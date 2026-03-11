@@ -4,6 +4,9 @@ compatibility_date = "2026-03-11"
 account_id = "0e1651bc459f3017e816ba2263e0807a"
 workers_dev = true
 
+[vars]
+WORKOS_CLIENT_ID = "client_01KKFCF9G08EH79QABA2Q729P2"
+
 [observability.logs]
 enabled = true
 head_sampling_rate = 1

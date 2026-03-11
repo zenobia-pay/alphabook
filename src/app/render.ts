@@ -5,8 +5,8 @@ import type {
   DocumentView,
   FeedTab,
   RailPanel,
+  SearchArchitectureStep,
   SearchResponse,
-  SeedDocument,
 } from "./data";
 
 export interface Viewer {
@@ -17,6 +17,7 @@ export interface Viewer {
   bio: string;
   interests: string[];
   onboardingComplete: boolean;
+  avatarUrl?: string;
 }
 
 export interface LibraryCollection {
@@ -62,58 +63,35 @@ export interface AssistantThread {
 
 const appCss = `
 :root {
-  --bg: #f6efe4;
-  --bg-elevated: rgba(255, 252, 247, 0.82);
-  --surface: rgba(18, 29, 36, 0.94);
-  --surface-soft: rgba(23, 37, 46, 0.82);
-  --surface-muted: rgba(27, 41, 50, 0.68);
-  --card: rgba(255, 249, 242, 0.86);
-  --card-strong: rgba(255, 252, 247, 0.98);
-  --text: #12222b;
-  --text-soft: #4b5b63;
-  --text-on-dark: #eef3f2;
-  --line: rgba(15, 27, 34, 0.12);
-  --line-strong: rgba(15, 27, 34, 0.24);
-  --accent: #a04d2e;
-  --accent-2: #0f7f84;
-  --accent-3: #d1b05f;
-  --danger: #992c2c;
-  --shadow: 0 18px 50px rgba(24, 34, 41, 0.14);
-  --radius-xl: 28px;
-  --radius-lg: 20px;
-  --radius-md: 14px;
-  --radius-sm: 10px;
+  --bg: #f4f0e8;
+  --panel: #ebe5d9;
+  --paper: #fbf8f2;
+  --ink: #171717;
+  --muted: #6a655d;
+  --line: rgba(23, 23, 23, 0.12);
+  --line-strong: rgba(23, 23, 23, 0.2);
+  --accent: #1f4b74;
+  --accent-soft: rgba(31, 75, 116, 0.08);
+  --success: #1d5d3e;
+  --danger: #8a302f;
+  --radius: 18px;
 }
 
-* { box-sizing: border-box; }
+* {
+  box-sizing: border-box;
+}
 
 html, body {
   margin: 0;
   padding: 0;
-  background:
-    radial-gradient(circle at top left, rgba(15, 127, 132, 0.12), transparent 34%),
-    radial-gradient(circle at bottom right, rgba(160, 77, 46, 0.1), transparent 24%),
-    linear-gradient(180deg, #faf4ea 0%, #f2e8da 100%);
-  color: var(--text);
-  font-family: "Avenir Next Condensed", "Gill Sans", "Trebuchet MS", sans-serif;
   min-height: 100%;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: "Avenir Next", "Optima", "Segoe UI", sans-serif;
 }
 
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  background:
-    linear-gradient(rgba(255,255,255,0.28), rgba(255,255,255,0.28)),
-    repeating-linear-gradient(
-      0deg,
-      rgba(87, 69, 51, 0.035),
-      rgba(87, 69, 51, 0.035) 1px,
-      transparent 1px,
-      transparent 6px
-    );
-  opacity: 0.44;
+body {
+  line-height: 1.5;
 }
 
 a {
@@ -121,32 +99,29 @@ a {
   text-decoration: none;
 }
 
-button, input, textarea, select {
+button,
+input,
+textarea,
+select {
   font: inherit;
 }
 
-.app-shell {
-  position: relative;
-  z-index: 1;
-  max-width: 1480px;
-  margin: 0 auto;
-  padding: 22px;
+.shell {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  min-height: 100vh;
 }
 
-.topbar {
-  display: grid;
-  grid-template-columns: 280px minmax(0, 1fr) auto;
-  gap: 18px;
-  align-items: center;
-  padding: 16px 18px;
-  border: 1px solid var(--line);
-  background: var(--bg-elevated);
-  border-radius: 26px;
-  box-shadow: var(--shadow);
-  backdrop-filter: blur(18px);
+.sidebar {
   position: sticky;
-  top: 16px;
-  z-index: 20;
+  top: 0;
+  height: 100vh;
+  padding: 28px 24px;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  gap: 28px;
 }
 
 .brand {
@@ -154,475 +129,289 @@ button, input, textarea, select {
   gap: 6px;
 }
 
-.brand-mark {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
-  font-size: 1.4rem;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+.brand-title {
+  font-family: "Iowan Old Style", "Palatino Linotype", serif;
+  font-size: 1.85rem;
+  letter-spacing: -0.04em;
 }
 
-.brand-mark span:last-child {
-  color: var(--accent);
+.brand-meta,
+.muted,
+.meta,
+.small {
+  color: var(--muted);
 }
 
-.brand-meta {
-  color: var(--text-soft);
-  font-size: 0.84rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+.nav {
+  display: grid;
+  gap: 6px;
 }
 
-.topnav {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  justify-content: center;
-}
-
-.topnav a {
-  padding: 12px 16px;
+.nav a,
+.nav button,
+.tab-row a,
+.rail-tabs a {
   border-radius: 999px;
-  border: 1px solid transparent;
-  color: var(--text-soft);
-  font-size: 0.95rem;
-  letter-spacing: 0.02em;
-}
-
-.topnav a.active {
-  background: var(--surface);
-  color: var(--text-on-dark);
-  border-color: rgba(255,255,255,0.08);
-}
-
-.topnav a:hover {
-  border-color: var(--line);
-}
-
-.top-actions {
-  display: flex;
-  gap: 12px;
-  justify-content: flex-end;
-  align-items: center;
-}
-
-.pill {
+  padding: 10px 14px;
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 12px;
-  border-radius: 999px;
+  color: var(--muted);
+}
+
+.nav a.active,
+.tab-row a.active,
+.rail-tabs a.active {
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--ink);
+}
+
+.sidebar-block {
+  display: grid;
+  gap: 10px;
+}
+
+.sidebar-viewer {
+  display: grid;
+  gap: 12px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+.avatar {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: rgba(255, 255, 255, 0.6);
   border: 1px solid var(--line);
-  background: rgba(255,255,255,0.62);
-  color: var(--text-soft);
-  font-size: 0.84rem;
+}
+
+.viewer-line {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.main {
+  padding: 36px 40px 48px;
+}
+
+.page {
+  max-width: 1120px;
+}
+
+.page-head {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 28px;
+}
+
+.page-title,
+.doc-title,
+.auth-title {
+  margin: 0;
+  font-family: "Iowan Old Style", "Palatino Linotype", serif;
+  font-size: clamp(2.2rem, 4vw, 3.6rem);
+  line-height: 0.96;
+  letter-spacing: -0.05em;
+}
+
+.eyebrow {
+  color: var(--muted);
+  font-size: 0.76rem;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+}
+
+.stack {
+  display: grid;
+  gap: 20px;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
 }
 
 .button,
 .button-quiet,
 .button-danger {
+  min-height: 42px;
+  padding: 0 16px;
+  border-radius: 999px;
+  border: 1px solid transparent;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  min-height: 44px;
-  padding: 0 16px;
-  border-radius: 999px;
-  border: none;
   cursor: pointer;
-  transition: transform 120ms ease, opacity 120ms ease, box-shadow 120ms ease;
 }
 
 .button {
-  background: linear-gradient(135deg, var(--accent), #bf7349);
+  background: var(--ink);
   color: white;
-  box-shadow: 0 10px 24px rgba(160, 77, 46, 0.24);
 }
 
 .button-quiet {
-  background: rgba(255,255,255,0.72);
-  color: var(--text);
-  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink);
+  border-color: var(--line);
 }
 
 .button-danger {
-  background: rgba(153, 44, 44, 0.12);
+  background: transparent;
   color: var(--danger);
-  border: 1px solid rgba(153, 44, 44, 0.18);
+  border-color: rgba(138, 48, 47, 0.22);
 }
 
-.button:hover,
-.button-quiet:hover,
-.button-danger:hover {
-  transform: translateY(-1px);
-}
-
-.hero {
+.query-form,
+.composer,
+.auth-panel,
+.line-form {
   display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(320px, 0.92fr);
-  gap: 24px;
-  margin-top: 22px;
+  gap: 12px;
 }
 
-.hero-panel,
-.hero-side,
-.card,
-.panel,
-.section-card,
-.feed-card,
-.library-card,
-.rail-card,
-.auth-card {
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-xl);
-  box-shadow: var(--shadow);
-}
-
-.hero-panel {
-  padding: 32px;
-  display: grid;
-  gap: 24px;
-  overflow: hidden;
-  position: relative;
-}
-
-.hero-panel::after {
-  content: "";
-  position: absolute;
-  inset: auto -70px -90px auto;
-  width: 260px;
-  height: 260px;
-  background: radial-gradient(circle, rgba(15,127,132,0.18), transparent 68%);
-  pointer-events: none;
-}
-
-.hero-kicker,
-.section-kicker,
-.eyebrow {
-  color: var(--accent);
-  font-size: 0.8rem;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-}
-
-.hero h1,
-.page-title,
-.doc-title,
-.profile-name,
-.auth-card h1 {
-  margin: 0;
-  font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
-  line-height: 0.95;
-  letter-spacing: -0.03em;
-}
-
-.hero h1 {
-  font-size: clamp(3rem, 6vw, 5.4rem);
-  max-width: 11ch;
-}
-
-.hero p,
-.lede,
-.muted,
-.meta-line,
-.stat-copy,
-.doc-summary,
-.thread-meta,
-.comment-meta {
-  color: var(--text-soft);
-}
-
-.query-form {
-  display: grid;
-  gap: 14px;
+.query-form input,
+.query-form textarea,
+.composer input,
+.composer textarea,
+.composer select,
+.auth-panel input,
+.auth-panel textarea,
+.line-form input,
+.line-form textarea {
+  width: 100%;
+  border: 1px solid var(--line-strong);
+  border-radius: 16px;
+  background: var(--paper);
+  min-height: 52px;
+  padding: 14px 16px;
+  color: var(--ink);
 }
 
 .query-form textarea,
-.query-form input[type="text"],
-.auth-card input,
-.auth-card textarea,
-.collection-form input,
-.collection-form textarea,
 .composer textarea,
-.composer input,
-.select-input {
-  width: 100%;
-  padding: 16px 18px;
-  border-radius: 18px;
-  border: 1px solid var(--line-strong);
-  background: rgba(255,255,255,0.86);
-  color: var(--text);
-  min-height: 56px;
+.auth-panel textarea {
+  min-height: 124px;
+  resize: vertical;
 }
 
-.query-actions,
-.inline-actions,
-.doc-actions,
-.tab-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  align-items: center;
-}
-
-.metric-grid,
-.labs-grid,
-.library-grid,
-.profile-grid,
-.page-grid,
-.feed-grid,
-.doc-grid,
-.assistant-grid {
-  display: grid;
-  gap: 20px;
-}
-
-.metric-grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.metric {
-  padding: 18px;
-  border-radius: var(--radius-lg);
-  background: rgba(18, 29, 36, 0.93);
-  color: var(--text-on-dark);
-  display: grid;
-  gap: 8px;
-}
-
-.metric strong {
-  font-size: 1.8rem;
-  font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
-}
-
-.hero-side {
-  padding: 24px;
-  background: linear-gradient(180deg, rgba(18,29,36,0.96), rgba(26,42,52,0.94));
-  color: var(--text-on-dark);
-  display: grid;
-  gap: 16px;
-}
-
-.hero-side .pill {
-  background: rgba(255,255,255,0.08);
-  color: rgba(255,255,255,0.72);
-  border-color: rgba(255,255,255,0.08);
-}
-
-.feed-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  margin-top: 24px;
-}
-
-.feed-card,
-.section-card,
-.library-card,
-.rail-card,
-.panel,
-.auth-card {
-  padding: 22px;
-}
-
-.feed-card {
-  display: grid;
-  gap: 18px;
-}
-
-.feed-card:hover {
-  transform: translateY(-2px);
-}
-
-.card-top {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  align-items: flex-start;
-}
-
-.card-title {
-  display: grid;
-  gap: 8px;
-}
-
-.card-title h3,
-.doc-side-title,
-.section-card h2,
-.rail-card h3,
-.library-card h3 {
-  margin: 0;
-  font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
-  line-height: 1.03;
-}
-
-.card-meta,
-.tag-row,
-.mini-list,
-.stat-row,
-.resource-list,
-.thread-list,
-.comment-list,
-.notes-list,
-.collections-list,
-.mini-metrics {
+.tab-row,
+.rail-tabs {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
 }
 
-.chip,
-.stat-chip,
-.tag,
-.small-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 7px 10px;
-  border-radius: 999px;
-  background: rgba(18,29,36,0.06);
-  color: var(--text-soft);
-  font-size: 0.8rem;
-  letter-spacing: 0.04em;
+.section {
+  padding: 22px 0;
+  border-top: 1px solid var(--line);
 }
 
-.tag {
-  text-transform: lowercase;
+.section:first-child {
+  border-top: none;
+  padding-top: 0;
 }
 
-.page-grid {
-  grid-template-columns: 1.25fr 0.78fr;
-  margin-top: 24px;
+.split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 36px;
   align-items: start;
 }
 
-.section-card {
+.two-up {
   display: grid;
-  gap: 16px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 28px;
 }
 
-.section-card h2 {
-  font-size: 2rem;
-}
-
-.list-stack {
+.list {
   display: grid;
   gap: 14px;
 }
 
-.resource-item,
-.note-item,
-.comment-item,
-.thread-item,
-.collection-item,
-.stat-band {
-  padding: 14px 16px;
-  border-radius: 16px;
-  background: rgba(255,255,255,0.68);
-  border: 1px solid var(--line);
+.item,
+.note,
+.comment,
+.thread,
+.resource,
+.plain-panel,
+.auth-box {
+  padding: 16px 0;
+  border-top: 1px solid var(--line);
 }
 
-.resource-item:hover,
-.thread-item:hover,
-.collection-item:hover {
-  border-color: rgba(15, 127, 132, 0.25);
+.item:first-child,
+.note:first-child,
+.comment:first-child,
+.thread:first-child,
+.resource:first-child {
+  border-top: none;
+  padding-top: 0;
 }
 
-.doc-grid {
-  grid-template-columns: minmax(0, 1.24fr) minmax(320px, 0.76fr);
-  gap: 24px;
-  margin-top: 24px;
-}
-
-.doc-header {
+.doc-row {
   display: grid;
-  gap: 18px;
-}
-
-.doc-title {
-  font-size: clamp(2.6rem, 4.6vw, 4.3rem);
-}
-
-.doc-subhead {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  align-items: center;
-}
-
-.doc-body {
-  display: grid;
-  gap: 18px;
-}
-
-.doc-article {
-  padding: 28px;
-  border-radius: 26px;
-  border: 1px solid var(--line);
-  background: var(--card-strong);
-  box-shadow: var(--shadow);
-}
-
-.doc-article p,
-.doc-article li {
-  line-height: 1.7;
-}
-
-.doc-article blockquote {
-  margin: 0;
-  padding: 18px 20px;
-  border-left: 3px solid var(--accent);
-  background: rgba(160, 77, 46, 0.05);
-  border-radius: 0 16px 16px 0;
-}
-
-.rail-card {
-  position: sticky;
-  top: 118px;
-  display: grid;
-  gap: 16px;
-}
-
-.rail-tabs {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 
-.rail-tab,
-.subtab {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 10px 12px;
-  border-radius: 12px;
-  border: 1px solid var(--line);
-  color: var(--text-soft);
+.doc-row h2,
+.doc-row h3,
+.panel-title,
+.section-title {
+  margin: 0;
+  font-family: "Iowan Old Style", "Palatino Linotype", serif;
+  line-height: 1;
 }
 
-.rail-tab.active,
-.subtab.active {
-  background: var(--surface);
-  color: var(--text-on-dark);
-  border-color: rgba(255,255,255,0.08);
+.doc-row h2 {
+  font-size: 1.55rem;
 }
 
-.assistant-grid {
-  grid-template-columns: 360px minmax(0, 1fr);
-  gap: 24px;
-  margin-top: 24px;
+.doc-meta,
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
-.thread-list {
-  flex-direction: column;
+.chip {
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--muted);
+  font-size: 0.8rem;
 }
 
-.thread-item.active {
-  background: rgba(15, 127, 132, 0.08);
-  border-color: rgba(15, 127, 132, 0.2);
+.score {
+  font-variant-numeric: tabular-nums;
+}
+
+.search-layout,
+.doc-layout,
+.assistant-layout,
+.library-layout,
+.profile-layout,
+.labs-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 36px;
+  align-items: start;
+}
+
+.aside {
+  display: grid;
+  gap: 20px;
+  position: sticky;
+  top: 36px;
+}
+
+.aside .plain-panel {
+  padding-top: 0;
 }
 
 .chat-log {
@@ -630,111 +419,73 @@ button, input, textarea, select {
   gap: 14px;
 }
 
-.chat-bubble {
-  padding: 16px 18px;
-  border-radius: 18px;
-  border: 1px solid var(--line);
-  background: rgba(255,255,255,0.82);
+.bubble {
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.58);
 }
 
-.chat-bubble.user {
-  background: rgba(15, 127, 132, 0.09);
-  border-color: rgba(15, 127, 132, 0.18);
+.bubble.user {
+  background: var(--accent-soft);
 }
 
-.auth-wrap {
-  min-height: calc(100vh - 160px);
-  display: grid;
-  place-items: center;
-}
-
-.auth-card {
-  width: min(720px, 100%);
-  display: grid;
-  gap: 18px;
-  padding: 36px;
-}
-
-.auth-card h1 {
-  font-size: clamp(2.8rem, 5vw, 4.2rem);
-}
-
-.split-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
+.empty {
+  color: var(--muted);
+  padding: 4px 0;
 }
 
 .flash {
-  padding: 14px 16px;
-  border-radius: 16px;
-  border: 1px solid rgba(160, 77, 46, 0.18);
-  background: rgba(160, 77, 46, 0.08);
-  color: var(--accent);
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(138, 48, 47, 0.08);
+  color: var(--danger);
 }
 
-.empty-state {
-  padding: 26px;
-  border-radius: 22px;
-  background: rgba(255,255,255,0.76);
-  border: 1px dashed var(--line-strong);
-  color: var(--text-soft);
+.success {
+  color: var(--success);
 }
 
 .footer-note {
-  margin-top: 28px;
-  padding: 18px 0 10px;
-  color: var(--text-soft);
-  font-size: 0.85rem;
+  margin-top: 40px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.9rem;
 }
 
-.mono {
-  font-family: "SF Mono", "JetBrains Mono", "Fira Code", monospace;
-}
-
-@media (max-width: 1120px) {
-  .topbar,
-  .hero,
-  .doc-grid,
-  .page-grid,
-  .assistant-grid {
+@media (max-width: 1040px) {
+  .shell,
+  .split,
+  .search-layout,
+  .doc-layout,
+  .assistant-layout,
+  .library-layout,
+  .profile-layout,
+  .labs-layout,
+  .two-up {
     grid-template-columns: 1fr;
   }
 
-  .rail-card {
+  .sidebar {
     position: static;
+    height: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--line);
   }
 
-  .feed-grid,
-  .metric-grid,
-  .split-grid {
-    grid-template-columns: 1fr;
+  .aside {
+    position: static;
+    top: auto;
   }
 }
 
-@media (max-width: 760px) {
-  .app-shell {
-    padding: 14px;
+@media (max-width: 720px) {
+  .main {
+    padding: 24px 20px 36px;
   }
 
-  .hero-panel,
-  .hero-side,
-  .feed-card,
-  .section-card,
-  .library-card,
-  .rail-card,
-  .doc-article,
-  .auth-card {
-    padding: 18px;
-    border-radius: 20px;
-  }
-
-  .topbar {
-    border-radius: 20px;
-  }
-
-  .hero h1 {
-    max-width: none;
+  .sidebar {
+    padding: 22px 20px;
   }
 }
 `;
@@ -760,46 +511,62 @@ function formatDate(value: string): string {
   });
 }
 
-function viewerBadge(viewer?: Viewer): string {
+function viewerControls(viewer?: Viewer): string {
   if (!viewer) {
-    return `<a class="button-quiet" href="/signin">Sign in</a>`;
+    return `
+      <a class="button" href="/signin">Continue with Google</a>
+      <div class="small">Google auth via WorkOS.</div>
+    `;
   }
 
   return `
-    <span class="pill">@${e(viewer.handle)}</span>
-    <a class="button-quiet" href="/u/${e(viewer.handle)}">Profile</a>
-    <form method="post" action="/auth/signout">
-      <button class="button-danger" type="submit">Sign out</button>
-    </form>
+    <div class="viewer-line">
+      ${viewer.avatarUrl ? `<img class="avatar" src="${e(viewer.avatarUrl)}" alt="${e(viewer.name)}" />` : `<div class="avatar"></div>`}
+      <div>
+        <div>${e(viewer.name)}</div>
+        <div class="small">@${e(viewer.handle)}</div>
+      </div>
+    </div>
+    <div class="row">
+      <a class="button-quiet" href="/u/${e(viewer.handle)}">Profile</a>
+      <form method="post" action="/auth/signout">
+        <button class="button-danger" type="submit">Sign out</button>
+      </form>
+    </div>
   `;
 }
 
-function topbar(activeNav: string, viewer?: Viewer): string {
-  const navItems = [
+function sidebar(activeNav: string, viewer?: Viewer): string {
+  const nav = [
     ["Explore", "/"],
+    ["Search", "/search"],
     ["Assistant", "/assistant"],
     ["Library", "/library"],
     ["Labs", "/labs"],
   ];
-  if (viewer) {
-    navItems.push(["Profile", `/u/${viewer.handle}`]);
-  }
 
   return `
-    <header class="topbar">
+    <aside class="sidebar">
       <a class="brand" href="/">
-        <div class="brand-mark"><span>Alpha</span><span>book</span></div>
-        <div class="brand-meta">Feed, library, assistant, field notes</div>
+        <div class="brand-title">alphabook</div>
+        <div class="brand-meta">book research, one real corpus</div>
       </a>
-      <nav class="topnav">
-        ${navItems
+      <nav class="nav">
+        ${nav
           .map(
-            ([label, href]) => `<a href="${href}" class="${activeNav === label ? "active" : ""}">${label}</a>`,
+            ([label, href]) =>
+              `<a class="${activeNav === label ? "active" : ""}" href="${href}">${label}</a>`,
           )
           .join("")}
+        ${viewer ? `<a class="${activeNav === "Profile" ? "active" : ""}" href="/u/${e(viewer.handle)}">Profile</a>` : ""}
       </nav>
-      <div class="top-actions">${viewerBadge(viewer)}</div>
-    </header>
+      <div class="sidebar-block">
+        <div class="eyebrow">Current corpus</div>
+        <div>Don Quixote</div>
+        <div class="small">Full text is live. No fake papers in the feed.</div>
+      </div>
+      <div class="sidebar-viewer">${viewerControls(viewer)}</div>
+    </aside>
   `;
 }
 
@@ -810,90 +577,113 @@ function layout(title: string, activeNav: string, viewer: Viewer | undefined, bo
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>${e(title)} · alphabook</title>
-    <meta name="description" content="Research feed, assistant, library, and profile surfaces for books and papers." />
+    <meta name="description" content="Search and research surface for long-form texts." />
     <style>${appCss}</style>
   </head>
   <body>
-    <div class="app-shell">
-      ${topbar(activeNav, viewer)}
-      ${body}
-      <div class="footer-note">
-        alphabook is a hybrid reading and research surface for books and papers. The current live bundle includes full-text retrieval for Don Quixote and metadata-first cards for the rest of the feed.
-      </div>
+    <div class="shell">
+      ${sidebar(activeNav, viewer)}
+      <main class="main">
+        <div class="page">${body}</div>
+      </main>
     </div>
   </body>
 </html>`;
 }
 
-function renderDocCard(document: DocumentCard, viewer?: Viewer, compact = false): string {
+function renderSearchForm(query?: string, action = "/search"): string {
   return `
-    <article class="${compact ? "resource-item" : "feed-card"}">
-      <div class="card-top">
-        <div class="card-title">
-          <div class="eyebrow">${e(document.kicker)}</div>
-          <h3><a href="/doc/${e(document.id)}">${e(document.title)}</a></h3>
-          <div class="meta-line">${e(document.authors.join(", "))} · ${e(document.year)} · ${e(document.venue)}</div>
-        </div>
-        <div class="mini-metrics">
-          <span class="stat-chip">${document.kind}</span>
-          <span class="stat-chip">${e(document.fullTextLabel)}</span>
-        </div>
+    <form class="query-form" method="get" action="${action}">
+      <textarea name="q" placeholder="Ask or search anything...">${e(query ?? "")}</textarea>
+      <div class="row">
+        <button class="button" type="submit">Search</button>
+        <a class="button-quiet" href="/assistant${query ? `?prompt=${encodeURIComponent(query)}` : ""}">Send to assistant</a>
       </div>
-      <p class="doc-summary">${e(document.summary)}</p>
-      <div class="tag-row">
-        ${document.tags.map((tag) => `<span class="tag">${e(tag)}</span>`).join("")}
+    </form>
+  `;
+}
+
+function renderDocSummary(document: DocumentCard, viewer?: Viewer): string {
+  return `
+    <article class="doc-row">
+      <div class="eyebrow">${e(document.kicker)}</div>
+      <h2><a href="/doc/${e(document.id)}">${e(document.title)}</a></h2>
+      <div class="meta">${e(document.authors.join(", "))} · ${e(document.year)} · ${e(document.venue)}</div>
+      <div class="chips">
+        <span class="chip">${e(document.kind)}</span>
+        <span class="chip">${e(document.fullTextLabel)}</span>
+        <span class="chip">likes ${document.stats.likes}</span>
+        <span class="chip">saves ${document.stats.saves}</span>
       </div>
-      <div class="stat-row">
-        <span class="small-chip">likes ${document.stats.likes}</span>
-        <span class="small-chip">saves ${document.stats.saves}</span>
-        <span class="small-chip">comments ${document.stats.comments}</span>
-        <span class="small-chip">${document.liked ? "liked by you" : "open for annotation"}</span>
-      </div>
-      <div class="doc-actions">
-        <a class="button-quiet" href="/doc/${e(document.id)}">Open dossier</a>
-        <a class="button-quiet" href="/assistant?docId=${e(document.id)}">Ask assistant</a>
+      <div>${e(document.summary)}</div>
+      <div class="row">
+        <a class="button-quiet" href="/doc/${e(document.id)}">Open</a>
+        <a class="button-quiet" href="/assistant?docId=${e(document.id)}">Ask</a>
         ${
           viewer
             ? `
-            <form method="post" action="/action/save">
-              <input type="hidden" name="docId" value="${e(document.id)}" />
-              <input type="hidden" name="redirect" value="/doc/${e(document.id)}" />
-              <button class="${document.saved ? "button" : "button-quiet"}" type="submit">${document.saved ? "Saved" : "Save"}</button>
-            </form>
-          `
-            : `<a class="button-quiet" href="/signin">Sign in to save</a>`
+              <form method="post" action="/action/save">
+                <input type="hidden" name="docId" value="${e(document.id)}" />
+                <input type="hidden" name="redirect" value="/doc/${e(document.id)}" />
+                <button class="${document.saved ? "button" : "button-quiet"}" type="submit">${document.saved ? "Saved" : "Save"}</button>
+              </form>
+            `
+            : ""
         }
       </div>
     </article>
   `;
 }
 
-function renderSearchPreview(search?: SearchResponse): string {
-  if (!search) {
-    return "";
-  }
+function renderSearchResults(search: SearchResponse): string {
+  return `
+    <div class="list">
+      ${search.results
+        .map(
+          (result) => `
+            <a class="item" href="${e(result.href)}">
+              <div class="row" style="justify-content: space-between;">
+                <strong>${e(result.title)}</strong>
+                <span class="chip">${e(result.strategy)}</span>
+              </div>
+              <div class="meta">score <span class="score">${result.score.toFixed(3)}</span></div>
+              <div>${e(result.excerpt)}</div>
+            </a>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function railNav(documentId: string, panel: RailPanel, view: DocumentView, query?: string): string {
+  const link = (label: string, nextPanel: RailPanel) =>
+    `<a class="${panel === nextPanel ? "active" : ""}" href="/doc/${e(documentId)}?view=${e(view)}&panel=${nextPanel}${
+      query ? `&q=${encodeURIComponent(query)}` : ""
+    }">${label}</a>`;
 
   return `
-    <section class="section-card">
-      <div class="section-kicker">Active retrieval</div>
-      <h2>Search routed “${e(search.query)}” into document and chunk evidence.</h2>
-      <div class="list-stack">
-        ${search.results
-          .slice(0, 5)
-          .map(
-            (result) => `
-              <a class="resource-item" href="${e(result.href)}">
-                <div class="card-top">
-                  <strong>${e(result.title)}</strong>
-                  <span class="small-chip">${e(result.strategy)}</span>
-                </div>
-                <div class="muted">${e(result.excerpt)}</div>
-              </a>
-            `,
-          )
-          .join("")}
-      </div>
-    </section>
+    <div class="rail-tabs">
+      ${link("Assistant", "assistant")}
+      ${link("Notes", "notes")}
+      ${link("Comments", "comments")}
+      ${link("Similar", "similar")}
+    </div>
+  `;
+}
+
+function viewTabs(documentId: string, view: DocumentView, panel: RailPanel, query?: string): string {
+  const link = (label: string, nextView: DocumentView) =>
+    `<a class="${view === nextView ? "active" : ""}" href="/doc/${e(documentId)}?view=${nextView}&panel=${e(panel)}${
+      query ? `&q=${encodeURIComponent(query)}` : ""
+    }">${label}</a>`;
+
+  return `
+    <div class="tab-row">
+      ${link("Document", "document")}
+      ${link("Brief", "brief")}
+      ${link("Resources", "resources")}
+    </div>
   `;
 }
 
@@ -903,75 +693,45 @@ export function renderHomePage(input: {
   documents: DocumentCard[];
   search?: SearchResponse;
 }): string {
+  const [document] = input.documents;
   const body = `
-    <section class="hero">
-      <div class="hero-panel">
-        <div class="hero-kicker">Explore feed</div>
-        <h1>Research like a working library, not a PDF graveyard.</h1>
-        <p class="lede">
-          alphabook combines a feed, a dossier reader, a library, and a persistent assistant. Ask broad questions,
-          save field notes, then launch slower research loops only when the cheap routing layer says a document matters.
-        </p>
-        <form class="query-form" method="get" action="/search">
-          <textarea name="q" placeholder="Ask or search anything... Try: all the times people are talking about sadness">${e(
-            input.search?.query ?? "",
-          )}</textarea>
-          <div class="query-actions">
-            <button class="button" type="submit">Search the corpus</button>
-            <a class="button-quiet" href="/assistant">Open assistant</a>
-            <a class="button-quiet" href="/labs">Inspect Labs</a>
-          </div>
-        </form>
-        <div class="metric-grid">
-          <div class="metric">
-            <div class="eyebrow">Surfaces</div>
-            <strong>6</strong>
-            <div>Feed, document, assistant, library, profile, labs.</div>
-          </div>
-          <div class="metric">
-            <div class="eyebrow">Live corpus</div>
-            <strong>2212</strong>
-            <div>Don Quixote chunks bundled into the deployed worker.</div>
-          </div>
-          <div class="metric">
-            <div class="eyebrow">Loop model</div>
-            <strong>3</strong>
-            <div>Fast routing, plain-text evidence, and slow research mode.</div>
-          </div>
-        </div>
+    <div class="page-head">
+      <div class="eyebrow">Explore</div>
+      <h1 class="page-title">Ask into the corpus.</h1>
+      <div class="muted">One real book is live. Everything here is grounded in that text.</div>
+    </div>
+
+    <section class="section">
+      ${renderSearchForm(input.search?.query, "/search")}
+    </section>
+
+    <section class="section">
+      <div class="tab-row">
+        <a class="${input.activeTab === "hot" ? "active" : ""}" href="/?tab=hot">Hot</a>
+        <a class="${input.activeTab === "likes" ? "active" : ""}" href="/?tab=likes">Likes</a>
+        <a class="${input.activeTab === "briefs" ? "active" : ""}" href="/?tab=briefs">Briefs</a>
       </div>
-      <aside class="hero-side">
-        <span class="pill">AlphaXiv-shaped product surface</span>
-        <h3 class="doc-side-title">What is live right now</h3>
-        <p class="muted">A feed-first reading app for books and papers, with sign-in, persistent library state, notes, comments, profile pages, labs, and an assistant surface.</p>
-        <div class="list-stack">
-          <div class="resource-item">
-            <strong>Feed tabs</strong>
-            <div class="muted">Hot, likes, briefs, all sorted with dynamic user signals.</div>
-          </div>
-          <div class="resource-item">
-            <strong>Document dossiers</strong>
-            <div class="muted">Document, brief, resources, plus assistant / notes / comments / similar in the rail.</div>
-          </div>
-          <div class="resource-item">
-            <strong>Persistent user state</strong>
-            <div class="muted">Cookie auth with collections, saves, comments, notes, and threads stored in a Durable Object.</div>
-          </div>
-        </div>
-      </aside>
     </section>
 
-    <section class="tab-row" style="margin-top:24px;">
-      <a class="subtab ${input.activeTab === "hot" ? "active" : ""}" href="/?tab=hot">Hot</a>
-      <a class="subtab ${input.activeTab === "likes" ? "active" : ""}" href="/?tab=likes">Likes</a>
-      <a class="subtab ${input.activeTab === "briefs" ? "active" : ""}" href="/?tab=briefs">Briefs</a>
+    <section class="section">
+      ${document ? renderDocSummary(document, input.viewer) : `<div class="empty">No documents loaded.</div>`}
     </section>
 
-    ${renderSearchPreview(input.search)}
+    ${
+      input.search
+        ? `
+          <section class="section">
+            <div class="eyebrow">Search</div>
+            <h2 class="section-title">Top hits for “${e(input.search.query)}”</h2>
+            ${renderSearchResults(input.search)}
+          </section>
+        `
+        : ""
+    }
 
-    <section class="feed-grid">
-      ${input.documents.map((document) => renderDocCard(document, input.viewer)).join("")}
-    </section>
+    <div class="footer-note">
+      Fast search uses local embeddings plus lexical matching. Slow search widens the evidence window after routing the query into the corpus.
+    </div>
   `;
 
   return layout("Explore", "Explore", input.viewer, body);
@@ -982,100 +742,50 @@ export function renderSearchPage(input: {
   query: string;
   search: SearchResponse;
   feedDocuments: DocumentCard[];
+  architecture: SearchArchitectureStep[];
 }): string {
   const body = `
-    <section class="hero">
-      <div class="hero-panel">
-        <div class="hero-kicker">Search</div>
-        <h1>Search that routes before it reasons.</h1>
-        <p class="lede">Use this surface for broad retrieval. The feed stays editorial; search stays operational.</p>
-        <form class="query-form" method="get" action="/search">
-          <input type="text" name="q" value="${e(input.query)}" placeholder="Search books, papers, and bundled full text" />
-          <div class="query-actions">
-            <button class="button" type="submit">Run search</button>
-            <a class="button-quiet" href="/assistant?prompt=${encodeURIComponent(input.query)}">Send to assistant</a>
-          </div>
-        </form>
-      </div>
-      <aside class="hero-side">
-        <span class="pill">Search diagnostics</span>
-        <h3 class="doc-side-title">Top routing outcomes</h3>
-        <div class="list-stack">
-          ${input.search.documentHits
-            .slice(0, 3)
-            .map(
-              (hit) => `
-                <a class="resource-item" href="${e(hit.href)}">
-                  <strong>${e(hit.title)}</strong>
-                  <div class="muted">${e(hit.excerpt)}</div>
-                </a>
-              `,
-            )
-            .join("")}
-        </div>
-      </aside>
-    </section>
+    <div class="page-head">
+      <div class="eyebrow">Search</div>
+      <h1 class="page-title">Route first. Read second.</h1>
+    </div>
 
-    <section class="page-grid">
-      <div class="section-card">
-        <div class="section-kicker">Results</div>
-        <h2>${input.search.results.length} routed results for “${e(input.query)}”.</h2>
-        <div class="list-stack">
-          ${input.search.results
-            .map(
-              (result) => `
-                <a class="resource-item" href="${e(result.href)}">
-                  <div class="card-top">
-                    <strong>${e(result.title)}</strong>
-                    <span class="small-chip">${e(result.strategy)}</span>
+    <div class="search-layout">
+      <div class="stack">
+        <section class="section">
+          ${renderSearchForm(input.query)}
+        </section>
+        <section class="section">
+          <div class="eyebrow">Results</div>
+          <h2 class="section-title">${input.search.results.length} hits for “${e(input.query)}”</h2>
+          ${renderSearchResults(input.search)}
+        </section>
+      </div>
+      <aside class="aside">
+        <section class="plain-panel">
+          <div class="eyebrow">How it works</div>
+          <div class="list">
+            ${input.architecture
+              .map(
+                (step) => `
+                  <div class="item">
+                    <strong>${e(step.title)}</strong>
+                    <div class="muted">${e(step.body)}</div>
                   </div>
-                  <div class="muted">${e(result.excerpt)}</div>
-                </a>
-              `,
-            )
-            .join("")}
-        </div>
-      </div>
-      <aside class="section-card">
-        <div class="section-kicker">Suggested next reads</div>
-        <h2>Move from search into a saved path.</h2>
-        <div class="list-stack">
-          ${input.feedDocuments.slice(0, 3).map((document) => renderDocCard(document, input.viewer, true)).join("")}
-        </div>
+                `,
+              )
+              .join("")}
+          </div>
+        </section>
+        <section class="plain-panel">
+          <div class="eyebrow">Current document</div>
+          ${input.feedDocuments[0] ? renderDocSummary(input.feedDocuments[0], input.viewer) : ""}
+        </section>
       </aside>
-    </section>
-  `;
-  return layout("Search", "Explore", input.viewer, body);
-}
-
-function railNav(documentId: string, panel: RailPanel, view: DocumentView, query?: string): string {
-  const link = (label: string, nextPanel: RailPanel) =>
-    `<a class="rail-tab ${panel === nextPanel ? "active" : ""}" href="/doc/${e(documentId)}?view=${e(view)}&panel=${nextPanel}${
-      query ? `&q=${encodeURIComponent(query)}` : ""
-    }">${label}</a>`;
-
-  return `
-    <div class="rail-tabs">
-      ${link("Assistant", "assistant")}
-      ${link("My Notes", "notes")}
-      ${link("Comments", "comments")}
-      ${link("Similar", "similar")}
     </div>
   `;
-}
 
-function viewTabs(documentId: string, view: DocumentView, panel: RailPanel, query?: string): string {
-  const link = (label: string, nextView: DocumentView) =>
-    `<a class="subtab ${view === nextView ? "active" : ""}" href="/doc/${e(documentId)}?view=${nextView}&panel=${e(panel)}${
-      query ? `&q=${encodeURIComponent(query)}` : ""
-    }">${label}</a>`;
-  return `
-    <div class="tab-row">
-      ${link("Document", "document")}
-      ${link("Brief", "brief")}
-      ${link("Resources", "resources")}
-    </div>
-  `;
+  return layout("Search", "Search", input.viewer, body);
 }
 
 export function renderDocumentPage(input: {
@@ -1091,226 +801,229 @@ export function renderDocumentPage(input: {
   thread?: AssistantThread;
 }): string {
   const doc = input.document;
-  const mainBody =
+  const sections =
     input.view === "resources"
       ? `
-        <div class="list-stack">
-          ${doc.resources
-            .map(
-              (resource) => `
-                <a class="resource-item" href="${e(resource.url)}" target="_blank" rel="noreferrer">
-                  <div class="card-top">
-                    <strong>${e(resource.label)}</strong>
-                    <span class="small-chip">${e(resource.kind)}</span>
-                  </div>
-                  <div class="muted">${e(doc.summary)}</div>
-                </a>
-              `,
-            )
-            .join("")}
-        </div>
-      `
+          <div class="list">
+            ${doc.resources
+              .map(
+                (resource) => `
+                  <a class="resource" href="${e(resource.url)}" target="_blank" rel="noreferrer">
+                    <div class="row" style="justify-content: space-between;">
+                      <strong>${e(resource.label)}</strong>
+                      <span class="chip">${e(resource.kind)}</span>
+                    </div>
+                  </a>
+                `,
+              )
+              .join("")}
+          </div>
+        `
       : `
-        <div class="list-stack">
-          ${(input.view === "brief" ? [{ title: "Editorial brief", body: doc.brief }, ...input.sections] : input.sections)
-            .map(
-              (section, index) => `
-                <section id="chunk-${index}" class="section-card">
-                  <div class="eyebrow">${index === 0 && input.view === "brief" ? "Brief" : "Section"}</div>
-                  <h2>${e(section.title)}</h2>
-                  <p>${e(section.body)}</p>
-                </section>
-              `,
-            )
-            .join("")}
-        </div>
-      `;
+          <div class="list">
+            ${(input.view === "brief" ? [{ title: "Brief", body: doc.brief }, ...input.sections] : input.sections)
+              .map(
+                (section, index) => `
+                  <section id="chunk-${index}" class="item">
+                    <div class="eyebrow">${input.view === "brief" && index === 0 ? "Brief" : "Passage"}</div>
+                    <h2 class="section-title">${e(section.title)}</h2>
+                    <div>${e(section.body)}</div>
+                  </section>
+                `,
+              )
+              .join("")}
+          </div>
+        `;
 
   let railBody = "";
   if (input.panel === "assistant") {
     railBody = `
-      <div class="rail-card">
+      <section class="plain-panel">
         ${railNav(doc.id, input.panel, input.view, input.search?.query)}
-        <div>
-          <div class="section-kicker">Document assistant</div>
-          <h3>Ask against this dossier</h3>
-          <p class="muted">Use the current reading surface as scope. Full-text retrieval is only live for Don Quixote in the current bundle.</p>
-        </div>
+      </section>
+      <section class="plain-panel">
+        <div class="eyebrow">Assistant</div>
+        <div class="muted">This panel scopes the prompt to the current book.</div>
         ${
-          input.thread && input.thread.messages.length
-            ? `<div class="chat-log">
-              ${input.thread.messages
-                .slice(-4)
-                .map(
-                  (message) => `
-                    <div class="chat-bubble ${message.role}">
-                      <div class="eyebrow">${message.role === "user" ? "You" : "Assistant"}</div>
-                      <div>${e(message.content)}</div>
-                    </div>
-                  `,
-                )
-                .join("")}
-            </div>`
-            : `<div class="empty-state">No messages yet for this document. Ask for a brief, a comparison, or a slow research pass.</div>`
+          input.thread?.messages.length
+            ? `
+              <div class="chat-log">
+                ${input.thread.messages
+                  .slice(-4)
+                  .map(
+                    (message) => `
+                      <div class="bubble ${message.role}">
+                        <div class="eyebrow">${message.role === "user" ? "You" : "Assistant"}</div>
+                        <div>${e(message.content)}</div>
+                      </div>
+                    `,
+                  )
+                  .join("")}
+              </div>
+            `
+            : `<div class="empty">No thread for this document yet.</div>`
         }
         <form class="composer" method="post" action="/action/assistant">
           <input type="hidden" name="docId" value="${e(doc.id)}" />
           <input type="hidden" name="redirect" value="/doc/${e(doc.id)}?panel=assistant&view=${input.view}" />
-          <textarea name="prompt" placeholder="Ask about motifs, arguments, or similar documents"></textarea>
-          <button class="button" type="submit">Send to assistant</button>
+          <textarea name="prompt" placeholder="Ask about a scene, motif, or pattern"></textarea>
+          <button class="button" type="submit">Ask</button>
         </form>
-      </div>
+      </section>
     `;
   } else if (input.panel === "notes") {
     railBody = `
-      <div class="rail-card">
+      <section class="plain-panel">
         ${railNav(doc.id, input.panel, input.view, input.search?.query)}
-        <div>
-          <div class="section-kicker">My notes</div>
-          <h3>Capture field notes while reading.</h3>
-        </div>
+      </section>
+      <section class="plain-panel">
+        <div class="eyebrow">Notes</div>
         ${
           input.viewer
             ? `
               <form class="composer" method="post" action="/action/note">
                 <input type="hidden" name="docId" value="${e(doc.id)}" />
                 <input type="hidden" name="redirect" value="/doc/${e(doc.id)}?panel=notes&view=${input.view}" />
-                <input name="anchor" placeholder="Anchor label, e.g. Windmill scene" />
-                <textarea name="text" placeholder="Write a private note"></textarea>
-                <button class="button" type="submit">Add note</button>
+                <input name="anchor" placeholder="Anchor" />
+                <textarea name="text" placeholder="Private note"></textarea>
+                <button class="button" type="submit">Save note</button>
               </form>
             `
-            : `<div class="empty-state"><a href="/signin">Sign in</a> to save notes.</div>`
+            : `<div class="empty"><a href="/signin">Continue with Google</a> to save notes.</div>`
         }
-        <div class="list-stack notes-list">
+        <div class="list">
           ${
             input.notes.length
               ? input.notes
                   .map(
                     (note) => `
-                      <div class="note-item">
-                        <div class="card-top">
-                          <strong>${e(note.anchor)}</strong>
-                          <span class="small-chip">${e(formatDate(note.createdAt))}</span>
-                        </div>
-                        <div class="muted">${e(note.text)}</div>
+                      <div class="note">
+                        <strong>${e(note.anchor)}</strong>
+                        <div>${e(note.text)}</div>
+                        <div class="small">${e(formatDate(note.createdAt))}</div>
                       </div>
                     `,
                   )
                   .join("")
-              : `<div class="empty-state">No notes yet for this document.</div>`
+              : `<div class="empty">No notes yet.</div>`
           }
         </div>
-      </div>
+      </section>
     `;
   } else if (input.panel === "comments") {
     railBody = `
-      <div class="rail-card">
+      <section class="plain-panel">
         ${railNav(doc.id, input.panel, input.view, input.search?.query)}
-        <div>
-          <div class="section-kicker">Comments</div>
-          <h3>Public conversation around the dossier.</h3>
-        </div>
+      </section>
+      <section class="plain-panel">
+        <div class="eyebrow">Comments</div>
         ${
           input.viewer
             ? `
               <form class="composer" method="post" action="/action/comment">
                 <input type="hidden" name="docId" value="${e(doc.id)}" />
                 <input type="hidden" name="redirect" value="/doc/${e(doc.id)}?panel=comments&view=${input.view}" />
-                <textarea name="text" placeholder="Add a public comment"></textarea>
-                <button class="button" type="submit">Post comment</button>
+                <textarea name="text" placeholder="Public comment"></textarea>
+                <button class="button" type="submit">Post</button>
               </form>
             `
-            : `<div class="empty-state"><a href="/signin">Sign in</a> to join the discussion.</div>`
+            : `<div class="empty"><a href="/signin">Continue with Google</a> to comment.</div>`
         }
-        <div class="list-stack comment-list">
+        <div class="list">
           ${
             input.comments.length
               ? input.comments
                   .map(
                     (comment) => `
-                      <div class="comment-item">
-                        <div class="card-top">
+                      <div class="comment">
+                        <div class="row" style="justify-content: space-between;">
                           <strong>${e(comment.userName)}</strong>
-                          <span class="small-chip">@${e(comment.handle)}</span>
+                          <span class="small">@${e(comment.handle)}</span>
                         </div>
-                        <div class="muted">${e(comment.text)}</div>
-                        <div class="comment-meta">${e(formatDate(comment.createdAt))}</div>
+                        <div>${e(comment.text)}</div>
+                        <div class="small">${e(formatDate(comment.createdAt))}</div>
                       </div>
                     `,
                   )
                   .join("")
-              : `<div class="empty-state">No comments yet.</div>`
+              : `<div class="empty">No comments yet.</div>`
           }
         </div>
-      </div>
+      </section>
     `;
   } else {
     railBody = `
-      <div class="rail-card">
+      <section class="plain-panel">
         ${railNav(doc.id, input.panel, input.view, input.search?.query)}
-        <div>
-          <div class="section-kicker">Similar documents</div>
-          <h3>Keep the reading graph open.</h3>
-        </div>
-        <div class="list-stack">
-          ${input.related.map((document) => renderDocCard(document, input.viewer, true)).join("")}
-        </div>
-      </div>
+      </section>
+      <section class="plain-panel">
+        <div class="eyebrow">Similar</div>
+        ${
+          input.related.length
+            ? input.related.map((related) => renderDocSummary(related, input.viewer)).join("")
+            : `<div class="empty">No other ingested books yet.</div>`
+        }
+      </section>
     `;
   }
 
   const body = `
-    <section class="doc-grid">
-      <div class="doc-body">
-        <div class="doc-header">
-          <div class="eyebrow">${e(doc.kicker)}</div>
-          <h1 class="doc-title">${e(doc.title)}</h1>
-          <div class="doc-subhead">
-            <span class="chip">${e(doc.kind)}</span>
-            <span class="chip">${e(doc.authors.join(", "))}</span>
-            <span class="chip">${e(doc.year)}</span>
-            <span class="chip">${e(doc.venue)}</span>
-            <span class="chip">${e(doc.fullTextLabel)}</span>
-          </div>
-          <p class="doc-summary">${e(doc.summary)}</p>
-          <div class="doc-actions">
-            <a class="button-quiet" href="/assistant?docId=${e(doc.id)}">Open full assistant</a>
-            ${
-              doc.resources[0]
-                ? `<a class="button-quiet" href="${e(doc.resources[0].url)}" target="_blank" rel="noreferrer">View source</a>`
-                : ""
-            }
-            ${
-              input.viewer
-                ? `
-                  <form method="post" action="/action/like">
-                    <input type="hidden" name="docId" value="${e(doc.id)}" />
-                    <input type="hidden" name="redirect" value="/doc/${e(doc.id)}?panel=${input.panel}&view=${input.view}" />
-                    <button class="${doc.liked ? "button" : "button-quiet"}" type="submit">${doc.liked ? "Liked" : "Like"} · ${doc.stats.likes}</button>
-                  </form>
-                  <form method="post" action="/action/save">
-                    <input type="hidden" name="docId" value="${e(doc.id)}" />
-                    <input type="hidden" name="redirect" value="/doc/${e(doc.id)}?panel=${input.panel}&view=${input.view}" />
-                    <button class="${doc.saved ? "button" : "button-quiet"}" type="submit">${doc.saved ? "Saved" : "Save"} · ${doc.stats.saves}</button>
-                  </form>
-                `
-                : `<a class="button-quiet" href="/signin">Sign in to save</a>`
-            }
-          </div>
-          ${viewTabs(doc.id, input.view, input.panel, input.search?.query)}
-        </div>
-        <article class="doc-article">
-          ${
-            input.search?.query
-              ? `<blockquote>Search overlay active for <span class="mono">${e(input.search.query)}</span>. The sections below are prioritized around the routed evidence.</blockquote>`
-              : ""
-          }
-          ${mainBody}
-        </article>
+    <div class="page-head">
+      <div class="eyebrow">${e(doc.kicker)}</div>
+      <h1 class="doc-title">${e(doc.title)}</h1>
+      <div class="meta">${e(doc.authors.join(", "))} · ${e(doc.year)} · ${e(doc.venue)}</div>
+      <div class="chips">
+        <span class="chip">${e(doc.fullTextLabel)}</span>
+        <span class="chip">likes ${doc.stats.likes}</span>
+        <span class="chip">saves ${doc.stats.saves}</span>
+        <span class="chip">comments ${doc.stats.comments}</span>
       </div>
-      ${railBody}
-    </section>
+      <div>${e(doc.summary)}</div>
+      <div class="row">
+        <a class="button-quiet" href="/assistant?docId=${e(doc.id)}">Open assistant</a>
+        ${doc.resources[0] ? `<a class="button-quiet" href="${e(doc.resources[0].url)}" target="_blank" rel="noreferrer">Source</a>` : ""}
+        ${
+          input.viewer
+            ? `
+              <form method="post" action="/action/like">
+                <input type="hidden" name="docId" value="${e(doc.id)}" />
+                <input type="hidden" name="redirect" value="/doc/${e(doc.id)}?panel=${input.panel}&view=${input.view}" />
+                <button class="${doc.liked ? "button" : "button-quiet"}" type="submit">${doc.liked ? "Liked" : "Like"}</button>
+              </form>
+              <form method="post" action="/action/save">
+                <input type="hidden" name="docId" value="${e(doc.id)}" />
+                <input type="hidden" name="redirect" value="/doc/${e(doc.id)}?panel=${input.panel}&view=${input.view}" />
+                <button class="${doc.saved ? "button" : "button-quiet"}" type="submit">${doc.saved ? "Saved" : "Save"}</button>
+              </form>
+            `
+            : ""
+        }
+      </div>
+    </div>
+
+    <div class="doc-layout">
+      <div class="stack">
+        <section class="section">
+          ${viewTabs(doc.id, input.view, input.panel, input.search?.query)}
+        </section>
+        ${
+          input.search?.query
+            ? `
+              <section class="section">
+                <div class="eyebrow">Query overlay</div>
+                <div>${e(input.search.query)}</div>
+              </section>
+            `
+            : ""
+        }
+        <section class="section">
+          ${sections}
+        </section>
+      </div>
+      <aside class="aside">
+        ${railBody}
+      </aside>
+    </div>
   `;
 
   return layout(doc.title, "Explore", input.viewer, body);
@@ -1325,109 +1038,96 @@ export function renderAssistantPage(input: {
   prompt?: string;
 }): string {
   const body = `
-    <section class="hero">
-      <div class="hero-panel">
-        <div class="hero-kicker">Assistant</div>
-        <h1>A persistent research workspace, not a disposable prompt box.</h1>
-        <p class="lede">Threads are saved into your account state. Scope a conversation to one document or keep it corpus-wide.</p>
-        ${
-          input.viewer
-            ? `
-              <form class="query-form" method="post" action="/action/assistant">
-                <input type="hidden" name="redirect" value="/assistant" />
-                <div class="split-grid">
-                  <select class="select-input" name="docId">
-                    <option value="">Entire library / feed</option>
+    <div class="page-head">
+      <div class="eyebrow">Assistant</div>
+      <h1 class="page-title">Persistent research threads.</h1>
+    </div>
+
+    <div class="assistant-layout">
+      <div class="stack">
+        <section class="section">
+          ${
+            input.viewer
+              ? `
+                <form class="composer" method="post" action="/action/assistant">
+                  <input type="hidden" name="redirect" value="/assistant" />
+                  <select name="docId">
+                    <option value="">Entire corpus</option>
                     ${input.availableDocs
                       .map(
                         (document) =>
-                          `<option value="${e(document.id)}" ${
-                            input.activeDocId === document.id ? "selected" : ""
-                          }>${e(document.title)}</option>`,
+                          `<option value="${e(document.id)}" ${input.activeDocId === document.id ? "selected" : ""}>${e(
+                            document.title,
+                          )}</option>`,
                       )
                       .join("")}
                   </select>
-                  <input name="threadId" value="${e(input.activeThread?.id ?? "")}" placeholder="Thread id (optional)" />
-                </div>
-                <textarea name="prompt" placeholder="Ask for a brief, comparison, or slow research pass">${e(
-                  input.prompt ?? "",
-                )}</textarea>
-                <button class="button" type="submit">Send</button>
-              </form>
-            `
-            : `<div class="empty-state"><a href="/signin">Sign in</a> to persist assistant threads.</div>`
-        }
+                  <input name="threadId" value="${e(input.activeThread?.id ?? "")}" placeholder="Reuse thread id" />
+                  <textarea name="prompt" placeholder="Ask a question about the book">${e(input.prompt ?? "")}</textarea>
+                  <button class="button" type="submit">Send</button>
+                </form>
+              `
+              : `<div class="empty"><a href="/signin">Continue with Google</a> to save assistant threads.</div>`
+          }
+        </section>
+        <section class="section">
+          <div class="eyebrow">Conversation</div>
+          <div class="chat-log">
+            ${
+              input.activeThread?.messages.length
+                ? input.activeThread.messages
+                    .map(
+                      (message) => `
+                        <div class="bubble ${message.role}">
+                          <div class="eyebrow">${message.role === "user" ? "You" : "Assistant"}</div>
+                          <div>${e(message.content)}</div>
+                          ${
+                            message.citations?.length
+                              ? `
+                                <div class="chips" style="margin-top: 10px;">
+                                  ${message.citations
+                                    .map((citation) => `<a class="chip" href="${e(citation.href)}">${e(citation.label)}</a>`)
+                                    .join("")}
+                                </div>
+                              `
+                              : ""
+                          }
+                        </div>
+                      `,
+                    )
+                    .join("")
+                : `<div class="empty">Start a thread to save a query and the synthesized answer.</div>`
+            }
+          </div>
+        </section>
       </div>
-      <aside class="hero-side">
-        <span class="pill">Assistant modes</span>
-        <div class="list-stack">
-          <div class="resource-item"><strong>Fast</strong><div class="muted">Route via metadata and chunk search.</div></div>
-          <div class="resource-item"><strong>Slow</strong><div class="muted">Trigger deeper evidence summaries for documents that matter.</div></div>
-          <div class="resource-item"><strong>Scoped</strong><div class="muted">Bind the thread to a specific document from the feed or your library.</div></div>
-        </div>
-      </aside>
-    </section>
 
-    <section class="assistant-grid">
-      <aside class="section-card">
-        <div class="section-kicker">Threads</div>
-        <h2>Saved conversations</h2>
-        <div class="thread-list">
-          ${
-            input.threads.length
-              ? input.threads
-                  .map(
-                    (thread) => `
-                      <a class="thread-item ${input.activeThread?.id === thread.id ? "active" : ""}" href="/assistant?threadId=${e(
-                        thread.id,
-                      )}">
-                        <strong>${e(thread.title)}</strong>
-                        <div class="thread-meta">${thread.docId ? `Scoped to ${e(thread.docId)}` : "Cross-library"} · ${e(
-                          formatDate(thread.updatedAt),
-                        )}</div>
-                      </a>
-                    `,
-                  )
-                  .join("")
-              : `<div class="empty-state">No saved threads yet.</div>`
-          }
-        </div>
+      <aside class="aside">
+        <section class="plain-panel">
+          <div class="eyebrow">Threads</div>
+          <div class="list">
+            ${
+              input.threads.length
+                ? input.threads
+                    .map(
+                      (thread) => `
+                        <a class="thread" href="/assistant?threadId=${e(thread.id)}">
+                          <strong>${e(thread.title)}</strong>
+                          <div class="small">${thread.docId ? e(thread.docId) : "corpus-wide"} · ${e(
+                            formatDate(thread.updatedAt),
+                          )}</div>
+                        </a>
+                      `,
+                    )
+                    .join("")
+                : `<div class="empty">No saved threads.</div>`
+            }
+          </div>
+        </section>
       </aside>
-      <div class="section-card">
-        <div class="section-kicker">Conversation</div>
-        <h2>${e(input.activeThread?.title ?? "Start a new thread")}</h2>
-        <div class="chat-log">
-          ${
-            input.activeThread?.messages.length
-              ? input.activeThread.messages
-                  .map(
-                    (message) => `
-                      <div class="chat-bubble ${message.role}">
-                        <div class="eyebrow">${message.role === "user" ? "You" : "Assistant"}</div>
-                        <div>${e(message.content)}</div>
-                        ${
-                          message.citations?.length
-                            ? `<div class="mini-list" style="margin-top:12px;">
-                                ${message.citations
-                                  .map(
-                                    (citation) => `
-                                      <a class="small-chip" href="${e(citation.href)}">${e(citation.label)}</a>
-                                    `,
-                                  )
-                                  .join("")}
-                              </div>`
-                            : ""
-                        }
-                      </div>
-                    `,
-                  )
-                  .join("")
-              : `<div class="empty-state">No messages yet. Ask for a brief, a reading plan, or a slower research sweep.</div>`
-          }
-        </div>
-      </div>
-    </section>
+    </div>
   `;
+
   return layout("Assistant", "Assistant", input.viewer, body);
 }
 
@@ -1440,83 +1140,64 @@ export function renderLibraryPage(input: {
   threadsCount: number;
 }): string {
   const body = `
-    <section class="hero">
-      <div class="hero-panel">
-        <div class="hero-kicker">Library</div>
-        <h1>Your saved reading graph.</h1>
-        <p class="lede">Save documents from the feed, group them into collections, and carry your notes and assistant threads with you.</p>
-        <div class="metric-grid">
-          <div class="metric"><div class="eyebrow">Saved</div><strong>${input.savedDocuments.length}</strong><div>Documents in your library.</div></div>
-          <div class="metric"><div class="eyebrow">Notes</div><strong>${input.notesCount}</strong><div>Private notes across the library.</div></div>
-          <div class="metric"><div class="eyebrow">Threads</div><strong>${input.threadsCount}</strong><div>Assistant conversations saved to your account.</div></div>
-        </div>
-      </div>
-      <aside class="hero-side">
-        <span class="pill">Collections</span>
-        ${
-          input.viewer
-            ? `
-              <form class="collection-form" method="post" action="/action/collection">
-                <input type="hidden" name="redirect" value="/library" />
-                <input name="name" placeholder="Create a collection" />
-                <button class="button" type="submit">Add collection</button>
-              </form>
-            `
-            : ""
-        }
-      </aside>
-    </section>
+    <div class="page-head">
+      <div class="eyebrow">Library</div>
+      <h1 class="page-title">Saved work.</h1>
+      <div class="muted">${input.savedDocuments.length} saved · ${input.notesCount} notes · ${input.threadsCount} threads</div>
+    </div>
 
-    <section class="library-grid" style="grid-template-columns: 1fr 1fr; margin-top:24px;">
-      <div class="library-card">
-        <div class="section-kicker">Saved documents</div>
-        <h3>Library shelf</h3>
-        <div class="list-stack">
-          ${
-            input.savedDocuments.length
-              ? input.savedDocuments.map((document) => renderDocCard(document, input.viewer, true)).join("")
-              : `<div class="empty-state">Nothing saved yet. Use the feed or search to start a shelf.</div>`
-          }
-        </div>
+    <div class="library-layout">
+      <div class="stack">
+        <section class="section">
+          <div class="eyebrow">Saved</div>
+          <div class="list">
+            ${
+              input.savedDocuments.length
+                ? input.savedDocuments.map((document) => renderDocSummary(document, input.viewer)).join("")
+                : `<div class="empty">Nothing saved yet.</div>`
+            }
+          </div>
+        </section>
+        <section class="section">
+          <div class="eyebrow">Recent</div>
+          <div class="list">
+            ${
+              input.recentDocuments.length
+                ? input.recentDocuments.map((document) => renderDocSummary(document, input.viewer)).join("")
+                : `<div class="empty">No recent documents.</div>`
+            }
+          </div>
+        </section>
       </div>
-      <div class="library-card">
-        <div class="section-kicker">Recent activity</div>
-        <h3>Recently opened dossiers</h3>
-        <div class="list-stack">
-          ${
-            input.recentDocuments.length
-              ? input.recentDocuments.map((document) => renderDocCard(document, input.viewer, true)).join("")
-              : `<div class="empty-state">Open a document and it will appear here.</div>`
-          }
-        </div>
-      </div>
-      <div class="library-card" style="grid-column: 1 / -1;">
-        <div class="section-kicker">Collections</div>
-        <h3>Working folders</h3>
-        <div class="list-stack">
-          ${
-            input.collections.length
-              ? input.collections
-                  .map(
-                    (collection) => `
-                      <div class="collection-item">
-                        <div class="card-top">
+      <aside class="aside">
+        <section class="plain-panel">
+          <div class="eyebrow">Collections</div>
+          <form class="line-form" method="post" action="/action/collection">
+            <input type="hidden" name="redirect" value="/library" />
+            <input name="name" placeholder="New collection" />
+            <button class="button" type="submit">Create</button>
+          </form>
+          <div class="list">
+            ${
+              input.collections.length
+                ? input.collections
+                    .map(
+                      (collection) => `
+                        <div class="item">
                           <strong>${e(collection.name)}</strong>
-                          <span class="small-chip">${collection.docs.length} docs</span>
+                          <div class="small">${collection.docs.length} docs</div>
                         </div>
-                        <div class="mini-list">
-                          ${collection.docs.map((document) => `<a class="small-chip" href="/doc/${e(document.id)}">${e(document.title)}</a>`).join("")}
-                        </div>
-                      </div>
-                    `,
-                  )
-                  .join("")
-              : `<div class="empty-state">Default collections are created when you sign up.</div>`
-          }
-        </div>
-      </div>
-    </section>
+                      `,
+                    )
+                    .join("")
+                : `<div class="empty">No collections yet.</div>`
+            }
+          </div>
+        </section>
+      </aside>
+    </div>
   `;
+
   return layout("Library", "Library", input.viewer, body);
 }
 
@@ -1524,167 +1205,218 @@ export function renderProfilePage(input: {
   viewer?: Viewer;
   profile: Viewer;
   ownProfile: boolean;
-  stats: { saved: number; notes: number; comments: number; collections: number; threads: number };
+  stats: {
+    saved: number;
+    notes: number;
+    comments: number;
+    collections: number;
+    threads: number;
+  };
   collectionNames: string[];
 }): string {
   const body = `
-    <section class="hero">
-      <div class="hero-panel">
-        <div class="hero-kicker">Profile</div>
-        <h1>${e(input.profile.name)}</h1>
-        <p class="lede">@${e(input.profile.handle)} · ${e(input.profile.bio || "Researcher building a personal reading graph.")}</p>
-        <div class="tag-row">
-          ${
-            input.profile.interests.length
-              ? input.profile.interests.map((interest) => `<span class="tag">${e(interest)}</span>`).join("")
-              : `<span class="tag">no interests configured yet</span>`
-          }
-        </div>
-      </div>
-      <aside class="hero-side">
-        <span class="pill">Profile stats</span>
-        <div class="metric-grid" style="grid-template-columns:1fr;">
-          <div class="metric"><div class="eyebrow">Saved</div><strong>${input.stats.saved}</strong><div>Documents in library</div></div>
-          <div class="metric"><div class="eyebrow">Notes</div><strong>${input.stats.notes}</strong><div>Private notes stored</div></div>
-          <div class="metric"><div class="eyebrow">Comments</div><strong>${input.stats.comments}</strong><div>Public comments posted</div></div>
-        </div>
-      </aside>
-    </section>
+    <div class="page-head">
+      <div class="eyebrow">Profile</div>
+      <h1 class="page-title">${e(input.profile.name)}</h1>
+      <div class="muted">@${e(input.profile.handle)} · ${e(input.profile.email)}</div>
+    </div>
 
-    <section class="profile-grid" style="grid-template-columns: 1fr 1fr; margin-top:24px;">
-      <div class="section-card">
-        <div class="section-kicker">Collections</div>
-        <h2>Research folders</h2>
-        <div class="list-stack">
-          ${
-            input.collectionNames.length
-              ? input.collectionNames.map((name) => `<div class="resource-item">${e(name)}</div>`).join("")
-              : `<div class="empty-state">No public collections yet.</div>`
-          }
-        </div>
+    <div class="profile-layout">
+      <div class="stack">
+        <section class="section">
+          <div>${e(input.profile.bio || "No bio yet.")}</div>
+        </section>
+        <section class="section">
+          <div class="chips">
+            <span class="chip">saved ${input.stats.saved}</span>
+            <span class="chip">notes ${input.stats.notes}</span>
+            <span class="chip">comments ${input.stats.comments}</span>
+            <span class="chip">collections ${input.stats.collections}</span>
+            <span class="chip">threads ${input.stats.threads}</span>
+          </div>
+        </section>
+        <section class="section">
+          <div class="eyebrow">Interests</div>
+          <div class="chips">
+            ${
+              input.profile.interests.length
+                ? input.profile.interests.map((interest) => `<span class="chip">${e(interest)}</span>`).join("")
+                : `<span class="empty">No interests yet.</span>`
+            }
+          </div>
+        </section>
       </div>
-      <div class="section-card">
-        <div class="section-kicker">Research posture</div>
-        <h2>How this reader uses the system</h2>
-        <p class="muted">The profile surface is where saved reading, annotations, and assistant history become a visible research identity instead of disappearing into tool logs.</p>
+      <aside class="aside">
+        <section class="plain-panel">
+          <div class="eyebrow">Collections</div>
+          <div class="list">
+            ${
+              input.collectionNames.length
+                ? input.collectionNames.map((name) => `<div class="item">${e(name)}</div>`).join("")
+                : `<div class="empty">No collections yet.</div>`
+            }
+          </div>
+        </section>
         ${
           input.ownProfile
             ? `
-              <form class="composer" method="post" action="/action/profile">
-                <input type="hidden" name="redirect" value="/u/${e(input.profile.handle)}" />
-                <textarea name="bio" placeholder="Short public bio">${e(input.profile.bio)}</textarea>
-                <input name="interests" value="${e(input.profile.interests.join(", "))}" placeholder="comma-separated interests" />
-                <button class="button" type="submit">Update profile</button>
-              </form>
+              <section class="plain-panel">
+                <div class="eyebrow">Edit</div>
+                <form class="auth-panel" method="post" action="/action/profile">
+                  <input type="hidden" name="redirect" value="/u/${e(input.profile.handle)}" />
+                  <textarea name="bio" placeholder="Bio">${e(input.profile.bio)}</textarea>
+                  <input name="interests" value="${e(input.profile.interests.join(", "))}" placeholder="Interests, comma separated" />
+                  <button class="button" type="submit">Update</button>
+                </form>
+              </section>
             `
             : ""
         }
-      </div>
-    </section>
+      </aside>
+    </div>
   `;
-  return layout(`${input.profile.name}`, "Profile", input.viewer, body);
+
+  return layout(input.profile.name, "Profile", input.viewer, body);
 }
 
-export function renderLabsPage(input: { viewer?: Viewer; documents: DocumentCard[] }): string {
+export function renderLabsPage(input: {
+  viewer?: Viewer;
+  documents: DocumentCard[];
+  architecture: SearchArchitectureStep[];
+}): string {
   const body = `
-    <section class="hero">
-      <div class="hero-panel">
-        <div class="hero-kicker">Labs</div>
-        <h1>The experimental wing for retrieval, graphs, and agent loops.</h1>
-        <p class="lede">Labs should feel like an instrument panel: unfinished on purpose, but clear about what can become productized.</p>
-      </div>
-      <aside class="hero-side">
-        <span class="pill">Why Labs exists</span>
-        <p class="muted">alphaXiv has a Labs surface because serious research products need somewhere to expose experimental views without breaking the core reading loop.</p>
-      </aside>
-    </section>
+    <div class="page-head">
+      <div class="eyebrow">Labs</div>
+      <h1 class="page-title">How the search stack works.</h1>
+    </div>
 
-    <section class="labs-grid" style="grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top:24px;">
-      <div class="section-card">
-        <div class="section-kicker">Semantic constellation</div>
-        <h2>Document graph</h2>
-        <p class="muted">A future canvas view for similarity clusters, saved documents, and assistant entry points. Right now the related-doc graph is precomputed and exposed in the dossier rail.</p>
+    <div class="labs-layout">
+      <div class="stack">
+        <section class="section">
+          <div class="list">
+            ${input.architecture
+              .map(
+                (step) => `
+                  <div class="item">
+                    <strong>${e(step.title)}</strong>
+                    <div>${e(step.body)}</div>
+                  </div>
+                `,
+              )
+              .join("")}
+          </div>
+        </section>
+        <section class="section">
+          <div class="eyebrow">Current implementation</div>
+          <div class="list">
+            <div class="item">
+              <strong>Fast search</strong>
+              <div>Local hashed embeddings plus lexical matching rank the book and its chunks.</div>
+            </div>
+            <div class="item">
+              <strong>Agentic slow search</strong>
+              <div>The slow mode widens the evidence set and returns a synthesis over more chunk hits for the same book.</div>
+            </div>
+            <div class="item">
+              <strong>Naive mode</strong>
+              <div>The exhaustive path is ready for a multi-book corpus, but with one live book it behaves as the widest sweep over Don Quixote.</div>
+            </div>
+          </div>
+        </section>
       </div>
-      <div class="section-card">
-        <div class="section-kicker">Agent runs</div>
-        <h2>Slow loop monitor</h2>
-        <p class="muted">Surface launched research jobs, runner type, evidence count, and completion state. The current live product uses the worker-local loop for bundled corpus scans.</p>
-      </div>
-      <div class="section-card">
-        <div class="section-kicker">Brief engine</div>
-        <h2>Editorial briefs</h2>
-        <p class="muted">Every feed card should be able to collapse into a short brief, then expand into notes, comments, and resources without context loss.</p>
-      </div>
-      <div class="section-card">
-        <div class="section-kicker">Recommended docs</div>
-        <h2>What to connect next</h2>
-        <div class="list-stack">
-          ${input.documents.slice(0, 4).map((document) => renderDocCard(document, input.viewer, true)).join("")}
-        </div>
-      </div>
-    </section>
+      <aside class="aside">
+        <section class="plain-panel">
+          <div class="eyebrow">Live document</div>
+          ${input.documents[0] ? renderDocSummary(input.documents[0], input.viewer) : `<div class="empty">No document loaded.</div>`}
+        </section>
+      </aside>
+    </div>
   `;
+
   return layout("Labs", "Labs", input.viewer, body);
 }
 
 export function renderAuthPage(input: {
   mode: "signin" | "signup";
   error?: string;
-  notice?: string;
+  authConfigured: boolean;
+  next?: string;
+  origin?: string;
 }): string {
-  const isSignUp = input.mode === "signup";
   const body = `
-    <div class="auth-wrap">
-      <section class="auth-card">
-        <div class="hero-kicker">${isSignUp ? "Create account" : "Sign in"}</div>
-        <h1>${isSignUp ? "Build a research identity." : "Return to your library."}</h1>
-        <p class="lede">This prototype uses cookie auth backed by a Durable Object so saves, threads, notes, and profile state survive page reloads.</p>
-        ${input.notice ? `<div class="flash">${e(input.notice)}</div>` : ""}
-        ${input.error ? `<div class="flash">${e(input.error)}</div>` : ""}
-        <form class="query-form" method="post" action="${isSignUp ? "/auth/signup" : "/auth/signin"}">
-          ${isSignUp ? `<input name="name" placeholder="Display name" required />` : ""}
-          <input type="email" name="email" placeholder="Email" required />
-          <input type="password" name="password" placeholder="Password" required />
-          <button class="button" type="submit">${isSignUp ? "Create account" : "Sign in"}</button>
-        </form>
-        <div class="muted">
-          ${
-            isSignUp
-              ? `Already have an account? <a href="/signin"><strong>Sign in</strong></a>.`
-              : `Need an account? <a href="/signup"><strong>Create one</strong></a>.`
-          }
-        </div>
-      </section>
+    <div class="page-head">
+      <div class="eyebrow">Sign in</div>
+      <h1 class="auth-title">Google auth only.</h1>
+      <div class="muted">No local username or password flow remains in the app.</div>
     </div>
+
+    <section class="section">
+      <div class="auth-box">
+        ${input.error ? `<div class="flash">${e(input.error)}</div>` : ""}
+        ${
+          input.authConfigured
+            ? `
+              <a class="button" href="/auth/google/start${input.next ? `?next=${encodeURIComponent(input.next)}` : ""}">
+                Continue with Google
+              </a>
+            `
+            : `
+              <div class="flash">WorkOS Google auth is not configured in this Worker yet.</div>
+              <div class="list">
+                <div class="item">
+                  <strong>1. Create a WorkOS app</strong>
+                  <div class="muted">Enable Google social auth in AuthKit.</div>
+                </div>
+                <div class="item">
+                  <strong>2. Add this redirect URI</strong>
+                  <div class="muted">${e(`${input.origin ?? "https://your-domain.example"}/auth/google/callback`)}</div>
+                </div>
+                <div class="item">
+                  <strong>3. Set Worker secrets</strong>
+                  <div class="muted">WORKOS_CLIENT_ID and WORKOS_API_KEY</div>
+                </div>
+              </div>
+            `
+        }
+      </div>
+    </section>
   `;
-  return layout(isSignUp ? "Sign Up" : "Sign In", "", undefined, body);
+
+  return layout("Sign in", "Explore", undefined, body);
 }
 
-export function renderOnboardingPage(input: { viewer: Viewer }): string {
+export function renderOnboardingPage(input: { viewer?: Viewer }): string {
+  const viewer = input.viewer;
   const body = `
-    <div class="auth-wrap">
-      <section class="auth-card">
-        <div class="hero-kicker">Onboarding</div>
-        <h1>Shape your feed before you drown in it.</h1>
-        <p class="lede">Pick interests so Explore, Similar, and Library can weight the right documents first.</p>
-        <form class="query-form" method="post" action="/action/onboarding">
-          <input type="hidden" name="redirect" value="/" />
-          <textarea name="bio" placeholder="Short profile bio">${e(input.viewer.bio)}</textarea>
-          <input name="interests" value="${e(input.viewer.interests.join(", "))}" placeholder="Interests, comma-separated. Example: transformers, melancholy, political theory" />
-          <button class="button" type="submit">Save preferences</button>
-        </form>
-      </section>
+    <div class="page-head">
+      <div class="eyebrow">Onboarding</div>
+      <h1 class="page-title">Finish your profile.</h1>
     </div>
+
+    <section class="section">
+      <form class="auth-panel" method="post" action="/action/onboarding">
+        <input type="hidden" name="redirect" value="/" />
+        <textarea name="bio" placeholder="Bio">${e(viewer?.bio ?? "")}</textarea>
+        <input name="interests" value="${e(viewer?.interests.join(", ") ?? "")}" placeholder="Interests, comma separated" />
+        <button class="button" type="submit">Save</button>
+      </form>
+    </section>
   `;
-  return layout("Onboarding", "", input.viewer, body);
+
+  return layout("Onboarding", "Explore", viewer, body);
 }
 
 export function renderNotFound(viewer?: Viewer): string {
-  return layout(
-    "Not Found",
-    "",
-    viewer,
-    `<section class="hero"><div class="hero-panel"><div class="hero-kicker">404</div><h1>That route is not in the library.</h1><p class="lede">Try Explore, Search, or Library.</p><div class="inline-actions"><a class="button" href="/">Back to Explore</a></div></div></section>`,
-  );
-}
+  const body = `
+    <div class="page-head">
+      <div class="eyebrow">404</div>
+      <h1 class="page-title">Page not found.</h1>
+      <div class="row">
+        <a class="button" href="/">Go home</a>
+        <a class="button-quiet" href="/search">Search</a>
+      </div>
+    </div>
+  `;
 
+  return layout("Not found", "Explore", viewer, body);
+}

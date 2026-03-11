@@ -9,6 +9,7 @@
     "deploy": "wrangler deploy"
   },
   "dependencies": {
+    "@workos-inc/node": "^8.8.0",
     "hono": "^4.11.10"
   },
   "devDependencies": {
