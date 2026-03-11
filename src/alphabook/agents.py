@@ -50,6 +50,33 @@ def build_terminaluse_prompt(query: str, book: BookRecord, hints: Sequence[Searc
     )
 
 
+def build_codex_prompt(query: str, book: BookRecord, hints: Sequence[SearchHit]) -> str:
+    hint_lines = []
+    for hint in hints[:8]:
+        hint_lines.append(
+            f"- chunk {hint.chunk.chunk_index} ({hint.strategy}, score={hint.score:.3f}): {hint.excerpt}"
+        )
+
+    hints_block = "\n".join(hint_lines) if hint_lines else "- no hints supplied"
+    return (
+        "You are a book research agent running inside a disposable workspace.\n\n"
+        f"Book: {book.title} by {book.author}\n"
+        f"Query: {query}\n\n"
+        "Read these files:\n"
+        "- input/book.txt for the full book text\n"
+        "- input/manifest.json for metadata\n"
+        "- input/hints.json for top passages from the fast retrieval pass\n\n"
+        "Use shell tools like rg, sed, and small scripts to search the book.\n"
+        "Then write two files:\n"
+        "- output/report.md: a concise markdown research note\n"
+        "- output/report.json: JSON with this shape:\n"
+        '  {"summary": string, "evidence": [{"chunk_index": number, "reason": string, "excerpt": string}]}\n\n'
+        "Focus on grounded evidence. If evidence is weak, say so clearly.\n\n"
+        "Fast-pass hints:\n"
+        f"{hints_block}\n"
+    )
+
+
 class LocalBookAgentRunner:
     def __init__(self, store: CorpusStore, embedder: BaseEmbeddingProvider):
         self.store = store
@@ -109,6 +136,155 @@ class LocalBookAgentRunner:
             summary=summary,
             evidence=top_evidence,
         )
+
+
+class CodexCliRunner:
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        self.name = "codex-cli"
+
+    def availability(self) -> Tuple[bool, str]:
+        if not self.settings.enable_codex_runner:
+            return False, "ALPHABOOK_ENABLE_CODEX_RUNNER is not set"
+        if shutil.which(self.settings.codex_binary) is None:
+            return False, f"{self.settings.codex_binary} is not installed"
+
+        try:
+            result = subprocess.run(
+                [self.settings.codex_binary, "exec", "--help"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+        except Exception as exc:
+            return False, f"codex exec check failed: {exc}"
+
+        if result.returncode != 0:
+            return False, "codex exec is not available"
+        return True, "ready"
+
+    async def run_many(
+        self,
+        query: str,
+        books: Sequence[BookRecord],
+        hints_by_book: Dict[str, Sequence[SearchHit]],
+    ) -> List[BookAgentResult]:
+        tasks = [self.run_book(query, book, hints_by_book.get(book.id, [])) for book in books]
+        return await asyncio.gather(*tasks)
+
+    async def run_book(self, query: str, book: BookRecord, hints: Sequence[SearchHit]) -> BookAgentResult:
+        return await asyncio.to_thread(self._run_sync, query, book, hints)
+
+    def _run_sync(self, query: str, book: BookRecord, hints: Sequence[SearchHit]) -> BookAgentResult:
+        is_ready, reason = self.availability()
+        if not is_ready:
+            raise RuntimeError(reason)
+
+        workspace = self._prepare_workspace(book, query, hints)
+        output_dir = workspace / "output"
+        final_output = output_dir / "final.md"
+        report_json = output_dir / "report.json"
+        report_md = output_dir / "report.md"
+
+        command = [
+            self.settings.codex_binary,
+            "exec",
+            "--skip-git-repo-check",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "-C",
+            str(workspace),
+            "-o",
+            str(final_output),
+            build_codex_prompt(query, book, hints),
+        ]
+        if self.settings.codex_model:
+            command.extend(["-m", self.settings.codex_model])
+        if self.settings.codex_profile:
+            command.extend(["-p", self.settings.codex_profile])
+
+        completed = subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=1800,
+        )
+
+        evidence: List[Evidence] = []
+        summary = ""
+
+        if report_json.exists():
+            try:
+                payload = json.loads(report_json.read_text(encoding="utf-8"))
+                summary = str(payload.get("summary") or "").strip()
+                for item in payload.get("evidence", [])[:6]:
+                    evidence.append(
+                        Evidence(
+                            chunk_id=f"{book.id}:{item.get('chunk_index', 'unknown')}",
+                            chunk_index=int(item.get("chunk_index", -1)),
+                            score=0.9,
+                            strategy=self.name,
+                            excerpt=str(item.get("excerpt") or "").strip(),
+                            reason=str(item.get("reason") or "reported by codex").strip(),
+                        )
+                    )
+            except Exception:
+                summary = ""
+
+        if not summary and report_md.exists():
+            summary = report_md.read_text(encoding="utf-8").strip()
+        if not summary and final_output.exists():
+            summary = final_output.read_text(encoding="utf-8").strip()
+        if not summary:
+            summary = completed.stdout.strip() or f"Codex completed for {book.title}, but no report file was written."
+
+        return BookAgentResult(
+            book=book,
+            runner=self.name,
+            summary=summary,
+            evidence=evidence,
+            output_path=str(report_md if report_md.exists() else final_output),
+        )
+
+    def _prepare_workspace(self, book: BookRecord, query: str, hints: Sequence[SearchHit]) -> Path:
+        workspace = self.settings.cache_dir / "codex-workspaces" / f"{book.id}-{slugify(query)[:48]}"
+        input_dir = workspace / "input"
+        output_dir = workspace / "output"
+        input_dir.mkdir(parents=True, exist_ok=True)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        source_path = Path(book.content_path)
+        (input_dir / "book.txt").write_text(source_path.read_text(encoding="utf-8"), encoding="utf-8")
+        (input_dir / "query.txt").write_text(query, encoding="utf-8")
+        (input_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "book_id": book.id,
+                    "title": book.title,
+                    "author": book.author,
+                    "source_url": book.source_url,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        (input_dir / "hints.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "chunk_index": hint.chunk.chunk_index,
+                        "strategy": hint.strategy,
+                        "score": round(hint.score, 4),
+                        "excerpt": hint.excerpt,
+                    }
+                    for hint in hints[:12]
+                ],
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        return workspace
 
 
 class TerminalUseCliRunner:

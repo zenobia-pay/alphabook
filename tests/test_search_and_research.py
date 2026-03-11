@@ -1,6 +1,6 @@
 import asyncio
 
-from alphabook.agents import LocalBookAgentRunner, TerminalUseCliRunner
+from alphabook.agents import CodexCliRunner, LocalBookAgentRunner, TerminalUseCliRunner
 from alphabook.config import load_settings
 from alphabook.embeddings import HashedEmbeddingProvider
 from alphabook.models import ResearchMode
@@ -16,9 +16,10 @@ def build_test_services(tmp_path):
     embedder = HashedEmbeddingProvider(dimensions=128)
     pipeline = CorpusPipeline(settings, store, embedder)
     search_service = SearchService(store, embedder)
+    codex_runner = CodexCliRunner(settings)
     local_runner = LocalBookAgentRunner(store, embedder)
     terminal_runner = TerminalUseCliRunner(settings)
-    orchestrator = ResearchOrchestrator(store, search_service, local_runner, terminal_runner)
+    orchestrator = ResearchOrchestrator(store, search_service, codex_runner, local_runner, terminal_runner)
     return settings, store, pipeline, search_service, orchestrator
 
 

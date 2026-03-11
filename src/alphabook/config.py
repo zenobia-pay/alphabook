@@ -15,6 +15,10 @@ class Settings:
     db_path: Path
     embed_model: str
     fallback_embed_dimensions: int
+    enable_codex_runner: bool
+    codex_binary: str
+    codex_model: Optional[str]
+    codex_profile: Optional[str]
     terminaluse_project_id: Optional[str]
     terminaluse_agent_name: Optional[str]
     terminaluse_branch: Optional[str]
@@ -39,6 +43,10 @@ def load_settings(root_dir: Optional[Path] = None) -> Settings:
         db_path=db_path,
         embed_model=os.environ.get("ALPHABOOK_EMBED_MODEL", "text-embedding-3-small"),
         fallback_embed_dimensions=int(os.environ.get("ALPHABOOK_FALLBACK_EMBED_DIMS", "256")),
+        enable_codex_runner=os.environ.get("ALPHABOOK_ENABLE_CODEX_RUNNER", "0") == "1",
+        codex_binary=os.environ.get("ALPHABOOK_CODEX_BINARY", "codex"),
+        codex_model=os.environ.get("ALPHABOOK_CODEX_MODEL"),
+        codex_profile=os.environ.get("ALPHABOOK_CODEX_PROFILE"),
         terminaluse_project_id=os.environ.get("ALPHABOOK_TERMINALUSE_PROJECT_ID"),
         terminaluse_agent_name=os.environ.get("ALPHABOOK_TERMINALUSE_AGENT_NAME"),
         terminaluse_branch=os.environ.get("ALPHABOOK_TERMINALUSE_BRANCH"),

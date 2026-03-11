@@ -4,6 +4,7 @@ import { Context, Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 
 import {
+  type AssistantExecutionMode,
   buildAssistantReply,
   buildDocumentCards,
   buildDocumentContext,
@@ -41,6 +42,8 @@ import {
 
 interface Env {
   APP_STATE: DurableObjectNamespace<AppState>;
+  AGENT_BACKEND_TOKEN?: string;
+  AGENT_BACKEND_URL?: string;
   WORKOS_API_KEY?: string;
   WORKOS_CLIENT_ID?: string;
 }
@@ -100,6 +103,28 @@ interface ProfileResponse {
 interface WorkOSAuthStoreResponse {
   viewer: Viewer;
   sessionToken: string;
+}
+
+interface AgentJobRecord {
+  id: string;
+  query: string;
+  mode: string;
+  book_id?: string;
+  status: "queued" | "running" | "completed" | "failed";
+  created_at: string;
+  updated_at: string;
+  result?: {
+    synthesis?: string;
+    agents?: Array<{
+      book?: { title?: string };
+      summary?: string;
+      evidence?: Array<{
+        chunk_index?: number;
+        excerpt?: string;
+      }>;
+    }>;
+  };
+  error?: string;
 }
 
 interface OAuthCookiePayload {
@@ -249,6 +274,10 @@ function authConfigured(env: Env): boolean {
   return Boolean(env.WORKOS_API_KEY && env.WORKOS_CLIENT_ID);
 }
 
+function agentBackendConfigured(env: Env): boolean {
+  return Boolean(env.AGENT_BACKEND_URL);
+}
+
 function sanitizeRedirect(value?: string): string {
   if (!value || !value.startsWith("/") || value.startsWith("//")) {
     return "/";
@@ -332,6 +361,62 @@ function getAuthorizationUrl(request: Request, env: Env, payload: OAuthCookiePay
 function displayName(email: string, firstName: string | null, lastName: string | null): string {
   const name = [firstName, lastName].filter(Boolean).join(" ").trim();
   return name || email.split("@")[0] || "Reader";
+}
+
+function agentBackendHeaders(env: Env, initHeaders?: HeadersInit): Headers {
+  const headers = new Headers(initHeaders);
+  if (env.AGENT_BACKEND_TOKEN) {
+    headers.set("authorization", `Bearer ${env.AGENT_BACKEND_TOKEN}`);
+  }
+  return headers;
+}
+
+async function agentBackendRequest<T>(
+  env: Env,
+  path: string,
+  init?: RequestInit & { json?: unknown },
+): Promise<T> {
+  if (!env.AGENT_BACKEND_URL) {
+    throw new Error("Agent backend is not configured.");
+  }
+
+  const requestInit: RequestInit = {
+    method: init?.method ?? "GET",
+    headers: agentBackendHeaders(env, init?.headers),
+    body: init?.body,
+  };
+  if (init?.json !== undefined) {
+    requestInit.body = JSON.stringify(init.json);
+    requestInit.headers = agentBackendHeaders(env, {
+      "content-type": "application/json",
+      ...(init.headers || {}),
+    });
+  }
+
+  const base = env.AGENT_BACKEND_URL.endsWith("/") ? env.AGENT_BACKEND_URL.slice(0, -1) : env.AGENT_BACKEND_URL;
+  const response = await fetch(`${base}${path}`, requestInit);
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || `Agent backend request failed for ${path}`);
+  }
+  return (await response.json()) as T;
+}
+
+function buildAgentCitations(job: AgentJobRecord): AssistantCitation[] {
+  return (job.result?.agents ?? []).flatMap((agent) =>
+    (agent.evidence ?? []).slice(0, 4).map((evidence) => ({
+      label: `${agent.book?.title ?? "Document"} · chunk ${evidence.chunk_index ?? "?"}`,
+      href: `/doc/don-quixote?panel=assistant#chunk-${evidence.chunk_index ?? 0}`,
+      excerpt: evidence.excerpt ?? agent.summary ?? "",
+    })),
+  );
+}
+
+function buildAgentSummary(job: AgentJobRecord): string {
+  if (job.status === "failed") {
+    return `Agent run failed. ${job.error ?? ""}`.trim();
+  }
+  return job.result?.synthesis || "Agent run completed.";
 }
 
 export class AppState extends DurableObject<Env> {
@@ -581,6 +666,10 @@ export class AppState extends DurableObject<Env> {
       const prompt = String(body.prompt || "");
       const answer = String(body.answer || "");
       const citations = (body.citations as AssistantCitation[]) || [];
+      const mode: AssistantExecutionMode = body.mode === "agent" ? "agent" : "fast";
+      const status: "pending" | "completed" | "failed" =
+        body.status === "pending" || body.status === "failed" ? body.status : "completed";
+      const jobId = String(body.jobId || "") || undefined;
       const threadId = String(body.threadId || "") || crypto.randomUUID();
       const library = ensureLibrary(db, userId);
       const now = new Date().toISOString();
@@ -602,8 +691,48 @@ export class AppState extends DurableObject<Env> {
       thread.docId = docId;
       thread.messages.push(
         { role: "user", content: prompt, createdAt: now },
-        { role: "assistant", content: answer, citations, createdAt: now },
+        { role: "assistant", content: answer, citations, createdAt: now, mode, status, jobId },
       );
+      await this.saveDb(db);
+      return Response.json({ thread });
+    }
+
+    if (url.pathname === "/assistant-update" && request.method === "POST") {
+      const body = await jsonFromRequest(request);
+      const userId = String(body.userId || "");
+      const threadId = String(body.threadId || "");
+      const jobId = String(body.jobId || "");
+      const answer = String(body.answer || "");
+      const citations = (body.citations as AssistantCitation[]) || [];
+      const status: "pending" | "completed" | "failed" =
+        body.status === "pending" || body.status === "failed" ? body.status : "completed";
+      const library = ensureLibrary(db, userId);
+      const now = new Date().toISOString();
+      const thread = library.threads.find((candidate) => candidate.id === threadId);
+      if (!thread) {
+        return Response.json({ error: "Thread not found." }, { status: 404 });
+      }
+
+      const pendingMessage = thread.messages.find(
+        (message) => message.role === "assistant" && message.jobId === jobId,
+      );
+      if (pendingMessage) {
+        pendingMessage.content = answer;
+        pendingMessage.citations = citations;
+        pendingMessage.status = status;
+        pendingMessage.mode = "agent";
+      } else {
+        thread.messages.push({
+          role: "assistant",
+          content: answer,
+          citations,
+          createdAt: now,
+          jobId,
+          status,
+          mode: "agent",
+        });
+      }
+      thread.updatedAt = now;
       await this.saveDb(db);
       return Response.json({ thread });
     }
@@ -716,6 +845,51 @@ function documentCardIndex(cards: DocumentCard[]): Record<string, DocumentCard> 
   return Object.fromEntries(cards.map((card) => [card.id, card]));
 }
 
+function pendingAgentMessages(thread?: AssistantThread) {
+  return (
+    thread?.messages.filter(
+      (message) => message.role === "assistant" && message.mode === "agent" && message.status === "pending" && message.jobId,
+    ) ?? []
+  );
+}
+
+async function syncPendingAgentThread(
+  env: Env,
+  viewer: Viewer | undefined,
+  thread: AssistantThread | undefined,
+): Promise<{ thread: AssistantThread | undefined; updated: boolean }> {
+  if (!viewer || !thread || !agentBackendConfigured(env)) {
+    return { thread, updated: false };
+  }
+
+  let updated = false;
+  let nextThread = thread;
+  for (const message of pendingAgentMessages(thread)) {
+    try {
+      const job = await agentBackendRequest<AgentJobRecord>(env, `/jobs/${encodeURIComponent(message.jobId ?? "")}`);
+      if (job.status === "completed" || job.status === "failed") {
+        const payload = await storeRequest<{ thread: AssistantThread }>(env, "/assistant-update", {
+          method: "POST",
+          json: {
+            userId: viewer.id,
+            threadId: thread.id,
+            jobId: message.jobId,
+            answer: buildAgentSummary(job),
+            citations: buildAgentCitations(job),
+            status: job.status,
+          },
+        });
+        nextThread = payload.thread;
+        updated = true;
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return { thread: nextThread, updated };
+}
+
 app.get("/", async (c) => {
   const requestedTab = c.req.query("tab");
   const tab: FeedTab = requestedTab === "likes" || requestedTab === "briefs" ? requestedTab : "hot";
@@ -777,7 +951,17 @@ app.get("/doc/:id", async (c) => {
     c.env,
     `/document-context?docId=${encodeURIComponent(docId)}${viewer ? `&userId=${encodeURIComponent(viewer.id)}` : ""}`,
   );
-  const thread = c.get("library")?.threads.find((candidate) => candidate.docId === docId);
+  const threadResponse = viewer
+    ? await storeRequest<{ threads: AssistantThread[] }>(c.env, `/assistant?userId=${encodeURIComponent(viewer.id)}`)
+    : { threads: [] };
+  let thread = threadResponse.threads.find((candidate) => candidate.docId === docId);
+  const sync = await syncPendingAgentThread(c.env, viewer, thread);
+  if (sync.updated && viewer) {
+    const refreshed = await storeRequest<{ threads: AssistantThread[] }>(c.env, `/assistant?userId=${encodeURIComponent(viewer.id)}`);
+    thread = refreshed.threads.find((candidate) => candidate.docId === docId);
+  } else {
+    thread = sync.thread;
+  }
 
   return c.html(
     renderDocumentPage({
@@ -791,6 +975,7 @@ app.get("/doc/:id", async (c) => {
       notes: docContext.notes,
       comments: docContext.comments,
       thread,
+      agentEnabled: agentBackendConfigured(c.env),
     }),
   );
 });
@@ -807,17 +992,27 @@ app.get("/assistant", async (c) => {
     `/assistant?userId=${encodeURIComponent(viewer.id)}`,
   );
   const threadId = c.req.query("threadId");
-  const activeThread = threadId
+  let activeThread = threadId
     ? threadsResponse.threads.find((thread) => thread.id === threadId)
     : threadsResponse.threads[0];
+  const sync = await syncPendingAgentThread(c.env, viewer, activeThread);
+  let threads = threadsResponse.threads;
+  if (sync.updated) {
+    const refreshed = await storeRequest<{ threads: AssistantThread[] }>(c.env, `/assistant?userId=${encodeURIComponent(viewer.id)}`);
+    threads = refreshed.threads;
+    activeThread = threadId ? threads.find((thread) => thread.id === threadId) : threads[0];
+  } else {
+    activeThread = sync.thread;
+  }
   return c.html(
     renderAssistantPage({
       viewer,
       availableDocs: cards,
-      threads: threadsResponse.threads,
+      threads,
       activeThread,
       activeDocId: c.req.query("docId") ?? undefined,
       prompt: c.req.query("prompt") ?? undefined,
+      agentEnabled: agentBackendConfigured(c.env),
     }),
   );
 });
@@ -884,6 +1079,9 @@ app.get("/labs", async (c) => {
 app.get("/signin", async (c) => {
   if (c.get("viewer")) {
     return c.redirect("/");
+  }
+  if (authConfigured(c.env) && !c.req.query("error")) {
+    return c.redirect(`/auth/google/start${c.req.query("next") ? `?next=${encodeURIComponent(sanitizeRedirect(c.req.query("next") ?? undefined))}` : ""}`);
   }
   return c.html(
     renderAuthPage({
@@ -1096,18 +1294,66 @@ app.post("/action/assistant", async (c) => {
     return redirectToSignIn(c);
   }
   const body = await formOrJson(c.req.raw);
-  const reply = buildAssistantReply(body.prompt, body.docId || undefined);
-  const save = await storeRequest<{ thread: AssistantThread }>(c.env, "/assistant-save", {
-    method: "POST",
-    json: {
-      userId: viewer.id,
-      docId: body.docId || undefined,
-      prompt: body.prompt,
-      answer: reply.answer,
-      citations: reply.citations,
-      threadId: body.threadId || undefined,
-    },
-  });
+  const mode: AssistantExecutionMode = body.mode === "agent" ? "agent" : "fast";
+  const save =
+    mode === "agent"
+      ? await (async () => {
+          if (!agentBackendConfigured(c.env)) {
+            return storeRequest<{ thread: AssistantThread }>(c.env, "/assistant-save", {
+              method: "POST",
+              json: {
+                userId: viewer.id,
+                docId: body.docId || undefined,
+                prompt: body.prompt,
+                answer: "Agent backend is not configured yet.",
+                citations: [],
+                threadId: body.threadId || undefined,
+                mode: "agent",
+                status: "failed",
+              },
+            });
+          }
+          const job = await agentBackendRequest<AgentJobRecord>(c.env, "/jobs", {
+            method: "POST",
+            json: {
+              query: body.prompt,
+              mode: "slow",
+              book_id: body.docId || undefined,
+              top_books: 1,
+              top_chunks: 8,
+            },
+          });
+          return storeRequest<{ thread: AssistantThread }>(c.env, "/assistant-save", {
+            method: "POST",
+            json: {
+              userId: viewer.id,
+              docId: body.docId || undefined,
+              prompt: body.prompt,
+              answer: "Agent run started. Refresh this thread in a few seconds.",
+              citations: [],
+              threadId: body.threadId || undefined,
+              mode: "agent",
+              status: "pending",
+              jobId: job.id,
+            },
+          });
+        })()
+      : await (async () => {
+          const reply = buildAssistantReply(body.prompt, body.docId || undefined, "fast");
+          return storeRequest<{ thread: AssistantThread }>(c.env, "/assistant-save", {
+            method: "POST",
+            json: {
+              userId: viewer.id,
+              docId: body.docId || undefined,
+              prompt: body.prompt,
+              answer: reply.answer,
+              citations: reply.citations,
+              threadId: body.threadId || undefined,
+              mode: "fast",
+              status: "completed",
+            },
+          });
+        })();
   if (body.redirect) {
     const redirect = body.redirect.includes("/assistant")
       ? `${body.redirect}${body.redirect.includes("?") ? "&" : "?"}threadId=${save.thread.id}`
@@ -1125,6 +1371,7 @@ app.get("/api/health", async (c) => {
     surfaces: ["explore", "search", "document", "assistant", "library", "profile", "labs"],
     auth: "workos-google",
     authConfigured: authConfigured(c.env),
+    agentBackendConfigured: agentBackendConfigured(c.env),
   });
 });
 
@@ -1216,11 +1463,48 @@ app.post("/api/assistant", async (c) => {
   if (!viewer) {
     return c.json({ error: "Unauthorized" }, 401);
   }
-  const body = (await c.req.json()) as { prompt?: string; docId?: string; threadId?: string };
+  const body = (await c.req.json()) as {
+    prompt?: string;
+    docId?: string;
+    threadId?: string;
+    mode?: AssistantExecutionMode;
+  };
   if (!body.prompt?.trim()) {
     return c.json({ error: "Missing prompt" }, 400);
   }
-  const reply = buildAssistantReply(body.prompt, body.docId);
+  const mode: AssistantExecutionMode = body.mode === "agent" ? "agent" : "fast";
+  if (mode === "agent") {
+    if (!agentBackendConfigured(c.env)) {
+      return c.json({ error: "Agent backend is not configured." }, 503);
+    }
+    const job = await agentBackendRequest<AgentJobRecord>(c.env, "/jobs", {
+      method: "POST",
+      json: {
+        query: body.prompt,
+        mode: "slow",
+        book_id: body.docId || undefined,
+        top_books: 1,
+        top_chunks: 8,
+      },
+    });
+    const save = await storeRequest<{ thread: AssistantThread }>(c.env, "/assistant-save", {
+      method: "POST",
+      json: {
+        userId: viewer.id,
+        docId: body.docId,
+        prompt: body.prompt,
+        answer: "Agent run started. Refresh this thread in a few seconds.",
+        citations: [],
+        threadId: body.threadId,
+        mode: "agent",
+        status: "pending",
+        jobId: job.id,
+      },
+    });
+    return c.json({ job, thread: save.thread });
+  }
+
+  const reply = buildAssistantReply(body.prompt, body.docId, "fast");
   const save = await storeRequest<{ thread: AssistantThread }>(c.env, "/assistant-save", {
     method: "POST",
     json: {
@@ -1230,6 +1514,8 @@ app.post("/api/assistant", async (c) => {
       answer: reply.answer,
       citations: reply.citations,
       threadId: body.threadId,
+      mode: "fast",
+      status: "completed",
     },
   });
   return c.json({ reply, thread: save.thread });

@@ -50,6 +50,9 @@ export interface AssistantMessage {
   content: string;
   createdAt: string;
   citations?: AssistantCitation[];
+  jobId?: string;
+  mode?: "fast" | "agent";
+  status?: "pending" | "completed" | "failed";
 }
 
 export interface AssistantThread {
@@ -514,8 +517,7 @@ function formatDate(value: string): string {
 function viewerControls(viewer?: Viewer): string {
   if (!viewer) {
     return `
-      <a class="button" href="/signin">Continue with Google</a>
-      <div class="small">Google auth via WorkOS.</div>
+      <a class="button" href="/signin">Sign in</a>
     `;
   }
 
@@ -563,7 +565,6 @@ function sidebar(activeNav: string, viewer?: Viewer): string {
       <div class="sidebar-block">
         <div class="eyebrow">Current corpus</div>
         <div>Don Quixote</div>
-        <div class="small">Full text is live. No fake papers in the feed.</div>
       </div>
       <div class="sidebar-viewer">${viewerControls(viewer)}</div>
     </aside>
@@ -656,6 +657,39 @@ function renderSearchResults(search: SearchResponse): string {
   `;
 }
 
+function renderAssistantComposer(input: {
+  docId?: string;
+  redirect: string;
+  activeDocId?: string;
+  prompt?: string;
+  threadId?: string;
+  agentEnabled?: boolean;
+}): string {
+  return `
+    <form class="composer" method="post" action="/action/assistant">
+      <input type="hidden" name="redirect" value="${e(input.redirect)}" />
+      <input type="hidden" name="threadId" value="${e(input.threadId ?? "")}" />
+      ${input.docId ? `<input type="hidden" name="docId" value="${e(input.docId)}" />` : ""}
+      ${
+        input.docId
+          ? ""
+          : `
+            <select name="docId">
+              <option value="">Entire corpus</option>
+              <option value="don-quixote" ${input.activeDocId === "don-quixote" ? "selected" : ""}>Don Quixote</option>
+            </select>
+          `
+      }
+      <select name="mode">
+        <option value="fast">Fast</option>
+        <option value="agent" ${input.agentEnabled ? "" : "disabled"}>Agent</option>
+      </select>
+      <textarea name="prompt" placeholder="Ask a question about the book">${e(input.prompt ?? "")}</textarea>
+      <button class="button" type="submit">Send</button>
+    </form>
+  `;
+}
+
 function railNav(documentId: string, panel: RailPanel, view: DocumentView, query?: string): string {
   const link = (label: string, nextPanel: RailPanel) =>
     `<a class="${panel === nextPanel ? "active" : ""}" href="/doc/${e(documentId)}?view=${e(view)}&panel=${nextPanel}${
@@ -698,7 +732,6 @@ export function renderHomePage(input: {
     <div class="page-head">
       <div class="eyebrow">Explore</div>
       <h1 class="page-title">Ask into the corpus.</h1>
-      <div class="muted">One real book is live. Everything here is grounded in that text.</div>
     </div>
 
     <section class="section">
@@ -728,10 +761,6 @@ export function renderHomePage(input: {
         `
         : ""
     }
-
-    <div class="footer-note">
-      Fast search uses local embeddings plus lexical matching. Slow search widens the evidence window after routing the query into the corpus.
-    </div>
   `;
 
   return layout("Explore", "Explore", input.viewer, body);
@@ -799,6 +828,7 @@ export function renderDocumentPage(input: {
   notes: NoteRecord[];
   comments: CommentRecord[];
   thread?: AssistantThread;
+  agentEnabled?: boolean;
 }): string {
   const doc = input.document;
   const sections =
@@ -843,7 +873,6 @@ export function renderDocumentPage(input: {
       </section>
       <section class="plain-panel">
         <div class="eyebrow">Assistant</div>
-        <div class="muted">This panel scopes the prompt to the current book.</div>
         ${
           input.thread?.messages.length
             ? `
@@ -853,7 +882,9 @@ export function renderDocumentPage(input: {
                   .map(
                     (message) => `
                       <div class="bubble ${message.role}">
-                        <div class="eyebrow">${message.role === "user" ? "You" : "Assistant"}</div>
+                        <div class="eyebrow">${message.role === "user" ? "You" : "Assistant"}${
+                          message.mode ? ` · ${message.mode}` : ""
+                        }${message.status === "pending" ? " · running" : message.status === "failed" ? " · failed" : ""}</div>
                         <div>${e(message.content)}</div>
                       </div>
                     `,
@@ -863,12 +894,12 @@ export function renderDocumentPage(input: {
             `
             : `<div class="empty">No thread for this document yet.</div>`
         }
-        <form class="composer" method="post" action="/action/assistant">
-          <input type="hidden" name="docId" value="${e(doc.id)}" />
-          <input type="hidden" name="redirect" value="/doc/${e(doc.id)}?panel=assistant&view=${input.view}" />
-          <textarea name="prompt" placeholder="Ask about a scene, motif, or pattern"></textarea>
-          <button class="button" type="submit">Ask</button>
-        </form>
+        ${renderAssistantComposer({
+          docId: doc.id,
+          redirect: `/doc/${doc.id}?panel=assistant&view=${input.view}`,
+          threadId: input.thread?.id,
+          agentEnabled: input.agentEnabled,
+        })}
       </section>
     `;
   } else if (input.panel === "notes") {
@@ -1036,6 +1067,7 @@ export function renderAssistantPage(input: {
   activeThread?: AssistantThread;
   activeDocId?: string;
   prompt?: string;
+  agentEnabled?: boolean;
 }): string {
   const body = `
     <div class="page-head">
@@ -1049,25 +1081,15 @@ export function renderAssistantPage(input: {
           ${
             input.viewer
               ? `
-                <form class="composer" method="post" action="/action/assistant">
-                  <input type="hidden" name="redirect" value="/assistant" />
-                  <select name="docId">
-                    <option value="">Entire corpus</option>
-                    ${input.availableDocs
-                      .map(
-                        (document) =>
-                          `<option value="${e(document.id)}" ${input.activeDocId === document.id ? "selected" : ""}>${e(
-                            document.title,
-                          )}</option>`,
-                      )
-                      .join("")}
-                  </select>
-                  <input name="threadId" value="${e(input.activeThread?.id ?? "")}" placeholder="Reuse thread id" />
-                  <textarea name="prompt" placeholder="Ask a question about the book">${e(input.prompt ?? "")}</textarea>
-                  <button class="button" type="submit">Send</button>
-                </form>
+                ${renderAssistantComposer({
+                  redirect: "/assistant",
+                  activeDocId: input.activeDocId,
+                  prompt: input.prompt,
+                  threadId: input.activeThread?.id,
+                  agentEnabled: input.agentEnabled,
+                })}
               `
-              : `<div class="empty"><a href="/signin">Continue with Google</a> to save assistant threads.</div>`
+              : `<div class="empty"><a href="/signin">Sign in</a> to save assistant threads.</div>`
           }
         </section>
         <section class="section">
@@ -1079,7 +1101,9 @@ export function renderAssistantPage(input: {
                     .map(
                       (message) => `
                         <div class="bubble ${message.role}">
-                          <div class="eyebrow">${message.role === "user" ? "You" : "Assistant"}</div>
+                          <div class="eyebrow">${message.role === "user" ? "You" : "Assistant"}${
+                            message.mode ? ` · ${message.mode}` : ""
+                          }${message.status === "pending" ? " · running" : message.status === "failed" ? " · failed" : ""}</div>
                           <div>${e(message.content)}</div>
                           ${
                             message.citations?.length
@@ -1346,8 +1370,7 @@ export function renderAuthPage(input: {
   const body = `
     <div class="page-head">
       <div class="eyebrow">Sign in</div>
-      <h1 class="auth-title">Google auth only.</h1>
-      <div class="muted">No local username or password flow remains in the app.</div>
+      <h1 class="auth-title">Sign in</h1>
     </div>
 
     <section class="section">
@@ -1356,9 +1379,7 @@ export function renderAuthPage(input: {
         ${
           input.authConfigured
             ? `
-              <a class="button" href="/auth/google/start${input.next ? `?next=${encodeURIComponent(input.next)}` : ""}">
-                Continue with Google
-              </a>
+              <a class="button" href="/auth/google/start${input.next ? `?next=${encodeURIComponent(input.next)}` : ""}">Sign in</a>
             `
             : `
               <div class="flash">WorkOS Google auth is not configured in this Worker yet.</div>

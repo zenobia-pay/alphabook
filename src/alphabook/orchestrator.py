@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Dict, List, Sequence
 
-from .agents import LocalBookAgentRunner, TerminalUseCliRunner
+from .agents import CodexCliRunner, LocalBookAgentRunner, TerminalUseCliRunner
 from .models import BookAgentResult, BookRecord, ResearchMode, ResearchReport, ScoredBook, SearchHit
 from .search import SearchService
 from .storage import CorpusStore
@@ -15,11 +15,13 @@ class ResearchOrchestrator:
         self,
         store: CorpusStore,
         search_service: SearchService,
+        codex_runner: CodexCliRunner,
         local_runner: LocalBookAgentRunner,
         terminaluse_runner: TerminalUseCliRunner,
     ):
         self.store = store
         self.search_service = search_service
+        self.codex_runner = codex_runner
         self.local_runner = local_runner
         self.terminaluse_runner = terminaluse_runner
 
@@ -46,8 +48,10 @@ class ResearchOrchestrator:
             )
 
         hints_by_book = self._group_hints(search.embedding_hits + search.text_hits)
-        available, availability_note = self.terminaluse_runner.availability()
-        runner = self.terminaluse_runner if available else self.local_runner
+        codex_available, codex_note = self.codex_runner.availability()
+        terminaluse_available, terminaluse_note = self.terminaluse_runner.availability()
+        availability_note = f"codex: {codex_note}; terminaluse: {terminaluse_note}"
+        runner = self.codex_runner if codex_available else self.terminaluse_runner if terminaluse_available else self.local_runner
 
         try:
             agent_results = await runner.run_many(

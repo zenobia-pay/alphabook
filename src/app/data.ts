@@ -1,6 +1,7 @@
 import corpusAsset from "../generated/don-quixote.json";
 
 export type ResearchMode = "fast" | "slow" | "naive";
+export type AssistantExecutionMode = "fast" | "agent";
 export type FeedTab = "hot" | "likes" | "briefs";
 export type RailPanel = "assistant" | "notes" | "comments" | "similar";
 export type DocumentView = "document" | "brief" | "resources";
@@ -184,7 +185,7 @@ export const searchArchitecture: SearchArchitectureStep[] = [
   {
     title: "1. Route with cheap signals",
     body:
-      "The query is embedded with a local hashed embedding and scored against the document metadata and the full-book centroid. This is the fast routing pass.",
+      "The query is embedded with a local hashed embedding and scored against the document metadata and the full-book centroid. This is the fast embeddings pass.",
   },
   {
     title: "2. Pull chunk evidence",
@@ -192,9 +193,9 @@ export const searchArchitecture: SearchArchitectureStep[] = [
       "The top route is expanded into chunk-level retrieval. Each chunk score mixes semantic similarity and lexical overlap so exact words and thematic matches both matter.",
   },
   {
-    title: "3. Escalate only when needed",
+    title: "3. Escalate into an agent run",
     body:
-      "Fast mode summarizes the top chunk hits. Slow mode broadens the evidence window. Naive mode is the exhaustive variant that would fan out across every ingested book once the corpus grows.",
+      "The second path hands the routed hints plus the full book text to a separate CLI agent service. That path is slower and should be used only after the embeddings pass narrows the search space.",
   },
 ];
 
@@ -443,14 +444,19 @@ export function runResearch(query: string, mode: ResearchMode, activeDocumentId?
   };
 }
 
-export function buildAssistantReply(prompt: string, activeDocumentId?: string): AssistantReply {
+export function buildAssistantReply(
+  prompt: string,
+  activeDocumentId?: string,
+  modeOverride?: ResearchMode,
+): AssistantReply {
   const lowered = prompt.toLowerCase();
   const mode: ResearchMode =
-    lowered.includes("all the times") || lowered.includes("every time") || lowered.includes("deep")
+    modeOverride ??
+    (lowered.includes("all the times") || lowered.includes("every time") || lowered.includes("deep")
       ? "slow"
       : lowered.includes("everything") || lowered.includes("entire book")
         ? "naive"
-        : "fast";
+        : "fast");
 
   const research = runResearch(prompt, mode, activeDocumentId);
   const topDocument = research.documents[0];

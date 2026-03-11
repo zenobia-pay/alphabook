@@ -8,7 +8,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
 
-from .agents import LocalBookAgentRunner, TerminalUseCliRunner
+from .agents import CodexCliRunner, LocalBookAgentRunner, TerminalUseCliRunner
 from .catalogue import SEED_BOOKS
 from .config import load_settings
 from .embeddings import build_embedding_provider
@@ -26,15 +26,17 @@ def build_services(root_dir: Optional[Path] = None) -> dict:
     embedder = build_embedding_provider(settings)
     pipeline = CorpusPipeline(settings, store, embedder)
     search_service = SearchService(store, embedder)
+    codex_runner = CodexCliRunner(settings)
     local_runner = LocalBookAgentRunner(store, embedder)
     terminaluse_runner = TerminalUseCliRunner(settings)
-    orchestrator = ResearchOrchestrator(store, search_service, local_runner, terminaluse_runner)
+    orchestrator = ResearchOrchestrator(store, search_service, codex_runner, local_runner, terminaluse_runner)
     return {
         "settings": settings,
         "store": store,
         "embedder": embedder,
         "pipeline": pipeline,
         "search_service": search_service,
+        "codex_runner": codex_runner,
         "terminaluse_runner": terminaluse_runner,
         "orchestrator": orchestrator,
     }

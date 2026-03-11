@@ -9,7 +9,9 @@ description = "Hybrid corpus research loops for books and papers"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
+    "fastapi>=0.116.0",
     "openai>=1.68.2",
+    "uvicorn>=0.35.0",
 ]
 
 [project.optional-dependencies]
@@ -19,6 +21,7 @@ dev = [
 
 [project.scripts]
 alphabook = "alphabook.cli:main"
+alphabook-agent-server = "alphabook.agent_server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/alphabook"]
