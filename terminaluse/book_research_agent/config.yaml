@@ -1,0 +1,35 @@
+build:
+  context:
+    root: ../
+    include_paths:
+      - book_research_agent
+    dockerfile: book_research_agent/Dockerfile
+    dockerignore: book_research_agent/.dockerignore
+
+agent:
+  name: agile-rattlesnake/alphabook-book-research
+  description: Whole-book research agent for AlphaBook
+  sdk_type: codex_agent_sdk
+
+deployment:
+  production:
+    replicaCount: 1
+    resources:
+      requests:
+        cpu: "250m"
+        memory: "2Gi"
+      limits:
+        cpu: "2"
+        memory: "4Gi"
+    areTasksSticky: false
+
+  preview:
+    replicaCount: 1
+    resources:
+      requests:
+        cpu: "250m"
+        memory: "2Gi"
+      limits:
+        cpu: "2"
+        memory: "4Gi"
+    areTasksSticky: false

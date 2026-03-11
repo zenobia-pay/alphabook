@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "alphabook_book_research"
+version = "0.1.0"
+description = "Whole-book research agent for AlphaBook"
+requires-python = ">=3.12"
+dependencies = [
+    "openai-agents>=0.9.0,<1.0.0",
+    "terminaluse[observability]",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]

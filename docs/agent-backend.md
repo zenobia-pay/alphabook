@@ -26,6 +26,8 @@ Workers do not provide a runtime for spawning local CLI tools like `codex exec`,
   - `ALPHABOOK_AGENT_API_TOKEN` if you want bearer auth
   - `OPENAI_API_KEY` if your Codex or embedding path needs it
 
+For the live deployment in this repo, the public agent backend is intended to run on Railway with a persistent volume mounted at `/data`.
+
 ## Local start
 
 ```bash
@@ -54,3 +56,7 @@ The same backend owns arbitrary Gutenberg imports:
 - `GET /books/{book_id}/search`
 
 That keeps imported-book storage, chunk retrieval, and agent execution on the same runtime that already has access to Codex.
+
+## Terminal Use pairing
+
+`Terminal Use` is the slow executor layer, not the public app backend. The current repo includes a deployable Terminal Use agent scaffold in [terminaluse/book_research_agent](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/terminaluse/book_research_agent) and a Railway startup script that can run `tu login --token "$TU_TOKEN"` before booting the FastAPI server.

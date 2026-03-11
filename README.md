@@ -125,6 +125,32 @@ export AGENT_BACKEND_TOKEN=change-me
 
 The Worker keeps the fast path local and only uses the agent server for the slower CLI-backed route.
 
+## Railway backend
+
+The repo now includes a root [Dockerfile](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/Dockerfile) for deploying the agent server to Railway.
+
+Recommended Railway variables:
+
+```bash
+ALPHABOOK_DATA_DIR=/data
+ALPHABOOK_AGENT_API_TOKEN=...
+ALPHABOOK_ENABLE_CODEX_RUNNER=0
+ALPHABOOK_TERMINALUSE_PROJECT_ID=...
+ALPHABOOK_TERMINALUSE_AGENT_NAME=agile-rattlesnake/alphabook-book-research
+TU_TOKEN=... # optional, required if you want Railway to authenticate the tu CLI
+```
+
+The startup script is [docker/railway-entrypoint.sh](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docker/railway-entrypoint.sh).
+
+## Terminal Use agent
+
+The Terminal Use agent scaffold lives in [terminaluse/book_research_agent](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/terminaluse/book_research_agent). Deploy it with:
+
+```bash
+cd terminaluse/book_research_agent
+tu deploy
+```
+
 ## Terminal Use integration
 
 The slow loop will use Terminal Use only when Codex is disabled or unavailable and all of these are true:

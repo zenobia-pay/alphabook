@@ -1,0 +1,15 @@
+.git
+.github
+.venv
+.pytest_cache
+.mypy_cache
+.DS_Store
+node_modules
+data
+dist
+build
+*.pyc
+__pycache__
+.wrangler
+.dev.vars
+terminaluse/book_research_agent/.venv
