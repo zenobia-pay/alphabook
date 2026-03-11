@@ -7,3 +7,11 @@ workers_dev = true
 [observability.logs]
 enabled = true
 head_sampling_rate = 1
+
+[[durable_objects.bindings]]
+name = "APP_STATE"
+class_name = "AppState"
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["AppState"]
