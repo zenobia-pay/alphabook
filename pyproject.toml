@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "alphabook"
+version = "0.1.0"
+description = "Hybrid corpus research loops for books and papers"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "openai>=1.68.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.5",
+]
+
+[project.scripts]
+alphabook = "alphabook.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/alphabook"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
