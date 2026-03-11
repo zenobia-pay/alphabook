@@ -52,6 +52,26 @@ List indexed books:
 alphabook list-books
 ```
 
+## Cloudflare Worker
+
+This repo now also includes a deployable Cloudflare Worker that serves the Don Quixote corpus over HTTP.
+
+Build and deploy it:
+
+```bash
+npm install
+npm run build:corpus
+npm run deploy
+```
+
+Useful endpoints:
+
+```bash
+curl https://alphabook.founders-0e1.workers.dev/api/health
+curl "https://alphabook.founders-0e1.workers.dev/api/search?q=windmills"
+curl "https://alphabook.founders-0e1.workers.dev/api/research?q=sadness&mode=slow"
+```
+
 ## Terminal Use integration
 
 The slow loop will use Terminal Use only when all of these are true:

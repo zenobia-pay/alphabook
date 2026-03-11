@@ -1,0 +1,9 @@
+name = "alphabook"
+main = "src/worker.ts"
+compatibility_date = "2026-03-11"
+account_id = "0e1651bc459f3017e816ba2263e0807a"
+workers_dev = true
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
