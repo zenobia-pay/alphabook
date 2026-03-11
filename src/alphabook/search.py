@@ -95,3 +95,58 @@ class SearchService:
             embedding_hits=embedding_hits,
             text_hits=text_hits,
         )
+
+    def fast_search_book(self, query: str, book_id: str, top_chunks: int = 8) -> SearchBundle:
+        book = self.store.get_book(book_id)
+        if not book:
+            raise RuntimeError(f"Book not found: {book_id}")
+
+        query_vector = self.embedder.embed_texts([query])[0]
+        book_vector = self.store.get_embeddings("book", [book.id]).get(book.id, [])
+        relevant_books = [
+            ScoredBook(
+                book=book,
+                score=cosine_similarity(query_vector, book_vector),
+                strategy="book-embedding",
+            )
+        ]
+
+        chunks = self.store.list_chunks(book.id)
+        chunk_vectors = self.store.get_embeddings("chunk", [chunk.id for chunk in chunks])
+        embedding_hits = sorted(
+            [
+                SearchHit(
+                    book=book,
+                    chunk=chunk,
+                    score=(0.75 * cosine_similarity(query_vector, chunk_vectors.get(chunk.id, [])))
+                    + (0.25 * relevant_books[0].score),
+                    strategy="chunk-embedding",
+                    excerpt=make_excerpt(chunk.content, query),
+                )
+                for chunk in chunks
+            ],
+            key=lambda item: item.score,
+            reverse=True,
+        )[:top_chunks]
+
+        text_hits = sorted(
+            [
+                SearchHit(
+                    book=book,
+                    chunk=chunk,
+                    score=score_text_query(query, chunk.content),
+                    strategy="plain-text",
+                    excerpt=make_excerpt(chunk.content, query),
+                )
+                for chunk in chunks
+            ],
+            key=lambda item: item.score,
+            reverse=True,
+        )[:top_chunks]
+
+        return SearchBundle(
+            query=query,
+            relevant_books=relevant_books,
+            embedding_hits=embedding_hits,
+            text_hits=text_hits,
+        )

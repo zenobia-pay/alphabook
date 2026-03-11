@@ -11,6 +11,7 @@ Workers do not provide a runtime for spawning local CLI tools like `codex exec`,
 3. prefers the Codex CLI runner when `ALPHABOOK_ENABLE_CODEX_RUNNER=1`
 4. falls back to Terminal Use or the local deep scan runner
 5. exposes job status for the Worker to poll
+6. imports and serves Project Gutenberg books for the Worker reading surface
 
 ## Recommended shape
 
@@ -41,3 +42,15 @@ When `AGENT_BACKEND_URL` is present, the Worker assistant exposes two modes:
 - `Agent`: enqueue a background job on the external server
 
 The Worker stores the pending assistant message, then replaces it with the finished result once the backend job reports `completed` or `failed`.
+
+## Gutenberg endpoints
+
+The same backend owns arbitrary Gutenberg imports:
+
+- `POST /books/import-gutenberg`
+- `GET /books`
+- `GET /books/{book_id}`
+- `GET /books/{book_id}/context`
+- `GET /books/{book_id}/search`
+
+That keeps imported-book storage, chunk retrieval, and agent execution on the same runtime that already has access to Codex.

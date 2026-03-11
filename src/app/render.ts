@@ -551,7 +551,7 @@ function sidebar(activeNav: string, viewer?: Viewer): string {
     <aside class="sidebar">
       <a class="brand" href="/">
         <div class="brand-title">alphabook</div>
-        <div class="brand-meta">book research, one real corpus</div>
+        <div class="brand-meta">public-domain book research</div>
       </a>
       <nav class="nav">
         ${nav
@@ -563,8 +563,8 @@ function sidebar(activeNav: string, viewer?: Viewer): string {
         ${viewer ? `<a class="${activeNav === "Profile" ? "active" : ""}" href="/u/${e(viewer.handle)}">Profile</a>` : ""}
       </nav>
       <div class="sidebar-block">
-        <div class="eyebrow">Current corpus</div>
-        <div>Don Quixote</div>
+        <div class="eyebrow">Project Gutenberg</div>
+        <div>Paste a reading URL to import a book.</div>
       </div>
       <div class="sidebar-viewer">${viewerControls(viewer)}</div>
     </aside>
@@ -601,6 +601,38 @@ function renderSearchForm(query?: string, action = "/search"): string {
         <a class="button-quiet" href="/assistant${query ? `?prompt=${encodeURIComponent(query)}` : ""}">Send to assistant</a>
       </div>
     </form>
+  `;
+}
+
+function renderImportForm(error?: string): string {
+  return `
+    <form class="query-form" method="post" action="/action/import-book">
+      <input type="text" name="url" placeholder="Paste a Project Gutenberg book URL" />
+      <div class="row">
+        <button class="button" type="submit">Import book</button>
+      </div>
+      ${error ? `<div class="flash">${e(error)}</div>` : ""}
+    </form>
+  `;
+}
+
+function renderImportedBookRow(book: {
+  id: string;
+  title: string;
+  author: string;
+  chunkCount: number;
+  sourceUrl: string;
+}): string {
+  return `
+    <article class="doc-row">
+      <div class="eyebrow">Imported book</div>
+      <h2><a href="/book/${e(book.id)}">${e(book.title)}</a></h2>
+      <div class="meta">${e(book.author)} · ${book.chunkCount} chunks</div>
+      <div class="row">
+        <a class="button-quiet" href="/book/${e(book.id)}">Open</a>
+        <a class="button-quiet" href="${e(book.sourceUrl)}" target="_blank" rel="noreferrer">Source</a>
+      </div>
+    </article>
   `;
 }
 
@@ -726,17 +758,44 @@ export function renderHomePage(input: {
   activeTab: FeedTab;
   documents: DocumentCard[];
   search?: SearchResponse;
+  importError?: string;
+  importedBooks: Array<{
+    id: string;
+    title: string;
+    author: string;
+    chunkCount: number;
+    sourceUrl: string;
+  }>;
 }): string {
   const [document] = input.documents;
   const body = `
     <div class="page-head">
       <div class="eyebrow">Explore</div>
-      <h1 class="page-title">Ask into the corpus.</h1>
+      <h1 class="page-title">Import a Gutenberg book.</h1>
     </div>
 
     <section class="section">
+      <div class="eyebrow">Import</div>
+      ${renderImportForm(input.importError)}
+    </section>
+
+    <section class="section">
+      <div class="eyebrow">Search</div>
       ${renderSearchForm(input.search?.query, "/search")}
     </section>
+
+    ${
+      input.importedBooks.length
+        ? `
+          <section class="section">
+            <div class="eyebrow">Imported</div>
+            <div class="list">
+              ${input.importedBooks.map((book) => renderImportedBookRow(book)).join("")}
+            </div>
+          </section>
+        `
+        : ""
+    }
 
     <section class="section">
       <div class="tab-row">
@@ -920,7 +979,7 @@ export function renderDocumentPage(input: {
                 <button class="button" type="submit">Save note</button>
               </form>
             `
-            : `<div class="empty"><a href="/signin">Continue with Google</a> to save notes.</div>`
+            : `<div class="empty"><a href="/signin">Sign in</a> to save notes.</div>`
         }
         <div class="list">
           ${
@@ -958,7 +1017,7 @@ export function renderDocumentPage(input: {
                 <button class="button" type="submit">Post</button>
               </form>
             `
-            : `<div class="empty"><a href="/signin">Continue with Google</a> to comment.</div>`
+            : `<div class="empty"><a href="/signin">Sign in</a> to comment.</div>`
         }
         <div class="list">
           ${
@@ -1153,6 +1212,108 @@ export function renderAssistantPage(input: {
   `;
 
   return layout("Assistant", "Assistant", input.viewer, body);
+}
+
+export function renderImportedBookPage(input: {
+  viewer?: Viewer;
+  book: {
+    id: string;
+    title: string;
+    author: string;
+    source_url: string;
+    text_length: number;
+    chunk_count: number;
+  };
+  sections: Array<{
+    chunk_index: number;
+    content: string;
+    excerpt?: string;
+    strategy?: string;
+    score?: number;
+  }>;
+  query?: string;
+  thread?: AssistantThread;
+  agentEnabled?: boolean;
+}): string {
+  const body = `
+    <div class="page-head">
+      <div class="eyebrow">Imported book</div>
+      <h1 class="doc-title">${e(input.book.title)}</h1>
+      <div class="meta">${e(input.book.author)} · ${input.book.chunk_count} chunks</div>
+      <div class="row">
+        <a class="button-quiet" href="${e(input.book.source_url)}" target="_blank" rel="noreferrer">Source</a>
+      </div>
+    </div>
+
+    <div class="doc-layout">
+      <div class="stack">
+        <section class="section">
+          <form class="query-form" method="get" action="/book/${e(input.book.id)}">
+            <input type="text" name="q" value="${e(input.query ?? "")}" placeholder="Search inside this book" />
+            <div class="row">
+              <button class="button" type="submit">Search book</button>
+            </div>
+          </form>
+        </section>
+        <section class="section">
+          <div class="list">
+            ${input.sections
+              .map(
+                (section) => `
+                  <section id="chunk-${section.chunk_index}" class="item">
+                    <div class="row" style="justify-content: space-between;">
+                      <div class="eyebrow">Chunk ${section.chunk_index}</div>
+                      ${
+                        section.strategy
+                          ? `<span class="chip">${e(section.strategy)}${section.score !== undefined ? ` ${section.score.toFixed(3)}` : ""}</span>`
+                          : ""
+                      }
+                    </div>
+                    <div>${e(section.content)}</div>
+                  </section>
+                `,
+              )
+              .join("")}
+          </div>
+        </section>
+      </div>
+
+      <aside class="aside">
+        <section class="plain-panel">
+          <div class="eyebrow">Assistant</div>
+          ${
+            input.thread?.messages.length
+              ? `
+                <div class="chat-log">
+                  ${input.thread.messages
+                    .slice(-6)
+                    .map(
+                      (message) => `
+                        <div class="bubble ${message.role}">
+                          <div class="eyebrow">${message.role === "user" ? "You" : "Assistant"}${
+                            message.mode ? ` · ${message.mode}` : ""
+                          }${message.status === "pending" ? " · running" : message.status === "failed" ? " · failed" : ""}</div>
+                          <div>${e(message.content)}</div>
+                        </div>
+                      `,
+                    )
+                    .join("")}
+                </div>
+              `
+              : `<div class="empty">Ask a question about this book.</div>`
+          }
+          ${renderAssistantComposer({
+            docId: `book:${input.book.id}`,
+            redirect: `/book/${input.book.id}${input.query ? `?q=${encodeURIComponent(input.query)}` : ""}`,
+            threadId: input.thread?.id,
+            agentEnabled: input.agentEnabled,
+          })}
+        </section>
+      </aside>
+    </div>
+  `;
+
+  return layout(input.book.title, "Explore", input.viewer, body);
 }
 
 export function renderLibraryPage(input: {

@@ -27,6 +27,7 @@ import {
   renderAuthPage,
   renderDocumentPage,
   renderHomePage,
+  renderImportedBookPage,
   renderLabsPage,
   renderLibraryPage,
   renderNotFound,
@@ -125,6 +126,28 @@ interface AgentJobRecord {
     }>;
   };
   error?: string;
+}
+
+interface BackendBookRecord {
+  id: string;
+  title: string;
+  author: string;
+  source_url: string;
+  text_length: number;
+  chunk_count: number;
+  created_at: string;
+}
+
+interface BackendBookContext {
+  book: BackendBookRecord;
+  query?: string | null;
+  sections: Array<{
+    chunk_index: number;
+    content: string;
+    excerpt?: string;
+    strategy?: string;
+    score?: number;
+  }>;
 }
 
 interface OAuthCookiePayload {
@@ -417,6 +440,17 @@ function buildAgentSummary(job: AgentJobRecord): string {
     return `Agent run failed. ${job.error ?? ""}`.trim();
   }
   return job.result?.synthesis || "Agent run completed.";
+}
+
+function isImportedBookDocId(docId?: string): boolean {
+  return Boolean(docId && docId.startsWith("book:"));
+}
+
+function importedBookIdFromDocId(docId?: string): string | undefined {
+  if (!isImportedBookDocId(docId)) {
+    return undefined;
+  }
+  return docId?.slice("book:".length);
 }
 
 export class AppState extends DurableObject<Env> {
@@ -899,7 +933,42 @@ app.get("/", async (c) => {
     savedDocIds: c.get("library")?.savedDocIds ?? [],
     interests: c.get("viewer")?.interests ?? [],
   });
-  return c.html(renderHomePage({ viewer: c.get("viewer"), activeTab: tab, documents: cards, search: q ? runSearch(q) : undefined }));
+  let importedBooks: Array<{
+    id: string;
+    title: string;
+    author: string;
+    chunkCount: number;
+    sourceUrl: string;
+  }> = [];
+  if (agentBackendConfigured(c.env)) {
+    try {
+      const payload = await agentBackendRequest<{ books: BackendBookRecord[] }>(c.env, "/books");
+      importedBooks = payload.books
+        .filter((book) => book.id !== "don-quixote")
+        .map((book) => ({
+          id: book.id,
+          title: book.title,
+          author: book.author,
+          chunkCount: book.chunk_count,
+          sourceUrl: book.source_url,
+          createdAt: book.created_at,
+        }))
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+        .map(({ createdAt: _createdAt, ...book }) => book);
+    } catch {
+      importedBooks = [];
+    }
+  }
+  return c.html(
+    renderHomePage({
+      viewer: c.get("viewer"),
+      activeTab: tab,
+      documents: cards,
+      search: q ? runSearch(q) : undefined,
+      importError: c.req.query("importError") ?? undefined,
+      importedBooks,
+    }),
+  );
 });
 
 app.get("/search", async (c) => {
@@ -974,6 +1043,55 @@ app.get("/doc/:id", async (c) => {
       search: q ? runSearch(q) : undefined,
       notes: docContext.notes,
       comments: docContext.comments,
+      thread,
+      agentEnabled: agentBackendConfigured(c.env),
+    }),
+  );
+});
+
+app.get("/book/:id", async (c) => {
+  if (!agentBackendConfigured(c.env)) {
+    return c.redirect("/?importError=Book%20backend%20is%20not%20configured.");
+  }
+
+  const bookId = c.req.param("id");
+  const query = c.req.query("q")?.trim();
+  const viewer = c.get("viewer") as Viewer | undefined;
+  let context: BackendBookContext;
+  try {
+    context = await agentBackendRequest<BackendBookContext>(
+      c.env,
+      `/books/${encodeURIComponent(bookId)}/context${query ? `?q=${encodeURIComponent(query)}` : ""}`,
+    );
+  } catch {
+    return c.html(renderNotFound(viewer), 404);
+  }
+
+  let thread: AssistantThread | undefined;
+  if (viewer) {
+    const threadsResponse = await storeRequest<{ threads: AssistantThread[] }>(
+      c.env,
+      `/assistant?userId=${encodeURIComponent(viewer.id)}`,
+    );
+    thread = threadsResponse.threads.find((candidate) => candidate.docId === `book:${bookId}`);
+    const sync = await syncPendingAgentThread(c.env, viewer, thread);
+    if (sync.updated) {
+      const refreshed = await storeRequest<{ threads: AssistantThread[] }>(
+        c.env,
+        `/assistant?userId=${encodeURIComponent(viewer.id)}`,
+      );
+      thread = refreshed.threads.find((candidate) => candidate.docId === `book:${bookId}`);
+    } else {
+      thread = sync.thread;
+    }
+  }
+
+  return c.html(
+    renderImportedBookPage({
+      viewer,
+      book: context.book,
+      sections: context.sections,
+      query: query || undefined,
       thread,
       agentEnabled: agentBackendConfigured(c.env),
     }),
@@ -1288,6 +1406,28 @@ app.post("/action/comment", async (c) => {
   return c.redirect(body.redirect || `/doc/${body.docId}?panel=comments`);
 });
 
+app.post("/action/import-book", async (c) => {
+  const body = await formOrJson(c.req.raw);
+  const url = body.url?.trim();
+  if (!url) {
+    return c.redirect("/?importError=Missing%20Gutenberg%20URL");
+  }
+  if (!agentBackendConfigured(c.env)) {
+    return c.redirect("/?importError=Book%20backend%20is%20not%20configured");
+  }
+
+  try {
+    const book = await agentBackendRequest<BackendBookRecord>(c.env, "/books/import-gutenberg", {
+      method: "POST",
+      json: { url },
+    });
+    return c.redirect(`/book/${book.id}`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Import failed";
+    return c.redirect(`/?importError=${encodeURIComponent(message)}`);
+  }
+});
+
 app.post("/action/assistant", async (c) => {
   const viewer = c.get("viewer") as Viewer | undefined;
   if (!viewer) {
@@ -1295,6 +1435,7 @@ app.post("/action/assistant", async (c) => {
   }
   const body = await formOrJson(c.req.raw);
   const mode: AssistantExecutionMode = body.mode === "agent" ? "agent" : "fast";
+  const importedBookId = importedBookIdFromDocId(body.docId || undefined);
   const save =
     mode === "agent"
       ? await (async () => {
@@ -1318,7 +1459,7 @@ app.post("/action/assistant", async (c) => {
             json: {
               query: body.prompt,
               mode: "slow",
-              book_id: body.docId || undefined,
+              book_id: importedBookId,
               top_books: 1,
               top_chunks: 8,
             },
@@ -1339,7 +1480,28 @@ app.post("/action/assistant", async (c) => {
           });
         })()
       : await (async () => {
-          const reply = buildAssistantReply(body.prompt, body.docId || undefined, "fast");
+          const reply = importedBookId
+            ? await (async () => {
+                if (!agentBackendConfigured(c.env)) {
+                  return {
+                    answer: "Book backend is not configured.",
+                    citations: [],
+                  };
+                }
+                const result = await agentBackendRequest<{
+                  summary: string;
+                  evidence: Array<{ chunk_index: number; excerpt: string }>;
+                }>(c.env, `/books/${encodeURIComponent(importedBookId)}/search?q=${encodeURIComponent(body.prompt)}`);
+                return {
+                  answer: result.summary,
+                  citations: result.evidence.slice(0, 4).map((evidence) => ({
+                    label: `Chunk ${evidence.chunk_index}`,
+                    href: `/book/${importedBookId}?q=${encodeURIComponent(body.prompt)}#chunk-${evidence.chunk_index}`,
+                    excerpt: evidence.excerpt,
+                  })),
+                };
+              })()
+            : buildAssistantReply(body.prompt, body.docId || undefined, "fast");
           return storeRequest<{ thread: AssistantThread }>(c.env, "/assistant-save", {
             method: "POST",
             json: {
@@ -1472,7 +1634,9 @@ app.post("/api/assistant", async (c) => {
   if (!body.prompt?.trim()) {
     return c.json({ error: "Missing prompt" }, 400);
   }
+  const prompt = body.prompt;
   const mode: AssistantExecutionMode = body.mode === "agent" ? "agent" : "fast";
+  const importedBookId = importedBookIdFromDocId(body.docId);
   if (mode === "agent") {
     if (!agentBackendConfigured(c.env)) {
       return c.json({ error: "Agent backend is not configured." }, 503);
@@ -1480,9 +1644,9 @@ app.post("/api/assistant", async (c) => {
     const job = await agentBackendRequest<AgentJobRecord>(c.env, "/jobs", {
       method: "POST",
       json: {
-        query: body.prompt,
+        query: prompt,
         mode: "slow",
-        book_id: body.docId || undefined,
+        book_id: importedBookId,
         top_books: 1,
         top_chunks: 8,
       },
@@ -1492,7 +1656,7 @@ app.post("/api/assistant", async (c) => {
       json: {
         userId: viewer.id,
         docId: body.docId,
-        prompt: body.prompt,
+        prompt,
         answer: "Agent run started. Refresh this thread in a few seconds.",
         citations: [],
         threadId: body.threadId,
@@ -1504,13 +1668,31 @@ app.post("/api/assistant", async (c) => {
     return c.json({ job, thread: save.thread });
   }
 
-  const reply = buildAssistantReply(body.prompt, body.docId, "fast");
+  const reply = importedBookId
+    ? await (async () => {
+        if (!agentBackendConfigured(c.env)) {
+          return { answer: "Book backend is not configured.", citations: [] as AssistantCitation[] };
+        }
+        const result = await agentBackendRequest<{
+          summary: string;
+          evidence: Array<{ chunk_index: number; excerpt: string }>;
+        }>(c.env, `/books/${encodeURIComponent(importedBookId)}/search?q=${encodeURIComponent(prompt)}`);
+        return {
+          answer: result.summary,
+          citations: result.evidence.slice(0, 4).map((evidence) => ({
+            label: `Chunk ${evidence.chunk_index}`,
+            href: `/book/${importedBookId}?q=${encodeURIComponent(prompt)}#chunk-${evidence.chunk_index}`,
+            excerpt: evidence.excerpt,
+          })),
+        };
+      })()
+    : buildAssistantReply(prompt, body.docId, "fast");
   const save = await storeRequest<{ thread: AssistantThread }>(c.env, "/assistant-save", {
     method: "POST",
     json: {
       userId: viewer.id,
       docId: body.docId,
-      prompt: body.prompt,
+      prompt,
       answer: reply.answer,
       citations: reply.citations,
       threadId: body.threadId,

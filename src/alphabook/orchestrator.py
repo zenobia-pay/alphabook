@@ -31,9 +31,14 @@ class ResearchOrchestrator:
         mode: ResearchMode = ResearchMode.FAST,
         top_books: int = 3,
         top_chunks: int = 8,
+        book_id: str | None = None,
     ) -> ResearchReport:
-        search = self.search_service.fast_search(query, top_books=top_books, top_chunks=top_chunks)
-        candidate_books = self._pick_candidate_books(mode, search.relevant_books)
+        if book_id:
+            search = self.search_service.fast_search_book(query, book_id=book_id, top_chunks=top_chunks)
+            candidate_books = self._pick_candidate_books(mode, search.relevant_books, book_id=book_id)
+        else:
+            search = self.search_service.fast_search(query, top_books=top_books, top_chunks=top_chunks)
+            candidate_books = self._pick_candidate_books(mode, search.relevant_books)
 
         if mode == ResearchMode.FAST:
             return ResearchReport(
@@ -80,7 +85,17 @@ class ResearchOrchestrator:
             synthesis=self._synthesize_deep(query, agent_results),
         )
 
-    def _pick_candidate_books(self, mode: ResearchMode, relevant_books: Sequence[ScoredBook]) -> List[ScoredBook]:
+    def _pick_candidate_books(
+        self,
+        mode: ResearchMode,
+        relevant_books: Sequence[ScoredBook],
+        book_id: str | None = None,
+    ) -> List[ScoredBook]:
+        if book_id:
+            selected = self.store.get_book(book_id)
+            if not selected:
+                raise RuntimeError(f"Book not found: {book_id}")
+            return [ScoredBook(book=selected, score=1.0, strategy="selected-book")]
         if mode == ResearchMode.NAIVE:
             return [
                 ScoredBook(book=book, score=1.0, strategy="naive-all-books")

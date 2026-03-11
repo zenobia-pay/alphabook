@@ -12,7 +12,7 @@ from .config import Settings
 from .embeddings import BaseEmbeddingProvider, average_vectors
 from .models import BookRecord, ChunkRecord
 from .storage import CorpusStore
-from .text import slugify, strip_project_gutenberg_boilerplate
+from .text import parse_gutenberg_source, slugify, strip_project_gutenberg_boilerplate
 
 
 class CorpusPipeline:
@@ -57,6 +57,17 @@ class CorpusPipeline:
             title=title,
             author=author,
             text=text,
+            source_url=source_url,
+        )
+
+    def ingest_gutenberg_url(self, source_url: str) -> BookRecord:
+        raw_text = self._download_text(source_url)
+        parsed = parse_gutenberg_source(source_url, raw_text)
+        return self.ingest_text(
+            book_id=parsed["book_id"],
+            title=parsed["title"],
+            author=parsed["author"],
+            text=parsed["text"],
             source_url=source_url,
         )
 

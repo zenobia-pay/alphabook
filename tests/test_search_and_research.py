@@ -60,3 +60,34 @@ def test_slow_research_falls_back_to_local_runner(tmp_path):
     assert report.agents
     assert report.agents[0].evidence
     assert "sadness" in report.agents[0].evidence[0].excerpt.lower()
+
+
+def test_slow_research_stays_on_selected_book(tmp_path):
+    _, _, pipeline, _, orchestrator = build_test_services(tmp_path)
+    pipeline.ingest_text(
+        book_id="don-quixote",
+        title="Don Quixote",
+        author="Miguel de Cervantes",
+        text="The knight charged the windmills and dreamed of giants. " * 40,
+        source_url="local://don",
+    )
+    pipeline.ingest_text(
+        book_id="grief-book",
+        title="Book of Grief",
+        author="Test Author",
+        text="There was sadness, grief, and mourning in every room. " * 40,
+        source_url="local://grief",
+    )
+
+    report = asyncio.run(
+        orchestrator.research(
+            "sadness and grief",
+            mode=ResearchMode.SLOW,
+            top_books=2,
+            top_chunks=4,
+            book_id="don-quixote",
+        )
+    )
+
+    assert [candidate.book.id for candidate in report.candidate_books] == ["don-quixote"]
+    assert [agent.book.id for agent in report.agents] == ["don-quixote"]

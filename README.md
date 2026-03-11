@@ -6,7 +6,7 @@
 2. `agent` research via a separate server that can run CLI tools such as `codex exec`.
 3. fallback local deep-scan research when no CLI agent is enabled.
 
-The seed corpus starts with Project Gutenberg's Don Quixote and is structured so the same pipeline can later ingest research papers or broader corpora.
+The repo still ships with Don Quixote as the seeded demo corpus, but the live ingestion path now accepts arbitrary Project Gutenberg book URLs and opens them in a dedicated `/book/:id` reading surface with the assistant rail beside the text.
 
 ## What is implemented
 
@@ -20,6 +20,8 @@ The seed corpus starts with Project Gutenberg's Don Quixote and is structured so
 - Slow research mode that prefers a Codex CLI runner, then Terminal Use, then a local deep scan.
 - Terminal Use CLI adapter that can attach a per-book filesystem and launch a remote task when `tu` is available, authenticated, and configured.
 - FastAPI agent server for running Codex-backed jobs outside the Worker runtime.
+- Gutenberg import path for HTML reading pages such as `https://www.gutenberg.org/cache/epub/41687/pg41687-images.html`.
+- Gutenberg import path for plain-text URLs such as `https://www.gutenberg.org/cache/epub/996/pg996.txt`.
 
 ## Quickstart
 
@@ -60,9 +62,17 @@ List indexed books:
 alphabook list-books
 ```
 
+Import a Gutenberg book directly into the agent backend:
+
+```bash
+curl -X POST http://127.0.0.1:9001/books/import-gutenberg \
+  -H 'content-type: application/json' \
+  --data '{"url":"https://www.gutenberg.org/cache/epub/41687/pg41687-images.html"}'
+```
+
 ## Cloudflare Worker
 
-This repo now also includes a deployable Cloudflare Worker that serves the Don Quixote corpus over HTTP.
+This repo also includes a Cloudflare Worker web app. The Worker serves the frontend and the fast path. Imported Gutenberg books are fetched from the agent backend.
 
 Build and deploy it:
 
@@ -79,6 +89,15 @@ curl https://alphabook.founders-0e1.workers.dev/api/health
 curl "https://alphabook.founders-0e1.workers.dev/api/search?q=windmills"
 curl "https://alphabook.founders-0e1.workers.dev/api/research?q=sadness&mode=slow"
 ```
+
+Local web flow for Gutenberg books:
+
+```bash
+export AGENT_BACKEND_URL=http://127.0.0.1:9001
+npx wrangler dev
+```
+
+Then open `/`, paste a Project Gutenberg URL, and the app will redirect to `/book/<gutenberg-id>` with the assistant rail on the right.
 
 ## Agent server
 

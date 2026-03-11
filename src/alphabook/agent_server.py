@@ -32,6 +32,10 @@ class AgentJobRequest(BaseModel):
     top_chunks: int = Field(default=8, ge=1, le=24)
 
 
+class GutenbergImportRequest(BaseModel):
+    url: str = Field(min_length=1)
+
+
 @dataclass
 class AgentJob:
     id: str
@@ -139,6 +143,7 @@ class AgentJobStore:
                     mode=ResearchMode(job.mode),
                     top_books=top_books,
                     top_chunks=top_chunks,
+                    book_id=job.book_id,
                 )
             )
             self._update_job(job_id, status="completed", result=to_jsonable(report))
@@ -173,9 +178,113 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
     require_auth = build_auth_dependency()
     app = FastAPI(title="alphabook-agent-server")
 
+    def serialize_book(book) -> dict:
+        chunks = store.services["store"].list_chunks(book.id)
+        return {
+            "id": book.id,
+            "title": book.title,
+            "author": book.author,
+            "source_url": book.source_url,
+            "text_length": book.text_length,
+            "chunk_count": len(chunks),
+            "created_at": book.created_at,
+        }
+
+    def context_for_book(book_id: str, query: Optional[str], limit: int = 18) -> dict:
+        book = store.services["store"].get_book(book_id)
+        if not book:
+            raise HTTPException(status_code=404, detail="Book not found")
+
+        chunks = store.services["store"].list_chunks(book_id)
+        if query:
+            bundle = store.services["search_service"].fast_search_book(query, book_id, top_chunks=limit)
+            ordered_hits = bundle.embedding_hits[:limit] + bundle.text_hits[:limit]
+            deduped = []
+            seen = set()
+            for hit in ordered_hits:
+                if hit.chunk.id in seen:
+                    continue
+                seen.add(hit.chunk.id)
+                deduped.append(
+                    {
+                        "chunk_index": hit.chunk.chunk_index,
+                        "content": hit.chunk.content,
+                        "excerpt": hit.excerpt,
+                        "strategy": hit.strategy,
+                        "score": hit.score,
+                    }
+                )
+            return {
+                "book": serialize_book(book),
+                "query": query,
+                "sections": deduped[:limit],
+            }
+
+        sections = [
+            {
+                "chunk_index": chunk.chunk_index,
+                "content": chunk.content,
+            }
+            for chunk in chunks[:limit]
+        ]
+        return {"book": serialize_book(book), "query": None, "sections": sections}
+
+    def fast_answer(book_id: str, query: str) -> dict:
+        bundle = store.services["search_service"].fast_search_book(query, book_id, top_chunks=8)
+        evidence = bundle.embedding_hits[:3] + bundle.text_hits[:3]
+        deduped = []
+        seen = set()
+        for hit in evidence:
+            if hit.chunk.id in seen:
+                continue
+            seen.add(hit.chunk.id)
+            deduped.append(
+                {
+                    "chunk_index": hit.chunk.chunk_index,
+                    "excerpt": hit.excerpt,
+                    "strategy": hit.strategy,
+                    "score": hit.score,
+                }
+            )
+        return {
+            "query": query,
+            "mode": "fast",
+            "summary": (
+                f"Fast search routed the question into {bundle.relevant_books[0].book.title} and returned "
+                f"{len(deduped)} high-signal passages."
+                if deduped
+                else "Fast search did not find strong evidence."
+            ),
+            "evidence": deduped,
+        }
+
     @app.get("/health")
     def health(_: None = Depends(require_auth)) -> dict:
         return store.health()
+
+    @app.get("/books")
+    def list_books(_: None = Depends(require_auth)) -> dict:
+        return {"books": [serialize_book(book) for book in store.services["store"].list_books()]}
+
+    @app.post("/books/import-gutenberg")
+    def import_gutenberg(request: GutenbergImportRequest, _: None = Depends(require_auth)) -> dict:
+        book = store.services["pipeline"].ingest_gutenberg_url(request.url.strip())
+        return serialize_book(book)
+
+    @app.get("/books/{book_id}")
+    def get_book(book_id: str, _: None = Depends(require_auth)) -> dict:
+        book = store.services["store"].get_book(book_id)
+        if not book:
+            raise HTTPException(status_code=404, detail="Book not found")
+        return serialize_book(book)
+
+    @app.get("/books/{book_id}/context")
+    def get_book_context(book_id: str, q: Optional[str] = None, _: None = Depends(require_auth)) -> dict:
+        return context_for_book(book_id, q)
+
+    @app.get("/books/{book_id}/search")
+    def search_book(book_id: str, q: str, _: None = Depends(require_auth)) -> dict:
+        return fast_answer(book_id, q)
 
     @app.post("/jobs")
     def create_job(request: AgentJobRequest, _: None = Depends(require_auth)) -> dict:
