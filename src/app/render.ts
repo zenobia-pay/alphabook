@@ -417,6 +417,34 @@ select {
   padding-top: 0;
 }
 
+.reader-shell {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: white;
+  min-height: 76vh;
+}
+
+.reader-frame {
+  width: 100%;
+  min-height: 76vh;
+  border: 0;
+  display: block;
+  background: white;
+}
+
+.match-card {
+  display: grid;
+  gap: 8px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+
+.match-card:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
 .chat-log {
   display: grid;
   gap: 14px;
@@ -479,6 +507,11 @@ select {
   .aside {
     position: static;
     top: auto;
+  }
+
+  .reader-shell,
+  .reader-frame {
+    min-height: 58vh;
   }
 }
 
@@ -1234,12 +1267,13 @@ export function renderImportedBookPage(input: {
   query?: string;
   thread?: AssistantThread;
   agentEnabled?: boolean;
+  readUrl: string;
 }): string {
   const body = `
     <div class="page-head">
       <div class="eyebrow">Imported book</div>
       <h1 class="doc-title">${e(input.book.title)}</h1>
-      <div class="meta">${e(input.book.author)} · ${input.book.chunk_count} chunks</div>
+      <div class="meta">${e(input.book.author)} · Project Gutenberg</div>
       <div class="row">
         <a class="button-quiet" href="${e(input.book.source_url)}" target="_blank" rel="noreferrer">Source</a>
       </div>
@@ -1256,29 +1290,45 @@ export function renderImportedBookPage(input: {
           </form>
         </section>
         <section class="section">
-          <div class="list">
-            ${input.sections
-              .map(
-                (section) => `
-                  <section id="chunk-${section.chunk_index}" class="item">
-                    <div class="row" style="justify-content: space-between;">
-                      <div class="eyebrow">Chunk ${section.chunk_index}</div>
-                      ${
-                        section.strategy
-                          ? `<span class="chip">${e(section.strategy)}${section.score !== undefined ? ` ${section.score.toFixed(3)}` : ""}</span>`
-                          : ""
-                      }
-                    </div>
-                    <div>${e(section.content)}</div>
-                  </section>
-                `,
-              )
-              .join("")}
+          <div class="reader-shell">
+            <iframe
+              class="reader-frame"
+              src="${e(input.readUrl)}"
+              title="${e(input.book.title)}"
+              loading="lazy"
+              referrerpolicy="no-referrer"
+            ></iframe>
           </div>
         </section>
       </div>
 
       <aside class="aside">
+        ${
+          input.query && input.sections.length
+            ? `
+              <section class="plain-panel">
+                <div class="eyebrow">Relevant passages</div>
+                ${input.sections
+                  .map(
+                    (section, index) => `
+                      <div id="evidence-${section.chunk_index}" class="match-card">
+                        <div class="row" style="justify-content: space-between;">
+                          <strong>Passage ${index + 1}</strong>
+                          ${
+                            section.strategy
+                              ? `<span class="chip">${e(section.strategy)}${section.score !== undefined ? ` ${section.score.toFixed(3)}` : ""}</span>`
+                              : ""
+                          }
+                        </div>
+                        <div>${e(section.excerpt ?? section.content)}</div>
+                      </div>
+                    `,
+                  )
+                  .join("")}
+              </section>
+            `
+            : ""
+        }
         <section class="plain-panel">
           <div class="eyebrow">Assistant</div>
           ${

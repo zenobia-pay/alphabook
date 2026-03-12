@@ -117,7 +117,7 @@ interface AgentJobRecord {
   result?: {
     synthesis?: string;
     agents?: Array<{
-      book?: { title?: string };
+      book?: { id?: string; title?: string };
       summary?: string;
       evidence?: Array<{
         chunk_index?: number;
@@ -426,13 +426,20 @@ async function agentBackendRequest<T>(
 }
 
 function buildAgentCitations(job: AgentJobRecord): AssistantCitation[] {
-  return (job.result?.agents ?? []).flatMap((agent) =>
-    (agent.evidence ?? []).slice(0, 4).map((evidence) => ({
-      label: `${agent.book?.title ?? "Document"} · chunk ${evidence.chunk_index ?? "?"}`,
-      href: `/doc/don-quixote?panel=assistant#chunk-${evidence.chunk_index ?? 0}`,
+  return (job.result?.agents ?? []).flatMap((agent) => {
+    const bookId = agent.book?.id;
+    const isImported = bookId?.startsWith("gutenberg-");
+    const baseHref = isImported
+      ? `/book/${bookId}?q=${encodeURIComponent(job.query)}`
+      : `/doc/${bookId ?? "don-quixote"}?panel=assistant`;
+    return (agent.evidence ?? []).slice(0, 4).map((evidence, index) => ({
+      label: `${agent.book?.title ?? "Document"} · passage ${index + 1}`,
+      href: isImported
+        ? `${baseHref}#evidence-${evidence.chunk_index ?? index + 1}`
+        : `${baseHref}#chunk-${evidence.chunk_index ?? index + 1}`,
       excerpt: evidence.excerpt ?? agent.summary ?? "",
-    })),
-  );
+    }));
+  });
 }
 
 function buildAgentSummary(job: AgentJobRecord): string {
@@ -451,6 +458,89 @@ function importedBookIdFromDocId(docId?: string): string | undefined {
     return undefined;
   }
   return docId?.slice("book:".length);
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function looksLikeHtmlDocument(contentType: string | null, body: string): boolean {
+  return Boolean(
+    contentType?.includes("text/html") ||
+      /^\s*<!doctype html/i.test(body) ||
+      /<html[\s>]/i.test(body) ||
+      /<body[\s>]/i.test(body),
+  );
+}
+
+function sourceBaseHref(sourceUrl: string): string {
+  const base = new URL(sourceUrl);
+  const lastSlash = base.pathname.lastIndexOf("/");
+  base.pathname = lastSlash >= 0 ? base.pathname.slice(0, lastSlash + 1) : "/";
+  base.search = "";
+  base.hash = "";
+  return base.toString();
+}
+
+function injectReaderBase(html: string, sourceUrl: string): string {
+  const baseTag = `<base href="${escapeHtml(sourceBaseHref(sourceUrl))}">`;
+  const cleaned = html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "");
+  if (/<base\b/i.test(cleaned)) {
+    return cleaned;
+  }
+  if (/<head[^>]*>/i.test(cleaned)) {
+    return cleaned.replace(/<head([^>]*)>/i, `<head$1>${baseTag}`);
+  }
+  return `<!doctype html><html><head><meta charset="utf-8">${baseTag}</head><body>${cleaned}</body></html>`;
+}
+
+function wrapPlainTextBook(title: string, author: string, text: string, sourceUrl: string): string {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${escapeHtml(title)}</title>
+    <style>
+      :root { color-scheme: light; }
+      body {
+        margin: 0;
+        padding: 48px 24px 80px;
+        background: #f8f4eb;
+        color: #181512;
+        font-family: "Iowan Old Style", "Palatino Linotype", serif;
+        line-height: 1.65;
+      }
+      main {
+        max-width: 760px;
+        margin: 0 auto;
+      }
+      h1 { margin: 0 0 8px; font-size: 2.6rem; line-height: 0.95; }
+      .meta { margin: 0 0 28px; color: #6a655d; }
+      .source { margin-bottom: 28px; }
+      pre {
+        white-space: pre-wrap;
+        word-break: break-word;
+        font: inherit;
+        margin: 0;
+      }
+      a { color: inherit; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>${escapeHtml(title)}</h1>
+      <div class="meta">${escapeHtml(author)} · Project Gutenberg</div>
+      <div class="source"><a href="${escapeHtml(sourceUrl)}" target="_top" rel="noreferrer">Open source</a></div>
+      <pre>${escapeHtml(text)}</pre>
+    </main>
+  </body>
+</html>`;
 }
 
 export class AppState extends DurableObject<Env> {
@@ -1094,8 +1184,46 @@ app.get("/book/:id", async (c) => {
       query: query || undefined,
       thread,
       agentEnabled: agentBackendConfigured(c.env),
+      readUrl: `/book/${bookId}/read`,
     }),
   );
+});
+
+app.get("/book/:id/read", async (c) => {
+  if (!agentBackendConfigured(c.env)) {
+    return c.text("Book backend is not configured.", 503);
+  }
+
+  const bookId = c.req.param("id");
+  let book: BackendBookRecord;
+  try {
+    book = await agentBackendRequest<BackendBookRecord>(c.env, `/books/${encodeURIComponent(bookId)}`);
+  } catch {
+    return c.text("Book not found.", 404);
+  }
+
+  const sourceResponse = await fetch(book.source_url);
+  if (!sourceResponse.ok) {
+    return c.text("Could not load source document.", 502);
+  }
+
+  const contentType = sourceResponse.headers.get("content-type");
+  const body = await sourceResponse.text();
+  if (looksLikeHtmlDocument(contentType, body)) {
+    return new Response(injectReaderBase(body, book.source_url), {
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": "public, max-age=3600",
+      },
+    });
+  }
+
+  return new Response(wrapPlainTextBook(book.title, book.author, body, book.source_url), {
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "public, max-age=3600",
+    },
+  });
 });
 
 app.get("/assistant", async (c) => {
@@ -1494,9 +1622,9 @@ app.post("/action/assistant", async (c) => {
                 }>(c.env, `/books/${encodeURIComponent(importedBookId)}/search?q=${encodeURIComponent(body.prompt)}`);
                 return {
                   answer: result.summary,
-                  citations: result.evidence.slice(0, 4).map((evidence) => ({
-                    label: `Chunk ${evidence.chunk_index}`,
-                    href: `/book/${importedBookId}?q=${encodeURIComponent(body.prompt)}#chunk-${evidence.chunk_index}`,
+                  citations: result.evidence.slice(0, 4).map((evidence, index) => ({
+                    label: `Passage ${index + 1}`,
+                    href: `/book/${importedBookId}?q=${encodeURIComponent(body.prompt)}#evidence-${evidence.chunk_index}`,
                     excerpt: evidence.excerpt,
                   })),
                 };
@@ -1679,9 +1807,9 @@ app.post("/api/assistant", async (c) => {
         }>(c.env, `/books/${encodeURIComponent(importedBookId)}/search?q=${encodeURIComponent(prompt)}`);
         return {
           answer: result.summary,
-          citations: result.evidence.slice(0, 4).map((evidence) => ({
-            label: `Chunk ${evidence.chunk_index}`,
-            href: `/book/${importedBookId}?q=${encodeURIComponent(prompt)}#chunk-${evidence.chunk_index}`,
+          citations: result.evidence.slice(0, 4).map((evidence, index) => ({
+            label: `Passage ${index + 1}`,
+            href: `/book/${importedBookId}?q=${encodeURIComponent(prompt)}#evidence-${evidence.chunk_index}`,
             excerpt: evidence.excerpt,
           })),
         };
