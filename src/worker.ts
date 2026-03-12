@@ -1076,32 +1076,6 @@ app.get("/", async (c) => {
     savedDocIds: c.get("library")?.savedDocIds ?? [],
     interests: c.get("viewer")?.interests ?? [],
   });
-  let importedBooks: Array<{
-    id: string;
-    title: string;
-    author: string;
-    chunkCount: number;
-    sourceUrl: string;
-  }> = [];
-  if (agentBackendConfigured(c.env)) {
-    try {
-      const payload = await agentBackendRequest<{ books: BackendBookRecord[] }>(c.env, "/books");
-      importedBooks = payload.books
-        .filter((book) => book.id !== "don-quixote")
-        .map((book) => ({
-          id: book.id,
-          title: book.title,
-          author: book.author,
-          chunkCount: book.chunk_count,
-          sourceUrl: book.source_url,
-          createdAt: book.created_at,
-        }))
-        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
-        .map(({ createdAt: _createdAt, ...book }) => book);
-    } catch {
-      importedBooks = [];
-    }
-  }
   return c.html(
     renderHomePage({
       viewer: c.get("viewer"),
@@ -1109,7 +1083,6 @@ app.get("/", async (c) => {
       documents: cards,
       search: q ? runSearch(q) : undefined,
       importError: c.req.query("importError") ?? undefined,
-      importedBooks,
     }),
   );
 });
@@ -1367,13 +1340,13 @@ app.get("/u/:handle", async (c) => {
           if (agentBackendConfigured(c.env)) {
             try {
               const book = await agentBackendRequest<BackendBookRecord>(c.env, `/books/${encodeURIComponent(bookId)}`);
-              return {
-                title: book.title,
-                href: `/book/${book.id}`,
-                summary: `${book.author} · ${book.chunk_count} searchable chunks`,
-                meta: "Recently opened book",
-                previewLabel: "Book",
-              };
+                return {
+                  title: book.title,
+                  href: `/book/${book.id}`,
+                  summary: `${book.author}`,
+                  meta: "Recently opened book",
+                  previewLabel: "Book",
+                };
             } catch {
               return {
                 title: bookId,

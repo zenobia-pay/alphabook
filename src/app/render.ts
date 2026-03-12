@@ -423,14 +423,6 @@ select {
   resize: vertical;
 }
 
-.launch-note {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  color: var(--muted);
-  font-size: 0.92rem;
-}
-
 .flash {
   padding: 14px 16px;
   border-radius: 16px;
@@ -632,11 +624,6 @@ select {
 
 .assistant-compose {
   padding-top: 4px;
-}
-
-.assistant-footnote {
-  color: var(--muted);
-  font-size: 0.9rem;
 }
 
 .prompt-grid {
@@ -963,10 +950,6 @@ function renderLaunchForm(value?: string, error?: string): string {
       <div class="row">
         <button class="button" type="submit">Open assistant</button>
       </div>
-      <div class="launch-note">
-        <span>Questions open the assistant. Gutenberg links import directly into the reader.</span>
-        <span>One input, two routes.</span>
-      </div>
       ${error ? `<div class="flash">${e(error)}</div>` : ""}
     </form>
   `;
@@ -997,7 +980,6 @@ function renderDocumentFeedCard(document: DocumentCard, viewer?: Viewer): string
         <div class="row">
           <span class="chip">likes ${document.stats.likes}</span>
           <span class="chip">saves ${document.stats.saves}</span>
-          <span class="chip">${e(document.fullTextLabel)}</span>
         </div>
         <div class="row">
           <a class="button-quiet" href="/doc/${e(document.id)}">Open</a>
@@ -1019,39 +1001,6 @@ function renderDocumentFeedCard(document: DocumentCard, viewer?: Viewer): string
         <div class="preview-kicker">${e(document.kind)}</div>
         <div class="preview-title">${e(title)}</div>
         <div class="preview-foot">${e(document.theme)}</div>
-      </div>
-    </article>
-  `;
-}
-
-function renderImportedFeedCard(book: {
-  id: string;
-  title: string;
-  author: string;
-  chunkCount: number;
-  sourceUrl: string;
-}): string {
-  const title = cleanBookTitle(book.title);
-  return `
-    <article class="feed-card">
-      <div class="feed-main">
-        <div class="eyebrow">Live corpus</div>
-        <h2 class="feed-title"><a href="/book/${e(book.id)}">${e(title)}</a></h2>
-        <div class="meta">${e(book.author)}</div>
-        <div class="feed-body">This book is already ingested with raw text, chunk storage, and assistant-ready retrieval. Open it to read the original page and ask questions beside it.</div>
-        <div class="row">
-          <span class="chip">${book.chunkCount} chunks</span>
-          <span class="chip">assistant-ready</span>
-        </div>
-        <div class="row">
-          <a class="button-quiet" href="/book/${e(book.id)}">Open</a>
-          <a class="button-quiet" href="${e(book.sourceUrl)}" target="_blank" rel="noreferrer">Source</a>
-        </div>
-      </div>
-      <div class="feed-preview">
-        <div class="preview-kicker">Reader</div>
-        <div class="preview-title">${e(title)}</div>
-        <div class="preview-foot">${e(book.author)}</div>
       </div>
     </article>
   `;
@@ -1202,18 +1151,8 @@ export function renderHomePage(input: {
   documents: DocumentCard[];
   search?: SearchResponse;
   importError?: string;
-  importedBooks: Array<{
-    id: string;
-    title: string;
-    author: string;
-    chunkCount: number;
-    sourceUrl: string;
-  }>;
 }): string {
-  const feed = [
-    ...input.importedBooks.map((book) => renderImportedFeedCard(book)),
-    ...input.documents.map((document) => renderDocumentFeedCard(document, input.viewer)),
-  ].join("");
+  const feed = input.documents.map((document) => renderDocumentFeedCard(document, input.viewer)).join("");
 
   const body = `
     <div class="explore-hero">
@@ -1226,11 +1165,11 @@ export function renderHomePage(input: {
       ${renderFeedTabs(input.activeTab)}
     </section>
 
-    <section class="section">
-      <div class="feed-list">
-        ${feed || `<div class="empty">Nothing is loaded yet.</div>`}
-      </div>
-    </section>
+      <section class="section">
+        <div class="feed-list">
+          ${feed || `<div class="empty">Nothing is loaded yet.</div>`}
+        </div>
+      </section>
   `;
 
   return layout("Explore", "Explore", input.viewer, body);
@@ -1456,7 +1395,6 @@ export function renderDocumentPage(input: {
       <h1 class="doc-title">${e(doc.title)}</h1>
       <div class="meta">${e(doc.authors.join(", "))} · ${e(doc.year)} · ${e(doc.venue)}</div>
       <div class="chips">
-        <span class="chip">${e(doc.fullTextLabel)}</span>
         <span class="chip">likes ${doc.stats.likes}</span>
         <span class="chip">saves ${doc.stats.saves}</span>
         <span class="chip">comments ${doc.stats.comments}</span>
@@ -1632,7 +1570,7 @@ export function renderImportedBookPage(input: {
     <div class="page-head">
       <div class="eyebrow">Reader</div>
       <h1 class="doc-title">${e(title)}</h1>
-      <div class="meta">${e(input.book.author)} · ${input.book.chunk_count} searchable chunks</div>
+      <div class="meta">${e(input.book.author)}</div>
     </div>
 
     <div class="reader-layout">
@@ -1677,7 +1615,6 @@ export function renderImportedBookPage(input: {
             prompt: input.query,
             placeholder: "Ask anything about this book",
           })}
-          <div class="assistant-footnote">The assistant uses stored chunks and saved text, not an iframe scrape.</div>
         </div>
       </aside>
     </div>
