@@ -68,27 +68,35 @@ const appCss = `
 :root {
   --bg: #f4f0e8;
   --panel: #ebe5d9;
+  --panel-strong: #e1d8c8;
   --paper: #fbf8f2;
+  --paper-strong: #fffdf8;
   --ink: #171717;
   --muted: #6a655d;
   --line: rgba(23, 23, 23, 0.12);
   --line-strong: rgba(23, 23, 23, 0.2);
   --accent: #1f4b74;
-  --accent-soft: rgba(31, 75, 116, 0.08);
-  --success: #1d5d3e;
+  --accent-soft: rgba(31, 75, 116, 0.09);
+  --accent-warm: #9e3f4b;
+  --accent-warm-soft: rgba(158, 63, 75, 0.1);
   --danger: #8a302f;
-  --radius: 18px;
+  --success: #1d5d3e;
+  --shadow: 0 20px 60px rgba(54, 45, 30, 0.08);
+  --radius: 22px;
 }
 
 * {
   box-sizing: border-box;
 }
 
-html, body {
+html,
+body {
   margin: 0;
   padding: 0;
   min-height: 100%;
-  background: var(--bg);
+  background:
+    radial-gradient(circle at top left, rgba(255, 255, 255, 0.55), transparent 32%),
+    linear-gradient(180deg, #f7f3ec 0%, var(--bg) 100%);
   color: var(--ink);
   font-family: "Avenir Next", "Optima", "Segoe UI", sans-serif;
 }
@@ -111,7 +119,7 @@ select {
 
 .shell {
   display: grid;
-  grid-template-columns: 280px minmax(0, 1fr);
+  grid-template-columns: 132px minmax(0, 1fr);
   min-height: 100vh;
 }
 
@@ -119,95 +127,132 @@ select {
   position: sticky;
   top: 0;
   height: 100vh;
-  padding: 28px 24px;
-  background: var(--panel);
+  padding: 22px 18px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.3), transparent 18%),
+    var(--panel);
   border-right: 1px solid var(--line);
   display: grid;
   grid-template-rows: auto auto 1fr auto;
-  gap: 28px;
+  gap: 20px;
 }
 
 .brand {
   display: grid;
-  gap: 6px;
-}
-
-.brand-title {
-  font-family: "Iowan Old Style", "Palatino Linotype", serif;
-  font-size: 1.85rem;
-  letter-spacing: -0.04em;
-}
-
-.brand-meta,
-.muted,
-.meta,
-.small {
-  color: var(--muted);
-}
-
-.nav {
-  display: grid;
-  gap: 6px;
-}
-
-.nav a,
-.nav button,
-.tab-row a,
-.rail-tabs a {
-  border-radius: 999px;
-  padding: 10px 14px;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--muted);
-}
-
-.nav a.active,
-.tab-row a.active,
-.rail-tabs a.active {
-  background: rgba(255, 255, 255, 0.72);
-  color: var(--ink);
-}
-
-.sidebar-block {
-  display: grid;
+  justify-items: center;
   gap: 10px;
 }
 
-.sidebar-viewer {
+.brand-mark {
+  width: 52px;
+  height: 52px;
+  border-radius: 16px;
   display: grid;
-  gap: 12px;
-  padding-top: 18px;
-  border-top: 1px solid var(--line);
+  place-items: center;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  font-family: "Iowan Old Style", "Palatino Linotype", serif;
+  font-size: 1.35rem;
+  letter-spacing: -0.06em;
+}
+
+.brand-word {
+  font-family: "Iowan Old Style", "Palatino Linotype", serif;
+  font-size: 1.1rem;
+  letter-spacing: -0.04em;
+}
+
+.sidebar-nav {
+  display: grid;
+  gap: 8px;
+}
+
+.sidebar-nav a {
+  padding: 12px 10px;
+  border-radius: 18px;
+  text-align: center;
+  color: var(--muted);
+  border: 1px solid transparent;
+}
+
+.sidebar-nav a.active {
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.68);
+  border-color: var(--line);
+  box-shadow: var(--shadow);
+}
+
+.sidebar-spacer {
+  min-height: 16px;
+}
+
+.sidebar-footer {
+  display: grid;
+  justify-items: center;
+}
+
+.avatar-link,
+.avatar,
+.avatar-large {
+  border-radius: 50%;
+  overflow: hidden;
+}
+
+.avatar-link {
+  width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.6);
 }
 
 .avatar {
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
+  width: 100%;
+  height: 100%;
   object-fit: cover;
-  background: rgba(255, 255, 255, 0.6);
-  border: 1px solid var(--line);
 }
 
-.viewer-line {
-  display: flex;
-  align-items: center;
-  gap: 12px;
+.avatar-fallback,
+.avatar-fallback-large {
+  display: grid;
+  place-items: center;
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-warm) 100%);
+  color: white;
+  font-weight: 600;
+}
+
+.avatar-fallback {
+  width: 100%;
+  height: 100%;
+}
+
+.avatar-large {
+  width: 120px;
+  height: 120px;
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+}
+
+.avatar-fallback-large {
+  width: 100%;
+  height: 100%;
+  font-size: 2.5rem;
 }
 
 .main {
-  padding: 36px 40px 48px;
+  padding: 34px 44px 56px;
 }
 
 .page {
-  max-width: 1120px;
+  width: min(1180px, 100%);
 }
 
 .page-head {
   display: grid;
   gap: 12px;
-  margin-bottom: 28px;
+  margin-bottom: 30px;
 }
 
 .page-title,
@@ -215,21 +260,49 @@ select {
 .auth-title {
   margin: 0;
   font-family: "Iowan Old Style", "Palatino Linotype", serif;
-  font-size: clamp(2.2rem, 4vw, 3.6rem);
-  line-height: 0.96;
-  letter-spacing: -0.05em;
+  font-size: clamp(2.55rem, 5vw, 4.9rem);
+  line-height: 0.94;
+  letter-spacing: -0.055em;
+}
+
+.section-title {
+  margin: 0;
+  font-family: "Iowan Old Style", "Palatino Linotype", serif;
+  font-size: 1.55rem;
+  line-height: 1;
+  letter-spacing: -0.04em;
 }
 
 .eyebrow {
   color: var(--muted);
-  font-size: 0.76rem;
+  font-size: 0.74rem;
   letter-spacing: 0.16em;
   text-transform: uppercase;
 }
 
+.muted,
+.meta,
+.small {
+  color: var(--muted);
+}
+
+.small {
+  font-size: 0.88rem;
+}
+
 .stack {
   display: grid;
-  gap: 20px;
+  gap: 24px;
+}
+
+.section {
+  padding-top: 22px;
+  border-top: 1px solid var(--line);
+}
+
+.section:first-child {
+  border-top: none;
+  padding-top: 0;
 }
 
 .row {
@@ -241,110 +314,456 @@ select {
 
 .button,
 .button-quiet,
-.button-danger {
-  min-height: 42px;
-  padding: 0 16px;
+.button-danger,
+.icon-button {
+  min-height: 44px;
+  padding: 0 18px;
   border-radius: 999px;
   border: 1px solid transparent;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
+  background: transparent;
 }
 
 .button {
   background: var(--ink);
   color: white;
+  box-shadow: 0 12px 30px rgba(23, 23, 23, 0.16);
 }
 
-.button-quiet {
-  background: transparent;
-  color: var(--ink);
+.button-quiet,
+.icon-button {
   border-color: var(--line);
+  background: rgba(255, 255, 255, 0.65);
 }
 
 .button-danger {
-  background: transparent;
-  color: var(--danger);
   border-color: rgba(138, 48, 47, 0.22);
+  color: var(--danger);
+  background: rgba(138, 48, 47, 0.04);
 }
 
-.query-form,
-.composer,
+.chip-row,
+.chips,
+.tab-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.chip,
+.tab-row a {
+  border-radius: 999px;
+  padding: 8px 13px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.62);
+  color: var(--muted);
+}
+
+.tab-row a.active {
+  background: var(--paper-strong);
+  color: var(--ink);
+  border-color: var(--line-strong);
+}
+
+.plain-panel,
+.feed-card,
+.search-stage,
+.prompt-card,
+.chat-shell,
+.profile-card,
+.history-row,
+.resource-card,
+.auth-box,
+.reader-shell,
+.assistant-rail {
+  background: rgba(255, 255, 255, 0.66);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.search-stage,
+.assistant-compose,
 .auth-panel,
 .line-form {
   display: grid;
   gap: 12px;
 }
 
-.query-form input,
-.query-form textarea,
-.composer input,
-.composer textarea,
-.composer select,
-.auth-panel input,
+.search-stage {
+  padding: 18px;
+}
+
+.search-stage textarea,
+.assistant-compose textarea,
 .auth-panel textarea,
+.auth-panel input,
 .line-form input,
-.line-form textarea {
+.composer select,
+.composer input,
+.composer textarea {
   width: 100%;
-  border: 1px solid var(--line-strong);
-  border-radius: 16px;
-  background: var(--paper);
-  min-height: 52px;
-  padding: 14px 16px;
+  min-height: 56px;
+  padding: 16px 18px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: var(--paper-strong);
   color: var(--ink);
 }
 
-.query-form textarea,
-.composer textarea,
-.auth-panel textarea {
+.search-stage textarea,
+.assistant-compose textarea,
+.auth-panel textarea,
+.composer textarea {
   min-height: 124px;
   resize: vertical;
 }
 
-.tab-row,
-.rail-tabs {
+.launch-note {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 0.92rem;
 }
 
-.section {
-  padding: 22px 0;
-  border-top: 1px solid var(--line);
+.flash {
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: rgba(138, 48, 47, 0.08);
+  color: var(--danger);
 }
 
-.section:first-child {
-  border-top: none;
-  padding-top: 0;
+.explore-hero,
+.assistant-hero {
+  display: grid;
+  gap: 18px;
+  margin-bottom: 30px;
 }
 
-.split {
+.assistant-hero {
+  justify-items: center;
+  text-align: center;
+  padding-top: 12px;
+}
+
+.signal {
+  width: 78px;
+  height: 78px;
+  border-radius: 26px;
+  display: grid;
+  place-items: center;
+  background: var(--accent-warm-soft);
+  color: var(--accent-warm);
+  font-family: "Iowan Old Style", "Palatino Linotype", serif;
+  font-size: 2.3rem;
+}
+
+.feed-list,
+.search-results,
+.history-list,
+.thread-list {
+  display: grid;
+  gap: 18px;
+}
+
+.feed-card {
+  padding: 26px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 220px;
+  gap: 22px;
+}
+
+.feed-main {
+  display: grid;
+  gap: 14px;
+}
+
+.feed-title {
+  margin: 0;
+  font-size: clamp(2rem, 4vw, 3.1rem);
+  line-height: 0.96;
+  letter-spacing: -0.05em;
+  font-family: "Iowan Old Style", "Palatino Linotype", serif;
+}
+
+.feed-body {
+  font-size: 1.02rem;
+  max-width: 58ch;
+}
+
+.feed-preview {
+  min-height: 240px;
+  border-radius: 22px;
+  border: 1px solid var(--line);
+  background:
+    linear-gradient(160deg, rgba(255, 255, 255, 0.76), rgba(255, 255, 255, 0.18)),
+    linear-gradient(135deg, rgba(31, 75, 116, 0.14), rgba(158, 63, 75, 0.08));
+  padding: 18px;
+  display: grid;
+  align-content: space-between;
+}
+
+.preview-kicker {
+  font-size: 0.8rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.preview-title {
+  font-family: "Iowan Old Style", "Palatino Linotype", serif;
+  font-size: 1.42rem;
+  line-height: 1;
+  letter-spacing: -0.04em;
+}
+
+.preview-foot {
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.search-layout,
+.doc-layout,
+.library-layout,
+.profile-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 320px;
-  gap: 36px;
+  gap: 30px;
   align-items: start;
 }
 
-.two-up {
+.reader-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 420px;
+  gap: 28px;
+  align-items: start;
+}
+
+.reader-column {
+  display: grid;
+  gap: 20px;
+}
+
+.reader-shell {
+  overflow: hidden;
+  background: white;
+  min-height: 78vh;
+}
+
+.reader-frame {
+  width: 100%;
+  min-height: 78vh;
+  border: 0;
+  display: block;
+  background: white;
+}
+
+.aside,
+.profile-aside {
+  position: sticky;
+  top: 34px;
+  display: grid;
+  gap: 18px;
+}
+
+.assistant-rail {
+  padding: 20px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 18px;
+  min-height: 78vh;
+}
+
+.assistant-rail-head {
+  display: grid;
+  gap: 6px;
+}
+
+.chat-shell {
+  padding: 22px;
+}
+
+.chat-log {
+  display: grid;
+  gap: 14px;
+}
+
+.message {
+  padding: 16px 18px;
+  border-radius: 20px;
+  background: var(--paper-strong);
+  border: 1px solid transparent;
+  display: grid;
+  gap: 8px;
+}
+
+.message.user {
+  background: var(--accent-soft);
+  border-color: rgba(31, 75, 116, 0.12);
+}
+
+.message.assistant {
+  border-color: var(--line);
+}
+
+.message-status {
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.citation-list {
+  display: grid;
+  gap: 10px;
+}
+
+.citation {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.68);
+}
+
+.assistant-compose {
+  padding-top: 4px;
+}
+
+.assistant-footnote {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.prompt-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 28px;
+  gap: 18px;
+  width: min(920px, 100%);
+}
+
+.prompt-card {
+  padding: 22px;
+  display: grid;
+  gap: 8px;
+}
+
+.thread-pill {
+  display: inline-flex;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: var(--accent-warm-soft);
+  color: var(--accent-warm);
+}
+
+.profile-hero {
+  display: grid;
+  justify-items: center;
+  text-align: center;
+  gap: 14px;
+  padding: 18px 0 10px;
+}
+
+.profile-name {
+  margin: 0;
+  font-size: clamp(2.1rem, 4vw, 3.3rem);
+  line-height: 0.96;
+  letter-spacing: -0.05em;
+  font-family: "Iowan Old Style", "Palatino Linotype", serif;
+}
+
+.stat-strip {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.stat-cell {
+  padding: 14px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid var(--line);
+  text-align: center;
+}
+
+.profile-tabs {
+  display: flex;
+  gap: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 22px;
+}
+
+.profile-tab {
+  padding: 10px 18px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.6);
+  color: var(--muted);
+}
+
+.profile-tab.active {
+  color: var(--ink);
+  border-color: var(--line-strong);
+  background: var(--paper-strong);
+}
+
+.history-row {
+  padding: 18px;
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.history-preview {
+  min-height: 118px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background:
+    linear-gradient(160deg, rgba(255, 255, 255, 0.76), rgba(255, 255, 255, 0.2)),
+    linear-gradient(135deg, rgba(31, 75, 116, 0.14), rgba(158, 63, 75, 0.08));
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+}
+
+.profile-card {
+  padding: 22px;
+  display: grid;
+  gap: 14px;
+}
+
+.form-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.auth-wrap {
+  width: min(720px, 100%);
+}
+
+.auth-box {
+  padding: 24px;
 }
 
 .list {
   display: grid;
-  gap: 14px;
+  gap: 12px;
 }
 
 .item,
 .note,
 .comment,
 .thread,
-.resource,
-.plain-panel,
-.auth-box {
-  padding: 16px 0;
+.resource {
+  padding-top: 14px;
   border-top: 1px solid var(--line);
 }
 
@@ -353,175 +772,86 @@ select {
 .comment:first-child,
 .thread:first-child,
 .resource:first-child {
-  border-top: none;
   padding-top: 0;
+  border-top: none;
 }
 
-.doc-row {
-  display: grid;
-  gap: 8px;
-}
-
-.doc-row h2,
-.doc-row h3,
-.panel-title,
-.section-title {
-  margin: 0;
-  font-family: "Iowan Old Style", "Palatino Linotype", serif;
-  line-height: 1;
-}
-
-.doc-row h2 {
-  font-size: 1.55rem;
-}
-
-.doc-meta,
-.chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.chip {
-  padding: 6px 10px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.72);
+.empty {
   color: var(--muted);
-  font-size: 0.8rem;
 }
 
 .score {
   font-variant-numeric: tabular-nums;
 }
 
-.search-layout,
-.doc-layout,
-.assistant-layout,
-.library-layout,
-.profile-layout,
-.labs-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 300px;
-  gap: 36px;
-  align-items: start;
-}
-
-.aside {
-  display: grid;
-  gap: 20px;
-  position: sticky;
-  top: 36px;
-}
-
-.aside .plain-panel {
-  padding-top: 0;
-}
-
-.reader-shell {
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  overflow: hidden;
-  background: white;
-  min-height: 76vh;
-}
-
-.reader-frame {
-  width: 100%;
-  min-height: 76vh;
-  border: 0;
-  display: block;
-  background: white;
-}
-
-.match-card {
-  display: grid;
-  gap: 8px;
-  padding: 12px 0;
-  border-top: 1px solid var(--line);
-}
-
-.match-card:first-child {
-  border-top: none;
-  padding-top: 0;
-}
-
-.chat-log {
-  display: grid;
-  gap: 14px;
-}
-
-.bubble {
-  padding: 14px 16px;
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.58);
-}
-
-.bubble.user {
-  background: var(--accent-soft);
-}
-
-.empty {
-  color: var(--muted);
-  padding: 4px 0;
-}
-
-.flash {
-  padding: 12px 14px;
-  border-radius: 14px;
-  background: rgba(138, 48, 47, 0.08);
-  color: var(--danger);
-}
-
-.success {
-  color: var(--success);
-}
-
 .footer-note {
-  margin-top: 40px;
-  padding-top: 18px;
-  border-top: 1px solid var(--line);
+  margin-top: 30px;
   color: var(--muted);
   font-size: 0.9rem;
 }
 
-@media (max-width: 1040px) {
-  .shell,
-  .split,
+@media (max-width: 1140px) {
+  .feed-card,
+  .reader-layout,
   .search-layout,
   .doc-layout,
-  .assistant-layout,
   .library-layout,
-  .profile-layout,
-  .labs-layout,
-  .two-up {
+  .profile-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .aside,
+  .profile-aside {
+    position: static;
+    top: auto;
+  }
+
+  .assistant-rail {
+    min-height: auto;
+  }
+}
+
+@media (max-width: 840px) {
+  .shell {
     grid-template-columns: 1fr;
   }
 
   .sidebar {
     position: static;
     height: auto;
+    grid-template-rows: auto auto auto;
     border-right: none;
     border-bottom: 1px solid var(--line);
   }
 
-  .aside {
-    position: static;
-    top: auto;
+  .sidebar-nav {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .sidebar-spacer,
+  .sidebar-footer {
+    display: none;
+  }
+
+  .main {
+    padding: 24px 20px 42px;
+  }
+
+  .prompt-grid,
+  .stat-strip {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .feed-card,
+  .history-row {
+    grid-template-columns: 1fr;
   }
 
   .reader-shell,
   .reader-frame {
     min-height: 58vh;
-  }
-}
-
-@media (max-width: 720px) {
-  .main {
-    padding: 24px 20px 36px;
-  }
-
-  .sidebar {
-    padding: 22px 20px;
   }
 }
 `;
@@ -547,59 +877,53 @@ function formatDate(value: string): string {
   });
 }
 
-function viewerControls(viewer?: Viewer): string {
-  if (!viewer) {
-    return `
-      <a class="button" href="/signin">Sign in</a>
-    `;
+function initials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) {
+    return "A";
   }
+  return parts
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? "")
+    .join("");
+}
 
-  return `
-    <div class="viewer-line">
-      ${viewer.avatarUrl ? `<img class="avatar" src="${e(viewer.avatarUrl)}" alt="${e(viewer.name)}" />` : `<div class="avatar"></div>`}
-      <div>
-        <div>${e(viewer.name)}</div>
-        <div class="small">@${e(viewer.handle)}</div>
-      </div>
-    </div>
-    <div class="row">
-      <a class="button-quiet" href="/u/${e(viewer.handle)}">Profile</a>
-      <form method="post" action="/auth/signout">
-        <button class="button-danger" type="submit">Sign out</button>
-      </form>
-    </div>
-  `;
+function renderAvatar(name: string, avatarUrl: string | undefined, large = false): string {
+  const className = large ? "avatar-large" : "avatar-link";
+  const fallbackClassName = large ? "avatar-fallback-large" : "avatar-fallback";
+  return avatarUrl
+    ? `<div class="${className}"><img class="avatar" src="${e(avatarUrl)}" alt="${e(name)}" /></div>`
+    : `<div class="${className}"><div class="${fallbackClassName}">${e(initials(name))}</div></div>`;
 }
 
 function sidebar(activeNav: string, viewer?: Viewer): string {
   const nav = [
     ["Explore", "/"],
-    ["Search", "/search"],
     ["Assistant", "/assistant"],
     ["Library", "/library"],
-    ["Labs", "/labs"],
   ];
-
   return `
     <aside class="sidebar">
       <a class="brand" href="/">
-        <div class="brand-title">alphabook</div>
-        <div class="brand-meta">public-domain book research</div>
+        <div class="brand-mark">ab</div>
+        <div class="brand-word">alphabook</div>
       </a>
-      <nav class="nav">
+      <nav class="sidebar-nav">
         ${nav
           .map(
             ([label, href]) =>
               `<a class="${activeNav === label ? "active" : ""}" href="${href}">${label}</a>`,
           )
           .join("")}
-        ${viewer ? `<a class="${activeNav === "Profile" ? "active" : ""}" href="/u/${e(viewer.handle)}">Profile</a>` : ""}
       </nav>
-      <div class="sidebar-block">
-        <div class="eyebrow">Project Gutenberg</div>
-        <div>Paste a reading URL to import a book.</div>
+      <div class="sidebar-spacer"></div>
+      <div class="sidebar-footer">
+        ${
+          viewer
+            ? `<a href="/u/${e(viewer.handle)}" aria-label="Profile">${renderAvatar(viewer.name, viewer.avatarUrl)}</a>`
+            : `<a class="avatar-link" href="/signin" aria-label="Sign in"><div class="avatar-fallback">+</div></a>`
+        }
       </div>
-      <div class="sidebar-viewer">${viewerControls(viewer)}</div>
     </aside>
   `;
 }
@@ -625,31 +949,74 @@ function layout(title: string, activeNav: string, viewer: Viewer | undefined, bo
 </html>`;
 }
 
-function renderSearchForm(query?: string, action = "/search"): string {
+function renderLaunchForm(value?: string, error?: string): string {
   return `
-    <form class="query-form" method="get" action="${action}">
-      <textarea name="q" placeholder="Ask or search anything...">${e(query ?? "")}</textarea>
+    <form class="search-stage" method="post" action="/action/launch">
+      <textarea name="query" placeholder="Ask about a book or paste a Gutenberg URL">${e(value ?? "")}</textarea>
       <div class="row">
-        <button class="button" type="submit">Search</button>
-        <a class="button-quiet" href="/assistant${query ? `?prompt=${encodeURIComponent(query)}` : ""}">Send to assistant</a>
+        <button class="button" type="submit">Open assistant</button>
       </div>
-    </form>
-  `;
-}
-
-function renderImportForm(error?: string): string {
-  return `
-    <form class="query-form" method="post" action="/action/import-book">
-      <input type="text" name="url" placeholder="Paste a Project Gutenberg book URL" />
-      <div class="row">
-        <button class="button" type="submit">Import book</button>
+      <div class="launch-note">
+        <span>Questions open the assistant. Gutenberg links import directly into the reader.</span>
+        <span>One input, two routes.</span>
       </div>
       ${error ? `<div class="flash">${e(error)}</div>` : ""}
     </form>
   `;
 }
 
-function renderImportedBookRow(book: {
+function renderFeedTabs(activeTab: FeedTab): string {
+  return `
+    <div class="tab-row">
+      <a class="${activeTab === "hot" ? "active" : ""}" href="/?tab=hot">Hot</a>
+      <a class="${activeTab === "likes" ? "active" : ""}" href="/?tab=likes">Likes</a>
+      <a class="${activeTab === "briefs" ? "active" : ""}" href="/?tab=briefs">Briefs</a>
+    </div>
+  `;
+}
+
+function renderDocumentFeedCard(document: DocumentCard, viewer?: Viewer): string {
+  return `
+    <article class="feed-card">
+      <div class="feed-main">
+        <div class="eyebrow">${e(document.kicker)}</div>
+        <h2 class="feed-title"><a href="/doc/${e(document.id)}">${e(document.title)}</a></h2>
+        <div class="meta">${e(document.authors.join(", "))} · ${e(document.year)} · ${e(document.venue)}</div>
+        <div class="feed-body">${e(document.summary)}</div>
+        <div class="chips">
+          ${document.tags.slice(0, 4).map((tag) => `<span class="chip">#${e(tag)}</span>`).join("")}
+        </div>
+        <div class="row">
+          <span class="chip">likes ${document.stats.likes}</span>
+          <span class="chip">saves ${document.stats.saves}</span>
+          <span class="chip">${e(document.fullTextLabel)}</span>
+        </div>
+        <div class="row">
+          <a class="button-quiet" href="/doc/${e(document.id)}">Open</a>
+          <a class="button-quiet" href="/assistant?docId=${e(document.id)}">Assistant</a>
+          ${
+            viewer
+              ? `
+                <form method="post" action="/action/save">
+                  <input type="hidden" name="docId" value="${e(document.id)}" />
+                  <input type="hidden" name="redirect" value="/" />
+                  <button class="${document.saved ? "button" : "button-quiet"}" type="submit">${document.saved ? "Saved" : "Save"}</button>
+                </form>
+              `
+              : ""
+          }
+        </div>
+      </div>
+      <div class="feed-preview">
+        <div class="preview-kicker">${e(document.kind)}</div>
+        <div class="preview-title">${e(document.title)}</div>
+        <div class="preview-foot">${e(document.theme)}</div>
+      </div>
+    </article>
+  `;
+}
+
+function renderImportedFeedCard(book: {
   id: string;
   title: string;
   author: string;
@@ -657,45 +1024,25 @@ function renderImportedBookRow(book: {
   sourceUrl: string;
 }): string {
   return `
-    <article class="doc-row">
-      <div class="eyebrow">Imported book</div>
-      <h2><a href="/book/${e(book.id)}">${e(book.title)}</a></h2>
-      <div class="meta">${e(book.author)} · ${book.chunkCount} chunks</div>
-      <div class="row">
-        <a class="button-quiet" href="/book/${e(book.id)}">Open</a>
-        <a class="button-quiet" href="${e(book.sourceUrl)}" target="_blank" rel="noreferrer">Source</a>
+    <article class="feed-card">
+      <div class="feed-main">
+        <div class="eyebrow">Live corpus</div>
+        <h2 class="feed-title"><a href="/book/${e(book.id)}">${e(book.title)}</a></h2>
+        <div class="meta">${e(book.author)}</div>
+        <div class="feed-body">This book is already ingested with raw text, chunk storage, and assistant-ready retrieval. Open it to read the original page and ask questions beside it.</div>
+        <div class="row">
+          <span class="chip">${book.chunkCount} chunks</span>
+          <span class="chip">assistant-ready</span>
+        </div>
+        <div class="row">
+          <a class="button-quiet" href="/book/${e(book.id)}">Open</a>
+          <a class="button-quiet" href="${e(book.sourceUrl)}" target="_blank" rel="noreferrer">Source</a>
+        </div>
       </div>
-    </article>
-  `;
-}
-
-function renderDocSummary(document: DocumentCard, viewer?: Viewer): string {
-  return `
-    <article class="doc-row">
-      <div class="eyebrow">${e(document.kicker)}</div>
-      <h2><a href="/doc/${e(document.id)}">${e(document.title)}</a></h2>
-      <div class="meta">${e(document.authors.join(", "))} · ${e(document.year)} · ${e(document.venue)}</div>
-      <div class="chips">
-        <span class="chip">${e(document.kind)}</span>
-        <span class="chip">${e(document.fullTextLabel)}</span>
-        <span class="chip">likes ${document.stats.likes}</span>
-        <span class="chip">saves ${document.stats.saves}</span>
-      </div>
-      <div>${e(document.summary)}</div>
-      <div class="row">
-        <a class="button-quiet" href="/doc/${e(document.id)}">Open</a>
-        <a class="button-quiet" href="/assistant?docId=${e(document.id)}">Ask</a>
-        ${
-          viewer
-            ? `
-              <form method="post" action="/action/save">
-                <input type="hidden" name="docId" value="${e(document.id)}" />
-                <input type="hidden" name="redirect" value="/doc/${e(document.id)}" />
-                <button class="${document.saved ? "button" : "button-quiet"}" type="submit">${document.saved ? "Saved" : "Save"}</button>
-              </form>
-            `
-            : ""
-        }
+      <div class="feed-preview">
+        <div class="preview-kicker">Reader</div>
+        <div class="preview-title">${e(book.title)}</div>
+        <div class="preview-foot">${e(book.author)}</div>
       </div>
     </article>
   `;
@@ -703,16 +1050,16 @@ function renderDocSummary(document: DocumentCard, viewer?: Viewer): string {
 
 function renderSearchResults(search: SearchResponse): string {
   return `
-    <div class="list">
+    <div class="search-results">
       ${search.results
         .map(
           (result) => `
-            <a class="item" href="${e(result.href)}">
+            <a class="plain-panel" style="padding: 18px;" href="${e(result.href)}">
               <div class="row" style="justify-content: space-between;">
                 <strong>${e(result.title)}</strong>
                 <span class="chip">${e(result.strategy)}</span>
               </div>
-              <div class="meta">score <span class="score">${result.score.toFixed(3)}</span></div>
+              <div class="small">score <span class="score">${result.score.toFixed(3)}</span></div>
               <div>${e(result.excerpt)}</div>
             </a>
           `,
@@ -723,35 +1070,91 @@ function renderSearchResults(search: SearchResponse): string {
 }
 
 function renderAssistantComposer(input: {
-  docId?: string;
   redirect: string;
-  activeDocId?: string;
   prompt?: string;
   threadId?: string;
-  agentEnabled?: boolean;
+  docId?: string;
+  placeholder?: string;
 }): string {
   return `
-    <form class="composer" method="post" action="/action/assistant">
+    <form class="assistant-compose" method="post" action="/action/assistant">
       <input type="hidden" name="redirect" value="${e(input.redirect)}" />
       <input type="hidden" name="threadId" value="${e(input.threadId ?? "")}" />
       ${input.docId ? `<input type="hidden" name="docId" value="${e(input.docId)}" />` : ""}
-      ${
-        input.docId
-          ? ""
-          : `
-            <select name="docId">
-              <option value="">Entire corpus</option>
-              <option value="don-quixote" ${input.activeDocId === "don-quixote" ? "selected" : ""}>Don Quixote</option>
-            </select>
-          `
-      }
-      <select name="mode">
-        <option value="fast">Fast</option>
-        <option value="agent" ${input.agentEnabled ? "" : "disabled"}>Agent</option>
-      </select>
-      <textarea name="prompt" placeholder="Ask a question about the book">${e(input.prompt ?? "")}</textarea>
-      <button class="button" type="submit">Send</button>
+      <textarea name="prompt" placeholder="${e(input.placeholder ?? "Ask anything about this book")}">${e(input.prompt ?? "")}</textarea>
+      <div class="row">
+        <button class="button" type="submit">Send</button>
+      </div>
     </form>
+  `;
+}
+
+function renderMessage(message: AssistantMessage): string {
+  const status =
+    message.status === "pending"
+      ? `<div class="message-status">Reading deeper across the text now.</div>`
+      : message.status === "failed"
+        ? `<div class="message-status">The deeper pass failed. The last grounded answer is still saved above.</div>`
+        : "";
+  const citations =
+    message.citations?.length
+      ? `
+        <div class="citation-list">
+          ${message.citations
+            .map(
+              (citation) => `
+                <a class="citation" href="${e(citation.href)}">
+                  <strong>${e(citation.label)}</strong>
+                  <div class="small">${e(citation.excerpt)}</div>
+                </a>
+              `,
+            )
+            .join("")}
+        </div>
+      `
+      : "";
+  return `
+    <div class="message ${message.role}">
+      <div class="eyebrow">${message.role === "user" ? "You" : "Assistant"}</div>
+      <div>${e(message.content)}</div>
+      ${status}
+      ${citations}
+    </div>
+  `;
+}
+
+function renderImportedEvidence(input: {
+  evidence: Array<{
+    chunk_index: number;
+    excerpt: string;
+    strategy?: string;
+    score?: number;
+  }>;
+}): string {
+  if (!input.evidence.length) {
+    return "";
+  }
+  return `
+    <div class="citation-list">
+      ${input.evidence
+        .slice(0, 6)
+        .map(
+          (evidence, index) => `
+            <a id="evidence-${evidence.chunk_index}" class="citation" href="#evidence-${evidence.chunk_index}">
+              <div class="row" style="justify-content: space-between;">
+                <strong>Passage ${index + 1}</strong>
+                ${
+                  evidence.strategy
+                    ? `<span class="chip">${e(evidence.strategy)}${evidence.score !== undefined ? ` ${evidence.score.toFixed(3)}` : ""}</span>`
+                    : ""
+                }
+              </div>
+              <div class="small">${e(evidence.excerpt)}</div>
+            </a>
+          `,
+        )
+        .join("")}
+    </div>
   `;
 }
 
@@ -760,9 +1163,8 @@ function railNav(documentId: string, panel: RailPanel, view: DocumentView, query
     `<a class="${panel === nextPanel ? "active" : ""}" href="/doc/${e(documentId)}?view=${e(view)}&panel=${nextPanel}${
       query ? `&q=${encodeURIComponent(query)}` : ""
     }">${label}</a>`;
-
   return `
-    <div class="rail-tabs">
+    <div class="tab-row">
       ${link("Assistant", "assistant")}
       ${link("Notes", "notes")}
       ${link("Comments", "comments")}
@@ -776,7 +1178,6 @@ function viewTabs(documentId: string, view: DocumentView, panel: RailPanel, quer
     `<a class="${view === nextView ? "active" : ""}" href="/doc/${e(documentId)}?view=${nextView}&panel=${e(panel)}${
       query ? `&q=${encodeURIComponent(query)}` : ""
     }">${label}</a>`;
-
   return `
     <div class="tab-row">
       ${link("Document", "document")}
@@ -800,59 +1201,27 @@ export function renderHomePage(input: {
     sourceUrl: string;
   }>;
 }): string {
-  const [document] = input.documents;
+  const feed = [
+    ...input.importedBooks.map((book) => renderImportedFeedCard(book)),
+    ...input.documents.map((document) => renderDocumentFeedCard(document, input.viewer)),
+  ].join("");
+
   const body = `
-    <div class="page-head">
+    <div class="explore-hero">
       <div class="eyebrow">Explore</div>
-      <h1 class="page-title">Import a Gutenberg book.</h1>
+      <h1 class="page-title">Ask or search anything...</h1>
+      ${renderLaunchForm(input.search?.query, input.importError)}
     </div>
 
     <section class="section">
-      <div class="eyebrow">Import</div>
-      ${renderImportForm(input.importError)}
+      ${renderFeedTabs(input.activeTab)}
     </section>
 
     <section class="section">
-      <div class="eyebrow">Search</div>
-      ${renderSearchForm(input.search?.query, "/search")}
-    </section>
-
-    ${
-      input.importedBooks.length
-        ? `
-          <section class="section">
-            <div class="eyebrow">Imported</div>
-            <div class="list">
-              ${input.importedBooks.map((book) => renderImportedBookRow(book)).join("")}
-            </div>
-          </section>
-        `
-        : ""
-    }
-
-    <section class="section">
-      <div class="tab-row">
-        <a class="${input.activeTab === "hot" ? "active" : ""}" href="/?tab=hot">Hot</a>
-        <a class="${input.activeTab === "likes" ? "active" : ""}" href="/?tab=likes">Likes</a>
-        <a class="${input.activeTab === "briefs" ? "active" : ""}" href="/?tab=briefs">Briefs</a>
+      <div class="feed-list">
+        ${feed || `<div class="empty">Nothing is loaded yet.</div>`}
       </div>
     </section>
-
-    <section class="section">
-      ${document ? renderDocSummary(document, input.viewer) : `<div class="empty">No documents loaded.</div>`}
-    </section>
-
-    ${
-      input.search
-        ? `
-          <section class="section">
-            <div class="eyebrow">Search</div>
-            <h2 class="section-title">Top hits for “${e(input.search.query)}”</h2>
-            ${renderSearchResults(input.search)}
-          </section>
-        `
-        : ""
-    }
   `;
 
   return layout("Explore", "Explore", input.viewer, body);
@@ -868,22 +1237,17 @@ export function renderSearchPage(input: {
   const body = `
     <div class="page-head">
       <div class="eyebrow">Search</div>
-      <h1 class="page-title">Route first. Read second.</h1>
+      <h1 class="page-title">Search results</h1>
+      <div class="muted">The dedicated search page is being folded into the assistant. This route remains for direct links.</div>
     </div>
 
     <div class="search-layout">
       <div class="stack">
-        <section class="section">
-          ${renderSearchForm(input.query)}
-        </section>
-        <section class="section">
-          <div class="eyebrow">Results</div>
-          <h2 class="section-title">${input.search.results.length} hits for “${e(input.query)}”</h2>
-          ${renderSearchResults(input.search)}
-        </section>
+        ${renderLaunchForm(input.query)}
+        ${renderSearchResults(input.search)}
       </div>
       <aside class="aside">
-        <section class="plain-panel">
+        <div class="plain-panel" style="padding: 22px;">
           <div class="eyebrow">How it works</div>
           <div class="list">
             ${input.architecture
@@ -891,22 +1255,17 @@ export function renderSearchPage(input: {
                 (step) => `
                   <div class="item">
                     <strong>${e(step.title)}</strong>
-                    <div class="muted">${e(step.body)}</div>
+                    <div class="small">${e(step.body)}</div>
                   </div>
                 `,
               )
               .join("")}
           </div>
-        </section>
-        <section class="plain-panel">
-          <div class="eyebrow">Current document</div>
-          ${input.feedDocuments[0] ? renderDocSummary(input.feedDocuments[0], input.viewer) : ""}
-        </section>
+        </div>
       </aside>
     </div>
   `;
-
-  return layout("Search", "Search", input.viewer, body);
+  return layout("Search", "Explore", input.viewer, body);
 }
 
 export function renderDocumentPage(input: {
@@ -930,7 +1289,7 @@ export function renderDocumentPage(input: {
             ${doc.resources
               .map(
                 (resource) => `
-                  <a class="resource" href="${e(resource.url)}" target="_blank" rel="noreferrer">
+                  <a class="resource-card" style="padding: 18px;" href="${e(resource.url)}" target="_blank" rel="noreferrer">
                     <div class="row" style="justify-content: space-between;">
                       <strong>${e(resource.label)}</strong>
                       <span class="chip">${e(resource.kind)}</span>
@@ -942,69 +1301,59 @@ export function renderDocumentPage(input: {
           </div>
         `
       : `
-          <div class="list">
-            ${(input.view === "brief" ? [{ title: "Brief", body: doc.brief }, ...input.sections] : input.sections)
-              .map(
-                (section, index) => `
-                  <section id="chunk-${index}" class="item">
-                    <div class="eyebrow">${input.view === "brief" && index === 0 ? "Brief" : "Passage"}</div>
-                    <h2 class="section-title">${e(section.title)}</h2>
-                    <div>${e(section.body)}</div>
-                  </section>
-                `,
-              )
-              .join("")}
+          <div class="chat-shell">
+            <div class="list">
+              ${(input.view === "brief" ? [{ title: "Brief", body: doc.brief }, ...input.sections] : input.sections)
+                .map(
+                  (section, index) => `
+                    <section id="chunk-${index}" class="item">
+                      <div class="eyebrow">${input.view === "brief" && index === 0 ? "Brief" : "Passage"}</div>
+                      <h2 class="section-title">${e(section.title)}</h2>
+                      <div>${e(section.body)}</div>
+                    </section>
+                  `,
+                )
+                .join("")}
+            </div>
           </div>
         `;
 
   let railBody = "";
   if (input.panel === "assistant") {
     railBody = `
-      <section class="plain-panel">
+      <div class="plain-panel" style="padding: 20px;">
         ${railNav(doc.id, input.panel, input.view, input.search?.query)}
-      </section>
-      <section class="plain-panel">
-        <div class="eyebrow">Assistant</div>
-        ${
-          input.thread?.messages.length
-            ? `
-              <div class="chat-log">
-                ${input.thread.messages
-                  .slice(-4)
-                  .map(
-                    (message) => `
-                      <div class="bubble ${message.role}">
-                        <div class="eyebrow">${message.role === "user" ? "You" : "Assistant"}${
-                          message.mode ? ` · ${message.mode}` : ""
-                        }${message.status === "pending" ? " · running" : message.status === "failed" ? " · failed" : ""}</div>
-                        <div>${e(message.content)}</div>
-                      </div>
-                    `,
-                  )
-                  .join("")}
-              </div>
-            `
-            : `<div class="empty">No thread for this document yet.</div>`
-        }
+      </div>
+      <div class="assistant-rail" style="min-height: auto;">
+        <div class="assistant-rail-head">
+          <div class="eyebrow">Assistant</div>
+          <div class="small">Ask the document without choosing a separate search mode. The faster pass answers first, then deeper work can continue behind it.</div>
+        </div>
+        <div class="chat-log">
+          ${
+            input.thread?.messages.length
+              ? input.thread.messages.slice(-6).map((message) => renderMessage(message)).join("")
+              : `<div class="empty">Start a conversation about this document.</div>`
+          }
+        </div>
         ${renderAssistantComposer({
-          docId: doc.id,
           redirect: `/doc/${doc.id}?panel=assistant&view=${input.view}`,
           threadId: input.thread?.id,
-          agentEnabled: input.agentEnabled,
+          docId: doc.id,
         })}
-      </section>
+      </div>
     `;
   } else if (input.panel === "notes") {
     railBody = `
-      <section class="plain-panel">
+      <div class="plain-panel" style="padding: 20px;">
         ${railNav(doc.id, input.panel, input.view, input.search?.query)}
-      </section>
-      <section class="plain-panel">
+      </div>
+      <div class="profile-card">
         <div class="eyebrow">Notes</div>
         ${
           input.viewer
             ? `
-              <form class="composer" method="post" action="/action/note">
+              <form class="form-grid" method="post" action="/action/note">
                 <input type="hidden" name="docId" value="${e(doc.id)}" />
                 <input type="hidden" name="redirect" value="/doc/${e(doc.id)}?panel=notes&view=${input.view}" />
                 <input name="anchor" placeholder="Anchor" />
@@ -1031,19 +1380,19 @@ export function renderDocumentPage(input: {
               : `<div class="empty">No notes yet.</div>`
           }
         </div>
-      </section>
+      </div>
     `;
   } else if (input.panel === "comments") {
     railBody = `
-      <section class="plain-panel">
+      <div class="plain-panel" style="padding: 20px;">
         ${railNav(doc.id, input.panel, input.view, input.search?.query)}
-      </section>
-      <section class="plain-panel">
+      </div>
+      <div class="profile-card">
         <div class="eyebrow">Comments</div>
         ${
           input.viewer
             ? `
-              <form class="composer" method="post" action="/action/comment">
+              <form class="form-grid" method="post" action="/action/comment">
                 <input type="hidden" name="docId" value="${e(doc.id)}" />
                 <input type="hidden" name="redirect" value="/doc/${e(doc.id)}?panel=comments&view=${input.view}" />
                 <textarea name="text" placeholder="Public comment"></textarea>
@@ -1072,21 +1421,23 @@ export function renderDocumentPage(input: {
               : `<div class="empty">No comments yet.</div>`
           }
         </div>
-      </section>
+      </div>
     `;
   } else {
     railBody = `
-      <section class="plain-panel">
+      <div class="plain-panel" style="padding: 20px;">
         ${railNav(doc.id, input.panel, input.view, input.search?.query)}
-      </section>
-      <section class="plain-panel">
+      </div>
+      <div class="profile-card">
         <div class="eyebrow">Similar</div>
-        ${
-          input.related.length
-            ? input.related.map((related) => renderDocSummary(related, input.viewer)).join("")
-            : `<div class="empty">No other ingested books yet.</div>`
-        }
-      </section>
+        <div class="list">
+          ${
+            input.related.length
+              ? input.related.map((related) => renderDocumentFeedCard(related, input.viewer)).join("")
+              : `<div class="empty">No related documents are loaded yet.</div>`
+          }
+        </div>
+      </div>
     `;
   }
 
@@ -1102,26 +1453,6 @@ export function renderDocumentPage(input: {
         <span class="chip">comments ${doc.stats.comments}</span>
       </div>
       <div>${e(doc.summary)}</div>
-      <div class="row">
-        <a class="button-quiet" href="/assistant?docId=${e(doc.id)}">Open assistant</a>
-        ${doc.resources[0] ? `<a class="button-quiet" href="${e(doc.resources[0].url)}" target="_blank" rel="noreferrer">Source</a>` : ""}
-        ${
-          input.viewer
-            ? `
-              <form method="post" action="/action/like">
-                <input type="hidden" name="docId" value="${e(doc.id)}" />
-                <input type="hidden" name="redirect" value="/doc/${e(doc.id)}?panel=${input.panel}&view=${input.view}" />
-                <button class="${doc.liked ? "button" : "button-quiet"}" type="submit">${doc.liked ? "Liked" : "Like"}</button>
-              </form>
-              <form method="post" action="/action/save">
-                <input type="hidden" name="docId" value="${e(doc.id)}" />
-                <input type="hidden" name="redirect" value="/doc/${e(doc.id)}?panel=${input.panel}&view=${input.view}" />
-                <button class="${doc.saved ? "button" : "button-quiet"}" type="submit">${doc.saved ? "Saved" : "Save"}</button>
-              </form>
-            `
-            : ""
-        }
-      </div>
     </div>
 
     <div class="doc-layout">
@@ -1133,8 +1464,10 @@ export function renderDocumentPage(input: {
           input.search?.query
             ? `
               <section class="section">
-                <div class="eyebrow">Query overlay</div>
-                <div>${e(input.search.query)}</div>
+                <div class="plain-panel" style="padding: 18px;">
+                  <div class="eyebrow">Query</div>
+                  <div>${e(input.search.query)}</div>
+                </div>
               </section>
             `
             : ""
@@ -1161,87 +1494,77 @@ export function renderAssistantPage(input: {
   prompt?: string;
   agentEnabled?: boolean;
 }): string {
+  const scopeDocId = input.activeDocId ?? input.activeThread?.docId;
+  const leadDoc = input.availableDocs[0];
   const body = `
-    <div class="page-head">
-      <div class="eyebrow">Assistant</div>
-      <h1 class="page-title">Persistent research threads.</h1>
+    <div class="assistant-hero">
+      <div class="signal">✦</div>
+      <h1 class="page-title">What do you want to learn?</h1>
+      <div class="muted">A single assistant surface. Quick retrieval lands first, then deeper reading can continue in the same thread.</div>
     </div>
 
-    <div class="assistant-layout">
-      <div class="stack">
-        <section class="section">
-          ${
-            input.viewer
-              ? `
-                ${renderAssistantComposer({
-                  redirect: "/assistant",
-                  activeDocId: input.activeDocId,
-                  prompt: input.prompt,
-                  threadId: input.activeThread?.id,
-                  agentEnabled: input.agentEnabled,
-                })}
-              `
-              : `<div class="empty"><a href="/signin">Sign in</a> to save assistant threads.</div>`
-          }
-        </section>
-        <section class="section">
-          <div class="eyebrow">Conversation</div>
-          <div class="chat-log">
-            ${
-              input.activeThread?.messages.length
-                ? input.activeThread.messages
-                    .map(
-                      (message) => `
-                        <div class="bubble ${message.role}">
-                          <div class="eyebrow">${message.role === "user" ? "You" : "Assistant"}${
-                            message.mode ? ` · ${message.mode}` : ""
-                          }${message.status === "pending" ? " · running" : message.status === "failed" ? " · failed" : ""}</div>
-                          <div>${e(message.content)}</div>
-                          ${
-                            message.citations?.length
-                              ? `
-                                <div class="chips" style="margin-top: 10px;">
-                                  ${message.citations
-                                    .map((citation) => `<a class="chip" href="${e(citation.href)}">${e(citation.label)}</a>`)
-                                    .join("")}
-                                </div>
-                              `
-                              : ""
-                          }
-                        </div>
-                      `,
-                    )
-                    .join("")
-                : `<div class="empty">Start a thread to save a query and the synthesized answer.</div>`
-            }
-          </div>
-        </section>
-      </div>
+    <section class="section">
+      ${renderAssistantComposer({
+        redirect: "/assistant",
+        prompt: input.prompt,
+        threadId: input.activeThread?.id,
+        docId: scopeDocId,
+        placeholder: "Ask about a book, a passage, or a theme",
+      })}
+      ${scopeDocId ? `<div class="footer-note">Current scope: ${e(scopeDocId)}</div>` : ""}
+    </section>
 
-      <aside class="aside">
-        <section class="plain-panel">
-          <div class="eyebrow">Threads</div>
-          <div class="list">
-            ${
-              input.threads.length
-                ? input.threads
-                    .map(
-                      (thread) => `
-                        <a class="thread" href="/assistant?threadId=${e(thread.id)}">
-                          <strong>${e(thread.title)}</strong>
-                          <div class="small">${thread.docId ? e(thread.docId) : "corpus-wide"} · ${e(
-                            formatDate(thread.updatedAt),
-                          )}</div>
-                        </a>
-                      `,
-                    )
-                    .join("")
-                : `<div class="empty">No saved threads.</div>`
-            }
-          </div>
-        </section>
-      </aside>
-    </div>
+    ${
+      input.activeThread?.messages.length
+        ? `
+          <section class="section">
+            <div class="chat-shell">
+              <div class="row" style="justify-content: space-between; margin-bottom: 16px;">
+                <div>
+                  <div class="eyebrow">Conversation</div>
+                  <h2 class="section-title">${e(input.activeThread.title)}</h2>
+                </div>
+                <span class="thread-pill">${e(formatDate(input.activeThread.updatedAt))}</span>
+              </div>
+              <div class="chat-log">
+                ${input.activeThread.messages.map((message) => renderMessage(message)).join("")}
+              </div>
+            </div>
+          </section>
+        `
+        : `
+          <section class="section">
+            <div class="prompt-grid">
+              <div class="prompt-card">
+                <div class="eyebrow">Trending</div>
+                <h2 class="section-title">Follow a live book</h2>
+                <div class="muted">Paste a Gutenberg URL on Explore, then open the reader and ask questions beside the text.</div>
+              </div>
+              <div class="prompt-card">
+                <div class="eyebrow">Grounded</div>
+                <h2 class="section-title">Start with evidence</h2>
+                <div class="muted">Questions are routed through stored chunks and citations first, so the assistant stays anchored to the book.</div>
+              </div>
+              ${
+                leadDoc
+                  ? `
+                    <div class="prompt-card">
+                      <div class="eyebrow">Live corpus</div>
+                      <h2 class="section-title">${e(leadDoc.title)}</h2>
+                      <div class="muted">${e(leadDoc.summary)}</div>
+                    </div>
+                  `
+                  : ""
+              }
+              <div class="prompt-card">
+                <div class="eyebrow">Deep read</div>
+                <h2 class="section-title">One thread, two passes</h2>
+                <div class="muted">The assistant answers quickly, then can continue with a broader scan across the full text in the background.</div>
+              </div>
+            </div>
+          </section>
+        `
+    }
   `;
 
   return layout("Assistant", "Assistant", input.viewer, body);
@@ -1279,129 +1602,73 @@ export function renderImportedBookPage(input: {
     }>;
   };
 }): string {
+  const transientMessages: AssistantMessage[] = input.fastAnswer
+    ? [
+        { role: "user", content: input.fastAnswer.query, createdAt: new Date().toISOString() },
+        {
+          role: "assistant",
+          content: input.fastAnswer.summary,
+          createdAt: new Date().toISOString(),
+          citations: input.fastAnswer.evidence.slice(0, 4).map((evidence, index) => ({
+            label: `Passage ${index + 1}`,
+            href: `#evidence-${evidence.chunk_index}`,
+            excerpt: evidence.excerpt,
+          })),
+        },
+      ]
+    : [];
+
   const body = `
     <div class="page-head">
-      <div class="eyebrow">Imported book</div>
+      <div class="eyebrow">Reader</div>
       <h1 class="doc-title">${e(input.book.title)}</h1>
-      <div class="meta">${e(input.book.author)} · Project Gutenberg</div>
-      <div class="row">
-        <a class="button-quiet" href="${e(input.book.source_url)}" target="_blank" rel="noreferrer">Source</a>
-      </div>
+      <div class="meta">${e(input.book.author)} · ${input.book.chunk_count} searchable chunks</div>
     </div>
 
-    <div class="doc-layout">
-      <div class="stack">
-        <section class="section">
-          <div class="reader-shell">
-            <iframe
-              class="reader-frame"
-              src="${e(input.readUrl)}"
-              title="${e(input.book.title)}"
-              loading="lazy"
-              referrerpolicy="no-referrer"
-            ></iframe>
-          </div>
-        </section>
+    <div class="reader-layout">
+      <div class="reader-column">
+        <div class="row">
+          <a class="button-quiet" href="${e(input.book.source_url)}" target="_blank" rel="noreferrer">Open source</a>
+        </div>
+        <div class="reader-shell">
+          <iframe
+            class="reader-frame"
+            src="${e(input.readUrl)}"
+            title="${e(input.book.title)}"
+            loading="lazy"
+            referrerpolicy="no-referrer"
+          ></iframe>
+        </div>
       </div>
 
-      <aside class="aside">
-        <section class="plain-panel">
+      <aside class="assistant-rail">
+        <div class="assistant-rail-head">
           <div class="eyebrow">Assistant</div>
-          <div class="chat-log">
-            ${
-              input.fastAnswer
-                ? `
-                  <div class="bubble user">
-                    <div class="eyebrow">You</div>
-                    <div>${e(input.fastAnswer.query)}</div>
-                  </div>
-                  <div class="bubble assistant">
-                    <div class="eyebrow">Assistant · fast</div>
-                    <div>${e(input.fastAnswer.summary)}</div>
-                    ${
-                      input.fastAnswer.evidence.length
-                        ? `
-                          <div class="chips" style="margin-top: 10px;">
-                            ${input.fastAnswer.evidence
-                              .slice(0, 4)
-                              .map(
-                                (evidence, index) =>
-                                  `<a class="chip" href="#evidence-${evidence.chunk_index}">Passage ${index + 1}</a>`,
-                              )
-                              .join("")}
-                          </div>
-                        `
-                        : ""
-                    }
-                  </div>
-                `
+          <div class="small">Ask beside the book. The first answer is grounded in retrieved passages, and a deeper pass can continue in the same thread.</div>
+        </div>
+
+        <div class="chat-log">
+          ${transientMessages.map((message) => renderMessage(message)).join("")}
+          ${
+            input.thread?.messages.length
+              ? input.thread.messages.slice(-8).map((message) => renderMessage(message)).join("")
+              : !input.fastAnswer
+                ? `<div class="empty">Ask a question to start a grounded reading thread.</div>`
                 : ""
-            }
-            ${
-              input.thread?.messages.length
-                ? input.thread.messages
-                    .slice(-6)
-                    .map(
-                      (message) => `
-                        <div class="bubble ${message.role}">
-                          <div class="eyebrow">${message.role === "user" ? "You" : "Assistant"}${
-                            message.mode ? ` · ${message.mode}` : ""
-                          }${message.status === "pending" ? " · running" : message.status === "failed" ? " · failed" : ""}</div>
-                          <div>${e(message.content)}</div>
-                          ${
-                            message.citations?.length
-                              ? `
-                                <div class="chips" style="margin-top: 10px;">
-                                  ${message.citations
-                                    .map((citation) => `<a class="chip" href="${e(citation.href)}">${e(citation.label)}</a>`)
-                                    .join("")}
-                                </div>
-                              `
-                              : ""
-                          }
-                        </div>
-                      `,
-                    )
-                    .join("")
-                : !input.fastAnswer
-                  ? `<div class="empty">Ask a question about this book.</div>`
-                  : ""
-            }
-          </div>
+          }
+          ${input.fastAnswer ? renderImportedEvidence({ evidence: input.fastAnswer.evidence }) : ""}
+        </div>
+
+        <div class="stack">
           ${renderAssistantComposer({
             docId: `book:${input.book.id}`,
             redirect: `/book/${input.book.id}${input.query ? `?q=${encodeURIComponent(input.query)}` : ""}`,
             threadId: input.thread?.id,
-            agentEnabled: input.agentEnabled,
             prompt: input.query,
+            placeholder: "Ask anything about this book",
           })}
-          ${
-            input.fastAnswer?.evidence.length
-              ? `
-                <div class="section">
-                  <div class="eyebrow">Grounding</div>
-                  ${input.fastAnswer.evidence
-                    .map(
-                      (evidence, index) => `
-                        <div id="evidence-${evidence.chunk_index}" class="match-card">
-                          <div class="row" style="justify-content: space-between;">
-                            <strong>Passage ${index + 1}</strong>
-                            ${
-                              evidence.strategy
-                                ? `<span class="chip">${e(evidence.strategy)}${evidence.score !== undefined ? ` ${evidence.score.toFixed(3)}` : ""}</span>`
-                                : ""
-                            }
-                          </div>
-                          <div>${e(evidence.excerpt)}</div>
-                        </div>
-                      `,
-                    )
-                    .join("")}
-                </div>
-              `
-              : ""
-          }
-        </section>
+          <div class="assistant-footnote">The assistant uses stored chunks and saved text, not an iframe scrape.</div>
+        </div>
       </aside>
     </div>
   `;
@@ -1420,18 +1687,17 @@ export function renderLibraryPage(input: {
   const body = `
     <div class="page-head">
       <div class="eyebrow">Library</div>
-      <h1 class="page-title">Saved work.</h1>
+      <h1 class="page-title">Saved work</h1>
       <div class="muted">${input.savedDocuments.length} saved · ${input.notesCount} notes · ${input.threadsCount} threads</div>
     </div>
 
     <div class="library-layout">
       <div class="stack">
         <section class="section">
-          <div class="eyebrow">Saved</div>
-          <div class="list">
+          <div class="feed-list">
             ${
               input.savedDocuments.length
-                ? input.savedDocuments.map((document) => renderDocSummary(document, input.viewer)).join("")
+                ? input.savedDocuments.map((document) => renderDocumentFeedCard(document, input.viewer)).join("")
                 : `<div class="empty">Nothing saved yet.</div>`
             }
           </div>
@@ -1441,14 +1707,15 @@ export function renderLibraryPage(input: {
           <div class="list">
             ${
               input.recentDocuments.length
-                ? input.recentDocuments.map((document) => renderDocSummary(document, input.viewer)).join("")
+                ? input.recentDocuments.map((document) => renderDocumentFeedCard(document, input.viewer)).join("")
                 : `<div class="empty">No recent documents.</div>`
             }
           </div>
         </section>
       </div>
+
       <aside class="aside">
-        <section class="plain-panel">
+        <div class="profile-card">
           <div class="eyebrow">Collections</div>
           <form class="line-form" method="post" action="/action/collection">
             <input type="hidden" name="redirect" value="/library" />
@@ -1471,7 +1738,7 @@ export function renderLibraryPage(input: {
                 : `<div class="empty">No collections yet.</div>`
             }
           </div>
-        </section>
+        </div>
       </aside>
     </div>
   `;
@@ -1491,62 +1758,111 @@ export function renderProfilePage(input: {
     threads: number;
   };
   collectionNames: string[];
+  historyItems: Array<{
+    title: string;
+    href: string;
+    summary: string;
+    meta: string;
+    previewLabel: string;
+  }>;
 }): string {
   const body = `
-    <div class="page-head">
-      <div class="eyebrow">Profile</div>
-      <h1 class="page-title">${e(input.profile.name)}</h1>
-      <div class="muted">@${e(input.profile.handle)} · ${e(input.profile.email)}</div>
+    <div class="profile-hero">
+      ${renderAvatar(input.profile.name, input.profile.avatarUrl, true)}
+      <h1 class="profile-name">${e(input.profile.name)}</h1>
+      <div class="muted">@${e(input.profile.handle)}</div>
+      <div class="muted">${e(input.profile.bio || "No bio yet.")}</div>
+      ${
+        input.ownProfile
+          ? `
+            <div class="row">
+              <a class="button-quiet" href="/library">Open library</a>
+              <form method="post" action="/auth/signout">
+                <button class="button-danger" type="submit">Sign out</button>
+              </form>
+            </div>
+          `
+          : ""
+      }
     </div>
 
+    <section class="section">
+      <div class="stat-strip">
+        <div class="stat-cell"><strong>${input.stats.saved}</strong><div class="small">Saved</div></div>
+        <div class="stat-cell"><strong>${input.stats.notes}</strong><div class="small">Notes</div></div>
+        <div class="stat-cell"><strong>${input.stats.comments}</strong><div class="small">Comments</div></div>
+        <div class="stat-cell"><strong>${input.stats.collections}</strong><div class="small">Collections</div></div>
+        <div class="stat-cell"><strong>${input.stats.threads}</strong><div class="small">Threads</div></div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="profile-tabs">
+        <div class="profile-tab">Papers</div>
+        <div class="profile-tab">Activity</div>
+        <div class="profile-tab active">History</div>
+      </div>
+    </section>
+
     <div class="profile-layout">
-      <div class="stack">
-        <section class="section">
-          <div>${e(input.profile.bio || "No bio yet.")}</div>
-        </section>
-        <section class="section">
-          <div class="chips">
-            <span class="chip">saved ${input.stats.saved}</span>
-            <span class="chip">notes ${input.stats.notes}</span>
-            <span class="chip">comments ${input.stats.comments}</span>
-            <span class="chip">collections ${input.stats.collections}</span>
-            <span class="chip">threads ${input.stats.threads}</span>
-          </div>
-        </section>
-        <section class="section">
-          <div class="eyebrow">Interests</div>
+      <div class="profile-main">
+        <div class="history-list">
+          ${
+            input.historyItems.length
+              ? input.historyItems
+                  .map(
+                    (item) => `
+                      <a class="history-row" href="${e(item.href)}">
+                        <div class="history-preview">${e(item.previewLabel)}</div>
+                        <div class="stack" style="gap: 8px;">
+                          <h2 class="section-title">${e(item.title)}</h2>
+                          <div>${e(item.summary)}</div>
+                          <div class="small">${e(item.meta)}</div>
+                        </div>
+                      </a>
+                    `,
+                  )
+                  .join("")
+              : `<div class="empty">No reading history yet.</div>`
+          }
+        </div>
+      </div>
+
+      <aside class="profile-aside">
+        <div class="profile-card">
+          <div class="eyebrow">Research areas</div>
           <div class="chips">
             ${
               input.profile.interests.length
                 ? input.profile.interests.map((interest) => `<span class="chip">${e(interest)}</span>`).join("")
-                : `<span class="empty">No interests yet.</span>`
+                : `<span class="empty">No research areas yet.</span>`
             }
           </div>
-        </section>
-      </div>
-      <aside class="aside">
-        <section class="plain-panel">
+        </div>
+
+        <div class="profile-card">
           <div class="eyebrow">Collections</div>
-          <div class="list">
+          <div class="chips">
             ${
               input.collectionNames.length
-                ? input.collectionNames.map((name) => `<div class="item">${e(name)}</div>`).join("")
-                : `<div class="empty">No collections yet.</div>`
+                ? input.collectionNames.map((name) => `<span class="chip">${e(name)}</span>`).join("")
+                : `<span class="empty">No collections yet.</span>`
             }
           </div>
-        </section>
+        </div>
+
         ${
           input.ownProfile
             ? `
-              <section class="plain-panel">
-                <div class="eyebrow">Edit</div>
+              <div class="profile-card">
+                <div class="eyebrow">Edit profile</div>
                 <form class="auth-panel" method="post" action="/action/profile">
                   <input type="hidden" name="redirect" value="/u/${e(input.profile.handle)}" />
                   <textarea name="bio" placeholder="Bio">${e(input.profile.bio)}</textarea>
                   <input name="interests" value="${e(input.profile.interests.join(", "))}" placeholder="Interests, comma separated" />
                   <button class="button" type="submit">Update</button>
                 </form>
-              </section>
+              </div>
             `
             : ""
         }
@@ -1564,54 +1880,16 @@ export function renderLabsPage(input: {
 }): string {
   const body = `
     <div class="page-head">
-      <div class="eyebrow">Labs</div>
-      <h1 class="page-title">How the search stack works.</h1>
-    </div>
-
-    <div class="labs-layout">
-      <div class="stack">
-        <section class="section">
-          <div class="list">
-            ${input.architecture
-              .map(
-                (step) => `
-                  <div class="item">
-                    <strong>${e(step.title)}</strong>
-                    <div>${e(step.body)}</div>
-                  </div>
-                `,
-              )
-              .join("")}
-          </div>
-        </section>
-        <section class="section">
-          <div class="eyebrow">Current implementation</div>
-          <div class="list">
-            <div class="item">
-              <strong>Fast search</strong>
-              <div>Local hashed embeddings plus lexical matching rank the book and its chunks.</div>
-            </div>
-            <div class="item">
-              <strong>Agentic slow search</strong>
-              <div>The slow mode widens the evidence set and returns a synthesis over more chunk hits for the same book.</div>
-            </div>
-            <div class="item">
-              <strong>Naive mode</strong>
-              <div>The exhaustive path is ready for a multi-book corpus, but with one live book it behaves as the widest sweep over Don Quixote.</div>
-            </div>
-          </div>
-        </section>
+      <div class="eyebrow">Assistant</div>
+      <h1 class="page-title">The assistant is the new primary surface.</h1>
+      <div class="muted">This legacy route is being retired. Use Explore to import or Assistant to ask questions.</div>
+      <div class="row">
+        <a class="button" href="/assistant">Open assistant</a>
+        <a class="button-quiet" href="/">Back to explore</a>
       </div>
-      <aside class="aside">
-        <section class="plain-panel">
-          <div class="eyebrow">Live document</div>
-          ${input.documents[0] ? renderDocSummary(input.documents[0], input.viewer) : `<div class="empty">No document loaded.</div>`}
-        </section>
-      </aside>
     </div>
   `;
-
-  return layout("Labs", "Labs", input.viewer, body);
+  return layout("Assistant", "Assistant", input.viewer, body);
 }
 
 export function renderAuthPage(input: {
@@ -1622,62 +1900,62 @@ export function renderAuthPage(input: {
   origin?: string;
 }): string {
   const body = `
-    <div class="page-head">
-      <div class="eyebrow">Sign in</div>
-      <h1 class="auth-title">Sign in</h1>
-    </div>
-
-    <section class="section">
-      <div class="auth-box">
-        ${input.error ? `<div class="flash">${e(input.error)}</div>` : ""}
-        ${
-          input.authConfigured
-            ? `
-              <a class="button" href="/auth/google/start${input.next ? `?next=${encodeURIComponent(input.next)}` : ""}">Sign in</a>
-            `
-            : `
-              <div class="flash">WorkOS Google auth is not configured in this Worker yet.</div>
-              <div class="list">
-                <div class="item">
-                  <strong>1. Create a WorkOS app</strong>
-                  <div class="muted">Enable Google social auth in AuthKit.</div>
-                </div>
-                <div class="item">
-                  <strong>2. Add this redirect URI</strong>
-                  <div class="muted">${e(`${input.origin ?? "https://your-domain.example"}/auth/google/callback`)}</div>
-                </div>
-                <div class="item">
-                  <strong>3. Set Worker secrets</strong>
-                  <div class="muted">WORKOS_CLIENT_ID and WORKOS_API_KEY</div>
-                </div>
-              </div>
-            `
-        }
+    <div class="auth-wrap">
+      <div class="page-head">
+        <div class="eyebrow">Sign in</div>
+        <h1 class="auth-title">Continue into AlphaBook</h1>
       </div>
-    </section>
-  `;
 
+      <section class="section">
+        <div class="auth-box">
+          ${input.error ? `<div class="flash">${e(input.error)}</div>` : ""}
+          ${
+            input.authConfigured
+              ? `<a class="button" href="/auth/google/start${input.next ? `?next=${encodeURIComponent(input.next)}` : ""}">Sign in with Google</a>`
+              : `
+                <div class="flash">WorkOS Google auth is not configured in this Worker yet.</div>
+                <div class="list">
+                  <div class="item">
+                    <strong>1. Create a WorkOS app</strong>
+                    <div class="small">Enable Google social auth in AuthKit.</div>
+                  </div>
+                  <div class="item">
+                    <strong>2. Add this redirect URI</strong>
+                    <div class="small">${e(`${input.origin ?? "https://your-domain.example"}/auth/google/callback`)}</div>
+                  </div>
+                  <div class="item">
+                    <strong>3. Set Worker secrets</strong>
+                    <div class="small">WORKOS_CLIENT_ID and WORKOS_API_KEY</div>
+                  </div>
+                </div>
+              `
+          }
+        </div>
+      </section>
+    </div>
+  `;
   return layout("Sign in", "Explore", undefined, body);
 }
 
 export function renderOnboardingPage(input: { viewer?: Viewer }): string {
   const viewer = input.viewer;
   const body = `
-    <div class="page-head">
-      <div class="eyebrow">Onboarding</div>
-      <h1 class="page-title">Finish your profile.</h1>
+    <div class="auth-wrap">
+      <div class="page-head">
+        <div class="eyebrow">Onboarding</div>
+        <h1 class="page-title">Set up your reading profile</h1>
+      </div>
+
+      <section class="section">
+        <form class="auth-panel" method="post" action="/action/onboarding">
+          <input type="hidden" name="redirect" value="/" />
+          <textarea name="bio" placeholder="Bio">${e(viewer?.bio ?? "")}</textarea>
+          <input name="interests" value="${e(viewer?.interests.join(", ") ?? "")}" placeholder="Interests, comma separated" />
+          <button class="button" type="submit">Save</button>
+        </form>
+      </section>
     </div>
-
-    <section class="section">
-      <form class="auth-panel" method="post" action="/action/onboarding">
-        <input type="hidden" name="redirect" value="/" />
-        <textarea name="bio" placeholder="Bio">${e(viewer?.bio ?? "")}</textarea>
-        <input name="interests" value="${e(viewer?.interests.join(", ") ?? "")}" placeholder="Interests, comma separated" />
-        <button class="button" type="submit">Save</button>
-      </form>
-    </section>
   `;
-
   return layout("Onboarding", "Explore", viewer, body);
 }
 
@@ -1685,13 +1963,12 @@ export function renderNotFound(viewer?: Viewer): string {
   const body = `
     <div class="page-head">
       <div class="eyebrow">404</div>
-      <h1 class="page-title">Page not found.</h1>
+      <h1 class="page-title">Page not found</h1>
       <div class="row">
         <a class="button" href="/">Go home</a>
-        <a class="button-quiet" href="/search">Search</a>
+        <a class="button-quiet" href="/assistant">Open assistant</a>
       </div>
     </div>
   `;
-
   return layout("Not found", "Explore", viewer, body);
 }

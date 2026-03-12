@@ -4,7 +4,6 @@ import { Context, Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 
 import {
-  type AssistantExecutionMode,
   buildAssistantReply,
   buildDocumentCards,
   buildDocumentContext,
@@ -13,7 +12,6 @@ import {
   listDocuments,
   runResearch,
   runSearch,
-  searchArchitecture,
   type AssistantCitation,
   type DocumentCard,
   type DocumentStats,
@@ -28,12 +26,10 @@ import {
   renderDocumentPage,
   renderHomePage,
   renderImportedBookPage,
-  renderLabsPage,
   renderLibraryPage,
   renderNotFound,
   renderOnboardingPage,
   renderProfilePage,
-  renderSearchPage,
   type AssistantThread,
   type CommentRecord,
   type LibraryCollection,
@@ -99,6 +95,7 @@ interface ProfileResponse {
     threads: number;
   };
   collectionNames?: string[];
+  recentDocIds?: string[];
 }
 
 interface WorkOSAuthStoreResponse {
@@ -320,6 +317,15 @@ function sanitizeRedirect(value?: string): string {
   return value;
 }
 
+function looksLikeGutenbergUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return /(^|\.)gutenberg\.org$/i.test(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
 function isSecureRequest(request: Request): boolean {
   return new URL(request.url).protocol === "https:";
 }
@@ -472,6 +478,40 @@ function importedBookIdFromDocId(docId?: string): string | undefined {
   return docId?.slice("book:".length);
 }
 
+function assistantRedirect(base: string | undefined, threadId: string): string {
+  if (!base) {
+    return `/assistant?threadId=${threadId}`;
+  }
+  if (base.includes("/assistant")) {
+    return `${base}${base.includes("?") ? "&" : "?"}threadId=${threadId}`;
+  }
+  return base;
+}
+
+async function bookSearchReply(env: Env, importedBookId: string, prompt: string): Promise<{
+  answer: string;
+  citations: AssistantCitation[];
+}> {
+  if (!agentBackendConfigured(env)) {
+    return {
+      answer: "The book backend is not configured yet.",
+      citations: [],
+    };
+  }
+  const result = await agentBackendRequest<{
+    summary: string;
+    evidence: Array<{ chunk_index: number; excerpt: string }>;
+  }>(env, `/books/${encodeURIComponent(importedBookId)}/search?q=${encodeURIComponent(prompt)}`);
+  return {
+    answer: result.summary,
+    citations: result.evidence.slice(0, 4).map((evidence, index) => ({
+      label: `Passage ${index + 1}`,
+      href: `/book/${importedBookId}?q=${encodeURIComponent(prompt)}#evidence-${evidence.chunk_index}`,
+      excerpt: evidence.excerpt,
+    })),
+  };
+}
+
 function escapeHtml(value: string): string {
   return value
     .replaceAll("&", "&amp;")
@@ -547,7 +587,7 @@ function wrapPlainTextBook(title: string, author: string, text: string, sourceUr
   <body>
     <main>
       <h1>${escapeHtml(title)}</h1>
-      <div class="meta">${escapeHtml(author)} · Project Gutenberg</div>
+      <div class="meta">${escapeHtml(author)}</div>
       <div class="source"><a href="${escapeHtml(sourceUrl)}" target="_top" rel="noreferrer">Open source</a></div>
       <pre>${escapeHtml(text)}</pre>
     </main>
@@ -802,7 +842,7 @@ export class AppState extends DurableObject<Env> {
       const prompt = String(body.prompt || "");
       const answer = String(body.answer || "");
       const citations = (body.citations as AssistantCitation[]) || [];
-      const mode: AssistantExecutionMode = body.mode === "agent" ? "agent" : "fast";
+      const mode: "fast" | "agent" = body.mode === "agent" ? "agent" : "fast";
       const status: "pending" | "completed" | "failed" =
         body.status === "pending" || body.status === "failed" ? body.status : "completed";
       const jobId = String(body.jobId || "") || undefined;
@@ -901,6 +941,7 @@ export class AppState extends DurableObject<Env> {
           threads: library.threads.length,
         },
         collectionNames: library.collections.map((collection) => collection.name),
+        recentDocIds: library.recentDocIds,
       } satisfies ProfileResponse);
     }
 
@@ -1074,17 +1115,8 @@ app.get("/", async (c) => {
 });
 
 app.get("/search", async (c) => {
-  const q = c.req.query("q")?.trim() || "sadness and grief";
-  const cards = documentCardsForViewer(c);
-  return c.html(
-    renderSearchPage({
-      viewer: c.get("viewer"),
-      query: q,
-      search: runSearch(q),
-      feedDocuments: cards,
-      architecture: searchArchitecture,
-    }),
-  );
+  const q = c.req.query("q")?.trim();
+  return c.redirect(q ? `/assistant?prompt=${encodeURIComponent(q)}` : "/");
 });
 
 app.get("/doc/:id", async (c) => {
@@ -1278,7 +1310,7 @@ app.get("/assistant", async (c) => {
       availableDocs: cards,
       threads,
       activeThread,
-      activeDocId: c.req.query("docId") ?? undefined,
+      activeDocId: c.req.query("docId") ?? activeThread?.docId ?? undefined,
       prompt: c.req.query("prompt") ?? undefined,
       agentEnabled: agentBackendConfigured(c.env),
     }),
@@ -1323,6 +1355,64 @@ app.get("/u/:handle", async (c) => {
     return c.html(renderNotFound(c.get("viewer")), 404);
   }
   const viewer = c.get("viewer") as Viewer | undefined;
+  const cards = documentCardIndex(documentCardsForViewer(c));
+  const historyItems = (
+    await Promise.all(
+      (profileResponse.recentDocIds ?? []).slice(0, 8).map(async (docId) => {
+        if (docId.startsWith("book:")) {
+          const bookId = importedBookIdFromDocId(docId);
+          if (!bookId) {
+            return undefined;
+          }
+          if (agentBackendConfigured(c.env)) {
+            try {
+              const book = await agentBackendRequest<BackendBookRecord>(c.env, `/books/${encodeURIComponent(bookId)}`);
+              return {
+                title: book.title,
+                href: `/book/${book.id}`,
+                summary: `${book.author} · ${book.chunk_count} searchable chunks`,
+                meta: "Recently opened book",
+                previewLabel: "Book",
+              };
+            } catch {
+              return {
+                title: bookId,
+                href: `/book/${bookId}`,
+                summary: "Imported Gutenberg reader",
+                meta: "Recently opened book",
+                previewLabel: "Book",
+              };
+            }
+          }
+          return {
+            title: bookId,
+            href: `/book/${bookId}`,
+            summary: "Imported Gutenberg reader",
+            meta: "Recently opened book",
+            previewLabel: "Book",
+          };
+        }
+
+        const card = cards[docId];
+        if (!card) {
+          return undefined;
+        }
+        return {
+          title: card.title,
+          href: `/doc/${card.id}`,
+          summary: card.summary,
+          meta: `${card.year} · ${card.venue}`,
+          previewLabel: card.kind,
+        };
+      }),
+    )
+  ).filter(Boolean) as Array<{
+    title: string;
+    href: string;
+    summary: string;
+    meta: string;
+    previewLabel: string;
+  }>;
   return c.html(
     renderProfilePage({
       viewer,
@@ -1330,18 +1420,13 @@ app.get("/u/:handle", async (c) => {
       ownProfile: viewer?.id === profileResponse.profile.id,
       stats: profileResponse.stats,
       collectionNames: profileResponse.collectionNames,
+      historyItems,
     }),
   );
 });
 
 app.get("/labs", async (c) => {
-  return c.html(
-    renderLabsPage({
-      viewer: c.get("viewer"),
-      documents: documentCardsForViewer(c),
-      architecture: searchArchitecture,
-    }),
-  );
+  return c.redirect("/assistant");
 });
 
 app.get("/signin", async (c) => {
@@ -1556,6 +1641,30 @@ app.post("/action/comment", async (c) => {
   return c.redirect(body.redirect || `/doc/${body.docId}?panel=comments`);
 });
 
+app.post("/action/launch", async (c) => {
+  const body = await formOrJson(c.req.raw);
+  const query = body.query?.trim();
+  if (!query) {
+    return c.redirect("/");
+  }
+  if (looksLikeGutenbergUrl(query)) {
+    if (!agentBackendConfigured(c.env)) {
+      return c.redirect("/?importError=Book%20backend%20is%20not%20configured");
+    }
+    try {
+      const book = await agentBackendRequest<BackendBookRecord>(c.env, "/books/import-gutenberg", {
+        method: "POST",
+        json: { url: query },
+      });
+      return c.redirect(`/book/${book.id}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Import failed";
+      return c.redirect(`/?importError=${encodeURIComponent(message)}`);
+    }
+  }
+  return c.redirect(`/assistant?prompt=${encodeURIComponent(query)}`);
+});
+
 app.post("/action/import-book", async (c) => {
   const body = await formOrJson(c.req.raw);
   const url = body.url?.trim();
@@ -1584,95 +1693,58 @@ app.post("/action/assistant", async (c) => {
     return redirectToSignIn(c);
   }
   const body = await formOrJson(c.req.raw);
-  const mode: AssistantExecutionMode = body.mode === "agent" ? "agent" : "fast";
-  const importedBookId = importedBookIdFromDocId(body.docId || undefined);
-  const save =
-    mode === "agent"
-      ? await (async () => {
-          if (!agentBackendConfigured(c.env)) {
-            return storeRequest<{ thread: AssistantThread }>(c.env, "/assistant-save", {
-              method: "POST",
-              json: {
-                userId: viewer.id,
-                docId: body.docId || undefined,
-                prompt: body.prompt,
-                answer: "Agent backend is not configured yet.",
-                citations: [],
-                threadId: body.threadId || undefined,
-                mode: "agent",
-                status: "failed",
-              },
-            });
-          }
-          const job = await agentBackendRequest<AgentJobRecord>(c.env, "/jobs", {
-            method: "POST",
-            json: {
-              query: body.prompt,
-              mode: "slow",
-              book_id: importedBookId,
-              top_books: 1,
-              top_chunks: 8,
-            },
-          });
-          return storeRequest<{ thread: AssistantThread }>(c.env, "/assistant-save", {
-            method: "POST",
-            json: {
-              userId: viewer.id,
-              docId: body.docId || undefined,
-              prompt: body.prompt,
-              answer: "Agent run started. Refresh this thread in a few seconds.",
-              citations: [],
-              threadId: body.threadId || undefined,
-              mode: "agent",
-              status: "pending",
-              jobId: job.id,
-            },
-          });
-        })()
-      : await (async () => {
-          const reply = importedBookId
-            ? await (async () => {
-                if (!agentBackendConfigured(c.env)) {
-                  return {
-                    answer: "Book backend is not configured.",
-                    citations: [],
-                  };
-                }
-                const result = await agentBackendRequest<{
-                  summary: string;
-                  evidence: Array<{ chunk_index: number; excerpt: string }>;
-                }>(c.env, `/books/${encodeURIComponent(importedBookId)}/search?q=${encodeURIComponent(body.prompt)}`);
-                return {
-                  answer: result.summary,
-                  citations: result.evidence.slice(0, 4).map((evidence, index) => ({
-                    label: `Passage ${index + 1}`,
-                    href: `/book/${importedBookId}?q=${encodeURIComponent(body.prompt)}#evidence-${evidence.chunk_index}`,
-                    excerpt: evidence.excerpt,
-                  })),
-                };
-              })()
-            : buildAssistantReply(body.prompt, body.docId || undefined, "fast");
-          return storeRequest<{ thread: AssistantThread }>(c.env, "/assistant-save", {
-            method: "POST",
-            json: {
-              userId: viewer.id,
-              docId: body.docId || undefined,
-              prompt: body.prompt,
-              answer: reply.answer,
-              citations: reply.citations,
-              threadId: body.threadId || undefined,
-              mode: "fast",
-              status: "completed",
-            },
-          });
-        })();
-  if (body.redirect) {
-    const redirect = body.redirect.includes("/assistant")
-      ? `${body.redirect}${body.redirect.includes("?") ? "&" : "?"}threadId=${save.thread.id}`
-      : body.redirect;
-    return c.redirect(redirect);
+  const prompt = body.prompt?.trim();
+  if (!prompt) {
+    return c.redirect(body.redirect || "/assistant");
   }
-  return c.redirect(`/assistant?threadId=${save.thread.id}`);
+  const importedBookId = importedBookIdFromDocId(body.docId || undefined);
+  const reply = importedBookId
+    ? await bookSearchReply(c.env, importedBookId, prompt)
+    : buildAssistantReply(prompt, body.docId || undefined, "fast");
+
+  const save = await storeRequest<{ thread: AssistantThread }>(c.env, "/assistant-save", {
+    method: "POST",
+    json: {
+      userId: viewer.id,
+      docId: body.docId || undefined,
+      prompt,
+      answer: reply.answer,
+      citations: reply.citations,
+      threadId: body.threadId || undefined,
+      mode: "fast",
+      status: "completed",
+    },
+  });
+
+  if (importedBookId && agentBackendConfigured(c.env)) {
+    try {
+      const job = await agentBackendRequest<AgentJobRecord>(c.env, "/jobs", {
+        method: "POST",
+        json: {
+          query: prompt,
+          mode: "slow",
+          book_id: importedBookId,
+          top_books: 1,
+          top_chunks: 8,
+        },
+      });
+      await storeRequest<{ thread: AssistantThread }>(c.env, "/assistant-update", {
+        method: "POST",
+        json: {
+          userId: viewer.id,
+          threadId: save.thread.id,
+          jobId: job.id,
+          answer: "I am running a broader pass across the full book now.",
+          citations: [],
+          status: "pending",
+        },
+      });
+    } catch {
+      // Keep the grounded answer even if the deeper pass fails to start.
+    }
+  }
+
+  return c.redirect(assistantRedirect(body.redirect, save.thread.id));
 });
 
 app.get("/api/health", async (c) => {
@@ -1680,7 +1752,7 @@ app.get("/api/health", async (c) => {
     status: "ok",
     runtime: "cloudflare-worker-app",
     documents: listDocuments().length,
-    surfaces: ["explore", "search", "document", "assistant", "library", "profile", "labs"],
+    surfaces: ["explore", "document", "assistant", "library", "profile"],
     auth: "workos-google",
     authConfigured: authConfigured(c.env),
     agentBackendConfigured: agentBackendConfigured(c.env),
@@ -1779,63 +1851,14 @@ app.post("/api/assistant", async (c) => {
     prompt?: string;
     docId?: string;
     threadId?: string;
-    mode?: AssistantExecutionMode;
   };
   if (!body.prompt?.trim()) {
     return c.json({ error: "Missing prompt" }, 400);
   }
   const prompt = body.prompt;
-  const mode: AssistantExecutionMode = body.mode === "agent" ? "agent" : "fast";
   const importedBookId = importedBookIdFromDocId(body.docId);
-  if (mode === "agent") {
-    if (!agentBackendConfigured(c.env)) {
-      return c.json({ error: "Agent backend is not configured." }, 503);
-    }
-    const job = await agentBackendRequest<AgentJobRecord>(c.env, "/jobs", {
-      method: "POST",
-      json: {
-        query: prompt,
-        mode: "slow",
-        book_id: importedBookId,
-        top_books: 1,
-        top_chunks: 8,
-      },
-    });
-    const save = await storeRequest<{ thread: AssistantThread }>(c.env, "/assistant-save", {
-      method: "POST",
-      json: {
-        userId: viewer.id,
-        docId: body.docId,
-        prompt,
-        answer: "Agent run started. Refresh this thread in a few seconds.",
-        citations: [],
-        threadId: body.threadId,
-        mode: "agent",
-        status: "pending",
-        jobId: job.id,
-      },
-    });
-    return c.json({ job, thread: save.thread });
-  }
-
   const reply = importedBookId
-    ? await (async () => {
-        if (!agentBackendConfigured(c.env)) {
-          return { answer: "Book backend is not configured.", citations: [] as AssistantCitation[] };
-        }
-        const result = await agentBackendRequest<{
-          summary: string;
-          evidence: Array<{ chunk_index: number; excerpt: string }>;
-        }>(c.env, `/books/${encodeURIComponent(importedBookId)}/search?q=${encodeURIComponent(prompt)}`);
-        return {
-          answer: result.summary,
-          citations: result.evidence.slice(0, 4).map((evidence, index) => ({
-            label: `Passage ${index + 1}`,
-            href: `/book/${importedBookId}?q=${encodeURIComponent(prompt)}#evidence-${evidence.chunk_index}`,
-            excerpt: evidence.excerpt,
-          })),
-        };
-      })()
+    ? await bookSearchReply(c.env, importedBookId, prompt)
     : buildAssistantReply(prompt, body.docId, "fast");
   const save = await storeRequest<{ thread: AssistantThread }>(c.env, "/assistant-save", {
     method: "POST",
@@ -1850,7 +1873,37 @@ app.post("/api/assistant", async (c) => {
       status: "completed",
     },
   });
-  return c.json({ reply, thread: save.thread });
+
+  let job: AgentJobRecord | undefined;
+  if (importedBookId && agentBackendConfigured(c.env)) {
+    try {
+      job = await agentBackendRequest<AgentJobRecord>(c.env, "/jobs", {
+        method: "POST",
+        json: {
+          query: prompt,
+          mode: "slow",
+          book_id: importedBookId,
+          top_books: 1,
+          top_chunks: 8,
+        },
+      });
+      await storeRequest<{ thread: AssistantThread }>(c.env, "/assistant-update", {
+        method: "POST",
+        json: {
+          userId: viewer.id,
+          threadId: save.thread.id,
+          jobId: job.id,
+          answer: "I am running a broader pass across the full book now.",
+          citations: [],
+          status: "pending",
+        },
+      });
+    } catch {
+      job = undefined;
+    }
+  }
+
+  return c.json({ reply, thread: save.thread, job });
 });
 
 app.notFound((c) => c.html(renderNotFound(c.get("viewer")), 404));

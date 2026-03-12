@@ -250,10 +250,9 @@ def create_app(root_dir: Optional[Path] = None) -> FastAPI:
             "query": query,
             "mode": "fast",
             "summary": (
-                f"Fast search routed the question into {bundle.relevant_books[0].book.title} and returned "
-                f"{len(deduped)} high-signal passages."
+                f"I found {len(deduped)} relevant passages in {bundle.relevant_books[0].book.title}."
                 if deduped
-                else "Fast search did not find strong evidence."
+                else "I could not find strong evidence for that question in this book yet."
             ),
             "evidence": deduped,
         }
