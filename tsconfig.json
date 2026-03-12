@@ -1,14 +1,11 @@
 {
-  "compilerOptions": {
-    "target": "ES2022",
-    "module": "ES2022",
-    "moduleResolution": "Bundler",
-    "resolveJsonModule": true,
-    "strict": true,
-    "types": ["@cloudflare/workers-types"],
-    "lib": ["ES2022", "WebWorker"],
-    "skipLibCheck": true,
-    "noEmit": true
-  },
-  "include": ["src/**/*.ts"]
+  "files": [],
+  "references": [
+    { "path": "./apps/frontend" },
+    { "path": "./packages/shared" },
+    { "path": "./packages/db" },
+    { "path": "./apps/orchestrator-worker" },
+    { "path": "./apps/runtime" },
+    { "path": "./apps/ingest" }
+  ]
 }

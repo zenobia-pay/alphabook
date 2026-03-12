@@ -1,0 +1,384 @@
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { dirname, join, normalize } from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import process from "node:process";
+
+import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { RUNTIME_AGENT_PROMPT, type RuntimeTaskResult, type WorkspaceManifest } from "@alphabook/shared";
+
+const execFileAsync = promisify(execFile);
+
+export interface RuntimeServerOptions {
+  port?: number;
+  workspaceRoot?: string;
+  authToken?: string;
+  r2Client?: S3Client;
+  r2BucketName?: string;
+}
+
+interface WorkspaceDownload {
+  r2Key?: string;
+  sourceUrl?: string;
+  destinationPath: string;
+}
+
+interface PrepareRequest {
+  runtimeId: string;
+  sessionId: string;
+  works: WorkspaceManifest["works"];
+  selectedChunkIds: string[];
+  taskContext: Record<string, unknown>;
+  downloads?: WorkspaceDownload[];
+}
+
+interface RunTaskRequest {
+  runtimeId: string;
+  taskSpec: Record<string, unknown>;
+}
+
+function createR2ClientFromEnv(): S3Client | null {
+  const endpoint = process.env.R2_ENDPOINT;
+  const accessKeyId = process.env.R2_ACCESS_KEY_ID;
+  const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY;
+  if (!endpoint || !accessKeyId || !secretAccessKey) {
+    return null;
+  }
+  return new S3Client({
+    region: "auto",
+    endpoint,
+    credentials: {
+      accessKeyId,
+      secretAccessKey,
+    },
+  });
+}
+
+function createPaths(workspaceRoot: string) {
+  return {
+    books: join(workspaceRoot, "books"),
+    chunks: join(workspaceRoot, "chunks"),
+    context: join(workspaceRoot, "context"),
+    output: join(workspaceRoot, "output"),
+    scratch: join(workspaceRoot, "scratch"),
+  };
+}
+
+function json(response: ServerResponse, statusCode: number, payload: unknown) {
+  response.statusCode = statusCode;
+  response.setHeader("content-type", "application/json; charset=utf-8");
+  response.end(JSON.stringify(payload));
+}
+
+async function readJson<T>(request: IncomingMessage): Promise<T> {
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of request) {
+    chunks.push(typeof chunk === "string" ? new TextEncoder().encode(chunk) : chunk);
+  }
+  const text = Buffer.concat(chunks).toString("utf8");
+  return JSON.parse(text) as T;
+}
+
+function safeJoin(root: string, targetPath: string): string {
+  const fullPath = normalize(join(root, targetPath.replace(/^\/+/, "")));
+  if (!fullPath.startsWith(root)) {
+    throw new Error("Path escapes workspace.");
+  }
+  return fullPath;
+}
+
+async function ensureWorkspace(paths: ReturnType<typeof createPaths>) {
+  await Promise.all(
+    Object.values(paths).map(async (path) => {
+      await mkdir(path, { recursive: true });
+    }),
+  );
+}
+
+async function resetWorkspace(paths: ReturnType<typeof createPaths>) {
+  await Promise.all(
+    Object.values(paths).map(async (path) => {
+      await rm(path, { recursive: true, force: true });
+    }),
+  );
+  await ensureWorkspace(paths);
+}
+
+async function streamToString(stream: unknown): Promise<string> {
+  if (stream && typeof stream === "object" && "transformToString" in stream && typeof stream.transformToString === "function") {
+    return stream.transformToString();
+  }
+  if (stream && typeof stream === "object" && Symbol.asyncIterator in stream) {
+    const parts: Buffer[] = [];
+    for await (const chunk of stream as AsyncIterable<Uint8Array | Buffer | string>) {
+      parts.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    return Buffer.concat(parts).toString("utf8");
+  }
+  throw new Error("Unsupported object body.");
+}
+
+async function downloadFromR2(
+  r2Client: S3Client,
+  bucketName: string,
+  r2Key: string,
+): Promise<string> {
+  const response = await r2Client.send(
+    new GetObjectCommand({
+      Bucket: bucketName,
+      Key: r2Key,
+    }),
+  );
+  if (!response.Body) {
+    throw new Error(`R2 object ${r2Key} had no body.`);
+  }
+  return streamToString(response.Body);
+}
+
+async function downloadFiles(
+  downloads: WorkspaceDownload[],
+  workspaceRoot: string,
+  r2Client: S3Client | null,
+  r2BucketName: string | null,
+) {
+  for (const item of downloads) {
+    const destination = safeJoin(workspaceRoot, item.destinationPath);
+    await mkdir(dirname(destination), { recursive: true });
+
+    if (item.r2Key) {
+      if (!r2Client || !r2BucketName) {
+        throw new Error("R2 hydration requested but runtime R2 credentials are not configured.");
+      }
+      const body = await downloadFromR2(r2Client, r2BucketName, item.r2Key);
+      await writeFile(destination, body, "utf8");
+      continue;
+    }
+
+    if (item.sourceUrl) {
+      const response = await fetch(item.sourceUrl);
+      if (!response.ok) {
+        throw new Error(`Failed to download ${item.sourceUrl}: ${response.status}`);
+      }
+      await writeFile(destination, await response.text(), "utf8");
+      continue;
+    }
+
+    throw new Error("Workspace download requires either r2Key or sourceUrl.");
+  }
+}
+
+async function writeManifest(paths: ReturnType<typeof createPaths>, payload: PrepareRequest) {
+  const manifest: WorkspaceManifest = {
+    runtimeId: payload.runtimeId,
+    sessionId: payload.sessionId,
+    works: payload.works,
+    selectedChunkIds: payload.selectedChunkIds,
+    taskContext: payload.taskContext,
+  };
+  await writeFile(join(paths.context, "manifest.json"), JSON.stringify(manifest, null, 2), "utf8");
+}
+
+async function listFiles(root: string, workspaceRoot: string): Promise<string[]> {
+  const entries = await readdir(root, { withFileTypes: true });
+  const files = await Promise.all(
+    entries.map(async (entry) => {
+      const fullPath = join(root, entry.name);
+      if (entry.isDirectory()) {
+        return listFiles(fullPath, workspaceRoot);
+      }
+      return [fullPath.replace(`${workspaceRoot}/`, "")];
+    }),
+  );
+  return files.flat();
+}
+
+async function runStubAgent(paths: ReturnType<typeof createPaths>, workspaceRoot: string, taskSpec: Record<string, unknown>): Promise<RuntimeTaskResult> {
+  const manifestText = await readFile(join(paths.context, "manifest.json"), "utf8");
+  const manifest = JSON.parse(manifestText) as WorkspaceManifest;
+  const workFiles = await listFiles(paths.books, workspaceRoot);
+  const chunkFiles = await listFiles(paths.chunks, workspaceRoot);
+  const comparisonLines = manifest.works.map((work) => `- ${work.workId}: ${work.cleanTextKey ?? "no-clean-text"} | ${work.chunksKey ?? "no-chunks"}`);
+
+  const summary = [
+    "# Summary",
+    "",
+    "This is a bounded AlphaBook runtime output.",
+    "",
+    "## Runtime Prompt",
+    RUNTIME_AGENT_PROMPT,
+    "",
+    "## Task",
+    JSON.stringify(taskSpec, null, 2),
+    "",
+    "## Works",
+    ...comparisonLines,
+    "",
+    "## Workspace Files",
+    ...workFiles.map((file) => `- ${file}`),
+    ...chunkFiles.map((file) => `- ${file}`),
+  ].join("\n");
+
+  const summaryRelativePath = "output/summary.md";
+  const summaryPath = join(paths.output, "summary.md");
+  await writeFile(summaryPath, summary, "utf8");
+
+  return {
+    runtimeId: manifest.runtimeId,
+    stdout: "Stub agent completed.",
+    stderr: "",
+    exitCode: 0,
+    artifacts: [
+      {
+        path: summaryRelativePath,
+        filename: "summary.md",
+        mimeType: "text/markdown",
+      },
+    ],
+  };
+}
+
+async function runExternalAgent(
+  paths: ReturnType<typeof createPaths>,
+  workspaceRoot: string,
+  taskSpec: Record<string, unknown>,
+): Promise<RuntimeTaskResult> {
+  const command = process.env.RUNTIME_AGENT_COMMAND;
+  if (!command) {
+    return runStubAgent(paths, workspaceRoot, taskSpec);
+  }
+
+  const taskPath = join(paths.context, "task.json");
+  await writeFile(taskPath, JSON.stringify(taskSpec, null, 2), "utf8");
+  const { stdout, stderr } = await execFileAsync(command, [], {
+    cwd: workspaceRoot,
+    env: {
+      ...process.env,
+      ALPHABOOK_RUNTIME_PROMPT: RUNTIME_AGENT_PROMPT,
+      ALPHABOOK_TASK_PATH: taskPath,
+      ALPHABOOK_OUTPUT_DIR: paths.output,
+    },
+    timeout: 60_000,
+  });
+
+  const outputFiles = await listFiles(paths.output, workspaceRoot);
+  return {
+    runtimeId: String(taskSpec.runtimeId ?? "runtime"),
+    stdout,
+    stderr,
+    exitCode: 0,
+    artifacts: outputFiles.map((file) => ({
+      path: file,
+      filename: file.split("/").at(-1) ?? file,
+      mimeType: file.endsWith(".md") ? "text/markdown" : "application/octet-stream",
+    })),
+  };
+}
+
+function authorized(request: IncomingMessage, authToken?: string): boolean {
+  if (!authToken) {
+    return true;
+  }
+  const header = request.headers.authorization;
+  return header === `Bearer ${authToken}`;
+}
+
+export function createAlphaBookRuntimeServer(options: RuntimeServerOptions = {}): Server {
+  const workspaceRoot = options.workspaceRoot ?? process.env.RUNTIME_WORKSPACE_ROOT ?? "/workspace";
+  const authToken = options.authToken ?? process.env.RUNTIME_SHARED_TOKEN;
+  const r2Client = options.r2Client ?? createR2ClientFromEnv();
+  const r2BucketName = options.r2BucketName ?? process.env.R2_BUCKET_NAME ?? null;
+  const paths = createPaths(workspaceRoot);
+
+  return createServer(async (request, response) => {
+    try {
+      if (!authorized(request, authToken)) {
+        return json(response, 401, { error: "Unauthorized" });
+      }
+
+      await ensureWorkspace(paths);
+
+      if (request.method === "GET" && request.url === "/health") {
+        return json(response, 200, {
+          status: "ok",
+          workspaceRoot,
+        });
+      }
+
+      if (request.method === "POST" && request.url === "/prepare") {
+        const payload = await readJson<PrepareRequest>(request);
+        await resetWorkspace(paths);
+        await writeManifest(paths, payload);
+        if (payload.downloads?.length) {
+          await downloadFiles(payload.downloads, workspaceRoot, r2Client, r2BucketName);
+        }
+        return json(response, 200, {
+          ok: true,
+          runtimeId: payload.runtimeId,
+          workspaceRoot,
+          manifestPath: "context/manifest.json",
+        });
+      }
+
+      if (request.method === "POST" && request.url === "/run-task") {
+        const payload = await readJson<RunTaskRequest>(request);
+        const taskPath = join(paths.context, "task.json");
+        await writeFile(taskPath, JSON.stringify(payload.taskSpec, null, 2), "utf8");
+        const result = await runExternalAgent(paths, workspaceRoot, {
+          runtimeId: payload.runtimeId,
+          ...payload.taskSpec,
+        });
+        return json(response, 200, result);
+      }
+
+      if (request.method === "GET" && request.url?.startsWith("/file?")) {
+        const url = new URL(request.url, "http://runtime.internal");
+        const targetPath = url.searchParams.get("path");
+        if (!targetPath) {
+          return json(response, 400, { error: "path is required" });
+        }
+        const filePath = safeJoin(workspaceRoot, targetPath);
+        const content = await readFile(filePath, "utf8");
+        const fileInfo = await stat(filePath);
+        return json(response, 200, {
+          path: targetPath,
+          size: fileInfo.size,
+          content,
+          encoding: "utf8",
+        });
+      }
+
+      if (request.method === "GET" && request.url === "/files") {
+        return json(response, 200, {
+          files: await listFiles(workspaceRoot, workspaceRoot),
+        });
+      }
+
+      if (request.method === "POST" && request.url === "/destroy") {
+        await resetWorkspace(paths);
+        return json(response, 200, {
+          ok: true,
+        });
+      }
+
+      return json(response, 404, { error: "Not found" });
+    } catch (error) {
+      return json(response, 500, {
+        error: error instanceof Error ? error.message : "Unknown runtime error",
+      });
+    }
+  });
+}
+
+export function startAlphaBookRuntimeServer(options: RuntimeServerOptions = {}) {
+  const port = options.port ?? Number(process.env.PORT ?? 8080);
+  const server = createAlphaBookRuntimeServer(options);
+  server.listen(port, () => {
+    console.log(`AlphaBook runtime listening on :${port}`);
+  });
+  return server;
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  startAlphaBookRuntimeServer();
+}

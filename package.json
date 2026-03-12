@@ -1,20 +1,49 @@
 {
-  "name": "alphabook-worker",
-  "version": "0.2.0",
+  "name": "alphabook-monorepo",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
-    "build:corpus": "python3 scripts/build_worker_corpus.py",
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy"
+    "migrate": "tsx packages/tooling/scripts/migrate.ts",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "build": "npm run build --workspaces --if-present",
+    "dev:frontend": "npm run dev -w @alphabook/frontend",
+    "dev:orchestrator": "npm run dev -w @alphabook/orchestrator-worker",
+    "dev:orchestrator:node": "npm run dev:node -w @alphabook/orchestrator-worker",
+    "deploy:orchestrator": "npm run deploy -w @alphabook/orchestrator-worker",
+    "dev:runtime": "npm run dev -w @alphabook/runtime",
+    "dev:ingest": "npm run dev -w @alphabook/ingest",
+    "test:ui": "npm run test:e2e -w @alphabook/frontend"
   },
   "dependencies": {
-    "@workos-inc/node": "^8.8.0",
-    "hono": "^4.11.10"
+    "@assistant-ui/react": "^0.12.17",
+    "@assistant-ui/react-ui": "^0.2.1",
+    "@aws-sdk/client-s3": "^3.888.0",
+    "@fontsource/manrope": "^5.2.6",
+    "@fontsource/newsreader": "^5.2.8",
+    "@hono/node-server": "^1.19.6",
+    "@neondatabase/serverless": "^1.0.1",
+    "@workos-inc/node": "^8.9.0",
+    "hono": "^4.11.10",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "zod": "^4.1.5"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260305.0",
+    "@playwright/test": "^1.55.0",
+    "@types/node": "^24.3.0",
+    "@types/react": "^19.1.12",
+    "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "^5.0.2",
+    "tsx": "^4.20.5",
     "typescript": "^5.9.3",
+    "vite": "^7.1.3",
     "wrangler": "^4.72.0"
   }
 }

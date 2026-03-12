@@ -1,0 +1,41 @@
+name = "alphabook-orchestrator-api"
+main = "src/index.ts"
+compatibility_date = "2026-03-12"
+account_id = "0e1651bc459f3017e816ba2263e0807a"
+workers_dev = true
+routes = [{ pattern = "api.alpha-book.org", custom_domain = true }]
+
+[vars]
+OPENAI_MODEL = "gpt-5.2"
+OPENAI_SYNTH_MODEL = "gpt-5.2"
+OPENAI_EMBEDDING_MODEL = "text-embedding-3-large"
+RUNTIME_AGENT_MODEL = "gpt-5.2-codex"
+ORCHESTRATOR_MAX_TURNS = "10"
+ORCHESTRATOR_MAX_RUNTIME_TASKS_PER_RUN = "4"
+ORCHESTRATOR_MAX_RUN_WALL_CLOCK_SECONDS = "90"
+CHEAP_TOOL_TIMEOUT_SECONDS = "30"
+RUNTIME_TOOL_TIMEOUT_SECONDS = "60"
+QUEUE_INGEST_NAME = "alphabook-ingest"
+QUEUE_JOBS_NAME = "alphabook-jobs"
+R2_BUCKET_NAME = "alphabook"
+WORKOS_CLIENT_ID = "client_01KKFCF9G08EH79QABA2Q729P2"
+RUNTIME_SERVICE_URL = ""
+FLY_RUNTIME_APP_NAME = "alphabook-runtime"
+FLY_RUNTIME_APP_URL = "https://alphabook-runtime.fly.dev"
+FLY_RUNTIME_IMAGE = "registry.fly.io/alphabook-runtime:deployment-01KKHTM6CKB62R55SCVGHGQRKM"
+FLY_RUNTIME_REGION = "iad"
+FLY_RUNTIME_MACHINE_CPUS = "1"
+FLY_RUNTIME_MACHINE_MEMORY_MB = "1024"
+
+[[r2_buckets]]
+binding = "CORPUS_BUCKET"
+bucket_name = "alphabook"
+preview_bucket_name = "alphabook-corpus-preview"
+
+[[queues.producers]]
+binding = "INGEST_QUEUE"
+queue = "alphabook-ingest"
+
+[[queues.producers]]
+binding = "JOBS_QUEUE"
+queue = "alphabook-jobs"

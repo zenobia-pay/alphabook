@@ -1,0 +1,15 @@
+name = "alphabook-web"
+main = "src/worker.ts"
+compatibility_date = "2026-03-12"
+account_id = "0e1651bc459f3017e816ba2263e0807a"
+workers_dev = true
+routes = [
+  { pattern = "alpha-book.org", custom_domain = true },
+  { pattern = "www.alpha-book.org", custom_domain = true },
+]
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+html_handling = "auto-trailing-slash"

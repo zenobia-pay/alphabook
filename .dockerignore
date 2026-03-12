@@ -12,4 +12,3 @@ build
 __pycache__
 .wrangler
 .dev.vars
-terminaluse/book_research_agent/.venv

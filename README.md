@@ -1,189 +1,204 @@
-# alphabook
+# AlphaBook
 
-`alphabook` is a local prototype for the research system you described:
+AlphaBook is now structured as a monorepo for the architecture you specified:
 
-1. `fast` embeddings plus plain-text retrieval inside the Worker.
-2. `agent` research via a separate server that can run CLI tools such as `codex exec`.
-3. fallback local deep-scan research when no CLI agent is enabled.
+- `apps/frontend`: Cloudflare Pages frontend
+- `apps/orchestrator-worker`: Cloudflare Worker API on `api.<domain>`
+- `apps/runtime`: Fly Machine runtime service for filesystem-backed analysis
+- `apps/ingest`: Hetzner-oriented ingest service with persistent disk
+- `packages/db`: Neon schema and migration utilities
+- `packages/shared`: shared tool schemas, prompts, limits, and storage conventions
+- `packages/tooling`: local scripts such as migrations
 
-The repo still ships with Don Quixote as the seeded demo corpus, but the live ingestion path now accepts arbitrary Project Gutenberg book URLs and opens them in a dedicated `/book/:id` reading surface with the assistant rail beside the text.
+## Current Status
 
-## What is implemented
+Phase 1 is implemented:
 
-- Local ingestion and indexing for public-domain text.
-- Built-in Don Quixote seed source.
-- Chunking with overlap so both embeddings and agent runs get stable context windows.
-- Local SQLite corpus store for books, chunks, and embeddings.
-- OpenAI embeddings when `OPENAI_API_KEY` is present.
-- Deterministic hashed embeddings fallback for local development and tests.
-- Fast hybrid search that combines corpus-level embeddings with plain-text chunk ranking.
-- Slow research mode that prefers a Codex CLI runner, then Terminal Use, then a local deep scan.
-- Terminal Use CLI adapter that can attach a per-book filesystem and launch a remote task when `tu` is available, authenticated, and configured.
-- FastAPI agent server for running Codex-backed jobs outside the Worker runtime.
-- Gutenberg import path for HTML reading pages such as `https://www.gutenberg.org/cache/epub/41687/pg41687-images.html`.
-- Gutenberg import path for plain-text URLs such as `https://www.gutenberg.org/cache/epub/996/pg996.txt`.
+- `POST /chat` and `GET /health` exist in the orchestrator Worker
+- the planner loop is deterministic code around an LLM planner
+- retrieval tools are implemented:
+  - `search_works`
+  - `get_work_metadata`
+  - `get_relevant_chunks`
+  - `get_work_text`
+- tool calls and run state are persisted through the store interface
+- final answer artifacts are written to R2
+- a happy-path retrieval test passes
 
-## Quickstart
+Phase 2 is implemented:
 
-```bash
-uv venv
-source .venv/bin/activate
-uv pip install -e ".[dev]"
+- the Worker can create and destroy Fly Machines
+- runtime instances are persisted in Neon
+- workspace manifests and runtime artifacts are written to R2
+- the runtime hydrates `/workspace/books`, `/workspace/chunks`, and `/workspace/context` from R2 keys
+- the Worker can run a bounded runtime task, read back `output/summary.md`, and persist the result
+- runtimes are reused per session when they already contain the requested works
+
+Phase 3 remains scaffolded:
+
+- the ingest service can ingest a single Gutenberg URL or a local Gutenberg mirror copy into Neon + R2 for the V1 path
+- the Hetzner rsync mirror box bootstrap and systemd timer are included under `ops/hetzner`
+- daily Project Gutenberg feed diffing still needs to be completed
+- chunk embedding generation/upload still needs to be completed
+
+## Monorepo Tree
+
+```text
+apps/
+  frontend/
+  orchestrator-worker/
+    src/
+    test/
+    wrangler.toml
+  runtime/
+    src/
+    Dockerfile
+    fly.toml
+  ingest/
+    src/
+    Dockerfile
+packages/
+  db/
+    migrations/
+    src/
+  shared/
+    src/
+  tooling/
+    scripts/
+docs/
+  api-contracts.md
+  environment.md
+ops/
+  hetzner/
 ```
 
-Index Don Quixote:
+## Assistant Experience
 
-```bash
-alphabook ingest-seed don-quixote
-```
+The frontend now ships a real chat interface in `apps/frontend`:
 
-Run the fast search loop:
+- ChatGPT-style session sidebar
+- one persistent assistant thread per session
+- streaming answers from the Worker over SSE
+- inline research log showing retrieval, workspace creation, runtime search, and synthesis
+- screenshot-tested empty, active-thread, and history-reopen states
 
-```bash
-alphabook search "windmills and knightly delusion"
-```
+The orchestrator flow is now explicit:
 
-Run the slow research loop:
+1. `search_works` narrows the corpus
+2. `get_relevant_chunks` runs lexical + embedding-aware retrieval
+3. the planner decides whether a deeper workspace search is needed
+4. `create_workspace`, `run_workspace_task`, and `read_workspace_file` pull back long-search evidence from a Fly runtime
+5. a separate synthesis step compiles the retrieved evidence and runtime output into the final plain-English answer with citations
 
-```bash
-alphabook research "all the times people are talking about sadness" --mode slow
-```
+## Environment
 
-Enable the Codex runner explicitly:
+The full environment list is in [docs/environment.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/environment.md).
 
-```bash
-export ALPHABOOK_ENABLE_CODEX_RUNNER=1
-alphabook research "all the times people are talking about sadness" --mode slow
-```
+Core variables:
 
-List indexed books:
+- `DATABASE_URL`
+- `OPENAI_API_KEY`
+- `OPENAI_MODEL`
+- `OPENAI_SYNTH_MODEL`
+- `OPENAI_EMBEDDING_MODEL`
+- `R2_BUCKET_NAME`
+- `FLY_API_TOKEN`
+- `FLY_RUNTIME_APP_NAME`
+- `FLY_RUNTIME_APP_URL`
+- `FLY_RUNTIME_IMAGE`
+- `FLY_RUNTIME_REGION`
+- `FLY_RUNTIME_SHARED_TOKEN`
+- `R2_ENDPOINT`
+- `R2_ACCESS_KEY_ID`
+- `R2_SECRET_ACCESS_KEY`
+- `GUTENBERG_MIRROR_ROOT`
+- `RUNTIME_SERVICE_URL`
+- `RUNTIME_SERVICE_TOKEN`
+- `QUEUE_INGEST_NAME`
+- `QUEUE_JOBS_NAME`
+- `VITE_API_BASE_URL`
 
-```bash
-alphabook list-books
-```
+## Local Development
 
-Import a Gutenberg book directly into the agent backend:
-
-```bash
-curl -X POST http://127.0.0.1:9001/books/import-gutenberg \
-  -H 'content-type: application/json' \
-  --data '{"url":"https://www.gutenberg.org/cache/epub/41687/pg41687-images.html"}'
-```
-
-## Cloudflare Worker
-
-This repo also includes a Cloudflare Worker web app. The Worker serves the frontend and the fast path. Imported Gutenberg books are fetched from the agent backend.
-
-Build and deploy it:
+Install dependencies:
 
 ```bash
 npm install
-npm run build:corpus
-npm run deploy
 ```
 
-Useful endpoints:
+Run Neon migrations:
 
 ```bash
-curl https://alphabook.founders-0e1.workers.dev/api/health
-curl "https://alphabook.founders-0e1.workers.dev/api/search?q=windmills"
-curl "https://alphabook.founders-0e1.workers.dev/api/research?q=sadness&mode=slow"
+DATABASE_URL=postgres://... npm run migrate
 ```
 
-Local web flow for Gutenberg books:
+Run the Worker locally:
 
 ```bash
-export AGENT_BACKEND_URL=http://127.0.0.1:9001
+cd apps/orchestrator-worker
 npx wrangler dev
 ```
 
-Then open `/`, paste a Project Gutenberg URL, and the app will redirect to `/book/<gutenberg-id>` with the assistant rail on the right.
-
-## Agent server
-
-Cloudflare Workers cannot spawn local CLI tools. The real `agent` path therefore lives in a separate Python service that the Worker can call.
-
-Run it locally:
+Run the local Node-backed assistant API harness used by Playwright:
 
 ```bash
-export ALPHABOOK_ENABLE_CODEX_RUNNER=1
-alphabook-agent-server --host 127.0.0.1 --port 9001
+PORT=8788 npm run dev:node -w @alphabook/orchestrator-worker
 ```
 
-Then point the Worker at it:
+Run the frontend locally:
 
 ```bash
-export AGENT_BACKEND_URL=http://127.0.0.1:9001
+npm run dev:frontend
 ```
 
-Optional hardening:
+Run the Fly runtime service locally:
 
 ```bash
-export ALPHABOOK_AGENT_API_TOKEN=change-me
-export AGENT_BACKEND_TOKEN=change-me
+npm run dev:runtime
 ```
 
-The Worker keeps the fast path local and only uses the agent server for the slower CLI-backed route.
-
-## Railway backend
-
-The repo now includes a root [Dockerfile](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/Dockerfile) for deploying the agent server to Railway.
-
-Recommended Railway variables:
+Run the ingest service locally:
 
 ```bash
-ALPHABOOK_DATA_DIR=/data
-ALPHABOOK_AGENT_API_TOKEN=...
-ALPHABOOK_ENABLE_CODEX_RUNNER=0
-ALPHABOOK_TERMINALUSE_PROJECT_ID=...
-ALPHABOOK_TERMINALUSE_AGENT_NAME=agile-rattlesnake/alphabook-book-research
-TU_TOKEN=... # optional, required if you want Railway to authenticate the tu CLI
+npm run dev:ingest
 ```
 
-The startup script is [docker/railway-entrypoint.sh](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docker/railway-entrypoint.sh).
-
-## Terminal Use agent
-
-The Terminal Use agent scaffold lives in [terminaluse/book_research_agent](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/terminaluse/book_research_agent). Deploy it with:
+Ingest from a local Gutenberg mirror:
 
 ```bash
-cd terminaluse/book_research_agent
-tu deploy
+GUTENBERG_MIRROR_ROOT=/srv/alphabook/gutenberg \
+npx tsx apps/ingest/src/index.ts ingest-gutenberg 12345
 ```
 
-## Terminal Use integration
-
-The slow loop will use Terminal Use only when Codex is disabled or unavailable and all of these are true:
-
-- `tu` is installed.
-- `tu whoami --json` reports a non-expired session.
-- `ALPHABOOK_TERMINALUSE_PROJECT_ID` is set.
-- `ALPHABOOK_TERMINALUSE_AGENT_NAME` is set.
-
-Optional:
-
-- `ALPHABOOK_TERMINALUSE_BRANCH`
-
-Example:
+Backfill the local mirror into Neon + R2 in batches:
 
 ```bash
-export ALPHABOOK_TERMINALUSE_PROJECT_ID=proj_...
-export ALPHABOOK_TERMINALUSE_AGENT_NAME=namespace/book-research
-alphabook research "melancholy and grief" --mode slow
+GUTENBERG_MIRROR_ROOT=/srv/alphabook/gutenberg \
+OPENAI_API_KEY=... \
+npx tsx apps/ingest/src/index.ts backfill-mirror - 100
 ```
 
-When Terminal Use is unavailable, the same command falls back to a local deep-scan runner.
+Run validation:
 
-## Embeddings behavior
+```bash
+npm run typecheck
+npm run test
+npm run test:ui
+```
 
-- Production path: OpenAI embeddings via `OPENAI_API_KEY`.
-- Local/test path: hashed lexical embeddings.
+## API Contracts
 
-The fallback keeps the pipeline runnable without external credentials, but the semantic quality is lower than real embeddings.
+The request/response contracts are documented in [docs/api-contracts.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/api-contracts.md).
 
-## Layout
+## Notes
 
-- [docs/architecture.md](/Users/ryanprendergast/Documents/Zenobia Pay/alphabook/docs/architecture.md)
-- [src/alphabook](/Users/ryanprendergast/Documents/Zenobia Pay/alphabook/src/alphabook)
-- [tests](/Users/ryanprendergast/Documents/Zenobia Pay/alphabook/tests)
-- [terminaluse/README.md](/Users/ryanprendergast/Documents/Zenobia Pay/alphabook/terminaluse/README.md)
+- The frontend uses `assistant-ui` for the thread/composer surface and streams `POST /chat` responses over SSE.
+- `GET /me`, `/auth/sign-in`, `/auth/callback`, and `/auth/sign-out` provide the WorkOS-backed login flow.
+- `GET /sessions` plus `GET /sessions/:sessionId/messages` power the session history and sidebar reopening flow.
+- The runtime service is designed to sit behind a Fly app URL and uses the `fly-force-instance-id` header so the Worker can talk to a specific Machine.
+- The runtime service expects `RUNTIME_SHARED_TOKEN` plus R2 credentials so it can hydrate the workspace directly from R2 keys.
+- The runtime agent now writes `summary.md`, `search-plan.json`, `search-iterations.json`, and `evidence.json` for each long VM search.
+- The ingest service supports single-URL ingestion plus local Gutenberg mirror ingestion through `GUTENBERG_MIRROR_ROOT`.
+- `run-once` now processes a mirror batch, and `backfill-mirror` can drain the rsync mirror into Neon + R2 with chunk embeddings.
+- The Gutenberg mirror box bootstrap is documented in [ops/hetzner/README.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/ops/hetzner/README.md).
+- Daily feed diffing is still the remaining ingest gap.

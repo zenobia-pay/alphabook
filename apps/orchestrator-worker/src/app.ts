@@ -1,0 +1,614 @@
+import { Hono, type Context } from "hono";
+import { cors } from "hono/cors";
+import { ChatRequestSchema, HARD_LIMITS, R2_PREFIXES, ToolArgsSchemas, type ChatRequest, type ChunkSearchResult, type Citation, type PlannerDecision, type ToolName, type WorkSummary } from "@alphabook/shared";
+
+import type { WorkOSAuth } from "./auth";
+import type { Embedder } from "./embeddings";
+import type { BlobStore } from "./r2";
+import type { Planner } from "./planner";
+import { parseToolCall } from "./planner";
+import type { Synthesizer, ToolHistoryEntry } from "./synthesizer";
+import type { AppStore, SessionRecord } from "./store";
+
+export interface WorkerQueues {
+  ingestName: string;
+  jobsName: string;
+}
+
+export interface RuntimeToolGateway {
+  createWorkspace(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+  runWorkspaceTask(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+  readWorkspaceFile(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+  destroyWorkspace(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+}
+
+export interface AppDeps {
+  store: AppStore;
+  planner: Planner;
+  embedder: Embedder;
+  synthesizer: Synthesizer;
+  blobStore: BlobStore;
+  runtimeGateway: RuntimeToolGateway;
+  queues: WorkerQueues;
+  auth?: WorkOSAuth;
+  now?: () => number;
+}
+
+function sseEvent(event: string, data: Record<string, unknown>): string {
+  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+}
+
+function normalizeToolArgs(toolName: ToolName, args: Record<string, unknown>): Record<string, unknown> {
+  const normalized = { ...args };
+  switch (toolName) {
+    case "get_work_metadata":
+      if (normalized.workIds === undefined && normalized.work_ids !== undefined) {
+        normalized.workIds = normalized.work_ids;
+      }
+      break;
+    case "get_relevant_chunks":
+      if (normalized.workIds === undefined && normalized.work_ids !== undefined) {
+        normalized.workIds = normalized.work_ids;
+      }
+      break;
+    case "get_work_text":
+      if (normalized.workId === undefined && normalized.work_id !== undefined) {
+        normalized.workId = normalized.work_id;
+      }
+      break;
+    case "create_workspace":
+      if (normalized.workIds === undefined && normalized.work_ids !== undefined) {
+        normalized.workIds = normalized.work_ids;
+      }
+      if (normalized.chunkIds === undefined && normalized.chunk_ids !== undefined) {
+        normalized.chunkIds = normalized.chunk_ids;
+      }
+      if (normalized.taskContext === undefined && normalized.task_context !== undefined) {
+        normalized.taskContext = normalized.task_context;
+      }
+      break;
+    case "run_workspace_task":
+      if (normalized.runtimeId === undefined && normalized.runtime_id !== undefined) {
+        normalized.runtimeId = normalized.runtime_id;
+      }
+      if (normalized.taskSpec === undefined && normalized.task_spec !== undefined) {
+        normalized.taskSpec = normalized.task_spec;
+      }
+      break;
+    case "read_workspace_file":
+      if (normalized.runtimeId === undefined && normalized.runtime_id !== undefined) {
+        normalized.runtimeId = normalized.runtime_id;
+      }
+      break;
+    case "destroy_workspace":
+      if (normalized.runtimeId === undefined && normalized.runtime_id !== undefined) {
+        normalized.runtimeId = normalized.runtime_id;
+      }
+      break;
+    default:
+      break;
+  }
+  return normalized;
+}
+
+function streamResponse(
+  executor: (send: (event: string, data: Record<string, unknown>) => Promise<void>) => Promise<void>,
+): Response {
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const encoder = new TextEncoder();
+      const send = async (event: string, data: Record<string, unknown>) => {
+        controller.enqueue(encoder.encode(sseEvent(event, data)));
+      };
+
+      try {
+        await executor(send);
+      } catch (error) {
+        await send("error", {
+          message: error instanceof Error ? error.message : "Unknown error",
+        });
+      } finally {
+        controller.close();
+      }
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+    },
+  });
+}
+
+async function executeTool(
+  deps: AppDeps,
+  toolName: ToolName,
+  args: Record<string, unknown>,
+  context: { sessionId: string; runId: string },
+): Promise<Record<string, unknown>> {
+  const normalizedArgs = normalizeToolArgs(toolName, args);
+  switch (toolName) {
+    case "search_works": {
+      const parsed = ToolArgsSchemas.search_works.parse(normalizedArgs);
+      const works = await deps.store.searchWorks(parsed.query, parsed.filters);
+      return { works };
+    }
+    case "get_work_metadata": {
+      const parsed = ToolArgsSchemas.get_work_metadata.parse(normalizedArgs);
+      const works = await deps.store.getWorkMetadata(parsed.workIds);
+      return { works };
+    }
+    case "get_relevant_chunks": {
+      const parsed = ToolArgsSchemas.get_relevant_chunks.parse(normalizedArgs);
+      const embedding = await deps.embedder.embedQuery(parsed.query);
+      const chunks = await deps.store.getRelevantChunks(
+        parsed.query,
+        parsed.workIds,
+        parsed.filters?.limit ?? 8,
+        embedding,
+      );
+      return { chunks };
+    }
+    case "get_work_text": {
+      const parsed = ToolArgsSchemas.get_work_text.parse(normalizedArgs);
+      const workFile = await deps.store.getWorkTextFile(parsed.workId);
+      if (!workFile?.r2Key) {
+        return { workId: parsed.workId, found: false };
+      }
+      const text = await deps.blobStore.getText(workFile.r2Key);
+      return {
+        workId: parsed.workId,
+        r2Key: workFile.r2Key,
+        found: Boolean(text),
+        text: text?.slice(0, 20000) ?? null,
+      };
+    }
+    case "create_workspace":
+      return deps.runtimeGateway.createWorkspace({
+        ...ToolArgsSchemas.create_workspace.parse(normalizedArgs),
+        sessionId: context.sessionId,
+        runId: context.runId,
+      });
+    case "run_workspace_task":
+      return deps.runtimeGateway.runWorkspaceTask({
+        ...ToolArgsSchemas.run_workspace_task.parse(normalizedArgs),
+        sessionId: context.sessionId,
+        runId: context.runId,
+      });
+    case "read_workspace_file":
+      return deps.runtimeGateway.readWorkspaceFile({
+        ...ToolArgsSchemas.read_workspace_file.parse(normalizedArgs),
+        sessionId: context.sessionId,
+        runId: context.runId,
+      });
+    case "destroy_workspace":
+      return deps.runtimeGateway.destroyWorkspace({
+        ...ToolArgsSchemas.destroy_workspace.parse(normalizedArgs),
+        sessionId: context.sessionId,
+        runId: context.runId,
+      });
+    default:
+      return { ok: false, error: `Unsupported tool: ${toolName}` };
+  }
+}
+
+function titleFromMessage(message: string): string {
+  return message
+    .trim()
+    .split(/\s+/)
+    .slice(0, 8)
+    .join(" ");
+}
+
+function chunkTextForStream(text: string): string[] {
+  const cleaned = text.trim();
+  if (!cleaned) {
+    return [];
+  }
+  const chunks: string[] = [];
+  let cursor = 0;
+  while (cursor < cleaned.length) {
+    const nextCursor = Math.min(cleaned.length, cursor + 180);
+    chunks.push(cleaned.slice(cursor, nextCursor));
+    cursor = nextCursor;
+  }
+  return chunks;
+}
+
+function summarizeToolHistory(toolHistory: ToolHistoryEntry[]) {
+  return toolHistory.map((entry) => ({
+    toolName: entry.toolName,
+    args: entry.args,
+    result: entry.result,
+  }));
+}
+
+function fallbackFinalAnswer(toolResults: Record<string, unknown>[]): { answer: string; citations: Array<Record<string, unknown>> } {
+  let lastChunkPayload: { chunks: ChunkSearchResult[] } | undefined;
+  for (let index = toolResults.length - 1; index >= 0; index -= 1) {
+    const candidate = toolResults[index];
+    if (Array.isArray(candidate.chunks)) {
+      lastChunkPayload = candidate as { chunks: ChunkSearchResult[] };
+      break;
+    }
+  }
+  if (!lastChunkPayload?.chunks.length) {
+    return {
+      answer: "The orchestrator stopped without enough evidence to answer confidently.",
+      citations: [],
+    };
+  }
+  const citations = lastChunkPayload.chunks.slice(0, 4).map((chunk) => ({
+    workId: chunk.workId,
+    chunkId: chunk.id,
+    label: `${chunk.workId}#${chunk.chunkIndex}`,
+    excerpt: chunk.excerpt,
+    r2Key: chunk.r2Key,
+  }));
+  return {
+    answer: "I gathered relevant passages, but the run hit its hard limit before producing a cleaner synthesis.",
+    citations,
+  };
+}
+
+async function persistFinalArtifact(deps: AppDeps, sessionId: string, runId: string, answer: string, citations: Array<Record<string, unknown>>) {
+  const key = R2_PREFIXES.sessionArtifact(sessionId, `${runId}-final-answer.json`);
+  await deps.blobStore.putJson(key, {
+    answer,
+    citations,
+  });
+  return key;
+}
+
+async function synthesizeAnswer(
+  deps: AppDeps,
+  params: {
+    sessionId: string;
+    runId: string;
+    userMessage: string;
+    plannerDraft?: string;
+    plannerCitations: Citation[];
+    toolHistory: ToolHistoryEntry[];
+  },
+  send: (event: string, data: Record<string, unknown>) => Promise<void>,
+) {
+  await send("synthesis.started", {
+    runId: params.runId,
+    sessionId: params.sessionId,
+  });
+
+  let synthesis;
+  try {
+    synthesis = await deps.synthesizer.synthesize({
+      userMessage: params.userMessage,
+      plannerDraft: params.plannerDraft,
+      plannerCitations: params.plannerCitations,
+      toolHistory: params.toolHistory,
+    });
+  } catch (error) {
+    synthesis = {
+      answer: params.plannerDraft ?? "The run completed, but the final synthesis step failed.",
+      citations: params.plannerCitations,
+    };
+    await send("synthesis.failed", {
+      runId: params.runId,
+      message: error instanceof Error ? error.message : "Unknown synthesis error",
+    });
+  }
+
+  const artifactKey = await persistFinalArtifact(deps, params.sessionId, params.runId, synthesis.answer, synthesis.citations);
+  await deps.store.appendMessage(params.sessionId, "assistant", synthesis.answer, {
+    citations: synthesis.citations,
+    artifactKey,
+    researchLog: summarizeToolHistory(params.toolHistory),
+  });
+
+  for (const text of chunkTextForStream(synthesis.answer)) {
+    await send("assistant.delta", {
+      text,
+    });
+  }
+  await send("assistant.completed", {
+    answer: synthesis.answer,
+    citations: synthesis.citations,
+    artifactKey,
+  });
+}
+
+async function runOrchestrator(
+  deps: AppDeps,
+  input: ChatRequest,
+  send: (event: string, data: Record<string, unknown>) => Promise<void>,
+): Promise<void> {
+  const started = deps.now?.() ?? Date.now();
+  if (!input.userId) {
+    throw new Error("A userId is required to start an orchestrator run.");
+  }
+  await deps.store.ensureUser(input.userId);
+
+  let session: SessionRecord | null = input.sessionId ? await deps.store.getSession(input.sessionId) : null;
+  if (!session) {
+    session = await deps.store.createSession(input.userId, titleFromMessage(input.message));
+    await send("session.created", {
+      sessionId: session.id,
+      title: session.title,
+    });
+  }
+
+  await deps.store.appendMessage(session.id, "user", input.message);
+  const run = await deps.store.createRun(session.id);
+  await send("run.started", {
+    runId: run.id,
+    sessionId: session.id,
+  });
+
+  const toolHistory: Array<{
+    toolName: ToolName;
+    args: Record<string, unknown>;
+    result: Record<string, unknown>;
+  }> = [];
+  const toolResults: Record<string, unknown>[] = [];
+  let runtimeTasks = 0;
+
+  for (let turn = 1; turn <= HARD_LIMITS.MAX_TURNS; turn += 1) {
+    if ((deps.now?.() ?? Date.now()) - started > HARD_LIMITS.MAX_RUN_WALL_CLOCK_SECONDS * 1000) {
+      break;
+    }
+
+    await deps.store.updateRun(run.id, {
+      plannerTurns: turn,
+    });
+
+    await send("planner.turn", {
+      runId: run.id,
+      turn,
+    });
+
+    const decision: PlannerDecision = await deps.planner.decide({
+      userMessage: input.message,
+      turns: turn,
+      toolHistory,
+      workScope: input.workIds,
+    });
+
+    if (decision.type === "final_answer") {
+      await deps.store.updateRun(run.id, {
+        status: "completed",
+        plannerTurns: turn,
+        completedAt: new Date().toISOString(),
+      });
+      await synthesizeAnswer(
+        deps,
+        {
+          sessionId: session.id,
+          runId: run.id,
+          userMessage: input.message,
+          plannerDraft: decision.answer,
+          plannerCitations: decision.citations,
+          toolHistory,
+        },
+        send,
+      );
+      await send("run.completed", {
+        runId: run.id,
+        sessionId: session.id,
+        status: "completed",
+      });
+      return;
+    }
+
+    const toolCall = parseToolCall(decision);
+    if (!toolCall) {
+      continue;
+    }
+
+    if (
+      (toolCall.tool_name === "create_workspace" || toolCall.tool_name === "run_workspace_task") &&
+      runtimeTasks >= HARD_LIMITS.MAX_RUNTIME_TASKS_PER_RUN
+    ) {
+      toolResults.push({
+        toolName: toolCall.tool_name,
+        ok: false,
+        error: "MAX_RUNTIME_TASKS_PER_RUN exceeded",
+      });
+      continue;
+    }
+
+    const toolRecord = await deps.store.startToolCall(run.id, toolCall.tool_name, toolCall.args);
+    await send("tool.started", {
+      runId: run.id,
+      toolCallId: toolRecord.id,
+      toolName: toolCall.tool_name,
+      args: toolCall.args,
+    });
+
+    let result: Record<string, unknown>;
+    let status: "completed" | "failed" = "completed";
+    try {
+      result = await executeTool(deps, toolCall.tool_name, toolCall.args, {
+        sessionId: session.id,
+        runId: run.id,
+      });
+      if (toolCall.tool_name === "create_workspace" || toolCall.tool_name === "run_workspace_task") {
+        runtimeTasks += 1;
+      }
+    } catch (error) {
+      status = "failed";
+      result = {
+        ok: false,
+        error: error instanceof Error ? error.message : "Unknown tool error",
+      };
+    }
+
+    await deps.store.finishToolCall(toolRecord.id, status, result);
+    await send("tool.completed", {
+      runId: run.id,
+      toolCallId: toolRecord.id,
+      toolName: toolCall.tool_name,
+      status,
+      result,
+    });
+    toolHistory.push({
+      toolName: toolCall.tool_name,
+      args: toolCall.args,
+      result,
+    });
+    toolResults.push(result);
+  }
+
+  const fallback = fallbackFinalAnswer(toolResults);
+  await deps.store.updateRun(run.id, {
+    status: "timed_out",
+    completedAt: new Date().toISOString(),
+  });
+  await synthesizeAnswer(
+    deps,
+    {
+      sessionId: session.id,
+      runId: run.id,
+      userMessage: input.message,
+      plannerDraft: fallback.answer,
+      plannerCitations: fallback.citations as Citation[],
+      toolHistory,
+    },
+    send,
+  );
+  await send("run.completed", {
+    runId: run.id,
+    sessionId: session.id,
+    status: "timed_out",
+  });
+}
+
+export function createApp(deps: AppDeps) {
+  const app = new Hono();
+  app.use(
+    "*",
+    cors({
+      origin: (origin) => {
+        if (!origin) {
+          return origin;
+        }
+        if (
+          origin === "https://alpha-book.org" ||
+          origin === "https://www.alpha-book.org" ||
+          origin === "http://127.0.0.1:4193" ||
+          origin === "http://localhost:4193"
+        ) {
+          return origin;
+        }
+        return "";
+      },
+      allowMethods: ["GET", "POST", "OPTIONS"],
+      allowHeaders: ["content-type"],
+      exposeHeaders: ["content-type"],
+      credentials: true,
+      maxAge: 86400,
+    }),
+  );
+
+  async function resolveUser(c: Context) {
+    if (deps.auth?.isConfigured()) {
+      return deps.auth.getCurrentUser(c);
+    }
+    const userId = c.req.query("userId");
+    if (!userId) {
+      return null;
+    }
+    await deps.store.ensureUser(userId);
+    return deps.store.getUserProfile(userId);
+  }
+
+  app.get("/health", async (c) => {
+    const database = await deps.store.healthCheck();
+    return c.json({
+      status: "ok",
+      service: "alphabook-orchestrator-worker",
+      database,
+      r2: "bound",
+      authConfigured: deps.auth?.isConfigured() ?? false,
+      queues: {
+        ingest: deps.queues.ingestName,
+        jobs: deps.queues.jobsName,
+      },
+      limits: {
+        maxTurns: HARD_LIMITS.MAX_TURNS,
+        maxRuntimeTasksPerRun: HARD_LIMITS.MAX_RUNTIME_TASKS_PER_RUN,
+        maxRunWallClockSeconds: HARD_LIMITS.MAX_RUN_WALL_CLOCK_SECONDS,
+      },
+    });
+  });
+
+  app.get("/me", async (c) => {
+    const user = await resolveUser(c);
+    return c.json({
+      authenticated: Boolean(user),
+      authConfigured: deps.auth?.isConfigured() ?? false,
+      user,
+    });
+  });
+
+  app.get("/auth/sign-in", async (c) => {
+    if (!deps.auth?.isConfigured()) {
+      return c.json({ error: "Authentication is not configured." }, 501);
+    }
+    return deps.auth.signIn(c);
+  });
+
+  app.get("/auth/callback", async (c) => {
+    if (!deps.auth?.isConfigured()) {
+      return c.json({ error: "Authentication is not configured." }, 501);
+    }
+    return deps.auth.callback(c);
+  });
+
+  app.get("/auth/sign-out", async (c) => {
+    if (!deps.auth?.isConfigured()) {
+      return c.redirect("https://alpha-book.org", 302);
+    }
+    return deps.auth.signOut(c);
+  });
+
+  app.post("/chat", async (c) => {
+    const payload = ChatRequestSchema.parse(await c.req.json());
+    const user = await resolveUser(c);
+    if ((deps.auth?.isConfigured() ?? false) && !user) {
+      return c.json({ error: "Authentication required." }, 401);
+    }
+    if (!user && !payload.userId) {
+      return c.json({ error: "userId is required when authentication is disabled." }, 400);
+    }
+    const requestPayload: ChatRequest = {
+      ...payload,
+      userId: user?.id ?? payload.userId,
+    };
+    return streamResponse((send) => runOrchestrator(deps, requestPayload, send));
+  });
+
+  app.get("/sessions", async (c) => {
+    const user = await resolveUser(c);
+    if (!user) {
+      return c.json({ error: "Authentication required." }, deps.auth?.isConfigured() ? 401 : 400);
+    }
+    const sessions = await deps.store.listSessions(user.id);
+    return c.json({ sessions });
+  });
+
+  app.get("/sessions/:sessionId/messages", async (c) => {
+    const sessionId = c.req.param("sessionId");
+    const session = await deps.store.getSession(sessionId);
+    if (!session) {
+      return c.json({ error: "Session not found." }, 404);
+    }
+    const user = await resolveUser(c);
+    if ((deps.auth?.isConfigured() ?? false) && (!user || user.id !== session.userId)) {
+      return c.json({ error: "Not authorized for this session." }, 403);
+    }
+    const messages = await deps.store.listMessages(sessionId);
+    return c.json({ messages });
+  });
+
+  return app;
+}
