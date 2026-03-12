@@ -877,6 +877,13 @@ function formatDate(value: string): string {
   });
 }
 
+function cleanBookTitle(value: string): string {
+  return value
+    .replace(/\s+\|\s+Project Gutenberg$/i, "")
+    .replace(/^The Project Gutenberg eBook of\s+/i, "")
+    .trim();
+}
+
 function initials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) {
@@ -976,12 +983,13 @@ function renderFeedTabs(activeTab: FeedTab): string {
 }
 
 function renderDocumentFeedCard(document: DocumentCard, viewer?: Viewer): string {
+  const title = cleanBookTitle(document.title);
   return `
     <article class="feed-card">
       <div class="feed-main">
         <div class="eyebrow">${e(document.kicker)}</div>
-        <h2 class="feed-title"><a href="/doc/${e(document.id)}">${e(document.title)}</a></h2>
-        <div class="meta">${e(document.authors.join(", "))} · ${e(document.year)} · ${e(document.venue)}</div>
+        <h2 class="feed-title"><a href="/doc/${e(document.id)}">${e(title)}</a></h2>
+        <div class="meta">${e(document.authors.join(", "))} · ${e(document.year)}</div>
         <div class="feed-body">${e(document.summary)}</div>
         <div class="chips">
           ${document.tags.slice(0, 4).map((tag) => `<span class="chip">#${e(tag)}</span>`).join("")}
@@ -1009,7 +1017,7 @@ function renderDocumentFeedCard(document: DocumentCard, viewer?: Viewer): string
       </div>
       <div class="feed-preview">
         <div class="preview-kicker">${e(document.kind)}</div>
-        <div class="preview-title">${e(document.title)}</div>
+        <div class="preview-title">${e(title)}</div>
         <div class="preview-foot">${e(document.theme)}</div>
       </div>
     </article>
@@ -1023,11 +1031,12 @@ function renderImportedFeedCard(book: {
   chunkCount: number;
   sourceUrl: string;
 }): string {
+  const title = cleanBookTitle(book.title);
   return `
     <article class="feed-card">
       <div class="feed-main">
         <div class="eyebrow">Live corpus</div>
-        <h2 class="feed-title"><a href="/book/${e(book.id)}">${e(book.title)}</a></h2>
+        <h2 class="feed-title"><a href="/book/${e(book.id)}">${e(title)}</a></h2>
         <div class="meta">${e(book.author)}</div>
         <div class="feed-body">This book is already ingested with raw text, chunk storage, and assistant-ready retrieval. Open it to read the original page and ask questions beside it.</div>
         <div class="row">
@@ -1041,7 +1050,7 @@ function renderImportedFeedCard(book: {
       </div>
       <div class="feed-preview">
         <div class="preview-kicker">Reader</div>
-        <div class="preview-title">${e(book.title)}</div>
+        <div class="preview-title">${e(title)}</div>
         <div class="preview-foot">${e(book.author)}</div>
       </div>
     </article>
@@ -1602,6 +1611,7 @@ export function renderImportedBookPage(input: {
     }>;
   };
 }): string {
+  const title = cleanBookTitle(input.book.title);
   const transientMessages: AssistantMessage[] = input.fastAnswer
     ? [
         { role: "user", content: input.fastAnswer.query, createdAt: new Date().toISOString() },
@@ -1621,7 +1631,7 @@ export function renderImportedBookPage(input: {
   const body = `
     <div class="page-head">
       <div class="eyebrow">Reader</div>
-      <h1 class="doc-title">${e(input.book.title)}</h1>
+      <h1 class="doc-title">${e(title)}</h1>
       <div class="meta">${e(input.book.author)} · ${input.book.chunk_count} searchable chunks</div>
     </div>
 
@@ -1634,7 +1644,7 @@ export function renderImportedBookPage(input: {
           <iframe
             class="reader-frame"
             src="${e(input.readUrl)}"
-            title="${e(input.book.title)}"
+            title="${e(title)}"
             loading="lazy"
             referrerpolicy="no-referrer"
           ></iframe>
@@ -1673,7 +1683,7 @@ export function renderImportedBookPage(input: {
     </div>
   `;
 
-  return layout(input.book.title, "Explore", input.viewer, body);
+  return layout(title, "Explore", input.viewer, body);
 }
 
 export function renderLibraryPage(input: {
