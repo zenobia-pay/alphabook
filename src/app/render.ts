@@ -1268,6 +1268,16 @@ export function renderImportedBookPage(input: {
   thread?: AssistantThread;
   agentEnabled?: boolean;
   readUrl: string;
+  fastAnswer?: {
+    query: string;
+    summary: string;
+    evidence: Array<{
+      chunk_index: number;
+      excerpt: string;
+      strategy?: string;
+      score?: number;
+    }>;
+  };
 }): string {
   const body = `
     <div class="page-head">
@@ -1282,14 +1292,6 @@ export function renderImportedBookPage(input: {
     <div class="doc-layout">
       <div class="stack">
         <section class="section">
-          <form class="query-form" method="get" action="/book/${e(input.book.id)}">
-            <input type="text" name="q" value="${e(input.query ?? "")}" placeholder="Search inside this book" />
-            <div class="row">
-              <button class="button" type="submit">Search book</button>
-            </div>
-          </form>
-        </section>
-        <section class="section">
           <div class="reader-shell">
             <iframe
               class="reader-frame"
@@ -1303,39 +1305,41 @@ export function renderImportedBookPage(input: {
       </div>
 
       <aside class="aside">
-        ${
-          input.query && input.sections.length
-            ? `
-              <section class="plain-panel">
-                <div class="eyebrow">Relevant passages</div>
-                ${input.sections
-                  .map(
-                    (section, index) => `
-                      <div id="evidence-${section.chunk_index}" class="match-card">
-                        <div class="row" style="justify-content: space-between;">
-                          <strong>Passage ${index + 1}</strong>
-                          ${
-                            section.strategy
-                              ? `<span class="chip">${e(section.strategy)}${section.score !== undefined ? ` ${section.score.toFixed(3)}` : ""}</span>`
-                              : ""
-                          }
-                        </div>
-                        <div>${e(section.excerpt ?? section.content)}</div>
-                      </div>
-                    `,
-                  )
-                  .join("")}
-              </section>
-            `
-            : ""
-        }
         <section class="plain-panel">
           <div class="eyebrow">Assistant</div>
-          ${
-            input.thread?.messages.length
-              ? `
-                <div class="chat-log">
-                  ${input.thread.messages
+          <div class="chat-log">
+            ${
+              input.fastAnswer
+                ? `
+                  <div class="bubble user">
+                    <div class="eyebrow">You</div>
+                    <div>${e(input.fastAnswer.query)}</div>
+                  </div>
+                  <div class="bubble assistant">
+                    <div class="eyebrow">Assistant · fast</div>
+                    <div>${e(input.fastAnswer.summary)}</div>
+                    ${
+                      input.fastAnswer.evidence.length
+                        ? `
+                          <div class="chips" style="margin-top: 10px;">
+                            ${input.fastAnswer.evidence
+                              .slice(0, 4)
+                              .map(
+                                (evidence, index) =>
+                                  `<a class="chip" href="#evidence-${evidence.chunk_index}">Passage ${index + 1}</a>`,
+                              )
+                              .join("")}
+                          </div>
+                        `
+                        : ""
+                    }
+                  </div>
+                `
+                : ""
+            }
+            ${
+              input.thread?.messages.length
+                ? input.thread.messages
                     .slice(-6)
                     .map(
                       (message) => `
@@ -1344,20 +1348,59 @@ export function renderImportedBookPage(input: {
                             message.mode ? ` · ${message.mode}` : ""
                           }${message.status === "pending" ? " · running" : message.status === "failed" ? " · failed" : ""}</div>
                           <div>${e(message.content)}</div>
+                          ${
+                            message.citations?.length
+                              ? `
+                                <div class="chips" style="margin-top: 10px;">
+                                  ${message.citations
+                                    .map((citation) => `<a class="chip" href="${e(citation.href)}">${e(citation.label)}</a>`)
+                                    .join("")}
+                                </div>
+                              `
+                              : ""
+                          }
+                        </div>
+                      `,
+                    )
+                    .join("")
+                : !input.fastAnswer
+                  ? `<div class="empty">Ask a question about this book.</div>`
+                  : ""
+            }
+          </div>
+          ${renderAssistantComposer({
+            docId: `book:${input.book.id}`,
+            redirect: `/book/${input.book.id}${input.query ? `?q=${encodeURIComponent(input.query)}` : ""}`,
+            threadId: input.thread?.id,
+            agentEnabled: input.agentEnabled,
+            prompt: input.query,
+          })}
+          ${
+            input.fastAnswer?.evidence.length
+              ? `
+                <div class="section">
+                  <div class="eyebrow">Grounding</div>
+                  ${input.fastAnswer.evidence
+                    .map(
+                      (evidence, index) => `
+                        <div id="evidence-${evidence.chunk_index}" class="match-card">
+                          <div class="row" style="justify-content: space-between;">
+                            <strong>Passage ${index + 1}</strong>
+                            ${
+                              evidence.strategy
+                                ? `<span class="chip">${e(evidence.strategy)}${evidence.score !== undefined ? ` ${evidence.score.toFixed(3)}` : ""}</span>`
+                                : ""
+                            }
+                          </div>
+                          <div>${e(evidence.excerpt)}</div>
                         </div>
                       `,
                     )
                     .join("")}
                 </div>
               `
-              : `<div class="empty">Ask a question about this book.</div>`
+              : ""
           }
-          ${renderAssistantComposer({
-            docId: `book:${input.book.id}`,
-            redirect: `/book/${input.book.id}${input.query ? `?q=${encodeURIComponent(input.query)}` : ""}`,
-            threadId: input.thread?.id,
-            agentEnabled: input.agentEnabled,
-          })}
         </section>
       </aside>
     </div>

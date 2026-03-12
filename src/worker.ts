@@ -150,6 +150,18 @@ interface BackendBookContext {
   }>;
 }
 
+interface BackendBookSearchResponse {
+  query: string;
+  mode: string;
+  summary: string;
+  evidence: Array<{
+    chunk_index: number;
+    excerpt: string;
+    strategy?: string;
+    score?: number;
+  }>;
+}
+
 interface OAuthCookiePayload {
   next: string;
   state: string;
@@ -1148,11 +1160,20 @@ app.get("/book/:id", async (c) => {
   const query = c.req.query("q")?.trim();
   const viewer = c.get("viewer") as Viewer | undefined;
   let context: BackendBookContext;
+  let fastAnswer: BackendBookSearchResponse | undefined;
   try {
-    context = await agentBackendRequest<BackendBookContext>(
-      c.env,
-      `/books/${encodeURIComponent(bookId)}/context${query ? `?q=${encodeURIComponent(query)}` : ""}`,
-    );
+    [context, fastAnswer] = await Promise.all([
+      agentBackendRequest<BackendBookContext>(
+        c.env,
+        `/books/${encodeURIComponent(bookId)}/context${query ? `?q=${encodeURIComponent(query)}` : ""}`,
+      ),
+      query
+        ? agentBackendRequest<BackendBookSearchResponse>(
+            c.env,
+            `/books/${encodeURIComponent(bookId)}/search?q=${encodeURIComponent(query)}`,
+          )
+        : Promise.resolve(undefined),
+    ]);
   } catch {
     return c.html(renderNotFound(viewer), 404);
   }
@@ -1185,6 +1206,7 @@ app.get("/book/:id", async (c) => {
       thread,
       agentEnabled: agentBackendConfigured(c.env),
       readUrl: `/book/${bookId}/read`,
+      fastAnswer,
     }),
   );
 });
