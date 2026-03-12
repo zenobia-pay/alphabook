@@ -1265,15 +1265,13 @@ app.get("/assistant", async (c) => {
     `/assistant?userId=${encodeURIComponent(viewer.id)}`,
   );
   const threadId = c.req.query("threadId");
-  let activeThread = threadId
-    ? threadsResponse.threads.find((thread) => thread.id === threadId)
-    : threadsResponse.threads[0];
+  let activeThread = threadId ? threadsResponse.threads.find((thread) => thread.id === threadId) : undefined;
   const sync = await syncPendingAgentThread(c.env, viewer, activeThread);
   let threads = threadsResponse.threads;
   if (sync.updated) {
     const refreshed = await storeRequest<{ threads: AssistantThread[] }>(c.env, `/assistant?userId=${encodeURIComponent(viewer.id)}`);
     threads = refreshed.threads;
-    activeThread = threadId ? threads.find((thread) => thread.id === threadId) : threads[0];
+    activeThread = threadId ? threads.find((thread) => thread.id === threadId) : undefined;
   } else {
     activeThread = sync.thread;
   }

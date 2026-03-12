@@ -138,26 +138,8 @@ select {
 }
 
 .brand {
-  display: grid;
-  justify-items: center;
-  gap: 10px;
-}
-
-.brand-mark {
-  width: 52px;
-  height: 52px;
-  border-radius: 16px;
-  display: grid;
-  place-items: center;
-  background: var(--paper);
-  border: 1px solid var(--line);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6);
-  font-family: "Iowan Old Style", "Palatino Linotype", serif;
-  font-size: 1.35rem;
-  letter-spacing: -0.06em;
-}
-
-.brand-word {
+  display: block;
+  text-align: center;
   font-family: "Iowan Old Style", "Palatino Linotype", serif;
   font-size: 1.1rem;
   letter-spacing: -0.04em;
@@ -453,6 +435,99 @@ select {
   color: var(--accent-warm);
   font-family: "Iowan Old Style", "Palatino Linotype", serif;
   font-size: 2.3rem;
+}
+
+.assistant-page {
+  display: grid;
+  min-height: calc(100vh - 68px);
+}
+
+.assistant-shell {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  min-height: calc(100vh - 68px);
+}
+
+.assistant-topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding-bottom: 22px;
+}
+
+.assistant-session-chip {
+  min-height: 40px;
+  padding: 0 18px;
+  border-radius: 14px;
+  display: inline-flex;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.65);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  max-width: 420px;
+}
+
+.assistant-stream {
+  display: grid;
+  align-content: start;
+  gap: 28px;
+  padding: 12px 0 32px;
+}
+
+.assistant-greeting {
+  width: min(980px, 100%);
+  margin: 18px auto 0;
+  display: grid;
+  gap: 22px;
+}
+
+.assistant-session-message {
+  width: min(980px, 100%);
+  margin: 0 auto;
+  display: grid;
+  gap: 10px;
+}
+
+.assistant-session-message.user {
+  justify-items: center;
+}
+
+.assistant-user-bubble {
+  width: min(880px, 100%);
+  padding: 18px 22px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid var(--line);
+}
+
+.assistant-reply {
+  display: grid;
+  gap: 16px;
+  font-size: 1.08rem;
+  line-height: 1.75;
+}
+
+.assistant-reply p {
+  margin: 0;
+}
+
+.assistant-dock {
+  position: sticky;
+  bottom: 0;
+  padding: 18px 0 8px;
+  background:
+    linear-gradient(180deg, rgba(244, 240, 232, 0), rgba(244, 240, 232, 0.92) 24%, var(--bg) 100%);
+}
+
+.assistant-dock .assistant-compose {
+  width: min(980px, 100%);
+  margin: 0 auto;
+  padding: 18px;
+  border-radius: 26px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
 }
 
 .feed-list,
@@ -828,6 +903,11 @@ select {
   .stat-strip {
     grid-template-columns: 1fr;
   }
+
+  .assistant-topbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
 }
 
 @media (max-width: 640px) {
@@ -898,10 +978,7 @@ function sidebar(activeNav: string, viewer?: Viewer): string {
   ];
   return `
     <aside class="sidebar">
-      <a class="brand" href="/">
-        <div class="brand-mark">ab</div>
-        <div class="brand-word">alphabook</div>
-      </a>
+      <a class="brand" href="/">alphabook</a>
       <nav class="sidebar-nav">
         ${nav
           .map(
@@ -1442,76 +1519,89 @@ export function renderAssistantPage(input: {
   agentEnabled?: boolean;
 }): string {
   const scopeDocId = input.activeDocId ?? input.activeThread?.docId;
-  const leadDoc = input.availableDocs[0];
+  const headerLabel = input.activeThread?.title || "New chat";
+  const greeting = input.activeThread?.messages.length
+    ? ""
+    : `
+      <div class="assistant-greeting">
+        <div class="assistant-reply">
+          <p>Hello. I am your AlphaBook research assistant. I can help you work through a book, trace a theme, or follow a question across the text.</p>
+          <p>Start with a book, a passage, or a research question and I will keep the thread grounded in the material we have ingested.</p>
+        </div>
+      </div>
+    `;
   const body = `
-    <div class="assistant-hero">
-      <div class="signal">✦</div>
-      <h1 class="page-title">What do you want to learn?</h1>
-      <div class="muted">A single assistant surface. Quick retrieval lands first, then deeper reading can continue in the same thread.</div>
+    <div class="assistant-page">
+      <div class="assistant-shell">
+        <div class="assistant-topbar">
+          <div class="assistant-session-chip">${e(headerLabel)}</div>
+          <a class="button-quiet" href="/assistant">New chat</a>
+        </div>
+
+        <div class="assistant-stream">
+          ${greeting}
+          ${
+            input.activeThread?.messages.length
+              ? input.activeThread.messages
+                  .map((message) =>
+                    message.role === "user"
+                      ? `
+                        <div class="assistant-session-message user">
+                          <div class="assistant-user-bubble">${e(message.content)}</div>
+                        </div>
+                      `
+                      : `
+                        <div class="assistant-session-message assistant">
+                          <div class="assistant-reply">
+                            ${e(message.content)
+                              .split(/\n{2,}/)
+                              .map((paragraph) => `<p>${paragraph}</p>`)
+                              .join("")}
+                            ${
+                              message.citations?.length
+                                ? `
+                                  <div class="citation-list">
+                                    ${message.citations
+                                      .map(
+                                        (citation) => `
+                                          <a class="citation" href="${e(citation.href)}">
+                                            <strong>${e(citation.label)}</strong>
+                                            <div class="small">${e(citation.excerpt)}</div>
+                                          </a>
+                                        `,
+                                      )
+                                      .join("")}
+                                  </div>
+                                `
+                                : ""
+                            }
+                            ${
+                              message.status === "pending"
+                                ? `<div class="small">Reading deeper across the text now.</div>`
+                                : message.status === "failed"
+                                  ? `<div class="small">The deeper pass failed.</div>`
+                                  : ""
+                            }
+                          </div>
+                        </div>
+                      `,
+                  )
+                  .join("")
+              : ""
+          }
+        </div>
+
+        <div class="assistant-dock">
+          ${renderAssistantComposer({
+            redirect: "/assistant",
+            prompt: input.prompt,
+            threadId: input.activeThread?.id,
+            docId: scopeDocId,
+            placeholder: "Ask anything about a book, passage, or idea",
+          })}
+        </div>
+      </div>
     </div>
-
-    <section class="section">
-      ${renderAssistantComposer({
-        redirect: "/assistant",
-        prompt: input.prompt,
-        threadId: input.activeThread?.id,
-        docId: scopeDocId,
-        placeholder: "Ask about a book, a passage, or a theme",
-      })}
-      ${scopeDocId ? `<div class="footer-note">Current scope: ${e(scopeDocId)}</div>` : ""}
-    </section>
-
-    ${
-      input.activeThread?.messages.length
-        ? `
-          <section class="section">
-            <div class="chat-shell">
-              <div class="row" style="justify-content: space-between; margin-bottom: 16px;">
-                <div>
-                  <div class="eyebrow">Conversation</div>
-                  <h2 class="section-title">${e(input.activeThread.title)}</h2>
-                </div>
-                <span class="thread-pill">${e(formatDate(input.activeThread.updatedAt))}</span>
-              </div>
-              <div class="chat-log">
-                ${input.activeThread.messages.map((message) => renderMessage(message)).join("")}
-              </div>
-            </div>
-          </section>
-        `
-        : `
-          <section class="section">
-            <div class="prompt-grid">
-              <div class="prompt-card">
-                <div class="eyebrow">Trending</div>
-                <h2 class="section-title">Follow a live book</h2>
-                <div class="muted">Paste a Gutenberg URL on Explore, then open the reader and ask questions beside the text.</div>
-              </div>
-              <div class="prompt-card">
-                <div class="eyebrow">Grounded</div>
-                <h2 class="section-title">Start with evidence</h2>
-                <div class="muted">Questions are routed through stored chunks and citations first, so the assistant stays anchored to the book.</div>
-              </div>
-              ${
-                leadDoc
-                  ? `
-                    <div class="prompt-card">
-                      <div class="eyebrow">Live corpus</div>
-                      <h2 class="section-title">${e(leadDoc.title)}</h2>
-                      <div class="muted">${e(leadDoc.summary)}</div>
-                    </div>
-                  `
-                  : ""
-              }
-              <div class="prompt-card">
-                <div class="eyebrow">Deep read</div>
-                <h2 class="section-title">One thread, two passes</h2>
-                <div class="muted">The assistant answers quickly, then can continue with a broader scan across the full text in the background.</div>
-              </div>
-            </div>
-          </section>
-        `
-    }
   `;
 
   return layout("Assistant", "Assistant", input.viewer, body);
