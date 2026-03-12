@@ -135,7 +135,7 @@ export class WorkOSAuth {
     }
   }
 
-  async signIn(c: Context) {
+  private async beginAuth(c: Context, screenHint?: "sign-in" | "sign-up") {
     const requestUrl = new URL(c.req.url);
     const cookieDomain = deriveCookieDomain(requestUrl);
     const returnTo = safeReturnTo(c.req.query("returnTo"), deriveFrontendOrigin(requestUrl));
@@ -144,6 +144,7 @@ export class WorkOSAuth {
       provider: "authkit",
       clientId: this.config.workosClientId,
       redirectUri,
+      ...(screenHint ? { screenHint } : {}),
     });
 
     setCookie(c, STATE_COOKIE_NAME, encodeStateCookie({ state, codeVerifier, returnTo }), {
@@ -156,6 +157,14 @@ export class WorkOSAuth {
     });
 
     return c.redirect(url, 302);
+  }
+
+  async signIn(c: Context) {
+    return this.beginAuth(c, "sign-in");
+  }
+
+  async signUp(c: Context) {
+    return this.beginAuth(c, "sign-up");
   }
 
   async callback(c: Context) {

@@ -4,7 +4,7 @@ import { Thread } from "@assistant-ui/react-ui";
 
 import type { ChatSessionSummary, Citation, MessageRecord, UserProfile } from "@alphabook/shared";
 
-import { buildSignInUrl, buildSignOutUrl, fetchCurrentUser, fetchMessages, fetchSessions, streamChat } from "./api";
+import { buildSignInUrl, buildSignOutUrl, buildSignUpUrl, fetchCurrentUser, fetchMessages, fetchSessions, streamChat } from "./api";
 
 type UiMessage = MessageRecord & {
   citations: Citation[];
@@ -314,11 +314,16 @@ function SignInCard({ copy }: { copy: string }) {
       <div className="empty-mark">
         <SparkIcon />
       </div>
-      <h2>Sign in to keep sessions, library history, and profile state.</h2>
+      <h2>Sign in or create an account to keep your sessions.</h2>
       <p>{copy}</p>
-      <a className="hero-button hero-button-primary" href={buildSignInUrl(window.location.href)}>
-        Sign in
-      </a>
+      <div className="hero-actions">
+        <a className="hero-button hero-button-primary" href={buildSignInUrl(window.location.href)}>
+          Sign in
+        </a>
+        <a className="hero-button" href={buildSignUpUrl(window.location.href)}>
+          Create account
+        </a>
+      </div>
     </section>
   );
 }
@@ -963,9 +968,14 @@ export default function App() {
             <span>New chat</span>
           </button>
           {authState.authConfigured && !authState.user && !authState.loading ? (
-            <a className="sidebar-signin" href={buildSignInUrl(window.location.href)}>
-              Sign in
-            </a>
+            <div className="sidebar-auth-actions">
+              <a className="sidebar-signin" href={buildSignInUrl(window.location.href)}>
+                Sign in
+              </a>
+              <a className="sidebar-signin" href={buildSignUpUrl(window.location.href)}>
+                Create account
+              </a>
+            </div>
           ) : null}
         </div>
 

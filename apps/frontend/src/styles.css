@@ -856,6 +856,11 @@ button {
   border-color: rgba(139, 55, 40, 0.24);
 }
 
+.sidebar-auth-actions {
+  display: grid;
+  gap: 8px;
+}
+
 .aui-root.aui-thread-root {
   flex: 1 1 auto;
   min-height: 0;

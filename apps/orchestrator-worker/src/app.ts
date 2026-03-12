@@ -557,6 +557,13 @@ export function createApp(deps: AppDeps) {
     return deps.auth.signIn(c);
   });
 
+  app.get("/auth/sign-up", async (c) => {
+    if (!deps.auth?.isConfigured()) {
+      return c.json({ error: "Authentication is not configured." }, 501);
+    }
+    return deps.auth.signUp(c);
+  });
+
   app.get("/auth/callback", async (c) => {
     if (!deps.auth?.isConfigured()) {
       return c.json({ error: "Authentication is not configured." }, 501);

@@ -52,6 +52,10 @@ export function buildSignInUrl(returnTo: string) {
   return `${API_BASE}/auth/sign-in?returnTo=${encodeURIComponent(returnTo)}`;
 }
 
+export function buildSignUpUrl(returnTo: string) {
+  return `${API_BASE}/auth/sign-up?returnTo=${encodeURIComponent(returnTo)}`;
+}
+
 export function buildSignOutUrl(returnTo: string) {
   return `${API_BASE}/auth/sign-out?returnTo=${encodeURIComponent(returnTo)}`;
 }

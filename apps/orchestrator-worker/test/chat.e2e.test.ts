@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { R2_PREFIXES } from "@alphabook/shared";
 
 import { createApp } from "../src/app";
+import { WorkOSAuth } from "../src/auth";
 import { HashEmbedder } from "../src/embeddings";
 import { MemoryBlobStore } from "../src/r2";
 import { FallbackPlanner, ScriptedPlanner } from "../src/planner";
@@ -19,6 +20,8 @@ class EchoSynthesizer implements Synthesizer {
     };
   }
 }
+
+const AUTH_STATE_COOKIE_NAME = "alphabook_auth_state=";
 
 test("orchestrator streams retrieval tool calls and final answer", async () => {
   const store = new InMemoryAppStore(
@@ -295,6 +298,61 @@ test("orchestrator can delegate to a runtime gateway and finish the run", async 
   assert.match(body, /create_workspace/);
   assert.match(body, /run_workspace_task/);
   assert.match(body, /workspace comparison completed/);
+});
+
+test("auth sign-up route redirects into WorkOS authkit with sign-up hint", async () => {
+  const store = new InMemoryAppStore();
+  const auth = new WorkOSAuth(
+    {
+      workosApiKey: "test_api_key",
+      workosClientId: "client_123",
+      cookiePassword: "test_cookie_password_32_chars_minimum",
+    },
+    store,
+  );
+
+  const app = createApp({
+    store,
+    planner: new FallbackPlanner(),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+      async runWorkspaceTask() {
+        return { ok: false, error: "disabled" };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async destroyWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+    auth,
+  });
+
+  const response = await app.request("/auth/sign-up?returnTo=https%3A%2F%2Falpha-book.org", {
+    headers: {
+      host: "api.alpha-book.org",
+      "x-forwarded-proto": "https",
+    },
+  });
+
+  assert.equal(response.status, 302);
+  const location = response.headers.get("location");
+  assert.ok(location);
+  assert.match(location, /^https:\/\/api\.workos\.com\/user_management\/authorize\?/);
+  assert.match(location, /screen_hint=sign-up/);
+  const setCookie = response.headers.get("set-cookie");
+  assert.ok(setCookie);
+  assert.match(setCookie, new RegExp(AUTH_STATE_COOKIE_NAME));
 });
 
 test("fallback planner can create a Fly workspace, run a task, read summary.md, and answer", async () => {
