@@ -10,5 +10,8 @@
     "deploy": "wrangler deploy",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "agentation": "^2.3.2"
   }
 }

@@ -61,6 +61,10 @@ button {
   display: none;
 }
 
+.agentation-shell {
+  z-index: 2000;
+}
+
 .sidebar {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto;

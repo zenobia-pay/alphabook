@@ -8,6 +8,7 @@ import {
 } from "@assistant-ui/react";
 import { Thread } from "@assistant-ui/react-ui";
 import type { ReadonlyJSONObject, ReadonlyJSONValue } from "assistant-stream/utils";
+import type { AgentationProps } from "agentation";
 
 import { getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type UserProfile } from "@alphabook/shared";
 
@@ -41,8 +42,60 @@ type AuthState = {
 };
 
 type ViewMode = "explore" | "assistant" | "library" | "profile";
+type UrlState = {
+  view: ViewMode;
+  sessionId: string | null | undefined;
+  debugEnabled: boolean;
+};
 
 const USER_STORAGE_KEY = "alphabook.localUserId";
+
+function isViewMode(value: string | null): value is ViewMode {
+  return value === "explore" || value === "assistant" || value === "library" || value === "profile";
+}
+
+function readUrlState(): UrlState {
+  if (typeof window === "undefined") {
+    return {
+      view: "assistant",
+      sessionId: undefined,
+      debugEnabled: false,
+    };
+  }
+
+  const params = new URLSearchParams(window.location.search);
+  const rawView = params.get("view");
+  return {
+    view: isViewMode(rawView) ? rawView : "assistant",
+    sessionId: params.has("session") ? params.get("session") || null : undefined,
+    debugEnabled: params.get("debug") === "true",
+  };
+}
+
+function writeUrlState(next: UrlState) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const url = new URL(window.location.href);
+  url.searchParams.set("view", next.view);
+  if (next.view === "assistant" && next.sessionId) {
+    url.searchParams.set("session", next.sessionId);
+  } else {
+    url.searchParams.delete("session");
+  }
+  if (next.debugEnabled) {
+    url.searchParams.set("debug", "true");
+  } else {
+    url.searchParams.delete("debug");
+  }
+
+  const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+  const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  if (nextUrl !== currentUrl) {
+    window.history.replaceState({}, "", nextUrl);
+  }
+}
 
 function ensureLocalUserId(): string {
   const existing = window.localStorage.getItem(USER_STORAGE_KEY);
@@ -551,6 +604,7 @@ function AssistantSurface({
 }
 
 export default function App() {
+  const initialUrlState = readUrlState();
   const [guestUserId] = useState(() => ensureLocalUserId());
   const [authState, setAuthState] = useState<AuthState>({
     loading: true,
@@ -558,14 +612,16 @@ export default function App() {
     user: null,
     error: null,
   });
-  const [activeView, setActiveView] = useState<ViewMode>("assistant");
+  const [activeView, setActiveView] = useState<ViewMode>(initialUrlState.view);
   const [sessions, setSessions] = useState<ChatSessionSummary[]>([]);
-  const [selectedSessionId, setSelectedSessionId] = useState<string | null | undefined>(undefined);
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null | undefined>(initialUrlState.sessionId);
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [isSending, setIsSending] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [streamingAssistantId, setStreamingAssistantId] = useState<string | null>(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [debugEnabled, setDebugEnabled] = useState(initialUrlState.debugEnabled);
+  const [AgentationComponent, setAgentationComponent] = useState<ComponentType<AgentationProps> | null>(null);
   const activeRunTokenRef = useRef(0);
 
   const currentUser = useMemo(
@@ -618,6 +674,49 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const handlePopState = () => {
+      const next = readUrlState();
+      setActiveView(next.view);
+      setSelectedSessionId(next.sessionId);
+      setDebugEnabled(next.debugEnabled);
+      setMobileNavOpen(false);
+    };
+
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
+
+  useEffect(() => {
+    writeUrlState({
+      view: activeView,
+      sessionId: selectedSessionId,
+      debugEnabled,
+    });
+  }, [activeView, selectedSessionId, debugEnabled]);
+
+  useEffect(() => {
+    if (!debugEnabled) {
+      setAgentationComponent(null);
+      return;
+    }
+
+    let cancelled = false;
+    void import("agentation")
+      .then((module) => {
+        if (!cancelled) {
+          setAgentationComponent(() => module.Agentation);
+        }
+      })
+      .catch((error) => {
+        console.error("Failed to load Agentation.", error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [debugEnabled]);
+
+  useEffect(() => {
     if (authState.loading) {
       return;
     }
@@ -658,7 +757,7 @@ export default function App() {
         setLoadError(error instanceof Error ? error.message : "Failed to load messages.");
       }
     })();
-  }, [selectedSessionId]);
+  }, [authState.loading, selectedSessionId]);
 
   async function refreshSessions(preferredSessionId?: string | null) {
     if (!currentUserId) {
@@ -1272,6 +1371,15 @@ export default function App() {
         </div>
         {renderMainView()}
       </main>
+
+      {debugEnabled && AgentationComponent ? (
+        <AgentationComponent
+          className="agentation-shell"
+          onCopy={(markdown) => {
+            console.info("[Agentation] copied feedback", markdown);
+          }}
+        />
+      ) : null}
     </div>
   );
 }
