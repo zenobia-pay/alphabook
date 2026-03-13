@@ -66,6 +66,17 @@ function normalizeToolArgs(toolName: ToolName, args: Record<string, unknown>): R
       if (normalized.taskContext === undefined && normalized.task_context !== undefined) {
         normalized.taskContext = normalized.task_context;
       }
+      if (typeof normalized.taskContext === "string") {
+        normalized.taskContext = {
+          prompt: normalized.taskContext,
+        };
+      } else if (Array.isArray(normalized.taskContext)) {
+        normalized.taskContext = {
+          items: normalized.taskContext,
+        };
+      } else if (!normalized.taskContext || typeof normalized.taskContext !== "object") {
+        normalized.taskContext = {};
+      }
       break;
     case "run_workspace_task":
       if (normalized.runtimeId === undefined && normalized.runtime_id !== undefined) {
@@ -73,6 +84,11 @@ function normalizeToolArgs(toolName: ToolName, args: Record<string, unknown>): R
       }
       if (normalized.taskSpec === undefined && normalized.task_spec !== undefined) {
         normalized.taskSpec = normalized.task_spec;
+      }
+      if (typeof normalized.taskSpec === "string") {
+        normalized.taskSpec = {
+          prompt: normalized.taskSpec,
+        };
       }
       break;
     case "read_workspace_file":
@@ -142,7 +158,12 @@ async function executeTool(
     }
     case "get_relevant_chunks": {
       const parsed = ToolArgsSchemas.get_relevant_chunks.parse(normalizedArgs);
-      const embedding = await deps.embedder.embedQuery(parsed.query);
+      let embedding: number[] | undefined;
+      try {
+        embedding = await deps.embedder.embedQuery(parsed.query);
+      } catch {
+        embedding = undefined;
+      }
       const chunks = await deps.store.getRelevantChunks(
         parsed.query,
         parsed.workIds,
@@ -676,6 +697,50 @@ export function createApp(deps: AppDeps) {
     }
     const messages = await deps.store.listMessages(sessionId);
     return c.json({ messages });
+  });
+
+  app.get("/sessions/:sessionId/runs", async (c) => {
+    const sessionId = c.req.param("sessionId");
+    const session = await deps.store.getSession(sessionId);
+    if (!session) {
+      return c.json({ error: "Session not found." }, 404);
+    }
+    const user = await resolveUser(c);
+    if ((deps.auth?.isConfigured() ?? false) && (!user || user.id !== session.userId)) {
+      return c.json({ error: "Not authorized for this session." }, 403);
+    }
+
+    const runs = await deps.store.listRuns(sessionId);
+    return c.json({ runs });
+  });
+
+  app.get("/sessions/:sessionId/runs/:runId", async (c) => {
+    const sessionId = c.req.param("sessionId");
+    const runId = c.req.param("runId");
+    const session = await deps.store.getSession(sessionId);
+    if (!session) {
+      return c.json({ error: "Session not found." }, 404);
+    }
+    const user = await resolveUser(c);
+    if ((deps.auth?.isConfigured() ?? false) && (!user || user.id !== session.userId)) {
+      return c.json({ error: "Not authorized for this session." }, 403);
+    }
+
+    const run = await deps.store.getRun(runId);
+    if (!run || run.sessionId !== sessionId) {
+      return c.json({ error: "Run not found." }, 404);
+    }
+
+    const [toolCalls, runtimeInstances] = await Promise.all([
+      deps.store.listToolCalls(runId),
+      deps.store.listRuntimeInstances(sessionId),
+    ]);
+
+    return c.json({
+      run,
+      toolCalls,
+      runtimeInstances,
+    });
   });
 
   app.get("/works", async (c) => {

@@ -5,7 +5,7 @@ import { R2_PREFIXES } from "@alphabook/shared";
 
 import { createApp } from "../src/app";
 import { WorkOSAuth } from "../src/auth";
-import { HashEmbedder } from "../src/embeddings";
+import { HashEmbedder, OpenAIEmbedder } from "../src/embeddings";
 import { MemoryBlobStore } from "../src/r2";
 import { FallbackPlanner, ScriptedPlanner } from "../src/planner";
 import { FlyMachinesRuntimeGateway } from "../src/runtime";
@@ -571,4 +571,119 @@ test("session endpoints expose chat history for the assistant UI", async () => {
     messagesPayload.messages.map((message) => message.role),
     ["user", "assistant"],
   );
+});
+
+test("workspace args are normalized and run logs are exposed", async () => {
+  const store = new InMemoryAppStore([
+    {
+      id: "work-1",
+      gutenbergId: 42,
+      title: "Divine Comedy",
+      language: "en",
+      releaseDate: "2000-01-01",
+      rightsStatus: "public_domain",
+      summary: "An epic poem through Hell, Purgatory, and Heaven.",
+      authors: ["Dante Alighieri"],
+      subjects: ["poetry"],
+      cleanTextKey: "gutenberg/clean/42/clean.txt",
+    },
+  ]);
+
+  let capturedTaskContext: Record<string, unknown> | null = null;
+  const app = createApp({
+    store,
+    planner: new ScriptedPlanner([
+      {
+        type: "tool_call",
+        tool_name: "create_workspace",
+        args: {
+          workIds: ["work-1"],
+          chunkIds: [],
+          taskContext: "find angry passages",
+        },
+      },
+      {
+        type: "final_answer",
+        answer: "Done.",
+        citations: [],
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace(args) {
+        capturedTaskContext = (args.taskContext ?? null) as Record<string, unknown> | null;
+        return { ok: true, runtimeId: "runtime-1" };
+      },
+      async runWorkspaceTask() {
+        return { ok: false, error: "disabled" };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async destroyWorkspace() {
+        return { ok: true };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const chatResponse = await app.request("/chat", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      userId: "demo-user",
+      message: "Find angry passages in Divine Comedy",
+    }),
+  });
+  await chatResponse.text();
+
+  assert.deepEqual(capturedTaskContext, { prompt: "find angry passages" });
+
+  const sessionsResponse = await app.request("/sessions?userId=demo-user");
+  const sessionsPayload = (await sessionsResponse.json()) as {
+    sessions: Array<{ id: string }>;
+  };
+  const sessionId = sessionsPayload.sessions[0]?.id;
+  assert.ok(sessionId);
+
+  const runsResponse = await app.request(`/sessions/${sessionId}/runs`);
+  assert.equal(runsResponse.status, 200);
+  const runsPayload = (await runsResponse.json()) as {
+    runs: Array<{ id: string }>;
+  };
+  assert.equal(runsPayload.runs.length, 1);
+
+  const runDetailsResponse = await app.request(`/sessions/${sessionId}/runs/${runsPayload.runs[0]?.id}`);
+  assert.equal(runDetailsResponse.status, 200);
+  const runDetailsPayload = (await runDetailsResponse.json()) as {
+    toolCalls: Array<{ toolName: string; argsJson: Record<string, unknown> }>;
+  };
+  assert.equal(runDetailsPayload.toolCalls.length, 1);
+  assert.equal(runDetailsPayload.toolCalls[0]?.toolName, "create_workspace");
+  assert.deepEqual(runDetailsPayload.toolCalls[0]?.argsJson.taskContext, "find angry passages");
+});
+
+test("OpenAIEmbedder requests 1536 dimensions for text-embedding-3 models", async () => {
+  let requestBody: Record<string, unknown> | null = null;
+  const embedder = new OpenAIEmbedder("test-key", "text-embedding-3-small", async (_input, init) => {
+    requestBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+    return Response.json({
+      data: [
+        {
+          embedding: [0.1, 0.2, 0.3],
+        },
+      ],
+    });
+  });
+
+  const embedding = await embedder.embedQuery("anger");
+  assert.deepEqual(embedding, [0.1, 0.2, 0.3]);
+  assert.equal(requestBody ? requestBody["dimensions"] : undefined, 1536);
 });

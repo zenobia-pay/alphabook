@@ -86,7 +86,7 @@ function buildFetchHandler(env: Env) {
       ? new OpenAIPlanner(env.OPENAI_API_KEY, env.OPENAI_MODEL)
       : new FallbackPlanner();
   const embedder = env.OPENAI_API_KEY
-    ? new OpenAIEmbedder(env.OPENAI_API_KEY, env.OPENAI_EMBEDDING_MODEL ?? "text-embedding-3-large")
+    ? new OpenAIEmbedder(env.OPENAI_API_KEY, env.OPENAI_EMBEDDING_MODEL ?? "text-embedding-3-small")
     : new HashEmbedder();
   const synthesizer = env.OPENAI_API_KEY
     ? new OpenAISynthesizer(env.OPENAI_API_KEY, env.OPENAI_SYNTH_MODEL ?? env.OPENAI_MODEL ?? "gpt-5.4")

@@ -103,8 +103,11 @@ export interface AppStore {
   listMessages(sessionId: string): Promise<MessageRecord[]>;
   appendMessage(sessionId: string, role: MessageRecord["role"], content: string, metadata?: Record<string, unknown>): Promise<MessageRecord>;
   createRun(sessionId: string): Promise<RunRecord>;
+  getRun(runId: string): Promise<RunRecord | null>;
+  listRuns(sessionId: string): Promise<RunRecord[]>;
   updateRun(runId: string, updates: Partial<Pick<RunRecord, "status" | "plannerTurns" | "completedAt">>): Promise<void>;
   startToolCall(runId: string, toolName: ToolName, argsJson: Record<string, unknown>): Promise<ToolCallRecord>;
+  listToolCalls(runId: string): Promise<ToolCallRecord[]>;
   finishToolCall(toolCallId: string, status: ToolCallRecord["status"], resultJson: Record<string, unknown>): Promise<void>;
   listWorks(offset?: number, limit?: number): Promise<WorkSummary[]>;
   getWorkById(workId: string): Promise<WorkDetailRecord | null>;
@@ -240,6 +243,8 @@ function excerpt(text: string, query: string): string {
   const end = Math.min(text.length, start + 220);
   return `${start > 0 ? "..." : ""}${text.slice(start, end)}${end < text.length ? "..." : ""}`;
 }
+
+const EXPECTED_EMBEDDING_DIMENSIONS = 1536;
 
 const WORK_SEARCH_STOP_WORDS = new Set([
   "a",
@@ -397,6 +402,16 @@ export class InMemoryAppStore implements AppStore {
     return run;
   }
 
+  async getRun(runId: string): Promise<RunRecord | null> {
+    return this.runs.get(runId) ?? null;
+  }
+
+  async listRuns(sessionId: string): Promise<RunRecord[]> {
+    return [...this.runs.values()]
+      .filter((run) => run.sessionId === sessionId)
+      .sort((left, right) => right.startedAt.localeCompare(left.startedAt));
+  }
+
   async updateRun(runId: string, updates: Partial<Pick<RunRecord, "status" | "plannerTurns" | "completedAt">>): Promise<void> {
     const run = this.runs.get(runId);
     if (!run) {
@@ -419,6 +434,12 @@ export class InMemoryAppStore implements AppStore {
     };
     this.toolCalls.set(toolCall.id, toolCall);
     return toolCall;
+  }
+
+  async listToolCalls(runId: string): Promise<ToolCallRecord[]> {
+    return [...this.toolCalls.values()]
+      .filter((toolCall) => toolCall.runId === runId)
+      .sort((left, right) => left.startedAt.localeCompare(right.startedAt));
   }
 
   async finishToolCall(toolCallId: string, status: ToolCallRecord["status"], resultJson: Record<string, unknown>): Promise<void> {
@@ -850,6 +871,63 @@ export class NeonAppStore implements AppStore {
     };
   }
 
+  async getRun(runId: string): Promise<RunRecord | null> {
+    const result = await this.db.query<{
+      id: string;
+      session_id: string;
+      status: RunRecord["status"];
+      planner_turns: number;
+      started_at: string;
+      completed_at: string | null;
+    }>(
+      `
+        SELECT id, session_id, status, planner_turns, started_at, completed_at
+        FROM runs
+        WHERE id = $1::uuid
+        LIMIT 1
+      `,
+      [runId],
+    );
+    const row = result.rows[0];
+    return row
+      ? {
+          id: row.id,
+          sessionId: row.session_id,
+          status: row.status,
+          plannerTurns: row.planner_turns,
+          startedAt: row.started_at,
+          completedAt: row.completed_at,
+        }
+      : null;
+  }
+
+  async listRuns(sessionId: string): Promise<RunRecord[]> {
+    const result = await this.db.query<{
+      id: string;
+      session_id: string;
+      status: RunRecord["status"];
+      planner_turns: number;
+      started_at: string;
+      completed_at: string | null;
+    }>(
+      `
+        SELECT id, session_id, status, planner_turns, started_at, completed_at
+        FROM runs
+        WHERE session_id = $1::uuid
+        ORDER BY started_at DESC
+      `,
+      [sessionId],
+    );
+    return result.rows.map((row) => ({
+      id: row.id,
+      sessionId: row.session_id,
+      status: row.status,
+      plannerTurns: row.planner_turns,
+      startedAt: row.started_at,
+      completedAt: row.completed_at,
+    }));
+  }
+
   async updateRun(runId: string, updates: Partial<Pick<RunRecord, "status" | "plannerTurns" | "completedAt">>): Promise<void> {
     await this.db.query(
       `
@@ -898,6 +976,37 @@ export class NeonAppStore implements AppStore {
       `,
       [toolCallId, status, JSON.stringify(resultJson)],
     );
+  }
+
+  async listToolCalls(runId: string): Promise<ToolCallRecord[]> {
+    const result = await this.db.query<{
+      id: string;
+      run_id: string;
+      tool_name: ToolName;
+      args_json: Record<string, unknown>;
+      result_json: Record<string, unknown> | null;
+      status: ToolCallRecord["status"];
+      started_at: string;
+      completed_at: string | null;
+    }>(
+      `
+        SELECT id, run_id, tool_name, args_json, result_json, status, started_at, completed_at
+        FROM tool_calls
+        WHERE run_id = $1::uuid
+        ORDER BY started_at ASC
+      `,
+      [runId],
+    );
+    return result.rows.map((row) => ({
+      id: row.id,
+      runId: row.run_id,
+      toolName: row.tool_name,
+      argsJson: row.args_json,
+      resultJson: row.result_json,
+      status: row.status,
+      startedAt: row.started_at,
+      completedAt: row.completed_at,
+    }));
   }
 
   async listWorks(offset = 0, limit = 12): Promise<WorkSummary[]> {
@@ -1058,7 +1167,10 @@ export class NeonAppStore implements AppStore {
       score: number;
     }>(
       `
-        WITH ranked AS (
+        WITH query_input AS (
+          SELECT websearch_to_tsquery('english', $1::text) AS tsq
+        ),
+        ranked AS (
           SELECT
             w.id,
             w.gutenberg_id,
@@ -1071,14 +1183,14 @@ export class NeonAppStore implements AppStore {
             ts_rank_cd(
               setweight(to_tsvector('english', COALESCE(w.title, '')), 'A') ||
               setweight(to_tsvector('english', COALESCE(w.summary, '')), 'B'),
-              websearch_to_tsquery('english', $1)
+              query_input.tsq
             ) AS score
-          FROM works w
+          FROM works w, query_input
           WHERE
             (
               setweight(to_tsvector('english', COALESCE(w.title, '')), 'A') ||
               setweight(to_tsvector('english', COALESCE(w.summary, '')), 'B')
-            ) @@ websearch_to_tsquery('english', $1)
+            ) @@ query_input.tsq
             AND ($2::text IS NULL OR w.language = $2::text)
             AND ($3::text IS NULL OR w.rights_status = $3::text)
         )
@@ -1240,7 +1352,8 @@ export class NeonAppStore implements AppStore {
   }
 
   async getRelevantChunks(query: string, workIds?: string[], limit = 8, embedding?: number[]): Promise<ChunkSearchResult[]> {
-    const vectorLiteral = embedding?.length ? `[${embedding.join(",")}]` : null;
+    const usableEmbedding = embedding?.length === EXPECTED_EMBEDDING_DIMENSIONS ? embedding : undefined;
+    const vectorLiteral = usableEmbedding ? `[${usableEmbedding.join(",")}]` : null;
     const result = await this.db.query<{
       id: string;
       work_id: string;
@@ -1252,7 +1365,7 @@ export class NeonAppStore implements AppStore {
       `
         WITH query_input AS (
           SELECT
-            websearch_to_tsquery('english', $1) AS tsq,
+            websearch_to_tsquery('english', $1::text) AS tsq,
             CASE WHEN $4::text IS NULL THEN NULL ELSE $4::vector END AS embedding
         )
         SELECT

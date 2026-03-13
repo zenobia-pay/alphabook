@@ -196,7 +196,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     private readonly config: FlyRuntimeGatewayConfig,
     fetchImpl?: FetchLike,
   ) {
-    this.fetchImpl = fetchImpl ?? fetch;
+    this.fetchImpl = fetchImpl ?? ((input, init) => fetch(input, init));
     this.runtimeAppUrl = buildRuntimeAppUrl(config.appName, config.runtimeAppUrl);
   }
 

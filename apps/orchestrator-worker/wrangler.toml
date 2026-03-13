@@ -8,7 +8,7 @@ routes = [{ pattern = "api.alpha-book.org", custom_domain = true }]
 [vars]
 OPENAI_MODEL = "gpt-5.2"
 OPENAI_SYNTH_MODEL = "gpt-5.2"
-OPENAI_EMBEDDING_MODEL = "text-embedding-3-large"
+OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
 RUNTIME_AGENT_MODEL = "gpt-5.2-codex"
 ORCHESTRATOR_MAX_TURNS = "10"
 ORCHESTRATOR_MAX_RUNTIME_TASKS_PER_RUN = "4"
