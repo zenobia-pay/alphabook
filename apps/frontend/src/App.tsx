@@ -12,9 +12,9 @@ import { Thread } from "@assistant-ui/react-ui";
 import type { ReadonlyJSONObject, ReadonlyJSONValue } from "assistant-stream/utils";
 import type { AgentationProps } from "agentation";
 
-import { getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type UserProfile, type WorkSummary } from "@alphabook/shared";
+import { getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type UserProfile, type WorkDetail, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
-import { buildSignInUrl, buildSignOutUrl, fetchCurrentUser, fetchMessages, fetchSessions, fetchWorks, streamChat } from "./api";
+import { buildSignInUrl, buildSignOutUrl, fetchCurrentUser, fetchMessages, fetchSessions, fetchWorkDetail, fetchWorks, streamChat } from "./api";
 
 type UiMessage = MessageRecord & {
   citations: Citation[];
@@ -44,17 +44,18 @@ type AuthState = {
   error: string | null;
 };
 
-type ViewMode = "explore" | "assistant" | "library" | "profile";
+type ViewMode = "explore" | "assistant" | "library" | "profile" | "book";
 type UrlState = {
   view: ViewMode;
   sessionId: string | null | undefined;
+  workId: string | null | undefined;
   debugEnabled: boolean;
 };
 
 const USER_STORAGE_KEY = "alphabook.localUserId";
 
 function isViewMode(value: string | null): value is ViewMode {
-  return value === "explore" || value === "assistant" || value === "library" || value === "profile";
+  return value === "explore" || value === "assistant" || value === "library" || value === "profile" || value === "book";
 }
 
 function readUrlState(): UrlState {
@@ -62,15 +63,18 @@ function readUrlState(): UrlState {
     return {
       view: "assistant",
       sessionId: undefined,
+      workId: undefined,
       debugEnabled: false,
     };
   }
 
+  const pathnameMatch = window.location.pathname.match(/^\/works\/([^/]+)$/);
   const params = new URLSearchParams(window.location.search);
   const rawView = params.get("view");
   return {
-    view: isViewMode(rawView) ? rawView : "assistant",
+    view: pathnameMatch ? "book" : isViewMode(rawView) ? rawView : "assistant",
     sessionId: params.has("session") ? params.get("session") || null : undefined,
+    workId: pathnameMatch ? decodeURIComponent(pathnameMatch[1]) : params.has("work") ? params.get("work") || null : undefined,
     debugEnabled: params.get("debug") === "true",
   };
 }
@@ -81,11 +85,23 @@ function writeUrlState(next: UrlState) {
   }
 
   const url = new URL(window.location.href);
-  url.searchParams.set("view", next.view);
-  if (next.view === "assistant" && next.sessionId) {
+  if (next.view === "book" && next.workId) {
+    url.pathname = `/works/${encodeURIComponent(next.workId)}`;
+    url.searchParams.delete("view");
+    url.searchParams.delete("work");
+  } else {
+    url.pathname = "/";
+    url.searchParams.set("view", next.view);
+    url.searchParams.delete("work");
+  }
+
+  if ((next.view === "assistant" || next.view === "book") && next.sessionId) {
     url.searchParams.set("session", next.sessionId);
   } else {
     url.searchParams.delete("session");
+  }
+  if (next.view !== "book" && next.workId) {
+    url.searchParams.set("work", next.workId);
   }
   if (next.debugEnabled) {
     url.searchParams.set("debug", "true");
@@ -220,6 +236,37 @@ function hueFromSeed(seed: string) {
 
 function pluralize(count: number, singular: string, plural = `${singular}s`) {
   return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function stripHtmlForFrame(html: string) {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .trim();
+}
+
+function buildReaderDocument(source: WorkSource, work: WorkDetail | null) {
+  const gutenbergId = work?.gutenbergId ?? null;
+  const baseHref = gutenbergId ? `https://www.gutenberg.org/cache/epub/${gutenbergId}/` : null;
+  return [
+    "<!doctype html>",
+    "<html>",
+    "<head>",
+    '<meta charset="utf-8">',
+    baseHref ? `<base href="${baseHref}">` : "",
+    "<style>",
+    "html,body{margin:0;padding:0;background:#f6f1e8;color:#241d17;font-family:Georgia,serif;line-height:1.58;}",
+    "body{padding:32px 36px;}",
+    "img{max-width:100%;height:auto;}",
+    "table{max-width:100%;}",
+    "a{color:inherit;}",
+    "</style>",
+    "</head>",
+    "<body>",
+    stripHtmlForFrame(source.content),
+    "</body>",
+    "</html>",
+  ].join("");
 }
 
 function quoted(value: unknown) {
@@ -682,18 +729,13 @@ function AssistantWelcome({
 
 function LockedState({
   title,
-  icon: Icon,
   compact = false,
 }: {
   title: string;
-  icon: ComponentType;
   compact?: boolean;
 }) {
   return (
     <section className={`locked-panel ${compact ? "is-compact" : ""}`}>
-      <div className="locked-mark">
-        <Icon />
-      </div>
       <div className="locked-copy">
         <h2>{title}</h2>
       </div>
@@ -811,6 +853,10 @@ export default function App() {
   const [feedNextOffset, setFeedNextOffset] = useState<number | null>(0);
   const [feedLoading, setFeedLoading] = useState(false);
   const [selectedWorkIds, setSelectedWorkIds] = useState<string[]>([]);
+  const [activeWorkId, setActiveWorkId] = useState<string | null | undefined>(initialUrlState.workId);
+  const [activeWork, setActiveWork] = useState<WorkDetail | null>(null);
+  const [activeWorkSource, setActiveWorkSource] = useState<WorkSource | null>(null);
+  const [activeWorkLoading, setActiveWorkLoading] = useState(false);
   const activeRunTokenRef = useRef(0);
 
   const currentUser = useMemo(
@@ -840,7 +886,12 @@ export default function App() {
   const profileHue = useMemo(() => hueFromSeed(profileSeed), [profileSeed]);
   const displayProfileName = displayName(currentUser);
   const profileTag = profileHandle(currentUser);
-  const activeViewLabel = activeView === "assistant" ? activeSession?.title ?? "Assistant" : NAV_ITEMS.find((item) => item.id === activeView)?.label ?? "AlphaBook";
+  const activeViewLabel =
+    activeView === "assistant"
+      ? activeSession?.title ?? "Assistant"
+      : activeView === "book"
+        ? activeWork?.title ?? "Book"
+        : NAV_ITEMS.find((item) => item.id === activeView)?.label ?? "AlphaBook";
   const authLocked = authState.authConfigured && !authState.user;
   const hasAuthenticatedUser = Boolean(authState.user);
 
@@ -870,6 +921,7 @@ export default function App() {
       const next = readUrlState();
       setActiveView(next.view);
       setSelectedSessionId(next.sessionId);
+      setActiveWorkId(next.workId);
       setDebugEnabled(next.debugEnabled);
       setMobileNavOpen(false);
     };
@@ -882,9 +934,10 @@ export default function App() {
     writeUrlState({
       view: activeView,
       sessionId: selectedSessionId,
+      workId: activeWorkId,
       debugEnabled,
     });
-  }, [activeView, selectedSessionId, debugEnabled]);
+  }, [activeView, selectedSessionId, activeWorkId, debugEnabled]);
 
   useEffect(() => {
     if (!debugEnabled) {
@@ -926,6 +979,27 @@ export default function App() {
       }
     })();
   }, [feedLoading, feedNextOffset, feedWorks.length]);
+
+  useEffect(() => {
+    if (!activeWorkId) {
+      setActiveWork(null);
+      setActiveWorkSource(null);
+      return;
+    }
+
+    void (async () => {
+      try {
+        setActiveWorkLoading(true);
+        const detail = await fetchWorkDetail(activeWorkId);
+        setActiveWork(detail.work);
+        setActiveWorkSource(detail.source);
+      } catch (error) {
+        setLoadError(error instanceof Error ? error.message : "Failed to load the selected book.");
+      } finally {
+        setActiveWorkLoading(false);
+      }
+    })();
+  }, [activeWorkId]);
 
   useEffect(() => {
     if (authState.loading) {
@@ -985,7 +1059,10 @@ export default function App() {
     }
   }
 
-  async function sendPrompt(question: string, options: { sessionIdOverride?: string | null } = {}) {
+  async function sendPrompt(
+    question: string,
+    options: { sessionIdOverride?: string | null; workIdsOverride?: string[]; viewOverride?: ViewMode } = {},
+  ) {
     const normalizedQuestion = question.trim();
     if (!normalizedQuestion || isSending || authState.loading) {
       return;
@@ -1006,7 +1083,7 @@ export default function App() {
       citations: [],
       toolCalls: [],
     };
-    setActiveView("assistant");
+    setActiveView(options.viewOverride ?? "assistant");
     setIsSending(true);
     setLoadError(null);
     setStreamingAssistantId(null);
@@ -1025,6 +1102,7 @@ export default function App() {
           sessionId: initialSessionId ?? undefined,
           userId: authState.authConfigured ? undefined : currentUserId,
           message: normalizedQuestion,
+          workIds: options.workIdsOverride,
         },
         {
           onEvent: (event) => {
@@ -1260,6 +1338,16 @@ export default function App() {
     setActiveView("assistant");
   }
 
+  function startNewBookChat() {
+    activeRunTokenRef.current += 1;
+    setSelectedSessionId(null);
+    setMessages([]);
+    setLoadError(null);
+    setIsSending(false);
+    setStreamingAssistantId(null);
+    setActiveView("book");
+  }
+
   function toggleSelectedWork(workId: string) {
     setSelectedWorkIds((current) => (current.includes(workId) ? current.filter((id) => id !== workId) : [...current, workId]));
   }
@@ -1284,6 +1372,9 @@ export default function App() {
 
   function handleNavSelection(view: ViewMode) {
     setMobileNavOpen(false);
+    if (view !== "book") {
+      setActiveWorkId(null);
+    }
     if (view === "assistant" && activeView === "assistant") {
       startNewChat();
       return;
@@ -1294,12 +1385,19 @@ export default function App() {
   function openSession(sessionId: string) {
     setMobileNavOpen(false);
     setSelectedSessionId(sessionId);
+    setActiveWorkId(null);
     setActiveView("assistant");
   }
 
   function queuePrompt(prompt: string) {
     startNewChat();
     void sendPrompt(prompt, { sessionIdOverride: null });
+  }
+
+  function openWork(workId: string) {
+    setMobileNavOpen(false);
+    setActiveWorkId(workId);
+    startNewBookChat();
   }
 
   function renderAssistantView() {
@@ -1314,7 +1412,6 @@ export default function App() {
           {!authState.loading && authLocked ? (
             <LockedState
               compact
-              icon={ChatIcon}
               title="Sign in to use the assistant."
             />
           ) : (
@@ -1328,6 +1425,83 @@ export default function App() {
             />
           )}
         </div>
+      </section>
+    );
+  }
+
+  function renderBookView() {
+    const showWelcome = !authState.loading && !authLocked && selectedSessionId == null && messages.length === 0 && !isSending;
+    const bookPromptHandler = async (prompt: string) => {
+      if (!activeWorkId) {
+        return;
+      }
+      await sendPrompt(prompt, {
+        sessionIdOverride: selectedSessionId ?? null,
+        workIdsOverride: [activeWorkId],
+        viewOverride: "book",
+      });
+    };
+
+    return (
+      <section className="book-page">
+        <div className="book-reader-pane">
+          {activeWorkLoading ? (
+            <div className="book-loading">Loading the book…</div>
+          ) : activeWork ? (
+            <>
+              <header className="book-reader-header">
+                <div>
+                  <p className="book-reader-meta">
+                    {[activeWork.gutenbergId ? `Gutenberg ${activeWork.gutenbergId}` : null, activeWork.language?.toUpperCase()].filter(Boolean).join(" · ")}
+                  </p>
+                  <h1>{activeWork.title}</h1>
+                  {activeWork.authors.length > 0 ? <p className="book-reader-authors">{activeWork.authors.join(" · ")}</p> : null}
+                </div>
+              </header>
+
+              <div className="book-reader-surface">
+                {activeWorkSource ? (
+                  activeWorkSource.format === "html" ? (
+                    <iframe
+                      title={activeWork.title}
+                      className="book-reader-frame"
+                      sandbox="allow-same-origin"
+                      srcDoc={buildReaderDocument(activeWorkSource, activeWork)}
+                    />
+                  ) : (
+                    <pre className="book-reader-text">{activeWorkSource.content}</pre>
+                  )
+                ) : (
+                  <div className="book-loading">This book does not have stored source content yet.</div>
+                )}
+              </div>
+            </>
+          ) : (
+            <div className="book-loading">Book not found.</div>
+          )}
+        </div>
+
+        <aside className="book-assistant-pane">
+          {loadError ? <div className="thread-error-banner">{loadError}</div> : null}
+          <div className="book-assistant-shell" data-testid="book-thread">
+            {authState.loading ? <div className="session-loading">Checking your session…</div> : null}
+            {!authState.loading && authLocked ? (
+              <LockedState
+                compact
+                title="Sign in to ask about this book."
+              />
+            ) : (
+              <AssistantSurface
+                key={`book-${activeWorkId ?? "unknown"}-${selectedSessionId ?? "new-thread"}`}
+                messages={messages}
+                isSending={isSending}
+                streamingAssistantId={streamingAssistantId}
+                onPrompt={bookPromptHandler}
+                showWelcome={showWelcome}
+              />
+            )}
+          </div>
+        </aside>
       </section>
     );
   }
@@ -1387,34 +1561,40 @@ export default function App() {
             const selected = selectedWorkIds.includes(work.id);
             const previewMeta = [formatReleaseYear(work.releaseDate), work.language?.toUpperCase()].filter(Boolean).join(" · ");
             return (
-              <button
-                key={work.id}
-                type="button"
-                aria-pressed={selected}
-                className={`work-feed-card ${selected ? "is-selected" : ""}`}
-                onClick={() => toggleSelectedWork(work.id)}
-              >
-                <div className="work-feed-heading">
-                  <div>
-                    {previewMeta ? <p className="work-feed-meta">{previewMeta}</p> : null}
-                    <h2>{work.title}</h2>
-                    {work.authors.length > 0 ? <p className="work-feed-authors">{work.authors.join(" · ")}</p> : null}
+              <article key={work.id} className={`work-feed-card ${selected ? "is-selected" : ""}`}>
+                <button
+                  type="button"
+                  className="work-feed-open"
+                  onClick={() => openWork(work.id)}
+                >
+                  <div className="work-feed-heading">
+                    <div>
+                      {previewMeta ? <p className="work-feed-meta">{previewMeta}</p> : null}
+                      <h2>{work.title}</h2>
+                      {work.authors.length > 0 ? <p className="work-feed-authors">{work.authors.join(" · ")}</p> : null}
+                    </div>
+                    <span className="work-feed-marker" aria-hidden="true" />
                   </div>
-                  <span className="work-feed-marker" aria-hidden="true" />
+
+                  {work.summary ? <p className="work-feed-summary">{work.summary}</p> : null}
+
+                  {work.subjects.length > 0 ? (
+                    <div className="work-feed-tags">
+                      {work.subjects.slice(0, 4).map((subject) => (
+                        <span key={subject} className="tag-chip">
+                          {subject}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                </button>
+
+                <div className="work-feed-actions">
+                  <button type="button" className="work-feed-action" onClick={() => toggleSelectedWork(work.id)}>
+                    {selected ? "Remove from ask" : "Use in ask"}
+                  </button>
                 </div>
-
-                {work.summary ? <p className="work-feed-summary">{work.summary}</p> : null}
-
-                {work.subjects.length > 0 ? (
-                  <div className="work-feed-tags">
-                    {work.subjects.slice(0, 4).map((subject) => (
-                      <span key={subject} className="tag-chip">
-                        {subject}
-                      </span>
-                    ))}
-                  </div>
-                ) : null}
-              </button>
+              </article>
             );
           })}
 
@@ -1445,7 +1625,6 @@ export default function App() {
           </header>
           <LockedState
             compact
-            icon={LibraryIcon}
             title="Sign in to open your library."
           />
         </div>
@@ -1499,7 +1678,6 @@ export default function App() {
           </header>
           <LockedState
             compact
-            icon={ProfileIcon}
             title="Create an account to open your profile."
           />
         </div>
@@ -1585,6 +1763,8 @@ export default function App() {
     switch (activeView) {
       case "explore":
         return renderExploreView();
+      case "book":
+        return renderBookView();
       case "library":
         return renderLibraryView();
       case "profile":
@@ -1625,11 +1805,12 @@ export default function App() {
         <nav className="sidebar-nav" aria-label="Primary">
           {NAV_ITEMS.map((item) => {
             const Icon = item.icon;
+            const isActive = activeView === item.id || (activeView === "book" && item.id === "explore");
             return (
               <button
                 key={item.id}
                 type="button"
-                className={`sidebar-nav-button ${activeView === item.id ? "is-active" : ""}`}
+                className={`sidebar-nav-button ${isActive ? "is-active" : ""}`}
                 onClick={() => handleNavSelection(item.id)}
               >
                 <Icon />
@@ -1644,6 +1825,7 @@ export default function App() {
             type="button"
             className="sidebar-profile sidebar-profile-icon"
             onClick={() => {
+              setActiveWorkId(null);
               setActiveView("profile");
               setMobileNavOpen(false);
             }}
@@ -1689,6 +1871,7 @@ export default function App() {
             aria-label="Open profile"
             onClick={() => {
               setMobileNavOpen(false);
+              setActiveWorkId(null);
               setActiveView("profile");
             }}
           >

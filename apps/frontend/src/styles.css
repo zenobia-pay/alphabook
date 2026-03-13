@@ -570,23 +570,6 @@ button {
   text-align: center;
 }
 
-.locked-mark {
-  width: 52px;
-  height: 52px;
-  display: grid;
-  place-items: center;
-  border-radius: 16px;
-  color: var(--accent);
-  border: 1px solid rgba(139, 55, 40, 0.12);
-  background: transparent;
-}
-
-.locked-mark svg {
-  width: 20px;
-  height: 20px;
-  fill: currentColor;
-}
-
 .locked-copy {
   display: grid;
   gap: 0;
@@ -869,13 +852,17 @@ button {
 }
 
 .sidebar-signin-bottom {
-  width: 72px;
-  height: 72px;
+  width: auto;
+  min-width: 0;
+  height: auto;
   margin-top: auto;
-  padding: 0;
+  padding: 10px 18px;
   justify-self: start;
-  background: rgba(255, 251, 247, 0.78);
-  box-shadow: 0 10px 24px rgba(58, 34, 27, 0.08);
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  font-weight: 600;
+  line-height: 1;
 }
 
 .sidebar-auth-actions {
