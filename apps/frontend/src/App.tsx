@@ -14,7 +14,7 @@ import type { AgentationProps } from "agentation";
 
 import { getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type UserProfile, type WorkSummary } from "@alphabook/shared";
 
-import { buildSignInUrl, buildSignOutUrl, buildSignUpUrl, fetchCurrentUser, fetchMessages, fetchSessions, fetchWorks, streamChat } from "./api";
+import { buildSignInUrl, buildSignOutUrl, fetchCurrentUser, fetchMessages, fetchSessions, fetchWorks, streamChat } from "./api";
 
 type UiMessage = MessageRecord & {
   citations: Citation[];
@@ -682,12 +682,10 @@ function AssistantWelcome({
 
 function LockedState({
   title,
-  copy,
   icon: Icon,
   compact = false,
 }: {
   title: string;
-  copy: string;
   icon: ComponentType;
   compact?: boolean;
 }) {
@@ -698,14 +696,10 @@ function LockedState({
       </div>
       <div className="locked-copy">
         <h2>{title}</h2>
-        <p>{copy}</p>
       </div>
       <div className="locked-actions">
         <a className="hero-button hero-button-primary" href={buildSignInUrl(window.location.href)}>
           Sign in
-        </a>
-        <a className="hero-button" href={buildSignUpUrl(window.location.href)}>
-          Create account
         </a>
       </div>
     </section>
@@ -1322,7 +1316,6 @@ export default function App() {
               compact
               icon={ChatIcon}
               title="Sign in to use the assistant."
-              copy="Chats and citations stay with your account."
             />
           ) : (
             <AssistantSurface
@@ -1453,7 +1446,6 @@ export default function App() {
           <LockedState
             icon={LibraryIcon}
             title="Sign in to open your library."
-            copy="Saved chats live here."
           />
         </div>
       );
@@ -1507,7 +1499,6 @@ export default function App() {
           <LockedState
             icon={ProfileIcon}
             title="Create an account to open your profile."
-            copy="History and saved sessions live here."
           />
         </div>
       );
@@ -1625,14 +1616,7 @@ export default function App() {
             </button>
           </div>
           {authState.authConfigured && !authState.user && !authState.loading ? (
-            <div className="sidebar-auth-actions">
-              <a className="sidebar-signin" href={buildSignInUrl(window.location.href)}>
-                Sign in
-              </a>
-              <a className="sidebar-signin" href={buildSignUpUrl(window.location.href)}>
-                Create account
-              </a>
-            </div>
+            <div className="sidebar-auth-actions" />
           ) : null}
         </div>
 
@@ -1653,28 +1637,34 @@ export default function App() {
           })}
         </nav>
 
-        <button
-          type="button"
-          className="sidebar-profile sidebar-profile-icon"
-          onClick={() => {
-            setActiveView("profile");
-            setMobileNavOpen(false);
-          }}
-          aria-label="Open profile"
-          title={displayProfileName}
-        >
-          {currentUser?.avatarUrl ? (
-            <img className="sidebar-avatar-image" src={currentUser.avatarUrl} alt={displayProfileName} />
-          ) : hasAuthenticatedUser ? (
-            <div className="profile-badge" style={{ ["--profile-hue" as string]: profileHue }}>
-              {initialsFromSeed(displayProfileName)}
-            </div>
-          ) : (
-            <div className="profile-badge profile-badge-neutral">
-              <ProfileIcon />
-            </div>
-          )}
-        </button>
+        {hasAuthenticatedUser || !authState.authConfigured ? (
+          <button
+            type="button"
+            className="sidebar-profile sidebar-profile-icon"
+            onClick={() => {
+              setActiveView("profile");
+              setMobileNavOpen(false);
+            }}
+            aria-label="Open profile"
+            title={displayProfileName}
+          >
+            {currentUser?.avatarUrl ? (
+              <img className="sidebar-avatar-image" src={currentUser.avatarUrl} alt={displayProfileName} />
+            ) : hasAuthenticatedUser ? (
+              <div className="profile-badge" style={{ ["--profile-hue" as string]: profileHue }}>
+                {initialsFromSeed(displayProfileName)}
+              </div>
+            ) : (
+              <div className="profile-badge profile-badge-neutral">
+                <ProfileIcon />
+              </div>
+            )}
+          </button>
+        ) : (
+          <a className="sidebar-signin sidebar-signin-bottom" href={buildSignInUrl(window.location.href)}>
+            Sign in
+          </a>
+        )}
       </aside>
 
       <main className={`main-panel is-${activeView}`}>

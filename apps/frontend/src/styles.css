@@ -557,7 +557,6 @@ button {
   gap: 16px;
   align-items: start;
   padding: 22px 0 0;
-  border-top: 1px solid rgba(72, 43, 37, 0.08);
 }
 
 .locked-panel.is-compact {
@@ -586,7 +585,7 @@ button {
 
 .locked-copy {
   display: grid;
-  gap: 8px;
+  gap: 0;
 }
 
 .locked-copy h2 {
@@ -595,13 +594,6 @@ button {
   font-size: clamp(2rem, 3.4vw, 3rem);
   line-height: 0.98;
   letter-spacing: -0.05em;
-}
-
-.locked-copy p {
-  margin: 0;
-  max-width: 58ch;
-  color: var(--text-muted);
-  line-height: 1.68;
 }
 
 .locked-actions {
@@ -871,9 +863,18 @@ button {
   border-color: rgba(139, 55, 40, 0.24);
 }
 
+.sidebar-signin-bottom {
+  width: 72px;
+  height: 72px;
+  margin-top: auto;
+  padding: 0;
+  justify-self: start;
+  background: rgba(255, 251, 247, 0.78);
+  box-shadow: 0 10px 24px rgba(58, 34, 27, 0.08);
+}
+
 .sidebar-auth-actions {
-  display: grid;
-  gap: 8px;
+  display: none;
 }
 
 .aui-root.aui-thread-root {
