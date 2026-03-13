@@ -1,12 +1,8 @@
 import { createContext, type ComponentType, type CSSProperties, type FormEvent, type UIEvent, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   AssistantRuntimeProvider,
-  makeAssistantToolUI,
   useExternalStoreRuntime,
-  useMessage,
-  type ToolCallMessagePartProps,
 } from "@assistant-ui/react";
-import { Composer, Thread } from "@assistant-ui/react-ui";
 import type { ReadonlyJSONObject, ReadonlyJSONValue } from "assistant-stream/utils";
 import type { AgentationProps } from "agentation";
 import { ChevronsLeft, ChevronsRight } from "lucide-react";
@@ -14,6 +10,7 @@ import { ChevronsLeft, ChevronsRight } from "lucide-react";
 import { getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type PublicProfileResponse, type UserProfile, type WorkDetail, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
 import { buildSignInUrl, buildSignOutUrl, fetchCurrentUser, fetchMessages, fetchProfile, fetchSessions, fetchWorkDetail, fetchWorks, followProfile, streamChat, unfollowProfile } from "./api";
+import { Thread } from "./components/assistant-ui/thread";
 import { Avatar, AvatarFallback, AvatarImage } from "./components/ui/avatar";
 import { Button } from "./components/ui/button";
 import { Card, CardContent } from "./components/ui/card";
@@ -65,8 +62,6 @@ type UrlState = {
 };
 
 const USER_STORAGE_KEY = "alphabook.localUserId";
-const CitationNavigationContext = createContext<CitationNavigationContextValue | null>(null);
-
 function isViewMode(value: string | null): value is ViewMode {
   return value === "explore" || value === "assistant" || value === "library" || value === "profile" || value === "book";
 }
@@ -881,78 +876,6 @@ const NAV_ITEMS: Array<{ id: ViewMode; label: string; icon: ComponentType }> = [
   { id: "profile", label: "Profile", icon: ProfileIcon },
 ];
 
-function AssistantToolCall({
-  toolName,
-  args,
-  result,
-  isError,
-  status,
-}: ToolCallMessagePartProps<Record<string, unknown>, Record<string, unknown>>) {
-  const label = getToolLabel(toolName);
-  const { __rationale, ...visibleArgs } = args;
-  const state =
-    status.type === "running" || result === undefined ? "running" : isError || status.type === "incomplete" ? "error" : "completed";
-  const detail = summarizeToolSentence({
-    toolName,
-    args: visibleArgs,
-    result,
-    state,
-    rationale: typeof __rationale === "string" ? __rationale : undefined,
-  });
-
-  return (
-    <div className={`tool-call-card is-${state}`}>
-      <span className="tool-call-label">{label}</span>
-      <p className="tool-call-detail">{detail}</p>
-    </div>
-  );
-}
-
-const TOOL_UIS = [
-  "search_works",
-  "get_work_metadata",
-  "get_relevant_chunks",
-  "get_work_text",
-  "create_workspace",
-  "run_workspace_task",
-  "read_workspace_file",
-  "destroy_workspace",
-].map((toolName) =>
-  makeAssistantToolUI<Record<string, unknown>, Record<string, unknown>>({
-    toolName,
-    render: AssistantToolCall,
-  }),
-);
-
-function AssistantFooter() {
-  const metadata = useMessage((message) => message.metadata.custom as Record<string, unknown> | undefined);
-  const citations = (Array.isArray(metadata?.citations) ? metadata?.citations : []) as Citation[];
-  const citationNavigation = useContext(CitationNavigationContext);
-
-  if (citations.length === 0) {
-    return null;
-  }
-
-  return (
-    <div className="assistant-footnotes">
-      <div className="citation-list">
-        {citations.map((citation) => (
-          <button
-            key={`${citation.workId}-${citation.chunkId ?? citation.label}`}
-            type="button"
-            className={`citation-chip ${citationNavigation?.activeWorkId === citation.workId ? "is-active" : ""}`}
-            title={decodeHtmlText(citation.excerpt)}
-            data-testid="citation-chip"
-            onClick={() => citationNavigation?.openCitation(citation)}
-          >
-            {citation.label}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 function LockedState({
   title,
   compact = false,
@@ -966,7 +889,7 @@ function LockedState({
         <h2 className="max-w-3xl font-[Newsreader] text-[clamp(2.2rem,5vw,4.6rem)] font-semibold leading-[0.92] tracking-[-0.06em] text-[var(--ink)]">
           {title}
         </h2>
-        <Button asChild variant="accent" size="lg">
+        <Button asChild variant="default" size="lg">
           <a href={buildSignInUrl(window.location.href)}>Sign in</a>
         </Button>
       </CardContent>
@@ -990,17 +913,11 @@ function AssistantSurface({
   isSending,
   streamingAssistantId,
   onPrompt,
-  showWelcome,
-  onOpenCitation,
-  activeWorkId,
 }: {
   messages: UiMessage[];
   isSending: boolean;
   streamingAssistantId: string | null;
   onPrompt: (prompt: string) => Promise<void>;
-  showWelcome: boolean;
-  onOpenCitation: (citation: Citation) => void;
-  activeWorkId: string | null | undefined;
 }) {
   const runtime = useExternalStoreRuntime({
     isRunning: isSending,
@@ -1017,42 +934,9 @@ function AssistantSurface({
   });
 
   return (
-    <CitationNavigationContext.Provider value={{ openCitation: onOpenCitation, activeWorkId }}>
-      <AssistantRuntimeProvider runtime={runtime}>
-        <Thread
-          assistantAvatar={{ fallback: "A" }}
-          tools={TOOL_UIS}
-          components={{
-            Composer,
-          }}
-          assistantMessage={{
-            allowCopy: true,
-            components: {
-              Footer: AssistantFooter,
-            },
-          }}
-          composer={{
-            allowAttachments: false,
-          }}
-          welcome={{
-            message: showWelcome ? "Ask Alphabook." : null,
-            suggestions: showWelcome
-              ? [
-                  {
-                    prompt: "Trace how grief moves across Don Quixote and Moby-Dick.",
-                  },
-                  {
-                    prompt: "Find books where exile and melancholy overlap.",
-                  },
-                  {
-                    prompt: "Compare how obsession sounds in the strongest passages of the corpus.",
-                  },
-                ]
-              : [],
-          }}
-        />
-      </AssistantRuntimeProvider>
-    </CitationNavigationContext.Provider>
+    <AssistantRuntimeProvider runtime={runtime}>
+      <Thread />
+    </AssistantRuntimeProvider>
   );
 }
 
@@ -1819,9 +1703,6 @@ export default function App() {
                 isSending={isSending}
                 streamingAssistantId={streamingAssistantId}
                 onPrompt={sendPrompt}
-                showWelcome={showWelcome}
-                onOpenCitation={openCitation}
-                activeWorkId={activeWorkId}
               />
             )}
           </div>
@@ -1900,9 +1781,6 @@ export default function App() {
                 isSending={isSending}
                 streamingAssistantId={streamingAssistantId}
                 onPrompt={bookPromptHandler}
-                showWelcome={showWelcome}
-                onOpenCitation={openCitation}
-                activeWorkId={activeWorkId}
               />
             )}
           </div>
@@ -2353,7 +2231,7 @@ export default function App() {
             ) : null}
           </Button>
         ) : (
-          <Button asChild variant="accent" className={cn("sidebar-signin sidebar-signin-bottom", sidebarCollapsed && "size-11 px-0")}>
+          <Button asChild variant="default" className={cn("sidebar-signin sidebar-signin-bottom", sidebarCollapsed && "size-11 px-0")}>
             <a href={buildSignInUrl(window.location.href)}>{sidebarCollapsed ? "→" : "Sign in"}</a>
           </Button>
         )}

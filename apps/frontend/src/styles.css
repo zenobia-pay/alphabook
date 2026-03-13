@@ -799,44 +799,6 @@ button {
   line-height: 1.82;
 }
 
-.citation-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-top: 6px;
-}
-
-.citation-chip {
-  appearance: none;
-  display: inline-flex;
-  align-items: center;
-  padding: 7px 11px;
-  border-radius: 999px;
-  background: transparent;
-  border: 1px solid rgba(139, 55, 40, 0.12);
-  color: var(--accent);
-  font: inherit;
-  font-size: 0.84rem;
-  font-weight: 700;
-  cursor: pointer;
-  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
-}
-
-.citation-chip:hover {
-  background: rgba(139, 55, 40, 0.08);
-  border-color: rgba(139, 55, 40, 0.22);
-}
-
-.citation-chip.is-active {
-  background: rgba(139, 55, 40, 0.12);
-  border-color: rgba(139, 55, 40, 0.28);
-}
-
-.citation-chip:focus-visible {
-  outline: 2px solid rgba(139, 55, 40, 0.34);
-  outline-offset: 2px;
-}
-
 .composer-shell {
   padding: 0 22px 22px;
 }
@@ -1029,47 +991,6 @@ button {
   overflow: hidden;
 }
 
-.assistant-footnotes {
-  display: grid;
-  gap: 10px;
-  margin-top: 12px;
-}
-
-.tool-call-card {
-  display: grid;
-  gap: 5px;
-  margin: 0 0 12px;
-  padding: 0 0 0 15px;
-  border-left: 2px solid rgba(72, 43, 37, 0.12);
-}
-
-.tool-call-card.is-running {
-  border-color: rgba(139, 55, 40, 0.4);
-}
-
-.tool-call-card.is-completed {
-  border-color: rgba(83, 129, 89, 0.5);
-}
-
-.tool-call-card.is-error {
-  border-color: rgba(166, 55, 55, 0.42);
-}
-
-.tool-call-label {
-  color: var(--text-muted);
-  font-size: 0.74rem;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.tool-call-detail {
-  margin: 0;
-  color: rgba(38, 26, 25, 0.82);
-  font-size: 0.94rem;
-  line-height: 1.58;
-}
-
 .signin-card .hero-button {
   text-decoration: none;
 }
@@ -1142,98 +1063,6 @@ button {
 
 .sidebar-auth-actions {
   display: none;
-}
-
-.aui-root.aui-thread-root {
-  flex: 1 1 auto;
-  min-height: 0;
-  height: 100%;
-  border: 0;
-  background: transparent;
-}
-
-.aui-thread-viewport {
-  min-height: 0;
-  padding: 22px 0 0;
-  overscroll-behavior-y: none;
-  scrollbar-gutter: stable;
-}
-
-.aui-thread-viewport-footer {
-  position: sticky;
-  bottom: 0;
-  margin-top: 12px;
-  display: flex;
-  width: 100%;
-  max-width: 860px;
-  flex-direction: column;
-  align-items: center;
-  justify-content: flex-end;
-  padding-bottom: 16px;
-  background-color: inherit;
-  z-index: 5;
-}
-
-.aui-thread-followup-suggestions {
-  display: none;
-}
-
-.aui-assistant-message-root,
-.aui-user-message-root {
-  max-width: min(860px, 100%);
-  margin: 0 auto 22px;
-}
-
-.aui-assistant-message-root .aui-avatar-root,
-.aui-user-message-root .aui-avatar-root {
-  display: none;
-}
-
-.aui-user-message-root {
-  display: flex;
-  justify-content: flex-end;
-}
-
-.aui-user-message-root .aui-user-message-content {
-  background: rgba(235, 228, 219, 0.72);
-  border: 1px solid rgba(72, 43, 37, 0.08);
-  border-radius: 20px;
-  padding: 14px 18px;
-}
-
-.aui-assistant-message-root .aui-assistant-message-content {
-  display: grid;
-  gap: 8px;
-  padding: 0;
-}
-
-.aui-message-part-text {
-  color: inherit;
-  font-size: 1.05rem;
-  line-height: 1.78;
-}
-
-.aui-composer-root {
-  max-width: 860px;
-  width: min(860px, 100%);
-  margin: 0 auto;
-}
-
-.aui-composer-input {
-  max-height: 160px;
-}
-
-.aui-thread-scroll-to-bottom {
-  background: rgba(255, 250, 246, 0.96);
-  border-color: rgba(139, 55, 40, 0.18);
-  color: var(--accent);
-  box-shadow: 0 10px 24px rgba(58, 34, 27, 0.14);
-}
-
-.aui-thread-welcome-root {
-  display: grid;
-  place-items: center;
-  min-height: 100%;
 }
 
 @media (max-width: 1120px) {
