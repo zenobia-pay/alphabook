@@ -334,7 +334,10 @@ async function runExternalAgent(
 
   const taskPath = join(paths.context, "task.json");
   await writeFile(taskPath, JSON.stringify(taskSpec, null, 2), "utf8");
-  const { stdout, stderr } = await execFileAsync(command, [], {
+  const shouldUseNode = /\.(?:[cm]?js|[cm]?ts)$/i.test(command);
+  const executable = shouldUseNode ? process.execPath : command;
+  const args = shouldUseNode ? [command] : [];
+  const { stdout, stderr } = await execFileAsync(executable, args, {
     cwd: workspaceRoot,
     env: {
       ...process.env,
