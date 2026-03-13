@@ -8,6 +8,7 @@ import { generatedMirrorDirectory, htmlToText, listMirrorIds, mainMirrorDirector
 
 test("main mirror path matches Gutenberg digit hierarchy", () => {
   const root = "/srv/alphabook/gutenberg";
+  assert.equal(mainMirrorDirectory(root, "3"), "/srv/alphabook/gutenberg/0/3");
   assert.equal(mainMirrorDirectory(root, "12345"), "/srv/alphabook/gutenberg/1/2/3/4/12345");
   assert.equal(generatedMirrorDirectory(root, "12345"), "/srv/alphabook/gutenberg/cache/epub/12345");
 });
@@ -39,4 +40,26 @@ test("listMirrorIds reads generated epub directories", async () => {
 
   const ids = await listMirrorIds(root);
   assert.deepEqual(ids, ["12345", "54321"]);
+});
+
+test("listMirrorIds falls back to the main mirror tree", async () => {
+  const root = await mkdtemp(join(tmpdir(), "alphabook-mirror-"));
+  await mkdir(join(root, "0", "3"), { recursive: true });
+  await mkdir(join(root, "1", "0", "0", "0", "1000"), { recursive: true });
+  await writeFile(join(root, "0", "3", "3-0.txt"), "Three", "utf8");
+  await writeFile(join(root, "1", "0", "0", "0", "1000", "1000-0.txt"), "Thousand", "utf8");
+
+  const ids = await listMirrorIds(root);
+  assert.deepEqual(ids, ["3", "1000"]);
+});
+
+test("resolveMirrorSource reads single-digit ids from the main mirror tree", async () => {
+  const root = await mkdtemp(join(tmpdir(), "alphabook-mirror-"));
+  await mkdir(join(root, "0", "3"), { recursive: true });
+  await writeFile(join(root, "0", "3", "3-0.txt"), "Single digit text", "utf8");
+
+  const result = await resolveMirrorSource(root, "3");
+  assert.equal(result.format, "text");
+  assert.match(result.sourcePath, /0\/3\/3-0\.txt$/);
+  assert.equal(result.rawText, "Single digit text");
 });

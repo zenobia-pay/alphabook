@@ -1,5 +1,5 @@
 import { access, readFile, readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 export interface MirrorSource {
   gutenbergId: string;
@@ -13,6 +13,9 @@ export interface MirrorSource {
 
 function digitsPath(gutenbergId: string): string[] {
   const digits = gutenbergId.replace(/\D+/g, "");
+  if (digits.length === 1) {
+    return ["0"];
+  }
   return digits.length > 1 ? digits.slice(0, -1).split("") : [];
 }
 
@@ -33,7 +36,7 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-async function listFilesRecursive(root: string, depth = 0): Promise<string[]> {
+async function listFilesRecursive(root: string, maxDepth = 2, currentDepth = 0): Promise<string[]> {
   if (!(await exists(root))) {
     return [];
   }
@@ -42,15 +45,22 @@ async function listFilesRecursive(root: string, depth = 0): Promise<string[]> {
     entries.map(async (entry) => {
       const fullPath = join(root, entry.name);
       if (entry.isDirectory()) {
-        if (depth >= 2) {
+        if (currentDepth >= maxDepth) {
           return [];
         }
-        return listFilesRecursive(fullPath, depth + 1);
+        return listFilesRecursive(fullPath, maxDepth, currentDepth + 1);
       }
       return [fullPath];
     }),
   );
   return files.flat();
+}
+
+function extractGutenbergIdFromPath(path: string): string | null {
+  const base = basename(path).toLowerCase();
+  const match = base.match(/^(\d+)(?:-\d+)?\.(txt|htm|html)(?:\.utf-8)?$/i)
+    ?? base.match(/^pg(\d+)(?:-[a-z0-9]+)?\.(txt|htm|html)(?:\.utf-8)?$/i);
+  return match?.[1] ?? null;
 }
 
 async function listNumericDirectories(root: string): Promise<string[]> {
@@ -151,12 +161,12 @@ export async function listMirrorIds(mirrorRoot: string): Promise<string[]> {
     return generatedIds.sort((left, right) => Number(left) - Number(right));
   }
 
-  const mainFiles = await listFilesRecursive(mirrorRoot, 6);
+  const mainFiles = await listFilesRecursive(mirrorRoot, 8);
   const discovered = new Set<string>();
   for (const path of mainFiles) {
-    const match = path.match(/\/(\d+)\/[^/]+$/);
-    if (match?.[1]) {
-      discovered.add(match[1]);
+    const match = extractGutenbergIdFromPath(path);
+    if (match) {
+      discovered.add(match);
     }
   }
   return [...discovered].sort((left, right) => Number(left) - Number(right));
