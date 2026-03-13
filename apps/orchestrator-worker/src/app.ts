@@ -258,19 +258,19 @@ function describePlannerAction(toolName: ToolName, rationale?: string) {
 
   switch (toolName) {
     case "search_works":
-      return "I’m going to scan corpus metadata first, then pull seed matches, then run a two-stage VM search.";
+      return "I’m starting a corpus-wide search and will gather the strongest quoted evidence I can find.";
     case "get_relevant_chunks":
-      return "I have candidate books, so I’m pulling seed matches from the index before the VM starts its broader search.";
+      return "I’m doing a quick first scan to pick up useful leads.";
     case "get_work_metadata":
-      return "I’m loading corpus metadata so the VM gets a richer map of the candidate books before it searches.";
+      return "I’m loading the book details before the deeper search begins.";
     case "get_work_text":
-      return "I’m opening the full text for the most relevant book so I can inspect it directly.";
+      return "I’m opening the book text directly.";
     case "create_workspace":
-      return "The initial scans are complete, so I’m preparing the VM workspace for the long-running corpus search.";
+      return "I’m starting the longer background search now.";
     case "run_workspace_task":
-      return "The workspace is ready. I’m running the long VM job now: first collect evidence, then write the briefing.";
+      return "I’m searching through the corpus now.";
     case "read_workspace_file":
-      return "The VM produced an intermediate artifact, and I’m reading it back into the thread.";
+      return "I’m bringing the latest search notes back into the thread.";
     case "destroy_workspace":
       return "I’m cleaning up the workspace now that I have the evidence I need.";
     default:
@@ -304,6 +304,45 @@ function fallbackFinalAnswer(toolResults: Record<string, unknown>[]): { answer: 
     answer: "I gathered relevant passages, but the run hit its hard limit before producing a cleaner synthesis.",
     citations,
   };
+}
+
+function isTextArtifact(filename: string, mimeType: string) {
+  return mimeType.startsWith("text/") || mimeType.includes("json") || /\.(md|txt|json|log)$/iu.test(filename);
+}
+
+async function loadRunArtifacts(
+  deps: AppDeps,
+  sessionId: string,
+  runId: string,
+  toolCalls: Awaited<ReturnType<AppStore["listToolCalls"]>>,
+) {
+  const runtimeIds = new Set<string>();
+  for (const toolCall of toolCalls) {
+    const result = toolCall.resultJson;
+    const args = toolCall.argsJson;
+    if (typeof result?.runtimeId === "string") {
+      runtimeIds.add(result.runtimeId);
+    }
+    if (typeof args?.runtimeId === "string") {
+      runtimeIds.add(args.runtimeId);
+    }
+  }
+
+  const artifacts = await deps.store.listArtifacts(sessionId);
+  const filtered = artifacts.filter((artifact) =>
+    artifact.runtimeId === null
+      ? artifact.filename.includes(runId)
+      : runtimeIds.has(artifact.runtimeId),
+  );
+
+  return Promise.all(
+    filtered.map(async (artifact) => ({
+      ...artifact,
+      content: isTextArtifact(artifact.filename, artifact.mimeType)
+        ? await deps.blobStore.getText(artifact.r2Key)
+        : null,
+    })),
+  );
 }
 
 async function persistFinalArtifact(deps: AppDeps, sessionId: string, runId: string, answer: string, citations: Array<Record<string, unknown>>) {
@@ -577,7 +616,7 @@ export function createApp(deps: AppDeps) {
         }
         return "";
       },
-      allowMethods: ["GET", "POST", "OPTIONS"],
+      allowMethods: ["GET", "POST", "DELETE", "OPTIONS"],
       allowHeaders: ["content-type"],
       exposeHeaders: ["content-type"],
       credentials: true,
@@ -622,13 +661,65 @@ export function createApp(deps: AppDeps) {
     return c.json({
       authenticated: Boolean(user),
       authConfigured: deps.auth?.isConfigured() ?? false,
-      user: user
-        ? {
-            ...user,
-            followersCount: 0,
-            followingCount: 0,
-          }
-        : null,
+      user: user ?? null,
+    });
+  });
+
+  app.get("/profiles/:userId", async (c) => {
+    const targetUserId = c.req.param("userId");
+    const profile = await deps.store.getUserProfile(targetUserId);
+    if (!profile) {
+      return c.json({ error: "Profile not found." }, 404);
+    }
+    const viewer = await resolveUser(c);
+    const isSelf = Boolean(viewer && viewer.id === targetUserId);
+    const isFollowing = viewer && !isSelf ? await deps.store.isFollowing(viewer.id, targetUserId) : false;
+    return c.json({
+      profile,
+      isFollowing,
+      isSelf,
+    });
+  });
+
+  app.post("/profiles/:userId/follow", async (c) => {
+    const viewer = await resolveUser(c);
+    if (!viewer) {
+      return c.json({ error: "Authentication required." }, deps.auth?.isConfigured() ? 401 : 400);
+    }
+    const targetUserId = c.req.param("userId");
+    const profile = await deps.store.getUserProfile(targetUserId);
+    if (!profile) {
+      return c.json({ error: "Profile not found." }, 404);
+    }
+    if (viewer.id !== targetUserId) {
+      await deps.store.followUser(viewer.id, targetUserId);
+    }
+    const refreshed = await deps.store.getUserProfile(targetUserId);
+    return c.json({
+      ok: true,
+      profile: refreshed ?? profile,
+      isFollowing: viewer.id !== targetUserId,
+    });
+  });
+
+  app.delete("/profiles/:userId/follow", async (c) => {
+    const viewer = await resolveUser(c);
+    if (!viewer) {
+      return c.json({ error: "Authentication required." }, deps.auth?.isConfigured() ? 401 : 400);
+    }
+    const targetUserId = c.req.param("userId");
+    const profile = await deps.store.getUserProfile(targetUserId);
+    if (!profile) {
+      return c.json({ error: "Profile not found." }, 404);
+    }
+    if (viewer.id !== targetUserId) {
+      await deps.store.unfollowUser(viewer.id, targetUserId);
+    }
+    const refreshed = await deps.store.getUserProfile(targetUserId);
+    return c.json({
+      ok: true,
+      profile: refreshed ?? profile,
+      isFollowing: false,
     });
   });
 
@@ -799,6 +890,40 @@ export function createApp(deps: AppDeps) {
       deps.store.listRuntimeInstances(sessionId),
       deps.store.listArtifacts(sessionId),
     ]);
+
+    return c.json({
+      session,
+      run,
+      messages,
+      toolCalls,
+      runtimeInstances,
+      artifacts,
+    });
+  });
+
+  app.get("/sessions/:sessionId/runs/:runId/logs", async (c) => {
+    const sessionId = c.req.param("sessionId");
+    const runId = c.req.param("runId");
+    const session = await deps.store.getSession(sessionId);
+    if (!session) {
+      return c.json({ error: "Session not found." }, 404);
+    }
+    const user = await resolveUser(c);
+    if ((deps.auth?.isConfigured() ?? false) && (!user || user.id !== session.userId)) {
+      return c.json({ error: "Not authorized for this session." }, 403);
+    }
+
+    const run = await deps.store.getRun(runId);
+    if (!run || run.sessionId !== sessionId) {
+      return c.json({ error: "Run not found." }, 404);
+    }
+
+    const [messages, toolCalls, runtimeInstances] = await Promise.all([
+      deps.store.listMessages(sessionId),
+      deps.store.listToolCalls(runId),
+      deps.store.listRuntimeInstances(sessionId),
+    ]);
+    const artifacts = await loadRunArtifacts(deps, sessionId, runId, toolCalls);
 
     return c.json({
       session,

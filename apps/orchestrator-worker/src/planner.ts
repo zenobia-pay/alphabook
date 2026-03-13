@@ -88,11 +88,12 @@ function artifactPath(result: Record<string, unknown> | null, patterns: RegExp[]
     return null;
   }
   for (const artifact of result.artifacts as Array<Record<string, unknown>>) {
-    if (typeof artifact.path !== "string") {
+    const path = typeof artifact.path === "string" ? artifact.path : null;
+    if (!path) {
       continue;
     }
-    if (patterns.some((pattern) => pattern.test(artifact.path))) {
-      return artifact.path;
+    if (patterns.some((pattern) => pattern.test(path))) {
+      return path;
     }
   }
   return null;
@@ -106,7 +107,7 @@ export class FallbackPlanner implements Planner {
       return {
         type: "tool_call",
         tool_name: "search_works",
-        rationale: "I’m going to scan corpus metadata first, then pull seed matches, then run a two-stage VM search over the candidate texts.",
+        rationale: "I’m starting a corpus-wide search and will gather the strongest quoted evidence I can find.",
         args: {
           query: context.userMessage,
           filters: {
@@ -121,7 +122,7 @@ export class FallbackPlanner implements Planner {
       return {
         type: "tool_call",
         tool_name: "get_work_metadata",
-        rationale: "I have candidate books from the metadata scan. Next I’m loading their metadata so the VM gets a richer corpus map before searching.",
+        rationale: "I found candidate books and I’m loading their details before the deeper search begins.",
         args: {
           workIds: metadataIds,
         },
@@ -133,8 +134,8 @@ export class FallbackPlanner implements Planner {
         type: "tool_call",
         tool_name: "get_relevant_chunks",
         rationale: scopedWorkIds.length > 0
-          ? "I’ve loaded metadata. Now I’m doing an initial index scan inside the open book to seed the VM search."
-          : "I’ve loaded metadata. Now I’m doing an initial index scan across the corpus to seed the VM search.",
+          ? "I’m doing a quick first scan inside the open book to pick up useful leads."
+          : "I’m doing a quick first scan across the corpus to pick up useful leads.",
         args: {
           query: context.userMessage,
           ...(metadataIds.length > 0 ? { workIds: metadataIds } : {}),
@@ -155,7 +156,7 @@ export class FallbackPlanner implements Planner {
       return {
         type: "tool_call",
         tool_name: "create_workspace",
-        rationale: "The initial scans are complete. I’m preparing a bounded VM workspace so the long-running agent can search the candidate corpus directly.",
+        rationale: "The background search is starting now.",
         args: {
           workIds,
           chunkIds: chunks.slice(0, 24).map((chunk) => chunk.id),
@@ -187,7 +188,7 @@ export class FallbackPlanner implements Planner {
       return {
         type: "tool_call",
         tool_name: "run_workspace_task",
-        rationale: "The workspace is ready. I’m starting VM pass 1 to collect evidence and assemble the search corpus.",
+        rationale: "I’m collecting evidence from the corpus now.",
         args: {
           runtimeId,
           taskSpec: {
@@ -208,7 +209,7 @@ export class FallbackPlanner implements Planner {
       return {
         type: "tool_call",
         tool_name: "read_workspace_file",
-        rationale: "VM pass 1 finished. I’m reading the evidence notes back so the search progress is visible in the thread.",
+        rationale: "I’m bringing back the current search notes.",
         args: {
           runtimeId,
           path: evidencePath,
@@ -221,7 +222,7 @@ export class FallbackPlanner implements Planner {
       return {
         type: "tool_call",
         tool_name: "run_workspace_task",
-        rationale: "The evidence set is ready. I’m starting VM pass 2 to write the final quoted briefing.",
+        rationale: "I’m turning the search findings into a quoted briefing.",
         args: {
           runtimeId,
           taskSpec: {
@@ -250,7 +251,7 @@ export class FallbackPlanner implements Planner {
       return {
         type: "tool_call",
         tool_name: "read_workspace_file",
-        rationale: "VM pass 2 finished. I’m reading the generated briefing back into the chat.",
+        rationale: "I’m bringing the finished briefing back into the chat.",
         args: {
           runtimeId,
           path: finalBriefingPath,

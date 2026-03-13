@@ -39,6 +39,7 @@ export interface FlyRuntimeGatewayConfig {
   r2Endpoint: string;
   r2AccessKeyId: string;
   r2SecretAccessKey: string;
+  machineCpuKind?: "shared" | "performance";
   machineCpus?: number;
   machineMemoryMb?: number;
 }
@@ -447,6 +448,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
             R2_SECRET_ACCESS_KEY: this.config.r2SecretAccessKey,
           },
           guest: {
+            cpu_kind: this.config.machineCpuKind ?? "shared",
             cpus: this.config.machineCpus ?? 1,
             memory_mb: this.config.machineMemoryMb ?? 1024,
           },

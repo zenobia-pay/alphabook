@@ -14,6 +14,8 @@ export interface UserRecord {
   name: string | null;
   avatarUrl: string | null;
   createdAt: string;
+  followersCount: number;
+  followingCount: number;
 }
 
 export interface SessionSummaryRecord extends SessionRecord {
@@ -97,6 +99,9 @@ export interface AppStore {
   ensureUser(userId: string): Promise<void>;
   upsertUserProfile(input: { id: string; email?: string | null; name?: string | null; avatarUrl?: string | null }): Promise<UserRecord>;
   getUserProfile(userId: string): Promise<UserRecord | null>;
+  followUser(followerId: string, followedId: string): Promise<void>;
+  unfollowUser(followerId: string, followedId: string): Promise<void>;
+  isFollowing(followerId: string, followedId: string): Promise<boolean>;
   createSession(userId: string, title?: string): Promise<SessionRecord>;
   getSession(sessionId: string): Promise<SessionRecord | null>;
   listSessions(userId: string): Promise<SessionSummaryRecord[]>;
@@ -292,6 +297,7 @@ function searchTokens(query: string): string[] {
 export class InMemoryAppStore implements AppStore {
   private readonly users = new Set<string>();
   private readonly userProfiles = new Map<string, UserRecord>();
+  private readonly follows = new Set<string>();
   private readonly sessions = new Map<string, SessionRecord>();
   private readonly messages = new Map<string, MessageRecord[]>();
   private readonly runs = new Map<string, RunRecord>();
@@ -313,6 +319,8 @@ export class InMemoryAppStore implements AppStore {
         name: "AlphaBook User",
         avatarUrl: null,
         createdAt: nowIso(),
+        followersCount: 0,
+        followingCount: 0,
       });
     }
   }
@@ -325,6 +333,8 @@ export class InMemoryAppStore implements AppStore {
       name: input.name ?? existing?.name ?? "AlphaBook User",
       avatarUrl: input.avatarUrl ?? existing?.avatarUrl ?? null,
       createdAt: existing?.createdAt ?? nowIso(),
+      followersCount: existing?.followersCount ?? 0,
+      followingCount: existing?.followingCount ?? 0,
     };
     this.users.add(input.id);
     this.userProfiles.set(input.id, record);
@@ -332,7 +342,32 @@ export class InMemoryAppStore implements AppStore {
   }
 
   async getUserProfile(userId: string): Promise<UserRecord | null> {
-    return this.userProfiles.get(userId) ?? null;
+    const profile = this.userProfiles.get(userId);
+    if (!profile) {
+      return null;
+    }
+    return {
+      ...profile,
+      followersCount: this.countFollowers(userId),
+      followingCount: this.countFollowing(userId),
+    };
+  }
+
+  async followUser(followerId: string, followedId: string): Promise<void> {
+    if (followerId === followedId) {
+      return;
+    }
+    await this.ensureUser(followerId);
+    await this.ensureUser(followedId);
+    this.follows.add(`${followerId}:${followedId}`);
+  }
+
+  async unfollowUser(followerId: string, followedId: string): Promise<void> {
+    this.follows.delete(`${followerId}:${followedId}`);
+  }
+
+  async isFollowing(followerId: string, followedId: string): Promise<boolean> {
+    return this.follows.has(`${followerId}:${followedId}`);
   }
 
   async createSession(userId: string, title?: string): Promise<SessionRecord> {
@@ -648,6 +683,26 @@ export class InMemoryAppStore implements AppStore {
   async healthCheck(): Promise<"ok" | "error"> {
     return "ok";
   }
+
+  private countFollowers(userId: string): number {
+    let count = 0;
+    for (const key of this.follows) {
+      if (key.endsWith(`:${userId}`)) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  private countFollowing(userId: string): number {
+    let count = 0;
+    for (const key of this.follows) {
+      if (key.startsWith(`${userId}:`)) {
+        count += 1;
+      }
+    }
+    return count;
+  }
 }
 
 export class NeonAppStore implements AppStore {
@@ -696,6 +751,8 @@ export class NeonAppStore implements AppStore {
       name: row.name,
       avatarUrl: row.avatar_url,
       createdAt: row.created_at,
+      followersCount: 0,
+      followingCount: 0,
     };
   }
 
@@ -706,11 +763,30 @@ export class NeonAppStore implements AppStore {
       name: string | null;
       avatar_url: string | null;
       created_at: string;
+      followers_count: number;
+      following_count: number;
     }>(
       `
-        SELECT id, email, name, avatar_url, created_at
-        FROM users
-        WHERE id = $1
+        SELECT
+          u.id,
+          u.email,
+          u.name,
+          u.avatar_url,
+          u.created_at,
+          COALESCE(followers.count, 0) AS followers_count,
+          COALESCE(following.count, 0) AS following_count
+        FROM users u
+        LEFT JOIN (
+          SELECT followed_id, COUNT(*)::int AS count
+          FROM user_follows
+          GROUP BY followed_id
+        ) AS followers ON followers.followed_id = u.id
+        LEFT JOIN (
+          SELECT follower_id, COUNT(*)::int AS count
+          FROM user_follows
+          GROUP BY follower_id
+        ) AS following ON following.follower_id = u.id
+        WHERE u.id = $1
         LIMIT 1
       `,
       [userId],
@@ -725,7 +801,49 @@ export class NeonAppStore implements AppStore {
       name: row.name,
       avatarUrl: row.avatar_url,
       createdAt: row.created_at,
+      followersCount: Number(row.followers_count ?? 0),
+      followingCount: Number(row.following_count ?? 0),
     };
+  }
+
+  async followUser(followerId: string, followedId: string): Promise<void> {
+    if (followerId === followedId) {
+      return;
+    }
+    await this.ensureUser(followerId);
+    await this.ensureUser(followedId);
+    await this.db.query(
+      `
+        INSERT INTO user_follows (follower_id, followed_id)
+        VALUES ($1, $2)
+        ON CONFLICT (follower_id, followed_id) DO NOTHING
+      `,
+      [followerId, followedId],
+    );
+  }
+
+  async unfollowUser(followerId: string, followedId: string): Promise<void> {
+    await this.db.query(
+      `
+        DELETE FROM user_follows
+        WHERE follower_id = $1 AND followed_id = $2
+      `,
+      [followerId, followedId],
+    );
+  }
+
+  async isFollowing(followerId: string, followedId: string): Promise<boolean> {
+    const result = await this.db.query<{ following: boolean }>(
+      `
+        SELECT EXISTS (
+          SELECT 1
+          FROM user_follows
+          WHERE follower_id = $1 AND followed_id = $2
+        ) AS following
+      `,
+      [followerId, followedId],
+    );
+    return Boolean(result.rows[0]?.following);
   }
 
   async createSession(userId: string, title?: string): Promise<SessionRecord> {
@@ -1160,77 +1278,81 @@ export class NeonAppStore implements AppStore {
         }),
       );
 
-    const result = await this.db.query<{
-      id: string;
-      gutenberg_id: number | string | null;
-      title: string;
-      metadata_json: Record<string, unknown>;
-      language: string | null;
-      release_date: string | null;
-      rights_status: string | null;
-      summary: string | null;
-      authors: string[];
-      subjects: string[];
-      score: number;
-    }>(
-      `
-        WITH query_input AS (
-          SELECT websearch_to_tsquery('english', $1::text) AS tsq
-        ),
-        ranked AS (
+    try {
+      const result = await this.db.query<{
+        id: string;
+        gutenberg_id: number | string | null;
+        title: string;
+        metadata_json: Record<string, unknown>;
+        language: string | null;
+        release_date: string | null;
+        rights_status: string | null;
+        summary: string | null;
+        authors: string[];
+        subjects: string[];
+        score: number;
+      }>(
+        `
+          WITH query_input AS (
+            SELECT websearch_to_tsquery('english', CAST($1 AS text)) AS tsq
+          ),
+          ranked AS (
+            SELECT
+              w.id,
+              w.gutenberg_id,
+              w.title,
+              w.metadata_json,
+              w.language,
+              w.release_date::text,
+              w.rights_status,
+              w.summary,
+              ts_rank_cd(
+                setweight(to_tsvector('english', COALESCE(w.title, '')), 'A') ||
+                setweight(to_tsvector('english', COALESCE(w.summary, '')), 'B'),
+                query_input.tsq
+              ) AS score
+            FROM works w, query_input
+            WHERE
+              (
+                setweight(to_tsvector('english', COALESCE(w.title, '')), 'A') ||
+                setweight(to_tsvector('english', COALESCE(w.summary, '')), 'B')
+              ) @@ query_input.tsq
+              AND ($2::text IS NULL OR w.language = $2::text)
+              AND ($3::text IS NULL OR w.rights_status = $3::text)
+          )
           SELECT
-            w.id,
-            w.gutenberg_id,
-            w.title,
-            w.metadata_json,
-            w.language,
-            w.release_date::text,
-            w.rights_status,
-            w.summary,
-            ts_rank_cd(
-              setweight(to_tsvector('english', COALESCE(w.title, '')), 'A') ||
-              setweight(to_tsvector('english', COALESCE(w.summary, '')), 'B'),
-              query_input.tsq
-            ) AS score
-          FROM works w, query_input
-          WHERE
-            (
-              setweight(to_tsvector('english', COALESCE(w.title, '')), 'A') ||
-              setweight(to_tsvector('english', COALESCE(w.summary, '')), 'B')
-            ) @@ query_input.tsq
-            AND ($2::text IS NULL OR w.language = $2::text)
-            AND ($3::text IS NULL OR w.rights_status = $3::text)
-        )
-        SELECT
-          ranked.id,
-          ranked.gutenberg_id,
-          ranked.title,
-          ranked.metadata_json,
-          ranked.language,
-          ranked.release_date,
-          ranked.rights_status,
-          ranked.summary,
-          ARRAY_REMOVE(ARRAY_AGG(DISTINCT a.name), NULL) AS authors,
-          ARRAY_REMOVE(ARRAY_AGG(DISTINCT s.label), NULL) AS subjects,
-          ranked.score
-        FROM ranked
-        LEFT JOIN work_authors wa ON wa.work_id = ranked.id
-        LEFT JOIN authors a ON a.id = wa.author_id
-        LEFT JOIN work_subjects ws ON ws.work_id = ranked.id
-        LEFT JOIN subjects s ON s.id = ws.subject_id
-        GROUP BY ranked.id, ranked.gutenberg_id, ranked.title, ranked.metadata_json, ranked.language, ranked.release_date, ranked.rights_status, ranked.summary, ranked.score
-        ORDER BY ranked.score DESC, ranked.title ASC
-        LIMIT $4
-      `,
-      [
-        query,
-        typeof filters.language === "string" ? filters.language : null,
-        typeof filters.rightsStatus === "string" ? filters.rightsStatus : null,
-        limit,
-      ],
-    );
-    if (result.rows.length > 0) {
-      return mapRows(result.rows);
+            ranked.id,
+            ranked.gutenberg_id,
+            ranked.title,
+            ranked.metadata_json,
+            ranked.language,
+            ranked.release_date,
+            ranked.rights_status,
+            ranked.summary,
+            ARRAY_REMOVE(ARRAY_AGG(DISTINCT a.name), NULL) AS authors,
+            ARRAY_REMOVE(ARRAY_AGG(DISTINCT s.label), NULL) AS subjects,
+            ranked.score
+          FROM ranked
+          LEFT JOIN work_authors wa ON wa.work_id = ranked.id
+          LEFT JOIN authors a ON a.id = wa.author_id
+          LEFT JOIN work_subjects ws ON ws.work_id = ranked.id
+          LEFT JOIN subjects s ON s.id = ws.subject_id
+          GROUP BY ranked.id, ranked.gutenberg_id, ranked.title, ranked.metadata_json, ranked.language, ranked.release_date, ranked.rights_status, ranked.summary, ranked.score
+          ORDER BY ranked.score DESC, ranked.title ASC
+          LIMIT $4
+        `,
+        [
+          query,
+          typeof filters.language === "string" ? filters.language : null,
+          typeof filters.rightsStatus === "string" ? filters.rightsStatus : null,
+          limit,
+        ],
+      );
+      if (result.rows.length > 0) {
+        return mapRows(result.rows);
+      }
+    } catch {
+      // Fall back to simpler token matching if the tsquery path rejects a query shape.
     }
 
     const tokens = searchTokens(query);

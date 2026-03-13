@@ -24,6 +24,7 @@ export interface Env {
   FLY_RUNTIME_IMAGE?: string;
   FLY_RUNTIME_REGION?: string;
   FLY_RUNTIME_SHARED_TOKEN?: string;
+  FLY_RUNTIME_MACHINE_CPU_KIND?: string;
   FLY_RUNTIME_MACHINE_CPUS?: string;
   FLY_RUNTIME_MACHINE_MEMORY_MB?: string;
   R2_BUCKET_NAME?: string;
@@ -63,6 +64,10 @@ function resolveRuntimeGateway(env: Env, store: NeonAppStore, blobStore: Cloudfl
       image: env.FLY_RUNTIME_IMAGE,
       region: env.FLY_RUNTIME_REGION,
       runtimeSharedToken: env.FLY_RUNTIME_SHARED_TOKEN,
+      machineCpuKind:
+        env.FLY_RUNTIME_MACHINE_CPU_KIND === "performance"
+          ? "performance"
+          : "shared",
       machineCpus: env.FLY_RUNTIME_MACHINE_CPUS ? Number(env.FLY_RUNTIME_MACHINE_CPUS) : undefined,
       machineMemoryMb: env.FLY_RUNTIME_MACHINE_MEMORY_MB ? Number(env.FLY_RUNTIME_MACHINE_MEMORY_MB) : undefined,
       r2BucketName: env.R2_BUCKET_NAME ?? "alphabook",

@@ -18,14 +18,14 @@ export const R2_PREFIXES = {
 } as const;
 
 export const TOOL_LABELS = {
-  search_works: "Corpus search",
-  get_work_metadata: "Book metadata",
-  get_relevant_chunks: "Passage retrieval",
-  get_work_text: "Full text lookup",
-  create_workspace: "Workspace setup",
-  run_workspace_task: "Deep search",
-  read_workspace_file: "Workspace output",
-  destroy_workspace: "Workspace cleanup",
+  search_works: "Metadata Scan",
+  get_work_metadata: "Book Details",
+  get_relevant_chunks: "Initial Scan",
+  get_work_text: "Text Lookup",
+  create_workspace: "Search Prep",
+  run_workspace_task: "Background Search",
+  read_workspace_file: "Search Progress",
+  destroy_workspace: "Cleanup",
 } as const;
 
 export function getToolLabel(toolName: string) {

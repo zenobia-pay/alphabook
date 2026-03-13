@@ -158,6 +158,34 @@ function formatWorkList(works: WorkSummary[]): string {
   return `${works[0].title}, ${works[1].title}, and ${works.length - 2} more works`;
 }
 
+function failedSteps(toolHistory: ToolHistoryEntry[]) {
+  return toolHistory
+    .filter((entry) => entry.result.ok === false)
+    .map((entry) => ({
+      toolName: entry.toolName,
+      error: typeof entry.result.error === "string" ? entry.result.error : "Unknown error",
+    }));
+}
+
+function userFacingErrorSummary(toolHistory: ToolHistoryEntry[]): string | null {
+  const failures = failedSteps(toolHistory);
+  if (failures.length === 0) {
+    return null;
+  }
+
+  const metadataFailure = failures.find((failure) => failure.toolName === "search_works");
+  const workspaceFailure = failures.find((failure) => failure.toolName === "create_workspace");
+  const runtimeFailure = failures.find((failure) => failure.toolName === "run_workspace_task");
+
+  if (workspaceFailure || runtimeFailure) {
+    return "I could not start or complete the background corpus search for this request, so this run did not actually search the books the way it should have.";
+  }
+  if (metadataFailure) {
+    return "I could not complete the first search pass across the library, so this run did not build a reliable corpus search plan.";
+  }
+  return "This run hit an internal search error before it could complete the corpus search.";
+}
+
 export class FallbackSynthesizer implements Synthesizer {
   async synthesize(input: SynthesisInput): Promise<SynthesisResult> {
     const works = extractWorks(input.toolHistory);
@@ -173,6 +201,14 @@ export class FallbackSynthesizer implements Synthesizer {
     if (runtimeSummary) {
       return {
         answer: runtimeSummary,
+        citations,
+      };
+    }
+
+    const failureSummary = userFacingErrorSummary(input.toolHistory);
+    if (failureSummary) {
+      return {
+        answer: failureSummary,
         citations,
       };
     }
