@@ -83,9 +83,11 @@ function hydrateMessage(message: MessageRecord) {
   return {
     ...message,
     citations: Array.isArray(message.metadata.citations) ? (message.metadata.citations as Citation[]) : [],
-    researchLog: Array.isArray(message.metadata.researchLog)
-      ? (message.metadata.researchLog as Array<Record<string, unknown>>)
-      : [],
+    toolCalls: Array.isArray(message.metadata.toolCalls)
+      ? (message.metadata.toolCalls as Array<Record<string, unknown>>)
+      : Array.isArray(message.metadata.researchLog)
+        ? (message.metadata.researchLog as Array<Record<string, unknown>>)
+        : [],
   };
 }
 

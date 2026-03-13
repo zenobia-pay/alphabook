@@ -1,18 +1,35 @@
 import { type ComponentType, useEffect, useMemo, useRef, useState } from "react";
-import { AssistantRuntimeProvider, useExternalStoreRuntime, useMessage } from "@assistant-ui/react";
+import {
+  AssistantRuntimeProvider,
+  makeAssistantToolUI,
+  useExternalStoreRuntime,
+  useMessage,
+  type ToolCallMessagePartProps,
+} from "@assistant-ui/react";
 import { Thread } from "@assistant-ui/react-ui";
+import type { ReadonlyJSONObject, ReadonlyJSONValue } from "assistant-stream/utils";
 
-import type { ChatSessionSummary, Citation, MessageRecord, UserProfile } from "@alphabook/shared";
+import { getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type UserProfile } from "@alphabook/shared";
 
 import { buildSignInUrl, buildSignOutUrl, buildSignUpUrl, fetchCurrentUser, fetchMessages, fetchSessions, streamChat } from "./api";
 
 type UiMessage = MessageRecord & {
   citations: Citation[];
-  researchLog: Array<Record<string, unknown>>;
+  toolCalls: ToolTraceEntry[];
 };
 
-type ResearchLogEntry = {
+type RawUiMessage = MessageRecord & {
+  citations: Citation[];
+  toolCalls: Array<Record<string, unknown>>;
+};
+
+type ToolTraceEntry = {
+  id: string;
+  toolName: string;
   label: string;
+  args: Record<string, unknown>;
+  result?: Record<string, unknown>;
+  isError?: boolean;
   state: "running" | "completed" | "error";
 };
 
@@ -47,13 +64,8 @@ function createGuestProfile(id: string): UserProfile {
   };
 }
 
-function normalizeResearchLogEntry(entry: Record<string, unknown>): ResearchLogEntry {
-  const fallbackLabel =
-    typeof entry.label === "string"
-      ? entry.label
-      : typeof entry.toolName === "string"
-        ? toolLabel(entry.toolName)
-        : "Run step";
+function normalizeToolTraceEntry(entry: Record<string, unknown>, index: number): ToolTraceEntry {
+  const toolName = typeof entry.toolName === "string" ? entry.toolName : "search_works";
   const state =
     entry.state === "running" || entry.state === "completed" || entry.state === "error"
       ? entry.state
@@ -62,18 +74,55 @@ function normalizeResearchLogEntry(entry: Record<string, unknown>): ResearchLogE
         : "completed";
 
   return {
-    label: fallbackLabel,
+    id:
+      typeof entry.toolCallId === "string"
+        ? entry.toolCallId
+        : typeof entry.id === "string"
+          ? entry.id
+          : `${toolName}-${index}`,
+    toolName,
+    label: typeof entry.label === "string" ? entry.label : getToolLabel(toolName),
+    args: entry.args && typeof entry.args === "object" ? (entry.args as Record<string, unknown>) : {},
+    result: entry.result && typeof entry.result === "object" ? (entry.result as Record<string, unknown>) : undefined,
+    isError: entry.isError === true || state === "error",
     state,
   };
 }
 
-function hydrateStoredMessage(message: UiMessage): UiMessage {
+function toReadonlyJsonValue(value: unknown): ReadonlyJSONValue {
+  if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => toReadonlyJsonValue(entry));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [key, toReadonlyJsonValue(entry)]),
+    ) as ReadonlyJSONObject;
+  }
+  return String(value);
+}
+
+function toReadonlyJsonObject(args: Record<string, unknown>): ReadonlyJSONObject {
+  return Object.fromEntries(Object.entries(args).map(([key, value]) => [key, toReadonlyJsonValue(value)])) as ReadonlyJSONObject;
+}
+
+function hydrateStoredMessage(message: RawUiMessage): UiMessage {
   return {
     ...message,
     citations: message.citations ?? [],
-    researchLog: Array.isArray(message.researchLog)
-      ? message.researchLog.map((entry) =>
-          entry && typeof entry === "object" ? normalizeResearchLogEntry(entry as Record<string, unknown>) : { label: "Run step", state: "completed" },
+    toolCalls: Array.isArray(message.toolCalls)
+      ? message.toolCalls.map((entry, index) =>
+          entry && typeof entry === "object"
+            ? normalizeToolTraceEntry(entry as Record<string, unknown>, index)
+            : {
+                id: `search_works-${index}`,
+                toolName: "search_works",
+                label: getToolLabel("search_works"),
+                args: {},
+                state: "completed",
+              },
         )
       : [],
   };
@@ -112,21 +161,44 @@ function hueFromSeed(seed: string) {
   return (total + 24) % 360;
 }
 
-function toolLabel(toolName: string) {
-  switch (toolName) {
-    case "search_works":
-      return "Scanning the corpus";
-    case "get_relevant_chunks":
-      return "Pulling grounded passages";
-    case "create_workspace":
-      return "Preparing a VM workspace";
-    case "run_workspace_task":
-      return "Running the long VM search";
-    case "read_workspace_file":
-      return "Collecting VM notes";
+function toolStatusLabel(entry: Pick<ToolTraceEntry, "state">) {
+  switch (entry.state) {
+    case "running":
+      return "Working";
+    case "error":
+      return "Failed";
     default:
-      return "Updating the run";
+      return "Done";
   }
+}
+
+function summarizeToolCall(entry: Pick<ToolTraceEntry, "toolName" | "args">) {
+  if (typeof entry.args.query === "string" && entry.args.query.trim()) {
+    return entry.args.query;
+  }
+  if (typeof entry.args.path === "string" && entry.args.path.trim()) {
+    return entry.args.path;
+  }
+  if (Array.isArray(entry.args.workIds) && entry.args.workIds.length > 0) {
+    return `${entry.args.workIds.length} work${entry.args.workIds.length === 1 ? "" : "s"}`;
+  }
+  if (Array.isArray(entry.args.chunkIds) && entry.args.chunkIds.length > 0) {
+    return `${entry.args.chunkIds.length} chunk${entry.args.chunkIds.length === 1 ? "" : "s"}`;
+  }
+  if (entry.toolName === "run_workspace_task" && entry.args.taskSpec && typeof entry.args.taskSpec === "object") {
+    const taskSpec = entry.args.taskSpec as Record<string, unknown>;
+    if (typeof taskSpec.goal === "string") {
+      return taskSpec.goal;
+    }
+    if (typeof taskSpec.query === "string") {
+      return taskSpec.query;
+    }
+  }
+  return "";
+}
+
+function toolFallbackLabel(toolName: string) {
+  return getToolLabel(toolName);
 }
 
 function displayName(user: UserProfile | null) {
@@ -144,16 +216,42 @@ function messageToThreadMessage(message: UiMessage, streamingAssistantId: string
   const metadata = {
     custom: {
       citations: message.citations,
-      researchLog: message.researchLog,
     },
   };
 
   if (message.role === "assistant") {
+    const content = [
+      ...message.toolCalls.map((entry) => {
+        const args = toReadonlyJsonObject(entry.args);
+        return {
+          type: "tool-call" as const,
+          toolCallId: entry.id,
+          toolName: entry.toolName,
+          args,
+          argsText: JSON.stringify(args),
+          ...(entry.state === "running"
+            ? {}
+            : {
+                result: entry.result ?? { ok: !entry.isError },
+                isError: entry.isError,
+              }),
+        };
+      }),
+      ...(message.content
+        ? [
+            {
+              type: "text" as const,
+              text: message.content,
+            },
+          ]
+        : []),
+    ];
+
     return {
       id: message.id,
       role: "assistant" as const,
       createdAt: new Date(message.createdAt),
-      content: message.content,
+      content,
       metadata,
       status:
         isSending && message.id === streamingAssistantId
@@ -270,39 +368,62 @@ const NAV_ITEMS: Array<{ id: ViewMode; label: string; icon: ComponentType }> = [
   { id: "profile", label: "Profile", icon: ProfileIcon },
 ];
 
+function AssistantToolCall({
+  toolName,
+  args,
+  result,
+  isError,
+  status,
+}: ToolCallMessagePartProps<Record<string, unknown>, Record<string, unknown>>) {
+  const label = toolFallbackLabel(toolName);
+  const state =
+    status.type === "running" || result === undefined ? "running" : isError || status.type === "incomplete" ? "error" : "completed";
+  const detail = summarizeToolCall({ toolName, args });
+
+  return (
+    <div className={`tool-call-card is-${state}`}>
+      <div className="tool-call-card-header">
+        <span className="tool-call-state">{toolStatusLabel({ state })}</span>
+        <strong>{label}</strong>
+      </div>
+      {detail ? <p className="tool-call-detail">{detail}</p> : null}
+    </div>
+  );
+}
+
+const TOOL_UIS = [
+  "search_works",
+  "get_work_metadata",
+  "get_relevant_chunks",
+  "get_work_text",
+  "create_workspace",
+  "run_workspace_task",
+  "read_workspace_file",
+  "destroy_workspace",
+].map((toolName) =>
+  makeAssistantToolUI<Record<string, unknown>, Record<string, unknown>>({
+    toolName,
+    render: AssistantToolCall,
+  }),
+);
+
 function AssistantFooter() {
   const metadata = useMessage((message) => message.metadata.custom as Record<string, unknown> | undefined);
   const citations = (Array.isArray(metadata?.citations) ? metadata?.citations : []) as Citation[];
-  const researchLog = ((Array.isArray(metadata?.researchLog) ? metadata?.researchLog : []) as Array<Record<string, unknown>>).map((entry) =>
-    normalizeResearchLogEntry(entry),
-  );
 
-  if (citations.length === 0 && researchLog.length === 0) {
+  if (citations.length === 0) {
     return null;
   }
 
   return (
     <div className="assistant-footnotes">
-      {researchLog.length > 0 ? (
-        <div className="tool-trail" aria-label="Tool calls">
-          {researchLog.map((entry, index) => (
-            <span key={`tool-${index}`} className={`tool-chip is-${entry.state}`}>
-              <span className="tool-chip-dot" />
-              <span>{entry.label}</span>
-            </span>
-          ))}
-        </div>
-      ) : null}
-
-      {citations.length > 0 ? (
-        <div className="citation-list">
-          {citations.map((citation) => (
-            <span key={`${citation.workId}-${citation.chunkId ?? citation.label}`} className="citation-chip">
-              {citation.label}
-            </span>
-          ))}
-        </div>
-      ) : null}
+      <div className="citation-list">
+        {citations.map((citation) => (
+          <span key={`${citation.workId}-${citation.chunkId ?? citation.label}`} className="citation-chip">
+            {citation.label}
+          </span>
+        ))}
+      </div>
     </div>
   );
 }
@@ -325,7 +446,7 @@ function AssistantWelcome({
       <div className="assistant-blank-mark">
         <SparkIcon />
       </div>
-      <h2>Ask the corpus.</h2>
+      <h2>Ask Alphabook.</h2>
       <div className="assistant-suggestions">
         {prompts.map((prompt) => (
           <button
@@ -410,6 +531,7 @@ function AssistantSurface({
     <AssistantRuntimeProvider runtime={runtime}>
       <Thread
         assistantAvatar={{ fallback: "A" }}
+        tools={TOOL_UIS}
         components={{ ThreadWelcome: Welcome }}
         assistantMessage={{
           allowCopy: true,
@@ -572,7 +694,7 @@ export default function App() {
       metadata: {},
       createdAt: new Date().toISOString(),
       citations: [],
-      researchLog: [],
+      toolCalls: [],
     };
     const assistantMessageId = crypto.randomUUID();
     const assistantMessage: UiMessage = {
@@ -583,7 +705,7 @@ export default function App() {
       metadata: {},
       createdAt: new Date().toISOString(),
       citations: [],
-      researchLog: [],
+      toolCalls: [],
     };
 
     setActiveView("assistant");
@@ -595,7 +717,7 @@ export default function App() {
     const runToken = activeRunTokenRef.current + 1;
     activeRunTokenRef.current = runToken;
     let workingSessionId = initialSessionId;
-    let activityLog: Array<{ id: string; label: string; state: ResearchLogEntry["state"] }> = [];
+    let activityLog: ToolTraceEntry[] = [];
 
     try {
       await streamChat(
@@ -635,17 +757,25 @@ export default function App() {
             }
 
             if (event.event === "tool.started" && typeof event.data.toolName === "string") {
-              const label = toolLabel(event.data.toolName);
-              activityLog = [...activityLog, { id: crypto.randomUUID(), label, state: "running" }];
+              const toolCallId = typeof event.data.toolCallId === "string" ? event.data.toolCallId : crypto.randomUUID();
+              const toolName = event.data.toolName;
+              const label = typeof event.data.label === "string" ? event.data.label : getToolLabel(toolName);
+              activityLog = [
+                ...activityLog,
+                {
+                  id: toolCallId,
+                  toolName,
+                  label,
+                  args: event.data.args && typeof event.data.args === "object" ? (event.data.args as Record<string, unknown>) : {},
+                  state: "running",
+                },
+              ];
               setMessages((current) =>
                 current.map((message) =>
                   message.id === assistantMessageId
                     ? {
                         ...message,
-                        researchLog: activityLog.map((entry) => ({
-                          label: entry.label,
-                          state: entry.state,
-                        })),
+                        toolCalls: activityLog,
                       }
                     : message,
                 ),
@@ -654,11 +784,16 @@ export default function App() {
             }
 
             if (event.event === "tool.completed" && typeof event.data.toolName === "string") {
-              const label = toolLabel(event.data.toolName);
+              const toolCallId = typeof event.data.toolCallId === "string" ? event.data.toolCallId : null;
+              const toolName = event.data.toolName;
+              const label = typeof event.data.label === "string" ? event.data.label : getToolLabel(toolName);
               activityLog = activityLog.map((entry) =>
-                entry.label === label && entry.state === "running"
+                (toolCallId ? entry.id === toolCallId : entry.toolName === toolName && entry.state === "running")
                   ? {
                       ...entry,
+                      label,
+                      result: event.data.result && typeof event.data.result === "object" ? (event.data.result as Record<string, unknown>) : undefined,
+                      isError: event.data.status === "failed",
                       state: event.data.status === "failed" ? "error" : "completed",
                     }
                   : entry,
@@ -668,10 +803,7 @@ export default function App() {
                   message.id === assistantMessageId
                     ? {
                         ...message,
-                        researchLog: activityLog.map((entry) => ({
-                          label: entry.label,
-                          state: entry.state,
-                        })),
+                        toolCalls: activityLog,
                       }
                     : message,
                 ),
@@ -700,10 +832,7 @@ export default function App() {
                     ? {
                         ...message,
                         citations: Array.isArray(event.data.citations) ? (event.data.citations as Citation[]) : [],
-                        researchLog: activityLog.map((entry) => ({
-                          label: entry.label,
-                          state: entry.state,
-                        })),
+                        toolCalls: activityLog,
                       }
                     : message,
                 ),
@@ -760,11 +889,11 @@ export default function App() {
         <div className="assistant-thread-shell" data-testid="thread">
           {authState.loading ? <div className="session-loading">Checking your session…</div> : null}
           {!authState.loading && authLocked ? (
-            <LockedState
+          <LockedState
               compact
               icon={ChatIcon}
-              title="Sign in to keep your assistant threads."
-              copy="AlphaBook stores your research sessions, citations, and run history on the signed-in account."
+              title="Sign in to save your threads."
+              copy="Your chats and citations live on your account."
             />
           ) : (
             <AssistantSurface
@@ -785,7 +914,6 @@ export default function App() {
       <div className="view-shell">
         <section className="hero-card">
           <h1>Start a thread.</h1>
-          <p className="hero-copy">Ask a question once, then keep the whole run in one place.</p>
           <div className="hero-actions">
             <button type="button" className="hero-button hero-button-primary" onClick={startNewChat}>
               New assistant session
@@ -856,8 +984,8 @@ export default function App() {
           </header>
           <LockedState
             icon={LibraryIcon}
-            title="Sign in to keep a library."
-            copy="Your saved chats, reopened runs, and reading trail all attach to the account behind your session."
+            title="Sign in to open your library."
+            copy="Saved chats and reopened runs show up here."
           />
         </div>
       );
@@ -910,8 +1038,8 @@ export default function App() {
           </header>
           <LockedState
             icon={ProfileIcon}
-            title="Create an account to unlock profile history."
-            copy="Profile holds your saved sessions, long-run history, and account-backed library state."
+            title="Create an account to open your profile."
+            copy="History and saved sessions show up here."
           />
         </div>
       );

@@ -765,49 +765,55 @@ button {
 
 .assistant-footnotes {
   display: grid;
-  gap: 12px;
-  margin-top: 14px;
+  gap: 10px;
+  margin-top: 12px;
 }
 
-.tool-trail {
+.tool-call-card {
+  display: grid;
+  gap: 4px;
+  margin: 0 0 12px;
+  padding: 0 0 0 16px;
+  border-left: 2px solid rgba(72, 43, 37, 0.12);
+}
+
+.tool-call-card.is-running {
+  border-color: rgba(139, 55, 40, 0.4);
+}
+
+.tool-call-card.is-completed {
+  border-color: rgba(83, 129, 89, 0.5);
+}
+
+.tool-call-card.is-error {
+  border-color: rgba(166, 55, 55, 0.42);
+}
+
+.tool-call-card-header {
   display: flex;
+  align-items: baseline;
+  gap: 10px;
   flex-wrap: wrap;
-  gap: 8px;
 }
 
-.tool-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 11px;
-  border-radius: 999px;
-  border: 1px solid rgba(72, 43, 37, 0.08);
+.tool-call-card-header strong {
+  font-size: 0.98rem;
+  font-weight: 700;
+}
+
+.tool-call-state {
   color: var(--text-muted);
-  background: rgba(255, 250, 245, 0.52);
-  font-size: 0.82rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
 }
 
-.tool-chip-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: rgba(139, 55, 40, 0.24);
-}
-
-.tool-chip.is-running {
-  color: var(--accent);
-}
-
-.tool-chip.is-running .tool-chip-dot {
-  background: rgba(139, 55, 40, 0.72);
-}
-
-.tool-chip.is-completed .tool-chip-dot {
-  background: #538159;
-}
-
-.tool-chip.is-error .tool-chip-dot {
-  background: #a63737;
+.tool-call-detail {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.92rem;
+  line-height: 1.55;
 }
 
 .signin-card .hero-button {
@@ -911,6 +917,8 @@ button {
 }
 
 .aui-assistant-message-root .aui-assistant-message-content {
+  display: grid;
+  gap: 8px;
   padding: 0;
 }
 
@@ -970,12 +978,12 @@ button {
 }
 
 .assistant-blank {
-  width: min(760px, 100%);
+  width: min(680px, 100%);
   margin: auto;
-  padding: 0 0 8vh;
+  padding: 0 0 6vh;
   display: grid;
   justify-items: center;
-  gap: 18px;
+  gap: 14px;
   text-align: center;
 }
 
@@ -997,13 +1005,13 @@ button {
 .assistant-blank h2 {
   margin: 0;
   font-family: "Newsreader", serif;
-  font-size: clamp(2.4rem, 5vw, 4rem);
-  line-height: 0.96;
+  font-size: clamp(2.1rem, 4.4vw, 3.3rem);
+  line-height: 0.98;
   letter-spacing: -0.06em;
 }
 
 .assistant-suggestions {
-  width: min(760px, 100%);
+  width: min(680px, 100%);
   display: grid;
   gap: 0;
 }
@@ -1013,9 +1021,9 @@ button {
   border-bottom: 1px solid rgba(72, 43, 37, 0.08);
   background: transparent;
   color: inherit;
-  padding: 16px 0;
+  padding: 14px 0;
   text-align: center;
-  font-size: 1.02rem;
+  font-size: 0.98rem;
 }
 
 .assistant-suggestion:hover:not(:disabled) {

@@ -1,6 +1,6 @@
 import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
-import { ChatRequestSchema, HARD_LIMITS, R2_PREFIXES, ToolArgsSchemas, type ChatRequest, type ChunkSearchResult, type Citation, type PlannerDecision, type ToolName, type WorkSummary } from "@alphabook/shared";
+import { ChatRequestSchema, HARD_LIMITS, R2_PREFIXES, ToolArgsSchemas, getToolLabel, type ChatRequest, type ChunkSearchResult, type Citation, type PlannerDecision, type ToolName, type WorkSummary } from "@alphabook/shared";
 
 import type { WorkOSAuth } from "./auth";
 import type { Embedder } from "./embeddings";
@@ -218,10 +218,14 @@ function chunkTextForStream(text: string): string[] {
 }
 
 function summarizeToolHistory(toolHistory: ToolHistoryEntry[]) {
-  return toolHistory.map((entry) => ({
+  return toolHistory.map((entry, index) => ({
+    id: `${entry.toolName}-${index}`,
     toolName: entry.toolName,
+    label: getToolLabel(entry.toolName),
     args: entry.args,
     result: entry.result,
+    state: entry.result.ok === false ? "error" : "completed",
+    isError: entry.result.ok === false,
   }));
 }
 
@@ -299,10 +303,12 @@ async function synthesizeAnswer(
   }
 
   const artifactKey = await persistFinalArtifact(deps, params.sessionId, params.runId, synthesis.answer, synthesis.citations);
+  const summarizedToolHistory = summarizeToolHistory(params.toolHistory);
   await deps.store.appendMessage(params.sessionId, "assistant", synthesis.answer, {
     citations: synthesis.citations,
     artifactKey,
-    researchLog: summarizeToolHistory(params.toolHistory),
+    researchLog: summarizedToolHistory,
+    toolCalls: summarizedToolHistory,
   });
 
   for (const text of chunkTextForStream(synthesis.answer)) {
@@ -421,6 +427,7 @@ async function runOrchestrator(
       runId: run.id,
       toolCallId: toolRecord.id,
       toolName: toolCall.tool_name,
+      label: getToolLabel(toolCall.tool_name),
       args: toolCall.args,
     });
 
@@ -447,6 +454,7 @@ async function runOrchestrator(
       runId: run.id,
       toolCallId: toolRecord.id,
       toolName: toolCall.tool_name,
+      label: getToolLabel(toolCall.tool_name),
       status,
       result,
     });
