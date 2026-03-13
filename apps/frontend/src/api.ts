@@ -2,10 +2,12 @@ import {
   CurrentUserResponseSchema,
   MessageListResponseSchema,
   SessionListResponseSchema,
+  WorkListResponseSchema,
   type Citation,
   type CurrentUserResponse,
   type MessageRecord,
   type StreamEvent,
+  type WorkSummary,
 } from "@alphabook/shared";
 
 function resolveApiBase() {
@@ -65,6 +67,22 @@ export async function fetchCurrentUser(): Promise<CurrentUserResponse> {
     }),
   );
   return CurrentUserResponseSchema.parse(await response.json());
+}
+
+export async function fetchWorks(options: { offset?: number; limit?: number } = {}): Promise<{ works: WorkSummary[]; nextOffset: number | null }> {
+  const params = new URLSearchParams();
+  if (options.offset !== undefined) {
+    params.set("offset", String(options.offset));
+  }
+  if (options.limit !== undefined) {
+    params.set("limit", String(options.limit));
+  }
+  const response = await ensureOk(
+    await fetch(`${API_BASE}/works${params.size ? `?${params.toString()}` : ""}`, {
+      credentials: "include",
+    }),
+  );
+  return WorkListResponseSchema.parse(await response.json());
 }
 
 export function buildSignInUrl(returnTo: string) {

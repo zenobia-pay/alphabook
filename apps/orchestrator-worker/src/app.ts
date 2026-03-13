@@ -625,5 +625,15 @@ export function createApp(deps: AppDeps) {
     return c.json({ messages });
   });
 
+  app.get("/works", async (c) => {
+    const offset = Math.max(0, Number.parseInt(c.req.query("offset") ?? "0", 10) || 0);
+    const limit = Math.min(24, Math.max(1, Number.parseInt(c.req.query("limit") ?? "12", 10) || 12));
+    const works = await deps.store.listWorks(offset, limit);
+    return c.json({
+      works,
+      nextOffset: works.length === limit ? offset + works.length : null,
+    });
+  });
+
   return app;
 }

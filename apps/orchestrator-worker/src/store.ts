@@ -104,6 +104,7 @@ export interface AppStore {
   updateRun(runId: string, updates: Partial<Pick<RunRecord, "status" | "plannerTurns" | "completedAt">>): Promise<void>;
   startToolCall(runId: string, toolName: ToolName, argsJson: Record<string, unknown>): Promise<ToolCallRecord>;
   finishToolCall(toolCallId: string, status: ToolCallRecord["status"], resultJson: Record<string, unknown>): Promise<void>;
+  listWorks(offset?: number, limit?: number): Promise<WorkSummary[]>;
   searchWorks(query: string, filters?: Record<string, unknown>): Promise<WorkSummary[]>;
   getWorkMetadata(workIds: string[]): Promise<WorkSummary[]>;
   getRelevantChunks(query: string, workIds?: string[], limit?: number, embedding?: number[]): Promise<ChunkSearchResult[]>;
@@ -137,6 +138,20 @@ type SeedChunk = ChunkSearchResult & {
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function normalizeGutenbergId(value: number | string | null | undefined): number | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+  return null;
 }
 
 function lexicalScore(query: string, text: string): number {
@@ -364,6 +379,23 @@ export class InMemoryAppStore implements AppStore {
     toolCall.status = status;
     toolCall.resultJson = resultJson;
     toolCall.completedAt = nowIso();
+  }
+
+  async listWorks(offset = 0, limit = 12): Promise<WorkSummary[]> {
+    return [...this.works]
+      .sort((left, right) => {
+        const leftRelease = left.releaseDate ?? "";
+        const rightRelease = right.releaseDate ?? "";
+        if (leftRelease !== rightRelease) {
+          return rightRelease.localeCompare(leftRelease);
+        }
+        return left.title.localeCompare(right.title);
+      })
+      .slice(offset, offset + limit)
+      .map((work) => ({
+        ...work,
+        score: undefined,
+      }));
   }
 
   async searchWorks(query: string): Promise<WorkSummary[]> {
@@ -790,12 +822,61 @@ export class NeonAppStore implements AppStore {
     );
   }
 
+  async listWorks(offset = 0, limit = 12): Promise<WorkSummary[]> {
+    const result = await this.db.query<{
+      id: string;
+      gutenberg_id: number | string | null;
+      title: string;
+      language: string | null;
+      release_date: string | null;
+      rights_status: string | null;
+      summary: string | null;
+      authors: string[];
+      subjects: string[];
+    }>(
+      `
+        SELECT
+          w.id,
+          w.gutenberg_id,
+          w.title,
+          w.language,
+          w.release_date::text,
+          w.rights_status,
+          w.summary,
+          ARRAY_REMOVE(ARRAY_AGG(DISTINCT a.name), NULL) AS authors,
+          ARRAY_REMOVE(ARRAY_AGG(DISTINCT s.label), NULL) AS subjects
+        FROM works w
+        LEFT JOIN work_authors wa ON wa.work_id = w.id
+        LEFT JOIN authors a ON a.id = wa.author_id
+        LEFT JOIN work_subjects ws ON ws.work_id = w.id
+        LEFT JOIN subjects s ON s.id = ws.subject_id
+        GROUP BY w.id, w.gutenberg_id, w.title, w.language, w.release_date, w.rights_status, w.summary
+        ORDER BY w.release_date DESC NULLS LAST, w.title ASC
+        OFFSET $1
+        LIMIT $2
+      `,
+      [offset, limit],
+    );
+
+    return result.rows.map((row) => ({
+      id: row.id,
+      gutenbergId: normalizeGutenbergId(row.gutenberg_id),
+      title: row.title,
+      language: row.language,
+      releaseDate: row.release_date,
+      rightsStatus: row.rights_status,
+      summary: row.summary,
+      authors: row.authors ?? [],
+      subjects: row.subjects ?? [],
+    }));
+  }
+
   async searchWorks(query: string, filters: Record<string, unknown> = {}): Promise<WorkSummary[]> {
     const limit = Number(filters.limit ?? 8);
     const mapRows = (
       rows: Array<{
         id: string;
-        gutenberg_id: number | null;
+        gutenberg_id: number | string | null;
         title: string;
         language: string | null;
         release_date: string | null;
@@ -808,7 +889,7 @@ export class NeonAppStore implements AppStore {
     ) =>
       rows.map((row) => ({
         id: row.id,
-        gutenbergId: row.gutenberg_id,
+        gutenbergId: normalizeGutenbergId(row.gutenberg_id),
         title: row.title,
         language: row.language,
         releaseDate: row.release_date,
@@ -821,7 +902,7 @@ export class NeonAppStore implements AppStore {
 
     const result = await this.db.query<{
       id: string;
-      gutenberg_id: number | null;
+      gutenberg_id: number | string | null;
       title: string;
       language: string | null;
       release_date: string | null;
@@ -893,7 +974,7 @@ export class NeonAppStore implements AppStore {
 
     const fallbackResult = await this.db.query<{
       id: string;
-      gutenberg_id: number | null;
+      gutenberg_id: number | string | null;
       title: string;
       language: string | null;
       release_date: string | null;
@@ -959,7 +1040,7 @@ export class NeonAppStore implements AppStore {
   async getWorkMetadata(workIds: string[]): Promise<WorkSummary[]> {
     const result = await this.db.query<{
       id: string;
-      gutenberg_id: number | null;
+      gutenberg_id: number | string | null;
       title: string;
       language: string | null;
       release_date: string | null;
@@ -992,7 +1073,7 @@ export class NeonAppStore implements AppStore {
     );
     return result.rows.map((row) => ({
       id: row.id,
-      gutenbergId: row.gutenberg_id,
+      gutenbergId: normalizeGutenbergId(row.gutenberg_id),
       title: row.title,
       language: row.language,
       releaseDate: row.release_date,

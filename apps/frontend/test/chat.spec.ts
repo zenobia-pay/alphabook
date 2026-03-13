@@ -21,6 +21,23 @@ test("empty chat state renders with the ChatGPT-style layout", async ({ page }) 
   });
 });
 
+test("explore centers the composer above the corpus feed", async ({ page }) => {
+  await page.goto("/?view=explore");
+
+  await expect(page.getByRole("heading", { name: "Ask or search anything" })).toBeVisible();
+  await expect(page.locator(".explore-composer-root")).toBeVisible();
+  await expect(page.locator(".work-feed-card")).toHaveCount(3);
+
+  await page.locator(".work-feed-card").first().click();
+  await expect(page.locator(".work-feed-card").first()).toHaveClass(/is-selected/);
+
+  await expect(page.locator(".app-shell")).toHaveScreenshot("explore-feed.png", {
+    animations: "disabled",
+    caret: "hide",
+    maxDiffPixelRatio: 0.02,
+  });
+});
+
 test("assistant run shows retrieval, runtime, and synthesized answer in one thread", async ({ page }) => {
   await page.goto("/");
 
@@ -49,11 +66,12 @@ test("sidebar history can reopen an earlier conversation", async ({ page }) => {
   await page.locator(".aui-composer-send").click();
   await expect(page.locator(".aui-assistant-message-root").last()).toContainText(/I started with the indexed corpus/i);
 
-  await page.getByRole("button", { name: "New chat" }).click();
+  await page.getByRole("button", { name: "Assistant" }).click();
   await page.locator(".aui-composer-input").fill("Compare ambition across Middlemarch and Don Quixote.");
   await page.locator(".aui-composer-send").click();
   await expect(page.getByText(/I then ran a deeper workspace search/i)).toBeVisible();
 
+  await page.getByRole("button", { name: "Library" }).click();
   await page.getByRole("button", { name: /Find books about sadness/i }).click();
   await expect(page.locator(".aui-user-message-root").last()).toContainText("Find books about sadness.");
 

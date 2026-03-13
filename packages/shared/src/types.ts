@@ -206,6 +206,13 @@ export const WorkSummarySchema = z.object({
 
 export type WorkSummary = z.infer<typeof WorkSummarySchema>;
 
+export const WorkListResponseSchema = z.object({
+  works: z.array(WorkSummarySchema),
+  nextOffset: z.number().nullable(),
+});
+
+export type WorkListResponse = z.infer<typeof WorkListResponseSchema>;
+
 export const ChunkSearchResultSchema = z.object({
   id: z.string(),
   workId: z.string(),

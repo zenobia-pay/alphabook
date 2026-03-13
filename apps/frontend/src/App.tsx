@@ -1,4 +1,4 @@
-import { type ComponentType, useEffect, useMemo, useRef, useState } from "react";
+import { type ComponentType, type FormEvent, type UIEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   AssistantRuntimeProvider,
   makeAssistantToolUI,
@@ -10,9 +10,9 @@ import { Thread } from "@assistant-ui/react-ui";
 import type { ReadonlyJSONObject, ReadonlyJSONValue } from "assistant-stream/utils";
 import type { AgentationProps } from "agentation";
 
-import { getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type UserProfile } from "@alphabook/shared";
+import { getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type UserProfile, type WorkSummary } from "@alphabook/shared";
 
-import { buildSignInUrl, buildSignOutUrl, buildSignUpUrl, fetchCurrentUser, fetchMessages, fetchSessions, streamChat } from "./api";
+import { buildSignInUrl, buildSignOutUrl, buildSignUpUrl, fetchCurrentUser, fetchMessages, fetchSessions, fetchWorks, streamChat } from "./api";
 
 type UiMessage = MessageRecord & {
   citations: Citation[];
@@ -357,6 +357,30 @@ function profileHandle(user: UserProfile | null) {
   return `@reader-${(user?.id ?? "alphabook").slice(0, 8)}`;
 }
 
+function formatReleaseYear(value: string | null | undefined) {
+  if (!value) {
+    return null;
+  }
+  const timestamp = Date.parse(value);
+  if (!Number.isNaN(timestamp)) {
+    return new Date(timestamp).getUTCFullYear().toString();
+  }
+  const match = value.match(/\d{4}/);
+  return match ? match[0] : null;
+}
+
+function buildExplorePrompt(question: string, works: WorkSummary[]) {
+  const normalized = question.trim();
+  if (works.length === 0) {
+    return normalized;
+  }
+  const titles = works.map((work) => work.title).join(", ");
+  if (!normalized) {
+    return `Give me a concise overview of ${titles}.`;
+  }
+  return `${normalized}\n\nFocus on these books: ${titles}.`;
+}
+
 function messageToThreadMessage(message: UiMessage, streamingAssistantId: string | null, isSending: boolean) {
   const metadata = {
     custom: {
@@ -448,15 +472,6 @@ function SparkIcon() {
   );
 }
 
-function PencilIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M4 17.5V20h2.5L18.7 7.8l-2.5-2.5L4 17.5Z" />
-      <path d="M14.8 4.7 17.3 2.2a1.6 1.6 0 0 1 2.2 0l2.3 2.3a1.6 1.6 0 0 1 0 2.2l-2.5 2.5-4.5-4.5Z" />
-    </svg>
-  );
-}
-
 function MenuIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -470,6 +485,14 @@ function CloseIcon() {
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <path d="m6.53 5.47 12 12-1.06 1.06-12-12Z" />
       <path d="m18.53 6.53-12 12-1.06-1.06 12-12Z" />
+    </svg>
+  );
+}
+
+function ArrowUpIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12.75 5.56v12.69h-1.5V5.56l-4.22 4.22-1.06-1.06L12 2.69l6.03 6.03-1.06 1.06-4.22-4.22Z" />
     </svg>
   );
 }
@@ -718,6 +741,11 @@ export default function App() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [debugEnabled, setDebugEnabled] = useState(initialUrlState.debugEnabled);
   const [AgentationComponent, setAgentationComponent] = useState<ComponentType<AgentationProps> | null>(null);
+  const [exploreDraft, setExploreDraft] = useState("");
+  const [feedWorks, setFeedWorks] = useState<WorkSummary[]>([]);
+  const [feedNextOffset, setFeedNextOffset] = useState<number | null>(0);
+  const [feedLoading, setFeedLoading] = useState(false);
+  const [selectedWorkIds, setSelectedWorkIds] = useState<string[]>([]);
   const activeRunTokenRef = useRef(0);
 
   const currentUser = useMemo(
@@ -737,7 +765,10 @@ export default function App() {
     () => sessions.find((session) => session.id === selectedSessionId) ?? null,
     [selectedSessionId, sessions],
   );
-  const recentSessions = useMemo(() => sessions.slice(0, 5), [sessions]);
+  const selectedWorks = useMemo(
+    () => feedWorks.filter((work) => selectedWorkIds.includes(work.id)),
+    [feedWorks, selectedWorkIds],
+  );
   const assistantMessages = useMemo(() => messages.filter((message) => message.role === "assistant"), [messages]);
   const citationCount = useMemo(() => messages.reduce((count, message) => count + message.citations.length, 0), [messages]);
   const profileSeed = currentUser?.email ?? currentUser?.id ?? guestUserId;
@@ -811,6 +842,25 @@ export default function App() {
       cancelled = true;
     };
   }, [debugEnabled]);
+
+  useEffect(() => {
+    if (feedLoading || feedNextOffset === null || feedWorks.length > 0) {
+      return;
+    }
+
+    void (async () => {
+      try {
+        setFeedLoading(true);
+        const next = await fetchWorks({ offset: 0, limit: 12 });
+        setFeedWorks(next.works);
+        setFeedNextOffset(next.nextOffset);
+      } catch (error) {
+        setLoadError(error instanceof Error ? error.message : "Failed to load the corpus feed.");
+      } finally {
+        setFeedLoading(false);
+      }
+    })();
+  }, [feedLoading, feedNextOffset, feedWorks.length]);
 
   useEffect(() => {
     if (authState.loading) {
@@ -1054,6 +1104,26 @@ export default function App() {
     }
   }
 
+  async function loadMoreWorks() {
+    if (feedLoading || feedNextOffset === null) {
+      return;
+    }
+
+    try {
+      setFeedLoading(true);
+      const next = await fetchWorks({ offset: feedNextOffset, limit: 12 });
+      setFeedWorks((current) => {
+        const seen = new Set(current.map((work) => work.id));
+        return [...current, ...next.works.filter((work) => !seen.has(work.id))];
+      });
+      setFeedNextOffset(next.nextOffset);
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : "Failed to load more works.");
+    } finally {
+      setFeedLoading(false);
+    }
+  }
+
   function startNewChat() {
     activeRunTokenRef.current += 1;
     setMobileNavOpen(false);
@@ -1063,6 +1133,37 @@ export default function App() {
     setIsSending(false);
     setStreamingAssistantId(null);
     setActiveView("assistant");
+  }
+
+  function toggleSelectedWork(workId: string) {
+    setSelectedWorkIds((current) => (current.includes(workId) ? current.filter((id) => id !== workId) : [...current, workId]));
+  }
+
+  function submitExplorePrompt(event?: FormEvent<HTMLFormElement>) {
+    event?.preventDefault();
+    const finalPrompt = buildExplorePrompt(exploreDraft, selectedWorks);
+    if (!finalPrompt) {
+      return;
+    }
+    setExploreDraft("");
+    setSelectedWorkIds([]);
+    queuePrompt(finalPrompt);
+  }
+
+  function handleExploreScroll(event: UIEvent<HTMLDivElement>) {
+    const target = event.currentTarget;
+    if (target.scrollTop + target.clientHeight >= target.scrollHeight - 360) {
+      void loadMoreWorks();
+    }
+  }
+
+  function handleNavSelection(view: ViewMode) {
+    setMobileNavOpen(false);
+    if (view === "assistant" && activeView === "assistant") {
+      startNewChat();
+      return;
+    }
+    setActiveView(view);
   }
 
   function openSession(sessionId: string) {
@@ -1109,54 +1210,92 @@ export default function App() {
 
   function renderExploreView() {
     return (
-      <div className="view-shell">
-        <section className="hero-card">
-          <h1>Start a thread.</h1>
-          <div className="hero-actions">
-            <button type="button" className="hero-button hero-button-primary" onClick={startNewChat}>
-              New assistant session
-            </button>
-            <button
-              type="button"
-              className="hero-button"
-              onClick={() => queuePrompt("Trace how grief and exile move across Don Quixote, Moby-Dick, and Pride and Prejudice.")}
-            >
-              Trace a theme
-            </button>
-          </div>
+      <div className="view-shell explore-view" onScroll={handleExploreScroll}>
+        <section className="explore-hero">
+          <h1>Ask or search anything</h1>
+
+          <form className="explore-composer-shell" onSubmit={submitExplorePrompt}>
+            <div className="aui-composer-root explore-composer-root">
+              {selectedWorks.length > 0 ? (
+                <div className="explore-selection-row">
+                  {selectedWorks.map((work) => (
+                    <button
+                      key={work.id}
+                      type="button"
+                      className="explore-selection-chip"
+                      onClick={() => toggleSelectedWork(work.id)}
+                    >
+                      {work.title}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+
+              <textarea
+                className="aui-composer-input explore-composer-input"
+                placeholder="Ask about a book, a theme, or the whole corpus..."
+                value={exploreDraft}
+                onChange={(event) => setExploreDraft(event.currentTarget.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    submitExplorePrompt();
+                  }
+                }}
+              />
+
+              <div className="explore-composer-footer">
+                <button
+                  type="submit"
+                  className="send-button explore-send"
+                  disabled={!exploreDraft.trim() && selectedWorks.length === 0}
+                  aria-label="Send prompt"
+                >
+                  <ArrowUpIcon />
+                </button>
+              </div>
+            </div>
+          </form>
         </section>
 
-        <section className="card-grid">
-          <article className="feature-card">
-            <h2 className="section-title">Recent</h2>
-            <div className="feature-list">
-              {recentSessions.length === 0 ? (
-                <p className="empty-copy">Threads appear here.</p>
-              ) : (
-                recentSessions.slice(0, 3).map((session) => (
-                  <button key={session.id} type="button" className="feature-row" onClick={() => openSession(session.id)}>
-                    <span>{session.title ?? "Untitled chat"}</span>
-                    <small>{formatRelativeTime(session.lastMessageAt)}</small>
-                  </button>
-                ))
-              )}
-            </div>
-          </article>
+        <section className="work-feed" aria-label="Corpus feed">
+          {feedWorks.map((work) => {
+            const selected = selectedWorkIds.includes(work.id);
+            const previewMeta = [formatReleaseYear(work.releaseDate), work.language?.toUpperCase()].filter(Boolean).join(" · ");
+            return (
+              <button
+                key={work.id}
+                type="button"
+                aria-pressed={selected}
+                className={`work-feed-card ${selected ? "is-selected" : ""}`}
+                onClick={() => toggleSelectedWork(work.id)}
+              >
+                <div className="work-feed-heading">
+                  <div>
+                    {previewMeta ? <p className="work-feed-meta">{previewMeta}</p> : null}
+                    <h2>{work.title}</h2>
+                    {work.authors.length > 0 ? <p className="work-feed-authors">{work.authors.join(" · ")}</p> : null}
+                  </div>
+                  <span className="work-feed-marker" aria-hidden="true" />
+                </div>
 
-          <article className="feature-card">
-            <h2 className="section-title">Try</h2>
-            <div className="prompt-stack">
-              {[
-                "Compare obsession in Don Quixote and Moby-Dick.",
-                "Find passages where characters anticipate ruin.",
-                "Map the strongest books for melancholy and grief.",
-              ].map((prompt) => (
-                <button key={prompt} type="button" className="prompt-card" onClick={() => queuePrompt(prompt)}>
-                  {prompt}
-                </button>
-              ))}
-            </div>
-          </article>
+                {work.summary ? <p className="work-feed-summary">{work.summary}</p> : null}
+
+                {work.subjects.length > 0 ? (
+                  <div className="work-feed-tags">
+                    {work.subjects.slice(0, 4).map((subject) => (
+                      <span key={subject} className="tag-chip">
+                        {subject}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+              </button>
+            );
+          })}
+
+          {feedLoading ? <p className="feed-status">Loading more works…</p> : null}
+          {!feedLoading && feedWorks.length === 0 ? <p className="feed-status">No works yet.</p> : null}
         </section>
       </div>
     );
@@ -1354,10 +1493,6 @@ export default function App() {
               <CloseIcon />
             </button>
           </div>
-          <button type="button" className="new-chat" onClick={startNewChat} aria-label="New chat">
-            <PencilIcon />
-            <span>New chat</span>
-          </button>
           {authState.authConfigured && !authState.user && !authState.loading ? (
             <div className="sidebar-auth-actions">
               <a className="sidebar-signin" href={buildSignInUrl(window.location.href)}>
@@ -1378,10 +1513,7 @@ export default function App() {
                 key={item.id}
                 type="button"
                 className={`sidebar-nav-button ${activeView === item.id ? "is-active" : ""}`}
-                onClick={() => {
-                  setActiveView(item.id);
-                  setMobileNavOpen(false);
-                }}
+                onClick={() => handleNavSelection(item.id)}
               >
                 <Icon />
                 <span>{item.label}</span>
@@ -1389,24 +1521,6 @@ export default function App() {
             );
           })}
         </nav>
-
-        {sessions.length > 0 ? (
-          <section className="sidebar-recents">
-            <div className="session-list">
-              {sessions.map((session) => (
-                <button
-                  key={session.id}
-                  type="button"
-                  className={`session-link ${session.id === selectedSessionId ? "is-active" : ""}`}
-                  onClick={() => openSession(session.id)}
-                >
-                  <span className="session-title">{session.title ?? "Untitled chat"}</span>
-                  <span className="session-time">{formatRelativeTime(session.lastMessageAt)}</span>
-                </button>
-              ))}
-            </div>
-          </section>
-        ) : null}
 
         <button
           type="button"
