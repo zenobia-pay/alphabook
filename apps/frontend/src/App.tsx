@@ -6,7 +6,6 @@ import {
   makeAssistantToolUI,
   useExternalStoreRuntime,
   useMessage,
-  useThread,
   type ToolCallMessagePartProps,
 } from "@assistant-ui/react";
 import { Thread } from "@assistant-ui/react-ui";
@@ -1022,16 +1021,14 @@ function AssistantSurface({
   }
 
   function AssistantComposer() {
-    const isRunning = useThread((thread) => thread.isRunning);
-
     return (
       <ComposerPrimitive.Root className="aui-composer-root">
         <ComposerPrimitive.Input
           rows={1}
           autoFocus
           className="aui-composer-input"
-          disabled={isRunning}
-          placeholder={isRunning ? "Thinking…" : "Write a message..."}
+          disabled={isSending}
+          placeholder={isSending ? "Thinking…" : "Write a message..."}
         />
         <ThreadPrimitive.If running={false}>
           <ComposerPrimitive.Send asChild>
