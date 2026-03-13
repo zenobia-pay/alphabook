@@ -766,15 +766,6 @@ function extractPromptText(message: {
     .trim();
 }
 
-function SparkIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M12 2.5 14 9l6.5 2-6.5 2-2 6.5-2-6.5-6.5-2 6.5-2 2-6.5Z" />
-      <path d="M18 3.5 18.8 6l2.4.8-2.4.8-.8 2.4-.8-2.4-2.4-.8 2.4-.8.8-2.5Z" />
-    </svg>
-  );
-}
-
 function MenuIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -911,44 +902,6 @@ function AssistantFooter() {
   );
 }
 
-function AssistantWelcome({
-  isSending,
-  onPrompt,
-}: {
-  isSending: boolean;
-  onPrompt: (prompt: string) => Promise<void>;
-}) {
-  const prompts = [
-    "Trace how grief moves across Don Quixote and Moby-Dick.",
-    "Find books where exile and melancholy overlap.",
-    "Compare how obsession sounds in the strongest passages of the corpus.",
-  ];
-
-  return (
-    <section className="assistant-blank" data-testid="empty-state">
-      <div className="assistant-blank-mark">
-        <SparkIcon />
-      </div>
-      <h2>Ask Alphabook.</h2>
-      <div className="assistant-suggestions">
-        {prompts.map((prompt) => (
-          <button
-            key={prompt}
-            type="button"
-            className="assistant-suggestion"
-            disabled={isSending}
-            onClick={() => {
-              void onPrompt(prompt);
-            }}
-          >
-            {prompt}
-          </button>
-        ))}
-      </div>
-    </section>
-  );
-}
-
 function LockedState({
   title,
   compact = false,
@@ -1014,10 +967,6 @@ function AssistantSurface({
     onCancel: async () => {},
   });
 
-  function Welcome() {
-    return <AssistantWelcome isSending={isSending} onPrompt={onPrompt} />;
-  }
-
   return (
     <CitationNavigationContext.Provider value={{ openCitation: onOpenCitation, activeWorkId }}>
       <AssistantRuntimeProvider runtime={runtime}>
@@ -1025,7 +974,6 @@ function AssistantSurface({
           assistantAvatar={{ fallback: "A" }}
           tools={TOOL_UIS}
           components={{
-            ...(showWelcome ? { ThreadWelcome: Welcome } : {}),
             Composer,
           }}
           assistantMessage={{
@@ -1038,7 +986,20 @@ function AssistantSurface({
             allowAttachments: false,
           }}
           welcome={{
-            message: null,
+            message: showWelcome ? "Ask Alphabook." : null,
+            suggestions: showWelcome
+              ? [
+                  {
+                    prompt: "Trace how grief moves across Don Quixote and Moby-Dick.",
+                  },
+                  {
+                    prompt: "Find books where exile and melancholy overlap.",
+                  },
+                  {
+                    prompt: "Compare how obsession sounds in the strongest passages of the corpus.",
+                  },
+                ]
+              : [],
           }}
         />
       </AssistantRuntimeProvider>

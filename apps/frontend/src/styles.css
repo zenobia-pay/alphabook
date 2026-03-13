@@ -1233,64 +1233,6 @@ button {
   min-height: 100%;
 }
 
-.assistant-blank {
-  width: min(680px, 100%);
-  margin: auto;
-  padding: 0 0 6vh;
-  display: grid;
-  justify-items: center;
-  gap: 14px;
-  text-align: center;
-}
-
-.assistant-blank-mark {
-  width: 52px;
-  height: 52px;
-  border-radius: 16px;
-  display: grid;
-  place-items: center;
-  color: var(--accent);
-  border: 1px solid rgba(139, 55, 40, 0.12);
-}
-
-.assistant-blank-mark svg {
-  width: 20px;
-  height: 20px;
-}
-
-.assistant-blank h2 {
-  margin: 0;
-  font-family: "Newsreader", serif;
-  font-size: clamp(2.1rem, 4.4vw, 3.3rem);
-  line-height: 0.98;
-  letter-spacing: -0.06em;
-}
-
-.assistant-suggestions {
-  width: min(680px, 100%);
-  display: grid;
-  gap: 0;
-}
-
-.assistant-suggestion {
-  border: 0;
-  border-bottom: 1px solid rgba(72, 43, 37, 0.08);
-  background: transparent;
-  color: inherit;
-  padding: 14px 0;
-  text-align: center;
-  font-size: 0.98rem;
-}
-
-.assistant-suggestion:hover:not(:disabled) {
-  color: var(--accent);
-}
-
-.assistant-suggestion:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
 @media (max-width: 1120px) {
   .profile-layout {
     grid-template-columns: 1fr;
@@ -1509,19 +1451,6 @@ button {
 
   .sidebar-profile {
     padding-top: 10px;
-  }
-
-  .assistant-blank {
-    padding-bottom: 6vh;
-  }
-
-  .assistant-blank h2 {
-    font-size: clamp(2rem, 12vw, 3rem);
-  }
-
-  .assistant-suggestion {
-    text-align: left;
-    font-size: 0.98rem;
   }
 
   .explore-view {
