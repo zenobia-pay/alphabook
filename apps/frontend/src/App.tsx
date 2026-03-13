@@ -1,4 +1,4 @@
-import { createContext, type ComponentType, type FormEvent, type UIEvent, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, type ComponentType, type CSSProperties, type FormEvent, type UIEvent, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   AssistantRuntimeProvider,
   makeAssistantToolUI,
@@ -9,10 +9,19 @@ import {
 import { Composer, Thread } from "@assistant-ui/react-ui";
 import type { ReadonlyJSONObject, ReadonlyJSONValue } from "assistant-stream/utils";
 import type { AgentationProps } from "agentation";
+import { ChevronsLeft, ChevronsRight } from "lucide-react";
 
 import { getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type UserProfile, type WorkDetail, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
 import { buildSignInUrl, buildSignOutUrl, fetchCurrentUser, fetchMessages, fetchSessions, fetchWorkDetail, fetchWorks, streamChat } from "./api";
+import { Avatar, AvatarFallback, AvatarImage } from "./components/ui/avatar";
+import { Badge } from "./components/ui/badge";
+import { Button } from "./components/ui/button";
+import { Card, CardContent } from "./components/ui/card";
+import { Separator } from "./components/ui/separator";
+import { Skeleton } from "./components/ui/skeleton";
+import { Textarea } from "./components/ui/textarea";
+import { cn } from "./lib/utils";
 
 type UiMessage = MessageRecord & {
   citations: Citation[];
@@ -910,29 +919,27 @@ function LockedState({
   compact?: boolean;
 }) {
   return (
-    <section className={`locked-panel ${compact ? "is-compact" : ""}`}>
-      <div className="locked-copy">
-        <h2>{title}</h2>
-      </div>
-      <div className="locked-actions">
-        <a className="hero-button hero-button-primary" href={buildSignInUrl(window.location.href)}>
-          Sign in
-        </a>
-      </div>
-    </section>
+    <Card className={cn("mx-auto w-full max-w-3xl border-none bg-transparent shadow-none", compact && "min-h-[52vh]")}>
+      <CardContent className="flex min-h-[44vh] flex-col items-center justify-center gap-6 px-6 py-10 text-center">
+        <h2 className="max-w-3xl font-[Newsreader] text-[clamp(2.2rem,5vw,4.6rem)] font-semibold leading-[0.92] tracking-[-0.06em] text-[var(--ink)]">
+          {title}
+        </h2>
+        <Button asChild variant="accent" size="lg">
+          <a href={buildSignInUrl(window.location.href)}>Sign in</a>
+        </Button>
+      </CardContent>
+    </Card>
   );
 }
 
 function AuthLoadingState({ compact = false }: { compact?: boolean }) {
   return (
-    <section className={`locked-panel auth-pending-panel ${compact ? "is-compact" : ""}`} aria-hidden="true">
-      <div className="locked-copy auth-pending-copy">
-        <div className="auth-skeleton auth-skeleton-title" />
-      </div>
-      <div className="locked-actions">
-        <div className="auth-skeleton auth-skeleton-pill" />
-      </div>
-    </section>
+    <Card className={cn("mx-auto w-full max-w-3xl border-none bg-transparent shadow-none", compact && "min-h-[52vh]")} aria-hidden="true">
+      <CardContent className="flex min-h-[44vh] flex-col items-center justify-center gap-6 px-6 py-10">
+        <Skeleton className="h-16 w-[min(44rem,82vw)] rounded-[28px]" />
+        <Skeleton className="h-11 w-32 rounded-full" />
+      </CardContent>
+    </Card>
   );
 }
 
@@ -1007,6 +1014,28 @@ function AssistantSurface({
   );
 }
 
+function SessionListCard({
+  session,
+  onOpen,
+}: {
+  session: ChatSessionSummary;
+  onOpen: () => void;
+}) {
+  return (
+    <button type="button" onClick={onOpen} className="w-full text-left">
+      <Card className="rounded-[22px] border-[rgba(72,43,37,0.08)] bg-[rgba(255,251,247,0.72)] shadow-none transition-colors hover:border-[rgba(139,55,40,0.18)] hover:bg-[rgba(255,251,247,0.92)]">
+        <CardContent className="space-y-3 p-5">
+          <div className="flex items-start justify-between gap-4">
+            <strong className="text-base font-semibold text-[var(--ink)]">{session.title ?? "Untitled chat"}</strong>
+            <span className="shrink-0 text-sm text-[var(--ink-soft)]">{formatRelativeTime(session.lastMessageAt)}</span>
+          </div>
+          <p className="line-clamp-2 text-sm leading-6 text-[var(--ink-soft)]">{session.lastMessagePreview ?? "No messages yet."}</p>
+        </CardContent>
+      </Card>
+    </button>
+  );
+}
+
 export default function App() {
   const initialUrlState = readUrlState();
   const [guestUserId] = useState(() => ensureLocalUserId());
@@ -1027,6 +1056,7 @@ export default function App() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [streamingAssistantId, setStreamingAssistantId] = useState<string | null>(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [debugEnabled, setDebugEnabled] = useState(initialUrlState.debugEnabled);
   const [AgentationComponent, setAgentationComponent] = useState<ComponentType<AgentationProps> | null>(null);
   const [exploreDraft, setExploreDraft] = useState("");
@@ -1772,24 +1802,27 @@ export default function App() {
           <h1>Ask or search anything</h1>
 
           <form className="explore-composer-shell" onSubmit={submitExplorePrompt}>
-            <div className="aui-composer-root explore-composer-root">
+            <Card className="explore-composer-root rounded-[28px] border-[var(--shell-strong)] bg-[rgba(255,251,247,0.84)] shadow-[0_18px_40px_rgba(58,34,27,0.08)]">
+              <CardContent className="p-3">
               {selectedWorks.length > 0 ? (
-                <div className="explore-selection-row">
+                <div className="explore-selection-row mb-3 flex flex-wrap gap-2">
                   {selectedWorks.map((work) => (
-                    <button
+                    <Button
                       key={work.id}
                       type="button"
+                      variant="outline"
+                      size="sm"
                       className="explore-selection-chip"
                       onClick={() => toggleSelectedWork(work.id)}
                     >
                       {work.title}
-                    </button>
+                    </Button>
                   ))}
                 </div>
               ) : null}
 
-              <textarea
-                className="aui-composer-input explore-composer-input"
+              <Textarea
+                className="explore-composer-input min-h-[96px] border-0 bg-transparent px-3 py-2 shadow-none focus-visible:ring-0"
                 placeholder="Ask about a book, a theme, or the whole corpus..."
                 value={exploreDraft}
                 onChange={(event) => setExploreDraft(event.currentTarget.value)}
@@ -1801,17 +1834,20 @@ export default function App() {
                 }}
               />
 
-              <div className="explore-composer-footer">
-                <button
+              <div className="explore-composer-footer flex justify-end">
+                <Button
                   type="submit"
-                  className="send-button explore-send"
+                  variant="default"
+                  size="icon"
+                  className="send-button explore-send size-10"
                   disabled={!exploreDraft.trim() && selectedWorks.length === 0}
                   aria-label="Send prompt"
                 >
                   <ArrowUpIcon />
-                </button>
+                </Button>
               </div>
-            </div>
+              </CardContent>
+            </Card>
           </form>
         </section>
 
@@ -1893,21 +1929,15 @@ export default function App() {
           <h1>Library</h1>
         </header>
 
-        <div className="library-list">
+        <div className="library-list space-y-3">
           {sessions.length === 0 ? (
-            <article className="feature-card">
-              <p className="empty-copy">Saved chats appear here.</p>
-            </article>
+            <Card className="feature-card rounded-[24px] border-dashed bg-[rgba(255,251,247,0.62)] shadow-none">
+              <CardContent className="p-8">
+                <p className="empty-copy text-sm text-[var(--ink-soft)]">Saved chats appear here.</p>
+              </CardContent>
+            </Card>
           ) : (
-            sessions.map((session) => (
-              <button key={session.id} type="button" className="library-card" onClick={() => openSession(session.id)}>
-                <div className="library-card-top">
-                  <strong>{session.title ?? "Untitled chat"}</strong>
-                  <span>{formatRelativeTime(session.lastMessageAt)}</span>
-                </div>
-                <p>{session.lastMessagePreview ?? "No messages yet."}</p>
-              </button>
-            ))
+            sessions.map((session) => <SessionListCard key={session.id} session={session} onOpen={() => openSession(session.id)} />)
           )}
         </div>
       </div>
@@ -1941,67 +1971,66 @@ export default function App() {
     const joinedLabel = formatMonthYear(currentUser?.createdAt);
 
     return (
-      <div className="profile-view">
-        <section className="profile-hero">
+      <div className="profile-view space-y-6">
+        <section className="profile-hero space-y-3">
           {currentUser?.avatarUrl ? (
-            <img className="profile-hero-image" src={currentUser.avatarUrl} alt={displayProfileName} />
+            <Avatar className="profile-hero-image size-28">
+              <AvatarImage src={currentUser.avatarUrl} alt={displayProfileName} />
+              <AvatarFallback>{initialsFromSeed(displayProfileName)}</AvatarFallback>
+            </Avatar>
           ) : (
-            <div className="profile-hero-badge" style={{ ["--profile-hue" as string]: profileHue }}>
-              {initialsFromSeed(displayProfileName)}
-            </div>
+            <Avatar className="profile-hero-badge size-28" style={{ ["--profile-hue" as string]: profileHue }}>
+              <AvatarFallback className="text-3xl">{initialsFromSeed(displayProfileName)}</AvatarFallback>
+            </Avatar>
           )}
           <h1>{displayProfileName}</h1>
           <p>{joinedLabel ? `${profileTag} • joined ${joinedLabel}` : profileTag}</p>
         </section>
 
-        <section className="profile-toolbar">
-          <div className="profile-stats">
-            <article>
-              <strong>{currentUser?.followersCount ?? 0}</strong>
+        <section className="profile-toolbar flex flex-wrap items-center justify-center gap-4">
+          <div className="profile-stats flex items-center gap-3">
+            <Badge variant="subtle" className="gap-2 px-4 py-2 text-sm">
+              <strong className="text-[var(--ink)]">{currentUser?.followersCount ?? 0}</strong>
               <span>Followers</span>
-            </article>
-            <article>
-              <strong>{currentUser?.followingCount ?? 0}</strong>
+            </Badge>
+            <Badge variant="subtle" className="gap-2 px-4 py-2 text-sm">
+              <strong className="text-[var(--ink)]">{currentUser?.followingCount ?? 0}</strong>
               <span>Following</span>
-            </article>
+            </Badge>
           </div>
           <div className="profile-actions">
             {authState.authConfigured && authState.user ? (
-              <a className="profile-chip" href={buildSignOutUrl(window.location.href)}>
-                Log out
-              </a>
+              <Button asChild variant="outline" className="profile-chip">
+                <a href={buildSignOutUrl(window.location.href)}>Log out</a>
+              </Button>
             ) : null}
           </div>
         </section>
 
         <section className="profile-nav" aria-label="Profile sections">
-          <button type="button" className="profile-nav-item" aria-disabled="true">
-            Papers
-          </button>
-          <button type="button" className="profile-nav-item" aria-disabled="true">
-            Activity
-          </button>
-          <button type="button" className="profile-nav-item is-active">
-            History
-          </button>
+          <div className="mx-auto flex w-fit items-center gap-2 rounded-full border border-[var(--shell-border)] bg-[rgba(255,251,247,0.7)] p-1">
+            <Button type="button" variant="ghost" size="sm" className="profile-nav-item" aria-disabled="true">
+              Papers
+            </Button>
+            <Button type="button" variant="ghost" size="sm" className="profile-nav-item" aria-disabled="true">
+              Activity
+            </Button>
+            <Button type="button" variant="default" size="sm" className="profile-nav-item is-active">
+              History
+            </Button>
+          </div>
         </section>
 
         <section className="profile-history">
-          <div className="library-list">
+          <div className="library-list space-y-3">
             {sessions.length === 0 ? (
-              <article className="feature-card">
-                <p className="empty-copy">No history yet.</p>
-              </article>
+              <Card className="feature-card rounded-[24px] border-dashed bg-[rgba(255,251,247,0.62)] shadow-none">
+                <CardContent className="p-8">
+                  <p className="empty-copy text-sm text-[var(--ink-soft)]">No history yet.</p>
+                </CardContent>
+              </Card>
             ) : (
-              sessions.map((session) => (
-                <button key={session.id} type="button" className="library-card" onClick={() => openSession(session.id)}>
-                  <div className="library-card-top">
-                    <strong>{session.title ?? "Untitled chat"}</strong>
-                    <span>{formatRelativeTime(session.lastMessageAt)}</span>
-                  </div>
-                  <p>{session.lastMessagePreview ?? "No messages yet."}</p>
-                </button>
-              ))
+              sessions.map((session) => <SessionListCard key={session.id} session={session} onOpen={() => openSession(session.id)} />)
             )}
           </div>
         </section>
@@ -2026,7 +2055,7 @@ export default function App() {
   }
 
   return (
-    <div className={`app-shell ${mobileNavOpen ? "is-nav-open" : ""}`}>
+    <div className={cn("app-shell", mobileNavOpen && "is-nav-open", sidebarCollapsed && "is-sidebar-collapsed")}>
       <button
         type="button"
         className={`shell-backdrop ${mobileNavOpen ? "is-open" : ""}`}
@@ -2034,48 +2063,65 @@ export default function App() {
         onClick={() => setMobileNavOpen(false)}
       />
 
-      <aside className={`sidebar ${mobileNavOpen ? "is-open" : ""}`} data-testid="sidebar">
-        <div className="sidebar-header">
+      <aside className={cn("sidebar", mobileNavOpen && "is-open", sidebarCollapsed && "is-collapsed")} data-testid="sidebar">
+        <div className="sidebar-header gap-4">
           <div className="brand-lockup">
-            <span className="wordmark">alphabook</span>
-            <button
-              type="button"
-              className="mobile-nav-close"
-              aria-label="Close menu"
-              onClick={() => setMobileNavOpen(false)}
-            >
-              <CloseIcon />
-            </button>
+            <div className="flex min-w-0 items-center gap-3">
+              <span className={cn("wordmark", sidebarCollapsed && "sr-only")}>alphabook</span>
+              {sidebarCollapsed ? <span className="wordmark">a.</span> : null}
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="hidden md:inline-flex"
+                aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+                onClick={() => setSidebarCollapsed((current) => !current)}
+              >
+                {sidebarCollapsed ? <ChevronsRight className="size-4" /> : <ChevronsLeft className="size-4" />}
+              </Button>
+              <button
+                type="button"
+                className="mobile-nav-close"
+                aria-label="Close menu"
+                onClick={() => setMobileNavOpen(false)}
+              >
+                <CloseIcon />
+              </button>
+            </div>
           </div>
-          {authState.authConfigured && !authState.user && !authState.loading ? (
-            <div className="sidebar-auth-actions" />
-          ) : null}
+          <Separator />
         </div>
 
-        <nav className="sidebar-nav" aria-label="Primary">
+        <nav className={cn("sidebar-nav", sidebarCollapsed && "items-center")} aria-label="Primary">
           {NAV_ITEMS.map((item) => {
             const Icon = item.icon;
             const isActive = activeView === item.id || (activeView === "book" && item.id === "explore");
             return (
-              <button
+              <Button
                 key={item.id}
                 type="button"
-                className={`sidebar-nav-button ${isActive ? "is-active" : ""}`}
+                variant={isActive ? "default" : "ghost"}
+                className={cn("sidebar-nav-button w-full justify-start rounded-2xl", sidebarCollapsed && "w-11 justify-center px-0")}
                 onClick={() => handleNavSelection(item.id)}
               >
                 <Icon />
-                <span>{item.label}</span>
-              </button>
+                {!sidebarCollapsed ? <span>{item.label}</span> : null}
+              </Button>
             );
           })}
         </nav>
 
         {authPending ? (
-          <div className="sidebar-auth-skeleton" aria-hidden="true" />
+          <div className="sidebar-auth-skeleton" aria-hidden="true">
+            <Skeleton className={cn("h-11 rounded-full", sidebarCollapsed ? "w-11" : "w-full")} />
+          </div>
         ) : hasAuthenticatedUser || !authState.authConfigured ? (
-          <button
+          <Button
             type="button"
-            className="sidebar-profile sidebar-profile-icon"
+            variant="outline"
+            className={cn("sidebar-profile h-auto justify-start gap-3 rounded-[22px] p-2", sidebarCollapsed && "size-12 justify-center p-0")}
             onClick={() => {
               setActiveWorkId(null);
               setActiveView("profile");
@@ -2084,42 +2130,50 @@ export default function App() {
             aria-label="Open profile"
             title={displayProfileName}
           >
-            {currentUser?.avatarUrl ? (
-              <img className="sidebar-avatar-image" src={currentUser.avatarUrl} alt={displayProfileName} />
-            ) : hasAuthenticatedUser ? (
-              <div className="profile-badge" style={{ ["--profile-hue" as string]: profileHue }}>
-                {initialsFromSeed(displayProfileName)}
+            <Avatar className="size-9">
+              {currentUser?.avatarUrl ? <AvatarImage className="sidebar-avatar-image" src={currentUser.avatarUrl} alt={displayProfileName} /> : null}
+              <AvatarFallback
+                className={cn(!hasAuthenticatedUser && "bg-[rgba(72,43,37,0.08)] text-[var(--ink-soft)]")}
+                style={hasAuthenticatedUser ? ({ ["--profile-hue" as string]: profileHue } as CSSProperties) : undefined}
+              >
+                {hasAuthenticatedUser ? initialsFromSeed(displayProfileName) : <ProfileIcon />}
+              </AvatarFallback>
+            </Avatar>
+            {!sidebarCollapsed ? (
+              <div className="min-w-0 text-left">
+                <div className="truncate text-sm font-medium text-[var(--ink)]">{displayProfileName}</div>
+                <div className="truncate text-xs text-[var(--ink-soft)]">{hasAuthenticatedUser ? "Profile" : "Guest reader"}</div>
               </div>
-            ) : (
-              <div className="profile-badge profile-badge-neutral">
-                <ProfileIcon />
-              </div>
-            )}
-          </button>
+            ) : null}
+          </Button>
         ) : (
-          <a className="sidebar-signin sidebar-signin-bottom" href={buildSignInUrl(window.location.href)}>
-            Sign in
-          </a>
+          <Button asChild variant="accent" className={cn("sidebar-signin sidebar-signin-bottom", sidebarCollapsed && "size-11 px-0")}>
+            <a href={buildSignInUrl(window.location.href)}>{sidebarCollapsed ? "→" : "Sign in"}</a>
+          </Button>
         )}
       </aside>
 
       <main className={`main-panel is-${activeView}`}>
-        <div className="mobile-shell-bar">
-          <button
+        <div className="mobile-shell-bar items-center">
+          <Button
             type="button"
+            variant="outline"
+            size="icon"
             className="mobile-shell-button"
             aria-label="Open navigation"
             onClick={() => setMobileNavOpen(true)}
           >
             <MenuIcon />
-          </button>
+          </Button>
           <div className="mobile-shell-meta">
             <span className="mobile-shell-wordmark">alphabook</span>
             <strong>{activeViewLabel}</strong>
           </div>
-          <button
+          <Button
             type="button"
-            className="mobile-shell-button mobile-profile-button"
+            variant="outline"
+            size="icon"
+            className="mobile-shell-button mobile-profile-button overflow-hidden"
             aria-label="Open profile"
             onClick={() => {
               setMobileNavOpen(false);
@@ -2127,18 +2181,11 @@ export default function App() {
               setActiveView("profile");
             }}
           >
-            {currentUser?.avatarUrl ? (
-              <img className="sidebar-avatar-image" src={currentUser.avatarUrl} alt={displayProfileName} />
-            ) : hasAuthenticatedUser ? (
-              <div className="profile-badge" style={{ ["--profile-hue" as string]: profileHue }}>
-                {initialsFromSeed(displayProfileName)}
-              </div>
-            ) : (
-              <div className="profile-badge profile-badge-neutral">
-                <ProfileIcon />
-              </div>
-            )}
-          </button>
+            <Avatar className="size-8">
+              {currentUser?.avatarUrl ? <AvatarImage className="sidebar-avatar-image" src={currentUser.avatarUrl} alt={displayProfileName} /> : null}
+              <AvatarFallback>{hasAuthenticatedUser ? initialsFromSeed(displayProfileName) : <ProfileIcon />}</AvatarFallback>
+            </Avatar>
+          </Button>
         </div>
         {renderMainView()}
       </main>
