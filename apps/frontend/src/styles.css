@@ -423,6 +423,25 @@ button {
   backdrop-filter: blur(12px);
 }
 
+.aui-assistant-message-content {
+  display: grid;
+  gap: 14px;
+}
+
+.aui-assistant-message-content > * {
+  min-width: 0;
+}
+
+.aui-assistant-message-content > .aui-md + .aui-tool-fallback-root,
+.aui-assistant-message-content > .aui-tool-fallback-root + .aui-md,
+.aui-assistant-message-content > .aui-message-error-root {
+  margin-top: 4px;
+}
+
+.aui-tool-fallback-root + .aui-tool-fallback-root {
+  margin-top: 10px;
+}
+
 .aui-composer-root [data-slot="composer-shell"] {
   border-color: var(--line);
   background: rgba(255, 255, 255, 0.96);
@@ -452,10 +471,28 @@ button {
 .aui-tool-fallback-root {
   border-color: var(--line);
   background: rgba(255, 255, 255, 0.94);
+  overflow: hidden;
 }
 
 .aui-tool-fallback-trigger:hover {
   background: rgba(39, 37, 34, 0.025);
+}
+
+.aui-tool-fallback-trigger {
+  min-height: 54px;
+}
+
+.aui-tool-fallback-trigger-label-wrapper {
+  line-height: 1.25;
+}
+
+.aui-tool-fallback-trigger-label-wrapper b {
+  font-weight: 700;
+}
+
+.aui-tool-fallback-content > div {
+  gap: 10px;
+  padding-top: 4px;
 }
 
 .aui-tool-fallback-result-content,
