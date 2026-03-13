@@ -1124,7 +1124,7 @@ button {
 
 .aui-thread-viewport {
   min-height: 0;
-  padding: 22px 0 112px;
+  padding: 22px 0 48px;
   overscroll-behavior-y: none;
   scrollbar-gutter: stable;
 }
@@ -1135,8 +1135,8 @@ button {
   display: flex;
   width: 100%;
   justify-content: center;
-  padding: 16px 0 8px;
-  background: linear-gradient(180deg, rgba(248, 242, 235, 0), rgba(248, 242, 235, 0.9) 32%);
+  padding: 6px 0 4px;
+  background: transparent;
 }
 
 .aui-thread-followup-suggestions {
@@ -1180,18 +1180,19 @@ button {
 
 .aui-composer-root {
   border: 1px solid var(--shell-strong);
-  width: min(860px, 100%);
-  background: rgba(255, 250, 246, 0.96);
-  border-radius: 24px;
-  box-shadow: 0 20px 36px rgba(58, 34, 27, 0.1);
-  padding: 7px 8px 7px 14px;
+  width: 100%;
+  max-width: 860px;
+  background: rgba(245, 239, 231, 0.94);
+  border-radius: 22px;
+  box-shadow: 0 8px 20px rgba(58, 34, 27, 0.08);
+  padding: 6px 8px 6px 12px;
   gap: 10px;
   backdrop-filter: blur(18px);
 }
 
 .aui-composer-root:focus-within {
   border-color: rgba(139, 55, 40, 0.22);
-  box-shadow: 0 0 0 1px rgba(139, 55, 40, 0.08), 0 18px 36px rgba(58, 34, 27, 0.1);
+  box-shadow: 0 0 0 1px rgba(139, 55, 40, 0.08), 0 10px 24px rgba(58, 34, 27, 0.1);
 }
 
 .aui-composer-input {
@@ -1200,7 +1201,7 @@ button {
   font-size: 0.96rem;
   line-height: 1.45;
   color: inherit;
-  padding: 8px 2px 8px 0;
+  padding: 6px 2px 6px 0;
 }
 
 .aui-composer-input::placeholder {
