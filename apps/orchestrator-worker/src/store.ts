@@ -158,6 +158,52 @@ function normalizeGutenbergId(value: number | string | null | undefined): number
   return null;
 }
 
+function readMetadataText(metadata: Record<string, unknown> | undefined, keys: string[]): string | null {
+  if (!metadata) {
+    return null;
+  }
+  for (const key of keys) {
+    const value = metadata[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
+function splitSubtitleFromTitle(title: string): { title: string; subtitle: string | null } {
+  const match = title.match(/^(.+?):\s+(.+)$/);
+  if (!match) {
+    return { title, subtitle: null };
+  }
+  return {
+    title: match[1]?.trim() || title,
+    subtitle: match[2]?.trim() || null,
+  };
+}
+
+function toWorkSummary(
+  work: Pick<SeedWork, "id" | "gutenbergId" | "title" | "language" | "releaseDate" | "rightsStatus" | "summary" | "authors" | "subjects" | "score" | "metadata">,
+): WorkSummary {
+  const explicitSubtitle = readMetadataText(work.metadata, ["subtitle", "subTitle", "secondaryTitle"]);
+  const explicitCoverImageUrl = readMetadataText(work.metadata, ["coverImageUrl", "coverUrl", "imageUrl", "thumbnailUrl"]);
+  const titleParts = explicitSubtitle ? { title: work.title, subtitle: explicitSubtitle } : splitSubtitleFromTitle(work.title);
+  return {
+    id: work.id,
+    gutenbergId: work.gutenbergId ?? null,
+    title: titleParts.title,
+    subtitle: titleParts.subtitle,
+    coverImageUrl: explicitCoverImageUrl,
+    language: work.language ?? null,
+    releaseDate: work.releaseDate ?? null,
+    rightsStatus: work.rightsStatus ?? null,
+    summary: work.summary ?? null,
+    authors: work.authors ?? [],
+    subjects: work.subjects ?? [],
+    score: work.score,
+  };
+}
+
 function lexicalScore(query: string, text: string): number {
   const tokens = query
     .toLowerCase()
@@ -396,10 +442,7 @@ export class InMemoryAppStore implements AppStore {
         return left.title.localeCompare(right.title);
       })
       .slice(offset, offset + limit)
-      .map((work) => ({
-        ...work,
-        score: undefined,
-      }));
+      .map((work) => toWorkSummary({ ...work, score: undefined }));
   }
 
   async getWorkById(workId: string): Promise<WorkDetailRecord | null> {
@@ -429,12 +472,13 @@ export class InMemoryAppStore implements AppStore {
       }))
       .filter((work) => (work.score ?? 0) > 0)
       .sort((left, right) => (right.score ?? 0) - (left.score ?? 0))
-      .slice(0, 8);
+      .slice(0, 8)
+      .map((work) => toWorkSummary(work));
   }
 
   async getWorkMetadata(workIds: string[]): Promise<WorkSummary[]> {
     const set = new Set(workIds);
-    return this.works.filter((work) => set.has(work.id));
+    return this.works.filter((work) => set.has(work.id)).map((work) => toWorkSummary(work));
   }
 
   async getRelevantChunks(query: string, workIds?: string[], limit = 8, embedding?: number[]): Promise<ChunkSearchResult[]> {
@@ -861,6 +905,7 @@ export class NeonAppStore implements AppStore {
       id: string;
       gutenberg_id: number | string | null;
       title: string;
+      metadata_json: Record<string, unknown>;
       language: string | null;
       release_date: string | null;
       rights_status: string | null;
@@ -873,6 +918,7 @@ export class NeonAppStore implements AppStore {
           w.id,
           w.gutenberg_id,
           w.title,
+          w.metadata_json,
           w.language,
           w.release_date::text,
           w.rights_status,
@@ -884,7 +930,7 @@ export class NeonAppStore implements AppStore {
         LEFT JOIN authors a ON a.id = wa.author_id
         LEFT JOIN work_subjects ws ON ws.work_id = w.id
         LEFT JOIN subjects s ON s.id = ws.subject_id
-        GROUP BY w.id, w.gutenberg_id, w.title, w.language, w.release_date, w.rights_status, w.summary
+        GROUP BY w.id, w.gutenberg_id, w.title, w.metadata_json, w.language, w.release_date, w.rights_status, w.summary
         ORDER BY w.release_date DESC NULLS LAST, w.title ASC
         OFFSET $1
         LIMIT $2
@@ -892,17 +938,20 @@ export class NeonAppStore implements AppStore {
       [offset, limit],
     );
 
-    return result.rows.map((row) => ({
-      id: row.id,
-      gutenbergId: normalizeGutenbergId(row.gutenberg_id),
-      title: row.title,
-      language: row.language,
-      releaseDate: row.release_date,
-      rightsStatus: row.rights_status,
-      summary: row.summary,
-      authors: row.authors ?? [],
-      subjects: row.subjects ?? [],
-    }));
+    return result.rows.map((row) =>
+      toWorkSummary({
+        id: row.id,
+        gutenbergId: normalizeGutenbergId(row.gutenberg_id),
+        title: row.title,
+        language: row.language,
+        releaseDate: row.release_date,
+        rightsStatus: row.rights_status,
+        summary: row.summary,
+        authors: row.authors ?? [],
+        subjects: row.subjects ?? [],
+        metadata: row.metadata_json ?? {},
+      }),
+    );
   }
 
   async getWorkById(workId: string): Promise<WorkDetailRecord | null> {
@@ -946,15 +995,18 @@ export class NeonAppStore implements AppStore {
       return null;
     }
     return {
-      id: row.id,
-      gutenbergId: normalizeGutenbergId(row.gutenberg_id),
-      title: row.title,
-      language: row.language,
-      releaseDate: row.release_date,
-      rightsStatus: row.rights_status,
-      summary: row.summary,
-      authors: row.authors ?? [],
-      subjects: row.subjects ?? [],
+      ...toWorkSummary({
+        id: row.id,
+        gutenbergId: normalizeGutenbergId(row.gutenberg_id),
+        title: row.title,
+        language: row.language,
+        releaseDate: row.release_date,
+        rightsStatus: row.rights_status,
+        summary: row.summary,
+        authors: row.authors ?? [],
+        subjects: row.subjects ?? [],
+        metadata: row.metadata_json ?? {},
+      }),
       metadata: row.metadata_json ?? {},
     };
   }
@@ -966,6 +1018,7 @@ export class NeonAppStore implements AppStore {
         id: string;
         gutenberg_id: number | string | null;
         title: string;
+        metadata_json: Record<string, unknown>;
         language: string | null;
         release_date: string | null;
         rights_status: string | null;
@@ -975,23 +1028,27 @@ export class NeonAppStore implements AppStore {
         score: number;
       }>,
     ) =>
-      rows.map((row) => ({
-        id: row.id,
-        gutenbergId: normalizeGutenbergId(row.gutenberg_id),
-        title: row.title,
-        language: row.language,
-        releaseDate: row.release_date,
-        rightsStatus: row.rights_status,
-        summary: row.summary,
-        authors: row.authors ?? [],
-        subjects: row.subjects ?? [],
-        score: row.score,
-      }));
+      rows.map((row) =>
+        toWorkSummary({
+          id: row.id,
+          gutenbergId: normalizeGutenbergId(row.gutenberg_id),
+          title: row.title,
+          language: row.language,
+          releaseDate: row.release_date,
+          rightsStatus: row.rights_status,
+          summary: row.summary,
+          authors: row.authors ?? [],
+          subjects: row.subjects ?? [],
+          score: row.score,
+          metadata: row.metadata_json ?? {},
+        }),
+      );
 
     const result = await this.db.query<{
       id: string;
       gutenberg_id: number | string | null;
       title: string;
+      metadata_json: Record<string, unknown>;
       language: string | null;
       release_date: string | null;
       rights_status: string | null;
@@ -1006,6 +1063,7 @@ export class NeonAppStore implements AppStore {
             w.id,
             w.gutenberg_id,
             w.title,
+            w.metadata_json,
             w.language,
             w.release_date::text,
             w.rights_status,
@@ -1028,6 +1086,7 @@ export class NeonAppStore implements AppStore {
           ranked.id,
           ranked.gutenberg_id,
           ranked.title,
+          ranked.metadata_json,
           ranked.language,
           ranked.release_date,
           ranked.rights_status,
@@ -1040,7 +1099,7 @@ export class NeonAppStore implements AppStore {
         LEFT JOIN authors a ON a.id = wa.author_id
         LEFT JOIN work_subjects ws ON ws.work_id = ranked.id
         LEFT JOIN subjects s ON s.id = ws.subject_id
-        GROUP BY ranked.id, ranked.gutenberg_id, ranked.title, ranked.language, ranked.release_date, ranked.rights_status, ranked.summary, ranked.score
+        GROUP BY ranked.id, ranked.gutenberg_id, ranked.title, ranked.metadata_json, ranked.language, ranked.release_date, ranked.rights_status, ranked.summary, ranked.score
         ORDER BY ranked.score DESC, ranked.title ASC
         LIMIT $4
       `,
@@ -1064,6 +1123,7 @@ export class NeonAppStore implements AppStore {
       id: string;
       gutenberg_id: number | string | null;
       title: string;
+      metadata_json: Record<string, unknown>;
       language: string | null;
       release_date: string | null;
       rights_status: string | null;
@@ -1078,6 +1138,7 @@ export class NeonAppStore implements AppStore {
             w.id,
             w.gutenberg_id,
             w.title,
+            w.metadata_json,
             w.language,
             w.release_date::text,
             w.rights_status,
@@ -1092,12 +1153,13 @@ export class NeonAppStore implements AppStore {
               COALESCE(w.title, '') ILIKE '%' || token || '%'
               OR COALESCE(w.summary, '') ILIKE '%' || token || '%'
             )
-          GROUP BY w.id, w.gutenberg_id, w.title, w.language, w.release_date, w.rights_status, w.summary
+          GROUP BY w.id, w.gutenberg_id, w.title, w.metadata_json, w.language, w.release_date, w.rights_status, w.summary
         )
         SELECT
           matches.id,
           matches.gutenberg_id,
           matches.title,
+          matches.metadata_json,
           matches.language,
           matches.release_date,
           matches.rights_status,
@@ -1110,7 +1172,7 @@ export class NeonAppStore implements AppStore {
         LEFT JOIN authors a ON a.id = wa.author_id
         LEFT JOIN work_subjects ws ON ws.work_id = matches.id
         LEFT JOIN subjects s ON s.id = ws.subject_id
-        GROUP BY matches.id, matches.gutenberg_id, matches.title, matches.language, matches.release_date, matches.rights_status, matches.summary, matches.score
+        GROUP BY matches.id, matches.gutenberg_id, matches.title, matches.metadata_json, matches.language, matches.release_date, matches.rights_status, matches.summary, matches.score
         ORDER BY matches.score DESC, matches.title ASC
         LIMIT $5
       `,
@@ -1130,6 +1192,7 @@ export class NeonAppStore implements AppStore {
       id: string;
       gutenberg_id: number | string | null;
       title: string;
+      metadata_json: Record<string, unknown>;
       language: string | null;
       release_date: string | null;
       rights_status: string | null;
@@ -1142,6 +1205,7 @@ export class NeonAppStore implements AppStore {
           w.id,
           w.gutenberg_id,
           w.title,
+          w.metadata_json,
           w.language,
           w.release_date::text,
           w.rights_status,
@@ -1154,22 +1218,25 @@ export class NeonAppStore implements AppStore {
         LEFT JOIN work_subjects ws ON ws.work_id = w.id
         LEFT JOIN subjects s ON s.id = ws.subject_id
         WHERE w.id = ANY($1::uuid[])
-        GROUP BY w.id
+        GROUP BY w.id, w.gutenberg_id, w.title, w.metadata_json, w.language, w.release_date, w.rights_status, w.summary
         ORDER BY w.title ASC
       `,
       [workIds],
     );
-    return result.rows.map((row) => ({
-      id: row.id,
-      gutenbergId: normalizeGutenbergId(row.gutenberg_id),
-      title: row.title,
-      language: row.language,
-      releaseDate: row.release_date,
-      rightsStatus: row.rights_status,
-      summary: row.summary,
-      authors: row.authors ?? [],
-      subjects: row.subjects ?? [],
-    }));
+    return result.rows.map((row) =>
+      toWorkSummary({
+        id: row.id,
+        gutenbergId: normalizeGutenbergId(row.gutenberg_id),
+        title: row.title,
+        language: row.language,
+        releaseDate: row.release_date,
+        rightsStatus: row.rights_status,
+        summary: row.summary,
+        authors: row.authors ?? [],
+        subjects: row.subjects ?? [],
+        metadata: row.metadata_json ?? {},
+      }),
+    );
   }
 
   async getRelevantChunks(query: string, workIds?: string[], limit = 8, embedding?: number[]): Promise<ChunkSearchResult[]> {

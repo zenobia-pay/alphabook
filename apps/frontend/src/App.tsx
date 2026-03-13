@@ -1893,7 +1893,7 @@ export default function App() {
         <section className="work-feed" aria-label="Corpus feed">
           {feedWorks.map((work) => {
             const selected = selectedWorkIds.includes(work.id);
-            const previewMeta = [formatReleaseYear(work.releaseDate), work.language?.toUpperCase()].filter(Boolean).join(" · ");
+            const previewMeta = [formatReleaseYear(work.releaseDate)].filter(Boolean).join(" · ");
             return (
               <article key={work.id} className={`work-feed-card ${selected ? "is-selected" : ""}`}>
                 <button
@@ -1902,12 +1902,17 @@ export default function App() {
                   onClick={() => openWork(work.id)}
                 >
                   <div className="work-feed-heading">
-                    <div>
+                    {work.coverImageUrl ? (
+                      <div className="work-feed-cover">
+                        <img src={work.coverImageUrl} alt="" loading="lazy" />
+                      </div>
+                    ) : null}
+                    <div className="work-feed-copy">
                       {previewMeta ? <p className="work-feed-meta">{previewMeta}</p> : null}
                       <h2>{work.title}</h2>
+                      {work.subtitle ? <p className="work-feed-subtitle">{work.subtitle}</p> : null}
                       {work.authors.length > 0 ? <p className="work-feed-authors">{work.authors.join(" · ")}</p> : null}
                     </div>
-                    <span className="work-feed-marker" aria-hidden="true" />
                   </div>
 
                   {work.summary ? <p className="work-feed-summary">{work.summary}</p> : null}
@@ -1922,12 +1927,6 @@ export default function App() {
                     </div>
                   ) : null}
                 </button>
-
-                <div className="work-feed-actions">
-                  <button type="button" className="work-feed-action" onClick={() => toggleSelectedWork(work.id)}>
-                    {selected ? "Remove from ask" : "Use in ask"}
-                  </button>
-                </div>
               </article>
             );
           })}

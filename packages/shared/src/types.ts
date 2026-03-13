@@ -197,6 +197,8 @@ export const WorkSummarySchema = z.object({
   id: z.string(),
   gutenbergId: z.number().nullable(),
   title: z.string(),
+  subtitle: z.string().nullable().optional(),
+  coverImageUrl: z.string().nullable().optional(),
   language: z.string().nullable(),
   releaseDate: z.string().nullable(),
   rightsStatus: z.string().nullable(),
