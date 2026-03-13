@@ -55,6 +55,34 @@ function needsWorkspaceSearch(query: string, workIds: string[], chunkCount: numb
 export class FallbackPlanner implements Planner {
   async decide(context: PlannerContext): Promise<PlannerDecision> {
     const toolNames = context.toolHistory.map((item) => item.toolName);
+    const scopedWorkIds = context.workScope?.length ? context.workScope : [];
+    const isScoped = scopedWorkIds.length > 0;
+    if (isScoped && !toolNames.includes("get_work_metadata")) {
+      return {
+        type: "tool_call",
+        tool_name: "get_work_metadata",
+        rationale: "I’m grounding this answer in the book you opened, so I’ll start by loading its metadata and then retrieve the strongest passages from that same book.",
+        args: {
+          workIds: scopedWorkIds,
+        },
+      };
+    }
+
+    if (isScoped && !toolNames.includes("get_relevant_chunks")) {
+      return {
+        type: "tool_call",
+        tool_name: "get_relevant_chunks",
+        rationale: "Now I’m pulling the strongest passages from the open book so the answer is grounded in its text.",
+        args: {
+          query: context.userMessage,
+          workIds: scopedWorkIds,
+          filters: {
+            limit: 6,
+          },
+        },
+      };
+    }
+
     if (!toolNames.includes("search_works")) {
       return {
         type: "tool_call",
@@ -70,7 +98,9 @@ export class FallbackPlanner implements Planner {
     }
 
     const searchResult = context.toolHistory.find((item) => item.toolName === "search_works");
-    const workIds = ((searchResult?.result.works as WorkSummary[] | undefined) ?? []).slice(0, 3).map((work) => work.id);
+    const workIds = isScoped
+      ? scopedWorkIds.slice(0, 3)
+      : ((searchResult?.result.works as WorkSummary[] | undefined) ?? []).slice(0, 3).map((work) => work.id);
 
     if (!toolNames.includes("get_relevant_chunks")) {
       return {
@@ -243,6 +273,9 @@ export class OpenAIPlanner implements Planner {
                   "destroy_workspace(runtime_id)",
                 ],
                 context,
+                plannerNotes: context.workScope?.length
+                  ? "A workScope is present. Stay inside those work IDs unless the user explicitly asks to widen scope."
+                  : null,
                 outputShape: {
                   type: "tool_call | final_answer",
                   tool_name: "one of the available tools when using tool_call",

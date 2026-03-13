@@ -1,5 +1,5 @@
 import type { DbClient } from "@alphabook/db";
-import type { ChunkSearchResult, ToolName, WorkSummary } from "@alphabook/shared";
+import type { ChunkSearchResult, ToolName, WorkDetail, WorkSummary } from "@alphabook/shared";
 
 export interface SessionRecord {
   id: string;
@@ -55,6 +55,8 @@ export interface WorkTextRecord {
   r2Key: string | null;
 }
 
+export interface WorkDetailRecord extends WorkDetail {}
+
 export type WorkFileKind = "raw" | "metadata" | "clean" | "chunks";
 
 export interface WorkFileRecord {
@@ -105,6 +107,7 @@ export interface AppStore {
   startToolCall(runId: string, toolName: ToolName, argsJson: Record<string, unknown>): Promise<ToolCallRecord>;
   finishToolCall(toolCallId: string, status: ToolCallRecord["status"], resultJson: Record<string, unknown>): Promise<void>;
   listWorks(offset?: number, limit?: number): Promise<WorkSummary[]>;
+  getWorkById(workId: string): Promise<WorkDetailRecord | null>;
   searchWorks(query: string, filters?: Record<string, unknown>): Promise<WorkSummary[]>;
   getWorkMetadata(workIds: string[]): Promise<WorkSummary[]>;
   getRelevantChunks(query: string, workIds?: string[], limit?: number, embedding?: number[]): Promise<ChunkSearchResult[]>;
@@ -130,6 +133,7 @@ type SeedWork = WorkSummary & {
   cleanTextKey?: string;
   chunksKey?: string;
   text?: string;
+  metadata?: Record<string, unknown>;
 };
 
 type SeedChunk = ChunkSearchResult & {
@@ -398,6 +402,25 @@ export class InMemoryAppStore implements AppStore {
       }));
   }
 
+  async getWorkById(workId: string): Promise<WorkDetailRecord | null> {
+    const work = this.works.find((candidate) => candidate.id === workId);
+    if (!work) {
+      return null;
+    }
+    return {
+      id: work.id,
+      gutenbergId: work.gutenbergId ?? null,
+      title: work.title,
+      language: work.language ?? null,
+      releaseDate: work.releaseDate ?? null,
+      rightsStatus: work.rightsStatus ?? null,
+      summary: work.summary ?? null,
+      authors: work.authors ?? [],
+      subjects: work.subjects ?? [],
+      metadata: work.metadata ?? {},
+    };
+  }
+
   async searchWorks(query: string): Promise<WorkSummary[]> {
     return [...this.works]
       .map((work) => ({
@@ -446,6 +469,17 @@ export class InMemoryAppStore implements AppStore {
             kind: "clean",
             r2Key: work.cleanTextKey,
             byteSize: work.text?.length ?? null,
+            metadata: {},
+          });
+        }
+        const rawKey = (work.metadata as Record<string, unknown> | undefined)?.rawKey;
+        if ((!wantedKinds || wantedKinds.has("raw")) && typeof rawKey === "string") {
+          records.push({
+            id: `${work.id}-raw`,
+            workId: work.id,
+            kind: "raw",
+            r2Key: rawKey,
+            byteSize: null,
             metadata: {},
           });
         }
@@ -869,6 +903,60 @@ export class NeonAppStore implements AppStore {
       authors: row.authors ?? [],
       subjects: row.subjects ?? [],
     }));
+  }
+
+  async getWorkById(workId: string): Promise<WorkDetailRecord | null> {
+    const result = await this.db.query<{
+      id: string;
+      gutenberg_id: number | string | null;
+      title: string;
+      language: string | null;
+      release_date: string | null;
+      rights_status: string | null;
+      summary: string | null;
+      metadata_json: Record<string, unknown>;
+      authors: string[];
+      subjects: string[];
+    }>(
+      `
+        SELECT
+          w.id,
+          w.gutenberg_id,
+          w.title,
+          w.language,
+          w.release_date::text,
+          w.rights_status,
+          w.summary,
+          w.metadata_json,
+          ARRAY_REMOVE(ARRAY_AGG(DISTINCT a.name), NULL) AS authors,
+          ARRAY_REMOVE(ARRAY_AGG(DISTINCT s.label), NULL) AS subjects
+        FROM works w
+        LEFT JOIN work_authors wa ON wa.work_id = w.id
+        LEFT JOIN authors a ON a.id = wa.author_id
+        LEFT JOIN work_subjects ws ON ws.work_id = w.id
+        LEFT JOIN subjects s ON s.id = ws.subject_id
+        WHERE w.id = $1::uuid
+        GROUP BY w.id, w.gutenberg_id, w.title, w.language, w.release_date, w.rights_status, w.summary, w.metadata_json
+        LIMIT 1
+      `,
+      [workId],
+    );
+    const row = result.rows[0];
+    if (!row) {
+      return null;
+    }
+    return {
+      id: row.id,
+      gutenbergId: normalizeGutenbergId(row.gutenberg_id),
+      title: row.title,
+      language: row.language,
+      releaseDate: row.release_date,
+      rightsStatus: row.rights_status,
+      summary: row.summary,
+      authors: row.authors ?? [],
+      subjects: row.subjects ?? [],
+      metadata: row.metadata_json ?? {},
+    };
   }
 
   async searchWorks(query: string, filters: Record<string, unknown> = {}): Promise<WorkSummary[]> {

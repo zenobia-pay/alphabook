@@ -208,12 +208,35 @@ export const WorkSummarySchema = z.object({
 
 export type WorkSummary = z.infer<typeof WorkSummarySchema>;
 
+export const WorkDetailSchema = WorkSummarySchema.extend({
+  metadata: z.record(z.string(), z.unknown()).default({}),
+});
+
+export type WorkDetail = z.infer<typeof WorkDetailSchema>;
+
 export const WorkListResponseSchema = z.object({
   works: z.array(WorkSummarySchema),
   nextOffset: z.number().nullable(),
 });
 
 export type WorkListResponse = z.infer<typeof WorkListResponseSchema>;
+
+export const WorkSourceSchema = z.object({
+  format: z.enum(["html", "text"]),
+  content: z.string(),
+  r2Key: z.string().nullable(),
+  sourcePath: z.string().nullable(),
+  metadataPath: z.string().nullable(),
+});
+
+export type WorkSource = z.infer<typeof WorkSourceSchema>;
+
+export const WorkDetailResponseSchema = z.object({
+  work: WorkDetailSchema,
+  source: WorkSourceSchema.nullable(),
+});
+
+export type WorkDetailResponse = z.infer<typeof WorkDetailResponseSchema>;
 
 export const ChunkSearchResultSchema = z.object({
   id: z.string(),

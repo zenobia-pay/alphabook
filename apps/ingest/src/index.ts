@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
-import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import { DeleteObjectsCommand, S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { createNeonDb } from "@alphabook/db";
 import { R2_PREFIXES } from "@alphabook/shared";
 
@@ -18,7 +18,14 @@ interface IngestContext {
 interface IngestSourceInput {
   gutenbergId: string;
   title: string;
+  rawSource: string;
   rawText: string;
+  sourceFormat?: "text" | "html";
+  authors?: string[];
+  subjects?: string[];
+  language?: string | null;
+  releaseDate?: string | null;
+  rightsStatus?: string | null;
   sourceUrl?: string;
   sourcePath?: string;
   metadata?: Record<string, unknown>;
@@ -117,6 +124,24 @@ function vectorLiteral(embedding: number[] | null | undefined) {
   return embedding?.length ? `[${embedding.join(",")}]` : null;
 }
 
+function uniqueStrings(values: Array<string | null | undefined>) {
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const value of values) {
+    const next = value?.trim();
+    if (!next) {
+      continue;
+    }
+    const key = next.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    normalized.push(next);
+  }
+  return normalized;
+}
+
 async function putText(r2: S3Client, bucket: string, key: string, body: string, contentType: string) {
   await r2.send(
     new PutObjectCommand({
@@ -128,10 +153,88 @@ async function putText(r2: S3Client, bucket: string, key: string, body: string, 
   );
 }
 
+async function deleteKeys(r2: S3Client, bucket: string, keys: string[]) {
+  const uniqueKeys = [...new Set(keys.filter(Boolean))];
+  if (uniqueKeys.length === 0) {
+    return;
+  }
+
+  for (let index = 0; index < uniqueKeys.length; index += 1000) {
+    const batch = uniqueKeys.slice(index, index + 1000);
+    await r2.send(
+      new DeleteObjectsCommand({
+        Bucket: bucket,
+        Delete: {
+          Objects: batch.map((Key) => ({ Key })),
+          Quiet: true,
+        },
+      }),
+    );
+  }
+}
+
+async function syncAuthors(context: IngestContext, workId: string, authors: string[]) {
+  const normalizedAuthors = uniqueStrings(authors);
+  await context.db.query(`DELETE FROM work_authors WHERE work_id = $1::uuid`, [workId]);
+
+  for (const authorName of normalizedAuthors) {
+    const existing = await context.db.query<{ id: string }>(
+      `SELECT id FROM authors WHERE lower(name) = lower($1) LIMIT 1`,
+      [authorName],
+    );
+    const authorId = existing.rows[0]?.id ?? crypto.randomUUID();
+    if (!existing.rows[0]?.id) {
+      await context.db.query(
+        `INSERT INTO authors (id, name, sort_name) VALUES ($1::uuid, $2, $3)`,
+        [authorId, authorName, authorName],
+      );
+    }
+    await context.db.query(
+      `INSERT INTO work_authors (work_id, author_id) VALUES ($1::uuid, $2::uuid) ON CONFLICT DO NOTHING`,
+      [workId, authorId],
+    );
+  }
+}
+
+async function syncSubjects(context: IngestContext, workId: string, subjects: string[]) {
+  const normalizedSubjects = uniqueStrings(subjects);
+  await context.db.query(`DELETE FROM work_subjects WHERE work_id = $1::uuid`, [workId]);
+
+  for (const subjectLabel of normalizedSubjects) {
+    const existing = await context.db.query<{ id: string }>(
+      `SELECT id FROM subjects WHERE label = $1 LIMIT 1`,
+      [subjectLabel],
+    );
+    const subjectId = existing.rows[0]?.id ?? crypto.randomUUID();
+    if (!existing.rows[0]?.id) {
+      await context.db.query(
+        `INSERT INTO subjects (id, label) VALUES ($1::uuid, $2) ON CONFLICT (label) DO NOTHING`,
+        [subjectId, subjectLabel],
+      );
+    }
+    const resolved = existing.rows[0]?.id
+      ? subjectId
+      : (
+          await context.db.query<{ id: string }>(
+            `SELECT id FROM subjects WHERE label = $1 LIMIT 1`,
+            [subjectLabel],
+          )
+        ).rows[0]?.id;
+    if (resolved) {
+      await context.db.query(
+        `INSERT INTO work_subjects (work_id, subject_id) VALUES ($1::uuid, $2::uuid) ON CONFLICT DO NOTHING`,
+        [workId, resolved],
+      );
+    }
+  }
+}
+
 async function persistIngestedWork(context: IngestContext, source: IngestSourceInput) {
   const cleanText = normalizeText(stripGutenbergBoilerplate(source.rawText));
   const chunks = chunkText(cleanText);
   const chunkEmbeddings = await embedChunks(chunks);
+  const authors = uniqueStrings(source.authors ?? []);
+  const subjects = uniqueStrings(source.subjects ?? []);
 
   const rawKey = R2_PREFIXES.rawText(source.gutenbergId);
   const metadataKey = R2_PREFIXES.rawMetadata(source.gutenbergId);
@@ -141,24 +244,42 @@ async function persistIngestedWork(context: IngestContext, source: IngestSourceI
   const metadataPayload = {
     gutenbergId: source.gutenbergId,
     title: source.title,
+    authors,
+    subjects,
+    language: source.language ?? null,
+    releaseDate: source.releaseDate ?? null,
+    rightsStatus: source.rightsStatus ?? "public_domain",
     sourceUrl: source.sourceUrl ?? null,
     sourcePath: source.sourcePath ?? null,
+    sourceFormat: source.sourceFormat ?? "text",
     ...source.metadata,
   };
 
   const workResult = await context.db.query<{ id: string }>(
     `
-      INSERT INTO works (id, gutenberg_id, title, language, rights_status, summary, metadata_json)
-      VALUES ($1::uuid, $2::bigint, $3, 'en', 'public_domain', $4, $5::jsonb)
+      INSERT INTO works (id, gutenberg_id, title, language, release_date, rights_status, summary, metadata_json)
+      VALUES ($1::uuid, $2::bigint, $3, $4, $5::date, $6, $7, $8::jsonb)
       ON CONFLICT (gutenberg_id) DO UPDATE
       SET
         title = EXCLUDED.title,
+        language = EXCLUDED.language,
+        release_date = EXCLUDED.release_date,
+        rights_status = EXCLUDED.rights_status,
         summary = EXCLUDED.summary,
         metadata_json = EXCLUDED.metadata_json,
         updated_at = now()
       RETURNING id
     `,
-    [proposedWorkId, Number(source.gutenbergId), source.title, null, JSON.stringify(metadataPayload)],
+    [
+      proposedWorkId,
+      Number(source.gutenbergId),
+      source.title,
+      source.language ?? null,
+      source.releaseDate ?? null,
+      source.rightsStatus ?? "public_domain",
+      null,
+      JSON.stringify(metadataPayload),
+    ],
   );
   const workId = workResult.rows[0]?.id;
   if (!workId) {
@@ -179,7 +300,13 @@ async function persistIngestedWork(context: IngestContext, source: IngestSourceI
     .join("\n");
 
   await Promise.all([
-    putText(context.r2, context.r2Bucket, rawKey, source.rawText, "text/plain; charset=utf-8"),
+    putText(
+      context.r2,
+      context.r2Bucket,
+      rawKey,
+      source.rawSource,
+      source.sourceFormat === "html" ? "text/html; charset=utf-8" : "text/plain; charset=utf-8",
+    ),
     putText(
       context.r2,
       context.r2Bucket,
@@ -235,6 +362,9 @@ async function persistIngestedWork(context: IngestContext, source: IngestSourceI
     );
   }
 
+  await syncAuthors(context, workId, authors);
+  await syncSubjects(context, workId, subjects);
+
   return {
     workId,
     gutenbergId: source.gutenbergId,
@@ -277,7 +407,9 @@ async function ingestUrl(context: IngestContext, gutenbergId: string, sourceUrl:
   return persistIngestedWork(context, {
     gutenbergId,
     title,
+    rawSource: rawText,
     rawText,
+    sourceFormat: /html/i.test(response.headers.get("content-type") ?? "") || /\.html?$/i.test(sourceUrl) ? "html" : "text",
     sourceUrl,
     metadata: {
       source: "remote-url",
@@ -294,7 +426,14 @@ async function ingestFromMirror(context: IngestContext, gutenbergId: string, exp
   return persistIngestedWork(context, {
     gutenbergId,
     title: explicitTitle ?? source.title ?? `Project Gutenberg ${gutenbergId}`,
+    rawSource: source.rawSource,
     rawText: source.rawText,
+    sourceFormat: source.format,
+    authors: source.authors,
+    subjects: source.subjects,
+    language: source.language,
+    releaseDate: source.releaseDate,
+    rightsStatus: source.rightsStatus,
     sourcePath: source.sourcePath,
     metadata: {
       source: "local-mirror",
@@ -304,6 +443,44 @@ async function ingestFromMirror(context: IngestContext, gutenbergId: string, exp
       ...source.metadata,
     },
   });
+}
+
+async function deleteGutenbergWorks(context: IngestContext, gutenbergIds: string[]) {
+  const ids = [...new Set(gutenbergIds.map((id) => id.trim()).filter(Boolean))];
+  if (ids.length === 0) {
+    return { deleted: 0, ids: [], r2KeysDeleted: 0 };
+  }
+
+  const rows = await context.db.query<{ gutenberg_id: number | string | null; r2_key: string | null }>(
+    `
+      SELECT w.gutenberg_id, wf.r2_key
+      FROM works w
+      LEFT JOIN work_files wf ON wf.work_id = w.id
+      WHERE w.gutenberg_id = ANY($1::bigint[])
+    `,
+    [ids.map((id) => Number(id))],
+  );
+
+  const r2Keys = uniqueStrings([
+    ...rows.rows.map((row) => (row.r2_key ? String(row.r2_key) : null)),
+    ...ids.flatMap((id) => [
+      R2_PREFIXES.rawText(id),
+      R2_PREFIXES.rawMetadata(id),
+      R2_PREFIXES.cleanText(id),
+      R2_PREFIXES.chunks(id),
+    ]),
+  ]);
+
+  await deleteKeys(context.r2, context.r2Bucket, r2Keys);
+  await context.db.query(`DELETE FROM works WHERE gutenberg_id = ANY($1::bigint[])`, [ids.map((id) => Number(id))]);
+  await context.db.query(`DELETE FROM authors a WHERE NOT EXISTS (SELECT 1 FROM work_authors wa WHERE wa.author_id = a.id)`);
+  await context.db.query(`DELETE FROM subjects s WHERE NOT EXISTS (SELECT 1 FROM work_subjects ws WHERE ws.subject_id = s.id)`);
+
+  return {
+    deleted: ids.length,
+    ids,
+    r2KeysDeleted: r2Keys.length,
+  };
 }
 
 async function backfillMirror(context: IngestContext, options: MirrorBackfillOptions) {
@@ -411,17 +588,32 @@ async function main() {
       return;
     }
 
+    if (command === "delete-gutenberg") {
+      if (args.length === 0) {
+        throw new Error("Usage: delete-gutenberg <gutenbergId...>");
+      }
+      const result = await deleteGutenbergWorks(context, args);
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
     console.log("Commands:");
     console.log("  ingest-url <gutenbergId> <sourceUrl> <title>");
     console.log("  ingest-gutenberg <gutenbergId> [title]");
     console.log("  backfill-mirror [startAfterId|-] [limit]");
+    console.log("  delete-gutenberg <gutenbergId...>");
     console.log("  run-once");
   } finally {
     await context.db.end();
+    context.r2.destroy();
   }
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : error);
-  process.exitCode = 1;
-});
+main()
+  .then(() => {
+    process.exit(0);
+  })
+  .catch((error) => {
+    console.error(error instanceof Error ? error.message : error);
+    process.exit(1);
+  });

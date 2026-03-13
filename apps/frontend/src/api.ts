@@ -2,11 +2,13 @@ import {
   CurrentUserResponseSchema,
   MessageListResponseSchema,
   SessionListResponseSchema,
+  WorkDetailResponseSchema,
   WorkListResponseSchema,
   type Citation,
   type CurrentUserResponse,
   type MessageRecord,
   type StreamEvent,
+  type WorkDetailResponse,
   type WorkSummary,
 } from "@alphabook/shared";
 
@@ -85,6 +87,15 @@ export async function fetchWorks(options: { offset?: number; limit?: number } = 
   return WorkListResponseSchema.parse(await response.json());
 }
 
+export async function fetchWorkDetail(workId: string): Promise<WorkDetailResponse> {
+  const response = await ensureOk(
+    await fetch(`${API_BASE}/works/${workId}`, {
+      credentials: "include",
+    }),
+  );
+  return WorkDetailResponseSchema.parse(await response.json());
+}
+
 export function buildSignInUrl(returnTo: string) {
   return `${API_BASE}/auth/sign-in?returnTo=${encodeURIComponent(returnTo)}`;
 }
@@ -114,6 +125,7 @@ export async function streamChat(
     userId?: string;
     sessionId?: string;
     message: string;
+    workIds?: string[];
   },
   handlers: ChatStreamHandlers,
 ) {

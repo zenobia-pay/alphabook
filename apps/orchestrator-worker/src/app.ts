@@ -688,5 +688,39 @@ export function createApp(deps: AppDeps) {
     });
   });
 
+  app.get("/works/:workId", async (c) => {
+    const workId = c.req.param("workId");
+    const work = await deps.store.getWorkById(workId);
+    if (!work) {
+      return c.json({ error: "Work not found." }, 404);
+    }
+
+    const files = await deps.store.getWorkFiles([workId], ["raw", "clean"]);
+    const rawFile = files.find((file) => file.kind === "raw") ?? null;
+    const cleanFile = files.find((file) => file.kind === "clean") ?? null;
+    const preferredFile = rawFile ?? cleanFile;
+    const content = preferredFile?.r2Key ? await deps.blobStore.getText(preferredFile.r2Key) : null;
+    const metadata = work.metadata ?? {};
+    const sourceFormat =
+      typeof metadata.sourceFormat === "string" && (metadata.sourceFormat === "html" || metadata.sourceFormat === "text")
+        ? metadata.sourceFormat
+        : rawFile?.r2Key?.endsWith(".html")
+          ? "html"
+          : "text";
+
+    return c.json({
+      work,
+      source: content
+        ? {
+            format: sourceFormat,
+            content,
+            r2Key: preferredFile?.r2Key ?? null,
+            sourcePath: typeof metadata.sourcePath === "string" ? metadata.sourcePath : null,
+            metadataPath: typeof metadata.metadataPath === "string" ? metadata.metadataPath : null,
+          }
+        : null,
+    });
+  });
+
   return app;
 }

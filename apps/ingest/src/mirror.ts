@@ -4,9 +4,15 @@ import { basename, join } from "node:path";
 export interface MirrorSource {
   gutenbergId: string;
   title: string | null;
+  authors: string[];
+  subjects: string[];
+  language: string | null;
+  releaseDate: string | null;
+  rightsStatus: string | null;
   sourcePath: string;
   metadataPath: string | null;
   format: "text" | "html";
+  rawSource: string;
   rawText: string;
   metadata: Record<string, unknown>;
 }
@@ -75,14 +81,14 @@ async function listNumericDirectories(root: string): Promise<string[]> {
 
 function scoreCandidate(gutenbergId: string, path: string): number {
   const base = path.split("/").at(-1)?.toLowerCase() ?? "";
-  if (base === `pg${gutenbergId}.txt`) return 100;
-  if (base === `pg${gutenbergId}-0.txt`) return 95;
-  if (base === `pg${gutenbergId}.txt.utf-8`) return 90;
-  if (base === `${gutenbergId}.txt`) return 85;
-  if (base.endsWith(".txt")) return 70;
-  if (base === `pg${gutenbergId}-images.html`) return 60;
-  if (base === `pg${gutenbergId}-h.htm` || base === `pg${gutenbergId}-h.html`) return 55;
-  if (base.endsWith(".html") || base.endsWith(".htm")) return 40;
+  if (base === `pg${gutenbergId}-images.html`) return 120;
+  if (base === `pg${gutenbergId}-h.htm` || base === `pg${gutenbergId}-h.html`) return 115;
+  if (base.endsWith(".html") || base.endsWith(".htm")) return 95;
+  if (base === `pg${gutenbergId}.txt`) return 90;
+  if (base === `pg${gutenbergId}-0.txt`) return 85;
+  if (base === `pg${gutenbergId}.txt.utf-8`) return 80;
+  if (base === `${gutenbergId}.txt`) return 75;
+  if (base.endsWith(".txt")) return 60;
   return -1;
 }
 
@@ -92,6 +98,11 @@ function decodeEntities(input: string): string {
     .replace(/&amp;/g, "&")
     .replace(/&quot;/g, "\"")
     .replace(/&#39;/g, "'")
+    .replace(/&rsquo;|&lsquo;/g, "'")
+    .replace(/&rdquo;|&ldquo;/g, "\"")
+    .replace(/&mdash;/g, "—")
+    .replace(/&ndash;/g, "–")
+    .replace(/&hellip;/g, "…")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">");
 }
@@ -117,6 +128,154 @@ function parseRdfTitle(raw: string): string | null {
   return match ? decodeEntities(match[1].trim()) : null;
 }
 
+function uniqueValues(values: Array<string | null | undefined>) {
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const value of values) {
+    const next = value?.trim();
+    if (!next) {
+      continue;
+    }
+    const key = next.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    normalized.push(next);
+  }
+  return normalized;
+}
+
+function cleanTitle(title: string | null): string | null {
+  if (!title) {
+    return null;
+  }
+  const normalized = decodeEntities(title)
+    .replace(/^Project Gutenberg(?:'s)?\s+(?:eBook|EBook|Etext|eText)\s+of\s+/i, "")
+    .replace(/^The Project Gutenberg eBook of\s+/i, "")
+    .replace(/^The Project Gutenberg Copyrighted E-?text of\s+/i, "")
+    .replace(/^The Project Gutenberg(?:'s)?\s+(?:eBook|EBook|eText|Etext)\s+of\s+/i, "")
+    .replace(/\s+by\s+.+$/i, "")
+    .replace(/\s*\|\s*Project Gutenberg.*$/i, "")
+    .replace(/\s{2,}/g, " ")
+    .trim()
+    .replace(/^["']|["']$/g, "")
+    .replace(/[.;,:-]+$/g, "")
+    .trim();
+  return normalized || null;
+}
+
+function parseHtmlTitle(raw: string): string | null {
+  const match = raw.match(/<title>([\s\S]*?)<\/title>/i);
+  return cleanTitle(match ? match[1].trim() : null);
+}
+
+function parseHtmlAuthor(raw: string): string | null {
+  const titleMatch = raw.match(/<title>([\s\S]*?)<\/title>/i);
+  if (titleMatch) {
+    const normalized = decodeEntities(titleMatch[1].replace(/\s+/g, " ").trim());
+    const byMatch = normalized.match(/\bby\s+(.+?)(?:\s*\|\s*Project Gutenberg.*)?$/i);
+    if (byMatch) {
+      return cleanTitle(byMatch[1]);
+    }
+  }
+
+  const metaMatch = raw.match(/<meta[^>]+name=["']author["'][^>]+content=["']([^"']+)["']/i);
+  return cleanTitle(metaMatch?.[1] ?? null);
+}
+
+function parseTextTitle(raw: string): string | null {
+  const titleMatch = raw.match(/^\s*Title:\s*(.+)$/im);
+  if (titleMatch) {
+    return cleanTitle(titleMatch[1]);
+  }
+
+  const lines = raw
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const startIndex = lines.findIndex((line) => /^\*\*\*\s*START OF/i.test(line));
+  const searchLines = startIndex >= 0 ? lines.slice(startIndex + 1, startIndex + 12) : lines.slice(0, 12);
+  const candidate = searchLines.find((line) => {
+    if (/^(author|release date|language|character set encoding|produced by|translated by):/i.test(line)) {
+      return false;
+    }
+    if (/^project gutenberg/i.test(line)) {
+      return false;
+    }
+    return /[a-z]/i.test(line);
+  });
+  return cleanTitle(candidate ?? null);
+}
+
+function parseTextAuthor(raw: string): string | null {
+  const authorMatch = raw.match(/^\s*Author:\s*(.+)$/im);
+  if (authorMatch) {
+    return cleanTitle(authorMatch[1]);
+  }
+
+  const lines = raw
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const titleIndex = lines.findIndex((line) => /[a-z]/i.test(line) && !/^project gutenberg/i.test(line));
+  const windowLines = titleIndex >= 0 ? lines.slice(titleIndex + 1, titleIndex + 6) : lines.slice(0, 6);
+  const candidate = windowLines.find((line) => /^(by|di)\s+/i.test(line));
+  if (!candidate) {
+    return null;
+  }
+  return cleanTitle(candidate.replace(/^(by|di)\s+/i, ""));
+}
+
+function parseHtmlLanguage(raw: string): string | null {
+  const attrMatch = raw.match(/<html[^>]+\blang=["']([^"']+)["']/i);
+  return attrMatch?.[1]?.trim().toLowerCase() ?? null;
+}
+
+function parseTextLanguage(raw: string): string | null {
+  const match = raw.match(/^\s*Language:\s*([A-Za-z-]+)\s*$/im);
+  return match?.[1]?.trim().toLowerCase() ?? null;
+}
+
+function parseRdfList(raw: string, tagName: string) {
+  return uniqueValues(
+    [...raw.matchAll(new RegExp(`<${tagName}>([\\s\\S]*?)<\\/${tagName}>`, "gi"))].map((match) => decodeEntities(match[1]?.trim() ?? "")),
+  );
+}
+
+function parseRdfMetadata(raw: string | null) {
+  if (!raw) {
+    return {
+      title: null,
+      authors: [] as string[],
+      subjects: [] as string[],
+      language: null as string | null,
+      releaseDate: null as string | null,
+      rightsStatus: null as string | null,
+    };
+  }
+
+  const title = cleanTitle(parseRdfTitle(raw));
+  const authors = parseRdfList(raw, "pgterms:name").map((name) => cleanTitle(name) ?? name);
+  const subjects = uniqueValues(
+    [...raw.matchAll(/<dcterms:subject>[\s\S]*?<rdf:value>([^<]+)<\/rdf:value>[\s\S]*?<\/dcterms:subject>/gi)].map((match) => decodeEntities(match[1]?.trim() ?? "")),
+  );
+  const language = raw.match(/<dcterms:language>[\s\S]*?<rdf:value>([^<]+)<\/rdf:value>/i)?.[1]?.trim().toLowerCase() ?? null;
+  const releaseDate = raw.match(/<dcterms:issued>([^<]+)<\/dcterms:issued>/i)?.[1]?.trim() ?? null;
+  const rightsStatus = raw.match(/<dcterms:rights>([^<]+)<\/dcterms:rights>/i)?.[1]?.trim() ?? null;
+
+  return {
+    title,
+    authors: uniqueValues(authors),
+    subjects: uniqueValues(subjects),
+    language,
+    releaseDate,
+    rightsStatus,
+  };
+}
+
 export async function resolveMirrorSource(mirrorRoot: string, gutenbergId: string): Promise<MirrorSource> {
   const generatedDir = generatedMirrorDirectory(mirrorRoot, gutenbergId);
   const mainDir = mainMirrorDirectory(mirrorRoot, gutenbergId);
@@ -137,19 +296,35 @@ export async function resolveMirrorSource(mirrorRoot: string, gutenbergId: strin
   const rawSource = await readFile(sourcePath, "utf8");
   const metadataRaw = (await exists(metadataPath)) ? await readFile(metadataPath, "utf8") : null;
   const format = /\.html?$/i.test(sourcePath) ? "html" : "text";
+  const derivedTitle = format === "html" ? parseHtmlTitle(rawSource) : parseTextTitle(rawSource);
+  const derivedAuthor = format === "html" ? parseHtmlAuthor(rawSource) : parseTextAuthor(rawSource);
+  const derivedLanguage = format === "html" ? parseHtmlLanguage(rawSource) : parseTextLanguage(rawSource);
+  const rdfMetadata = parseRdfMetadata(metadataRaw);
 
   return {
     gutenbergId,
-    title: metadataRaw ? parseRdfTitle(metadataRaw) : null,
+    title: rdfMetadata.title ?? derivedTitle,
+    authors: rdfMetadata.authors.length > 0 ? rdfMetadata.authors : uniqueValues([derivedAuthor]),
+    subjects: rdfMetadata.subjects,
+    language: rdfMetadata.language ?? derivedLanguage,
+    releaseDate: rdfMetadata.releaseDate,
+    rightsStatus: rdfMetadata.rightsStatus,
     sourcePath,
     metadataPath: metadataRaw ? metadataPath : null,
     format,
+    rawSource,
     rawText: format === "html" ? htmlToText(rawSource) : rawSource,
     metadata: {
       sourcePath,
       metadataPath: metadataRaw ? metadataPath : null,
       format,
-      rdfTitle: metadataRaw ? parseRdfTitle(metadataRaw) : null,
+      rdfTitle: rdfMetadata.title,
+      derivedTitle,
+      authors: rdfMetadata.authors.length > 0 ? rdfMetadata.authors : uniqueValues([derivedAuthor]),
+      subjects: rdfMetadata.subjects,
+      language: rdfMetadata.language ?? derivedLanguage,
+      releaseDate: rdfMetadata.releaseDate,
+      rightsStatus: rdfMetadata.rightsStatus,
     },
   };
 }
