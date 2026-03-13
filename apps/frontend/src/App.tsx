@@ -748,6 +748,19 @@ function LockedState({
   );
 }
 
+function AuthLoadingState({ compact = false }: { compact?: boolean }) {
+  return (
+    <section className={`locked-panel auth-pending-panel ${compact ? "is-compact" : ""}`} aria-hidden="true">
+      <div className="locked-copy auth-pending-copy">
+        <div className="auth-skeleton auth-skeleton-title" />
+      </div>
+      <div className="locked-actions">
+        <div className="auth-skeleton auth-skeleton-pill" />
+      </div>
+    </section>
+  );
+}
+
 function AssistantSurface({
   messages,
   isSending,
@@ -894,6 +907,7 @@ export default function App() {
         : NAV_ITEMS.find((item) => item.id === activeView)?.label ?? "AlphaBook";
   const authLocked = authState.authConfigured && !authState.user;
   const hasAuthenticatedUser = Boolean(authState.user);
+  const authPending = authState.loading;
 
   useEffect(() => {
     void (async () => {
@@ -1408,8 +1422,9 @@ export default function App() {
         {loadError ? <div className="thread-error-banner">{loadError}</div> : null}
 
         <div className="assistant-thread-shell" data-testid="thread">
-          {authState.loading ? <div className="session-loading">Checking your session…</div> : null}
-          {!authState.loading && authLocked ? (
+          {authPending ? (
+            <AuthLoadingState compact />
+          ) : authLocked ? (
             <LockedState
               compact
               title="Sign in to use the assistant."
@@ -1484,8 +1499,9 @@ export default function App() {
         <aside className="book-assistant-pane">
           {loadError ? <div className="thread-error-banner">{loadError}</div> : null}
           <div className="book-assistant-shell" data-testid="book-thread">
-            {authState.loading ? <div className="session-loading">Checking your session…</div> : null}
-            {!authState.loading && authLocked ? (
+            {authPending ? (
+              <AuthLoadingState compact />
+            ) : authLocked ? (
               <LockedState
                 compact
                 title="Sign in to ask about this book."
@@ -1606,13 +1622,13 @@ export default function App() {
   }
 
   function renderLibraryView() {
-    if (authState.loading) {
+    if (authPending) {
       return (
         <div className="view-shell locked-view">
           <header className="view-header">
             <h1>Library</h1>
           </header>
-          <div className="session-loading">Checking your session…</div>
+          <AuthLoadingState compact />
         </div>
       );
     }
@@ -1659,13 +1675,13 @@ export default function App() {
   }
 
   function renderProfileView() {
-    if (authState.loading) {
+    if (authPending) {
       return (
         <div className="view-shell locked-view">
           <header className="view-header">
             <h1>Profile</h1>
           </header>
-          <div className="session-loading">Checking your session…</div>
+          <AuthLoadingState compact />
         </div>
       );
     }
@@ -1820,7 +1836,9 @@ export default function App() {
           })}
         </nav>
 
-        {hasAuthenticatedUser || !authState.authConfigured ? (
+        {authPending ? (
+          <div className="sidebar-auth-skeleton" aria-hidden="true" />
+        ) : hasAuthenticatedUser || !authState.authConfigured ? (
           <button
             type="button"
             className="sidebar-profile sidebar-profile-icon"
