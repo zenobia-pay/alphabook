@@ -56,62 +56,18 @@ export class FallbackPlanner implements Planner {
   async decide(context: PlannerContext): Promise<PlannerDecision> {
     const toolNames = context.toolHistory.map((item) => item.toolName);
     const scopedWorkIds = context.workScope?.length ? context.workScope : [];
-    const isScoped = scopedWorkIds.length > 0;
-    if (isScoped && !toolNames.includes("get_work_metadata")) {
-      return {
-        type: "tool_call",
-        tool_name: "get_work_metadata",
-        rationale: "I’m grounding this answer in the book you opened, so I’ll start by loading its metadata and then retrieve the strongest passages from that same book.",
-        args: {
-          workIds: scopedWorkIds,
-        },
-      };
-    }
-
-    if (isScoped && !toolNames.includes("get_relevant_chunks")) {
-      return {
-        type: "tool_call",
-        tool_name: "get_relevant_chunks",
-        rationale: "Now I’m pulling the strongest passages from the open book so the answer is grounded in its text.",
-        args: {
-          query: context.userMessage,
-          workIds: scopedWorkIds,
-          filters: {
-            limit: 6,
-          },
-        },
-      };
-    }
-
-    if (!toolNames.includes("search_works")) {
-      return {
-        type: "tool_call",
-        tool_name: "search_works",
-        rationale: "I’ll start by searching the corpus for likely books, then pull the strongest passages before deciding whether a deeper workspace search is necessary.",
-        args: {
-          query: context.userMessage,
-          filters: {
-            limit: 5,
-          },
-        },
-      };
-    }
-
-    const searchResult = context.toolHistory.find((item) => item.toolName === "search_works");
-    const workIds = isScoped
-      ? scopedWorkIds.slice(0, 3)
-      : ((searchResult?.result.works as WorkSummary[] | undefined) ?? []).slice(0, 3).map((work) => work.id);
-
     if (!toolNames.includes("get_relevant_chunks")) {
       return {
         type: "tool_call",
         tool_name: "get_relevant_chunks",
-        rationale: "I found candidate books. Next I’m pulling the strongest passages so the answer is grounded in actual text.",
+        rationale: scopedWorkIds.length > 0
+          ? "I’m starting with deterministic indexed passage retrieval inside the open book before I hand anything to the VM."
+          : "I’m starting with deterministic indexed passage retrieval across the corpus before I hand anything to the VM.",
         args: {
           query: context.userMessage,
-          workIds,
+          ...(scopedWorkIds.length > 0 ? { workIds: scopedWorkIds } : {}),
           filters: {
-            limit: 6,
+            limit: 12,
           },
         },
       };
@@ -122,24 +78,28 @@ export class FallbackPlanner implements Planner {
     if (!chunks.length) {
       return {
         type: "final_answer",
-        answer: "I could not find enough evidence in the current corpus to answer that yet.",
+        answer: "I could not find enough indexed evidence in the current corpus to answer that yet.",
         citations: [],
       };
     }
+
+    const workIds = scopedWorkIds.length > 0
+      ? scopedWorkIds.slice(0, 3)
+      : Array.from(new Set(chunks.map((chunk) => chunk.workId))).slice(0, 4);
 
     if (needsWorkspaceSearch(context.userMessage, workIds, chunks.length)) {
       if (!toolNames.includes("create_workspace")) {
         return {
           type: "tool_call",
           tool_name: "create_workspace",
-          rationale: "The retrieval pass is not enough on its own, so I’m preparing a workspace with the relevant books and passages for a deeper local search.",
+          rationale: "The indexed passages are only the first pass, so I’m preparing a bounded VM workspace with the strongest candidate books and passages for deterministic local search.",
           args: {
-            workIds: workIds.slice(0, 3),
-            chunkIds: chunks.slice(0, 8).map((chunk) => chunk.id),
+            workIds: workIds.slice(0, 4),
+            chunkIds: chunks.slice(0, 12).map((chunk) => chunk.id),
             taskContext: {
               question: context.userMessage,
-              mode: "corpus_search",
-              topChunks: chunks.slice(0, 6).map((chunk) => ({
+              mode: "deterministic_long_search",
+              topChunks: chunks.slice(0, 8).map((chunk) => ({
                 chunkId: chunk.id,
                 workId: chunk.workId,
                 excerpt: chunk.excerpt,
@@ -162,15 +122,16 @@ export class FallbackPlanner implements Planner {
         return {
           type: "tool_call",
           tool_name: "run_workspace_task",
-          rationale: "The workspace is ready. Now I’m running a deeper iterative search over the local corpus files to compare evidence across books.",
+          rationale: "The workspace is ready. Now I’m running the deterministic two-pass Codex VM search: first gather local evidence, then write a quoted briefing.",
           args: {
             runtimeId,
             taskSpec: {
-              kind: "corpus_search",
+              kind: "briefing_search",
               question: context.userMessage,
-              workIds: workIds.slice(0, 3),
-              chunkIds: chunks.slice(0, 8).map((chunk) => chunk.id),
-              outputFile: "output/summary.md",
+              workIds: workIds.slice(0, 4),
+              chunkIds: chunks.slice(0, 12).map((chunk) => chunk.id),
+              briefingFile: "output/briefing.md",
+              briefingJsonFile: "output/briefing.json",
             },
           },
         };
@@ -178,6 +139,7 @@ export class FallbackPlanner implements Planner {
 
       if (!toolNames.includes("read_workspace_file")) {
         const runtimeId = context.toolHistory.find((item) => item.toolName === "create_workspace")?.result.runtimeId;
+        const runResult = context.toolHistory.find((item) => item.toolName === "run_workspace_task")?.result;
         if (typeof runtimeId !== "string") {
           return {
             type: "final_answer",
@@ -186,13 +148,27 @@ export class FallbackPlanner implements Planner {
           };
         }
 
+        if (typeof runResult?.briefing === "string" && runResult.briefing.trim().length > 0) {
+          return {
+            type: "final_answer",
+            answer: runResult.briefing,
+            citations: extractCitationsFromChunks(chunks),
+          };
+        }
+
+        const artifactPath = Array.isArray(runResult?.artifacts)
+          ? (runResult.artifacts as Array<Record<string, unknown>>).find((artifact) =>
+            typeof artifact.path === "string" && /output\/(briefing|summary)\.md$/u.test(artifact.path),
+          )?.path
+          : null;
+
         return {
           type: "tool_call",
           tool_name: "read_workspace_file",
-          rationale: "The deep workspace search has finished. I’m reading the generated summary back so I can synthesize the answer.",
+          rationale: "The deep VM search finished. I’m reading the generated briefing back into the chat.",
           args: {
             runtimeId,
-            path: "output/summary.md",
+            path: typeof artifactPath === "string" ? artifactPath : "output/briefing.md",
           },
         };
       }
@@ -200,7 +176,7 @@ export class FallbackPlanner implements Planner {
       const summary = context.toolHistory.find((item) => item.toolName === "read_workspace_file")?.result.content;
       const answer = typeof summary === "string" && summary.trim().length
         ? summary.slice(0, 1600)
-        : "I completed a deeper runtime search after retrieval and gathered enough evidence to answer from the corpus.";
+        : "I completed the deterministic VM search after retrieval and gathered enough evidence to answer from the corpus.";
       return {
         type: "final_answer",
         answer,

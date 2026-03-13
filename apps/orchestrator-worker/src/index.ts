@@ -3,11 +3,11 @@ import { createNeonDb } from "@alphabook/db";
 import { createApp } from "./app";
 import { WorkOSAuth } from "./auth";
 import { HashEmbedder, OpenAIEmbedder } from "./embeddings";
-import { OpenAIPlanner, FallbackPlanner } from "./planner";
+import { FallbackPlanner } from "./planner";
 import { CloudflareR2Store } from "./r2";
 import { FlyMachinesRuntimeGateway, HttpRuntimeGateway, StubRuntimeGateway } from "./runtime";
 import { NeonAppStore } from "./store";
-import { FallbackSynthesizer, OpenAISynthesizer } from "./synthesizer";
+import { FallbackSynthesizer } from "./synthesizer";
 
 export interface Env {
   DATABASE_URL: string;
@@ -81,16 +81,11 @@ function buildFetchHandler(env: Env) {
   const db = createNeonDb(env.DATABASE_URL);
   const store = new NeonAppStore(db);
   const blobStore = new CloudflareR2Store(env.CORPUS_BUCKET);
-  const planner =
-    env.OPENAI_API_KEY && env.OPENAI_MODEL
-      ? new OpenAIPlanner(env.OPENAI_API_KEY, env.OPENAI_MODEL)
-      : new FallbackPlanner();
+  const planner = new FallbackPlanner();
   const embedder = env.OPENAI_API_KEY
     ? new OpenAIEmbedder(env.OPENAI_API_KEY, env.OPENAI_EMBEDDING_MODEL ?? "text-embedding-3-small")
     : new HashEmbedder();
-  const synthesizer = env.OPENAI_API_KEY
-    ? new OpenAISynthesizer(env.OPENAI_API_KEY, env.OPENAI_SYNTH_MODEL ?? env.OPENAI_MODEL ?? "gpt-5.4")
-    : new FallbackSynthesizer();
+  const synthesizer = new FallbackSynthesizer();
 
   const app = createApp({
     store,

@@ -28,7 +28,10 @@ interface PrepareRequest {
   runtimeId: string;
   sessionId: string;
   works: WorkspaceManifest["works"];
+  dataSchema?: WorkspaceManifest["dataSchema"];
+  fileCatalog?: WorkspaceManifest["fileCatalog"];
   selectedChunkIds: string[];
+  selectedChunks?: WorkspaceManifest["selectedChunks"];
   taskContext: Record<string, unknown>;
   downloads?: WorkspaceDownload[];
 }
@@ -78,6 +81,14 @@ async function readJson<T>(request: IncomingMessage): Promise<T> {
   }
   const text = Buffer.concat(chunks).toString("utf8");
   return JSON.parse(text) as T;
+}
+
+async function readJsonIfPresent<T>(path: string, fallback: T): Promise<T> {
+  try {
+    return JSON.parse(await readFile(path, "utf8")) as T;
+  } catch {
+    return fallback;
+  }
 }
 
 function safeJoin(root: string, targetPath: string): string {
@@ -173,7 +184,10 @@ async function writeManifest(paths: ReturnType<typeof createPaths>, payload: Pre
     runtimeId: payload.runtimeId,
     sessionId: payload.sessionId,
     works: payload.works,
+    dataSchema: payload.dataSchema,
+    fileCatalog: payload.fileCatalog,
     selectedChunkIds: payload.selectedChunkIds,
+    selectedChunks: payload.selectedChunks,
     taskContext: payload.taskContext,
   };
   await writeFile(join(paths.context, "manifest.json"), JSON.stringify(manifest, null, 2), "utf8");
@@ -211,6 +225,9 @@ async function runStubAgent(paths: ReturnType<typeof createPaths>, workspaceRoot
     "## Task",
     JSON.stringify(taskSpec, null, 2),
     "",
+    "## Data Schema",
+    JSON.stringify(manifest.dataSchema ?? {}, null, 2),
+    "",
     "## Works",
     ...comparisonLines,
     "",
@@ -219,8 +236,8 @@ async function runStubAgent(paths: ReturnType<typeof createPaths>, workspaceRoot
     ...chunkFiles.map((file) => `- ${file}`),
   ].join("\n");
 
-  const summaryRelativePath = "output/summary.md";
-  const summaryPath = join(paths.output, "summary.md");
+  const summaryRelativePath = "output/briefing.md";
+  const summaryPath = join(paths.output, "briefing.md");
   await writeFile(summaryPath, summary, "utf8");
 
   return {
@@ -228,10 +245,19 @@ async function runStubAgent(paths: ReturnType<typeof createPaths>, workspaceRoot
     stdout: "Stub agent completed.",
     stderr: "",
     exitCode: 0,
+    briefing: summary,
+    citations: manifest.selectedChunks?.slice(0, 6).map((chunk) => ({
+      workId: chunk.workId,
+      chunkId: chunk.id,
+      label: `${chunk.workId}#${chunk.chunkIndex}`,
+      excerpt: chunk.excerpt,
+      r2Key: chunk.r2Key ?? undefined,
+    })) ?? [],
+    codexRuns: [],
     artifacts: [
       {
         path: summaryRelativePath,
-        filename: "summary.md",
+        filename: "briefing.md",
         mimeType: "text/markdown",
       },
     ],
@@ -262,11 +288,48 @@ async function runExternalAgent(
   });
 
   const outputFiles = await listFiles(paths.output, workspaceRoot);
+  const briefingJsonPath = join(paths.output, "briefing.json");
+  const codexRunsPath = join(paths.output, "codex-runs.json");
+  const briefingJson = await readJsonIfPresent<Record<string, unknown> | null>(briefingJsonPath, null);
+  const codexRuns = await readJsonIfPresent<unknown[]>(codexRunsPath, []);
+  const normalizedCodexRuns = Array.isArray(codexRuns)
+    ? codexRuns.flatMap((entry) => {
+      if (!entry || typeof entry !== "object") {
+        return [];
+      }
+      const record = entry as Record<string, unknown>;
+      if (
+        typeof record.step !== "string"
+        || typeof record.promptPath !== "string"
+        || typeof record.outputPath !== "string"
+        || typeof record.logPath !== "string"
+        || typeof record.exitCode !== "number"
+      ) {
+        return [];
+      }
+      return [{
+        step: record.step,
+        promptPath: record.promptPath,
+        outputPath: record.outputPath,
+        logPath: record.logPath,
+        exitCode: record.exitCode,
+      }];
+    })
+    : [];
   return {
     runtimeId: String(taskSpec.runtimeId ?? "runtime"),
     stdout,
     stderr,
     exitCode: 0,
+    briefing:
+      briefingJson && typeof briefingJson === "object" && typeof briefingJson.briefing === "string"
+        ? briefingJson.briefing
+        : undefined,
+    citations:
+      briefingJson && typeof briefingJson === "object" && Array.isArray(briefingJson.citations)
+        ? briefingJson.citations
+        : [],
+    codexRuns: normalizedCodexRuns,
     artifacts: outputFiles.map((file) => ({
       path: file,
       filename: file.split("/").at(-1) ?? file,

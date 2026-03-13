@@ -1,4 +1,4 @@
-import { HARD_LIMITS, R2_PREFIXES, ToolArgsSchemas } from "@alphabook/shared";
+import { HARD_LIMITS, R2_PREFIXES, ToolArgsSchemas, WORKSPACE_POSTGRES_SCHEMA, type WorkSummary } from "@alphabook/shared";
 
 import type { RuntimeToolGateway } from "./app";
 import type { BlobStore } from "./r2";
@@ -73,11 +73,19 @@ function sanitizeMachineName(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 55);
 }
 
-function groupWorkFiles(workIds: string[], files: WorkFileRecord[]): Array<{ workId: string; cleanTextKey?: string; chunksKey?: string }> {
+function groupWorkFiles(workIds: string[], files: WorkFileRecord[], metadata: WorkSummary[]) {
   return workIds.map((workId) => {
     const workFiles = files.filter((file) => file.workId === workId);
+    const work = metadata.find((candidate) => candidate.id === workId);
     return {
       workId,
+      title: work?.title,
+      authors: work?.authors,
+      language: work?.language ?? null,
+      releaseDate: work?.releaseDate ?? null,
+      rightsStatus: work?.rightsStatus ?? null,
+      summary: work?.summary ?? null,
+      subjects: work?.subjects,
       cleanTextKey: workFiles.find((file) => file.kind === "clean")?.r2Key,
       chunksKey: workFiles.find((file) => file.kind === "chunks")?.r2Key,
     };
@@ -243,7 +251,10 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
           runtimeId,
           sessionId,
           works: workspacePlan.manifest.works,
+          dataSchema: workspacePlan.manifest.dataSchema,
+          fileCatalog: workspacePlan.manifest.fileCatalog,
           selectedChunkIds: workspacePlan.manifest.selectedChunkIds,
+          selectedChunks: workspacePlan.manifest.selectedChunks,
           taskContext: workspacePlan.manifest.taskContext,
           downloads: workspacePlan.downloads,
         }),
@@ -552,7 +563,11 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     chunkIds: string[],
     taskContext: Record<string, unknown>,
   ) {
-    const workFiles = await this.store.getWorkFiles(workIds, ["clean", "chunks"] satisfies WorkFileKind[]);
+    const [workMetadata, workFiles, selectedChunks] = await Promise.all([
+      this.store.getWorkMetadata(workIds),
+      this.store.getWorkFiles(workIds, ["clean", "chunks"] satisfies WorkFileKind[]),
+      chunkIds.length > 0 ? this.store.getChunksByIds(chunkIds) : Promise.resolve([]),
+    ]);
     const downloads: WorkspaceDownload[] = [];
     let totalBytes = 0;
 
@@ -572,8 +587,27 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     const manifest = {
       runtimeId,
       sessionId,
-      works: groupWorkFiles(workIds, workFiles),
+      works: groupWorkFiles(workIds, workFiles, workMetadata),
+      dataSchema: WORKSPACE_POSTGRES_SCHEMA,
+      fileCatalog: downloads.map((download) => {
+        const pathSegments = download.destinationPath.split("/");
+        return {
+          workId: pathSegments[1] ?? "unknown-work",
+          kind: pathSegments[0] === "chunks" ? "chunks" : "clean",
+          r2Key: download.r2Key,
+          destinationPath: download.destinationPath,
+          byteSize: download.byteSize ?? null,
+        };
+      }),
       selectedChunkIds: chunkIds,
+      selectedChunks: selectedChunks.map((chunk) => ({
+        id: chunk.id,
+        workId: chunk.workId,
+        chunkIndex: chunk.chunkIndex,
+        text: chunk.text,
+        excerpt: chunk.excerpt,
+        r2Key: chunk.r2Key ?? null,
+      })),
       taskContext,
     };
 
@@ -592,8 +626,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
       },
     });
 
-    if (chunkIds.length > 0) {
-      const selectedChunks = await this.store.getChunksByIds(chunkIds);
+    if (selectedChunks.length > 0) {
       const selectedChunksKey = R2_PREFIXES.runtimeArtifact(runtimeId, "selected-chunks.json");
       const selectedChunksText = JSON.stringify(selectedChunks, null, 2);
       totalBytes += selectedChunksText.length;

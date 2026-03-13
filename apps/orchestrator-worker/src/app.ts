@@ -266,11 +266,11 @@ function describePlannerAction(toolName: ToolName, rationale?: string) {
     case "get_work_text":
       return "I’m opening the full text for the most relevant book so I can inspect it directly.";
     case "create_workspace":
-      return "Retrieval alone is not enough here, so I’m preparing a workspace for a deeper local search.";
+      return "Indexed retrieval alone is not enough here, so I’m preparing a VM workspace for deterministic local search.";
     case "run_workspace_task":
-      return "The workspace is ready. I’m running a deeper iterative search across the local corpus files now.";
+      return "The workspace is ready. I’m running the two-pass VM search now: gather evidence first, then write the briefing.";
     case "read_workspace_file":
-      return "The workspace search finished, and I’m reading its output back into the thread.";
+      return "The VM briefing is ready, and I’m reading it back into the thread.";
     case "destroy_workspace":
       return "I’m cleaning up the workspace now that I have the evidence I need.";
     default:

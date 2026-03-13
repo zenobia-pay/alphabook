@@ -117,11 +117,24 @@ function extractChunks(toolHistory: ToolHistoryEntry[]): ChunkSearchResult[] {
 function extractRuntimeSummary(toolHistory: ToolHistoryEntry[]): string | null {
   for (let index = toolHistory.length - 1; index >= 0; index -= 1) {
     const candidate = toolHistory[index];
+    if (candidate.toolName === "run_workspace_task" && typeof candidate.result.briefing === "string") {
+      return candidate.result.briefing;
+    }
     if (candidate.toolName === "read_workspace_file" && typeof candidate.result.content === "string") {
       return candidate.result.content;
     }
   }
   return null;
+}
+
+function extractRuntimeCitations(toolHistory: ToolHistoryEntry[]): Citation[] {
+  for (let index = toolHistory.length - 1; index >= 0; index -= 1) {
+    const candidate = toolHistory[index];
+    if (candidate.toolName === "run_workspace_task") {
+      return sanitizeCitations(candidate.result.citations);
+    }
+  }
+  return [];
 }
 
 function compactMarkdown(markdown: string): string {
@@ -150,10 +163,19 @@ export class FallbackSynthesizer implements Synthesizer {
     const works = extractWorks(input.toolHistory);
     const chunks = extractChunks(input.toolHistory);
     const runtimeSummary = extractRuntimeSummary(input.toolHistory);
+    const runtimeCitations = extractRuntimeCitations(input.toolHistory);
     const citations = dedupeCitations([
+      ...runtimeCitations,
       ...input.plannerCitations,
       ...chunks.slice(0, 4).map(chunkCitation),
     ]).slice(0, 6);
+
+    if (runtimeSummary) {
+      return {
+        answer: runtimeSummary,
+        citations,
+      };
+    }
 
     const retrievalParagraph = chunks.length
       ? `I started with the indexed corpus and pulled the strongest passages from ${formatWorkList(works)}. The retrieved evidence points in a consistent direction: ${chunks
@@ -162,11 +184,7 @@ export class FallbackSynthesizer implements Synthesizer {
           .join(" ")}`
       : `I started with the indexed corpus, but the retrieval pass found only thin evidence for this question.`;
 
-    const runtimeParagraph = runtimeSummary
-      ? `I then ran a deeper workspace search over local corpus files and metadata. That longer pass came back with: ${compactMarkdown(runtimeSummary)
-          .replace(/\s+/g, " ")
-          .slice(0, 560)}`
-      : `The answer below leans on retrieval evidence only because no deeper runtime summary was available for this run.`;
+    const runtimeParagraph = `The answer below leans on retrieval evidence only because no deeper runtime briefing was available for this run.`;
 
     const normalizedDraft = input.plannerDraft
       ? compactMarkdown(input.plannerDraft).replace(/\s+/g, " ").trim()

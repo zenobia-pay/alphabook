@@ -264,8 +264,35 @@ export type ToolResult = z.infer<typeof ToolResultSchema>;
 export interface WorkspaceManifest {
   runtimeId: string;
   sessionId: string;
-  works: Array<{ workId: string; cleanTextKey?: string; chunksKey?: string }>;
+  works: Array<{
+    workId: string;
+    title?: string;
+    authors?: string[];
+    language?: string | null;
+    releaseDate?: string | null;
+    rightsStatus?: string | null;
+    summary?: string | null;
+    subjects?: string[];
+    cleanTextKey?: string;
+    chunksKey?: string;
+  }>;
+  dataSchema?: Record<string, unknown>;
+  fileCatalog?: Array<{
+    workId: string;
+    kind: string;
+    r2Key: string;
+    destinationPath: string;
+    byteSize?: number | null;
+  }>;
   selectedChunkIds: string[];
+  selectedChunks?: Array<{
+    id: string;
+    workId: string;
+    chunkIndex: number;
+    text: string;
+    excerpt: string;
+    r2Key?: string | null;
+  }>;
   taskContext: Record<string, unknown>;
 }
 
@@ -274,5 +301,14 @@ export interface RuntimeTaskResult {
   stdout: string;
   stderr: string;
   exitCode: number;
+  briefing?: string;
+  citations?: Citation[];
+  codexRuns?: Array<{
+    step: string;
+    promptPath: string;
+    outputPath: string;
+    logPath: string;
+    exitCode: number;
+  }>;
   artifacts: Array<{ path: string; filename: string; mimeType: string }>;
 }
