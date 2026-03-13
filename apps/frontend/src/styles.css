@@ -811,6 +811,7 @@ button {
 }
 
 .citation-chip {
+  appearance: none;
   display: inline-flex;
   align-items: center;
   padding: 7px 11px;
@@ -818,8 +819,26 @@ button {
   background: transparent;
   border: 1px solid rgba(139, 55, 40, 0.12);
   color: var(--accent);
+  font: inherit;
   font-size: 0.84rem;
   font-weight: 700;
+  cursor: pointer;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+
+.citation-chip:hover {
+  background: rgba(139, 55, 40, 0.08);
+  border-color: rgba(139, 55, 40, 0.22);
+}
+
+.citation-chip.is-active {
+  background: rgba(139, 55, 40, 0.12);
+  border-color: rgba(139, 55, 40, 0.28);
+}
+
+.citation-chip:focus-visible {
+  outline: 2px solid rgba(139, 55, 40, 0.34);
+  outline-offset: 2px;
 }
 
 .composer-shell {
@@ -975,6 +994,14 @@ button {
   font-family: "Newsreader", serif;
   font-size: 1.04rem;
   line-height: 1.72;
+  scroll-margin: 24vh;
+}
+
+.book-reader-text mark.alphabook-inline-highlight {
+  background: rgba(187, 73, 44, 0.18);
+  color: inherit;
+  border-radius: 0.22rem;
+  padding: 0 0.12rem;
 }
 
 .book-loading {

@@ -1,4 +1,4 @@
-import { type ComponentType, type FormEvent, type UIEvent, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, type ComponentType, type FormEvent, type UIEvent, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   AssistantRuntimeProvider,
   ComposerPrimitive,
@@ -38,6 +38,11 @@ type ToolTraceEntry = {
   state: "running" | "completed" | "error";
 };
 
+type CitationNavigationContextValue = {
+  openCitation: (citation: Citation) => void;
+  activeWorkId: string | null | undefined;
+};
+
 type AuthState = {
   loading: boolean;
   authConfigured: boolean;
@@ -54,6 +59,7 @@ type UrlState = {
 };
 
 const USER_STORAGE_KEY = "alphabook.localUserId";
+const CitationNavigationContext = createContext<CitationNavigationContextValue | null>(null);
 
 function isViewMode(value: string | null): value is ViewMode {
   return value === "explore" || value === "assistant" || value === "library" || value === "profile" || value === "book";
@@ -224,6 +230,197 @@ function formatRelativeTime(value: string | null | undefined) {
   return `${deltaDays}d ago`;
 }
 
+function decodeHtmlText(input: string) {
+  return input
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, "\"")
+    .replace(/&#39;|&apos;|&rsquo;|&lsquo;/gi, "'")
+    .replace(/&rdquo;|&ldquo;/gi, "\"")
+    .replace(/&mdash;/gi, "—")
+    .replace(/&ndash;/gi, "–")
+    .replace(/&hellip;/gi, "…")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">");
+}
+
+function canonicalizeSearchCharacter(character: string) {
+  if (/\s/.test(character)) {
+    return " ";
+  }
+
+  switch (character) {
+    case "’":
+    case "‘":
+      return "'";
+    case "“":
+    case "”":
+      return "\"";
+    case "—":
+    case "–":
+      return "-";
+    default:
+      return character.toLowerCase();
+  }
+}
+
+function buildNormalizedSearchIndex(raw: string) {
+  let normalized = "";
+  const map: number[] = [];
+  let previousWasSpace = false;
+
+  for (let index = 0; index < raw.length; index += 1) {
+    const next = canonicalizeSearchCharacter(raw[index]);
+    if (next === " ") {
+      if (previousWasSpace) {
+        continue;
+      }
+      previousWasSpace = true;
+    } else {
+      previousWasSpace = false;
+    }
+    normalized += next;
+    map.push(index);
+  }
+
+  return { normalized, map };
+}
+
+function buildCitationCandidates(citation: Citation) {
+  const decodedExcerpt = decodeHtmlText(citation.excerpt).replace(/\s+/g, " ").trim();
+  const cleanedExcerpt = decodedExcerpt.replace(/^[`"'“”‘’]+|[`"'“”‘’.,;:!?]+$/g, "").trim();
+  const excerptSegments = cleanedExcerpt
+    .split(/[.;!?]\s+|\s+[—–-]\s+/)
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length >= 24);
+  const labelCandidate = decodeHtmlText(citation.label).replace(/\s+/g, " ").trim();
+  const candidates = [decodedExcerpt, cleanedExcerpt, ...excerptSegments, labelCandidate]
+    .filter((candidate, index, values) => candidate.length >= 12 && values.indexOf(candidate) === index)
+    .sort((left, right) => right.length - left.length);
+
+  if (candidates.length === 0 && decodedExcerpt.length > 0) {
+    return [decodedExcerpt];
+  }
+  return candidates;
+}
+
+function clearReaderHighlights(root: ParentNode) {
+  for (const mark of root.querySelectorAll("mark.alphabook-inline-highlight")) {
+    const parent = mark.parentNode;
+    if (!parent) {
+      continue;
+    }
+    parent.replaceChild(mark.ownerDocument.createTextNode(mark.textContent ?? ""), mark);
+    parent.normalize();
+  }
+
+  for (const block of root.querySelectorAll(".alphabook-highlight-block")) {
+    block.classList.remove("alphabook-highlight-block");
+  }
+}
+
+function highlightTextNodeRange(node: Text, startOffset: number, endOffset: number, className: string) {
+  if (startOffset >= endOffset) {
+    return null;
+  }
+
+  let target = node;
+  if (startOffset > 0) {
+    target = target.splitText(startOffset);
+  }
+  if (endOffset - startOffset < target.length) {
+    target.splitText(endOffset - startOffset);
+  }
+
+  const mark = target.ownerDocument.createElement("mark");
+  mark.className = className;
+  target.parentNode?.replaceChild(mark, target);
+  mark.appendChild(target);
+  return mark;
+}
+
+function highlightExcerptInTextContainer(container: HTMLElement, citation: Citation) {
+  clearReaderHighlights(container);
+
+  const textNode = container.firstChild instanceof Text ? container.firstChild : null;
+  if (!textNode?.textContent) {
+    return false;
+  }
+
+  const rawText = textNode.textContent;
+  const { normalized, map } = buildNormalizedSearchIndex(rawText);
+  for (const candidate of buildCitationCandidates(citation)) {
+    const normalizedCandidate = buildNormalizedSearchIndex(candidate).normalized.trim();
+    if (!normalizedCandidate) {
+      continue;
+    }
+    const matchIndex = normalized.indexOf(normalizedCandidate);
+    if (matchIndex < 0) {
+      continue;
+    }
+
+    const rawStart = map[matchIndex];
+    const rawEnd = map[matchIndex + normalizedCandidate.length - 1] + 1;
+    const mark = highlightTextNodeRange(textNode, rawStart, rawEnd, "alphabook-inline-highlight");
+    mark?.parentElement?.classList.add("alphabook-highlight-block");
+    mark?.scrollIntoView({ behavior: "smooth", block: "center" });
+    return true;
+  }
+
+  return false;
+}
+
+function highlightExcerptInIframe(iframe: HTMLIFrameElement, citation: Citation) {
+  const doc = iframe.contentDocument;
+  const win = iframe.contentWindow;
+  if (!doc || !win || !doc.body) {
+    return false;
+  }
+
+  clearReaderHighlights(doc);
+  const searchableWindow = win as Window & {
+    find?: (
+      string: string,
+      caseSensitive?: boolean,
+      backwards?: boolean,
+      wrapAround?: boolean,
+      wholeWord?: boolean,
+      searchInFrames?: boolean,
+      showDialog?: boolean,
+    ) => boolean;
+  };
+  const finder = typeof searchableWindow.find === "function" ? searchableWindow.find.bind(searchableWindow) : null;
+  if (!finder) {
+    return false;
+  }
+
+  for (const candidate of buildCitationCandidates(citation)) {
+    const found = finder(candidate, false, false, true, false, false, false);
+    if (!found) {
+      continue;
+    }
+
+    const selection = win.getSelection();
+    const anchorNode = selection?.anchorNode ?? selection?.focusNode ?? null;
+    const anchorElement =
+      anchorNode instanceof Element
+        ? anchorNode
+        : anchorNode?.parentElement ?? null;
+    const block = anchorElement?.closest("p, li, blockquote, h1, h2, h3, h4, h5, h6, div");
+
+    if (block instanceof HTMLElement) {
+      block.classList.add("alphabook-highlight-block");
+      block.scrollIntoView({ behavior: "smooth", block: "center" });
+      selection?.removeAllRanges();
+      return true;
+    }
+
+    selection?.removeAllRanges();
+  }
+
+  return false;
+}
+
 function initialsFromSeed(seed: string) {
   const letters = seed.replace(/[^a-z0-9]/gi, "");
   return letters.slice(0, 2).toUpperCase() || "AB";
@@ -263,6 +460,8 @@ function buildReaderDocument(source: WorkSource, work: WorkDetail | null) {
     "img{max-width:100%;height:auto;}",
     "table{max-width:100%;}",
     "a{color:inherit;}",
+    ".alphabook-highlight-block{background:rgba(187,73,44,0.14)!important;box-shadow:0 0 0 3px rgba(187,73,44,0.16);border-radius:10px;padding:0.2rem 0.45rem;scroll-margin:24vh;}",
+    "mark.alphabook-inline-highlight{background:rgba(187,73,44,0.18);color:inherit;border-radius:0.22rem;padding:0 0.12rem;}",
     "</style>",
     "</head>",
     "<body>",
@@ -689,6 +888,7 @@ const TOOL_UIS = [
 function AssistantFooter() {
   const metadata = useMessage((message) => message.metadata.custom as Record<string, unknown> | undefined);
   const citations = (Array.isArray(metadata?.citations) ? metadata?.citations : []) as Citation[];
+  const citationNavigation = useContext(CitationNavigationContext);
 
   if (citations.length === 0) {
     return null;
@@ -698,9 +898,16 @@ function AssistantFooter() {
     <div className="assistant-footnotes">
       <div className="citation-list">
         {citations.map((citation) => (
-          <span key={`${citation.workId}-${citation.chunkId ?? citation.label}`} className="citation-chip">
+          <button
+            key={`${citation.workId}-${citation.chunkId ?? citation.label}`}
+            type="button"
+            className={`citation-chip ${citationNavigation?.activeWorkId === citation.workId ? "is-active" : ""}`}
+            title={decodeHtmlText(citation.excerpt)}
+            data-testid="citation-chip"
+            onClick={() => citationNavigation?.openCitation(citation)}
+          >
             {citation.label}
-          </span>
+          </button>
         ))}
       </div>
     </div>
@@ -785,12 +992,16 @@ function AssistantSurface({
   streamingAssistantId,
   onPrompt,
   showWelcome,
+  onOpenCitation,
+  activeWorkId,
 }: {
   messages: UiMessage[];
   isSending: boolean;
   streamingAssistantId: string | null;
   onPrompt: (prompt: string) => Promise<void>;
   showWelcome: boolean;
+  onOpenCitation: (citation: Citation) => void;
+  activeWorkId: string | null | undefined;
 }) {
   const runtime = useExternalStoreRuntime({
     isRunning: isSending,
@@ -844,28 +1055,30 @@ function AssistantSurface({
   }
 
   return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <Thread
-        assistantAvatar={{ fallback: "A" }}
-        tools={TOOL_UIS}
-        components={{
-          ...(showWelcome ? { ThreadWelcome: Welcome } : {}),
-          Composer: AssistantComposer,
-        }}
-        assistantMessage={{
-          allowCopy: true,
-          components: {
-            Footer: AssistantFooter,
-          },
-        }}
-        composer={{
-          allowAttachments: false,
-        }}
-        welcome={{
-          message: null,
-        }}
-      />
-    </AssistantRuntimeProvider>
+    <CitationNavigationContext.Provider value={{ openCitation: onOpenCitation, activeWorkId }}>
+      <AssistantRuntimeProvider runtime={runtime}>
+        <Thread
+          assistantAvatar={{ fallback: "A" }}
+          tools={TOOL_UIS}
+          components={{
+            ...(showWelcome ? { ThreadWelcome: Welcome } : {}),
+            Composer: AssistantComposer,
+          }}
+          assistantMessage={{
+            allowCopy: true,
+            components: {
+              Footer: AssistantFooter,
+            },
+          }}
+          composer={{
+            allowAttachments: false,
+          }}
+          welcome={{
+            message: null,
+          }}
+        />
+      </AssistantRuntimeProvider>
+    </CitationNavigationContext.Provider>
   );
 }
 
@@ -900,7 +1113,11 @@ export default function App() {
   const [activeWork, setActiveWork] = useState<WorkDetail | null>(null);
   const [activeWorkSource, setActiveWorkSource] = useState<WorkSource | null>(null);
   const [activeWorkLoading, setActiveWorkLoading] = useState(false);
+  const [pendingCitation, setPendingCitation] = useState<Citation | null>(null);
+  const [bookReaderLoadVersion, setBookReaderLoadVersion] = useState(0);
   const activeRunTokenRef = useRef(0);
+  const bookReaderFrameRef = useRef<HTMLIFrameElement | null>(null);
+  const bookReaderTextRef = useRef<HTMLPreElement | null>(null);
 
   const currentUser = useMemo(
     () => {
@@ -1028,6 +1245,7 @@ export default function App() {
     if (!activeWorkId) {
       setActiveWork(null);
       setActiveWorkSource(null);
+      setBookReaderLoadVersion((current) => current + 1);
       return;
     }
 
@@ -1044,6 +1262,34 @@ export default function App() {
       }
     })();
   }, [activeWorkId]);
+
+  useEffect(() => {
+    if (!pendingCitation || !activeWorkSource || !activeWork || activeWork.id !== pendingCitation.workId) {
+      return;
+    }
+
+    let cancelled = false;
+    const applyHighlight = () => {
+      if (cancelled) {
+        return;
+      }
+
+      const highlighted =
+        activeWorkSource.format === "html"
+          ? (bookReaderFrameRef.current ? highlightExcerptInIframe(bookReaderFrameRef.current, pendingCitation) : false)
+          : (bookReaderTextRef.current ? highlightExcerptInTextContainer(bookReaderTextRef.current, pendingCitation) : false);
+
+      if (highlighted || activeWorkSource.format === "text") {
+        setPendingCitation(null);
+      }
+    };
+
+    const timeout = window.setTimeout(applyHighlight, 60);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeout);
+    };
+  }, [activeWork, activeWorkSource, bookReaderLoadVersion, pendingCitation]);
 
   useEffect(() => {
     if (authState.loading) {
@@ -1428,6 +1674,7 @@ export default function App() {
     setMobileNavOpen(false);
     if (view !== "book") {
       setActiveWorkId(null);
+      setPendingCitation(null);
     }
     if (view === "assistant" && activeView === "assistant") {
       startNewChat();
@@ -1440,6 +1687,7 @@ export default function App() {
     setMobileNavOpen(false);
     setSelectedSessionId(sessionId);
     setActiveWorkId(null);
+    setPendingCitation(null);
     setActiveView("assistant");
   }
 
@@ -1450,8 +1698,16 @@ export default function App() {
 
   function openWork(workId: string) {
     setMobileNavOpen(false);
+    setPendingCitation(null);
     setActiveWorkId(workId);
     startNewBookChat();
+  }
+
+  function openCitation(citation: Citation) {
+    setMobileNavOpen(false);
+    setPendingCitation(citation);
+    setActiveWorkId(citation.workId);
+    setActiveView("book");
   }
 
   function renderAssistantView() {
@@ -1486,17 +1742,19 @@ export default function App() {
               title="Sign in to use the assistant."
             />
           ) : (
-            <AssistantSurface
-              key={selectedSessionId ?? "new-thread"}
-              messages={messages}
-              isSending={isSending}
-              streamingAssistantId={streamingAssistantId}
-              onPrompt={sendPrompt}
-              showWelcome={showWelcome}
-            />
-          )}
-        </div>
-      </section>
+              <AssistantSurface
+                key={selectedSessionId ?? "new-thread"}
+                messages={messages}
+                isSending={isSending}
+                streamingAssistantId={streamingAssistantId}
+                onPrompt={sendPrompt}
+                showWelcome={showWelcome}
+                onOpenCitation={openCitation}
+                activeWorkId={activeWorkId}
+              />
+            )}
+          </div>
+        </section>
     );
   }
 
@@ -1536,11 +1794,13 @@ export default function App() {
                     <iframe
                       title={activeWork.title}
                       className="book-reader-frame"
+                      ref={bookReaderFrameRef}
                       sandbox="allow-same-origin"
                       srcDoc={buildReaderDocument(activeWorkSource, activeWork)}
+                      onLoad={() => setBookReaderLoadVersion((current) => current + 1)}
                     />
                   ) : (
-                    <pre className="book-reader-text">{activeWorkSource.content}</pre>
+                    <pre ref={bookReaderTextRef} className="book-reader-text">{activeWorkSource.content}</pre>
                   )
                 ) : (
                   <div className="book-loading">This book does not have stored source content yet.</div>
@@ -1570,6 +1830,8 @@ export default function App() {
                 streamingAssistantId={streamingAssistantId}
                 onPrompt={bookPromptHandler}
                 showWelcome={showWelcome}
+                onOpenCitation={openCitation}
+                activeWorkId={activeWorkId}
               />
             )}
           </div>
