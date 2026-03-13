@@ -267,6 +267,20 @@ button {
   box-shadow: 0 8px 18px rgba(58, 34, 27, 0.12);
 }
 
+.profile-badge svg,
+.profile-hero-badge svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+}
+
+.profile-badge-neutral {
+  color: var(--accent);
+  background: transparent;
+  border: 1px solid rgba(139, 55, 40, 0.14);
+  box-shadow: none;
+}
+
 .main-panel {
   min-height: 100vh;
   background: transparent;
@@ -577,6 +591,78 @@ button {
   color: var(--text-muted);
   font-size: 1rem;
   line-height: 1.62;
+}
+
+.locked-view {
+  display: grid;
+  gap: 18px;
+}
+
+.locked-panel {
+  max-width: 720px;
+  display: grid;
+  gap: 16px;
+  align-items: start;
+  padding: 22px 0 0;
+  border-top: 1px solid rgba(72, 43, 37, 0.08);
+}
+
+.locked-panel.is-compact {
+  max-width: 620px;
+  margin: 11vh auto 0;
+  justify-items: center;
+  text-align: center;
+}
+
+.locked-mark {
+  width: 52px;
+  height: 52px;
+  display: grid;
+  place-items: center;
+  border-radius: 16px;
+  color: var(--accent);
+  border: 1px solid rgba(139, 55, 40, 0.12);
+  background: transparent;
+}
+
+.locked-mark svg {
+  width: 20px;
+  height: 20px;
+  fill: currentColor;
+}
+
+.locked-copy {
+  display: grid;
+  gap: 8px;
+}
+
+.locked-copy h2 {
+  margin: 0;
+  font-family: "Newsreader", serif;
+  font-size: clamp(2rem, 3.4vw, 3rem);
+  line-height: 0.98;
+  letter-spacing: -0.05em;
+}
+
+.locked-copy p {
+  margin: 0;
+  max-width: 58ch;
+  color: var(--text-muted);
+  line-height: 1.68;
+}
+
+.locked-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.session-loading {
+  max-width: 620px;
+  margin: 12vh auto 0;
+  padding-top: 16px;
+  text-align: center;
+  color: var(--text-muted);
 }
 
 .message-row {
@@ -1102,6 +1188,18 @@ button {
   .empty-state {
     margin-top: 8vh;
     padding-bottom: 28px;
+  }
+
+  .locked-panel {
+    padding-top: 18px;
+  }
+
+  .locked-panel.is-compact {
+    margin-top: 9vh;
+  }
+
+  .locked-copy h2 {
+    font-size: clamp(1.8rem, 8vw, 2.6rem);
   }
 
   .empty-state h2 {

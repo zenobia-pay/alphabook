@@ -328,6 +328,38 @@ function SignInCard({ copy }: { copy: string }) {
   );
 }
 
+function LockedState({
+  title,
+  copy,
+  icon: Icon,
+  compact = false,
+}: {
+  title: string;
+  copy: string;
+  icon: ComponentType;
+  compact?: boolean;
+}) {
+  return (
+    <section className={`locked-panel ${compact ? "is-compact" : ""}`}>
+      <div className="locked-mark">
+        <Icon />
+      </div>
+      <div className="locked-copy">
+        <h2>{title}</h2>
+        <p>{copy}</p>
+      </div>
+      <div className="locked-actions">
+        <a className="hero-button hero-button-primary" href={buildSignInUrl(window.location.href)}>
+          Sign in
+        </a>
+        <a className="hero-button" href={buildSignUpUrl(window.location.href)}>
+          Create account
+        </a>
+      </div>
+    </section>
+  );
+}
+
 function AssistantSurface({
   messages,
   isSending,
@@ -396,8 +428,16 @@ export default function App() {
   const activeRunTokenRef = useRef(0);
 
   const currentUser = useMemo(
-    () => authState.user ?? (authState.authConfigured ? null : createGuestProfile(guestUserId)),
-    [authState.authConfigured, authState.user, guestUserId],
+    () => {
+      if (authState.loading) {
+        return null;
+      }
+      if (authState.user) {
+        return authState.user;
+      }
+      return authState.authConfigured ? null : createGuestProfile(guestUserId);
+    },
+    [authState.authConfigured, authState.loading, authState.user, guestUserId],
   );
   const currentUserId = currentUser?.id ?? null;
   const activeSession = useMemo(
@@ -412,6 +452,7 @@ export default function App() {
   const displayProfileName = displayName(currentUser);
   const profileTag = profileHandle(currentUser);
   const activeViewLabel = activeView === "assistant" ? activeSession?.title ?? "Assistant" : NAV_ITEMS.find((item) => item.id === activeView)?.label ?? "AlphaBook";
+  const authLocked = authState.authConfigured && !authState.user;
 
   useEffect(() => {
     void (async () => {
@@ -435,6 +476,9 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (authState.loading) {
+      return;
+    }
     if (!currentUserId) {
       setSessions([]);
       setSelectedSessionId(null);
@@ -456,6 +500,9 @@ export default function App() {
   }, [authState.authConfigured, currentUserId, selectedSessionId]);
 
   useEffect(() => {
+    if (authState.loading) {
+      return;
+    }
     if (!selectedSessionId) {
       setMessages([]);
       return;
@@ -495,7 +542,7 @@ export default function App() {
 
   async function sendPrompt(question: string, options: { sessionIdOverride?: string | null } = {}) {
     const normalizedQuestion = question.trim();
-    if (!normalizedQuestion || isSending) {
+    if (!normalizedQuestion || isSending || authState.loading) {
       return;
     }
     if (!currentUserId) {
@@ -709,21 +756,6 @@ export default function App() {
   }
 
   function renderAssistantView() {
-    if (authState.loading) {
-      return (
-        <div className="view-shell">
-          <section className="hero-card">
-            <p className="eyebrow">Assistant</p>
-            <h1>Loading your session…</h1>
-          </section>
-        </div>
-      );
-    }
-
-    if (authState.authConfigured && !authState.user) {
-      return <SignInCard copy="Your chat history, library, and saved profile all sit behind the shared session." />;
-    }
-
     return (
       <>
         <header className="thread-header">
@@ -732,6 +764,7 @@ export default function App() {
             <h1>{activeSession?.title ?? "New research chat"}</h1>
           </div>
           <div className="thread-header-actions">
+            {authState.loading ? <span className="status-pill">Checking session</span> : null}
             {statusText ? <span className="status-pill">{statusText}</span> : null}
           </div>
         </header>
@@ -739,13 +772,23 @@ export default function App() {
         {loadError ? <div className="thread-error-banner">{loadError}</div> : null}
 
         <div className="assistant-thread-shell" ref={threadContainerRef} data-testid="thread">
-          <AssistantSurface
-            key={selectedSessionId ?? "new-thread"}
-            messages={messages}
-            isSending={isSending}
-            streamingAssistantId={streamingAssistantId}
-            onPrompt={sendPrompt}
-          />
+          {authState.loading ? <div className="session-loading">Checking your session…</div> : null}
+          {!authState.loading && authLocked ? (
+            <LockedState
+              compact
+              icon={ChatIcon}
+              title="Sign in to keep your assistant threads."
+              copy="AlphaBook stores your research sessions, citations, and run history on the signed-in account."
+            />
+          ) : (
+            <AssistantSurface
+              key={selectedSessionId ?? "new-thread"}
+              messages={messages}
+              isSending={isSending}
+              streamingAssistantId={streamingAssistantId}
+              onPrompt={sendPrompt}
+            />
+          )}
         </div>
       </>
     );
@@ -809,8 +852,36 @@ export default function App() {
   }
 
   function renderLibraryView() {
-    if (authState.authConfigured && !authState.user) {
-      return <SignInCard copy="Library is backed by your signed-in account, so you can reopen the same research threads later." />;
+    if (authState.loading) {
+      return (
+        <div className="view-shell locked-view">
+          <header className="view-header">
+            <div>
+              <p className="eyebrow">Library</p>
+              <h1>Your saved threads live here.</h1>
+            </div>
+          </header>
+          <div className="session-loading">Checking your session…</div>
+        </div>
+      );
+    }
+
+    if (authLocked) {
+      return (
+        <div className="view-shell locked-view">
+          <header className="view-header">
+            <div>
+              <p className="eyebrow">Library</p>
+              <h1>Your saved threads live here.</h1>
+            </div>
+          </header>
+          <LockedState
+            icon={LibraryIcon}
+            title="Sign in to keep a library."
+            copy="Your saved chats, reopened runs, and reading trail all attach to the account behind your session."
+          />
+        </div>
+      );
     }
 
     return (
@@ -845,8 +916,36 @@ export default function App() {
   }
 
   function renderProfileView() {
-    if (authState.authConfigured && !authState.user) {
-      return <SignInCard copy="Profile is powered by the authenticated AlphaBook session and reflects the same account used for saved chats." />;
+    if (authState.loading) {
+      return (
+        <div className="view-shell locked-view">
+          <header className="view-header">
+            <div>
+              <p className="eyebrow">Profile</p>
+              <h1>Your account details live here.</h1>
+            </div>
+          </header>
+          <div className="session-loading">Checking your session…</div>
+        </div>
+      );
+    }
+
+    if (authLocked) {
+      return (
+        <div className="view-shell locked-view">
+          <header className="view-header">
+            <div>
+              <p className="eyebrow">Profile</p>
+              <h1>Your account details live here.</h1>
+            </div>
+          </header>
+          <LockedState
+            icon={ProfileIcon}
+            title="Create an account to unlock profile history."
+            copy="Profile holds your saved sessions, long-run history, and account-backed library state."
+          />
+        </div>
+      );
     }
 
     return (
@@ -1035,9 +1134,13 @@ export default function App() {
         >
           {currentUser?.avatarUrl ? (
             <img className="sidebar-avatar-image" src={currentUser.avatarUrl} alt={displayProfileName} />
-          ) : (
+          ) : currentUser ? (
             <div className="profile-badge" style={{ ["--profile-hue" as string]: profileHue }}>
               {initialsFromSeed(displayProfileName)}
+            </div>
+          ) : (
+            <div className="profile-badge profile-badge-neutral">
+              <ProfileIcon />
             </div>
           )}
         </button>
@@ -1068,9 +1171,13 @@ export default function App() {
           >
             {currentUser?.avatarUrl ? (
               <img className="sidebar-avatar-image" src={currentUser.avatarUrl} alt={displayProfileName} />
-            ) : (
+            ) : currentUser ? (
               <div className="profile-badge" style={{ ["--profile-hue" as string]: profileHue }}>
                 {initialsFromSeed(displayProfileName)}
+              </div>
+            ) : (
+              <div className="profile-badge profile-badge-neutral">
+                <ProfileIcon />
               </div>
             )}
           </button>
