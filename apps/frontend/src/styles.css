@@ -4,24 +4,24 @@
   font-family: "Manrope", sans-serif;
   color: #261a19;
   background:
-    radial-gradient(circle at top left, rgba(166, 64, 54, 0.03), transparent 26%),
-    linear-gradient(180deg, #fbf8f4 0%, #f7f3ed 100%);
+    radial-gradient(circle at top left, rgba(249, 115, 22, 0.025), transparent 24%),
+    linear-gradient(180deg, #ffffff 0%, #fbfbfa 100%);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   --shell-border: rgba(72, 43, 37, 0.08);
   --shell-strong: rgba(72, 43, 37, 0.14);
-  --surface: rgba(255, 255, 255, 0.74);
-  --surface-strong: rgba(255, 255, 255, 0.9);
-  --sidebar: rgba(255, 255, 255, 0.8);
+  --surface: rgba(255, 255, 255, 0.84);
+  --surface-strong: rgba(255, 255, 255, 0.96);
+  --sidebar: rgba(255, 255, 255, 0.92);
   --text-muted: rgba(38, 26, 25, 0.62);
-  --accent: #8b3728;
-  --accent-strong: #6f2a20;
-  --accent-soft: rgba(139, 55, 40, 0.1);
-  --accent-line: rgba(139, 55, 40, 0.2);
-  --shadow: 0 16px 42px rgba(58, 34, 27, 0.05);
-  --app-bg: #fbf8f4;
+  --accent: #f97316;
+  --accent-strong: #ea580c;
+  --accent-soft: rgba(249, 115, 22, 0.08);
+  --accent-line: rgba(249, 115, 22, 0.18);
+  --shadow: 0 16px 42px rgba(15, 23, 42, 0.04);
+  --app-bg: #ffffff;
   --ink: #261a19;
   --ink-soft: rgba(38, 26, 25, 0.62);
   --ink-strong: #171311;
@@ -82,7 +82,7 @@ button {
   gap: 12px;
   height: 100vh;
   padding: 18px 14px 14px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(249, 246, 241, 0.82));
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(252, 252, 251, 0.92));
   border-right: 1px solid var(--shell-border);
   position: sticky;
   top: 0;
@@ -148,12 +148,15 @@ button {
   border-bottom: 1px solid rgba(72, 43, 37, 0.08);
   background: transparent;
   color: inherit;
-  padding: 11px 0;
+  padding: 14px 0;
   text-align: left;
+  border-radius: 0;
+  box-shadow: none;
 }
 
 .sidebar-nav-button:hover {
   color: var(--ink);
+  background: transparent;
 }
 
 .sidebar-nav-button.is-active {
@@ -163,7 +166,7 @@ button {
 
 .sidebar-profile {
   margin-top: auto;
-  padding: 8px 0 0;
+  padding: 12px 0 0;
 }
 
 .sidebar.is-collapsed .sidebar-profile {
@@ -525,6 +528,7 @@ button {
   display: grid;
   justify-items: center;
   gap: 8px;
+  padding-top: 18px;
   text-align: center;
 }
 
@@ -606,42 +610,16 @@ button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 112px;
-  padding: 9px 16px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.9);
-  border: 1px solid rgba(72, 43, 37, 0.08);
-  color: inherit;
+  min-width: 0;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  border: 0;
+  color: var(--ink);
   font-size: 0.88rem;
   font-weight: 600;
   text-decoration: none;
-}
-
-.profile-chip[aria-disabled="true"] {
-  color: var(--text-muted);
-}
-
-.profile-nav {
-  display: flex;
-  justify-content: center;
-  gap: 28px;
-  padding: 0 0 14px;
-  border-bottom: 1px solid rgba(72, 43, 37, 0.08);
-}
-
-.profile-nav-item {
-  border: 0;
-  border-bottom: 3px solid transparent;
-  background: transparent;
-  color: var(--text-muted);
-  padding: 0 4px 12px;
-  font-size: 0.98rem;
-}
-
-.profile-nav-item.is-active {
-  color: #b33b46;
-  border-color: #b33b46;
-  font-weight: 700;
+  box-shadow: none;
 }
 
 .profile-history {
@@ -1104,7 +1082,8 @@ button {
 .profile-hero-image,
 .sidebar-avatar-image {
   border-radius: 50%;
-  object-fit: cover;
+  object-fit: contain;
+  background: white;
   box-shadow: 0 10px 24px rgba(58, 34, 27, 0.08);
 }
 

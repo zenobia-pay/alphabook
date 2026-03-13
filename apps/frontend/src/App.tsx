@@ -15,7 +15,6 @@ import { getToolLabel, type ChatSessionSummary, type Citation, type MessageRecor
 
 import { buildSignInUrl, buildSignOutUrl, fetchCurrentUser, fetchMessages, fetchSessions, fetchWorkDetail, fetchWorks, streamChat } from "./api";
 import { Avatar, AvatarFallback, AvatarImage } from "./components/ui/avatar";
-import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import { Card, CardContent } from "./components/ui/card";
 import { Separator } from "./components/ui/separator";
@@ -511,54 +510,54 @@ function summarizeToolSentence({
         if (planned) {
           return planned;
         }
-        return query ? `Scanning corpus metadata for ${query}.` : "Scanning corpus metadata.";
+        return query ? `Scanning the library for leads on ${query}.` : "Scanning the library for leads.";
       }
       if (state === "error") {
         return query
-          ? `The corpus metadata scan for ${query} failed${errorMessage ? `: ${errorMessage}` : "."}`
-          : `The corpus metadata scan failed${errorMessage ? `: ${errorMessage}` : "."}`;
+          ? `The first search pass for ${query} failed${errorMessage ? `: ${errorMessage}` : "."}`
+          : `The first search pass failed${errorMessage ? `: ${errorMessage}` : "."}`;
       }
       if (resultWorkCount === 0) {
         return query
-          ? `Scanned corpus metadata for ${query} and found no strong candidate books.`
-          : "Scanned corpus metadata and found no strong candidate books.";
+          ? `Scanned the library for ${query} and found no strong leads yet.`
+          : "Scanned the library and found no strong leads yet.";
       }
       return query
-        ? `Scanned corpus metadata for ${query} and found ${pluralize(resultWorkCount, "candidate work")}.`
-        : `Scanned corpus metadata and found ${pluralize(resultWorkCount, "candidate work")}.`;
+        ? `Scanned the library for ${query} and found ${pluralize(resultWorkCount, "candidate book")}.`
+        : `Scanned the library and found ${pluralize(resultWorkCount, "candidate book")}.`;
 
     case "get_relevant_chunks":
       if (state === "running") {
         if (planned) {
           return planned;
         }
-        return query ? `Running an initial index scan for ${query}.` : "Running an initial index scan.";
+        return query ? `Looking for early leads on ${query}.` : "Looking for early leads.";
       }
       if (state === "error") {
         return query
-          ? `The initial index scan for ${query} failed${errorMessage ? `: ${errorMessage}` : "."}`
-          : `The initial index scan failed${errorMessage ? `: ${errorMessage}` : "."}`;
+          ? `The quick scan for ${query} failed${errorMessage ? `: ${errorMessage}` : "."}`
+          : `The quick scan failed${errorMessage ? `: ${errorMessage}` : "."}`;
       }
       if (resultChunkCount === 0) {
         return query
-          ? `Ran an initial index scan for ${query} and found no seed matches.`
-          : "Ran an initial index scan and found no seed matches.";
+          ? `Ran a quick scan for ${query} and found no strong leads yet.`
+          : "Ran a quick scan and found no strong leads yet.";
       }
       return query
-        ? `Found ${pluralize(resultChunkCount, "seed match")} for ${query}.`
-        : `Found ${pluralize(resultChunkCount, "seed match")}.`;
+        ? `Found ${pluralize(resultChunkCount, "early lead")} for ${query}.`
+        : `Found ${pluralize(resultChunkCount, "early lead")}.`;
 
     case "get_work_metadata":
       if (state === "running") {
         if (planned) {
           return planned;
         }
-        return `Loading metadata for ${pluralize(workCount, "book")}.`;
+        return `Loading details for ${pluralize(workCount, "book")}.`;
       }
       if (state === "error") {
-        return `Metadata lookup failed${errorMessage ? `: ${errorMessage}` : "."}`;
+        return `Loading book details failed${errorMessage ? `: ${errorMessage}` : "."}`;
       }
-      return `Loaded metadata for ${pluralize(resultWorkCount || workCount, "book")}.`;
+      return `Loaded details for ${pluralize(resultWorkCount || workCount, "book")}.`;
 
     case "get_work_text":
       if (state === "running") {
@@ -577,12 +576,12 @@ function summarizeToolSentence({
         if (planned) {
           return planned;
         }
-        return `Preparing a VM workspace for ${pluralize(workCount, "book")}${chunkCount ? ` and ${pluralize(chunkCount, "passage")}` : ""}.`;
+        return `Preparing the background search for ${pluralize(workCount, "book")}${chunkCount ? ` and ${pluralize(chunkCount, "lead")}` : ""}.`;
       }
       if (state === "error") {
-        return `Preparing the VM workspace failed${errorMessage ? `: ${errorMessage}` : "."}`;
+        return `Starting the background search failed${errorMessage ? `: ${errorMessage}` : "."}`;
       }
-      return `Prepared a VM workspace for ${pluralize(workCount, "book")}${chunkCount ? ` and ${pluralize(chunkCount, "passage")}` : ""}.`;
+      return `Prepared the background search for ${pluralize(workCount, "book")}${chunkCount ? ` and ${pluralize(chunkCount, "lead")}` : ""}.`;
 
     case "run_workspace_task":
       if (state === "running") {
@@ -590,59 +589,63 @@ function summarizeToolSentence({
           return planned;
         }
         if (runtimePhase === "collect_evidence") {
-          return query ? `Running VM pass 1 to collect evidence for ${query}.` : "Running VM pass 1 to collect evidence.";
+          return query ? `Searching the corpus for evidence about ${query}.` : "Searching the corpus for evidence.";
         }
         if (runtimePhase === "write_briefing") {
-          return query ? `Running VM pass 2 to write the briefing for ${query}.` : "Running VM pass 2 to write the briefing.";
+          return query ? `Writing the quoted briefing for ${query}.` : "Writing the quoted briefing.";
         }
-        return query ? `Running the VM search for ${query}.` : "Running the VM search.";
+        return query ? `Running the background search for ${query}.` : "Running the background search.";
       }
       if (state === "error") {
         if (runtimePhase === "collect_evidence") {
           return query
-            ? `VM pass 1 for ${query} failed${errorMessage ? `: ${errorMessage}` : "."}`
-            : `VM pass 1 failed${errorMessage ? `: ${errorMessage}` : "."}`;
+            ? `The evidence search for ${query} failed${errorMessage ? `: ${errorMessage}` : "."}`
+            : `The evidence search failed${errorMessage ? `: ${errorMessage}` : "."}`;
         }
         if (runtimePhase === "write_briefing") {
           return query
-            ? `VM pass 2 for ${query} failed${errorMessage ? `: ${errorMessage}` : "."}`
-            : `VM pass 2 failed${errorMessage ? `: ${errorMessage}` : "."}`;
+            ? `Writing the briefing for ${query} failed${errorMessage ? `: ${errorMessage}` : "."}`
+            : `Writing the briefing failed${errorMessage ? `: ${errorMessage}` : "."}`;
         }
         return query
-          ? `The VM search for ${query} failed${errorMessage ? `: ${errorMessage}` : "."}`
-          : `The VM search failed${errorMessage ? `: ${errorMessage}` : "."}`;
+          ? `The background search for ${query} failed${errorMessage ? `: ${errorMessage}` : "."}`
+          : `The background search failed${errorMessage ? `: ${errorMessage}` : "."}`;
       }
       if (runtimePhase === "collect_evidence") {
-        return query ? `Finished VM pass 1 evidence collection for ${query}.` : "Finished VM pass 1 evidence collection.";
+        return query ? `Finished gathering evidence for ${query}.` : "Finished gathering evidence.";
       }
       if (runtimePhase === "write_briefing") {
-        return query ? `Finished VM pass 2 briefing for ${query}.` : "Finished VM pass 2 briefing.";
+        return query ? `Finished the quoted briefing for ${query}.` : "Finished the quoted briefing.";
       }
-      return query ? `Finished the VM search for ${query}.` : "Finished the VM search.";
+      return query ? `Finished the background search for ${query}.` : "Finished the background search.";
 
     case "read_workspace_file":
       if (state === "running") {
         if (planned) {
           return planned;
         }
-        return path ? `Reading ${path} from the VM workspace.` : "Reading the VM workspace output.";
+        return path?.includes("evidence")
+          ? "Bringing back the current search notes."
+          : "Bringing back the finished briefing.";
       }
       if (state === "error") {
-        return `Reading the VM workspace output failed${errorMessage ? `: ${errorMessage}` : "."}`;
+        return `Reading the search output failed${errorMessage ? `: ${errorMessage}` : "."}`;
       }
-      return path ? `Read ${path} from the VM workspace.` : "Read the VM workspace output.";
+      return path?.includes("evidence")
+        ? "Brought back the current search notes."
+        : "Brought back the finished briefing.";
 
     case "destroy_workspace":
       if (state === "running") {
         if (planned) {
           return planned;
         }
-        return "Closing the VM workspace.";
+        return "Cleaning up the background search.";
       }
       if (state === "error") {
-        return `Closing the VM workspace failed${errorMessage ? `: ${errorMessage}` : "."}`;
+        return `Cleaning up the background search failed${errorMessage ? `: ${errorMessage}` : "."}`;
       }
-      return "Closed the VM workspace.";
+      return "Cleaned up the background search.";
 
     default:
       if (state === "running") {
@@ -2018,35 +2021,21 @@ export default function App() {
 
         <section className="profile-toolbar flex flex-wrap items-center justify-center gap-4">
           <div className="profile-stats flex items-center gap-3">
-            <Badge variant="subtle" className="gap-2 px-4 py-2 text-sm">
-              <strong className="text-[var(--ink)]">{currentUser?.followersCount ?? 0}</strong>
-              <span>Followers</span>
-            </Badge>
-            <Badge variant="subtle" className="gap-2 px-4 py-2 text-sm">
-              <strong className="text-[var(--ink)]">{currentUser?.followingCount ?? 0}</strong>
-              <span>Following</span>
-            </Badge>
+            <div className="px-4 py-1 text-center">
+              <strong className="block text-[var(--ink)]">{currentUser?.followersCount ?? 0}</strong>
+              <span className="text-xs text-[var(--ink-soft)]">Followers</span>
+            </div>
+            <div className="px-4 py-1 text-center">
+              <strong className="block text-[var(--ink)]">{currentUser?.followingCount ?? 0}</strong>
+              <span className="text-xs text-[var(--ink-soft)]">Following</span>
+            </div>
           </div>
           <div className="profile-actions">
             {authState.authConfigured && authState.user ? (
-              <Button asChild variant="outline" className="profile-chip">
+              <Button asChild variant="ghost" className="profile-chip">
                 <a href={buildSignOutUrl(window.location.href)}>Log out</a>
               </Button>
             ) : null}
-          </div>
-        </section>
-
-        <section className="profile-nav" aria-label="Profile sections">
-          <div className="mx-auto flex w-fit items-center gap-2 rounded-full border border-[rgba(72,43,37,0.06)] bg-[rgba(255,255,255,0.72)] p-1">
-            <Button type="button" variant="ghost" size="sm" className="profile-nav-item" aria-disabled="true">
-              Papers
-            </Button>
-            <Button type="button" variant="ghost" size="sm" className="profile-nav-item" aria-disabled="true">
-              Activity
-            </Button>
-            <Button type="button" variant="default" size="sm" className="profile-nav-item is-active">
-              History
-            </Button>
           </div>
         </section>
 
@@ -2131,10 +2120,10 @@ export default function App() {
               <Button
                 key={item.id}
                 type="button"
-                variant={isActive ? "default" : "ghost"}
+                variant="ghost"
                 className={cn(
-                  "sidebar-nav-button w-full justify-start rounded-[18px] px-4 py-3 text-[1.05rem]",
-                  isActive && "bg-white shadow-[0_8px_20px_rgba(58,34,27,0.05)]",
+                  "sidebar-nav-button w-full justify-start rounded-none px-0 py-3 text-[1.05rem]",
+                  isActive && "font-medium",
                   sidebarCollapsed && "w-11 justify-center px-0",
                 )}
                 onClick={() => handleNavSelection(item.id)}
@@ -2153,9 +2142,9 @@ export default function App() {
         ) : hasAuthenticatedUser || !authState.authConfigured ? (
           <Button
             type="button"
-            variant="outline"
+            variant="ghost"
             className={cn(
-              "sidebar-profile h-auto justify-start gap-3 rounded-[18px] border-[rgba(72,43,37,0.06)] bg-[rgba(255,255,255,0.74)] p-2 shadow-none",
+              "sidebar-profile h-auto justify-start gap-3 rounded-none p-0",
               sidebarCollapsed && "size-12 justify-center p-0",
             )}
             onClick={() => {
