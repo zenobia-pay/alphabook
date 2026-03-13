@@ -16,6 +16,7 @@ const SynthesizerResponseSchema = z.object({
 
 export interface ToolHistoryEntry {
   toolName: ToolName;
+  rationale?: string;
   args: Record<string, unknown>;
   result: Record<string, unknown>;
 }

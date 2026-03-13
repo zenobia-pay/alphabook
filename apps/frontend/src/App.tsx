@@ -28,6 +28,7 @@ type ToolTraceEntry = {
   id: string;
   toolName: string;
   label: string;
+  rationale?: string;
   args: Record<string, unknown>;
   result?: Record<string, unknown>;
   isError?: boolean;
@@ -135,6 +136,7 @@ function normalizeToolTraceEntry(entry: Record<string, unknown>, index: number):
           : `${toolName}-${index}`,
     toolName,
     label: typeof entry.label === "string" ? entry.label : getToolLabel(toolName),
+    rationale: typeof entry.rationale === "string" ? entry.rationale : undefined,
     args: entry.args && typeof entry.args === "object" ? (entry.args as Record<string, unknown>) : {},
     result: entry.result && typeof entry.result === "object" ? (entry.result as Record<string, unknown>) : undefined,
     isError: entry.isError === true || state === "error",
@@ -231,7 +233,9 @@ function summarizeToolSentence({
   args,
   result,
   state,
-}: Pick<ToolTraceEntry, "toolName" | "args" | "result" | "state">) {
+  rationale,
+}: Pick<ToolTraceEntry, "toolName" | "args" | "result" | "state" | "rationale">) {
+  const planned = typeof rationale === "string" && rationale.trim() ? rationale.trim() : null;
   const query = quoted(args.query)
     ?? (args.taskSpec && typeof args.taskSpec === "object" ? quoted((args.taskSpec as Record<string, unknown>).query) : null)
     ?? (args.taskSpec && typeof args.taskSpec === "object" ? quoted((args.taskSpec as Record<string, unknown>).goal) : null);
@@ -245,6 +249,9 @@ function summarizeToolSentence({
   switch (toolName) {
     case "search_works":
       if (state === "running") {
+        if (planned) {
+          return planned;
+        }
         return query ? `Searching the corpus for ${query}.` : "Searching the corpus.";
       }
       if (state === "error") {
@@ -263,6 +270,9 @@ function summarizeToolSentence({
 
     case "get_relevant_chunks":
       if (state === "running") {
+        if (planned) {
+          return planned;
+        }
         return query ? `Gathering the strongest passages for ${query}.` : "Gathering the strongest passages.";
       }
       if (state === "error") {
@@ -281,6 +291,9 @@ function summarizeToolSentence({
 
     case "get_work_metadata":
       if (state === "running") {
+        if (planned) {
+          return planned;
+        }
         return `Loading metadata for ${pluralize(workCount, "book")}.`;
       }
       if (state === "error") {
@@ -290,6 +303,9 @@ function summarizeToolSentence({
 
     case "get_work_text":
       if (state === "running") {
+        if (planned) {
+          return planned;
+        }
         return "Opening the full text for a book.";
       }
       if (state === "error") {
@@ -299,6 +315,9 @@ function summarizeToolSentence({
 
     case "create_workspace":
       if (state === "running") {
+        if (planned) {
+          return planned;
+        }
         return `Preparing a VM workspace for ${pluralize(workCount, "book")}${chunkCount ? ` and ${pluralize(chunkCount, "passage")}` : ""}.`;
       }
       if (state === "error") {
@@ -308,6 +327,9 @@ function summarizeToolSentence({
 
     case "run_workspace_task":
       if (state === "running") {
+        if (planned) {
+          return planned;
+        }
         return query ? `Running a deeper VM search for ${query}.` : "Running a deeper VM search.";
       }
       if (state === "error") {
@@ -319,6 +341,9 @@ function summarizeToolSentence({
 
     case "read_workspace_file":
       if (state === "running") {
+        if (planned) {
+          return planned;
+        }
         return path ? `Reading ${path} from the VM workspace.` : "Reading the VM workspace output.";
       }
       if (state === "error") {
@@ -328,6 +353,9 @@ function summarizeToolSentence({
 
     case "destroy_workspace":
       if (state === "running") {
+        if (planned) {
+          return planned;
+        }
         return "Closing the VM workspace.";
       }
       if (state === "error") {
@@ -337,6 +365,9 @@ function summarizeToolSentence({
 
     default:
       if (state === "running") {
+        if (planned) {
+          return planned;
+        }
         return "Running the next research step.";
       }
       if (state === "error") {
@@ -389,9 +420,15 @@ function messageToThreadMessage(message: UiMessage, streamingAssistantId: string
   };
 
   if (message.role === "assistant") {
-    const content = [
-      ...message.toolCalls.map((entry) => {
-        const args = toReadonlyJsonObject(entry.args);
+    const toolParts = message.toolCalls.map((entry) => {
+        const args = toReadonlyJsonObject(
+          entry.rationale
+            ? {
+                ...entry.args,
+                __rationale: entry.rationale,
+              }
+            : entry.args,
+        );
         return {
           type: "tool-call" as const,
           toolCallId: entry.id,
@@ -405,16 +442,19 @@ function messageToThreadMessage(message: UiMessage, streamingAssistantId: string
                 isError: entry.isError,
               }),
         };
-      }),
-      ...(message.content
-        ? [
-            {
-              type: "text" as const,
-              text: message.content,
-            },
-          ]
-        : []),
-    ];
+      });
+    const textParts = message.content
+      ? [
+          {
+            type: "text" as const,
+            text: message.content,
+          },
+        ]
+      : [];
+    const isPlanMessage = message.metadata.phase === "plan";
+    const content = isPlanMessage
+      ? [...textParts, ...toolParts]
+      : [...toolParts, ...textParts];
 
     return {
       id: message.id,
@@ -544,13 +584,15 @@ function AssistantToolCall({
   status,
 }: ToolCallMessagePartProps<Record<string, unknown>, Record<string, unknown>>) {
   const label = getToolLabel(toolName);
+  const { __rationale, ...visibleArgs } = args;
   const state =
     status.type === "running" || result === undefined ? "running" : isError || status.type === "incomplete" ? "error" : "completed";
   const detail = summarizeToolSentence({
     toolName,
-    args,
+    args: visibleArgs,
     result,
     state,
+    rationale: typeof __rationale === "string" ? __rationale : undefined,
   });
 
   return (
@@ -941,28 +983,18 @@ export default function App() {
       citations: [],
       toolCalls: [],
     };
-    const assistantMessageId = crypto.randomUUID();
-    const assistantMessage: UiMessage = {
-      id: assistantMessageId,
-      sessionId: initialSessionId ?? "pending",
-      role: "assistant",
-      content: "",
-      metadata: {},
-      createdAt: new Date().toISOString(),
-      citations: [],
-      toolCalls: [],
-    };
-
     setActiveView("assistant");
     setIsSending(true);
     setLoadError(null);
-    setStreamingAssistantId(assistantMessageId);
-    setMessages((current) => [...current, userMessage, assistantMessage]);
+    setStreamingAssistantId(null);
+    setMessages((current) => [...current, userMessage]);
 
     const runToken = activeRunTokenRef.current + 1;
     activeRunTokenRef.current = runToken;
     let workingSessionId = initialSessionId;
     let activityLog: ToolTraceEntry[] = [];
+    let planMessageId: string | null = null;
+    let finalAssistantMessageId: string | null = null;
 
     try {
       await streamChat(
@@ -993,11 +1025,46 @@ export default function App() {
               ]);
               setMessages((current) =>
                 current.map((message) =>
-                  message.id === userMessage.id || message.id === assistantMessageId
+                  message.id === userMessage.id || message.id === planMessageId || message.id === finalAssistantMessageId
                     ? { ...message, sessionId: createdSessionId }
                     : message,
                 ),
               );
+              return;
+            }
+
+            if (event.event === "assistant.plan" && typeof event.data.text === "string") {
+              const messageId = typeof event.data.messageId === "string" ? event.data.messageId : crypto.randomUUID();
+              planMessageId = messageId;
+              setMessages((current) => {
+                const existingIndex = current.findIndex((message) => message.id === messageId);
+                const nextMessage: UiMessage = {
+                  id: messageId,
+                  sessionId: workingSessionId ?? "pending",
+                  role: "assistant",
+                  content: event.data.text as string,
+                  metadata: {
+                    phase: "plan",
+                  },
+                  createdAt: new Date().toISOString(),
+                  citations: [],
+                  toolCalls: activityLog,
+                };
+                if (existingIndex >= 0) {
+                  const copy = [...current];
+                  copy[existingIndex] = {
+                    ...copy[existingIndex],
+                    content: nextMessage.content,
+                    metadata: {
+                      ...copy[existingIndex].metadata,
+                      phase: "plan",
+                    },
+                    toolCalls: activityLog,
+                  };
+                  return copy;
+                }
+                return [...current, nextMessage];
+              });
               return;
             }
 
@@ -1011,13 +1078,14 @@ export default function App() {
                   id: toolCallId,
                   toolName,
                   label,
+                  rationale: typeof event.data.rationale === "string" ? event.data.rationale : undefined,
                   args: event.data.args && typeof event.data.args === "object" ? (event.data.args as Record<string, unknown>) : {},
                   state: "running",
                 },
               ];
               setMessages((current) =>
                 current.map((message) =>
-                  message.id === assistantMessageId
+                  message.id === planMessageId
                     ? {
                         ...message,
                         toolCalls: activityLog,
@@ -1037,6 +1105,7 @@ export default function App() {
                   ? {
                       ...entry,
                       label,
+                      rationale: typeof event.data.rationale === "string" ? event.data.rationale : entry.rationale,
                       result: event.data.result && typeof event.data.result === "object" ? (event.data.result as Record<string, unknown>) : undefined,
                       isError: event.data.status === "failed",
                       state: event.data.status === "failed" ? "error" : "completed",
@@ -1045,7 +1114,7 @@ export default function App() {
               );
               setMessages((current) =>
                 current.map((message) =>
-                  message.id === assistantMessageId
+                  message.id === planMessageId
                     ? {
                         ...message,
                         toolCalls: activityLog,
@@ -1057,9 +1126,26 @@ export default function App() {
             }
 
             if (event.event === "assistant.delta" && typeof event.data.text === "string") {
+              if (!finalAssistantMessageId) {
+                finalAssistantMessageId = crypto.randomUUID();
+                setStreamingAssistantId(finalAssistantMessageId);
+                setMessages((current) => [
+                  ...current,
+                  {
+                    id: finalAssistantMessageId!,
+                    sessionId: workingSessionId ?? "pending",
+                    role: "assistant",
+                    content: "",
+                    metadata: {},
+                    createdAt: new Date().toISOString(),
+                    citations: [],
+                    toolCalls: [],
+                  },
+                ]);
+              }
               setMessages((current) =>
                 current.map((message) =>
-                  message.id === assistantMessageId
+                  message.id === finalAssistantMessageId
                     ? {
                         ...message,
                         content: `${message.content}${event.data.text as string}`,
@@ -1071,13 +1157,29 @@ export default function App() {
             }
 
             if (event.event === "assistant.completed") {
+              if (!finalAssistantMessageId) {
+                finalAssistantMessageId = crypto.randomUUID();
+                setMessages((current) => [
+                  ...current,
+                  {
+                    id: finalAssistantMessageId!,
+                    sessionId: workingSessionId ?? "pending",
+                    role: "assistant",
+                    content: typeof event.data.answer === "string" ? event.data.answer : "",
+                    metadata: {},
+                    createdAt: new Date().toISOString(),
+                    citations: Array.isArray(event.data.citations) ? (event.data.citations as Citation[]) : [],
+                    toolCalls: [],
+                  },
+                ]);
+              }
               setMessages((current) =>
                 current.map((message) =>
-                  message.id === assistantMessageId
+                  message.id === finalAssistantMessageId
                     ? {
                         ...message,
                         citations: Array.isArray(event.data.citations) ? (event.data.citations as Citation[]) : [],
-                        toolCalls: activityLog,
+                        toolCalls: [],
                       }
                     : message,
                 ),

@@ -59,6 +59,7 @@ export class FallbackPlanner implements Planner {
       return {
         type: "tool_call",
         tool_name: "search_works",
+        rationale: "I’ll start by searching the corpus for likely books, then pull the strongest passages before deciding whether a deeper workspace search is necessary.",
         args: {
           query: context.userMessage,
           filters: {
@@ -75,6 +76,7 @@ export class FallbackPlanner implements Planner {
       return {
         type: "tool_call",
         tool_name: "get_relevant_chunks",
+        rationale: "I found candidate books. Next I’m pulling the strongest passages so the answer is grounded in actual text.",
         args: {
           query: context.userMessage,
           workIds,
@@ -100,6 +102,7 @@ export class FallbackPlanner implements Planner {
         return {
           type: "tool_call",
           tool_name: "create_workspace",
+          rationale: "The retrieval pass is not enough on its own, so I’m preparing a workspace with the relevant books and passages for a deeper local search.",
           args: {
             workIds: workIds.slice(0, 3),
             chunkIds: chunks.slice(0, 8).map((chunk) => chunk.id),
@@ -129,6 +132,7 @@ export class FallbackPlanner implements Planner {
         return {
           type: "tool_call",
           tool_name: "run_workspace_task",
+          rationale: "The workspace is ready. Now I’m running a deeper iterative search over the local corpus files to compare evidence across books.",
           args: {
             runtimeId,
             taskSpec: {
@@ -155,6 +159,7 @@ export class FallbackPlanner implements Planner {
         return {
           type: "tool_call",
           tool_name: "read_workspace_file",
+          rationale: "The deep workspace search has finished. I’m reading the generated summary back so I can synthesize the answer.",
           args: {
             runtimeId,
             path: "output/summary.md",
@@ -242,6 +247,7 @@ export class OpenAIPlanner implements Planner {
                   type: "tool_call | final_answer",
                   tool_name: "one of the available tools when using tool_call",
                   args: "object",
+                  rationale: "optional short plain-English sentence about the next step when using tool_call",
                   answer: "string",
                   citations: "array of {workId, chunkId?, label, excerpt, r2Key?}",
                 },

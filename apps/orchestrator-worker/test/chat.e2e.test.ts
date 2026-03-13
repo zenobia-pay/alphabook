@@ -134,6 +134,7 @@ test("orchestrator streams retrieval tool calls and final answer", async () => {
   assert.equal(response.status, 200);
   const body = await response.text();
   assert.match(body, /event: session\.created/);
+  assert.match(body, /event: assistant\.plan/);
   assert.match(body, /event: tool\.started/);
   assert.match(body, /event: tool\.completed/);
   assert.match(body, /event: assistant\.completed/);

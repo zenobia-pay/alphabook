@@ -222,11 +222,39 @@ function summarizeToolHistory(toolHistory: ToolHistoryEntry[]) {
     id: `${entry.toolName}-${index}`,
     toolName: entry.toolName,
     label: getToolLabel(entry.toolName),
+    rationale: entry.rationale,
     args: entry.args,
     result: entry.result,
     state: entry.result.ok === false ? "error" : "completed",
     isError: entry.result.ok === false,
   }));
+}
+
+function describePlannerAction(toolName: ToolName, rationale?: string) {
+  if (typeof rationale === "string" && rationale.trim()) {
+    return rationale.trim();
+  }
+
+  switch (toolName) {
+    case "search_works":
+      return "I’m going to search the corpus for likely books, then decide which ones are worth grounding in passages.";
+    case "get_relevant_chunks":
+      return "I found candidate books, so I’m pulling the strongest passages before I answer.";
+    case "get_work_metadata":
+      return "I’m loading book metadata so I can tighten the scope before I continue.";
+    case "get_work_text":
+      return "I’m opening the full text for the most relevant book so I can inspect it directly.";
+    case "create_workspace":
+      return "Retrieval alone is not enough here, so I’m preparing a workspace for a deeper local search.";
+    case "run_workspace_task":
+      return "The workspace is ready. I’m running a deeper iterative search across the local corpus files now.";
+    case "read_workspace_file":
+      return "The workspace search finished, and I’m reading its output back into the thread.";
+    case "destroy_workspace":
+      return "I’m cleaning up the workspace now that I have the evidence I need.";
+    default:
+      return "I’m planning the next research step.";
+  }
 }
 
 function fallbackFinalAnswer(toolResults: Record<string, unknown>[]): { answer: string; citations: Array<Record<string, unknown>> } {
@@ -352,11 +380,13 @@ async function runOrchestrator(
 
   const toolHistory: Array<{
     toolName: ToolName;
+    rationale?: string;
     args: Record<string, unknown>;
     result: Record<string, unknown>;
   }> = [];
   const toolResults: Record<string, unknown>[] = [];
   let runtimeTasks = 0;
+  let initialPlanSent = false;
 
   for (let turn = 1; turn <= HARD_LIMITS.MAX_TURNS; turn += 1) {
     if ((deps.now?.() ?? Date.now()) - started > HARD_LIMITS.MAX_RUN_WALL_CLOCK_SECONDS * 1000) {
@@ -423,11 +453,26 @@ async function runOrchestrator(
     }
 
     const toolRecord = await deps.store.startToolCall(run.id, toolCall.tool_name, toolCall.args);
+    if (!initialPlanSent) {
+      const planText = describePlannerAction(toolCall.tool_name, toolCall.rationale);
+      const planMessage = await deps.store.appendMessage(session.id, "assistant", planText, {
+        phase: "plan",
+        runId: run.id,
+      });
+      await send("assistant.plan", {
+        runId: run.id,
+        sessionId: session.id,
+        messageId: planMessage.id,
+        text: planText,
+      });
+      initialPlanSent = true;
+    }
     await send("tool.started", {
       runId: run.id,
       toolCallId: toolRecord.id,
       toolName: toolCall.tool_name,
       label: getToolLabel(toolCall.tool_name),
+      rationale: toolCall.rationale ?? null,
       args: toolCall.args,
     });
 
@@ -455,11 +500,13 @@ async function runOrchestrator(
       toolCallId: toolRecord.id,
       toolName: toolCall.tool_name,
       label: getToolLabel(toolCall.tool_name),
+      rationale: toolCall.rationale ?? null,
       status,
       result,
     });
     toolHistory.push({
       toolName: toolCall.tool_name,
+      rationale: toolCall.rationale,
       args: toolCall.args,
       result,
     });
