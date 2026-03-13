@@ -1635,9 +1635,6 @@ export default function App() {
     if (authPending) {
       return (
         <div className="view-shell locked-view">
-          <header className="view-header">
-            <h1>Library</h1>
-          </header>
           <AuthLoadingState compact />
         </div>
       );
@@ -1646,9 +1643,6 @@ export default function App() {
     if (authLocked) {
       return (
         <div className="view-shell locked-view">
-          <header className="view-header">
-            <h1>Library</h1>
-          </header>
           <LockedState
             compact
             title="Sign in to open your library."
@@ -1688,9 +1682,6 @@ export default function App() {
     if (authPending) {
       return (
         <div className="view-shell locked-view">
-          <header className="view-header">
-            <h1>Profile</h1>
-          </header>
           <AuthLoadingState compact />
         </div>
       );
@@ -1699,9 +1690,6 @@ export default function App() {
     if (authLocked) {
       return (
         <div className="view-shell locked-view">
-          <header className="view-header">
-            <h1>Profile</h1>
-          </header>
           <LockedState
             compact
             title="Create an account to open your profile."
