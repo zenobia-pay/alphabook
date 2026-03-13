@@ -179,6 +179,8 @@ export const UserProfileSchema = z.object({
   name: z.string().nullable(),
   avatarUrl: z.string().url().nullable(),
   createdAt: z.string(),
+  followersCount: z.number().int().nonnegative().default(0),
+  followingCount: z.number().int().nonnegative().default(0),
 });
 
 export type UserProfile = z.infer<typeof UserProfileSchema>;

@@ -134,6 +134,8 @@ function createGuestProfile(id: string): UserProfile {
     name: "AlphaBook Reader",
     avatarUrl: null,
     createdAt: new Date().toISOString(),
+    followersCount: 0,
+    followingCount: 0,
   };
 }
 
@@ -1769,25 +1771,15 @@ export default function App() {
         <section className="profile-toolbar">
           <div className="profile-stats">
             <article>
-              <strong>{sessions.length}</strong>
-              <span>Threads</span>
+              <strong>{currentUser?.followersCount ?? 0}</strong>
+              <span>Followers</span>
             </article>
             <article>
-              <strong>{assistantMessages.length}</strong>
-              <span>Answers</span>
-            </article>
-            <article>
-              <strong>{citationCount}</strong>
-              <span>Citations</span>
+              <strong>{currentUser?.followingCount ?? 0}</strong>
+              <span>Following</span>
             </article>
           </div>
           <div className="profile-actions">
-            <button type="button" className="profile-chip" aria-disabled="true">
-              Reading
-            </button>
-            <button type="button" className="profile-chip" aria-disabled="true">
-              Archive
-            </button>
             {authState.authConfigured && authState.user ? (
               <a className="profile-chip" href={buildSignOutUrl(window.location.href)}>
                 Log out

@@ -601,7 +601,13 @@ export function createApp(deps: AppDeps) {
     return c.json({
       authenticated: Boolean(user),
       authConfigured: deps.auth?.isConfigured() ?? false,
-      user,
+      user: user
+        ? {
+            ...user,
+            followersCount: 0,
+            followingCount: 0,
+          }
+        : null,
     });
   });
 
