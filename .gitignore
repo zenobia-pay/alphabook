@@ -9,5 +9,6 @@ dist/
 coverage/
 .turbo/
 apps/**/.wrangler/
+apps/**/test-results/
 public/
 data/

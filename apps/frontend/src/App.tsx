@@ -1,5 +1,5 @@
 import { type ComponentType, useEffect, useMemo, useRef, useState } from "react";
-import { AssistantRuntimeProvider, ThreadPrimitive, useExternalStoreRuntime, useMessage } from "@assistant-ui/react";
+import { AssistantRuntimeProvider, useExternalStoreRuntime, useMessage } from "@assistant-ui/react";
 import { Thread } from "@assistant-ui/react-ui";
 
 import type { ChatSessionSummary, Citation, MessageRecord, UserProfile } from "@alphabook/shared";
@@ -9,6 +9,11 @@ import { buildSignInUrl, buildSignOutUrl, buildSignUpUrl, fetchCurrentUser, fetc
 type UiMessage = MessageRecord & {
   citations: Citation[];
   researchLog: Array<Record<string, unknown>>;
+};
+
+type ResearchLogEntry = {
+  label: string;
+  state: "running" | "completed" | "error";
 };
 
 type AuthState = {
@@ -42,16 +47,36 @@ function createGuestProfile(id: string): UserProfile {
   };
 }
 
+function normalizeResearchLogEntry(entry: Record<string, unknown>): ResearchLogEntry {
+  const fallbackLabel =
+    typeof entry.label === "string"
+      ? entry.label
+      : typeof entry.toolName === "string"
+        ? toolLabel(entry.toolName)
+        : "Run step";
+  const state =
+    entry.state === "running" || entry.state === "completed" || entry.state === "error"
+      ? entry.state
+      : entry.isError === true
+        ? "error"
+        : "completed";
+
+  return {
+    label: fallbackLabel,
+    state,
+  };
+}
+
 function hydrateStoredMessage(message: UiMessage): UiMessage {
   return {
     ...message,
     citations: message.citations ?? [],
-    researchLog: message.researchLog ?? [],
+    researchLog: Array.isArray(message.researchLog)
+      ? message.researchLog.map((entry) =>
+          entry && typeof entry === "object" ? normalizeResearchLogEntry(entry as Record<string, unknown>) : { label: "Run step", state: "completed" },
+        )
+      : [],
   };
-}
-
-function messagePreview(message: UiMessage) {
-  return message.content.replace(/\s+/g, " ").trim().slice(0, 96);
 }
 
 function formatRelativeTime(value: string | null | undefined) {
@@ -248,7 +273,9 @@ const NAV_ITEMS: Array<{ id: ViewMode; label: string; icon: ComponentType }> = [
 function AssistantFooter() {
   const metadata = useMessage((message) => message.metadata.custom as Record<string, unknown> | undefined);
   const citations = (Array.isArray(metadata?.citations) ? metadata?.citations : []) as Citation[];
-  const researchLog = (Array.isArray(metadata?.researchLog) ? metadata?.researchLog : []) as Array<Record<string, unknown>>;
+  const researchLog = ((Array.isArray(metadata?.researchLog) ? metadata?.researchLog : []) as Array<Record<string, unknown>>).map((entry) =>
+    normalizeResearchLogEntry(entry),
+  );
 
   if (citations.length === 0 && researchLog.length === 0) {
     return null;
@@ -256,6 +283,17 @@ function AssistantFooter() {
 
   return (
     <div className="assistant-footnotes">
+      {researchLog.length > 0 ? (
+        <div className="tool-trail" aria-label="Tool calls">
+          {researchLog.map((entry, index) => (
+            <span key={`tool-${index}`} className={`tool-chip is-${entry.state}`}>
+              <span className="tool-chip-dot" />
+              <span>{entry.label}</span>
+            </span>
+          ))}
+        </div>
+      ) : null}
+
       {citations.length > 0 ? (
         <div className="citation-list">
           {citations.map((citation) => (
@@ -265,25 +303,17 @@ function AssistantFooter() {
           ))}
         </div>
       ) : null}
-
-      {researchLog.length > 0 ? (
-        <details className="research-log">
-          <summary>Run log</summary>
-          <ul>
-            {researchLog.map((entry, index) => (
-              <li key={`log-${index}`}>
-                <span className={`log-state is-${String(entry.state ?? "completed")}`} />
-                <span>{String(entry.label ?? "Run step")}</span>
-              </li>
-            ))}
-          </ul>
-        </details>
-      ) : null}
     </div>
   );
 }
 
-function AssistantWelcome() {
+function AssistantWelcome({
+  isSending,
+  onPrompt,
+}: {
+  isSending: boolean;
+  onPrompt: (prompt: string) => Promise<void>;
+}) {
   const prompts = [
     "Trace how grief moves across Don Quixote and Moby-Dick.",
     "Find books where exile and melancholy overlap.",
@@ -291,38 +321,25 @@ function AssistantWelcome() {
   ];
 
   return (
-    <section className="empty-state" data-testid="empty-state">
-      <div className="empty-mark">
+    <section className="assistant-blank" data-testid="empty-state">
+      <div className="assistant-blank-mark">
         <SparkIcon />
       </div>
-      <h2>Ask anything about the corpus.</h2>
-      <p>The assistant starts with retrieval, escalates to workspace search when needed, and answers in one thread.</p>
-      <div className="welcome-suggestions">
+      <h2>Ask the corpus.</h2>
+      <div className="assistant-suggestions">
         {prompts.map((prompt) => (
-          <ThreadPrimitive.Suggestion key={prompt} prompt={prompt} autoSend method="replace" className="prompt-card">
+          <button
+            key={prompt}
+            type="button"
+            className="assistant-suggestion"
+            disabled={isSending}
+            onClick={() => {
+              void onPrompt(prompt);
+            }}
+          >
             {prompt}
-          </ThreadPrimitive.Suggestion>
+          </button>
         ))}
-      </div>
-    </section>
-  );
-}
-
-function SignInCard({ copy }: { copy: string }) {
-  return (
-    <section className="empty-state signin-card">
-      <div className="empty-mark">
-        <SparkIcon />
-      </div>
-      <h2>Sign in or create an account to keep your sessions.</h2>
-      <p>{copy}</p>
-      <div className="hero-actions">
-        <a className="hero-button hero-button-primary" href={buildSignInUrl(window.location.href)}>
-          Sign in
-        </a>
-        <a className="hero-button" href={buildSignUpUrl(window.location.href)}>
-          Create account
-        </a>
       </div>
     </section>
   );
@@ -385,11 +402,15 @@ function AssistantSurface({
     onCancel: async () => {},
   });
 
+  function Welcome() {
+    return <AssistantWelcome isSending={isSending} onPrompt={onPrompt} />;
+  }
+
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <Thread
         assistantAvatar={{ fallback: "A" }}
-        components={{ ThreadWelcome: AssistantWelcome }}
+        components={{ ThreadWelcome: Welcome }}
         assistantMessage={{
           allowCopy: true,
           components: {
@@ -420,11 +441,9 @@ export default function App() {
   const [selectedSessionId, setSelectedSessionId] = useState<string | null | undefined>(undefined);
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [isSending, setIsSending] = useState(false);
-  const [statusText, setStatusText] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [streamingAssistantId, setStreamingAssistantId] = useState<string | null>(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
-  const threadContainerRef = useRef<HTMLDivElement | null>(null);
   const activeRunTokenRef = useRef(0);
 
   const currentUser = useMemo(
@@ -453,6 +472,7 @@ export default function App() {
   const profileTag = profileHandle(currentUser);
   const activeViewLabel = activeView === "assistant" ? activeSession?.title ?? "Assistant" : NAV_ITEMS.find((item) => item.id === activeView)?.label ?? "AlphaBook";
   const authLocked = authState.authConfigured && !authState.user;
+  const hasAuthenticatedUser = Boolean(authState.user);
 
   useEffect(() => {
     void (async () => {
@@ -518,13 +538,6 @@ export default function App() {
     })();
   }, [selectedSessionId]);
 
-  useEffect(() => {
-    if (!threadContainerRef.current) {
-      return;
-    }
-    threadContainerRef.current.scrollTop = threadContainerRef.current.scrollHeight;
-  }, [messages, isSending, statusText]);
-
   async function refreshSessions(preferredSessionId?: string | null) {
     if (!currentUserId) {
       return;
@@ -576,14 +589,13 @@ export default function App() {
     setActiveView("assistant");
     setIsSending(true);
     setLoadError(null);
-    setStatusText("Planning the run");
     setStreamingAssistantId(assistantMessageId);
     setMessages((current) => [...current, userMessage, assistantMessage]);
 
     const runToken = activeRunTokenRef.current + 1;
     activeRunTokenRef.current = runToken;
     let workingSessionId = initialSessionId;
-    let activityLog: Array<{ id: string; label: string; state: "running" | "completed" | "error" }> = [];
+    let activityLog: Array<{ id: string; label: string; state: ResearchLogEntry["state"] }> = [];
 
     try {
       await streamChat(
@@ -622,14 +634,8 @@ export default function App() {
               return;
             }
 
-            if (event.event === "planner.turn") {
-              setStatusText(`Planner turn ${String(event.data.turn ?? "")}`);
-              return;
-            }
-
             if (event.event === "tool.started" && typeof event.data.toolName === "string") {
               const label = toolLabel(event.data.toolName);
-              setStatusText(label);
               activityLog = [...activityLog, { id: crypto.randomUUID(), label, state: "running" }];
               setMessages((current) =>
                 current.map((message) =>
@@ -673,13 +679,7 @@ export default function App() {
               return;
             }
 
-            if (event.event === "synthesis.started") {
-              setStatusText("Writing the answer");
-              return;
-            }
-
             if (event.event === "assistant.delta" && typeof event.data.text === "string") {
-              setStatusText("Writing the answer");
               setMessages((current) =>
                 current.map((message) =>
                   message.id === assistantMessageId
@@ -694,7 +694,6 @@ export default function App() {
             }
 
             if (event.event === "assistant.completed") {
-              setStatusText(null);
               setMessages((current) =>
                 current.map((message) =>
                   message.id === assistantMessageId
@@ -725,7 +724,6 @@ export default function App() {
     } finally {
       if (activeRunTokenRef.current === runToken) {
         setIsSending(false);
-        setStatusText(null);
         setStreamingAssistantId(null);
         await refreshSessions(workingSessionId ?? null);
       }
@@ -739,7 +737,6 @@ export default function App() {
     setMessages([]);
     setLoadError(null);
     setIsSending(false);
-    setStatusText(null);
     setStreamingAssistantId(null);
     setActiveView("assistant");
   }
@@ -757,21 +754,10 @@ export default function App() {
 
   function renderAssistantView() {
     return (
-      <>
-        <header className="thread-header">
-          <div>
-            <p className="eyebrow">Assistant</p>
-            <h1>{activeSession?.title ?? "New research chat"}</h1>
-          </div>
-          <div className="thread-header-actions">
-            {authState.loading ? <span className="status-pill">Checking session</span> : null}
-            {statusText ? <span className="status-pill">{statusText}</span> : null}
-          </div>
-        </header>
-
+      <section className="assistant-page">
         {loadError ? <div className="thread-error-banner">{loadError}</div> : null}
 
-        <div className="assistant-thread-shell" ref={threadContainerRef} data-testid="thread">
+        <div className="assistant-thread-shell" data-testid="thread">
           {authState.loading ? <div className="session-loading">Checking your session…</div> : null}
           {!authState.loading && authLocked ? (
             <LockedState
@@ -790,7 +776,7 @@ export default function App() {
             />
           )}
         </div>
-      </>
+      </section>
     );
   }
 
@@ -798,9 +784,8 @@ export default function App() {
     return (
       <div className="view-shell">
         <section className="hero-card">
-          <p className="eyebrow">Explore</p>
-          <h1>Ask once. Read the answer in one thread.</h1>
-          <p className="hero-copy">Start a new chat, reopen a recent one, or jump straight into a deeper comparison.</p>
+          <h1>Start a thread.</h1>
+          <p className="hero-copy">Ask a question once, then keep the whole run in one place.</p>
           <div className="hero-actions">
             <button type="button" className="hero-button hero-button-primary" onClick={startNewChat}>
               New assistant session
@@ -817,7 +802,7 @@ export default function App() {
 
         <section className="card-grid">
           <article className="feature-card">
-            <p className="feature-label">Recent sessions</p>
+            <h2 className="section-title">Recent</h2>
             <div className="feature-list">
               {recentSessions.length === 0 ? (
                 <p className="empty-copy">Your research threads will start appearing here.</p>
@@ -833,7 +818,7 @@ export default function App() {
           </article>
 
           <article className="feature-card">
-            <p className="feature-label">Jump back in</p>
+            <h2 className="section-title">Try</h2>
             <div className="prompt-stack">
               {[
                 "Compare obsession in Don Quixote and Moby-Dick.",
@@ -856,10 +841,7 @@ export default function App() {
       return (
         <div className="view-shell locked-view">
           <header className="view-header">
-            <div>
-              <p className="eyebrow">Library</p>
-              <h1>Your saved threads live here.</h1>
-            </div>
+            <h1>Library</h1>
           </header>
           <div className="session-loading">Checking your session…</div>
         </div>
@@ -870,10 +852,7 @@ export default function App() {
       return (
         <div className="view-shell locked-view">
           <header className="view-header">
-            <div>
-              <p className="eyebrow">Library</p>
-              <h1>Your saved threads live here.</h1>
-            </div>
+            <h1>Library</h1>
           </header>
           <LockedState
             icon={LibraryIcon}
@@ -887,11 +866,7 @@ export default function App() {
     return (
       <div className="view-shell">
         <header className="view-header">
-          <div>
-            <p className="eyebrow">Library</p>
-            <h1>Your recent research threads.</h1>
-          </div>
-          <span className="collection-pill">{sessions.length} threads</span>
+          <h1>Library</h1>
         </header>
 
         <div className="library-list">
@@ -920,10 +895,7 @@ export default function App() {
       return (
         <div className="view-shell locked-view">
           <header className="view-header">
-            <div>
-              <p className="eyebrow">Profile</p>
-              <h1>Your account details live here.</h1>
-            </div>
+            <h1>Profile</h1>
           </header>
           <div className="session-loading">Checking your session…</div>
         </div>
@@ -934,10 +906,7 @@ export default function App() {
       return (
         <div className="view-shell locked-view">
           <header className="view-header">
-            <div>
-              <p className="eyebrow">Profile</p>
-              <h1>Your account details live here.</h1>
-            </div>
+            <h1>Profile</h1>
           </header>
           <LockedState
             icon={ProfileIcon}
@@ -987,10 +956,7 @@ export default function App() {
         <section className="profile-layout">
           <div className="profile-history">
             <header className="view-header">
-              <div>
-                <p className="eyebrow">History</p>
-                <h2>Recent reading and research.</h2>
-              </div>
+              <h2>Recent history</h2>
             </header>
             <div className="library-list">
               {sessions.length === 0 ? (
@@ -1012,7 +978,7 @@ export default function App() {
           </div>
 
           <aside className="profile-sidecard">
-            <p className="feature-label">Research areas</p>
+            <h2 className="section-title">Areas</h2>
             <div className="tag-cloud">
               {["Public Domain", "Comparative Reading", "Theme Tracking", "Long Search", "Corpus Notes"].map((tag) => (
                 <span key={tag} className="tag-chip">
@@ -1098,16 +1064,10 @@ export default function App() {
           })}
         </nav>
 
-        <section className="sidebar-recents">
-          <div className="sidebar-section-header">
-            <span>Recent</span>
-            {sessions.length > 0 ? <small>{sessions.length}</small> : null}
-          </div>
-          <div className="session-list">
-            {sessions.length === 0 ? (
-              <p className="session-empty">Your research threads will appear here.</p>
-            ) : (
-              sessions.map((session) => (
+        {sessions.length > 0 ? (
+          <section className="sidebar-recents">
+            <div className="session-list">
+              {sessions.map((session) => (
                 <button
                   key={session.id}
                   type="button"
@@ -1115,12 +1075,12 @@ export default function App() {
                   onClick={() => openSession(session.id)}
                 >
                   <span className="session-title">{session.title ?? "Untitled chat"}</span>
-                  <span className="session-preview">{session.lastMessagePreview ?? "No messages yet."}</span>
+                  <span className="session-time">{formatRelativeTime(session.lastMessageAt)}</span>
                 </button>
-              ))
-            )}
-          </div>
-        </section>
+              ))}
+            </div>
+          </section>
+        ) : null}
 
         <button
           type="button"
@@ -1134,7 +1094,7 @@ export default function App() {
         >
           {currentUser?.avatarUrl ? (
             <img className="sidebar-avatar-image" src={currentUser.avatarUrl} alt={displayProfileName} />
-          ) : currentUser ? (
+          ) : hasAuthenticatedUser ? (
             <div className="profile-badge" style={{ ["--profile-hue" as string]: profileHue }}>
               {initialsFromSeed(displayProfileName)}
             </div>
@@ -1171,7 +1131,7 @@ export default function App() {
           >
             {currentUser?.avatarUrl ? (
               <img className="sidebar-avatar-image" src={currentUser.avatarUrl} alt={displayProfileName} />
-            ) : currentUser ? (
+            ) : hasAuthenticatedUser ? (
               <div className="profile-badge" style={{ ["--profile-hue" as string]: profileHue }}>
                 {initialsFromSeed(displayProfileName)}
               </div>
