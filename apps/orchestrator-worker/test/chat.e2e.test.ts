@@ -668,6 +668,28 @@ test("workspace args are normalized and run logs are exposed", async () => {
   assert.equal(runDetailsPayload.toolCalls.length, 1);
   assert.equal(runDetailsPayload.toolCalls[0]?.toolName, "create_workspace");
   assert.deepEqual(runDetailsPayload.toolCalls[0]?.argsJson.taskContext, "find angry passages");
+
+  const debugResponse = await app.request(`/sessions/${sessionId}/debug`);
+  assert.equal(debugResponse.status, 200);
+  const debugPayload = (await debugResponse.json()) as {
+    messages: Array<{ role: string }>;
+    runs: Array<{ id: string }>;
+    toolCallsByRun: Record<string, Array<{ toolName: string }>>;
+    artifacts: Array<unknown>;
+  };
+  assert.deepEqual(debugPayload.messages.map((message) => message.role), ["user", "assistant", "assistant"]);
+  assert.equal(debugPayload.runs.length, 1);
+  assert.equal(debugPayload.toolCallsByRun[runsPayload.runs[0]?.id ?? ""]?.[0]?.toolName, "create_workspace");
+  assert.ok(Array.isArray(debugPayload.artifacts));
+
+  const runDebugResponse = await app.request(`/sessions/${sessionId}/runs/${runsPayload.runs[0]?.id}/debug`);
+  assert.equal(runDebugResponse.status, 200);
+  const runDebugPayload = (await runDebugResponse.json()) as {
+    run: { id: string };
+    toolCalls: Array<{ toolName: string }>;
+  };
+  assert.equal(runDebugPayload.run.id, runsPayload.runs[0]?.id);
+  assert.equal(runDebugPayload.toolCalls[0]?.toolName, "create_workspace");
 });
 
 test("OpenAIEmbedder requests 1536 dimensions for text-embedding-3 models", async () => {

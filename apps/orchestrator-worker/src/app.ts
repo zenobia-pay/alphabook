@@ -743,6 +743,73 @@ export function createApp(deps: AppDeps) {
     });
   });
 
+  app.get("/sessions/:sessionId/debug", async (c) => {
+    const sessionId = c.req.param("sessionId");
+    const session = await deps.store.getSession(sessionId);
+    if (!session) {
+      return c.json({ error: "Session not found." }, 404);
+    }
+    const user = await resolveUser(c);
+    if ((deps.auth?.isConfigured() ?? false) && (!user || user.id !== session.userId)) {
+      return c.json({ error: "Not authorized for this session." }, 403);
+    }
+
+    const [messages, runs, runtimeInstances, artifacts] = await Promise.all([
+      deps.store.listMessages(sessionId),
+      deps.store.listRuns(sessionId),
+      deps.store.listRuntimeInstances(sessionId),
+      deps.store.listArtifacts(sessionId),
+    ]);
+    const toolCallsByRun = Object.fromEntries(
+      await Promise.all(
+        runs.map(async (run) => [run.id, await deps.store.listToolCalls(run.id)]),
+      ),
+    );
+
+    return c.json({
+      session,
+      messages,
+      runs,
+      toolCallsByRun,
+      runtimeInstances,
+      artifacts,
+    });
+  });
+
+  app.get("/sessions/:sessionId/runs/:runId/debug", async (c) => {
+    const sessionId = c.req.param("sessionId");
+    const runId = c.req.param("runId");
+    const session = await deps.store.getSession(sessionId);
+    if (!session) {
+      return c.json({ error: "Session not found." }, 404);
+    }
+    const user = await resolveUser(c);
+    if ((deps.auth?.isConfigured() ?? false) && (!user || user.id !== session.userId)) {
+      return c.json({ error: "Not authorized for this session." }, 403);
+    }
+
+    const run = await deps.store.getRun(runId);
+    if (!run || run.sessionId !== sessionId) {
+      return c.json({ error: "Run not found." }, 404);
+    }
+
+    const [messages, toolCalls, runtimeInstances, artifacts] = await Promise.all([
+      deps.store.listMessages(sessionId),
+      deps.store.listToolCalls(runId),
+      deps.store.listRuntimeInstances(sessionId),
+      deps.store.listArtifacts(sessionId),
+    ]);
+
+    return c.json({
+      session,
+      run,
+      messages,
+      toolCalls,
+      runtimeInstances,
+      artifacts,
+    });
+  });
+
   app.get("/works", async (c) => {
     const offset = Math.max(0, Number.parseInt(c.req.query("offset") ?? "0", 10) || 0);
     const limit = Math.min(24, Math.max(1, Number.parseInt(c.req.query("limit") ?? "12", 10) || 12));

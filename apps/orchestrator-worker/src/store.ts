@@ -129,6 +129,7 @@ export interface AppStore {
   saveArtifact(
     input: Omit<ArtifactRecord, "id" | "createdAt"> & { id?: string; createdAt?: string },
   ): Promise<ArtifactRecord>;
+  listArtifacts(sessionId: string, runtimeId?: string | null): Promise<ArtifactRecord[]>;
   healthCheck(): Promise<"ok" | "error">;
 }
 
@@ -636,6 +637,12 @@ export class InMemoryAppStore implements AppStore {
     };
     this.artifacts.set(record.r2Key, record);
     return record;
+  }
+
+  async listArtifacts(sessionId: string, runtimeId?: string | null): Promise<ArtifactRecord[]> {
+    return [...this.artifacts.values()]
+      .filter((artifact) => artifact.sessionId === sessionId && (runtimeId === undefined || artifact.runtimeId === runtimeId))
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   }
 
   async healthCheck(): Promise<"ok" | "error"> {
@@ -1728,6 +1735,39 @@ export class NeonAppStore implements AppStore {
       metadata: row.metadata_json,
       createdAt: row.created_at,
     };
+  }
+
+  async listArtifacts(sessionId: string, runtimeId?: string | null): Promise<ArtifactRecord[]> {
+    const result = await this.db.query<{
+      id: string;
+      session_id: string;
+      runtime_id: string | null;
+      r2_key: string;
+      filename: string;
+      mime_type: string;
+      metadata_json: Record<string, unknown>;
+      created_at: string;
+    }>(
+      `
+        SELECT id, session_id, runtime_id, r2_key, filename, mime_type, metadata_json, created_at
+        FROM artifacts
+        WHERE
+          session_id = $1::uuid
+          AND ($2::text IS NULL OR runtime_id = $2::text)
+        ORDER BY created_at ASC
+      `,
+      [sessionId, runtimeId ?? null],
+    );
+    return result.rows.map((row) => ({
+      id: row.id,
+      sessionId: row.session_id,
+      runtimeId: row.runtime_id,
+      r2Key: row.r2_key,
+      filename: row.filename,
+      mimeType: row.mime_type,
+      metadata: row.metadata_json,
+      createdAt: row.created_at,
+    }));
   }
 
   async healthCheck(): Promise<"ok" | "error"> {
