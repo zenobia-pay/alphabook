@@ -504,27 +504,27 @@ button {
 
 .profile-view {
   display: grid;
-  gap: 16px;
-  padding: 4px 42px 24px;
+  gap: 12px;
+  padding: 0 42px 24px;
 }
 
 .profile-hero {
   display: grid;
   justify-items: center;
-  gap: 6px;
+  gap: 4px;
   text-align: center;
 }
 
 .profile-hero-badge {
-  width: 108px;
-  height: 108px;
-  font-size: 2.4rem;
+  width: 92px;
+  height: 92px;
+  font-size: 2rem;
 }
 
 .profile-hero h1 {
   margin: 0;
   font-family: "Manrope", sans-serif;
-  font-size: clamp(2rem, 3.2vw, 2.9rem);
+  font-size: clamp(1.85rem, 3vw, 2.55rem);
   font-weight: 800;
   letter-spacing: -0.06em;
 }
@@ -532,14 +532,15 @@ button {
 .profile-hero p {
   margin: 0;
   color: var(--text-muted);
-  font-size: 0.92rem;
+  font-size: 0.88rem;
 }
 
 .profile-toolbar {
-  display: grid;
-  gap: 10px;
-  justify-items: center;
-  padding-bottom: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 22px;
+  padding-bottom: 10px;
   border-bottom: 1px solid rgba(72, 43, 37, 0.11);
 }
 
@@ -551,10 +552,10 @@ button {
 }
 
 .profile-stats article {
-  min-width: 124px;
-  padding: 0 18px;
+  min-width: 96px;
+  padding: 0 14px;
   display: grid;
-  gap: 4px;
+  gap: 2px;
   justify-items: center;
   position: relative;
 }
@@ -570,7 +571,7 @@ button {
 }
 
 .profile-stats strong {
-  font-size: 1rem;
+  font-size: 0.95rem;
   font-family: "Manrope", sans-serif;
   font-weight: 700;
   color: #b33b46;
@@ -578,12 +579,12 @@ button {
 
 .profile-stats span {
   color: #b33b46;
-  font-size: 0.82rem;
+  font-size: 0.78rem;
 }
 
 .profile-actions {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   justify-content: center;
   gap: 0;
 }
@@ -592,13 +593,13 @@ button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 138px;
-  padding: 10px 18px;
+  min-width: 112px;
+  padding: 9px 16px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.46);
   border: 1px solid rgba(72, 43, 37, 0.12);
   color: inherit;
-  font-size: 0.9rem;
+  font-size: 0.88rem;
   font-weight: 600;
   text-decoration: none;
 }
@@ -1491,19 +1492,20 @@ button {
   }
 
   .profile-view {
-    padding-top: 14px;
-    gap: 14px;
+    padding-top: 8px;
+    gap: 12px;
   }
 
   .profile-hero-badge,
   .profile-hero-image {
-    width: 96px;
-    height: 96px;
+    width: 84px;
+    height: 84px;
   }
 
   .profile-toolbar {
-    gap: 10px;
-    padding-bottom: 12px;
+    gap: 16px;
+    padding-bottom: 10px;
+    flex-wrap: nowrap;
   }
 
   .profile-stats {
@@ -1531,7 +1533,7 @@ button {
   }
 
   .profile-chip {
-    min-width: 128px;
+    min-width: 108px;
     flex: 0 0 auto;
   }
 
