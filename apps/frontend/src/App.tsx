@@ -1634,20 +1634,24 @@ export default function App() {
   function renderLibraryView() {
     if (authPending) {
       return (
-        <div className="view-shell locked-view">
-          <AuthLoadingState compact />
-        </div>
+        <section className="assistant-page">
+          <div className="assistant-thread-shell">
+            <AuthLoadingState compact />
+          </div>
+        </section>
       );
     }
 
     if (authLocked) {
       return (
-        <div className="view-shell locked-view">
-          <LockedState
-            compact
-            title="Sign in to open your library."
-          />
-        </div>
+        <section className="assistant-page">
+          <div className="assistant-thread-shell">
+            <LockedState
+              compact
+              title="Sign in to open your library."
+            />
+          </div>
+        </section>
       );
     }
 
@@ -1681,20 +1685,24 @@ export default function App() {
   function renderProfileView() {
     if (authPending) {
       return (
-        <div className="view-shell locked-view">
-          <AuthLoadingState compact />
-        </div>
+        <section className="assistant-page">
+          <div className="assistant-thread-shell">
+            <AuthLoadingState compact />
+          </div>
+        </section>
       );
     }
 
     if (authLocked) {
       return (
-        <div className="view-shell locked-view">
-          <LockedState
-            compact
-            title="Create an account to open your profile."
-          />
-        </div>
+        <section className="assistant-page">
+          <div className="assistant-thread-shell">
+            <LockedState
+              compact
+              title="Create an account to open your profile."
+            />
+          </div>
+        </section>
       );
     }
 
