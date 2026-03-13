@@ -679,6 +679,19 @@ button {
   }
 }
 
+@keyframes composer-thinking-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.88);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
 .message-row {
   display: flex;
   margin-bottom: 26px;
@@ -1126,6 +1139,11 @@ button {
   color: rgba(38, 26, 25, 0.42);
 }
 
+.aui-composer-input:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
 .aui-composer-action {
   color: var(--text-muted);
 }
@@ -1150,6 +1168,26 @@ button {
   width: 16px;
   height: 16px;
   fill: currentColor;
+}
+
+.aui-composer-thinking {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 0 6px 0 2px;
+  color: rgba(38, 26, 25, 0.64);
+  font-size: 0.88rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.aui-composer-thinking-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #171311;
+  animation: composer-thinking-pulse 1.05s ease-in-out infinite;
 }
 
 .aui-thread-scroll-to-bottom {
