@@ -1,14 +1,12 @@
 import { createContext, type ComponentType, type FormEvent, type UIEvent, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   AssistantRuntimeProvider,
-  ComposerPrimitive,
-  ThreadPrimitive,
   makeAssistantToolUI,
   useExternalStoreRuntime,
   useMessage,
   type ToolCallMessagePartProps,
 } from "@assistant-ui/react";
-import { Thread } from "@assistant-ui/react-ui";
+import { Composer, Thread } from "@assistant-ui/react-ui";
 import type { ReadonlyJSONObject, ReadonlyJSONValue } from "assistant-stream/utils";
 import type { AgentationProps } from "agentation";
 
@@ -1020,37 +1018,6 @@ function AssistantSurface({
     return <AssistantWelcome isSending={isSending} onPrompt={onPrompt} />;
   }
 
-  function AssistantComposer() {
-    return (
-      <ComposerPrimitive.Root className="aui-composer-root">
-        <ComposerPrimitive.Input
-          rows={1}
-          autoFocus
-          className="aui-composer-input"
-          disabled={isSending}
-          placeholder={isSending ? "Thinking…" : "Write a message..."}
-        />
-        <ThreadPrimitive.If running={false}>
-          <ComposerPrimitive.Send asChild>
-            <button
-              type="button"
-              className="aui-button aui-button-primary aui-button-icon aui-composer-send"
-              aria-label="Send"
-            >
-              <ArrowUpIcon />
-            </button>
-          </ComposerPrimitive.Send>
-        </ThreadPrimitive.If>
-        <ThreadPrimitive.If running>
-          <div className="aui-composer-thinking" aria-live="polite">
-            <span className="aui-composer-thinking-dot" />
-            <span>Thinking</span>
-          </div>
-        </ThreadPrimitive.If>
-      </ComposerPrimitive.Root>
-    );
-  }
-
   return (
     <CitationNavigationContext.Provider value={{ openCitation: onOpenCitation, activeWorkId }}>
       <AssistantRuntimeProvider runtime={runtime}>
@@ -1059,7 +1026,7 @@ function AssistantSurface({
           tools={TOOL_UIS}
           components={{
             ...(showWelcome ? { ThreadWelcome: Welcome } : {}),
-            Composer: AssistantComposer,
+            Composer,
           }}
           assistantMessage={{
             allowCopy: true,

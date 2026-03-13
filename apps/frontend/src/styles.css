@@ -1151,27 +1151,24 @@ button {
 
 .aui-thread-viewport {
   min-height: 0;
-  padding: 22px 0 8px;
+  padding: 22px 0 0;
   overscroll-behavior-y: none;
   scrollbar-gutter: stable;
 }
 
 .aui-thread-viewport-footer {
   position: sticky;
-  bottom: 10px;
+  bottom: 0;
+  margin-top: 12px;
   display: flex;
   width: 100%;
-  justify-content: center;
-  height: 0;
-  padding: 0;
-  background: transparent;
-  overflow: visible;
-  pointer-events: none;
+  max-width: 860px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  padding-bottom: 16px;
+  background-color: inherit;
   z-index: 5;
-}
-
-.aui-thread-viewport-footer > * {
-  pointer-events: auto;
 }
 
 .aui-thread-followup-suggestions {
@@ -1214,89 +1211,13 @@ button {
 }
 
 .aui-composer-root {
-  display: flex;
-  align-items: center;
-  flex-wrap: nowrap;
-  border: 1px solid var(--shell-strong);
-  width: 100%;
   max-width: 860px;
-  background: rgba(245, 239, 231, 0.94);
-  border-radius: 20px;
-  box-shadow: 0 6px 14px rgba(58, 34, 27, 0.07);
-  padding: 6px 8px 6px 10px;
-  gap: 8px;
-  backdrop-filter: blur(18px);
-}
-
-.aui-composer-root:focus-within {
-  border-color: rgba(139, 55, 40, 0.22);
-  box-shadow: 0 0 0 1px rgba(139, 55, 40, 0.08), 0 10px 24px rgba(58, 34, 27, 0.1);
+  width: min(860px, 100%);
+  margin: 0 auto;
 }
 
 .aui-composer-input {
-  min-height: 0;
-  max-height: 120px;
-  flex: 1 1 auto;
-  font-size: 0.96rem;
-  line-height: 1.45;
-  color: inherit;
-  padding: 3px 2px 3px 0;
-  margin: 0;
-}
-
-.aui-composer-input::placeholder {
-  color: rgba(38, 26, 25, 0.42);
-}
-
-.aui-composer-input:disabled {
-  cursor: wait;
-  opacity: 0.72;
-}
-
-.aui-composer-action {
-  color: var(--text-muted);
-}
-
-.aui-composer-send {
-  width: 34px;
-  height: 34px;
-  flex: 0 0 auto;
-  border-radius: 999px;
-  border: 0;
-  background: #171311;
-  color: white;
-  box-shadow: 0 12px 28px rgba(23, 19, 17, 0.2);
-}
-
-.aui-composer-send:hover {
-  transform: translateY(-1px);
-  background: #090807;
-}
-
-.aui-composer-send svg {
-  width: 16px;
-  height: 16px;
-  fill: currentColor;
-}
-
-.aui-composer-thinking {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 34px;
-  padding: 0 6px 0 2px;
-  color: rgba(38, 26, 25, 0.64);
-  font-size: 0.88rem;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-}
-
-.aui-composer-thinking-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: #171311;
-  animation: composer-thinking-pulse 1.05s ease-in-out infinite;
+  max-height: 160px;
 }
 
 .aui-thread-scroll-to-bottom {
