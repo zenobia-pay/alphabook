@@ -1,6 +1,8 @@
 import { type ComponentType, type FormEvent, type UIEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   AssistantRuntimeProvider,
+  ComposerPrimitive,
+  ThreadPrimitive,
   makeAssistantToolUI,
   useExternalStoreRuntime,
   useMessage,
@@ -741,12 +743,39 @@ function AssistantSurface({
     return <AssistantWelcome isSending={isSending} onPrompt={onPrompt} />;
   }
 
+  function AssistantComposer() {
+    return (
+      <ComposerPrimitive.Root className="aui-composer-root">
+        <ComposerPrimitive.Input
+          rows={1}
+          autoFocus
+          className="aui-composer-input"
+          placeholder="Write a message..."
+        />
+        <ThreadPrimitive.If running={false}>
+          <ComposerPrimitive.Send asChild>
+            <button
+              type="button"
+              className="aui-button aui-button-primary aui-button-icon aui-composer-send"
+              aria-label="Send"
+            >
+              <ArrowUpIcon />
+            </button>
+          </ComposerPrimitive.Send>
+        </ThreadPrimitive.If>
+      </ComposerPrimitive.Root>
+    );
+  }
+
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <Thread
         assistantAvatar={{ fallback: "A" }}
         tools={TOOL_UIS}
-        components={showWelcome ? { ThreadWelcome: Welcome } : {}}
+        components={{
+          ...(showWelcome ? { ThreadWelcome: Welcome } : {}),
+          Composer: AssistantComposer,
+        }}
         assistantMessage={{
           allowCopy: true,
           components: {
