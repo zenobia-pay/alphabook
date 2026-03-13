@@ -502,6 +502,8 @@ function summarizeToolSentence({
   const resultChunkCount = result ? getCount(result.chunks) : 0;
   const path = typeof args.path === "string" ? args.path : null;
   const errorMessage = typeof result?.error === "string" ? result.error : null;
+  const taskSpec = args.taskSpec && typeof args.taskSpec === "object" ? args.taskSpec as Record<string, unknown> : null;
+  const runtimePhase = typeof taskSpec?.phase === "string" ? taskSpec.phase : null;
 
   switch (toolName) {
     case "search_works":
@@ -509,42 +511,42 @@ function summarizeToolSentence({
         if (planned) {
           return planned;
         }
-        return query ? `Searching the corpus for ${query}.` : "Searching the corpus.";
+        return query ? `Scanning corpus metadata for ${query}.` : "Scanning corpus metadata.";
       }
       if (state === "error") {
         return query
-          ? `The corpus search for ${query} failed${errorMessage ? `: ${errorMessage}` : "."}`
-          : `The corpus search failed${errorMessage ? `: ${errorMessage}` : "."}`;
+          ? `The corpus metadata scan for ${query} failed${errorMessage ? `: ${errorMessage}` : "."}`
+          : `The corpus metadata scan failed${errorMessage ? `: ${errorMessage}` : "."}`;
       }
       if (resultWorkCount === 0) {
         return query
-          ? `Searched the corpus for ${query} and found no matching books.`
-          : "Searched the corpus and found no matching books.";
+          ? `Scanned corpus metadata for ${query} and found no strong candidate books.`
+          : "Scanned corpus metadata and found no strong candidate books.";
       }
       return query
-        ? `Searched the corpus for ${query} and found ${pluralize(resultWorkCount, "matching work")}.`
-        : `Searched the corpus and found ${pluralize(resultWorkCount, "matching work")}.`;
+        ? `Scanned corpus metadata for ${query} and found ${pluralize(resultWorkCount, "candidate work")}.`
+        : `Scanned corpus metadata and found ${pluralize(resultWorkCount, "candidate work")}.`;
 
     case "get_relevant_chunks":
       if (state === "running") {
         if (planned) {
           return planned;
         }
-        return query ? `Gathering the strongest passages for ${query}.` : "Gathering the strongest passages.";
+        return query ? `Running an initial index scan for ${query}.` : "Running an initial index scan.";
       }
       if (state === "error") {
         return query
-          ? `Passage retrieval for ${query} failed${errorMessage ? `: ${errorMessage}` : "."}`
-          : `Passage retrieval failed${errorMessage ? `: ${errorMessage}` : "."}`;
+          ? `The initial index scan for ${query} failed${errorMessage ? `: ${errorMessage}` : "."}`
+          : `The initial index scan failed${errorMessage ? `: ${errorMessage}` : "."}`;
       }
       if (resultChunkCount === 0) {
         return query
-          ? `Looked for grounded passages for ${query} and found none.`
-          : "Looked for grounded passages and found none.";
+          ? `Ran an initial index scan for ${query} and found no seed matches.`
+          : "Ran an initial index scan and found no seed matches.";
       }
       return query
-        ? `Pulled ${pluralize(resultChunkCount, "grounded passage")} for ${query}.`
-        : `Pulled ${pluralize(resultChunkCount, "grounded passage")}.`;
+        ? `Found ${pluralize(resultChunkCount, "seed match")} for ${query}.`
+        : `Found ${pluralize(resultChunkCount, "seed match")}.`;
 
     case "get_work_metadata":
       if (state === "running") {
@@ -587,14 +589,36 @@ function summarizeToolSentence({
         if (planned) {
           return planned;
         }
-        return query ? `Running a deeper VM search for ${query}.` : "Running a deeper VM search.";
+        if (runtimePhase === "collect_evidence") {
+          return query ? `Running VM pass 1 to collect evidence for ${query}.` : "Running VM pass 1 to collect evidence.";
+        }
+        if (runtimePhase === "write_briefing") {
+          return query ? `Running VM pass 2 to write the briefing for ${query}.` : "Running VM pass 2 to write the briefing.";
+        }
+        return query ? `Running the VM search for ${query}.` : "Running the VM search.";
       }
       if (state === "error") {
+        if (runtimePhase === "collect_evidence") {
+          return query
+            ? `VM pass 1 for ${query} failed${errorMessage ? `: ${errorMessage}` : "."}`
+            : `VM pass 1 failed${errorMessage ? `: ${errorMessage}` : "."}`;
+        }
+        if (runtimePhase === "write_briefing") {
+          return query
+            ? `VM pass 2 for ${query} failed${errorMessage ? `: ${errorMessage}` : "."}`
+            : `VM pass 2 failed${errorMessage ? `: ${errorMessage}` : "."}`;
+        }
         return query
-          ? `The deep VM search for ${query} failed${errorMessage ? `: ${errorMessage}` : "."}`
-          : `The deep VM search failed${errorMessage ? `: ${errorMessage}` : "."}`;
+          ? `The VM search for ${query} failed${errorMessage ? `: ${errorMessage}` : "."}`
+          : `The VM search failed${errorMessage ? `: ${errorMessage}` : "."}`;
       }
-      return query ? `Finished the deeper VM search for ${query}.` : "Finished the deeper VM search.";
+      if (runtimePhase === "collect_evidence") {
+        return query ? `Finished VM pass 1 evidence collection for ${query}.` : "Finished VM pass 1 evidence collection.";
+      }
+      if (runtimePhase === "write_briefing") {
+        return query ? `Finished VM pass 2 briefing for ${query}.` : "Finished VM pass 2 briefing.";
+      }
+      return query ? `Finished the VM search for ${query}.` : "Finished the VM search.";
 
     case "read_workspace_file":
       if (state === "running") {
@@ -1023,7 +1047,7 @@ function SessionListCard({
 }) {
   return (
     <button type="button" onClick={onOpen} className="w-full text-left">
-      <Card className="rounded-[22px] border-[rgba(72,43,37,0.08)] bg-[rgba(255,251,247,0.72)] shadow-none transition-colors hover:border-[rgba(139,55,40,0.18)] hover:bg-[rgba(255,251,247,0.92)]">
+      <Card className="rounded-[20px] border-[rgba(72,43,37,0.06)] bg-[rgba(255,255,255,0.72)] shadow-none transition-colors hover:border-[rgba(72,43,37,0.1)] hover:bg-[rgba(255,255,255,0.92)]">
         <CardContent className="space-y-3 p-5">
           <div className="flex items-start justify-between gap-4">
             <strong className="text-base font-semibold text-[var(--ink)]">{session.title ?? "Untitled chat"}</strong>
@@ -1931,7 +1955,7 @@ export default function App() {
 
         <div className="library-list space-y-3">
           {sessions.length === 0 ? (
-            <Card className="feature-card rounded-[24px] border-dashed bg-[rgba(255,251,247,0.62)] shadow-none">
+            <Card className="feature-card rounded-[20px] border-[rgba(72,43,37,0.06)] bg-[rgba(255,255,255,0.62)] shadow-none">
               <CardContent className="p-8">
                 <p className="empty-copy text-sm text-[var(--ink-soft)]">Saved chats appear here.</p>
               </CardContent>
@@ -1974,13 +1998,18 @@ export default function App() {
       <div className="profile-view space-y-6">
         <section className="profile-hero space-y-3">
           {currentUser?.avatarUrl ? (
-            <Avatar className="profile-hero-image size-28">
+            <Avatar className="profile-hero-image size-28 bg-white p-1">
               <AvatarImage src={currentUser.avatarUrl} alt={displayProfileName} />
               <AvatarFallback>{initialsFromSeed(displayProfileName)}</AvatarFallback>
             </Avatar>
           ) : (
-            <Avatar className="profile-hero-badge size-28" style={{ ["--profile-hue" as string]: profileHue }}>
-              <AvatarFallback className="text-3xl">{initialsFromSeed(displayProfileName)}</AvatarFallback>
+            <Avatar className="profile-hero-badge size-28 bg-white p-1" style={{ ["--profile-hue" as string]: profileHue }}>
+              <AvatarFallback
+                className="text-3xl text-white"
+                style={{ background: `linear-gradient(160deg, hsl(${profileHue} 72% 56%), hsl(${profileHue - 12} 62% 46%))` }}
+              >
+                {initialsFromSeed(displayProfileName)}
+              </AvatarFallback>
             </Avatar>
           )}
           <h1>{displayProfileName}</h1>
@@ -2008,7 +2037,7 @@ export default function App() {
         </section>
 
         <section className="profile-nav" aria-label="Profile sections">
-          <div className="mx-auto flex w-fit items-center gap-2 rounded-full border border-[var(--shell-border)] bg-[rgba(255,251,247,0.7)] p-1">
+          <div className="mx-auto flex w-fit items-center gap-2 rounded-full border border-[rgba(72,43,37,0.06)] bg-[rgba(255,255,255,0.72)] p-1">
             <Button type="button" variant="ghost" size="sm" className="profile-nav-item" aria-disabled="true">
               Papers
             </Button>
@@ -2024,7 +2053,7 @@ export default function App() {
         <section className="profile-history">
           <div className="library-list space-y-3">
             {sessions.length === 0 ? (
-              <Card className="feature-card rounded-[24px] border-dashed bg-[rgba(255,251,247,0.62)] shadow-none">
+              <Card className="feature-card rounded-[20px] border-[rgba(72,43,37,0.06)] bg-[rgba(255,255,255,0.62)] shadow-none">
                 <CardContent className="p-8">
                   <p className="empty-copy text-sm text-[var(--ink-soft)]">No history yet.</p>
                 </CardContent>
@@ -2103,7 +2132,11 @@ export default function App() {
                 key={item.id}
                 type="button"
                 variant={isActive ? "default" : "ghost"}
-                className={cn("sidebar-nav-button w-full justify-start rounded-2xl", sidebarCollapsed && "w-11 justify-center px-0")}
+                className={cn(
+                  "sidebar-nav-button w-full justify-start rounded-[18px] px-4 py-3 text-[1.05rem]",
+                  isActive && "bg-white shadow-[0_8px_20px_rgba(58,34,27,0.05)]",
+                  sidebarCollapsed && "w-11 justify-center px-0",
+                )}
                 onClick={() => handleNavSelection(item.id)}
               >
                 <Icon />
@@ -2121,7 +2154,10 @@ export default function App() {
           <Button
             type="button"
             variant="outline"
-            className={cn("sidebar-profile h-auto justify-start gap-3 rounded-[22px] p-2", sidebarCollapsed && "size-12 justify-center p-0")}
+            className={cn(
+              "sidebar-profile h-auto justify-start gap-3 rounded-[18px] border-[rgba(72,43,37,0.06)] bg-[rgba(255,255,255,0.74)] p-2 shadow-none",
+              sidebarCollapsed && "size-12 justify-center p-0",
+            )}
             onClick={() => {
               setActiveWorkId(null);
               setActiveView("profile");
@@ -2130,19 +2166,25 @@ export default function App() {
             aria-label="Open profile"
             title={displayProfileName}
           >
-            <Avatar className="size-9">
+            <Avatar className="size-11 bg-white p-0.5">
               {currentUser?.avatarUrl ? <AvatarImage className="sidebar-avatar-image" src={currentUser.avatarUrl} alt={displayProfileName} /> : null}
               <AvatarFallback
-                className={cn(!hasAuthenticatedUser && "bg-[rgba(72,43,37,0.08)] text-[var(--ink-soft)]")}
-                style={hasAuthenticatedUser ? ({ ["--profile-hue" as string]: profileHue } as CSSProperties) : undefined}
+                className={cn(hasAuthenticatedUser ? "text-white" : "bg-[rgba(72,43,37,0.05)] text-[var(--ink-soft)]")}
+                style={
+                  hasAuthenticatedUser
+                    ? ({
+                        background: `linear-gradient(160deg, hsl(${profileHue} 72% 56%), hsl(${profileHue - 12} 62% 46%))`,
+                      } as CSSProperties)
+                    : undefined
+                }
               >
                 {hasAuthenticatedUser ? initialsFromSeed(displayProfileName) : <ProfileIcon />}
               </AvatarFallback>
             </Avatar>
             {!sidebarCollapsed ? (
               <div className="min-w-0 text-left">
-                <div className="truncate text-sm font-medium text-[var(--ink)]">{displayProfileName}</div>
-                <div className="truncate text-xs text-[var(--ink-soft)]">{hasAuthenticatedUser ? "Profile" : "Guest reader"}</div>
+                <div className="truncate text-[1rem] font-medium text-[var(--ink)]">{displayProfileName}</div>
+                <div className="truncate text-xs text-[var(--ink-soft)]">{hasAuthenticatedUser ? "Account" : "Guest reader"}</div>
               </div>
             ) : null}
           </Button>

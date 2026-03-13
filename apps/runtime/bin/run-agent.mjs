@@ -301,6 +301,7 @@ function buildSearchPrompt(runtimePrompt, manifest, task, evidence, question) {
     "- Write /workspace/output/search-plan.json with the search strategy, chosen files, and why they matter.",
     "- Write /workspace/output/download-manifest.json with the files or excerpts you copied into scratch/research-corpus.",
     "- Write /workspace/output/evidence.json as JSON with an array field named evidence containing objects shaped like { workId, chunkId?, chunkIndex?, sourcePath, label, excerpt, rationale, r2Key? }.",
+    "- Write /workspace/output/evidence-notes.md as markdown notes summarizing what you found so far and which texts look most relevant.",
     "- Prefer exact quotes and preserve source identifiers.",
     "",
     `Question: ${question}`,
@@ -346,6 +347,9 @@ function buildBriefingPrompt(runtimePrompt, manifest, task, question) {
     "Task spec:",
     JSON.stringify(task, null, 2),
     "",
+    "Existing evidence:",
+    "Read /workspace/output/evidence.json and /workspace/output/evidence-notes.md before writing the briefing.",
+    "",
     "Workspace manifest summary:",
     JSON.stringify({
       works: manifest.works,
@@ -389,6 +393,59 @@ function schemaForBriefingStep() {
     },
     required: ["briefingPath", "citationCount", "summary"],
   };
+}
+
+function normalizePhase(task) {
+  return typeof task.phase === "string" ? task.phase : "collect_and_brief";
+}
+
+function evidenceItemsFromSeed(evidence) {
+  return [...evidence.runtimeHits, ...evidence.selectedChunks].slice(0, 10).map((entry) => ({
+    workId: entry.workId,
+    chunkId: entry.id || undefined,
+    chunkIndex: entry.chunkIndex,
+    sourcePath: `chunks/${entry.workId}/chunks.jsonl`,
+    label: `${entry.workId}#${entry.chunkIndex}`,
+    excerpt: entry.excerpt,
+    rationale: "Recovered from deterministic local search results.",
+    r2Key: entry.r2Key || undefined,
+  }));
+}
+
+async function ensureEvidenceArtifacts(outputDir, question, evidence, reason = "Recovered from deterministic local search results.") {
+  const evidenceJsonPath = join(outputDir, "evidence.json");
+  const notesPath = join(outputDir, "evidence-notes.md");
+  const items = evidenceItemsFromSeed(evidence).map((entry) => ({
+    ...entry,
+    rationale: reason,
+  }));
+  await writeFile(
+    evidenceJsonPath,
+    JSON.stringify(
+      {
+        question,
+        evidence: items,
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+  await writeFile(
+    notesPath,
+    [
+      "# Evidence Notes",
+      "",
+      `Question: ${question}`,
+      "",
+      "## Current Leads",
+      ...items.slice(0, 8).map((entry) => `- ${entry.label}: "${normalizeWhitespace(entry.excerpt).slice(0, 360)}"`),
+      "",
+      "## Notes",
+      "- These notes summarize the current evidence set before the final briefing step.",
+    ].join("\n"),
+    "utf8",
+  );
 }
 
 function runProcess(command, args, options = {}) {
@@ -606,47 +663,59 @@ async function main() {
   );
   await writeFile(join(outputDir, "evidence.seed.json"), JSON.stringify(evidence, null, 2), "utf8");
 
+  const phase = normalizePhase(task);
   const codexRuns = [];
   let briefing = "";
   let citations = [];
 
   try {
-    const searchRun = await runCodexStep({
-      workspaceRoot,
-      outputDir,
-      model,
-      step: "codex-pass-1-search",
-      promptText: buildSearchPrompt(runtimePrompt, manifest, task, evidence, question),
-      schema: schemaForSearchStep(),
-    });
-    codexRuns.push(searchRun);
-
-    const briefingRun = await runCodexStep({
-      workspaceRoot,
-      outputDir,
-      model,
-      step: "codex-pass-2-briefing",
-      promptText: buildBriefingPrompt(runtimePrompt, manifest, task, question),
-      schema: schemaForBriefingStep(),
-    });
-    codexRuns.push(briefingRun);
-
-    const briefingJsonPath = join(outputDir, "briefing.json");
-    const briefingMarkdownPath = join(outputDir, "briefing.md");
-    const briefingJson = await readJsonIfPresent(briefingJsonPath, null);
-    const briefingMarkdown = (await fileExists(briefingMarkdownPath))
-      ? await readFile(briefingMarkdownPath, "utf8")
-      : "";
-
-    if (briefingJson && typeof briefingJson === "object") {
-      briefing = typeof briefingJson.briefing === "string" ? briefingJson.briefing : briefingMarkdown;
-      citations = Array.isArray(briefingJson.citations) ? briefingJson.citations : [];
-    } else {
-      briefing = briefingMarkdown;
+    if (phase === "collect_evidence" || phase === "collect_and_brief") {
+      const searchRun = await runCodexStep({
+        workspaceRoot,
+        outputDir,
+        model,
+        step: "codex-pass-1-search",
+        promptText: buildSearchPrompt(runtimePrompt, manifest, task, evidence, question),
+        schema: schemaForSearchStep(),
+      });
+      codexRuns.push(searchRun);
+      if (!(await fileExists(join(outputDir, "evidence.json"))) || !(await fileExists(join(outputDir, "evidence-notes.md")))) {
+        await ensureEvidenceArtifacts(outputDir, question, evidence, "Recovered after the Codex evidence pass did not write all expected artifacts.");
+      }
     }
 
-    if (!briefing.trim()) {
-      throw new Error("Codex did not produce output/briefing.md or a usable briefing.json.");
+    if (phase === "write_briefing" || phase === "collect_and_brief") {
+      if (!(await fileExists(join(outputDir, "evidence.json"))) || !(await fileExists(join(outputDir, "evidence-notes.md")))) {
+        await ensureEvidenceArtifacts(outputDir, question, evidence);
+      }
+
+      const briefingRun = await runCodexStep({
+        workspaceRoot,
+        outputDir,
+        model,
+        step: "codex-pass-2-briefing",
+        promptText: buildBriefingPrompt(runtimePrompt, manifest, task, question),
+        schema: schemaForBriefingStep(),
+      });
+      codexRuns.push(briefingRun);
+
+      const briefingJsonPath = join(outputDir, "briefing.json");
+      const briefingMarkdownPath = join(outputDir, "briefing.md");
+      const briefingJson = await readJsonIfPresent(briefingJsonPath, null);
+      const briefingMarkdown = (await fileExists(briefingMarkdownPath))
+        ? await readFile(briefingMarkdownPath, "utf8")
+        : "";
+
+      if (briefingJson && typeof briefingJson === "object") {
+        briefing = typeof briefingJson.briefing === "string" ? briefingJson.briefing : briefingMarkdown;
+        citations = Array.isArray(briefingJson.citations) ? briefingJson.citations : [];
+      } else {
+        briefing = briefingMarkdown;
+      }
+
+      if (!briefing.trim()) {
+        throw new Error("Codex did not produce output/briefing.md or a usable briefing.json.");
+      }
     }
   } catch (error) {
     const fallback = {
@@ -654,28 +723,32 @@ async function main() {
       note: "Falling back to the built-in deterministic local search summarizer.",
     };
     await writeFile(join(outputDir, "codex-fallback.json"), JSON.stringify(fallback, null, 2), "utf8");
-    await writeFile(
-      join(outputDir, "evidence.json"),
-      JSON.stringify(
-        {
-          evidence: [...evidence.runtimeHits, ...evidence.selectedChunks].slice(0, 10).map((entry) => ({
-            workId: entry.workId,
-            chunkId: entry.id || undefined,
-            chunkIndex: entry.chunkIndex,
-            sourcePath: `chunks/${entry.workId}/chunks.jsonl`,
-            label: `${entry.workId}#${entry.chunkIndex}`,
-            excerpt: entry.excerpt,
-            rationale: "Recovered from deterministic local search fallback.",
-            r2Key: entry.r2Key || undefined,
-          })),
-        },
-        null,
-        2,
-      ),
-      "utf8",
-    );
-    briefing = fallbackBriefing(question, evidence);
-    citations = fallbackCitations(evidence);
+    await ensureEvidenceArtifacts(outputDir, question, evidence, "Recovered from deterministic local search fallback.");
+    if (phase === "write_briefing" || phase === "collect_and_brief") {
+      briefing = fallbackBriefing(question, evidence);
+      citations = fallbackCitations(evidence);
+      await writeFile(join(outputDir, "briefing.md"), briefing, "utf8");
+      await writeFile(
+        join(outputDir, "briefing.json"),
+        JSON.stringify(
+          {
+            question,
+            briefing,
+            citations,
+          },
+          null,
+          2,
+        ),
+        "utf8",
+      );
+    }
+  }
+
+  if (!(await fileExists(join(outputDir, "evidence.json"))) || !(await fileExists(join(outputDir, "evidence-notes.md")))) {
+    await ensureEvidenceArtifacts(outputDir, question, evidence);
+  }
+
+  if (phase === "write_briefing" || phase === "collect_and_brief") {
     await writeFile(join(outputDir, "briefing.md"), briefing, "utf8");
     await writeFile(
       join(outputDir, "briefing.json"),
@@ -692,44 +765,9 @@ async function main() {
     );
   }
 
-  if (!(await fileExists(join(outputDir, "evidence.json")))) {
-    await writeFile(
-      join(outputDir, "evidence.json"),
-      JSON.stringify(
-        {
-          evidence: [...evidence.runtimeHits, ...evidence.selectedChunks].slice(0, 10).map((entry) => ({
-            workId: entry.workId,
-            chunkId: entry.id || undefined,
-            chunkIndex: entry.chunkIndex,
-            sourcePath: `chunks/${entry.workId}/chunks.jsonl`,
-            label: `${entry.workId}#${entry.chunkIndex}`,
-            excerpt: entry.excerpt,
-            rationale: "Recovered from deterministic local search results.",
-            r2Key: entry.r2Key || undefined,
-          })),
-        },
-        null,
-        2,
-      ),
-      "utf8",
-    );
-  }
-
-  await writeFile(join(outputDir, "briefing.md"), briefing, "utf8");
-  await writeFile(
-    join(outputDir, "briefing.json"),
-    JSON.stringify(
-      {
-        question,
-        briefing,
-        citations,
-      },
-      null,
-      2,
-    ),
-    "utf8",
-  );
-  await writeFile(join(outputDir, "codex-runs.json"), JSON.stringify(codexRuns, null, 2), "utf8");
+  const previousCodexRuns = await readJsonIfPresent(join(outputDir, "codex-runs.json"), []);
+  const nextCodexRuns = Array.isArray(previousCodexRuns) ? [...previousCodexRuns, ...codexRuns] : codexRuns;
+  await writeFile(join(outputDir, "codex-runs.json"), JSON.stringify(nextCodexRuns, null, 2), "utf8");
 }
 
 main().catch((error) => {

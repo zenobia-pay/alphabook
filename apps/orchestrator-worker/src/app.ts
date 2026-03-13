@@ -258,19 +258,19 @@ function describePlannerAction(toolName: ToolName, rationale?: string) {
 
   switch (toolName) {
     case "search_works":
-      return "I’m going to search the corpus for likely books, then decide which ones are worth grounding in passages.";
+      return "I’m going to scan corpus metadata first, then pull seed matches, then run a two-stage VM search.";
     case "get_relevant_chunks":
-      return "I found candidate books, so I’m pulling the strongest passages before I answer.";
+      return "I have candidate books, so I’m pulling seed matches from the index before the VM starts its broader search.";
     case "get_work_metadata":
-      return "I’m loading book metadata so I can tighten the scope before I continue.";
+      return "I’m loading corpus metadata so the VM gets a richer map of the candidate books before it searches.";
     case "get_work_text":
       return "I’m opening the full text for the most relevant book so I can inspect it directly.";
     case "create_workspace":
-      return "Indexed retrieval alone is not enough here, so I’m preparing a VM workspace for deterministic local search.";
+      return "The initial scans are complete, so I’m preparing the VM workspace for the long-running corpus search.";
     case "run_workspace_task":
-      return "The workspace is ready. I’m running the two-pass VM search now: gather evidence first, then write the briefing.";
+      return "The workspace is ready. I’m running the long VM job now: first collect evidence, then write the briefing.";
     case "read_workspace_file":
-      return "The VM briefing is ready, and I’m reading it back into the thread.";
+      return "The VM produced an intermediate artifact, and I’m reading it back into the thread.";
     case "destroy_workspace":
       return "I’m cleaning up the workspace now that I have the evidence I need.";
     default:

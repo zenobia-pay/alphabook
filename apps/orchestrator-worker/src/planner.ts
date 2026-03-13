@@ -52,20 +52,63 @@ function needsWorkspaceSearch(query: string, workIds: string[], chunkCount: numb
   return /\b(all|every|trace|theme|pattern|survey|synthesize|search|find|why|how|where|when|corpus)\b/i.test(query);
 }
 
+function metadataWorkIds(context: PlannerContext, limit = 12): string[] {
+  const searchResult = context.toolHistory.find((item) => item.toolName === "search_works")?.result;
+  const works = Array.isArray(searchResult?.works) ? searchResult.works as WorkSummary[] : [];
+  return works.slice(0, limit).map((work) => work.id);
+}
+
+function seedChunkPayload(context: PlannerContext): ChunkSearchResult[] {
+  const chunkResult = context.toolHistory.find((item) => item.toolName === "get_relevant_chunks")?.result;
+  return (chunkResult?.chunks as ChunkSearchResult[] | undefined) ?? [];
+}
+
+function phaseResult(context: PlannerContext, phase: string): Record<string, unknown> | null {
+  for (let index = context.toolHistory.length - 1; index >= 0; index -= 1) {
+    const entry = context.toolHistory[index];
+    if (entry.toolName !== "run_workspace_task") {
+      continue;
+    }
+    const taskSpec = entry.args.taskSpec as Record<string, unknown> | undefined;
+    if (typeof taskSpec?.phase === "string" && taskSpec.phase === phase) {
+      return entry.result;
+    }
+  }
+  return null;
+}
+
+function hasReadWorkspacePath(context: PlannerContext, path: string): boolean {
+  return context.toolHistory.some((entry) =>
+    entry.toolName === "read_workspace_file" && entry.args.path === path,
+  );
+}
+
+function artifactPath(result: Record<string, unknown> | null, patterns: RegExp[]): string | null {
+  if (!Array.isArray(result?.artifacts)) {
+    return null;
+  }
+  for (const artifact of result.artifacts as Array<Record<string, unknown>>) {
+    if (typeof artifact.path !== "string") {
+      continue;
+    }
+    if (patterns.some((pattern) => pattern.test(artifact.path))) {
+      return artifact.path;
+    }
+  }
+  return null;
+}
+
 export class FallbackPlanner implements Planner {
   async decide(context: PlannerContext): Promise<PlannerDecision> {
     const toolNames = context.toolHistory.map((item) => item.toolName);
     const scopedWorkIds = context.workScope?.length ? context.workScope : [];
-    if (!toolNames.includes("get_relevant_chunks")) {
+    if (!toolNames.includes("search_works")) {
       return {
         type: "tool_call",
-        tool_name: "get_relevant_chunks",
-        rationale: scopedWorkIds.length > 0
-          ? "I’m starting with deterministic indexed passage retrieval inside the open book before I hand anything to the VM."
-          : "I’m starting with deterministic indexed passage retrieval across the corpus before I hand anything to the VM.",
+        tool_name: "search_works",
+        rationale: "I’m going to scan corpus metadata first, then pull seed matches, then run a two-stage VM search over the candidate texts.",
         args: {
           query: context.userMessage,
-          ...(scopedWorkIds.length > 0 ? { workIds: scopedWorkIds } : {}),
           filters: {
             limit: 12,
           },
@@ -73,121 +116,154 @@ export class FallbackPlanner implements Planner {
       };
     }
 
-    const chunkResult = context.toolHistory.find((item) => item.toolName === "get_relevant_chunks");
-    const chunks = (chunkResult?.result.chunks as ChunkSearchResult[] | undefined) ?? [];
-    if (!chunks.length) {
+    const metadataIds = scopedWorkIds.length > 0 ? scopedWorkIds.slice(0, 12) : metadataWorkIds(context, 12);
+    if (!toolNames.includes("get_work_metadata") && metadataIds.length > 0) {
       return {
-        type: "final_answer",
-        answer: "I could not find enough indexed evidence in the current corpus to answer that yet.",
-        citations: [],
+        type: "tool_call",
+        tool_name: "get_work_metadata",
+        rationale: "I have candidate books from the metadata scan. Next I’m loading their metadata so the VM gets a richer corpus map before searching.",
+        args: {
+          workIds: metadataIds,
+        },
       };
     }
 
-    const workIds = scopedWorkIds.length > 0
-      ? scopedWorkIds.slice(0, 3)
-      : Array.from(new Set(chunks.map((chunk) => chunk.workId))).slice(0, 4);
-
-    if (needsWorkspaceSearch(context.userMessage, workIds, chunks.length)) {
-      if (!toolNames.includes("create_workspace")) {
-        return {
-          type: "tool_call",
-          tool_name: "create_workspace",
-          rationale: "The indexed passages are only the first pass, so I’m preparing a bounded VM workspace with the strongest candidate books and passages for deterministic local search.",
-          args: {
-            workIds: workIds.slice(0, 4),
-            chunkIds: chunks.slice(0, 12).map((chunk) => chunk.id),
-            taskContext: {
-              question: context.userMessage,
-              mode: "deterministic_long_search",
-              topChunks: chunks.slice(0, 8).map((chunk) => ({
-                chunkId: chunk.id,
-                workId: chunk.workId,
-                excerpt: chunk.excerpt,
-              })),
-            },
+    if (!toolNames.includes("get_relevant_chunks")) {
+      return {
+        type: "tool_call",
+        tool_name: "get_relevant_chunks",
+        rationale: scopedWorkIds.length > 0
+          ? "I’ve loaded metadata. Now I’m doing an initial index scan inside the open book to seed the VM search."
+          : "I’ve loaded metadata. Now I’m doing an initial index scan across the corpus to seed the VM search.",
+        args: {
+          query: context.userMessage,
+          ...(metadataIds.length > 0 ? { workIds: metadataIds } : {}),
+          filters: {
+            limit: 20,
           },
-        };
-      }
+        },
+      };
+    }
 
-      if (!toolNames.includes("run_workspace_task")) {
-        const runtimeId = context.toolHistory.find((item) => item.toolName === "create_workspace")?.result.runtimeId;
-        if (typeof runtimeId !== "string") {
-          return {
-            type: "final_answer",
-            answer: "I retrieved evidence, but I could not start a deeper workspace search.",
-            citations: extractCitationsFromChunks(chunks),
-          };
-        }
+    const chunks = seedChunkPayload(context);
+    const workIds = Array.from(new Set([
+      ...metadataIds,
+      ...chunks.map((chunk) => chunk.workId),
+    ])).slice(0, 12);
 
-        return {
-          type: "tool_call",
-          tool_name: "run_workspace_task",
-          rationale: "The workspace is ready. Now I’m running the deterministic two-pass Codex VM search: first gather local evidence, then write a quoted briefing.",
-          args: {
-            runtimeId,
-            taskSpec: {
-              kind: "briefing_search",
-              question: context.userMessage,
-              workIds: workIds.slice(0, 4),
-              chunkIds: chunks.slice(0, 12).map((chunk) => chunk.id),
-              briefingFile: "output/briefing.md",
-              briefingJsonFile: "output/briefing.json",
-            },
+    if (!toolNames.includes("create_workspace")) {
+      return {
+        type: "tool_call",
+        tool_name: "create_workspace",
+        rationale: "The initial scans are complete. I’m preparing a bounded VM workspace so the long-running agent can search the candidate corpus directly.",
+        args: {
+          workIds,
+          chunkIds: chunks.slice(0, 24).map((chunk) => chunk.id),
+          taskContext: {
+            question: context.userMessage,
+            mode: "exhaustive_corpus_search",
+            candidateWorkIds: workIds,
+            topChunks: chunks.slice(0, 12).map((chunk) => ({
+              chunkId: chunk.id,
+              workId: chunk.workId,
+              excerpt: chunk.excerpt,
+            })),
           },
-        };
-      }
+        },
+      };
+    }
 
-      if (!toolNames.includes("read_workspace_file")) {
-        const runtimeId = context.toolHistory.find((item) => item.toolName === "create_workspace")?.result.runtimeId;
-        const runResult = context.toolHistory.find((item) => item.toolName === "run_workspace_task")?.result;
-        if (typeof runtimeId !== "string") {
-          return {
-            type: "final_answer",
-            answer: "The workspace search finished, but I could not resolve its runtime.",
-            citations: extractCitationsFromChunks(chunks),
-          };
-        }
-
-        if (typeof runResult?.briefing === "string" && runResult.briefing.trim().length > 0) {
-          return {
-            type: "final_answer",
-            answer: runResult.briefing,
-            citations: extractCitationsFromChunks(chunks),
-          };
-        }
-
-        const artifactPath = Array.isArray(runResult?.artifacts)
-          ? (runResult.artifacts as Array<Record<string, unknown>>).find((artifact) =>
-            typeof artifact.path === "string" && /output\/(briefing|summary)\.md$/u.test(artifact.path),
-          )?.path
-          : null;
-
-        return {
-          type: "tool_call",
-          tool_name: "read_workspace_file",
-          rationale: "The deep VM search finished. I’m reading the generated briefing back into the chat.",
-          args: {
-            runtimeId,
-            path: typeof artifactPath === "string" ? artifactPath : "output/briefing.md",
-          },
-        };
-      }
-
-      const summary = context.toolHistory.find((item) => item.toolName === "read_workspace_file")?.result.content;
-      const answer = typeof summary === "string" && summary.trim().length
-        ? summary.slice(0, 1600)
-        : "I completed the deterministic VM search after retrieval and gathered enough evidence to answer from the corpus.";
+    const runtimeId = context.toolHistory.find((item) => item.toolName === "create_workspace")?.result.runtimeId;
+    if (typeof runtimeId !== "string") {
       return {
         type: "final_answer",
-        answer,
+        answer: "I prepared the search plan, but I could not start the workspace runtime.",
         citations: extractCitationsFromChunks(chunks),
       };
     }
 
-    const answer = `I found evidence across ${new Set(chunks.map((chunk) => chunk.workId)).size} works. The strongest passages all cluster around the same theme, so I would answer the query from those retrieved chunks first.`;
+    const collectResult = phaseResult(context, "collect_evidence");
+    if (!collectResult) {
+      return {
+        type: "tool_call",
+        tool_name: "run_workspace_task",
+        rationale: "The workspace is ready. I’m starting VM pass 1 to collect evidence and assemble the search corpus.",
+        args: {
+          runtimeId,
+          taskSpec: {
+            kind: "briefing_search",
+            phase: "collect_evidence",
+            question: context.userMessage,
+            workIds,
+            chunkIds: chunks.slice(0, 24).map((chunk) => chunk.id),
+            evidenceFile: "output/evidence.json",
+            evidenceNotesFile: "output/evidence-notes.md",
+          },
+        },
+      };
+    }
+
+    const evidencePath = artifactPath(collectResult, [/output\/evidence-notes\.md$/u, /output\/summary\.md$/u]) ?? "output/evidence-notes.md";
+    if (!hasReadWorkspacePath(context, evidencePath)) {
+      return {
+        type: "tool_call",
+        tool_name: "read_workspace_file",
+        rationale: "VM pass 1 finished. I’m reading the evidence notes back so the search progress is visible in the thread.",
+        args: {
+          runtimeId,
+          path: evidencePath,
+        },
+      };
+    }
+
+    const briefingResult = phaseResult(context, "write_briefing");
+    if (!briefingResult) {
+      return {
+        type: "tool_call",
+        tool_name: "run_workspace_task",
+        rationale: "The evidence set is ready. I’m starting VM pass 2 to write the final quoted briefing.",
+        args: {
+          runtimeId,
+          taskSpec: {
+            kind: "briefing_search",
+            phase: "write_briefing",
+            question: context.userMessage,
+            workIds,
+            chunkIds: chunks.slice(0, 24).map((chunk) => chunk.id),
+            briefingFile: "output/briefing.md",
+            briefingJsonFile: "output/briefing.json",
+          },
+        },
+      };
+    }
+
+    if (typeof briefingResult.briefing === "string" && briefingResult.briefing.trim().length > 0) {
+      return {
+        type: "final_answer",
+        answer: briefingResult.briefing,
+        citations: extractCitationsFromChunks(chunks),
+      };
+    }
+
+    const finalBriefingPath = artifactPath(briefingResult, [/output\/briefing\.md$/u, /output\/summary\.md$/u]) ?? "output/briefing.md";
+    if (!hasReadWorkspacePath(context, finalBriefingPath)) {
+      return {
+        type: "tool_call",
+        tool_name: "read_workspace_file",
+        rationale: "VM pass 2 finished. I’m reading the generated briefing back into the chat.",
+        args: {
+          runtimeId,
+          path: finalBriefingPath,
+        },
+      };
+    }
+
+    const summary = context.toolHistory.find((item) => item.toolName === "read_workspace_file" && item.args.path === finalBriefingPath)?.result.content;
     return {
       type: "final_answer",
-      answer,
+      answer: typeof summary === "string" && summary.trim().length
+        ? summary.slice(0, 1600)
+        : "I completed the VM evidence collection and briefing pass, but the final briefing artifact was empty.",
       citations: extractCitationsFromChunks(chunks),
     };
   }

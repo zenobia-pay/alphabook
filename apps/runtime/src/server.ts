@@ -213,6 +213,7 @@ async function runStubAgent(paths: ReturnType<typeof createPaths>, workspaceRoot
   const workFiles = await listFiles(paths.books, workspaceRoot);
   const chunkFiles = await listFiles(paths.chunks, workspaceRoot);
   const comparisonLines = manifest.works.map((work) => `- ${work.workId}: ${work.cleanTextKey ?? "no-clean-text"} | ${work.chunksKey ?? "no-chunks"}`);
+  const phase = typeof taskSpec.phase === "string" ? taskSpec.phase : "collect_and_brief";
 
   const summary = [
     "# Summary",
@@ -236,31 +237,88 @@ async function runStubAgent(paths: ReturnType<typeof createPaths>, workspaceRoot
     ...chunkFiles.map((file) => `- ${file}`),
   ].join("\n");
 
-  const summaryRelativePath = "output/briefing.md";
-  const summaryPath = join(paths.output, "briefing.md");
-  await writeFile(summaryPath, summary, "utf8");
+  const evidenceNotesRelativePath = "output/evidence-notes.md";
+  const evidenceNotesPath = join(paths.output, "evidence-notes.md");
+  await writeFile(evidenceNotesPath, summary, "utf8");
+  await writeFile(
+    join(paths.output, "evidence.json"),
+    JSON.stringify({
+      question: taskSpec.question ?? null,
+      evidence: manifest.selectedChunks?.slice(0, 6).map((chunk) => ({
+        workId: chunk.workId,
+        chunkId: chunk.id,
+        chunkIndex: chunk.chunkIndex,
+        sourcePath: `chunks/${chunk.workId}/chunks.jsonl`,
+        label: `${chunk.workId}#${chunk.chunkIndex}`,
+        excerpt: chunk.excerpt,
+        rationale: "Stub runtime evidence item.",
+        r2Key: chunk.r2Key ?? undefined,
+      })) ?? [],
+    }, null, 2),
+    "utf8",
+  );
+
+  const artifacts: RuntimeTaskResult["artifacts"] = [
+    {
+      path: evidenceNotesRelativePath,
+      filename: "evidence-notes.md",
+      mimeType: "text/markdown",
+    },
+    {
+      path: "output/evidence.json",
+      filename: "evidence.json",
+      mimeType: "application/json",
+    },
+  ];
+
+  if (phase === "write_briefing" || phase === "collect_and_brief") {
+    const summaryRelativePath = "output/briefing.md";
+    const summaryPath = join(paths.output, "briefing.md");
+    await writeFile(summaryPath, summary, "utf8");
+    await writeFile(
+      join(paths.output, "briefing.json"),
+      JSON.stringify({
+        question: taskSpec.question ?? null,
+        briefing: summary,
+        citations: manifest.selectedChunks?.slice(0, 6).map((chunk) => ({
+          workId: chunk.workId,
+          chunkId: chunk.id,
+          label: `${chunk.workId}#${chunk.chunkIndex}`,
+          excerpt: chunk.excerpt,
+          r2Key: chunk.r2Key ?? undefined,
+        })) ?? [],
+      }, null, 2),
+      "utf8",
+    );
+    artifacts.push({
+      path: summaryRelativePath,
+      filename: "briefing.md",
+      mimeType: "text/markdown",
+    });
+    artifacts.push({
+      path: "output/briefing.json",
+      filename: "briefing.json",
+      mimeType: "application/json",
+    });
+  }
 
   return {
     runtimeId: manifest.runtimeId,
     stdout: "Stub agent completed.",
     stderr: "",
     exitCode: 0,
-    briefing: summary,
-    citations: manifest.selectedChunks?.slice(0, 6).map((chunk) => ({
-      workId: chunk.workId,
-      chunkId: chunk.id,
-      label: `${chunk.workId}#${chunk.chunkIndex}`,
-      excerpt: chunk.excerpt,
-      r2Key: chunk.r2Key ?? undefined,
-    })) ?? [],
+    briefing: phase === "write_briefing" || phase === "collect_and_brief" ? summary : undefined,
+    citations: phase === "write_briefing" || phase === "collect_and_brief"
+      ? manifest.selectedChunks?.slice(0, 6).map((chunk) => ({
+        workId: chunk.workId,
+        chunkId: chunk.id,
+        label: `${chunk.workId}#${chunk.chunkIndex}`,
+        excerpt: chunk.excerpt,
+        r2Key: chunk.r2Key ?? undefined,
+      })) ?? []
+      : [],
     codexRuns: [],
-    artifacts: [
-      {
-        path: summaryRelativePath,
-        filename: "briefing.md",
-        mimeType: "text/markdown",
-      },
-    ],
+    artifacts,
   };
 }
 
