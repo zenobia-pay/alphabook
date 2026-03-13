@@ -18,16 +18,16 @@ export const R2_PREFIXES = {
 } as const;
 
 export const TOOL_LABELS = {
-  search_works: "Scanning the corpus",
-  get_work_metadata: "Reading work metadata",
-  get_relevant_chunks: "Pulling grounded passages",
-  get_work_text: "Opening full text",
-  create_workspace: "Preparing a VM workspace",
-  run_workspace_task: "Running the long VM search",
-  read_workspace_file: "Collecting VM notes",
-  destroy_workspace: "Closing the VM workspace",
+  search_works: "Corpus search",
+  get_work_metadata: "Book metadata",
+  get_relevant_chunks: "Passage retrieval",
+  get_work_text: "Full text lookup",
+  create_workspace: "Workspace setup",
+  run_workspace_task: "Deep search",
+  read_workspace_file: "Workspace output",
+  destroy_workspace: "Workspace cleanup",
 } as const;
 
 export function getToolLabel(toolName: string) {
-  return TOOL_LABELS[toolName as keyof typeof TOOL_LABELS] ?? "Updating the run";
+  return TOOL_LABELS[toolName as keyof typeof TOOL_LABELS] ?? "Research step";
 }

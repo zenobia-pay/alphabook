@@ -775,9 +775,9 @@ button {
 
 .tool-call-card {
   display: grid;
-  gap: 4px;
+  gap: 5px;
   margin: 0 0 12px;
-  padding: 0 0 0 16px;
+  padding: 0 0 0 15px;
   border-left: 2px solid rgba(72, 43, 37, 0.12);
 }
 
@@ -793,31 +793,19 @@ button {
   border-color: rgba(166, 55, 55, 0.42);
 }
 
-.tool-call-card-header {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.tool-call-card-header strong {
-  font-size: 0.98rem;
-  font-weight: 700;
-}
-
-.tool-call-state {
+.tool-call-label {
   color: var(--text-muted);
-  font-size: 0.7rem;
+  font-size: 0.74rem;
   font-weight: 700;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
 }
 
 .tool-call-detail {
   margin: 0;
-  color: var(--text-muted);
-  font-size: 0.92rem;
-  line-height: 1.55;
+  color: rgba(38, 26, 25, 0.82);
+  font-size: 0.94rem;
+  line-height: 1.58;
 }
 
 .signin-card .hero-button {

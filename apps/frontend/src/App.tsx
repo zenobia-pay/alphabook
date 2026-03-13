@@ -214,44 +214,136 @@ function hueFromSeed(seed: string) {
   return (total + 24) % 360;
 }
 
-function toolStatusLabel(entry: Pick<ToolTraceEntry, "state">) {
-  switch (entry.state) {
-    case "running":
-      return "Working";
-    case "error":
-      return "Failed";
+function pluralize(count: number, singular: string, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function quoted(value: unknown) {
+  return typeof value === "string" && value.trim() ? `“${value.trim()}”` : null;
+}
+
+function getCount(value: unknown) {
+  return Array.isArray(value) ? value.length : 0;
+}
+
+function summarizeToolSentence({
+  toolName,
+  args,
+  result,
+  state,
+}: Pick<ToolTraceEntry, "toolName" | "args" | "result" | "state">) {
+  const query = quoted(args.query)
+    ?? (args.taskSpec && typeof args.taskSpec === "object" ? quoted((args.taskSpec as Record<string, unknown>).query) : null)
+    ?? (args.taskSpec && typeof args.taskSpec === "object" ? quoted((args.taskSpec as Record<string, unknown>).goal) : null);
+  const workCount = getCount(args.workIds);
+  const chunkCount = getCount(args.chunkIds);
+  const resultWorkCount = result ? getCount(result.works) : 0;
+  const resultChunkCount = result ? getCount(result.chunks) : 0;
+  const path = typeof args.path === "string" ? args.path : null;
+  const errorMessage = typeof result?.error === "string" ? result.error : null;
+
+  switch (toolName) {
+    case "search_works":
+      if (state === "running") {
+        return query ? `Searching the corpus for ${query}.` : "Searching the corpus.";
+      }
+      if (state === "error") {
+        return query
+          ? `The corpus search for ${query} failed${errorMessage ? `: ${errorMessage}` : "."}`
+          : `The corpus search failed${errorMessage ? `: ${errorMessage}` : "."}`;
+      }
+      if (resultWorkCount === 0) {
+        return query
+          ? `Searched the corpus for ${query} and found no matching books.`
+          : "Searched the corpus and found no matching books.";
+      }
+      return query
+        ? `Searched the corpus for ${query} and found ${pluralize(resultWorkCount, "matching work")}.`
+        : `Searched the corpus and found ${pluralize(resultWorkCount, "matching work")}.`;
+
+    case "get_relevant_chunks":
+      if (state === "running") {
+        return query ? `Gathering the strongest passages for ${query}.` : "Gathering the strongest passages.";
+      }
+      if (state === "error") {
+        return query
+          ? `Passage retrieval for ${query} failed${errorMessage ? `: ${errorMessage}` : "."}`
+          : `Passage retrieval failed${errorMessage ? `: ${errorMessage}` : "."}`;
+      }
+      if (resultChunkCount === 0) {
+        return query
+          ? `Looked for grounded passages for ${query} and found none.`
+          : "Looked for grounded passages and found none.";
+      }
+      return query
+        ? `Pulled ${pluralize(resultChunkCount, "grounded passage")} for ${query}.`
+        : `Pulled ${pluralize(resultChunkCount, "grounded passage")}.`;
+
+    case "get_work_metadata":
+      if (state === "running") {
+        return `Loading metadata for ${pluralize(workCount, "book")}.`;
+      }
+      if (state === "error") {
+        return `Metadata lookup failed${errorMessage ? `: ${errorMessage}` : "."}`;
+      }
+      return `Loaded metadata for ${pluralize(resultWorkCount || workCount, "book")}.`;
+
+    case "get_work_text":
+      if (state === "running") {
+        return "Opening the full text for a book.";
+      }
+      if (state === "error") {
+        return `Opening the full text failed${errorMessage ? `: ${errorMessage}` : "."}`;
+      }
+      return "Opened the full text for a book.";
+
+    case "create_workspace":
+      if (state === "running") {
+        return `Preparing a VM workspace for ${pluralize(workCount, "book")}${chunkCount ? ` and ${pluralize(chunkCount, "passage")}` : ""}.`;
+      }
+      if (state === "error") {
+        return `Preparing the VM workspace failed${errorMessage ? `: ${errorMessage}` : "."}`;
+      }
+      return `Prepared a VM workspace for ${pluralize(workCount, "book")}${chunkCount ? ` and ${pluralize(chunkCount, "passage")}` : ""}.`;
+
+    case "run_workspace_task":
+      if (state === "running") {
+        return query ? `Running a deeper VM search for ${query}.` : "Running a deeper VM search.";
+      }
+      if (state === "error") {
+        return query
+          ? `The deep VM search for ${query} failed${errorMessage ? `: ${errorMessage}` : "."}`
+          : `The deep VM search failed${errorMessage ? `: ${errorMessage}` : "."}`;
+      }
+      return query ? `Finished the deeper VM search for ${query}.` : "Finished the deeper VM search.";
+
+    case "read_workspace_file":
+      if (state === "running") {
+        return path ? `Reading ${path} from the VM workspace.` : "Reading the VM workspace output.";
+      }
+      if (state === "error") {
+        return `Reading the VM workspace output failed${errorMessage ? `: ${errorMessage}` : "."}`;
+      }
+      return path ? `Read ${path} from the VM workspace.` : "Read the VM workspace output.";
+
+    case "destroy_workspace":
+      if (state === "running") {
+        return "Closing the VM workspace.";
+      }
+      if (state === "error") {
+        return `Closing the VM workspace failed${errorMessage ? `: ${errorMessage}` : "."}`;
+      }
+      return "Closed the VM workspace.";
+
     default:
-      return "Done";
+      if (state === "running") {
+        return "Running the next research step.";
+      }
+      if (state === "error") {
+        return `A research step failed${errorMessage ? `: ${errorMessage}` : "."}`;
+      }
+      return "Finished the next research step.";
   }
-}
-
-function summarizeToolCall(entry: Pick<ToolTraceEntry, "toolName" | "args">) {
-  if (typeof entry.args.query === "string" && entry.args.query.trim()) {
-    return entry.args.query;
-  }
-  if (typeof entry.args.path === "string" && entry.args.path.trim()) {
-    return entry.args.path;
-  }
-  if (Array.isArray(entry.args.workIds) && entry.args.workIds.length > 0) {
-    return `${entry.args.workIds.length} work${entry.args.workIds.length === 1 ? "" : "s"}`;
-  }
-  if (Array.isArray(entry.args.chunkIds) && entry.args.chunkIds.length > 0) {
-    return `${entry.args.chunkIds.length} chunk${entry.args.chunkIds.length === 1 ? "" : "s"}`;
-  }
-  if (entry.toolName === "run_workspace_task" && entry.args.taskSpec && typeof entry.args.taskSpec === "object") {
-    const taskSpec = entry.args.taskSpec as Record<string, unknown>;
-    if (typeof taskSpec.goal === "string") {
-      return taskSpec.goal;
-    }
-    if (typeof taskSpec.query === "string") {
-      return taskSpec.query;
-    }
-  }
-  return "";
-}
-
-function toolFallbackLabel(toolName: string) {
-  return getToolLabel(toolName);
 }
 
 function displayName(user: UserProfile | null) {
@@ -428,18 +520,20 @@ function AssistantToolCall({
   isError,
   status,
 }: ToolCallMessagePartProps<Record<string, unknown>, Record<string, unknown>>) {
-  const label = toolFallbackLabel(toolName);
+  const label = getToolLabel(toolName);
   const state =
     status.type === "running" || result === undefined ? "running" : isError || status.type === "incomplete" ? "error" : "completed";
-  const detail = summarizeToolCall({ toolName, args });
+  const detail = summarizeToolSentence({
+    toolName,
+    args,
+    result,
+    state,
+  });
 
   return (
     <div className={`tool-call-card is-${state}`}>
-      <div className="tool-call-card-header">
-        <span className="tool-call-state">{toolStatusLabel({ state })}</span>
-        <strong>{label}</strong>
-      </div>
-      {detail ? <p className="tool-call-detail">{detail}</p> : null}
+      <span className="tool-call-label">{label}</span>
+      <p className="tool-call-detail">{detail}</p>
     </div>
   );
 }
@@ -556,11 +650,13 @@ function AssistantSurface({
   isSending,
   streamingAssistantId,
   onPrompt,
+  showWelcome,
 }: {
   messages: UiMessage[];
   isSending: boolean;
   streamingAssistantId: string | null;
   onPrompt: (prompt: string) => Promise<void>;
+  showWelcome: boolean;
 }) {
   const runtime = useExternalStoreRuntime({
     isRunning: isSending,
@@ -585,7 +681,7 @@ function AssistantSurface({
       <Thread
         assistantAvatar={{ fallback: "A" }}
         tools={TOOL_UIS}
-        components={{ ThreadWelcome: Welcome }}
+        components={showWelcome ? { ThreadWelcome: Welcome } : {}}
         assistantMessage={{
           allowCopy: true,
           components: {
@@ -981,6 +1077,8 @@ export default function App() {
   }
 
   function renderAssistantView() {
+    const showWelcome = !authState.loading && !authLocked && selectedSessionId == null && messages.length === 0 && !isSending;
+
     return (
       <section className="assistant-page">
         {loadError ? <div className="thread-error-banner">{loadError}</div> : null}
@@ -988,11 +1086,11 @@ export default function App() {
         <div className="assistant-thread-shell" data-testid="thread">
           {authState.loading ? <div className="session-loading">Checking your session…</div> : null}
           {!authState.loading && authLocked ? (
-          <LockedState
+            <LockedState
               compact
               icon={ChatIcon}
-              title="Sign in to save your threads."
-              copy="Your chats and citations live on your account."
+              title="Sign in to use the assistant."
+              copy="Chats and citations stay with your account."
             />
           ) : (
             <AssistantSurface
@@ -1001,6 +1099,7 @@ export default function App() {
               isSending={isSending}
               streamingAssistantId={streamingAssistantId}
               onPrompt={sendPrompt}
+              showWelcome={showWelcome}
             />
           )}
         </div>
@@ -1032,7 +1131,7 @@ export default function App() {
             <h2 className="section-title">Recent</h2>
             <div className="feature-list">
               {recentSessions.length === 0 ? (
-                <p className="empty-copy">Your research threads will start appearing here.</p>
+                <p className="empty-copy">Threads appear here.</p>
               ) : (
                 recentSessions.slice(0, 3).map((session) => (
                   <button key={session.id} type="button" className="feature-row" onClick={() => openSession(session.id)}>
@@ -1084,7 +1183,7 @@ export default function App() {
           <LockedState
             icon={LibraryIcon}
             title="Sign in to open your library."
-            copy="Saved chats and reopened runs show up here."
+            copy="Saved chats live here."
           />
         </div>
       );
@@ -1099,7 +1198,7 @@ export default function App() {
         <div className="library-list">
           {sessions.length === 0 ? (
             <article className="feature-card">
-              <p className="empty-copy">Start a conversation in the assistant and it will appear here.</p>
+              <p className="empty-copy">Saved chats appear here.</p>
             </article>
           ) : (
             sessions.map((session) => (
@@ -1138,7 +1237,7 @@ export default function App() {
           <LockedState
             icon={ProfileIcon}
             title="Create an account to open your profile."
-            copy="History and saved sessions show up here."
+            copy="History and saved sessions live here."
           />
         </div>
       );
@@ -1183,12 +1282,12 @@ export default function App() {
         <section className="profile-layout">
           <div className="profile-history">
             <header className="view-header">
-              <h2>Recent history</h2>
+              <h2>History</h2>
             </header>
             <div className="library-list">
               {sessions.length === 0 ? (
                 <article className="feature-card">
-                  <p className="empty-copy">No history yet. Ask the assistant a question to start building a trail.</p>
+                  <p className="empty-copy">No history yet.</p>
                 </article>
               ) : (
                 sessions.map((session) => (

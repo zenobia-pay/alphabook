@@ -30,8 +30,10 @@ test("assistant run shows retrieval, runtime, and synthesized answer in one thre
   const assistantThread = page.locator(".aui-assistant-message-root").last();
   await expect(assistantThread).toContainText(/I started with the indexed corpus/i);
   await expect(assistantThread).toContainText(/I then ran a deeper workspace search/i);
-  await expect(assistantThread).toContainText(/Scanning the corpus/i);
-  await expect(assistantThread).toContainText(/Running the long VM search/i);
+  await expect(assistantThread).toContainText(/Corpus search/i);
+  await expect(assistantThread).toContainText(/Searched the corpus for/i);
+  await expect(assistantThread).toContainText(/Deep search/i);
+  await expect(page.getByTestId("empty-state")).toHaveCount(0);
 
   await expect(page.locator(".app-shell")).toHaveScreenshot("assistant-thread.png", {
     animations: "disabled",
