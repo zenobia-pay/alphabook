@@ -450,6 +450,21 @@ function formatReleaseYear(value: string | null | undefined) {
   return match ? match[0] : null;
 }
 
+function formatMonthYear(value: string | null | undefined) {
+  if (!value) {
+    return null;
+  }
+  const timestamp = Date.parse(value);
+  if (Number.isNaN(timestamp)) {
+    return null;
+  }
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(new Date(timestamp));
+}
+
 function buildExplorePrompt(question: string, works: WorkSummary[]) {
   const normalized = question.trim();
   if (works.length === 0) {
@@ -1735,6 +1750,8 @@ export default function App() {
       );
     }
 
+    const joinedLabel = formatMonthYear(currentUser?.createdAt);
+
     return (
       <div className="profile-view">
         <section className="profile-hero">
@@ -1746,65 +1763,69 @@ export default function App() {
             </div>
           )}
           <h1>{displayProfileName}</h1>
-          <p>{profileTag}</p>
+          <p>{joinedLabel ? `${profileTag} • joined ${joinedLabel}` : profileTag}</p>
+        </section>
+
+        <section className="profile-toolbar">
+          <div className="profile-stats">
+            <article>
+              <strong>{sessions.length}</strong>
+              <span>Threads</span>
+            </article>
+            <article>
+              <strong>{assistantMessages.length}</strong>
+              <span>Answers</span>
+            </article>
+            <article>
+              <strong>{citationCount}</strong>
+              <span>Citations</span>
+            </article>
+          </div>
           <div className="profile-actions">
+            <button type="button" className="profile-chip" aria-disabled="true">
+              Reading
+            </button>
+            <button type="button" className="profile-chip" aria-disabled="true">
+              Archive
+            </button>
             {authState.authConfigured && authState.user ? (
-              <a className="hero-button" href={buildSignOutUrl(window.location.href)}>
-                Sign out
+              <a className="profile-chip" href={buildSignOutUrl(window.location.href)}>
+                Log out
               </a>
             ) : null}
           </div>
         </section>
 
-        <section className="profile-stats">
-          <article>
-            <strong>{sessions.length}</strong>
-            <span>Threads</span>
-          </article>
-          <article>
-            <strong>{assistantMessages.length}</strong>
-            <span>Answers</span>
-          </article>
-          <article>
-            <strong>{citationCount}</strong>
-            <span>Citations</span>
-          </article>
+        <section className="profile-nav" aria-label="Profile sections">
+          <button type="button" className="profile-nav-item" aria-disabled="true">
+            Papers
+          </button>
+          <button type="button" className="profile-nav-item" aria-disabled="true">
+            Activity
+          </button>
+          <button type="button" className="profile-nav-item is-active">
+            History
+          </button>
         </section>
 
-        <section className="profile-layout">
-          <div className="profile-history">
-            <header className="view-header">
-              <h2>History</h2>
-            </header>
-            <div className="library-list">
-              {sessions.length === 0 ? (
-                <article className="feature-card">
-                  <p className="empty-copy">No history yet.</p>
-                </article>
-              ) : (
-                sessions.map((session) => (
-                  <button key={session.id} type="button" className="library-card" onClick={() => openSession(session.id)}>
-                    <div className="library-card-top">
-                      <strong>{session.title ?? "Untitled chat"}</strong>
-                      <span>{formatRelativeTime(session.lastMessageAt)}</span>
-                    </div>
-                    <p>{session.lastMessagePreview ?? "No messages yet."}</p>
-                  </button>
-                ))
-              )}
-            </div>
+        <section className="profile-history">
+          <div className="library-list">
+            {sessions.length === 0 ? (
+              <article className="feature-card">
+                <p className="empty-copy">No history yet.</p>
+              </article>
+            ) : (
+              sessions.map((session) => (
+                <button key={session.id} type="button" className="library-card" onClick={() => openSession(session.id)}>
+                  <div className="library-card-top">
+                    <strong>{session.title ?? "Untitled chat"}</strong>
+                    <span>{formatRelativeTime(session.lastMessageAt)}</span>
+                  </div>
+                  <p>{session.lastMessagePreview ?? "No messages yet."}</p>
+                </button>
+              ))
+            )}
           </div>
-
-          <aside className="profile-sidecard">
-            <h2 className="section-title">Areas</h2>
-            <div className="tag-cloud">
-              {["Public Domain", "Comparative Reading", "Theme Tracking", "Long Search", "Corpus Notes"].map((tag) => (
-                <span key={tag} className="tag-chip">
-                  {tag}
-                </span>
-              ))}
-            </div>
-          </aside>
         </section>
       </div>
     );
