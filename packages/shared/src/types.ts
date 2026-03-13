@@ -193,6 +193,22 @@ export const CurrentUserResponseSchema = z.object({
 
 export type CurrentUserResponse = z.infer<typeof CurrentUserResponseSchema>;
 
+export const PublicProfileResponseSchema = z.object({
+  profile: UserProfileSchema,
+  isFollowing: z.boolean(),
+  isSelf: z.boolean(),
+});
+
+export type PublicProfileResponse = z.infer<typeof PublicProfileResponseSchema>;
+
+export const FollowProfileResponseSchema = z.object({
+  ok: z.literal(true),
+  profile: UserProfileSchema,
+  isFollowing: z.boolean(),
+});
+
+export type FollowProfileResponse = z.infer<typeof FollowProfileResponseSchema>;
+
 export const WorkSummarySchema = z.object({
   id: z.string(),
   gutenbergId: z.number().nullable(),

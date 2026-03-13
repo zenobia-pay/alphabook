@@ -11,9 +11,9 @@ import type { ReadonlyJSONObject, ReadonlyJSONValue } from "assistant-stream/uti
 import type { AgentationProps } from "agentation";
 import { ChevronsLeft, ChevronsRight } from "lucide-react";
 
-import { getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type UserProfile, type WorkDetail, type WorkSource, type WorkSummary } from "@alphabook/shared";
+import { getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type PublicProfileResponse, type UserProfile, type WorkDetail, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
-import { buildSignInUrl, buildSignOutUrl, fetchCurrentUser, fetchMessages, fetchSessions, fetchWorkDetail, fetchWorks, streamChat } from "./api";
+import { buildSignInUrl, buildSignOutUrl, fetchCurrentUser, fetchMessages, fetchProfile, fetchSessions, fetchWorkDetail, fetchWorks, followProfile, streamChat, unfollowProfile } from "./api";
 import { Avatar, AvatarFallback, AvatarImage } from "./components/ui/avatar";
 import { Button } from "./components/ui/button";
 import { Card, CardContent } from "./components/ui/card";
@@ -60,6 +60,7 @@ type UrlState = {
   view: ViewMode;
   sessionId: string | null | undefined;
   workId: string | null | undefined;
+  profileUserId: string | null | undefined;
   debugEnabled: boolean;
 };
 
@@ -76,17 +77,20 @@ function readUrlState(): UrlState {
       view: "assistant",
       sessionId: undefined,
       workId: undefined,
+      profileUserId: undefined,
       debugEnabled: false,
     };
   }
 
   const pathnameMatch = window.location.pathname.match(/^\/works\/([^/]+)$/);
+  const profilePathMatch = window.location.pathname.match(/^\/u\/([^/]+)$/);
   const params = new URLSearchParams(window.location.search);
   const rawView = params.get("view");
   return {
-    view: pathnameMatch ? "book" : isViewMode(rawView) ? rawView : "assistant",
+    view: pathnameMatch ? "book" : profilePathMatch ? "profile" : isViewMode(rawView) ? rawView : "assistant",
     sessionId: params.has("session") ? params.get("session") || null : undefined,
     workId: pathnameMatch ? decodeURIComponent(pathnameMatch[1]) : params.has("work") ? params.get("work") || null : undefined,
+    profileUserId: profilePathMatch ? decodeURIComponent(profilePathMatch[1]) : params.has("profile") ? params.get("profile") || null : undefined,
     debugEnabled: params.get("debug") === "true",
   };
 }
@@ -101,10 +105,21 @@ function writeUrlState(next: UrlState) {
     url.pathname = `/works/${encodeURIComponent(next.workId)}`;
     url.searchParams.delete("view");
     url.searchParams.delete("work");
+    url.searchParams.delete("profile");
+  } else if (next.view === "profile" && next.profileUserId) {
+    url.pathname = `/u/${encodeURIComponent(next.profileUserId)}`;
+    url.searchParams.delete("view");
+    url.searchParams.delete("work");
+    url.searchParams.delete("profile");
   } else {
     url.pathname = "/";
     url.searchParams.set("view", next.view);
     url.searchParams.delete("work");
+    if (next.profileUserId) {
+      url.searchParams.set("profile", next.profileUserId);
+    } else {
+      url.searchParams.delete("profile");
+    }
   }
 
   if ((next.view === "assistant" || next.view === "book") && next.sessionId) {
@@ -1092,11 +1107,14 @@ export default function App() {
   const [feedLoading, setFeedLoading] = useState(false);
   const [selectedWorkIds, setSelectedWorkIds] = useState<string[]>([]);
   const [activeWorkId, setActiveWorkId] = useState<string | null | undefined>(initialUrlState.workId);
+  const [activeProfileUserId, setActiveProfileUserId] = useState<string | null | undefined>(initialUrlState.profileUserId);
   const [activeWork, setActiveWork] = useState<WorkDetail | null>(null);
   const [activeWorkSource, setActiveWorkSource] = useState<WorkSource | null>(null);
   const [activeWorkLoading, setActiveWorkLoading] = useState(false);
   const [pendingCitation, setPendingCitation] = useState<Citation | null>(null);
   const [bookReaderLoadVersion, setBookReaderLoadVersion] = useState(0);
+  const [publicProfile, setPublicProfile] = useState<PublicProfileResponse | null>(null);
+  const [publicProfileLoading, setPublicProfileLoading] = useState(false);
   const activeRunTokenRef = useRef(0);
   const bookReaderFrameRef = useRef<HTMLIFrameElement | null>(null);
   const bookReaderTextRef = useRef<HTMLPreElement | null>(null);
@@ -1165,6 +1183,7 @@ export default function App() {
       setActiveView(next.view);
       setSelectedSessionId(next.sessionId);
       setActiveWorkId(next.workId);
+      setActiveProfileUserId(next.profileUserId);
       setDebugEnabled(next.debugEnabled);
       setMobileNavOpen(false);
     };
@@ -1178,9 +1197,10 @@ export default function App() {
       view: activeView,
       sessionId: selectedSessionId,
       workId: activeWorkId,
+      profileUserId: activeProfileUserId,
       debugEnabled,
     });
-  }, [activeView, selectedSessionId, activeWorkId, debugEnabled]);
+  }, [activeView, selectedSessionId, activeWorkId, activeProfileUserId, debugEnabled]);
 
   useEffect(() => {
     if (!debugEnabled) {
@@ -1244,6 +1264,38 @@ export default function App() {
       }
     })();
   }, [activeWorkId]);
+
+  useEffect(() => {
+    if (!activeProfileUserId || (currentUserId && activeProfileUserId === currentUserId)) {
+      setPublicProfile(null);
+      setPublicProfileLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        setPublicProfileLoading(true);
+        const next = await fetchProfile(activeProfileUserId);
+        if (!cancelled) {
+          setPublicProfile(next);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setLoadError(error instanceof Error ? error.message : "Failed to load profile.");
+          setPublicProfile(null);
+        }
+      } finally {
+        if (!cancelled) {
+          setPublicProfileLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeProfileUserId, currentUserId]);
 
   useEffect(() => {
     if (!pendingCitation || !activeWorkSource || !activeWork || activeWork.id !== pendingCitation.workId) {
@@ -1658,6 +1710,10 @@ export default function App() {
       setActiveWorkId(null);
       setPendingCitation(null);
     }
+    if (view !== "profile") {
+      setActiveProfileUserId(null);
+      setPublicProfile(null);
+    }
     if (view === "assistant" && activeView === "assistant") {
       startNewChat();
       return;
@@ -1669,6 +1725,7 @@ export default function App() {
     setMobileNavOpen(false);
     setSelectedSessionId(sessionId);
     setActiveWorkId(null);
+    setActiveProfileUserId(null);
     setPendingCitation(null);
     setActiveView("assistant");
   }
@@ -1681,6 +1738,7 @@ export default function App() {
   function openWork(workId: string) {
     setMobileNavOpen(false);
     setPendingCitation(null);
+    setActiveProfileUserId(null);
     setActiveWorkId(workId);
     startNewBookChat();
   }
@@ -1688,8 +1746,39 @@ export default function App() {
   function openCitation(citation: Citation) {
     setMobileNavOpen(false);
     setPendingCitation(citation);
+    setActiveProfileUserId(null);
     setActiveWorkId(citation.workId);
     setActiveView("book");
+  }
+
+  function openProfile(userId?: string | null) {
+    setMobileNavOpen(false);
+    setActiveWorkId(null);
+    setPendingCitation(null);
+    setActiveProfileUserId(userId ?? currentUserId ?? null);
+    setActiveView("profile");
+  }
+
+  async function toggleFollowProfile() {
+    if (!activeProfileUserId || !publicProfile || publicProfile.isSelf) {
+      return;
+    }
+    try {
+      const next = publicProfile.isFollowing ? await unfollowProfile(activeProfileUserId) : await followProfile(activeProfileUserId);
+      setPublicProfile({
+        profile: next.profile,
+        isFollowing: next.isFollowing,
+        isSelf: false,
+      });
+      if (currentUser && currentUser.id === activeProfileUserId) {
+        setAuthState((state) => ({
+          ...state,
+          user: next.profile,
+        }));
+      }
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : "Failed to update follow state.");
+    }
   }
 
   function renderAssistantView() {
@@ -1972,6 +2061,7 @@ export default function App() {
   }
 
   function renderProfileView() {
+    const isPublicProfile = Boolean(activeProfileUserId && (!currentUserId || activeProfileUserId !== currentUserId));
     if (authPending) {
       return (
         <section className="assistant-page">
@@ -1982,7 +2072,7 @@ export default function App() {
       );
     }
 
-    if (authLocked) {
+    if (authLocked && !isPublicProfile) {
       return (
         <section className="assistant-page">
           <div className="assistant-thread-shell">
@@ -1992,6 +2082,92 @@ export default function App() {
             />
           </div>
         </section>
+      );
+    }
+
+    if (isPublicProfile) {
+      if (publicProfileLoading) {
+        return (
+          <section className="assistant-page">
+            <div className="assistant-thread-shell">
+              <AuthLoadingState compact />
+            </div>
+          </section>
+        );
+      }
+
+      if (!publicProfile) {
+        return (
+          <section className="assistant-page">
+            <div className="assistant-thread-shell">
+              <LockedState compact title="That profile could not be loaded." />
+            </div>
+          </section>
+        );
+      }
+
+      const profile = publicProfile.profile;
+      const publicName = displayName(profile);
+      const publicTag = profileHandle(profile);
+      const publicHue = hueFromSeed(profile.email ?? profile.id);
+      const publicJoined = formatMonthYear(profile.createdAt);
+
+      return (
+        <div className="profile-view space-y-6">
+          <section className="profile-hero space-y-3">
+            {profile.avatarUrl ? (
+              <Avatar className="profile-hero-image size-28 bg-white p-1">
+                <AvatarImage src={profile.avatarUrl} alt={publicName} />
+                <AvatarFallback>{initialsFromSeed(publicName)}</AvatarFallback>
+              </Avatar>
+            ) : (
+              <Avatar className="profile-hero-badge size-28 bg-white p-1" style={{ ["--profile-hue" as string]: publicHue }}>
+                <AvatarFallback
+                  className="text-3xl text-white"
+                  style={{ background: `linear-gradient(160deg, hsl(${publicHue} 72% 56%), hsl(${publicHue - 12} 62% 46%))` }}
+                >
+                  {initialsFromSeed(publicName)}
+                </AvatarFallback>
+              </Avatar>
+            )}
+            <h1>{publicName}</h1>
+            <p>{publicJoined ? `${publicTag} • joined ${publicJoined}` : publicTag}</p>
+          </section>
+
+          <section className="profile-toolbar flex flex-wrap items-center justify-center gap-4">
+            <div className="profile-stats flex items-center gap-3">
+              <div className="px-4 py-1 text-center">
+                <strong className="block text-[var(--ink)]">{profile.followersCount}</strong>
+                <span className="text-xs text-[var(--ink-soft)]">Followers</span>
+              </div>
+              <div className="px-4 py-1 text-center">
+                <strong className="block text-[var(--ink)]">{profile.followingCount}</strong>
+                <span className="text-xs text-[var(--ink-soft)]">Following</span>
+              </div>
+            </div>
+            <div className="profile-actions">
+              {publicProfile.isSelf ? null : authLocked ? (
+                <Button asChild variant="ghost" className="profile-chip">
+                  <a href={buildSignInUrl(window.location.href)}>Sign in to follow</a>
+                </Button>
+              ) : (
+                <Button type="button" variant="ghost" className="profile-chip" onClick={() => void toggleFollowProfile()}>
+                  {publicProfile.isFollowing ? "Following" : "Follow"}
+                </Button>
+              )}
+            </div>
+          </section>
+
+          <section className="profile-history">
+            <div className="library-list space-y-3">
+              <Card className="feature-card rounded-[20px] border-[rgba(72,43,37,0.06)] bg-[rgba(255,255,255,0.62)] shadow-none">
+                <CardContent className="p-8">
+                  <p className="empty-copy text-sm text-[var(--ink-soft)]">Public reading history is not shared yet.</p>
+                </CardContent>
+              </Card>
+            </div>
+          </section>
+        </div>
       );
     }
 
@@ -2148,8 +2324,7 @@ export default function App() {
               sidebarCollapsed && "size-12 justify-center p-0",
             )}
             onClick={() => {
-              setActiveWorkId(null);
-              setActiveView("profile");
+              openProfile(currentUser?.id ?? null);
               setMobileNavOpen(false);
             }}
             aria-label="Open profile"
@@ -2207,9 +2382,7 @@ export default function App() {
             className="mobile-shell-button mobile-profile-button overflow-hidden"
             aria-label="Open profile"
             onClick={() => {
-              setMobileNavOpen(false);
-              setActiveWorkId(null);
-              setActiveView("profile");
+              openProfile(currentUser?.id ?? null);
             }}
           >
             <Avatar className="size-8">

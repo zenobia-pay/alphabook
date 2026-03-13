@@ -709,3 +709,80 @@ test("OpenAIEmbedder requests 1536 dimensions for text-embedding-3 models", asyn
   assert.deepEqual(embedding, [0.1, 0.2, 0.3]);
   assert.equal(requestBody ? requestBody["dimensions"] : undefined, 1536);
 });
+
+test("public profile endpoints expose follow state", async () => {
+  const store = new InMemoryAppStore();
+  await store.upsertUserProfile({
+    id: "viewer",
+    email: "viewer@example.com",
+    name: "Viewer",
+  });
+  await store.upsertUserProfile({
+    id: "author",
+    email: "author@example.com",
+    name: "Author",
+  });
+
+  const app = createApp({
+    store,
+    planner: new ScriptedPlanner([
+      {
+        type: "final_answer",
+        answer: "ok",
+        citations: [],
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false };
+      },
+      async runWorkspaceTask() {
+        return { ok: false };
+      },
+      async readWorkspaceFile() {
+        return { ok: false };
+      },
+      async destroyWorkspace() {
+        return { ok: true };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const initialProfileResponse = await app.request("/profiles/author?userId=viewer");
+  assert.equal(initialProfileResponse.status, 200);
+  const initialProfile = (await initialProfileResponse.json()) as {
+    profile: { followersCount: number };
+    isFollowing: boolean;
+  };
+  assert.equal(initialProfile.isFollowing, false);
+  assert.equal(initialProfile.profile.followersCount, 0);
+
+  const followResponse = await app.request("/profiles/author/follow?userId=viewer", {
+    method: "POST",
+  });
+  assert.equal(followResponse.status, 200);
+  const followPayload = (await followResponse.json()) as {
+    profile: { followersCount: number };
+    isFollowing: boolean;
+  };
+  assert.equal(followPayload.isFollowing, true);
+  assert.equal(followPayload.profile.followersCount, 1);
+
+  const unfollowResponse = await app.request("/profiles/author/follow?userId=viewer", {
+    method: "DELETE",
+  });
+  assert.equal(unfollowResponse.status, 200);
+  const unfollowPayload = (await unfollowResponse.json()) as {
+    profile: { followersCount: number };
+    isFollowing: boolean;
+  };
+  assert.equal(unfollowPayload.isFollowing, false);
+  assert.equal(unfollowPayload.profile.followersCount, 0);
+});

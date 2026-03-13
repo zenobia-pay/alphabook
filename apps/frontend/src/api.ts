@@ -1,12 +1,16 @@
 import {
   CurrentUserResponseSchema,
+  FollowProfileResponseSchema,
   MessageListResponseSchema,
+  PublicProfileResponseSchema,
   SessionListResponseSchema,
   WorkDetailResponseSchema,
   WorkListResponseSchema,
   type Citation,
   type CurrentUserResponse,
+  type FollowProfileResponse,
   type MessageRecord,
+  type PublicProfileResponse,
   type StreamEvent,
   type WorkDetailResponse,
   type WorkSummary,
@@ -69,6 +73,35 @@ export async function fetchCurrentUser(): Promise<CurrentUserResponse> {
     }),
   );
   return CurrentUserResponseSchema.parse(await response.json());
+}
+
+export async function fetchProfile(userId: string): Promise<PublicProfileResponse> {
+  const response = await ensureOk(
+    await fetch(`${API_BASE}/profiles/${userId}`, {
+      credentials: "include",
+    }),
+  );
+  return PublicProfileResponseSchema.parse(await response.json());
+}
+
+export async function followProfile(userId: string): Promise<FollowProfileResponse> {
+  const response = await ensureOk(
+    await fetch(`${API_BASE}/profiles/${userId}/follow`, {
+      method: "POST",
+      credentials: "include",
+    }),
+  );
+  return FollowProfileResponseSchema.parse(await response.json());
+}
+
+export async function unfollowProfile(userId: string): Promise<FollowProfileResponse> {
+  const response = await ensureOk(
+    await fetch(`${API_BASE}/profiles/${userId}/follow`, {
+      method: "DELETE",
+      credentials: "include",
+    }),
+  );
+  return FollowProfileResponseSchema.parse(await response.json());
 }
 
 export async function fetchWorks(options: { offset?: number; limit?: number } = {}): Promise<{ works: WorkSummary[]; nextOffset: number | null }> {

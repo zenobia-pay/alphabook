@@ -161,4 +161,19 @@ CREATE INDEX IF NOT EXISTS idx_chunks_tsv ON chunks USING gin(tsv);
 CREATE INDEX IF NOT EXISTS idx_chunks_embedding ON chunks USING hnsw (embedding vector_cosine_ops);
 `,
   },
+  {
+    id: "0002_social_graph",
+    sql: `
+CREATE TABLE IF NOT EXISTS user_follows (
+  follower_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  followed_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (follower_id, followed_id),
+  CONSTRAINT user_follows_not_self CHECK (follower_id <> followed_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_follows_followed_id ON user_follows(followed_id);
+CREATE INDEX IF NOT EXISTS idx_user_follows_follower_id ON user_follows(follower_id);
+`,
+  },
 ] as const;
