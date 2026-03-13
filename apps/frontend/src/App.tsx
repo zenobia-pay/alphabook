@@ -1444,6 +1444,7 @@ export default function App() {
             <h1>Library</h1>
           </header>
           <LockedState
+            compact
             icon={LibraryIcon}
             title="Sign in to open your library."
           />
@@ -1497,6 +1498,7 @@ export default function App() {
             <h1>Profile</h1>
           </header>
           <LockedState
+            compact
             icon={ProfileIcon}
             title="Create an account to open your profile."
           />
