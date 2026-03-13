@@ -287,11 +287,13 @@ button {
 
 .explore-composer-root {
   width: 100%;
-  padding: 14px 16px 12px;
+  padding: 10px 14px 10px;
 }
 
 .explore-composer-input {
-  min-height: 132px;
+  min-height: 112px;
+  font-size: 0.98rem;
+  line-height: 1.55;
 }
 
 .explore-selection-row {
@@ -312,15 +314,17 @@ button {
 }
 
 .explore-composer-footer {
-  margin-top: 12px;
+  margin-top: 8px;
   display: flex;
   justify-content: flex-end;
 }
 
 .explore-send {
-  width: 50px;
-  height: 50px;
-  box-shadow: 0 10px 22px rgba(139, 55, 40, 0.26);
+  width: 44px;
+  height: 44px;
+  background: #171311;
+  color: #fff;
+  box-shadow: 0 12px 28px rgba(23, 19, 17, 0.2);
 }
 
 .work-feed {
@@ -730,14 +734,15 @@ button {
   place-items: center;
   border: none;
   border-radius: 50%;
-  background: linear-gradient(180deg, #aa4f3e, #8b3728);
+  background: #171311;
   color: white;
-  box-shadow: 0 12px 24px rgba(139, 55, 40, 0.32);
+  box-shadow: 0 12px 28px rgba(23, 19, 17, 0.2);
   transition: transform 120ms ease, opacity 120ms ease;
 }
 
 .send-button:hover:not(:disabled) {
   transform: translateY(-1px);
+  background: #090807;
 }
 
 .send-button:disabled {
@@ -893,7 +898,7 @@ button {
 }
 
 .aui-thread-viewport-footer {
-  position: static;
+  position: relative;
   padding: 8px 0 4px;
   background: transparent;
 }
@@ -954,10 +959,10 @@ button {
 
 .aui-composer-input {
   min-height: 72px;
-  font-size: 1.05rem;
-  line-height: 1.6;
+  font-size: 0.98rem;
+  line-height: 1.55;
   color: inherit;
-  padding: 10px 2px 10px 0;
+  padding: 7px 2px 7px 0;
 }
 
 .aui-composer-input::placeholder {
@@ -987,11 +992,14 @@ button {
 .aui-composer-send svg {
   width: 16px;
   height: 16px;
+  fill: currentColor;
 }
 
 .aui-thread-scroll-to-bottom {
+  background: rgba(255, 250, 246, 0.96);
   border-color: rgba(139, 55, 40, 0.18);
   color: var(--accent);
+  box-shadow: 0 10px 24px rgba(58, 34, 27, 0.14);
 }
 
 .aui-thread-welcome-root {
