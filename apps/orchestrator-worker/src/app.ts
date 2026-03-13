@@ -216,6 +216,13 @@ async function executeTool(
 }
 
 function workspaceProgressSteps(args: Record<string, unknown>): string[] {
+  if ("taskContext" in args && !("taskSpec" in args)) {
+    return [
+      "Allocating a fresh workspace.",
+      "Loading corpus files into the workspace.",
+      "Finishing the workspace setup.",
+    ];
+  }
   const taskSpec = args.taskSpec && typeof args.taskSpec === "object" ? args.taskSpec as Record<string, unknown> : null;
   const phase = typeof taskSpec?.phase === "string" ? taskSpec.phase : null;
   const workCount = Array.isArray(taskSpec?.workIds) ? taskSpec.workIds.length : 0;
@@ -223,15 +230,15 @@ function workspaceProgressSteps(args: Record<string, unknown>): string[] {
   if (phase === "collect_evidence") {
     return [
       `Scanning ${scope} for likely matches.`,
-      "Pulling candidate passages into a working evidence set.",
-      "Checking which quotations are strong enough to keep.",
+      "Pulling candidate passages into the evidence set.",
+      "Keeping the strongest quotations and source references.",
     ];
   }
   if (phase === "write_briefing") {
     return [
-      "Turning the evidence set into a quoted briefing.",
+      "Turning the evidence into a quoted briefing.",
       "Linking each quotation back to its source text.",
-      "Finishing the briefing and source references.",
+      "Finishing the briefing.",
     ];
   }
   return [
@@ -248,9 +255,11 @@ function startToolProgressEmitter(
   args: Record<string, unknown>,
 ) {
   if (toolName !== "run_workspace_task") {
-    return {
-      stop() {},
-    };
+    if (toolName !== "create_workspace") {
+      return {
+        stop() {},
+      };
+    }
   }
 
   const steps = workspaceProgressSteps(args);
@@ -316,23 +325,23 @@ function describePlannerAction(toolName: ToolName, rationale?: string) {
 
   switch (toolName) {
     case "search_works":
-      return "I’m starting a corpus-wide search and will gather the strongest quoted evidence I can find.";
+      return "Scanning the library for likely books and themes.";
     case "get_relevant_chunks":
-      return "I’m doing a quick first scan to pick up useful leads.";
+      return "Pulling a few seed passages to guide the deeper search.";
     case "get_work_metadata":
-      return "I’m loading the book details before the deeper search begins.";
+      return "Loading context for the books most likely to matter.";
     case "get_work_text":
-      return "I’m opening the book text directly.";
+      return "Opening the source text directly.";
     case "create_workspace":
-      return "I’m starting the longer background search now.";
+      return "Preparing the workspace for the full corpus search.";
     case "run_workspace_task":
-      return "I’m searching through the corpus now.";
+      return "Searching the corpus now.";
     case "read_workspace_file":
-      return "I’m bringing the latest search notes back into the thread.";
+      return "Bringing the latest search notes back into the thread.";
     case "destroy_workspace":
-      return "I’m cleaning up the workspace now that I have the evidence I need.";
+      return "Cleaning up the workspace.";
     default:
-      return "I’m planning the next research step.";
+      return "Planning the next research step.";
   }
 }
 

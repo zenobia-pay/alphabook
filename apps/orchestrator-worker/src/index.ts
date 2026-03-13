@@ -16,6 +16,7 @@ export interface Env {
   OPENAI_SYNTH_MODEL?: string;
   OPENAI_EMBEDDING_MODEL?: string;
   RUNTIME_AGENT_MODEL?: string;
+  RUNTIME_R2_BUCKET_NAME?: string;
   RUNTIME_SERVICE_URL?: string;
   RUNTIME_SERVICE_TOKEN?: string;
   FLY_API_TOKEN?: string;
@@ -70,7 +71,7 @@ function resolveRuntimeGateway(env: Env, store: NeonAppStore, blobStore: Cloudfl
           : "shared",
       machineCpus: env.FLY_RUNTIME_MACHINE_CPUS ? Number(env.FLY_RUNTIME_MACHINE_CPUS) : undefined,
       machineMemoryMb: env.FLY_RUNTIME_MACHINE_MEMORY_MB ? Number(env.FLY_RUNTIME_MACHINE_MEMORY_MB) : undefined,
-      r2BucketName: env.R2_BUCKET_NAME ?? "alphabook",
+      r2BucketName: env.RUNTIME_R2_BUCKET_NAME ?? env.R2_BUCKET_NAME ?? "alphabook",
       r2Endpoint: env.R2_ENDPOINT,
       r2AccessKeyId: env.R2_ACCESS_KEY_ID,
       r2SecretAccessKey: env.R2_SECRET_ACCESS_KEY,

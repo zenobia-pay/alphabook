@@ -178,12 +178,12 @@ function userFacingErrorSummary(toolHistory: ToolHistoryEntry[]): string | null 
   const runtimeFailure = failures.find((failure) => failure.toolName === "run_workspace_task");
 
   if (workspaceFailure || runtimeFailure) {
-    return "I could not start or complete the background corpus search for this request, so this run did not actually search the books the way it should have.";
+    return "The full corpus search did not complete for this run, so I do not have a reliable briefing yet.";
   }
   if (metadataFailure) {
-    return "I could not complete the first search pass across the library, so this run did not build a reliable corpus search plan.";
+    return "The library scan failed early, so this run never built a reliable search plan.";
   }
-  return "This run hit an internal search error before it could complete the corpus search.";
+  return "This run hit an internal search error before the corpus search could finish.";
 }
 
 export class FallbackSynthesizer implements Synthesizer {

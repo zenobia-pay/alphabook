@@ -107,7 +107,7 @@ export class FallbackPlanner implements Planner {
       return {
         type: "tool_call",
         tool_name: "search_works",
-        rationale: "I’m starting a corpus-wide search and will gather the strongest quoted evidence I can find.",
+        rationale: "Scanning the library for likely books and themes.",
         args: {
           query: context.userMessage,
           filters: {
@@ -122,7 +122,7 @@ export class FallbackPlanner implements Planner {
       return {
         type: "tool_call",
         tool_name: "get_work_metadata",
-        rationale: "I found candidate books and I’m loading their details before the deeper search begins.",
+        rationale: "Loading context for the books most likely to matter.",
         args: {
           workIds: metadataIds,
         },
@@ -134,8 +134,8 @@ export class FallbackPlanner implements Planner {
         type: "tool_call",
         tool_name: "get_relevant_chunks",
         rationale: scopedWorkIds.length > 0
-          ? "I’m doing a quick first scan inside the open book to pick up useful leads."
-          : "I’m doing a quick first scan across the corpus to pick up useful leads.",
+          ? "Pulling a few seed passages from the open book."
+          : "Pulling a few seed passages from across the corpus.",
         args: {
           query: context.userMessage,
           ...(metadataIds.length > 0 ? { workIds: metadataIds } : {}),
@@ -156,7 +156,7 @@ export class FallbackPlanner implements Planner {
       return {
         type: "tool_call",
         tool_name: "create_workspace",
-        rationale: "The background search is starting now.",
+        rationale: "Preparing the workspace for the full corpus search.",
         args: {
           workIds,
           chunkIds: chunks.slice(0, 24).map((chunk) => chunk.id),
@@ -188,7 +188,7 @@ export class FallbackPlanner implements Planner {
       return {
         type: "tool_call",
         tool_name: "run_workspace_task",
-        rationale: "I’m collecting evidence from the corpus now.",
+        rationale: "Searching the corpus and gathering quoted evidence.",
         args: {
           runtimeId,
           taskSpec: {
@@ -209,7 +209,7 @@ export class FallbackPlanner implements Planner {
       return {
         type: "tool_call",
         tool_name: "read_workspace_file",
-        rationale: "I’m bringing back the current search notes.",
+        rationale: "Bringing back the current search notes.",
         args: {
           runtimeId,
           path: evidencePath,
@@ -222,7 +222,7 @@ export class FallbackPlanner implements Planner {
       return {
         type: "tool_call",
         tool_name: "run_workspace_task",
-        rationale: "I’m turning the search findings into a quoted briefing.",
+        rationale: "Turning the evidence into a quoted briefing.",
         args: {
           runtimeId,
           taskSpec: {
@@ -251,7 +251,7 @@ export class FallbackPlanner implements Planner {
       return {
         type: "tool_call",
         tool_name: "read_workspace_file",
-        rationale: "I’m bringing the finished briefing back into the chat.",
+        rationale: "Bringing the finished briefing back into the chat.",
         args: {
           runtimeId,
           path: finalBriefingPath,

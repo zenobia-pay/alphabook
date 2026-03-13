@@ -51,6 +51,7 @@ function createR2ClientFromEnv(): S3Client | null {
   return new S3Client({
     region: "auto",
     endpoint,
+    forcePathStyle: true,
     credentials: {
       accessKeyId,
       secretAccessKey,
@@ -135,12 +136,18 @@ async function downloadFromR2(
   bucketName: string,
   r2Key: string,
 ): Promise<string> {
-  const response = await r2Client.send(
-    new GetObjectCommand({
-      Bucket: bucketName,
-      Key: r2Key,
-    }),
-  );
+  let response;
+  try {
+    response = await r2Client.send(
+      new GetObjectCommand({
+        Bucket: bucketName,
+        Key: r2Key,
+      }),
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown R2 error";
+    throw new Error(`Failed to download ${r2Key} from R2 bucket ${bucketName}: ${message}`);
+  }
   if (!response.Body) {
     throw new Error(`R2 object ${r2Key} had no body.`);
   }
@@ -487,6 +494,7 @@ export function createAlphaBookRuntimeServer(options: RuntimeServerOptions = {})
 
       return json(response, 404, { error: "Not found" });
     } catch (error) {
+      console.error("runtime request failed", error);
       return json(response, 500, {
         error: error instanceof Error ? error.message : "Unknown runtime error",
       });

@@ -18,13 +18,13 @@ export const R2_PREFIXES = {
 } as const;
 
 export const TOOL_LABELS = {
-  search_works: "Metadata Scan",
-  get_work_metadata: "Book Details",
-  get_relevant_chunks: "Initial Scan",
+  search_works: "Library Scan",
+  get_work_metadata: "Book Context",
+  get_relevant_chunks: "Seed Passages",
   get_work_text: "Text Lookup",
-  create_workspace: "Search Prep",
-  run_workspace_task: "Background Search",
-  read_workspace_file: "Search Progress",
+  create_workspace: "Workspace Setup",
+  run_workspace_task: "Corpus Search",
+  read_workspace_file: "Search Notes",
   destroy_workspace: "Cleanup",
 } as const;
 
