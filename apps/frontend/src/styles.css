@@ -304,13 +304,34 @@ button {
 
 .explore-composer-root {
   width: 100%;
-  padding: 10px 14px 10px;
+  border: 1px solid var(--shell-strong);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.04);
+  overflow: hidden;
+}
+
+.explore-composer-surface {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 8px;
 }
 
 .explore-composer-input {
-  min-height: 112px;
+  min-height: 72px;
   font-size: 0.98rem;
   line-height: 1.55;
+  border: 0;
+  background: transparent;
+  padding: 8px 10px 0;
+  box-shadow: none;
+  resize: none;
+}
+
+.explore-composer-input:focus-visible {
+  outline: none;
+  box-shadow: none;
 }
 
 .explore-selection-row {
@@ -331,17 +352,97 @@ button {
 }
 
 .explore-composer-footer {
-  margin-top: 8px;
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.explore-composer-spacer {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  margin-left: 2px;
+  color: var(--ink-soft);
+  font-size: 2rem;
+  font-weight: 300;
+  line-height: 1;
+  user-select: none;
 }
 
 .explore-send {
-  width: 44px;
-  height: 44px;
-  background: #171311;
+  width: 32px;
+  height: 32px;
+  background: #8d877f;
   color: #fff;
-  box-shadow: 0 12px 28px rgba(23, 19, 17, 0.2);
+  box-shadow: none;
+}
+
+.explore-send:hover:not(:disabled) {
+  background: #171311;
+}
+
+.explore-send:disabled {
+  opacity: 0.45;
+}
+
+.aui-thread-root {
+  --aui-corner-radius: 24px;
+}
+
+.aui-thread-viewport {
+  overscroll-behavior-y: contain;
+}
+
+.aui-thread-viewport-footer {
+  box-shadow: none;
+}
+
+.aui-composer-root [data-slot="composer-shell"] {
+  border-color: var(--shell-strong);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.04);
+}
+
+.aui-composer-send,
+.aui-composer-cancel,
+.aui-thread-scroll-to-bottom {
+  box-shadow: none;
+}
+
+.aui-composer-send {
+  background: #8d877f;
+  color: #fff;
+}
+
+.aui-composer-send:hover:not(:disabled) {
+  background: #171311;
+}
+
+.aui-thread-scroll-to-bottom {
+  background: rgba(255, 255, 255, 0.96);
+}
+
+.aui-tool-fallback-root {
+  border-color: rgba(38, 26, 25, 0.16);
+  background: rgba(255, 255, 255, 0.94);
+}
+
+.aui-tool-fallback-trigger:hover {
+  background: rgba(38, 26, 25, 0.025);
+}
+
+.aui-tool-fallback-result-content,
+.aui-tool-fallback-args-value,
+.aui-tool-fallback-error-reason {
+  font-size: 0.86rem;
+  line-height: 1.5;
+}
+
+.aui-tooltip-content,
+[data-slot="tooltip-content"] {
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
 }
 
 .work-feed {

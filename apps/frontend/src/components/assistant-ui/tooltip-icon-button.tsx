@@ -20,6 +20,8 @@ export const TooltipIconButton = forwardRef<
   HTMLButtonElement,
   TooltipIconButtonProps
 >(({ children, tooltip, side = "bottom", className, ...rest }, ref) => {
+  const isIconSize = rest.size === "icon" || rest.size === undefined;
+
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -27,7 +29,11 @@ export const TooltipIconButton = forwardRef<
           variant="ghost"
           size="icon"
           {...rest}
-          className={cn("aui-button-icon size-6 p-1", className)}
+          className={cn(
+            "aui-button-icon rounded-full p-0 text-muted-foreground hover:text-foreground",
+            isIconSize && "size-8",
+            className,
+          )}
           ref={ref}
         >
           <Slot.Slottable>{children}</Slot.Slottable>

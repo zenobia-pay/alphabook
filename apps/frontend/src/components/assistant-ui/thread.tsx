@@ -41,7 +41,7 @@ export const Thread: FC = () => {
       style={{
         ["--thread-max-width" as string]: "44rem",
         ["--composer-radius" as string]: "24px",
-        ["--composer-padding" as string]: "10px",
+        ["--composer-padding" as string]: "8px",
       }}
     >
       <ThreadPrimitive.Viewport
@@ -60,7 +60,7 @@ export const Thread: FC = () => {
           }}
         />
 
-        <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 mx-auto mt-auto flex w-full max-w-(--thread-max-width) flex-col gap-4 overflow-visible rounded-t-(--composer-radius) bg-background pb-4 md:pb-6">
+        <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 mx-auto mt-auto flex w-full max-w-(--thread-max-width) flex-col gap-3 overflow-visible bg-background pb-3 md:pb-4">
           <ThreadScrollToBottom />
           <Composer />
         </ThreadPrimitive.ViewportFooter>
@@ -74,8 +74,9 @@ const ThreadScrollToBottom: FC = () => {
     <ThreadPrimitive.ScrollToBottom asChild>
       <TooltipIconButton
         tooltip="Scroll to bottom"
+        side="top"
         variant="outline"
-        className="aui-thread-scroll-to-bottom absolute -top-12 z-10 self-center rounded-full p-4 disabled:invisible dark:border-border dark:bg-background dark:hover:bg-accent"
+        className="aui-thread-scroll-to-bottom absolute -top-10 z-10 self-center rounded-full p-3 disabled:invisible dark:border-border dark:bg-background dark:hover:bg-accent"
       >
         <ArrowDownIcon />
       </TooltipIconButton>
@@ -140,7 +141,7 @@ const Composer: FC = () => {
           <ComposerAttachments />
           <ComposerPrimitive.Input
             placeholder="Send a message..."
-            className="aui-composer-input max-h-32 min-h-10 w-full resize-none bg-transparent px-1.75 py-1 text-sm outline-none placeholder:text-muted-foreground/80"
+            className="aui-composer-input max-h-28 min-h-8 w-full resize-none bg-transparent px-1.5 py-0.5 text-[0.98rem] leading-6 outline-none placeholder:text-muted-foreground/80"
             rows={1}
             autoFocus
             aria-label="Message input"
@@ -160,7 +161,7 @@ const ComposerAction: FC = () => {
         <ComposerPrimitive.Send asChild>
           <TooltipIconButton
             tooltip="Send message"
-            side="bottom"
+            side="top"
             type="button"
             variant="default"
             size="icon"

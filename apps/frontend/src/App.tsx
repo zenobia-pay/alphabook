@@ -751,7 +751,7 @@ function messageToThreadMessage(message: UiMessage, streamingAssistantId: string
         return {
           type: "tool-call" as const,
           toolCallId: entry.id,
-          toolName: entry.toolName,
+          toolName: entry.label,
           args,
           argsText: JSON.stringify(args),
           ...(entry.state === "running"
@@ -1457,11 +1457,12 @@ export default function App() {
             if (event.event === "tool.progress" && typeof event.data.toolName === "string" && typeof event.data.text === "string") {
               const toolCallId = typeof event.data.toolCallId === "string" ? event.data.toolCallId : null;
               const toolName = event.data.toolName;
-              activityLog = activityLog.map((entry) =>
+              const rationale = event.data.text;
+              activityLog = activityLog.map((entry): ToolTraceEntry =>
                 (toolCallId ? entry.id === toolCallId : entry.toolName === toolName && entry.state === "running")
                   ? {
                       ...entry,
-                      rationale: event.data.text,
+                      rationale,
                     }
                   : entry,
               );
@@ -1830,8 +1831,8 @@ export default function App() {
           <h1>Ask or search anything</h1>
 
           <form className="explore-composer-shell" onSubmit={submitExplorePrompt}>
-            <Card className="explore-composer-root rounded-[28px] border-[var(--shell-strong)] bg-[rgba(255,251,247,0.84)] shadow-[0_18px_40px_rgba(58,34,27,0.08)]">
-              <CardContent className="p-3">
+            <Card className="explore-composer-root">
+              <CardContent className="p-0">
               {selectedWorks.length > 0 ? (
                 <div className="explore-selection-row mb-3 flex flex-wrap gap-2">
                   {selectedWorks.map((work) => (
@@ -1849,30 +1850,33 @@ export default function App() {
                 </div>
               ) : null}
 
-              <Textarea
-                className="explore-composer-input min-h-[96px] border-0 bg-transparent px-3 py-2 shadow-none focus-visible:ring-0"
-                placeholder="Ask about a book, a theme, or the whole corpus..."
-                value={exploreDraft}
-                onChange={(event) => setExploreDraft(event.currentTarget.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey) {
-                    event.preventDefault();
-                    submitExplorePrompt();
-                  }
-                }}
-              />
+              <div className="explore-composer-surface">
+                <Textarea
+                  className="explore-composer-input"
+                  placeholder="Ask about a book, a theme, or the whole corpus..."
+                  value={exploreDraft}
+                  onChange={(event) => setExploreDraft(event.currentTarget.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && !event.shiftKey) {
+                      event.preventDefault();
+                      submitExplorePrompt();
+                    }
+                  }}
+                />
 
-              <div className="explore-composer-footer flex justify-end">
-                <Button
-                  type="submit"
-                  variant="default"
-                  size="icon"
-                  className="send-button explore-send size-10"
-                  disabled={!exploreDraft.trim() && selectedWorks.length === 0}
-                  aria-label="Send prompt"
-                >
-                  <ArrowUpIcon />
-                </Button>
+                <div className="explore-composer-footer">
+                  <span className="explore-composer-spacer" aria-hidden="true">+</span>
+                  <Button
+                    type="submit"
+                    variant="default"
+                    size="icon"
+                    className="explore-send"
+                    disabled={!exploreDraft.trim() && selectedWorks.length === 0}
+                    aria-label="Send prompt"
+                  >
+                    <ArrowUpIcon />
+                  </Button>
+                </div>
               </div>
               </CardContent>
             </Card>

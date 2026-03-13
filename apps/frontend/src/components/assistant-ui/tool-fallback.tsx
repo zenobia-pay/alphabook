@@ -66,7 +66,7 @@ function ToolFallbackRoot({
       open={isOpen}
       onOpenChange={handleOpenChange}
       className={cn(
-        "aui-tool-fallback-root group/tool-fallback-root w-full rounded-lg border py-3",
+        "aui-tool-fallback-root group/tool-fallback-root w-full rounded-xl border py-2.5",
         className,
       )}
       style={
@@ -105,13 +105,13 @@ function ToolFallbackTrigger({
     status?.type === "incomplete" && status.reason === "cancelled";
 
   const Icon = statusIconMap[statusType];
-  const label = isCancelled ? "Cancelled tool" : "Used tool";
+  const label = isCancelled ? "Cancelled" : isRunning ? "Working" : "Completed";
 
   return (
     <CollapsibleTrigger
       data-slot="tool-fallback-trigger"
       className={cn(
-        "aui-tool-fallback-trigger group/trigger flex w-full items-center gap-2 px-4 text-sm transition-colors",
+        "aui-tool-fallback-trigger group/trigger flex w-full items-center gap-2.5 px-4 text-sm transition-colors",
         className,
       )}
       {...props}
@@ -127,12 +127,13 @@ function ToolFallbackTrigger({
       <span
         data-slot="tool-fallback-trigger-label"
         className={cn(
-          "aui-tool-fallback-trigger-label-wrapper relative inline-block grow text-left leading-none",
+          "aui-tool-fallback-trigger-label-wrapper relative inline-block grow text-left leading-tight",
           isCancelled && "text-muted-foreground line-through",
         )}
       >
         <span>
-          {label}: <b>{toolName}</b>
+          <span className="font-medium text-muted-foreground">{label}</span>{" "}
+          <b>{toolName}</b>
         </span>
         {isRunning && (
           <span
@@ -140,7 +141,8 @@ function ToolFallbackTrigger({
             data-slot="tool-fallback-trigger-shimmer"
             className="aui-tool-fallback-trigger-shimmer shimmer pointer-events-none absolute inset-0 motion-reduce:animate-none"
           >
-            {label}: <b>{toolName}</b>
+            <span className="font-medium text-muted-foreground">{label}</span>{" "}
+            <b>{toolName}</b>
           </span>
         )}
       </span>
