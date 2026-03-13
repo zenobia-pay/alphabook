@@ -2,31 +2,31 @@
 
 :root {
   font-family: "Manrope", sans-serif;
-  color: #272522;
+  color: #262626;
   background:
     radial-gradient(circle at top left, rgba(37, 99, 235, 0.05), transparent 24%),
-    linear-gradient(180deg, #fbf8f1 0%, #f7f4eb 100%);
+    linear-gradient(180deg, #fcfcfb 0%, #fafafa 100%);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  --shell-border: rgba(39, 37, 34, 0.1);
-  --shell-strong: rgba(39, 37, 34, 0.16);
-  --surface: rgba(255, 252, 245, 0.88);
-  --surface-strong: rgba(255, 252, 245, 0.96);
-  --sidebar: rgba(251, 248, 241, 0.94);
-  --text-muted: rgba(39, 37, 34, 0.64);
+  --shell-border: rgba(38, 38, 38, 0.1);
+  --shell-strong: rgba(38, 38, 38, 0.16);
+  --surface: rgba(255, 255, 255, 0.88);
+  --surface-strong: rgba(255, 255, 255, 0.96);
+  --sidebar: rgba(250, 250, 250, 0.94);
+  --text-muted: rgba(38, 38, 38, 0.62);
   --accent: #2563eb;
   --accent-strong: #1d4ed8;
   --accent-soft: rgba(37, 99, 235, 0.08);
   --accent-line: rgba(37, 99, 235, 0.18);
   --shadow: 0 18px 48px rgba(26, 33, 52, 0.06);
-  --app-bg: #f7f4eb;
-  --ink: #272522;
-  --ink-soft: rgba(39, 37, 34, 0.64);
+  --app-bg: #fafafa;
+  --ink: #262626;
+  --ink-soft: rgba(38, 38, 38, 0.62);
   --ink-strong: #171717;
-  --line: #ddd8ca;
-  --card: #f4f0e6;
+  --line: #e5e5e5;
+  --card: #f5f5f5;
 }
 
 * {
@@ -88,7 +88,7 @@ button {
   gap: 12px;
   height: 100vh;
   padding: 18px 14px 14px;
-  background: linear-gradient(180deg, rgba(251, 248, 241, 0.96), rgba(247, 244, 235, 0.92));
+  background: linear-gradient(180deg, rgba(250, 250, 250, 0.96), rgba(245, 245, 245, 0.92));
   border-right: 1px solid var(--shell-border);
   position: sticky;
   top: 0;
@@ -162,12 +162,12 @@ button {
 
 .sidebar-nav-button:hover {
   color: var(--ink);
-  background: rgba(255, 255, 255, 0.42);
+  background: rgba(255, 255, 255, 0.7);
 }
 
 .sidebar-nav-button.is-active {
   color: var(--ink);
-  background: rgba(255, 255, 255, 0.58);
+  background: rgba(255, 255, 255, 0.9);
   border-color: var(--line);
 }
 
@@ -276,7 +276,7 @@ button {
 
 .hero-button {
   border: 1px solid var(--line);
-  background: rgba(255, 252, 245, 0.85);
+  background: rgba(255, 255, 255, 0.9);
   border-radius: 999px;
   padding: 9px 14px;
   color: inherit;
@@ -314,7 +314,7 @@ button {
   padding: 0.45rem 0.8rem;
   border: 1px solid var(--line);
   border-radius: 999px;
-  background: rgba(255, 252, 245, 0.9);
+  background: rgba(255, 255, 255, 0.92);
   color: var(--text-muted);
   font-size: 0.86rem;
   font-weight: 500;
@@ -328,7 +328,7 @@ button {
   width: 100%;
   border: 1px solid var(--line);
   border-radius: 18px;
-  background: rgba(255, 252, 245, 0.96);
+  background: rgba(255, 255, 255, 0.96);
   box-shadow: var(--shadow);
   overflow: hidden;
 }
@@ -419,13 +419,13 @@ button {
 
 .aui-thread-viewport-footer {
   box-shadow: none;
-  background: linear-gradient(180deg, rgba(247, 244, 235, 0) 0%, rgba(247, 244, 235, 0.88) 24%, rgba(247, 244, 235, 0.97) 100%);
+  background: linear-gradient(180deg, rgba(250, 250, 250, 0) 0%, rgba(250, 250, 250, 0.88) 24%, rgba(250, 250, 250, 0.97) 100%);
   backdrop-filter: blur(12px);
 }
 
 .aui-composer-root [data-slot="composer-shell"] {
   border-color: var(--line);
-  background: rgba(255, 252, 245, 0.96);
+  background: rgba(255, 255, 255, 0.96);
   box-shadow: var(--shadow);
 }
 
@@ -445,13 +445,13 @@ button {
 }
 
 .aui-thread-scroll-to-bottom {
-  background: rgba(255, 252, 245, 0.96);
+  background: rgba(255, 255, 255, 0.96);
   border-color: var(--line);
 }
 
 .aui-tool-fallback-root {
   border-color: var(--line);
-  background: rgba(255, 252, 245, 0.94);
+  background: rgba(255, 255, 255, 0.94);
 }
 
 .aui-tool-fallback-trigger:hover {
@@ -481,7 +481,7 @@ button {
   width: 100%;
   border: 1px solid var(--line);
   border-radius: 18px;
-  background: rgba(255, 252, 245, 0.82);
+  background: rgba(245, 245, 245, 0.82);
   color: inherit;
   padding: 18px 18px 16px;
   text-align: left;
@@ -491,12 +491,12 @@ button {
 .work-feed-card:hover {
   color: var(--accent);
   border-color: var(--accent-line);
-  background: rgba(255, 255, 255, 0.92);
+  background: rgba(255, 255, 255, 0.96);
 }
 
 .work-feed-card.is-selected {
   border-color: var(--accent-line);
-  background: rgba(255, 255, 255, 0.92);
+  background: rgba(255, 255, 255, 0.96);
 }
 
 .work-feed-open {
@@ -592,7 +592,7 @@ button {
 .profile-sidecard {
   border: 1px solid var(--line);
   border-radius: 18px;
-  background: rgba(255, 252, 245, 0.82);
+  background: rgba(245, 245, 245, 0.82);
   padding: 0;
 }
 
@@ -612,7 +612,7 @@ button {
   width: 100%;
   border: 1px solid var(--line);
   border-radius: 18px;
-  background: rgba(255, 252, 245, 0.82);
+  background: rgba(245, 245, 245, 0.82);
   color: inherit;
   padding: 14px 16px;
   text-align: left;
@@ -621,7 +621,7 @@ button {
 .library-card:hover {
   color: var(--accent);
   border-color: var(--accent-line);
-  background: rgba(255, 255, 255, 0.92);
+  background: rgba(255, 255, 255, 0.96);
 }
 
 .empty-copy {
@@ -900,7 +900,7 @@ button {
 
 .user-card {
   max-width: 680px;
-  background: rgba(255, 252, 245, 0.96);
+  background: rgba(255, 255, 255, 0.96);
   border: 1px solid var(--line);
   border-radius: 18px;
   padding: 18px 22px;
@@ -1030,7 +1030,7 @@ button {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   border-right: 1px solid var(--line);
-  background: rgba(255, 250, 242, 0.68);
+  background: rgba(250, 250, 250, 0.72);
 }
 
 .book-reader-header {
@@ -1251,7 +1251,7 @@ button {
     gap: 12px;
     padding: 12px 16px 10px;
     border-bottom: 1px solid var(--line);
-    background: rgba(251, 248, 241, 0.9);
+    background: rgba(250, 250, 250, 0.92);
     backdrop-filter: blur(14px);
     position: sticky;
     top: 0;
@@ -1267,7 +1267,7 @@ button {
     border: 0;
     border: 1px solid var(--line);
     border-radius: 12px;
-    background: rgba(255, 252, 245, 0.82);
+    background: rgba(255, 255, 255, 0.88);
     color: inherit;
     padding: 0;
   }
