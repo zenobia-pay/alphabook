@@ -13,3 +13,6 @@ directory = "./dist"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
 html_handling = "auto-trailing-slash"
+
+[vars]
+API_ORIGIN = "https://api.alpha-book.org"
