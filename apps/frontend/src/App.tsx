@@ -865,6 +865,9 @@ export default function App() {
   const [sessions, setSessions] = useState<ChatSessionSummary[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null | undefined>(initialUrlState.sessionId);
   const [messages, setMessages] = useState<UiMessage[]>([]);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [sessionsResolved, setSessionsResolved] = useState(false);
+  const [messagesLoading, setMessagesLoading] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [streamingAssistantId, setStreamingAssistantId] = useState<string | null>(null);
@@ -1030,6 +1033,8 @@ export default function App() {
       return;
     }
     if (!currentUserId) {
+      setSessionsResolved(true);
+      setSessionsLoading(false);
       setSessions([]);
       setSelectedSessionId(null);
       setMessages([]);
@@ -1038,6 +1043,7 @@ export default function App() {
 
     void (async () => {
       try {
+        setSessionsLoading(true);
         const nextSessions = await fetchSessions(authState.authConfigured ? undefined : currentUserId);
         setSessions(nextSessions);
         if (selectedSessionId === undefined && nextSessions[0]) {
@@ -1045,6 +1051,9 @@ export default function App() {
         }
       } catch (error) {
         setLoadError(error instanceof Error ? error.message : "Failed to load sessions.");
+      } finally {
+        setSessionsLoading(false);
+        setSessionsResolved(true);
       }
     })();
   }, [authState.authConfigured, currentUserId, selectedSessionId]);
@@ -1054,16 +1063,20 @@ export default function App() {
       return;
     }
     if (!selectedSessionId) {
+      setMessagesLoading(false);
       setMessages([]);
       return;
     }
 
     void (async () => {
       try {
+        setMessagesLoading(true);
         const nextMessages = await fetchMessages(selectedSessionId);
         setMessages(nextMessages.map(hydrateStoredMessage));
       } catch (error) {
         setLoadError(error instanceof Error ? error.message : "Failed to load messages.");
+      } finally {
+        setMessagesLoading(false);
       }
     })();
   }, [authState.loading, selectedSessionId]);
@@ -1425,7 +1438,21 @@ export default function App() {
   }
 
   function renderAssistantView() {
-    const showWelcome = !authState.loading && !authLocked && selectedSessionId == null && messages.length === 0 && !isSending;
+    const assistantHistoryLoading =
+      !authPending
+      && !authLocked
+      && (
+        (hasAuthenticatedUser && !sessionsResolved)
+        || sessionsLoading
+        || (selectedSessionId != null && messagesLoading)
+      );
+    const showWelcome =
+      !assistantHistoryLoading
+      && !authState.loading
+      && !authLocked
+      && selectedSessionId == null
+      && messages.length === 0
+      && !isSending;
 
     return (
       <section className="assistant-page">
@@ -1433,6 +1460,8 @@ export default function App() {
 
         <div className="assistant-thread-shell" data-testid="thread">
           {authPending ? (
+            <AuthLoadingState compact />
+          ) : assistantHistoryLoading ? (
             <AuthLoadingState compact />
           ) : authLocked ? (
             <LockedState
