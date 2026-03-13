@@ -215,6 +215,64 @@ async function executeTool(
   }
 }
 
+function workspaceProgressSteps(args: Record<string, unknown>): string[] {
+  const taskSpec = args.taskSpec && typeof args.taskSpec === "object" ? args.taskSpec as Record<string, unknown> : null;
+  const phase = typeof taskSpec?.phase === "string" ? taskSpec.phase : null;
+  const workCount = Array.isArray(taskSpec?.workIds) ? taskSpec.workIds.length : 0;
+  const scope = workCount > 0 ? `${workCount} books` : "the current corpus snapshot";
+  if (phase === "collect_evidence") {
+    return [
+      `Scanning ${scope} for likely matches.`,
+      "Pulling candidate passages into a working evidence set.",
+      "Checking which quotations are strong enough to keep.",
+    ];
+  }
+  if (phase === "write_briefing") {
+    return [
+      "Turning the evidence set into a quoted briefing.",
+      "Linking each quotation back to its source text.",
+      "Finishing the briefing and source references.",
+    ];
+  }
+  return [
+    `Searching ${scope}.`,
+    "Reviewing the strongest passages.",
+  ];
+}
+
+function startToolProgressEmitter(
+  send: (event: string, data: Record<string, unknown>) => Promise<void>,
+  runId: string,
+  toolCallId: string,
+  toolName: ToolName,
+  args: Record<string, unknown>,
+) {
+  if (toolName !== "run_workspace_task") {
+    return {
+      stop() {},
+    };
+  }
+
+  const steps = workspaceProgressSteps(args);
+  let stepIndex = 0;
+  const timer = setInterval(() => {
+    const text = steps[stepIndex % steps.length];
+    stepIndex += 1;
+    void send("tool.progress", {
+      runId,
+      toolCallId,
+      toolName,
+      text,
+    });
+  }, 4000);
+
+  return {
+    stop() {
+      clearInterval(timer);
+    },
+  };
+}
+
 function titleFromMessage(message: string): string {
   return message
     .trim()
@@ -535,6 +593,7 @@ async function runOrchestrator(
       rationale: toolCall.rationale ?? null,
       args: toolCall.args,
     });
+    const progressEmitter = startToolProgressEmitter(send, run.id, toolRecord.id, toolCall.tool_name, toolCall.args);
 
     let result: Record<string, unknown>;
     let status: "completed" | "failed" = "completed";
@@ -552,6 +611,8 @@ async function runOrchestrator(
         ok: false,
         error: error instanceof Error ? error.message : "Unknown tool error",
       };
+    } finally {
+      progressEmitter.stop();
     }
 
     await deps.store.finishToolCall(toolRecord.id, status, result);

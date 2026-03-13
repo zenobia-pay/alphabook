@@ -513,6 +513,10 @@ function summarizeToolSentence({
   const errorMessage = typeof result?.error === "string" ? result.error : null;
   const taskSpec = args.taskSpec && typeof args.taskSpec === "object" ? args.taskSpec as Record<string, unknown> : null;
   const runtimePhase = typeof taskSpec?.phase === "string" ? taskSpec.phase : null;
+  const hydratedWorkCount =
+    result?.manifest && typeof result.manifest === "object" && Array.isArray((result.manifest as Record<string, unknown>).works)
+      ? ((result.manifest as Record<string, unknown>).works as unknown[]).length
+      : 0;
 
   switch (toolName) {
     case "search_works":
@@ -586,10 +590,16 @@ function summarizeToolSentence({
         if (planned) {
           return planned;
         }
+        if (workCount === 0) {
+          return "Preparing the background search across the current corpus.";
+        }
         return `Preparing the background search for ${pluralize(workCount, "book")}${chunkCount ? ` and ${pluralize(chunkCount, "lead")}` : ""}.`;
       }
       if (state === "error") {
         return `Starting the background search failed${errorMessage ? `: ${errorMessage}` : "."}`;
+      }
+      if (hydratedWorkCount > 0) {
+        return `Prepared the background search for ${pluralize(hydratedWorkCount, "book")}${chunkCount ? ` and ${pluralize(chunkCount, "lead")}` : ""}.`;
       }
       return `Prepared the background search for ${pluralize(workCount, "book")}${chunkCount ? ` and ${pluralize(chunkCount, "lead")}` : ""}.`;
 
@@ -1428,6 +1438,30 @@ export default function App() {
                       result: event.data.result && typeof event.data.result === "object" ? (event.data.result as Record<string, unknown>) : undefined,
                       isError: event.data.status === "failed",
                       state: event.data.status === "failed" ? "error" : "completed",
+                    }
+                  : entry,
+              );
+              setMessages((current) =>
+                current.map((message) =>
+                  message.id === planMessageId
+                    ? {
+                        ...message,
+                        toolCalls: activityLog,
+                      }
+                    : message,
+                ),
+              );
+              return;
+            }
+
+            if (event.event === "tool.progress" && typeof event.data.toolName === "string" && typeof event.data.text === "string") {
+              const toolCallId = typeof event.data.toolCallId === "string" ? event.data.toolCallId : null;
+              const toolName = event.data.toolName;
+              activityLog = activityLog.map((entry) =>
+                (toolCallId ? entry.id === toolCallId : entry.toolName === toolName && entry.state === "running")
+                  ? {
+                      ...entry,
+                      rationale: event.data.text,
                     }
                   : entry,
               );

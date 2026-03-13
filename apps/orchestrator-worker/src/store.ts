@@ -1386,13 +1386,20 @@ export class NeonAppStore implements AppStore {
             w.summary,
             COUNT(*)::float AS score
           FROM works w
-          CROSS JOIN UNNEST($4::text[]) AS token
+          LEFT JOIN work_authors wa_seed ON wa_seed.work_id = w.id
+          LEFT JOIN authors a_seed ON a_seed.id = wa_seed.author_id
+          LEFT JOIN work_subjects ws_seed ON ws_seed.work_id = w.id
+          LEFT JOIN subjects s_seed ON s_seed.id = ws_seed.subject_id
+          CROSS JOIN UNNEST($3::text[]) AS token
           WHERE
-            ($2::text IS NULL OR w.language = $2::text)
-            AND ($3::text IS NULL OR w.rights_status = $3::text)
+            ($1::text IS NULL OR w.language = $1::text)
+            AND ($2::text IS NULL OR w.rights_status = $2::text)
             AND (
               COALESCE(w.title, '') ILIKE '%' || token || '%'
               OR COALESCE(w.summary, '') ILIKE '%' || token || '%'
+              OR COALESCE(a_seed.name, '') ILIKE '%' || token || '%'
+              OR COALESCE(s_seed.label, '') ILIKE '%' || token || '%'
+              OR COALESCE(w.metadata_json::text, '') ILIKE '%' || token || '%'
             )
           GROUP BY w.id, w.gutenberg_id, w.title, w.metadata_json, w.language, w.release_date, w.rights_status, w.summary
         )
@@ -1415,10 +1422,9 @@ export class NeonAppStore implements AppStore {
         LEFT JOIN subjects s ON s.id = ws.subject_id
         GROUP BY matches.id, matches.gutenberg_id, matches.title, matches.metadata_json, matches.language, matches.release_date, matches.rights_status, matches.summary, matches.score
         ORDER BY matches.score DESC, matches.title ASC
-        LIMIT $5
+        LIMIT $4
       `,
       [
-        query,
         typeof filters.language === "string" ? filters.language : null,
         typeof filters.rightsStatus === "string" ? filters.rightsStatus : null,
         tokens,

@@ -250,7 +250,7 @@ function fallbackBriefing(question, evidence) {
   ];
 
   if (!evidence.runtimeHits.length && !evidence.selectedChunks.length) {
-    lines.push("I searched the hydrated workspace, but did not find enough grounded passages to answer confidently.");
+    lines.push("I searched the current corpus snapshot, but did not find enough quoted passages to answer confidently.");
     return lines.join("\n");
   }
 

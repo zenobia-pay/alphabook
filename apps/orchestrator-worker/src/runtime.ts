@@ -106,6 +106,10 @@ function dedupeByKey<T extends { r2Key: string }>(items: T[]): T[] {
   return deduped;
 }
 
+function uniqueStrings(values: string[]): string[] {
+  return Array.from(new Set(values.filter((value) => value.length > 0)));
+}
+
 export class StubRuntimeGateway implements RuntimeToolGateway {
   async createWorkspace() {
     return {
@@ -565,9 +569,13 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     chunkIds: string[],
     taskContext: Record<string, unknown>,
   ) {
+    const exhaustiveMode = taskContext.mode === "exhaustive_corpus_search";
+    const resolvedWorkIds = exhaustiveMode
+      ? (await this.store.listWorks(0, 1000)).map((work) => work.id)
+      : uniqueStrings(workIds);
     const [workMetadata, workFiles, selectedChunks] = await Promise.all([
-      this.store.getWorkMetadata(workIds),
-      this.store.getWorkFiles(workIds, ["clean", "chunks"] satisfies WorkFileKind[]),
+      this.store.getWorkMetadata(resolvedWorkIds),
+      this.store.getWorkFiles(resolvedWorkIds, ["clean", "chunks"] satisfies WorkFileKind[]),
       chunkIds.length > 0 ? this.store.getChunksByIds(chunkIds) : Promise.resolve([]),
     ]);
     const downloads: WorkspaceDownload[] = [];
@@ -589,7 +597,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     const manifest = {
       runtimeId,
       sessionId,
-      works: groupWorkFiles(workIds, workFiles, workMetadata),
+      works: groupWorkFiles(resolvedWorkIds, workFiles, workMetadata),
       dataSchema: WORKSPACE_POSTGRES_SCHEMA,
       fileCatalog: downloads.map((download) => {
         const pathSegments = download.destinationPath.split("/");
@@ -610,7 +618,10 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
         excerpt: chunk.excerpt,
         r2Key: chunk.r2Key ?? null,
       })),
-      taskContext,
+      taskContext: {
+        ...taskContext,
+        hydratedWorkIds: resolvedWorkIds,
+      },
     };
 
     const manifestKey = R2_PREFIXES.runtimeArtifact(runtimeId, "manifest.json");
