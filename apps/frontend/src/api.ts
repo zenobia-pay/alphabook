@@ -8,7 +8,26 @@ import {
   type StreamEvent,
 } from "@alphabook/shared";
 
-const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "") ?? "/api";
+function resolveApiBase() {
+  const configured = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "");
+  if (configured) {
+    return configured;
+  }
+
+  if (typeof window !== "undefined") {
+    const hostname = window.location.hostname;
+    if (hostname === "alpha-book.org" || hostname === "www.alpha-book.org") {
+      return "https://api.alpha-book.org";
+    }
+    if (hostname.endsWith(".workers.dev")) {
+      return "https://alphabook-orchestrator-api.founders-0e1.workers.dev";
+    }
+  }
+
+  return "/api";
+}
+
+const API_BASE = resolveApiBase();
 
 export interface ChatStreamHandlers {
   onEvent: (event: StreamEvent) => void;

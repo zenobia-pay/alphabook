@@ -15,7 +15,12 @@ export default {
       upstreamUrl.pathname = url.pathname.replace(/^\/api/, "") || "/";
       upstreamUrl.search = url.search;
 
-      return fetch(new Request(upstreamUrl.toString(), request));
+      return fetch(upstreamUrl.toString(), {
+        method: request.method,
+        headers: request.headers,
+        body: request.method === "GET" || request.method === "HEAD" ? undefined : request.body,
+        redirect: "manual",
+      });
     }
 
     const response = await env.ASSETS.fetch(request);
