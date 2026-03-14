@@ -317,6 +317,7 @@ export interface RuntimeTaskResult {
   stdout: string;
   stderr: string;
   exitCode: number;
+  evidenceNotes?: string;
   briefing?: string;
   citations?: Citation[];
   codexRuns?: Array<{

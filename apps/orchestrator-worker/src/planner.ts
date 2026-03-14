@@ -77,6 +77,11 @@ function phaseResult(context: PlannerContext, phase: string): Record<string, unk
   return null;
 }
 
+function phaseRuntimeId(context: PlannerContext, phase: string): string | null {
+  const result = phaseResult(context, phase);
+  return typeof result?.runtimeId === "string" ? result.runtimeId : null;
+}
+
 function hasReadWorkspacePath(context: PlannerContext, path: string): boolean {
   return context.toolHistory.some((entry) =>
     entry.toolName === "read_workspace_file" && entry.args.path === path,
@@ -204,15 +209,15 @@ export class FallbackPlanner implements Planner {
       };
     }
 
-    const evidencePath = artifactPath(collectResult, [/output\/evidence-notes\.md$/u, /output\/summary\.md$/u]) ?? "output/evidence-notes.md";
-    if (!hasReadWorkspacePath(context, evidencePath)) {
+    const evidenceNotesPath = artifactPath(collectResult, [/output\/evidence-notes\.md$/u]) ?? "output/evidence-notes.md";
+    if (!hasReadWorkspacePath(context, evidenceNotesPath)) {
       return {
         type: "tool_call",
         tool_name: "read_workspace_file",
-        rationale: "Bringing back the current search notes.",
+        rationale: "Bringing the current search notes into the chat.",
         args: {
-          runtimeId,
-          path: evidencePath,
+          runtimeId: phaseRuntimeId(context, "collect_evidence") ?? runtimeId,
+          path: evidenceNotesPath,
         },
       };
     }
@@ -242,7 +247,7 @@ export class FallbackPlanner implements Planner {
       return {
         type: "final_answer",
         answer: briefingResult.briefing,
-        citations: extractCitationsFromChunks(chunks),
+        citations: Array.isArray(briefingResult.citations) ? briefingResult.citations as Citation[] : extractCitationsFromChunks(chunks),
       };
     }
 
@@ -264,8 +269,8 @@ export class FallbackPlanner implements Planner {
       type: "final_answer",
       answer: typeof summary === "string" && summary.trim().length
         ? summary.slice(0, 1600)
-        : "I completed the VM evidence collection and briefing pass, but the final briefing artifact was empty.",
-      citations: extractCitationsFromChunks(chunks),
+        : "I completed the corpus search, but the runtime did not return a final briefing payload.",
+      citations: Array.isArray(briefingResult.citations) ? briefingResult.citations as Citation[] : extractCitationsFromChunks(chunks),
     };
   }
 }

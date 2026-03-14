@@ -92,6 +92,15 @@ async function readJsonIfPresent<T>(path: string, fallback: T): Promise<T> {
   }
 }
 
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function safeJoin(root: string, targetPath: string): string {
   const fullPath = normalize(join(root, targetPath.replace(/^\/+/, "")));
   if (!fullPath.startsWith(root)) {
@@ -314,6 +323,7 @@ async function runStubAgent(paths: ReturnType<typeof createPaths>, workspaceRoot
     stdout: "Stub agent completed.",
     stderr: "",
     exitCode: 0,
+    evidenceNotes: summary,
     briefing: phase === "write_briefing" || phase === "collect_and_brief" ? summary : undefined,
     citations: phase === "write_briefing" || phase === "collect_and_brief"
       ? manifest.selectedChunks?.slice(0, 6).map((chunk) => ({
@@ -352,14 +362,18 @@ async function runExternalAgent(
       ALPHABOOK_TASK_PATH: taskPath,
       ALPHABOOK_OUTPUT_DIR: paths.output,
     },
-    timeout: 60_000,
+    timeout: 180_000,
   });
 
   const outputFiles = await listFiles(paths.output, workspaceRoot);
   const briefingJsonPath = join(paths.output, "briefing.json");
   const codexRunsPath = join(paths.output, "codex-runs.json");
+  const evidenceNotesPath = join(paths.output, "evidence-notes.md");
   const briefingJson = await readJsonIfPresent<Record<string, unknown> | null>(briefingJsonPath, null);
   const codexRuns = await readJsonIfPresent<unknown[]>(codexRunsPath, []);
+  const evidenceNotes = (await fileExists(evidenceNotesPath))
+    ? await readFile(evidenceNotesPath, "utf8")
+    : undefined;
   const normalizedCodexRuns = Array.isArray(codexRuns)
     ? codexRuns.flatMap((entry) => {
       if (!entry || typeof entry !== "object") {
@@ -389,6 +403,7 @@ async function runExternalAgent(
     stdout,
     stderr,
     exitCode: 0,
+    evidenceNotes,
     briefing:
       briefingJson && typeof briefingJson === "object" && typeof briefingJson.briefing === "string"
         ? briefingJson.briefing

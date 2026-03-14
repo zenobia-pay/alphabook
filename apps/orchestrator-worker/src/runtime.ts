@@ -504,8 +504,9 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
   }
 
   private async waitForMachine(machineId: string, state = "started"): Promise<void> {
+    const waitTimeoutSeconds = Math.min(HARD_LIMITS.MAX_RUNTIME_TOOL_TIMEOUT_SECONDS, 60);
     await this.flyRequest(
-      `/apps/${this.config.appName}/machines/${machineId}/wait?state=${encodeURIComponent(state)}&timeout=${HARD_LIMITS.MAX_RUNTIME_TOOL_TIMEOUT_SECONDS}`,
+      `/apps/${this.config.appName}/machines/${machineId}/wait?state=${encodeURIComponent(state)}&timeout=${waitTimeoutSeconds}`,
       { method: "GET" },
     );
   }

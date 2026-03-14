@@ -7,30 +7,76 @@ import process from "node:process";
 
 const STOP_WORDS = new Set([
   "a",
+  "about",
+  "after",
   "an",
   "and",
+  "any",
   "are",
   "as",
   "at",
+  "back",
   "be",
+  "been",
   "but",
   "by",
+  "can",
+  "did",
+  "do",
+  "does",
+  "during",
+  "each",
+  "every",
+  "break",
+  "find",
   "for",
   "from",
+  "get",
+  "getting",
   "how",
+  "if",
   "in",
   "into",
   "is",
   "it",
+  "its",
+  "just",
+  "many",
+  "me",
+  "more",
+  "most",
   "of",
   "on",
+  "one",
   "or",
+  "our",
+  "out",
+  "people",
+  "person",
+  "same",
+  "seem",
+  "seeming",
+  "show",
   "that",
+  "than",
   "the",
   "their",
+  "them",
+  "then",
+  "there",
+  "these",
   "this",
+  "those",
+  "through",
+  "times",
   "to",
+  "together",
+  "too",
+  "up",
+  "upon",
+  "us",
   "was",
+  "were",
   "what",
   "when",
   "where",
@@ -40,8 +86,90 @@ const STOP_WORDS = new Set([
   "with",
 ]);
 
+const NON_NARRATIVE_TITLE_PATTERN = /\b(address|constitution|bill of rights|declaration|compact)\b/i;
+const ROMANTIC_RELATIONSHIP_PATTERN = /\b(love|loves|lover|lovers|beloved|husband|wife|marry|married|marriage|wedding|bride|groom|courtship)\b/i;
+const KINSHIP_PATTERN = /\b(brother|sister|mother|father|son|daughter|uncle|aunt|cousin|kinsman)\b/i;
+const REUNION_RETURN_PATTERN = /\b(return(?:ed)?|reconcile(?:d|r)?|reunite(?:d)?)\b/i;
+const REUNION_PRIMARY_PATTERNS = [
+  /\breturn again\b/i,
+  /\breconciled?\b/i,
+  /\breconciler\b/i,
+  /\breunite(?:d)?\b/i,
+  /\bbeing reconciled\b/i,
+];
+const REUNION_SECONDARY_SIGNALS = [
+  { pattern: /\bparted\b/i, score: 12, concept: "separation" },
+  { pattern: /\bseparat(?:e|ed|ion)\b/i, score: 10, concept: "separation" },
+  { pattern: /\bdivorc(?:e|ed)\b/i, score: 10, concept: "separation" },
+  { pattern: /\breturn(?:ed)?\b/i, score: 12, concept: "return" },
+  { pattern: /\bagain\b/i, score: 7, concept: "return" },
+  { pattern: /\blove(?:r|rs)?\b/i, score: 9, concept: "relationship" },
+  { pattern: /\bhusband\b/i, score: 8, concept: "relationship" },
+  { pattern: /\bwife\b/i, score: 8, concept: "relationship" },
+  { pattern: /\bmarri(?:ed|age)\b/i, score: 9, concept: "relationship" },
+];
+
+const QUERY_FAMILIES = [
+  {
+    id: "anger",
+    pattern: /\b(angry|anger|rage|furious|fury|wrath|resentment|resentful|mad)\b/i,
+    tokens: ["angry", "anger", "rage", "furious", "fury", "wrath", "resentment", "resentful", "mad", "outrage"],
+    phrases: ["grew angry", "was angry", "in anger", "full of wrath", "in a rage"],
+    concepts: [
+      { name: "anger", terms: ["angry", "anger", "rage", "furious", "fury", "wrath", "resentment", "outrage"] },
+      { name: "outburst", terms: ["shouted", "cried out", "stormed", "choler", "fret", "swore"] },
+    ],
+    strongPatterns: [/\bin anger\b/i, /\bin a rage\b/i, /\bfull of wrath\b/i, /\bcholer(?:ic)?\b/i],
+  },
+  {
+    id: "reunion",
+    pattern: /\b(break ?up|broke ?up|back together|reconcile|reconciled|reunion|reunite|reunited|lovers)\b/i,
+    tokens: ["separated", "parted", "reconcile", "reconciled", "reconciler", "reunion", "reunite", "reunited", "return", "again", "lover", "lovers", "love", "marry", "married", "marriage", "husband", "wife", "courtship", "divorce", "divorced"],
+    phrases: ["back together", "came back", "return again", "returned to her", "returned to him", "joined again", "met again", "reunited with", "being reconciled", "reconciled to"],
+    concepts: [
+      { name: "separation", terms: ["parted", "separate", "separated", "divorce", "divorced", "forsook", "forsaken", "left"] },
+      { name: "return", terms: ["return", "returned", "again", "reconcile", "reconciled", "reconciler", "reunite", "reunited", "joined again", "met again"] },
+      { name: "relationship", terms: ["love", "lover", "lovers", "marry", "married", "marriage", "husband", "wife", "courtship", "wedding"] },
+    ],
+    strongPatterns: [
+      /\bparted from .* return again\b/i,
+      /\breconciled? to\b/i,
+      /\breturned? to (?:her|him)\b/i,
+      /\bbeing reconciled\b/i,
+      /\bhusband and wife may be divorced\b/i,
+    ],
+    downweightNonNarrativeTitles: true,
+  },
+  {
+    id: "grief",
+    pattern: /\b(grief|grieve|mourning|sorrow|lament)\b/i,
+    tokens: ["grief", "grieve", "grieving", "mourning", "mourn", "sorrow", "sorrows", "lament", "lamentation"],
+    phrases: ["full of grief", "in sorrow", "began to mourn"],
+    concepts: [
+      { name: "grief", terms: ["grief", "grieve", "mourning", "mourn", "sorrow", "lament"] },
+      { name: "loss", terms: ["death", "dead", "buried", "loss", "weep", "wept"] },
+    ],
+    strongPatterns: [/\bfull of grief\b/i, /\bin sorrow\b/i, /\bbegan to mourn\b/i],
+  },
+  {
+    id: "obsession",
+    pattern: /\b(obsession|obsessed|fixation|consumed)\b/i,
+    tokens: ["obsession", "obsessed", "fixation", "consumed", "consume", "monomania"],
+    phrases: ["could not stop", "fixed upon", "consumed by"],
+    concepts: [
+      { name: "fixation", terms: ["obsession", "obsessed", "fixation", "consumed", "consume", "monomania"] },
+      { name: "persistence", terms: ["could not stop", "fixed upon", "again and again"] },
+    ],
+    strongPatterns: [/\bcould not stop\b/i, /\bfixed upon\b/i, /\bconsumed by\b/i],
+  },
+];
+
 function normalizeWhitespace(value) {
   return value.replace(/\s+/g, " ").trim();
+}
+
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function queryTokens(value) {
@@ -56,36 +184,298 @@ function queryTokens(value) {
   );
 }
 
-function scoreText(text, tokens, phrase) {
-  const haystack = text.toLowerCase();
+function semanticExpansions(question) {
+  const expansions = {
+    tokens: [],
+    phrases: [],
+    families: [],
+  };
+
+  for (const family of QUERY_FAMILIES) {
+    if (!family.pattern.test(question)) {
+      continue;
+    }
+    expansions.families.push(family);
+    expansions.tokens.push(...family.tokens);
+    expansions.phrases.push(...family.phrases);
+  }
+
+  return {
+    tokens: Array.from(new Set(expansions.tokens)),
+    phrases: Array.from(new Set(expansions.phrases)),
+    families: expansions.families,
+  };
+}
+
+function scoreText(text, tokens, phrases) {
+  const haystack = normalizeWhitespace(text).toLowerCase();
   let score = 0;
   for (const token of tokens) {
-    const count = haystack.split(token).length - 1;
-    score += count * 2;
+    const count = countOccurrences(haystack, token.toLowerCase());
+    if (count === 0) {
+      continue;
+    }
+    score += count * (token.length >= 7 ? 4 : 3);
   }
-  if (phrase && haystack.includes(phrase.toLowerCase())) {
-    score += 8;
+  for (const phrase of phrases) {
+    if (haystack.includes(phrase.toLowerCase())) {
+      score += 10;
+    }
   }
   return score;
 }
 
-function topTermsFromHits(hits, seedTokens, limit = 6) {
-  const counts = new Map();
-  const seed = new Set(seedTokens);
+function buildChunkIndex(allChunks) {
+  const byWork = new Map();
+  for (const chunk of allChunks) {
+    const workId = String(chunk.work_id || "unknown-work");
+    const existing = byWork.get(workId) || [];
+    existing.push(chunk);
+    byWork.set(workId, existing);
+  }
+  for (const chunks of byWork.values()) {
+    chunks.sort((left, right) => Number(left.chunk_index || 0) - Number(right.chunk_index || 0));
+  }
+  return byWork;
+}
+
+function expandWithNeighbors(hits, byWork) {
+  const expanded = [];
+  const seen = new Set();
 
   for (const hit of hits.slice(0, 8)) {
-    for (const token of queryTokens(String(hit.text || ""))) {
-      if (seed.has(token)) {
+    const workChunks = byWork.get(String(hit.work_id || "")) || [];
+    const hitIndex = workChunks.findIndex((candidate) => String(candidate.id || "") === String(hit.id || ""));
+    const neighbors = hitIndex >= 0
+      ? workChunks.slice(Math.max(0, hitIndex - 1), hitIndex + 2).filter((chunk) => String(chunk.id || "") !== String(hit.id || ""))
+      : [];
+    const window = [hit, ...neighbors];
+
+    for (const chunk of window) {
+      const key = String(chunk.id || `${chunk.work_id}:${chunk.chunk_index}`);
+      if (seen.has(key)) {
         continue;
       }
-      counts.set(token, (counts.get(token) || 0) + 1);
+      seen.add(key);
+      expanded.push({
+        ...chunk,
+        score: typeof chunk.score === "number" ? chunk.score : hit.score,
+        matched_iterations: chunk.matched_iterations || hit.matched_iterations || [],
+      });
     }
   }
 
-  return [...counts.entries()]
-    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
-    .slice(0, limit)
-    .map(([token]) => token);
+  return expanded;
+}
+
+function countOccurrences(text, term) {
+  if (!term) {
+    return 0;
+  }
+  const normalizedTerm = normalizeWhitespace(term.toLowerCase());
+  if (!normalizedTerm) {
+    return 0;
+  }
+  const escaped = escapeRegex(normalizedTerm).replace(/\s+/g, "\\s+");
+  const pattern = new RegExp(`(^|[^a-z0-9])${escaped}(?=$|[^a-z0-9])`, "gi");
+  return [...text.matchAll(pattern)].length;
+}
+
+function conceptMatches(text, concept) {
+  let count = 0;
+  for (const term of concept.terms) {
+    count += countOccurrences(text, term.toLowerCase());
+  }
+  return count;
+}
+
+function scoreFamilySignals(text, family) {
+  const matchedConcepts = [];
+  const matchedPatterns = [];
+  let score = 0;
+
+  for (const concept of family.concepts ?? []) {
+    const count = conceptMatches(text, concept);
+    if (count <= 0) {
+      continue;
+    }
+    matchedConcepts.push(concept.name);
+    score += 8 + Math.min(count, 3) * 5;
+  }
+
+  for (const pattern of family.strongPatterns ?? []) {
+    if (!pattern.test(text)) {
+      continue;
+    }
+    matchedPatterns.push(pattern.source);
+    score += 18;
+  }
+
+  if (family.id === "reunion") {
+    const hasRomanticRelationship = ROMANTIC_RELATIONSHIP_PATTERN.test(text);
+    const hasKinshipOnly = KINSHIP_PATTERN.test(text) && !hasRomanticRelationship;
+    if (matchedConcepts.includes("return") && matchedConcepts.includes("relationship")) {
+      score += 24;
+    }
+    if (matchedConcepts.includes("return") && matchedConcepts.includes("separation")) {
+      score += 22;
+    }
+    if (matchedConcepts.includes("return") && hasRomanticRelationship) {
+      score += 16;
+    }
+    if (hasKinshipOnly) {
+      score -= 26;
+    }
+    if (!matchedConcepts.includes("return") && matchedPatterns.length === 0) {
+      score -= 22;
+    }
+    if (matchedConcepts.includes("relationship") && !matchedConcepts.includes("return")) {
+      score -= 10;
+    }
+    if (matchedConcepts.length < 2 && matchedPatterns.length === 0) {
+      score -= 12;
+    }
+  }
+
+  return {
+    score,
+    matchedConcepts,
+    matchedPatterns,
+  };
+}
+
+function contextWindowText(chunk, byWork, radius = 2) {
+  const workChunks = byWork.get(String(chunk.work_id || "")) || [];
+  const hitIndex = workChunks.findIndex((candidate) => String(candidate.id || "") === String(chunk.id || ""));
+  if (hitIndex < 0) {
+    return normalizeWhitespace(String(chunk.text || ""));
+  }
+  return normalizeWhitespace(
+    workChunks
+      .slice(Math.max(0, hitIndex - radius), hitIndex + radius + 1)
+      .map((candidate) => String(candidate.text || ""))
+      .join(" "),
+  );
+}
+
+function isStrongReunionHit(hit, byWork) {
+  const windowText = contextWindowText(hit, byWork, 2).toLowerCase();
+  const hasPrimaryPattern = REUNION_PRIMARY_PATTERNS.some((pattern) => pattern.test(windowText));
+  const hasReturnSignal =
+    hasPrimaryPattern ||
+    REUNION_RETURN_PATTERN.test(windowText) ||
+    (Array.isArray(hit.matched_concepts) && hit.matched_concepts.includes("return"));
+  const hasSeparationSignal =
+    /\b(parted|separate|separated|separation|divorce|divorced|left|forsook|forsaken)\b/i.test(windowText) ||
+    (Array.isArray(hit.matched_concepts) && hit.matched_concepts.includes("separation"));
+  const hasRomanticSignal =
+    ROMANTIC_RELATIONSHIP_PATTERN.test(windowText) ||
+    (Array.isArray(hit.matched_concepts) && hit.matched_concepts.includes("relationship"));
+  const hasKinshipOnly = KINSHIP_PATTERN.test(windowText) && !hasRomanticSignal;
+
+  if (!hasReturnSignal) {
+    return false;
+  }
+  if (hasKinshipOnly) {
+    return false;
+  }
+  return hasPrimaryPattern || hasRomanticSignal || hasSeparationSignal;
+}
+
+function filterFamilyHits(hits, byWork, families) {
+  if (!families.some((family) => family.id === "reunion")) {
+    return hits;
+  }
+  const strictHits = hits.filter((hit) => isStrongReunionHit(hit, byWork));
+  return strictHits.length > 0 ? strictHits : hits;
+}
+
+function prioritizeFamilyHits(hits, families) {
+  if (!families.some((family) => family.id === "reunion")) {
+    return hits;
+  }
+  return [...hits].sort((left, right) => {
+    const leftWindow = Array.isArray(left.matched_iterations) && left.matched_iterations.includes("reunion-window-search") ? 1 : 0;
+    const rightWindow = Array.isArray(right.matched_iterations) && right.matched_iterations.includes("reunion-window-search") ? 1 : 0;
+    if (leftWindow !== rightWindow) {
+      return rightWindow - leftWindow;
+    }
+    return right.score - left.score || left.chunk_index - right.chunk_index;
+  });
+}
+
+function workScoreAdjustment(question, work, activeFamilies) {
+  if (!work) {
+    return 0;
+  }
+  let score = 0;
+  const title = String(work.title || "");
+
+  if (activeFamilies.some((family) => family.downweightNonNarrativeTitles) && NON_NARRATIVE_TITLE_PATTERN.test(title)) {
+    score -= 32;
+  }
+
+  if (/\b(love|lover|marry|married|husband|wife|break ?up|reconcile|reunite)\b/i.test(question) && /shakespeare|twain/i.test(String(work.authors || ""))) {
+    score += 8;
+  }
+
+  return score;
+}
+
+function searchCorpus(allChunks, question, tokens, phrases, families, workById, name) {
+  const hits = [];
+  for (const chunk of allChunks) {
+    const text = String(chunk.text || "");
+    const normalizedText = normalizeWhitespace(text).toLowerCase();
+    let score = scoreText(text, tokens, phrases);
+    const matchedConcepts = [];
+    const matchedPatterns = [];
+
+    for (const family of families) {
+      const familySignals = scoreFamilySignals(normalizedText, family);
+      score += familySignals.score;
+      matchedConcepts.push(...familySignals.matchedConcepts);
+      matchedPatterns.push(...familySignals.matchedPatterns);
+    }
+
+    score += workScoreAdjustment(question, workById.get(String(chunk.work_id || "")), families);
+    if (score <= 0) {
+      continue;
+    }
+    hits.push({
+      ...chunk,
+      score,
+      matched_concepts: Array.from(new Set(matchedConcepts)),
+      matched_patterns: Array.from(new Set(matchedPatterns)),
+    });
+  }
+  hits.sort((left, right) => right.score - left.score || left.chunk_index - right.chunk_index);
+  return {
+    name,
+    tokens,
+    phrases,
+    hits: hits.slice(0, 24),
+  };
+}
+
+function diversifyHits(hits, limit = 10, perWorkLimit = 4) {
+  const selected = [];
+  const perWorkCounts = new Map();
+
+  for (const hit of hits) {
+    const workId = String(hit.work_id || "");
+    const count = perWorkCounts.get(workId) || 0;
+    if (count >= perWorkLimit) {
+      continue;
+    }
+    perWorkCounts.set(workId, count + 1);
+    selected.push(hit);
+    if (selected.length >= limit) {
+      break;
+    }
+  }
+
+  return selected;
 }
 
 function mergeHits(iterations) {
@@ -114,64 +504,67 @@ function mergeHits(iterations) {
   );
 }
 
-function buildChunkIndex(allChunks) {
-  const byWork = new Map();
-  for (const chunk of allChunks) {
-    const workId = String(chunk.work_id || "unknown-work");
-    const existing = byWork.get(workId) || [];
-    existing.push(chunk);
-    byWork.set(workId, existing);
-  }
-  for (const chunks of byWork.values()) {
-    chunks.sort((left, right) => Number(left.chunk_index || 0) - Number(right.chunk_index || 0));
-  }
-  return byWork;
-}
+function searchReunionWindows(chunkIndex, workById, question) {
+  const hits = [];
+  const reunionFamily = QUERY_FAMILIES.find((family) => family.id === "reunion");
 
-function expandWithNeighbors(hits, byWork) {
-  const expanded = [];
-  const seen = new Set();
+  for (const workChunks of chunkIndex.values()) {
+    for (let index = 0; index < workChunks.length; index += 1) {
+      const windowChunks = workChunks.slice(Math.max(0, index - 2), index + 3);
+      const currentChunk = workChunks[index];
+      const windowText = normalizeWhitespace(windowChunks.map((chunk) => String(chunk.text || "")).join(" ")).toLowerCase();
 
-  for (const hit of hits.slice(0, 6)) {
-    const workChunks = byWork.get(String(hit.work_id || "")) || [];
-    const hitIndex = workChunks.findIndex((candidate) => String(candidate.id || "") === String(hit.id || ""));
-    const window = hitIndex >= 0 ? workChunks.slice(Math.max(0, hitIndex - 1), hitIndex + 2) : [hit];
+      let score = 0;
+      const matchedPatterns = [];
+      const matchedConcepts = new Set();
+      let hasPrimarySignal = false;
 
-    for (const chunk of window) {
-      const key = String(chunk.id || `${chunk.work_id}:${chunk.chunk_index}`);
-      if (seen.has(key)) {
+      for (const pattern of REUNION_PRIMARY_PATTERNS) {
+        if (!pattern.test(windowText)) {
+          continue;
+        }
+        hasPrimarySignal = true;
+        matchedPatterns.push(pattern.source);
+        score += 28;
+        matchedConcepts.add("return");
+      }
+
+      if (!hasPrimarySignal) {
         continue;
       }
-      seen.add(key);
-      expanded.push({
-        ...chunk,
-        score: typeof chunk.score === "number" ? chunk.score : hit.score,
-        matched_iterations: chunk.matched_iterations || hit.matched_iterations || [],
+
+      for (const signal of REUNION_SECONDARY_SIGNALS) {
+        if (!signal.pattern.test(windowText)) {
+          continue;
+        }
+        score += signal.score;
+        matchedConcepts.add(signal.concept);
+      }
+
+      if (matchedConcepts.has("return") && matchedConcepts.has("relationship")) {
+        score += 18;
+      }
+      if (matchedConcepts.has("return") && matchedConcepts.has("separation")) {
+        score += 16;
+      }
+
+      score += workScoreAdjustment(question, workById.get(String(currentChunk.work_id || "")), reunionFamily ? [reunionFamily] : []);
+
+      hits.push({
+        ...currentChunk,
+        score,
+        matched_concepts: Array.from(matchedConcepts),
+        matched_patterns: matchedPatterns,
       });
     }
   }
 
-  return expanded;
-}
-
-function searchCorpus(allChunks, tokens, phrase, name) {
-  const hits = [];
-  for (const chunk of allChunks) {
-    const text = String(chunk.text || "");
-    const score = scoreText(text, tokens, phrase);
-    if (score <= 0) {
-      continue;
-    }
-    hits.push({
-      ...chunk,
-      score,
-    });
-  }
   hits.sort((left, right) => right.score - left.score || left.chunk_index - right.chunk_index);
   return {
-    name,
-    tokens,
-    hits: hits.slice(0, 12),
+    name: "reunion-window-search",
+    tokens: [],
+    phrases: [],
+    hits: hits.slice(0, 24),
   };
 }
 
@@ -216,25 +609,26 @@ async function readJsonIfPresent(path, fallback) {
   return (await fileExists(path)) ? parseJson(path) : fallback;
 }
 
-function buildSearchEvidence(question, selectedChunks, runtimeChunks) {
+function buildSearchEvidence(question, selectedChunks, runtimeChunks, workById) {
   return {
     question,
     selectedChunks: selectedChunks.slice(0, 8).map((chunk) => ({
       id: String(chunk.id || ""),
       workId: String(chunk.work_id || chunk.workId || ""),
+      title: String(workById.get(String(chunk.work_id || chunk.workId || ""))?.title || ""),
       chunkIndex: Number(chunk.chunk_index || chunk.chunkIndex || 0),
       excerpt: normalizeWhitespace(String(chunk.excerpt || chunk.text || "")).slice(0, 500),
-      text: String(chunk.text || ""),
       r2Key: chunk.r2Key ?? chunk.r2_key ?? null,
     })),
     runtimeHits: runtimeChunks.slice(0, 10).map((chunk) => ({
       id: String(chunk.id || ""),
       workId: String(chunk.work_id || chunk.workId || ""),
+      title: String(workById.get(String(chunk.work_id || chunk.workId || ""))?.title || ""),
       chunkIndex: Number(chunk.chunk_index || chunk.chunkIndex || 0),
       excerpt: normalizeWhitespace(String(chunk.text || "")).slice(0, 500),
-      text: String(chunk.text || ""),
       score: Number(chunk.score || 0),
       matchedIterations: Array.isArray(chunk.matched_iterations) ? chunk.matched_iterations : [],
+      matchedConcepts: Array.isArray(chunk.matched_concepts) ? chunk.matched_concepts : [],
       r2Key: chunk.r2Key ?? chunk.r2_key ?? null,
     })),
   };
@@ -255,9 +649,13 @@ function fallbackBriefing(question, evidence) {
   }
 
   for (const entry of [...evidence.runtimeHits, ...evidence.selectedChunks].slice(0, 6)) {
+    const sourceLabel = entry.title ? `${entry.title} (${entry.workId}#${entry.chunkIndex})` : `${entry.workId}#${entry.chunkIndex}`;
+    const conceptSummary = Array.isArray(entry.matchedConcepts) && entry.matchedConcepts.length > 0
+      ? `it matches the local search signals for ${entry.matchedConcepts.join(", ")}`
+      : "it surfaced during the local corpus scan";
     lines.push(
-      `- ${entry.workId}#${entry.chunkIndex}: "${normalizeWhitespace(entry.excerpt).slice(0, 360)}"`,
-      `  This passage appears relevant to the question because it surfaced during the deterministic local search.`,
+      `- ${sourceLabel}: "${normalizeWhitespace(entry.excerpt).slice(0, 360)}"`,
+      `  This passage appears relevant to the question because ${conceptSummary}.`,
     );
   }
 
@@ -287,6 +685,28 @@ function fallbackCitations(evidence) {
 }
 
 function buildSearchPrompt(runtimePrompt, manifest, task, evidence, question) {
+  const manifestSummary = {
+    works: Array.isArray(manifest.works)
+      ? manifest.works.slice(0, 30).map((work) => ({
+        workId: work.workId,
+        title: work.title,
+        authors: work.authors ?? [],
+        language: work.language ?? null,
+        cleanTextKey: work.cleanTextKey ?? null,
+        chunksKey: work.chunksKey ?? null,
+      }))
+      : [],
+    dataSchema: manifest.dataSchema,
+    selectedChunkIds: manifest.selectedChunkIds,
+    selectedChunks: Array.isArray(manifest.selectedChunks)
+      ? manifest.selectedChunks.slice(0, 12).map((chunk) => ({
+        workId: chunk.workId,
+        chunkId: chunk.chunkId,
+        excerpt: typeof chunk.excerpt === "string" ? normalizeWhitespace(chunk.excerpt).slice(0, 220) : "",
+      }))
+      : [],
+    taskContext: manifest.taskContext,
+  };
   return [
     runtimePrompt,
     "",
@@ -310,14 +730,7 @@ function buildSearchPrompt(runtimePrompt, manifest, task, evidence, question) {
     JSON.stringify(task, null, 2),
     "",
     "Workspace manifest summary:",
-    JSON.stringify({
-      works: manifest.works,
-      dataSchema: manifest.dataSchema,
-      fileCatalog: manifest.fileCatalog,
-      selectedChunkIds: manifest.selectedChunkIds,
-      selectedChunks: manifest.selectedChunks,
-      taskContext: manifest.taskContext,
-    }, null, 2),
+    JSON.stringify(manifestSummary, null, 2),
     "",
     "Seed evidence from the orchestrator:",
     JSON.stringify(evidence, null, 2),
@@ -327,6 +740,24 @@ function buildSearchPrompt(runtimePrompt, manifest, task, evidence, question) {
 }
 
 function buildBriefingPrompt(runtimePrompt, manifest, task, question) {
+  const manifestSummary = {
+    works: Array.isArray(manifest.works)
+      ? manifest.works.slice(0, 30).map((work) => ({
+        workId: work.workId,
+        title: work.title,
+        authors: work.authors ?? [],
+        language: work.language ?? null,
+      }))
+      : [],
+    selectedChunkIds: manifest.selectedChunkIds,
+    selectedChunks: Array.isArray(manifest.selectedChunks)
+      ? manifest.selectedChunks.slice(0, 12).map((chunk) => ({
+        workId: chunk.workId,
+        chunkId: chunk.chunkId,
+        excerpt: typeof chunk.excerpt === "string" ? normalizeWhitespace(chunk.excerpt).slice(0, 220) : "",
+      }))
+      : [],
+  };
   return [
     runtimePrompt,
     "",
@@ -351,11 +782,7 @@ function buildBriefingPrompt(runtimePrompt, manifest, task, question) {
     "Read /workspace/output/evidence.json and /workspace/output/evidence-notes.md before writing the briefing.",
     "",
     "Workspace manifest summary:",
-    JSON.stringify({
-      works: manifest.works,
-      selectedChunkIds: manifest.selectedChunkIds,
-      selectedChunks: manifest.selectedChunks,
-    }, null, 2),
+    JSON.stringify(manifestSummary, null, 2),
     "",
     "When finished, reply with JSON describing the briefing path, number of citations, and a short one-sentence summary.",
   ].join("\n");
@@ -406,8 +833,12 @@ function evidenceItemsFromSeed(evidence) {
     chunkIndex: entry.chunkIndex,
     sourcePath: `chunks/${entry.workId}/chunks.jsonl`,
     label: `${entry.workId}#${entry.chunkIndex}`,
+    title: entry.title || undefined,
     excerpt: entry.excerpt,
-    rationale: "Recovered from deterministic local search results.",
+    rationale:
+      Array.isArray(entry.matchedConcepts) && entry.matchedConcepts.length > 0
+        ? `Recovered from deterministic local search results matching ${entry.matchedConcepts.join(", ")}.`
+        : "Recovered from deterministic local search results.",
     r2Key: entry.r2Key || undefined,
   }));
 }
@@ -439,7 +870,9 @@ async function ensureEvidenceArtifacts(outputDir, question, evidence, reason = "
       `Question: ${question}`,
       "",
       "## Current Leads",
-      ...items.slice(0, 8).map((entry) => `- ${entry.label}: "${normalizeWhitespace(entry.excerpt).slice(0, 360)}"`),
+      ...items.slice(0, 8).map((entry) =>
+        `- ${entry.title ? `${entry.title} (${entry.label})` : entry.label}: "${normalizeWhitespace(entry.excerpt).slice(0, 360)}"`,
+      ),
       "",
       "## Notes",
       "- These notes summarize the current evidence set before the final briefing step.",
@@ -514,47 +947,73 @@ async function runCodexStep({
   await writeFile(promptPath, promptText, "utf8");
   await writeFile(schemaPath, JSON.stringify(schema, null, 2), "utf8");
 
-  const result = await runProcess(
-    codexCommand,
-    [
-      "exec",
-      "--skip-git-repo-check",
-      "-C",
-      workspaceRoot,
-      "--sandbox",
-      "workspace-write",
-      "--model",
-      model,
-      "--output-schema",
-      schemaPath,
-      "--output-last-message",
-      outputPath,
-      "-",
-    ],
-    {
-      cwd: workspaceRoot,
-      env: process.env,
-      input: promptText,
-    },
-  );
+  const attemptLogs = [];
+  let result = null;
+  let exitCode = 1;
+  const maxAttempts = 3;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    result = await runProcess(
+      codexCommand,
+      [
+        "exec",
+        "--skip-git-repo-check",
+        "-C",
+        workspaceRoot,
+        "--sandbox",
+        "workspace-write",
+        "--model",
+        model,
+        "--output-schema",
+        schemaPath,
+        "--output-last-message",
+        outputPath,
+        "-",
+      ],
+      {
+        cwd: workspaceRoot,
+        env: process.env,
+        input: promptText,
+      },
+    );
+
+    exitCode = result.exitCode;
+    attemptLogs.push(
+      [
+        `attempt=${attempt}`,
+        `exitCode=${result.exitCode}`,
+        "",
+        "# stdout",
+        result.stdout,
+        "",
+        "# stderr",
+        result.stderr,
+      ].join("\n"),
+    );
+
+    if (result.exitCode === 0) {
+      break;
+    }
+
+    if (attempt < maxAttempts) {
+      await new Promise((resolve) => setTimeout(resolve, attempt * 2_000));
+    }
+  }
 
   await writeFile(
     logPath,
     [
       `step=${step}`,
-      `exitCode=${result.exitCode}`,
+      `exitCode=${exitCode}`,
+      `attempts=${attemptLogs.length}`,
       "",
-      "# stdout",
-      result.stdout,
-      "",
-      "# stderr",
-      result.stderr,
-    ].join("\n"),
+      ...attemptLogs,
+    ].join("\n\n"),
     "utf8",
   );
 
-  if (result.exitCode !== 0) {
-    throw new Error(`Codex step ${step} failed with exit code ${result.exitCode}.`);
+  if (!result || result.exitCode !== 0) {
+    throw new Error(`Codex step ${step} failed with exit code ${exitCode}.`);
   }
 
   return {
@@ -598,6 +1057,14 @@ async function main() {
 
   const question = String(task.question || task.prompt || task.task || "Analyze the workspace corpus.");
   const tokens = queryTokens(question);
+  const expansions = semanticExpansions(question);
+  const searchTokens = Array.from(new Set([...tokens, ...expansions.tokens]));
+  const searchPhrases = Array.from(new Set([normalizeWhitespace(question.toLowerCase()), ...expansions.phrases]));
+  const workById = new Map(
+    Array.isArray(manifest.works)
+      ? manifest.works.map((work) => [String(work.workId || ""), work])
+      : [],
+  );
   const chunkFiles = await listChunkFiles(chunksRoot);
   const allChunks = [];
 
@@ -606,27 +1073,17 @@ async function main() {
     allChunks.push(...chunks);
   }
 
-  const iterationOne = searchCorpus(allChunks, tokens, question, "question-tokens");
-  const expansionTokens = topTermsFromHits(iterationOne.hits, tokens);
-  const iterationTwo = searchCorpus(
-    allChunks,
-    Array.from(new Set([...tokens, ...expansionTokens])),
-    question,
-    "expanded-tokens",
-  );
-  const selectedChunkTokens = topTermsFromHits(selectedChunks, Array.from(new Set([...tokens, ...expansionTokens])), 4);
-  const iterationThree = searchCorpus(
-    allChunks,
-    Array.from(new Set([...tokens, ...expansionTokens, ...selectedChunkTokens])),
-    question,
-    "retrieval-refinement",
-  );
-
-  const iterations = [iterationOne, iterationTwo, iterationThree];
-  const mergedHits = mergeHits(iterations);
   const chunkIndex = buildChunkIndex(allChunks);
-  const topRuntimeHits = expandWithNeighbors(mergedHits, chunkIndex).slice(0, 10);
-  const evidence = buildSearchEvidence(question, selectedChunks.slice(0, 8), topRuntimeHits);
+  const iterations = [
+    searchCorpus(allChunks, question, searchTokens, searchPhrases, expansions.families, workById, "family-search"),
+  ];
+  if (expansions.families.some((family) => family.id === "reunion")) {
+    iterations.push(searchReunionWindows(chunkIndex, workById, question));
+  }
+  const mergedHits = mergeHits(iterations);
+  const filteredHits = prioritizeFamilyHits(filterFamilyHits(mergedHits, chunkIndex, expansions.families), expansions.families);
+  const topRuntimeHits = diversifyHits(expandWithNeighbors(filteredHits, chunkIndex), 10, 3);
+  const evidence = buildSearchEvidence(question, selectedChunks.slice(0, 8), topRuntimeHits, workById);
 
   await writeFile(
     join(outputDir, "search-plan.json"),
@@ -634,8 +1091,9 @@ async function main() {
       {
         question,
         seedTokens: tokens,
-        expansionTokens,
-        refinementTokens: selectedChunkTokens,
+        semanticTokens: expansions.tokens,
+        semanticFamilies: expansions.families.map((family) => family.id),
+        phraseBoosts: searchPhrases,
         candidateWorkIds: Array.from(new Set(topRuntimeHits.map((chunk) => String(chunk.work_id || "")))).filter(Boolean),
       },
       null,
@@ -654,6 +1112,7 @@ async function main() {
           work_id: hit.work_id,
           chunk_index: hit.chunk_index,
           score: hit.score,
+          matched_concepts: Array.isArray(hit.matched_concepts) ? hit.matched_concepts : [],
         })),
       })),
       null,

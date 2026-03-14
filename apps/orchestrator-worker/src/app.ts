@@ -264,7 +264,7 @@ function startToolProgressEmitter(
 
   const steps = workspaceProgressSteps(args);
   let stepIndex = 0;
-  const timer = setInterval(() => {
+  const emitStep = () => {
     const text = steps[stepIndex % steps.length];
     stepIndex += 1;
     void send("tool.progress", {
@@ -273,7 +273,11 @@ function startToolProgressEmitter(
       toolName,
       text,
     });
-  }, 4000);
+  };
+  emitStep();
+  const timer = setInterval(() => {
+    emitStep();
+  }, 3000);
 
   return {
     stop() {
@@ -305,11 +309,91 @@ function chunkTextForStream(text: string): string[] {
   return chunks;
 }
 
+function labelForToolCall(toolName: ToolName, args: Record<string, unknown>) {
+  if (toolName === "run_workspace_task") {
+    const taskSpec = args.taskSpec;
+    if (taskSpec && typeof taskSpec === "object") {
+      const phase = typeof (taskSpec as Record<string, unknown>).phase === "string"
+        ? (taskSpec as Record<string, unknown>).phase
+        : null;
+      if (phase === "collect_evidence") {
+        return "Evidence Search";
+      }
+      if (phase === "write_briefing") {
+        return "Quoted Briefing";
+      }
+    }
+  }
+  if (toolName === "read_workspace_file") {
+    const path = typeof args.path === "string" ? args.path : "";
+    if (/briefing\.md$/u.test(path)) {
+      return "Briefing Import";
+    }
+    if (/evidence-notes\.md$/u.test(path)) {
+      return "Search Notes";
+    }
+  }
+  return getToolLabel(toolName);
+}
+
+function clientSafeToolResult(toolName: ToolName, result: Record<string, unknown>): Record<string, unknown> {
+  if (toolName === "create_workspace") {
+    const manifest = result.manifest && typeof result.manifest === "object"
+      ? result.manifest as Record<string, unknown>
+      : null;
+    const hydratedWorkCount = manifest && Array.isArray(manifest.works) ? manifest.works.length : 0;
+    return {
+      ok: result.ok === true,
+      reused: result.reused === true,
+      runtimeId: typeof result.runtimeId === "string" ? result.runtimeId : undefined,
+      hydratedWorkCount,
+      manifest: hydratedWorkCount > 0 ? { works: new Array(hydratedWorkCount).fill(null) } : undefined,
+      error: typeof result.error === "string" ? result.error : undefined,
+    };
+  }
+
+  if (toolName === "run_workspace_task") {
+    const artifacts = Array.isArray(result.artifacts) ? result.artifacts : [];
+    const citations = Array.isArray(result.citations) ? result.citations : [];
+    const codexRuns = Array.isArray(result.codexRuns) ? result.codexRuns : [];
+    const evidenceCount =
+      result.evidence && typeof result.evidence === "object" && Array.isArray((result.evidence as Record<string, unknown>).items)
+        ? ((result.evidence as Record<string, unknown>).items as unknown[]).length
+        : undefined;
+    return {
+      exitCode: typeof result.exitCode === "number" ? result.exitCode : undefined,
+      runtimeId: typeof result.runtimeId === "string" ? result.runtimeId : undefined,
+      artifactCount: artifacts.length,
+      citationCount: citations.length,
+      codexRunCount: codexRuns.length,
+      evidenceCount: typeof evidenceCount === "number" ? evidenceCount : undefined,
+      briefingLength: typeof result.briefing === "string" ? result.briefing.length : undefined,
+      usedFallback: artifacts.some((artifact) =>
+        artifact && typeof artifact === "object" && typeof (artifact as Record<string, unknown>).path === "string"
+          ? String((artifact as Record<string, unknown>).path).includes("codex-fallback")
+          : false,
+      ),
+      error: typeof result.error === "string" ? result.error : undefined,
+    };
+  }
+
+  if (toolName === "read_workspace_file") {
+    return {
+      path: typeof result.path === "string" ? result.path : undefined,
+      size: typeof result.size === "number" ? result.size : undefined,
+      contentPreview: typeof result.content === "string" ? result.content.slice(0, 280) : undefined,
+      error: typeof result.error === "string" ? result.error : undefined,
+    };
+  }
+
+  return result;
+}
+
 function summarizeToolHistory(toolHistory: ToolHistoryEntry[]) {
   return toolHistory.map((entry, index) => ({
     id: `${entry.toolName}-${index}`,
     toolName: entry.toolName,
-    label: getToolLabel(entry.toolName),
+    label: labelForToolCall(entry.toolName, entry.args),
     rationale: entry.rationale,
     args: entry.args,
     result: entry.result,
@@ -598,7 +682,7 @@ async function runOrchestrator(
       runId: run.id,
       toolCallId: toolRecord.id,
       toolName: toolCall.tool_name,
-      label: getToolLabel(toolCall.tool_name),
+      label: labelForToolCall(toolCall.tool_name, toolCall.args),
       rationale: toolCall.rationale ?? null,
       args: toolCall.args,
     });
@@ -625,14 +709,15 @@ async function runOrchestrator(
     }
 
     await deps.store.finishToolCall(toolRecord.id, status, result);
+    const streamedResult = clientSafeToolResult(toolCall.tool_name, result);
     await send("tool.completed", {
       runId: run.id,
       toolCallId: toolRecord.id,
       toolName: toolCall.tool_name,
-      label: getToolLabel(toolCall.tool_name),
+      label: labelForToolCall(toolCall.tool_name, toolCall.args),
       rationale: toolCall.rationale ?? null,
       status,
-      result,
+      result: streamedResult,
     });
     toolHistory.push({
       toolName: toolCall.tool_name,

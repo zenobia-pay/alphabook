@@ -739,6 +739,29 @@ function messageToThreadMessage(message: UiMessage, streamingAssistantId: string
   };
 
   if (message.role === "assistant") {
+    const isPlanMessage = message.metadata.phase === "plan";
+    if (isPlanMessage) {
+      const progressSummary = message.toolCalls
+        .map((entry) => {
+          const prefix = entry.state === "error" ? "Error" : entry.state === "completed" ? "Done" : "Working";
+          return `${prefix}: ${summarizeToolSentence(entry)}`;
+        })
+        .join("\n\n");
+      const planText = [message.content, progressSummary].filter(Boolean).join("\n\n");
+
+      return {
+        id: message.id,
+        role: "assistant" as const,
+        createdAt: new Date(message.createdAt),
+        content: planText,
+        metadata,
+        status:
+          isSending && message.id === streamingAssistantId
+            ? ({ type: "running" } as const)
+            : ({ type: "complete", reason: "stop" } as const),
+      };
+    }
+
     const toolParts = message.toolCalls.map((entry) => {
         const args = toReadonlyJsonObject(
           entry.rationale
@@ -770,10 +793,7 @@ function messageToThreadMessage(message: UiMessage, streamingAssistantId: string
           },
         ]
       : [];
-    const isPlanMessage = message.metadata.phase === "plan";
-    const content = isPlanMessage
-      ? [...textParts, ...toolParts]
-      : [...toolParts, ...textParts];
+    const content = [...toolParts, ...textParts];
 
     return {
       id: message.id,
@@ -1323,6 +1343,15 @@ export default function App() {
     let activityLog: ToolTraceEntry[] = [];
     let planMessageId: string | null = null;
     let finalAssistantMessageId: string | null = null;
+    const updatePlanMessage = (updater: (message: UiMessage) => UiMessage) => {
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === planMessageId
+            ? updater(message)
+            : message,
+        ),
+      );
+    };
 
     try {
       await streamChat(
@@ -1412,16 +1441,14 @@ export default function App() {
                   state: "running",
                 },
               ];
-              setMessages((current) =>
-                current.map((message) =>
-                  message.id === planMessageId
-                    ? {
-                        ...message,
-                        toolCalls: activityLog,
-                      }
-                    : message,
-                ),
-              );
+              updatePlanMessage((message) => ({
+                ...message,
+                content:
+                  typeof event.data.rationale === "string" && event.data.rationale.trim()
+                    ? event.data.rationale
+                    : message.content,
+                toolCalls: activityLog,
+              }));
               return;
             }
 
@@ -1441,16 +1468,19 @@ export default function App() {
                     }
                   : entry,
               );
-              setMessages((current) =>
-                current.map((message) =>
-                  message.id === planMessageId
-                    ? {
-                        ...message,
-                        toolCalls: activityLog,
-                      }
-                    : message,
-                ),
-              );
+              const completedEntry = activityLog.find((entry) => entry.id === toolCallId)
+                ?? activityLog.find((entry) => entry.toolName === toolName);
+              updatePlanMessage((message) => ({
+                ...message,
+                content: summarizeToolSentence({
+                  toolName,
+                  args: completedEntry?.args ?? {},
+                  result: completedEntry?.result,
+                  state: completedEntry?.state ?? (event.data.status === "failed" ? "error" : "completed"),
+                  rationale: completedEntry?.rationale,
+                }),
+                toolCalls: activityLog,
+              }));
               return;
             }
 
@@ -1466,16 +1496,11 @@ export default function App() {
                     }
                   : entry,
               );
-              setMessages((current) =>
-                current.map((message) =>
-                  message.id === planMessageId
-                    ? {
-                        ...message,
-                        toolCalls: activityLog,
-                      }
-                    : message,
-                ),
-              );
+              updatePlanMessage((message) => ({
+                ...message,
+                content: rationale.trim() ? rationale : message.content,
+                toolCalls: activityLog,
+              }));
               return;
             }
 
