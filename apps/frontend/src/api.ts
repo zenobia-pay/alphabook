@@ -395,6 +395,66 @@ export async function streamChat(
   }
 }
 
+export async function streamRun(
+  sessionId: string,
+  runId: string,
+  handlers: ChatStreamHandlers,
+  options: {
+    signal?: AbortSignal;
+  } = {},
+) {
+  const response = await ensureOk(
+    await fetch(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}/runs/${encodeURIComponent(runId)}/stream`, {
+      method: "GET",
+      credentials: "include",
+      signal: options.signal,
+    }),
+  );
+
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw new Error("Run stream was not available.");
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) {
+      break;
+    }
+    buffer += decoder.decode(value, { stream: true });
+
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary >= 0) {
+      const rawEvent = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      boundary = buffer.indexOf("\n\n");
+
+      const eventName = rawEvent
+        .split("\n")
+        .find((line) => line.startsWith("event:"))
+        ?.replace("event:", "")
+        .trim();
+      const dataLine = rawEvent
+        .split("\n")
+        .find((line) => line.startsWith("data:"))
+        ?.replace("data:", "")
+        .trim();
+
+      if (!eventName || !dataLine) {
+        continue;
+      }
+
+      handlers.onEvent({
+        event: eventName,
+        data: JSON.parse(dataLine) as Record<string, unknown>,
+      });
+    }
+  }
+}
+
 export async function cancelRun(runId: string) {
   const response = await ensureOk(
     await fetch(`${API_BASE}/runs/${encodeURIComponent(runId)}/cancel`, {

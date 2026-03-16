@@ -9,7 +9,7 @@ import { ChevronsLeft, ChevronsRight, Link2, MessageSquarePlus } from "lucide-re
 
 import { getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type PublicProfileResponse, type UserProfile, type WorkDetail, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
-import { buildSignInUrl, cancelRun, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchCurrentUser, fetchMessages, fetchProfile, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, queryAdminAnalytics, sendAnalyticsEvent, signOut, streamChat, unfollowProfile, type SessionRunRecord } from "./api";
+import { buildSignInUrl, cancelRun, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchCurrentUser, fetchMessages, fetchProfile, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, queryAdminAnalytics, sendAnalyticsEvent, signOut, streamChat, streamRun, unfollowProfile, type SessionRunRecord } from "./api";
 import { Thread } from "./components/assistant-ui/thread";
 import { Avatar, AvatarFallback, AvatarImage } from "./components/ui/avatar";
 import { Button } from "./components/ui/button";
@@ -1801,6 +1801,7 @@ export default function App() {
   });
   const activeRunTokenRef = useRef(0);
   const activeChatAbortControllerRef = useRef<AbortController | null>(null);
+  const reconnectRunStreamAbortControllerRef = useRef<AbortController | null>(null);
   const activeRunIdRef = useRef<string | null>(null);
   const bookPageRef = useRef<HTMLElement | null>(null);
   const bookAssistantResizeStartRef = useRef<{ pointerX: number; width: number } | null>(null);
@@ -2288,6 +2289,10 @@ export default function App() {
 
     let cancelled = false;
     let pollTimer: number | null = null;
+    let streamFailed = false;
+    const abortController = new AbortController();
+    reconnectRunStreamAbortControllerRef.current?.abort();
+    reconnectRunStreamAbortControllerRef.current = abortController;
 
     const pollMessages = async () => {
       try {
@@ -2308,10 +2313,57 @@ export default function App() {
       }
     };
 
-    void pollMessages();
+    const refreshMessages = async () => {
+      const nextMessages = await fetchMessages(selectedSessionId);
+      if (cancelled) {
+        return;
+      }
+      setMessages(nextMessages.map(hydrateStoredMessage));
+    };
+
+    void streamRun(
+      selectedSessionId,
+      recoveredActiveRunId,
+      {
+        onEvent: (event) => {
+          if (cancelled) {
+            return;
+          }
+          if (
+            event.event === "assistant.plan"
+            || event.event === "tool.started"
+            || event.event === "tool.progress"
+            || event.event === "tool.completed"
+            || event.event === "assistant.completed"
+            || event.event === "run.completed"
+          ) {
+            void refreshMessages();
+          }
+        },
+      },
+      {
+        signal: abortController.signal,
+      },
+    ).catch((error) => {
+      if (cancelled || (error instanceof DOMException && error.name === "AbortError")) {
+        return;
+      }
+      streamFailed = true;
+      void pollMessages();
+    });
+
+    window.setTimeout(() => {
+      if (!cancelled && !streamFailed) {
+        void pollMessages();
+      }
+    }, 2500);
 
     return () => {
       cancelled = true;
+      abortController.abort();
+      if (reconnectRunStreamAbortControllerRef.current === abortController) {
+        reconnectRunStreamAbortControllerRef.current = null;
+      }
       if (pollTimer !== null) {
         window.clearTimeout(pollTimer);
       }
@@ -2608,6 +2660,8 @@ export default function App() {
     const abortController = activeChatAbortControllerRef.current;
     activeChatAbortControllerRef.current = null;
     abortController?.abort();
+    reconnectRunStreamAbortControllerRef.current?.abort();
+    reconnectRunStreamAbortControllerRef.current = null;
 
     const runId = activeRunIdRef.current ?? recoveredActiveRunId;
     activeRunIdRef.current = null;
@@ -2663,6 +2717,8 @@ export default function App() {
     setStreamingAssistantId(null);
     setMessages((current) => [...current, userMessage]);
     activeChatAbortControllerRef.current?.abort();
+    reconnectRunStreamAbortControllerRef.current?.abort();
+    reconnectRunStreamAbortControllerRef.current = null;
     const abortController = new AbortController();
     activeChatAbortControllerRef.current = abortController;
 

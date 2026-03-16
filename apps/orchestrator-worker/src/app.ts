@@ -558,6 +558,7 @@ function normalizeToolArgs(toolName: ToolName, args: Record<string, unknown>): R
 function streamResponse(
   executor: (send: (event: string, data: Record<string, unknown>) => Promise<void>) => Promise<void>,
   onError?: (error: unknown) => Promise<void>,
+  onClose?: () => void | Promise<void>,
 ): Response {
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -579,6 +580,9 @@ function streamResponse(
         controller.close();
       }
     },
+    async cancel() {
+      await onClose?.();
+    },
   });
 
   return new Response(stream, {
@@ -589,6 +593,14 @@ function streamResponse(
     },
   });
 }
+
+type ActiveRunState = {
+  sessionId: string;
+  userId: string;
+  runtimeIds: Set<string>;
+  cancelRequested: boolean;
+  subscribers: Map<string, (event: string, data: Record<string, unknown>) => Promise<void>>;
+};
 
 function decorateWork(c: Context, work: WorkSummary): WorkSummary {
   const metadata = "metadata" in work && work.metadata && typeof work.metadata === "object"
@@ -2110,13 +2122,29 @@ async function runOrchestrator(
   request: Request,
   input: ChatRequest,
   send: (event: string, data: Record<string, unknown>) => Promise<void>,
-  activeRuns: Map<string, {
-    sessionId: string;
-    userId: string;
-    runtimeIds: Set<string>;
-    cancelRequested: boolean;
-  }>,
+  activeRuns: Map<string, ActiveRunState>,
 ): Promise<void> {
+  const originalSend = send;
+  send = async (event: string, data: Record<string, unknown>) => {
+    await originalSend(event, data);
+    const runId = typeof data.runId === "string" ? data.runId : null;
+    if (!runId) {
+      return;
+    }
+    const activeRun = activeRuns.get(runId);
+    if (!activeRun || activeRun.subscribers.size === 0) {
+      return;
+    }
+    const subscribers = [...activeRun.subscribers.values()];
+    await Promise.all(subscribers.map(async (subscriber) => {
+      try {
+        await subscriber(event, data);
+      } catch {
+        // Ignore subscriber disconnect races.
+      }
+    }));
+  };
+
   const started = deps.now?.() ?? Date.now();
   if (!input.userId) {
     throw new Error("A userId is required to start an orchestrator run.");
@@ -2250,6 +2278,7 @@ async function runOrchestrator(
     userId: input.userId,
     runtimeIds: new Set<string>(),
     cancelRequested: false,
+    subscribers: new Map(),
   });
   await send("run.started", {
     runId: run.id,
@@ -2832,12 +2861,7 @@ async function runOrchestrator(
 
 export function createApp(deps: AppDeps) {
   const app = new Hono();
-  const activeRuns = new Map<string, {
-    sessionId: string;
-    userId: string;
-    runtimeIds: Set<string>;
-    cancelRequested: boolean;
-  }>();
+  const activeRuns = new Map<string, ActiveRunState>();
   app.onError(async (error, c) => {
     try {
       await recordUnexpectedError(deps, error, {
@@ -3277,6 +3301,60 @@ export function createApp(deps: AppDeps) {
           userId: requestPayload.userId ?? null,
           sessionId: requestPayload.sessionId ?? null,
         }),
+    );
+  });
+
+  app.get("/sessions/:sessionId/runs/:runId/stream", async (c) => {
+    const trustedRequest = requireTrustedBrowserRequest(c);
+    if (trustedRequest) {
+      return trustedRequest;
+    }
+    const sessionId = c.req.param("sessionId");
+    const runId = c.req.param("runId");
+    const session = await deps.store.getSession(sessionId);
+    if (!session) {
+      return c.json({ error: "Session not found." }, 404);
+    }
+    if (!(await canAccessSession(c, session))) {
+      return c.json({ error: "Not authorized for this session." }, 403);
+    }
+    const run = await deps.store.getRun(runId);
+    if (!run || run.sessionId !== sessionId) {
+      return c.json({ error: "Run not found." }, 404);
+    }
+
+    let subscriberId: string | null = null;
+    let release: (() => void) | null = null;
+
+    return streamResponse(
+      async (send) => {
+        const activeRun = activeRuns.get(runId);
+        if (!activeRun) {
+          await send("run.completed", {
+            runId,
+            sessionId,
+            status: run.status,
+          });
+          return;
+        }
+
+        subscriberId = crypto.randomUUID();
+        activeRun.subscribers.set(subscriberId, send);
+        await send("run.started", {
+          runId,
+          sessionId,
+        });
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      },
+      undefined,
+      () => {
+        if (subscriberId) {
+          activeRuns.get(runId)?.subscribers.delete(subscriberId);
+        }
+        release?.();
+      },
     );
   });
 
