@@ -5,7 +5,7 @@ import {
 } from "@assistant-ui/react";
 import type { ReadonlyJSONObject, ReadonlyJSONValue } from "assistant-stream/utils";
 import type { AgentationProps } from "agentation";
-import { ChevronsLeft, ChevronsRight, GripVertical, Link2, MessageSquarePlus } from "lucide-react";
+import { ChevronsLeft, ChevronsRight, Link2, MessageSquarePlus } from "lucide-react";
 
 import { getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type PublicProfileResponse, type UserProfile, type WorkDetail, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
@@ -1468,6 +1468,8 @@ export default function App() {
   });
   const activeRunTokenRef = useRef(0);
   const bookPageRef = useRef<HTMLElement | null>(null);
+  const bookAssistantResizeStartRef = useRef<{ pointerX: number; width: number } | null>(null);
+  const bookAssistantRafRef = useRef<number | null>(null);
 
   const currentUser = useMemo(
     () => {
@@ -1763,16 +1765,28 @@ export default function App() {
     }
 
     const handlePointerMove = (event: PointerEvent) => {
+      const start = bookAssistantResizeStartRef.current;
       const rect = bookPageRef.current?.getBoundingClientRect();
-      if (!rect) {
+      if (!start || !rect) {
         return;
       }
-      const nextWidth = rect.right - event.clientX;
+      const delta = start.pointerX - event.clientX;
       const maxWidth = Math.min(BOOK_ASSISTANT_MAX_WIDTH, Math.max(BOOK_ASSISTANT_MIN_WIDTH, rect.width - 360));
-      setBookAssistantWidth(Math.min(maxWidth, Math.max(BOOK_ASSISTANT_MIN_WIDTH, nextWidth)));
+      const nextWidth = Math.min(maxWidth, Math.max(BOOK_ASSISTANT_MIN_WIDTH, start.width + delta));
+      if (bookAssistantRafRef.current !== null) {
+        cancelAnimationFrame(bookAssistantRafRef.current);
+      }
+      bookAssistantRafRef.current = window.requestAnimationFrame(() => {
+        setBookAssistantWidth(nextWidth);
+      });
     };
     const stopDragging = () => {
       setIsDraggingBookAssistant(false);
+      bookAssistantResizeStartRef.current = null;
+      if (bookAssistantRafRef.current !== null) {
+        cancelAnimationFrame(bookAssistantRafRef.current);
+        bookAssistantRafRef.current = null;
+      }
     };
 
     window.addEventListener("pointermove", handlePointerMove);
@@ -2469,6 +2483,10 @@ export default function App() {
       return;
     }
     event.preventDefault();
+    bookAssistantResizeStartRef.current = {
+      pointerX: event.clientX,
+      width: bookAssistantWidth,
+    };
     setIsDraggingBookAssistant(true);
   }
 
@@ -2587,9 +2605,7 @@ export default function App() {
           role="separator"
           aria-orientation="vertical"
           aria-label="Resize assistant panel"
-        >
-          <GripVertical />
-        </div>
+        />
 
         <aside className="book-assistant-pane">
           {loadError ? <div className="thread-error-banner">{loadError}</div> : null}

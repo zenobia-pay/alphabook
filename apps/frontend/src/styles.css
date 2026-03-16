@@ -1287,7 +1287,7 @@ button {
   height: 100%;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 14px minmax(320px, var(--book-assistant-width, 420px));
+  grid-template-columns: minmax(0, 1fr) 8px minmax(320px, var(--book-assistant-width, 420px));
   overflow: hidden;
 }
 
@@ -1344,38 +1344,31 @@ button {
 .book-reader-passages {
   width: min(860px, calc(100% - 56px));
   margin: 0 auto;
-  padding: 28px 0 44px;
+  padding: 24px 0 36px;
   display: grid;
-  gap: 14px;
+  gap: 4px;
 }
 
 .book-passage {
   position: relative;
-  padding: 14px 18px 14px 42px;
-  border: 1px solid transparent;
-  border-radius: 18px;
-  transition: background 140ms ease, border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease;
+  padding: 8px 10px 8px 28px;
+  border-left: 2px solid transparent;
+  transition: border-color 140ms ease, color 140ms ease;
   scroll-margin: 18vh;
 }
 
-.book-passage:hover {
-  background: rgba(255, 255, 255, 0.65);
-  border-color: rgba(37, 99, 235, 0.1);
-}
-
 .book-passage.is-active {
-  background: rgba(37, 99, 235, 0.08);
-  border-color: rgba(37, 99, 235, 0.18);
-  box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.08);
+  border-left-color: rgba(37, 99, 235, 0.32);
 }
 
 .book-passage.is-heading {
-  margin-top: 12px;
-  background: rgba(255, 255, 255, 0.5);
+  margin-top: 10px;
+  padding-top: 12px;
+  padding-bottom: 6px;
 }
 
 .book-passage.is-quote {
-  border-left: 3px solid rgba(37, 99, 235, 0.28);
+  border-left-color: rgba(37, 99, 235, 0.2);
 }
 
 .book-passage.is-preformatted .book-passage-text {
@@ -1386,10 +1379,10 @@ button {
 
 .book-passage-anchor {
   position: absolute;
-  left: 10px;
-  top: 16px;
-  width: 24px;
-  height: 24px;
+  left: 0;
+  top: 10px;
+  width: 20px;
+  height: 20px;
   border: 0;
   border-radius: 999px;
   display: grid;
@@ -1406,7 +1399,7 @@ button {
 }
 
 .book-passage-anchor:hover {
-  background: rgba(37, 99, 235, 0.1);
+  background: rgba(37, 99, 235, 0.08);
   color: var(--accent-strong);
 }
 
@@ -1420,7 +1413,7 @@ button {
   white-space: pre-wrap;
   font-family: "Newsreader", serif;
   font-size: 1.07rem;
-  line-height: 1.78;
+  line-height: 1.64;
   color: var(--ink-strong);
 }
 
@@ -1448,18 +1441,28 @@ button {
 }
 
 .book-assistant-divider {
-  display: grid;
-  place-items: center;
-  border-left: 1px solid rgba(38, 38, 38, 0.08);
-  border-right: 1px solid rgba(38, 38, 38, 0.06);
-  background: linear-gradient(180deg, rgba(245, 245, 245, 0.96), rgba(240, 240, 240, 0.9));
+  position: relative;
   cursor: col-resize;
-  color: rgba(38, 38, 38, 0.34);
+  background: transparent;
 }
 
-.book-assistant-divider svg {
-  width: 14px;
-  height: 14px;
+.book-assistant-divider::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  background: rgba(38, 38, 38, 0.1);
+  transition: background 120ms ease, width 120ms ease, box-shadow 120ms ease;
+}
+
+.book-assistant-divider:hover::before,
+.book-page.is-resizing .book-assistant-divider::before {
+  width: 2px;
+  background: rgba(37, 99, 235, 0.7);
+  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.12);
 }
 
 .book-assistant-pane {
@@ -1743,22 +1746,23 @@ button {
 
   .book-reader-passages {
     width: calc(100% - 24px);
-    padding: 18px 0 32px;
-    gap: 10px;
+    padding: 18px 0 28px;
+    gap: 2px;
   }
 
   .book-passage {
-    padding: 12px 14px 12px 34px;
+    padding: 8px 8px 8px 24px;
   }
 
   .book-passage-anchor {
     opacity: 1;
-    left: 8px;
-    top: 13px;
+    left: 0;
+    top: 9px;
   }
 
   .book-passage-text {
     font-size: 0.98rem;
+    line-height: 1.58;
   }
 
   .book-assistant-shell {
