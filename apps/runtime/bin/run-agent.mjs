@@ -720,7 +720,9 @@ function buildBriefingPrompt(runtimePrompt, manifest, task, evidence, question) 
     "- Prefer primary-source quotations, preserve source identifiers, and favor recall over premature narrowing.",
     "- Once you have 2 to 8 strong quotations, stop searching and write the briefing.",
     "- If you cannot find strong quotations after the search budget, still write all required output files and explain that the evidence is thin.",
-    "- Your final assistant message should be one short sentence confirming that the workspace files were written.",
+    "- Success requires both: writing the four output files above and returning a final JSON object that matches the provided output schema.",
+    "- In that final JSON object, set status to ok or thin_evidence, set message to one concise sentence describing the result, and set filesWritten to the exact output file paths you wrote.",
+    "- Do not stop after searching. A run is incomplete until all required output files exist and your final JSON object has been returned.",
     "",
     `Question: ${question}`,
     "",
@@ -733,7 +735,7 @@ function buildBriefingPrompt(runtimePrompt, manifest, task, evidence, question) 
     "Seed evidence from the orchestrator:",
     JSON.stringify(evidence, null, 2),
     "",
-    "When finished, reply with one short plain-text sentence only.",
+    "When finished, return only a JSON object that matches the provided output schema.",
   ].join("\n");
 }
 
