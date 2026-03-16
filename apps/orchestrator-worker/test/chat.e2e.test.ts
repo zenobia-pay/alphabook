@@ -21,6 +21,15 @@ class EchoSynthesizer implements Synthesizer {
   }
 }
 
+class CapturingBlobStore extends MemoryBlobStore {
+  readonly writes: Array<{ key: string; value: string }> = [];
+
+  override async putText(key: string, value: string): Promise<void> {
+    this.writes.push({ key, value });
+    await super.putText(key, value);
+  }
+}
+
 const AUTH_STATE_COOKIE_NAME = "alphabook_auth_state=";
 
 test("orchestrator streams retrieval tool calls and final answer", async () => {
@@ -366,6 +375,121 @@ test("auth sign-up route redirects into WorkOS authkit with sign-up hint", async
   const setCookie = response.headers.get("set-cookie");
   assert.ok(setCookie);
   assert.match(setCookie, new RegExp(AUTH_STATE_COOKIE_NAME));
+});
+
+test("analytics endpoint stores posted events", async () => {
+  const blobStore = new CapturingBlobStore();
+  const app = createApp({
+    store: new InMemoryAppStore(),
+    planner: new ScriptedPlanner([
+      {
+        type: "final_answer",
+        answer: "ok",
+        citations: [],
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore,
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false };
+      },
+      async runWorkspaceTask() {
+        return { ok: false };
+      },
+      async readWorkspaceFile() {
+        return { ok: false };
+      },
+      async listWorkspaceFiles() {
+        return { ok: true, files: [] };
+      },
+      async destroyWorkspace() {
+        return { ok: true };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const response = await app.request("/a?userId=guest-user", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      event: "book_open",
+      userId: "guest-user",
+      properties: {
+        workId: "work-1",
+      },
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(blobStore.writes.length, 1);
+  assert.match(blobStore.writes[0]?.key ?? "", /^analytics\//);
+  assert.match(blobStore.writes[0]?.value ?? "", /"event": "book_open"/);
+});
+
+test("auth sign-in route forces interactive WorkOS auth", async () => {
+  const store = new InMemoryAppStore();
+  const auth = new WorkOSAuth(
+    {
+      workosApiKey: "test_api_key",
+      workosClientId: "client_123",
+      cookiePassword: "test_cookie_password_32_chars_minimum",
+    },
+    store,
+  );
+
+  const app = createApp({
+    store,
+    planner: new FallbackPlanner(),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+      async runWorkspaceTask() {
+        return { ok: false, error: "disabled" };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: false, error: "disabled" };
+      },
+      async destroyWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+    auth,
+  });
+
+  const response = await app.request(
+    "/auth/sign-in?returnTo=https%3A%2F%2Falpha-book.org",
+    {
+      headers: {
+        host: "api.alpha-book.org",
+        "x-forwarded-proto": "https",
+      },
+    },
+  );
+
+  assert.equal(response.status, 302);
+  const location = response.headers.get("location");
+  assert.ok(location);
+  assert.match(location, /^https:\/\/api\.workos\.com\/user_management\/authorize\?/);
+  assert.match(location, /prompt=login/);
 });
 
 test("auth sign-out route clears local cookies and redirects through WorkOS logout when session exists", async () => {

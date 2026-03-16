@@ -167,10 +167,12 @@ export class WorkOSAuth {
     const cookieDomain = deriveCookieDomain(requestUrl);
     const returnTo = safeReturnTo(c.req.query("returnTo"), deriveFrontendOrigin(requestUrl));
     const redirectUri = `${requestUrl.origin}/auth/callback`;
+    const prompt = c.req.query("prompt") || (screenHint === "sign-in" ? "login" : undefined);
     const { url, state, codeVerifier } = await this.workos.userManagement.getAuthorizationUrlWithPKCE({
       provider: "authkit",
       clientId: this.config.workosClientId,
       redirectUri,
+      ...(prompt ? { prompt } : {}),
       ...(screenHint ? { screenHint } : {}),
     });
 

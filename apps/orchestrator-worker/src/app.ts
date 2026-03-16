@@ -40,6 +40,33 @@ function sseEvent(event: string, data: Record<string, unknown>): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
+function analyticsKey(eventName: string) {
+  const date = new Date().toISOString().slice(0, 10);
+  const safeEvent = eventName.replace(/[^a-z0-9_-]+/gi, "-").toLowerCase();
+  return `analytics/${date}/${Date.now()}-${crypto.randomUUID()}-${safeEvent}.json`;
+}
+
+async function recordAnalyticsEvent(
+  deps: AppDeps,
+  request: Request,
+  eventName: string,
+  payload: Record<string, unknown> = {},
+) {
+  const forwardedFor = request.headers.get("cf-connecting-ip") ?? request.headers.get("x-forwarded-for");
+  const userAgent = request.headers.get("user-agent");
+  await deps.blobStore.putJson(
+    analyticsKey(eventName),
+    {
+      event: eventName,
+      timestamp: new Date().toISOString(),
+      source: "alphabook-web",
+      userAgent,
+      ip: forwardedFor ?? null,
+      ...payload,
+    },
+  );
+}
+
 function normalizeToolArgs(toolName: ToolName, args: Record<string, unknown>): Record<string, unknown> {
   const normalized = { ...args };
   switch (toolName) {
@@ -1045,6 +1072,33 @@ export function createApp(deps: AppDeps) {
     });
   });
 
+  app.post("/a", async (c) => {
+    let payload: Record<string, unknown> | null = null;
+    try {
+      payload = await c.req.json();
+    } catch {
+      return c.json({ error: "Invalid analytics payload." }, 400);
+    }
+    const eventName = typeof payload?.event === "string" ? payload.event.trim() : "";
+    if (!eventName) {
+      return c.json({ error: "event is required." }, 400);
+    }
+    const user = await resolveUser(c);
+    const details = payload && typeof payload.properties === "object" && payload.properties
+      ? payload.properties as Record<string, unknown>
+      : {};
+    try {
+      await recordAnalyticsEvent(deps, c.req.raw, eventName, {
+        userId: user?.id ?? (typeof payload?.userId === "string" ? payload.userId : null),
+        authenticated: Boolean(user),
+        details,
+      });
+      return c.json({ ok: true });
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : "Failed to store analytics event." }, 500);
+    }
+  });
+
   app.get("/admin/access", async (c) => {
     const user = await resolveUser(c);
     return c.json({
@@ -1060,8 +1114,12 @@ export function createApp(deps: AppDeps) {
     if (!admin) {
       return c.json({ error: "Not authorized." }, 403);
     }
-    const users = await deps.store.listUsers();
-    return c.json({ users });
+    try {
+      const users = await deps.store.listUsers();
+      return c.json({ users });
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : "Failed to load users." }, 500);
+    }
   });
 
   app.get("/admin/runs", async (c) => {
@@ -1069,8 +1127,12 @@ export function createApp(deps: AppDeps) {
     if (!admin) {
       return c.json({ error: "Not authorized." }, 403);
     }
-    const runs = await deps.store.listAllRuns();
-    return c.json({ runs });
+    try {
+      const runs = await deps.store.listAllRuns();
+      return c.json({ runs });
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : "Failed to load runs." }, 500);
+    }
   });
 
   app.get("/profiles/:userId", async (c) => {
@@ -1135,6 +1197,9 @@ export function createApp(deps: AppDeps) {
     if (!deps.auth?.isConfigured()) {
       return c.json({ error: "Authentication is not configured." }, 501);
     }
+    void recordAnalyticsEvent(deps, c.req.raw, "sign_in", {
+      returnTo: c.req.query("returnTo") ?? null,
+    }).catch(() => {});
     return deps.auth.signIn(c);
   });
 
@@ -1142,6 +1207,9 @@ export function createApp(deps: AppDeps) {
     if (!deps.auth?.isConfigured()) {
       return c.json({ error: "Authentication is not configured." }, 501);
     }
+    void recordAnalyticsEvent(deps, c.req.raw, "sign_up", {
+      returnTo: c.req.query("returnTo") ?? null,
+    }).catch(() => {});
     return deps.auth.signUp(c);
   });
 

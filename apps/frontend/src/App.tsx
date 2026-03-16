@@ -9,7 +9,7 @@ import { ChevronsLeft, ChevronsRight } from "lucide-react";
 
 import { getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type PublicProfileResponse, type UserProfile, type WorkDetail, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
-import { buildSignInUrl, buildSignOutUrl, fetchAdminAccess, fetchAdminRunLogs, fetchAdminRuns, fetchAdminUsers, fetchCurrentUser, fetchMessages, fetchProfile, fetchSessions, fetchWorkDetail, fetchWorks, followProfile, streamChat, unfollowProfile } from "./api";
+import { buildSignInUrl, buildSignOutUrl, fetchAdminAccess, fetchAdminRunLogs, fetchAdminRuns, fetchAdminUsers, fetchCurrentUser, fetchMessages, fetchProfile, fetchSessions, fetchWorkDetail, fetchWorks, followProfile, sendAnalyticsEvent, streamChat, unfollowProfile } from "./api";
 import { Thread } from "./components/assistant-ui/thread";
 import { Avatar, AvatarFallback, AvatarImage } from "./components/ui/avatar";
 import { Button } from "./components/ui/button";
@@ -59,6 +59,7 @@ type UrlState = {
   workId: string | null | undefined;
   profileUserId: string | null | undefined;
   runId: string | null | undefined;
+  adminSubview: "overview" | "logs";
   debugEnabled: boolean;
 };
 
@@ -96,6 +97,7 @@ function readUrlState(): UrlState {
       workId: undefined,
       profileUserId: undefined,
       runId: undefined,
+      adminSubview: "overview",
       debugEnabled: false,
     };
   }
@@ -110,6 +112,7 @@ function readUrlState(): UrlState {
     workId: pathnameMatch ? decodeURIComponent(pathnameMatch[1]) : params.has("work") ? params.get("work") || null : undefined,
     profileUserId: profilePathMatch ? decodeURIComponent(profilePathMatch[1]) : params.has("profile") ? params.get("profile") || null : undefined,
     runId: params.has("run") ? params.get("run") || null : undefined,
+    adminSubview: params.get("adminSubview") === "logs" || params.has("run") ? "logs" : "overview",
     debugEnabled: params.get("debug") === "true",
   };
 }
@@ -144,6 +147,11 @@ function writeUrlState(next: UrlState) {
     url.searchParams.set("run", next.runId);
   } else {
     url.searchParams.delete("run");
+  }
+  if (next.view === "admin" && next.adminSubview === "logs") {
+    url.searchParams.set("adminSubview", "logs");
+  } else {
+    url.searchParams.delete("adminSubview");
   }
 
   if ((next.view === "assistant" || next.view === "book") && next.sessionId) {
@@ -1079,6 +1087,7 @@ export default function App() {
   const [sessions, setSessions] = useState<ChatSessionSummary[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null | undefined>(initialUrlState.sessionId);
   const [selectedAdminRunId, setSelectedAdminRunId] = useState<string | null | undefined>(initialUrlState.runId);
+  const [adminSubview, setAdminSubview] = useState<"overview" | "logs">(initialUrlState.adminSubview);
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [sessionsResolved, setSessionsResolved] = useState(false);
@@ -1238,6 +1247,7 @@ export default function App() {
       setActiveWorkId(next.workId);
       setActiveProfileUserId(next.profileUserId);
       setSelectedAdminRunId(next.runId);
+      setAdminSubview(next.adminSubview);
       setAdminRunInput(next.runId ?? "");
       setDebugEnabled(next.debugEnabled);
       setMobileNavOpen(false);
@@ -1254,9 +1264,10 @@ export default function App() {
       workId: activeWorkId,
       profileUserId: activeProfileUserId,
       runId: selectedAdminRunId,
+      adminSubview,
       debugEnabled,
     });
-  }, [activeView, selectedSessionId, activeWorkId, activeProfileUserId, selectedAdminRunId, debugEnabled]);
+  }, [activeView, selectedSessionId, activeWorkId, activeProfileUserId, selectedAdminRunId, adminSubview, debugEnabled]);
 
   useEffect(() => {
     if (activeView === "profile" && currentUserId && !activeProfileUserId) {
@@ -1455,6 +1466,10 @@ export default function App() {
     }
   }
 
+  function track(event: string, properties: Record<string, unknown> = {}) {
+    sendAnalyticsEvent(event, properties, currentUserId);
+  }
+
   async function loadAdminRunLogs(runId: string) {
     const normalizedRunId = runId.trim();
     if (!normalizedRunId) {
@@ -1477,6 +1492,7 @@ export default function App() {
       }));
       const payload = await fetchAdminRunLogs(normalizedRunId);
       setSelectedAdminRunId(normalizedRunId);
+      setAdminSubview("logs");
       setAdminRunInput(normalizedRunId);
       setAdminRunLog({
         loading: false,
@@ -1486,6 +1502,7 @@ export default function App() {
       });
     } catch (error) {
       setSelectedAdminRunId(normalizedRunId);
+      setAdminSubview("logs");
       setAdminRunInput(normalizedRunId);
       setAdminRunLog({
         loading: false,
@@ -1565,6 +1582,13 @@ export default function App() {
     }
 
     const initialSessionId = options.sessionIdOverride !== undefined ? options.sessionIdOverride : selectedSessionId;
+    if (initialSessionId) {
+      track("assistant_followup_message", {
+        sessionId: initialSessionId,
+        view: options.viewOverride ?? activeView,
+        workIds: options.workIdsOverride ?? [],
+      });
+    }
     const userMessage: UiMessage = {
       id: crypto.randomUUID(),
       sessionId: initialSessionId ?? "pending",
@@ -1612,6 +1636,12 @@ export default function App() {
             }
             if (event.event === "session.created" && typeof event.data.sessionId === "string") {
               const createdSessionId = event.data.sessionId;
+              track("assistant_session_created", {
+                sessionId: createdSessionId,
+                promptLength: normalizedQuestion.length,
+                view: options.viewOverride ?? activeView,
+                workIds: options.workIdsOverride ?? [],
+              });
               workingSessionId = createdSessionId;
               setSelectedSessionId(createdSessionId);
               setSessions((current) => [
@@ -1892,6 +1922,7 @@ export default function App() {
     }
     if (view !== "admin") {
       setSelectedAdminRunId(null);
+      setAdminSubview("overview");
     }
     if (view === "assistant" && activeView === "assistant") {
       startNewChat();
@@ -1918,6 +1949,10 @@ export default function App() {
   }
 
   function openWork(workId: string) {
+    track("book_open", {
+      workId,
+      source: activeView,
+    });
     setMobileNavOpen(false);
     setPendingCitation(null);
     setActiveProfileUserId(null);
@@ -1926,6 +1961,10 @@ export default function App() {
   }
 
   function openCitation(citation: Citation) {
+    track("book_open", {
+      workId: citation.workId,
+      source: "citation",
+    });
     setMobileNavOpen(false);
     setPendingCitation(citation);
     setActiveProfileUserId(null);
@@ -2433,6 +2472,80 @@ export default function App() {
     }
 
     const summary = summarizeRunLogPayload(adminRunLog.payload);
+    const showingLogs = adminSubview === "logs";
+
+    if (showingLogs) {
+      return (
+        <div className="view-shell space-y-6">
+          <section className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="space-y-2">
+                <h1 className="font-[Newsreader] text-[clamp(2.2rem,4vw,3.5rem)] font-semibold leading-[0.92] tracking-[-0.05em] text-[var(--ink)]">
+                  Run Log Detail
+                </h1>
+                <p className="max-w-3xl text-sm leading-6 text-[var(--ink-soft)]">
+                  Inspect one run in full, including tool calls, session context, artifacts, prompts, and live runtime output.
+                </p>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setAdminSubview("overview")}
+              >
+                Back to admin overview
+              </Button>
+            </div>
+
+            <Card className="rounded-[24px] border-[rgba(72,43,37,0.06)] bg-[rgba(255,255,255,0.78)] shadow-none">
+              <CardContent className="space-y-4 p-5">
+                <form
+                  className="flex flex-col gap-3 md:flex-row"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void loadAdminRunLogs(adminRunInput);
+                  }}
+                >
+                  <input
+                    className="min-h-12 flex-1 rounded-[16px] border border-[rgba(72,43,37,0.12)] bg-white px-4 text-sm text-[var(--ink)] outline-none transition focus:border-[rgba(72,43,37,0.28)]"
+                    placeholder="Enter a run ID"
+                    value={adminRunInput}
+                    onChange={(event) => setAdminRunInput(event.currentTarget.value)}
+                  />
+                  <Button type="submit" disabled={adminRunLog.loading || !adminRunInput.trim()}>
+                    {adminRunLog.loading ? "Loading…" : "Load run"}
+                  </Button>
+                </form>
+
+                <div className="flex flex-wrap items-center gap-3 text-sm text-[var(--ink-soft)]">
+                  <span>Signed in as {adminAccess.user?.email ?? "unknown user"}.</span>
+                  {adminRunLog.runId ? <span>Viewing run {adminRunLog.runId}.</span> : null}
+                  {summary.length > 0 ? <span>{summary.join(" · ")}</span> : null}
+                </div>
+
+                {adminRunLog.error ? (
+                  <div className="rounded-[16px] border border-[rgba(187,73,44,0.2)] bg-[rgba(187,73,44,0.08)] px-4 py-3 text-sm leading-6 text-[var(--ink)]">
+                    {adminRunLog.error}
+                  </div>
+                ) : null}
+              </CardContent>
+            </Card>
+          </section>
+
+          {adminRunLog.payload ? (
+            <section className="space-y-4">
+              <AdminJsonBlock title="Run" value={adminRunLog.payload.run ?? {}} />
+              <AdminJsonBlock title="Session" value={adminRunLog.payload.session ?? {}} />
+              <AdminJsonBlock title="Owner" value={adminRunLog.payload.owner ?? {}} />
+              <AdminJsonBlock title="Messages" value={adminRunLog.payload.messages ?? []} />
+              <AdminJsonBlock title="Tool Calls" value={adminRunLog.payload.toolCalls ?? []} />
+              <AdminJsonBlock title="Runtime Instances" value={adminRunLog.payload.runtimeInstances ?? []} />
+              <AdminJsonBlock title="Artifacts" value={adminRunLog.payload.artifacts ?? []} />
+              <AdminJsonBlock title="Live Runtime" value={adminRunLog.payload.liveRuntime ?? []} />
+            </section>
+          ) : null}
+        </div>
+      );
+    }
 
     return (
       <div className="view-shell space-y-6">
@@ -2468,15 +2581,7 @@ export default function App() {
 
               <div className="flex flex-wrap items-center gap-3 text-sm text-[var(--ink-soft)]">
                 <span>Signed in as {adminAccess.user?.email ?? "unknown user"}.</span>
-                {adminRunLog.runId ? <span>Viewing run {adminRunLog.runId}.</span> : null}
-                {summary.length > 0 ? <span>{summary.join(" · ")}</span> : null}
               </div>
-
-              {adminRunLog.error ? (
-                <div className="rounded-[16px] border border-[rgba(187,73,44,0.2)] bg-[rgba(187,73,44,0.08)] px-4 py-3 text-sm leading-6 text-[var(--ink)]">
-                  {adminRunLog.error}
-                </div>
-              ) : null}
             </CardContent>
           </Card>
         </section>
@@ -2519,7 +2624,7 @@ export default function App() {
 
           <AdminTableCard title="Analytics">
             <p className="text-sm leading-6 text-[var(--ink-soft)]">
-              Analytics is not wired yet. This panel is reserved for run volume, user funnels, tool failure rates, Codex latency, and corpus search quality once tracking is in place.
+              Basic analytics is now ingesting sign-in, sign-up, assistant session creation, follow-up message, and book-open events through `/a`. This panel is still a placeholder until we add aggregated queries and charts.
             </p>
           </AdminTableCard>
         </section>
@@ -2573,7 +2678,10 @@ export default function App() {
                                 type="button"
                                 variant="outline"
                                 size="sm"
-                                onClick={() => void loadAdminRunLogs(runId)}
+                                onClick={() => {
+                                  setAdminSubview("logs");
+                                  void loadAdminRunLogs(runId);
+                                }}
                               >
                                 Logs
                               </Button>
@@ -2592,18 +2700,6 @@ export default function App() {
           </AdminTableCard>
         </section>
 
-        {adminRunLog.payload ? (
-          <section className="space-y-4">
-            <AdminJsonBlock title="Run" value={adminRunLog.payload.run ?? {}} />
-            <AdminJsonBlock title="Session" value={adminRunLog.payload.session ?? {}} />
-            <AdminJsonBlock title="Owner" value={adminRunLog.payload.owner ?? {}} />
-            <AdminJsonBlock title="Messages" value={adminRunLog.payload.messages ?? []} />
-            <AdminJsonBlock title="Tool Calls" value={adminRunLog.payload.toolCalls ?? []} />
-            <AdminJsonBlock title="Runtime Instances" value={adminRunLog.payload.runtimeInstances ?? []} />
-            <AdminJsonBlock title="Artifacts" value={adminRunLog.payload.artifacts ?? []} />
-            <AdminJsonBlock title="Live Runtime" value={adminRunLog.payload.liveRuntime ?? []} />
-          </section>
-        ) : null}
       </div>
     );
   }

@@ -118,6 +118,36 @@ export async function fetchAdminRuns(): Promise<Record<string, unknown>[]> {
   return Array.isArray(payload.runs) ? payload.runs : [];
 }
 
+export function sendAnalyticsEvent(
+  event: string,
+  properties: Record<string, unknown> = {},
+  userId?: string | null,
+) {
+  const payload = JSON.stringify({
+    event,
+    properties,
+    userId: userId ?? null,
+  });
+
+  if (typeof navigator !== "undefined" && typeof navigator.sendBeacon === "function") {
+    const blob = new Blob([payload], { type: "application/json" });
+    const sent = navigator.sendBeacon(`${API_BASE}/a`, blob);
+    if (sent) {
+      return;
+    }
+  }
+
+  void fetch(`${API_BASE}/a`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    credentials: "include",
+    keepalive: true,
+    body: payload,
+  }).catch(() => {});
+}
+
 export async function fetchProfile(userId: string): Promise<PublicProfileResponse> {
   const response = await ensureOk(
     await fetch(`${API_BASE}/profiles/${userId}`, {

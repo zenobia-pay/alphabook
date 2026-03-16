@@ -986,8 +986,6 @@ export class NeonAppStore implements AppStore {
       name: string | null;
       avatar_url: string | null;
       created_at: string;
-      followers_count: number;
-      following_count: number;
       session_count: number;
       run_count: number;
       last_seen_at: string | null;
@@ -999,22 +997,10 @@ export class NeonAppStore implements AppStore {
           u.name,
           u.avatar_url,
           u.created_at,
-          COALESCE(followers.count, 0) AS followers_count,
-          COALESCE(following.count, 0) AS following_count,
           COALESCE(session_counts.session_count, 0) AS session_count,
           COALESCE(run_counts.run_count, 0) AS run_count,
           last_seen.last_seen_at
         FROM users u
-        LEFT JOIN (
-          SELECT followed_id, COUNT(*)::int AS count
-          FROM user_follows
-          GROUP BY followed_id
-        ) AS followers ON followers.followed_id = u.id
-        LEFT JOIN (
-          SELECT follower_id, COUNT(*)::int AS count
-          FROM user_follows
-          GROUP BY follower_id
-        ) AS following ON following.follower_id = u.id
         LEFT JOIN (
           SELECT user_id, COUNT(*)::int AS session_count
           FROM chat_sessions
@@ -1041,8 +1027,8 @@ export class NeonAppStore implements AppStore {
       name: row.name,
       avatarUrl: row.avatar_url,
       createdAt: row.created_at,
-      followersCount: Number(row.followers_count ?? 0),
-      followingCount: Number(row.following_count ?? 0),
+      followersCount: 0,
+      followingCount: 0,
       sessionCount: Number(row.session_count ?? 0),
       runCount: Number(row.run_count ?? 0),
       lastSeenAt: row.last_seen_at,
