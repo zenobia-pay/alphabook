@@ -60,6 +60,7 @@ function resolveRuntimeGateway(env: Env, store: NeonAppStore, blobStore: Cloudfl
       apiToken: env.FLY_API_TOKEN,
       appName: env.FLY_RUNTIME_APP_NAME,
       runtimeAppUrl: env.FLY_RUNTIME_APP_URL,
+      databaseUrl: env.DATABASE_URL,
       openAIApiKey: env.OPENAI_API_KEY,
       runtimeAgentModel: env.RUNTIME_AGENT_MODEL,
       image: env.FLY_RUNTIME_IMAGE,

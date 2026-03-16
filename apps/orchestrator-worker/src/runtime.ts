@@ -31,6 +31,7 @@ export interface FlyRuntimeGatewayConfig {
   appName: string;
   image: string;
   region: string;
+  databaseUrl?: string;
   runtimeSharedToken?: string;
   runtimeAppUrl?: string;
   openAIApiKey?: string;
@@ -444,6 +445,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
             PORT: "8080",
             RUNTIME_WORKSPACE_ROOT: "/workspace",
             RUNTIME_SHARED_TOKEN: this.config.runtimeSharedToken ?? "",
+            DATABASE_URL: this.config.databaseUrl ?? "",
             OPENAI_API_KEY: this.config.openAIApiKey ?? "",
             RUNTIME_AGENT_MODEL: this.config.runtimeAgentModel ?? "gpt-5-codex",
             R2_BUCKET_NAME: this.config.r2BucketName,

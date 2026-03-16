@@ -219,7 +219,9 @@ async function writeSelectedChunks(paths: ReturnType<typeof createPaths>, payloa
 
 async function writeWorkspaceHelpers(paths: ReturnType<typeof createPaths>) {
   const hydrateHelperSource = await readFile(new URL("../bin/hydrate-files.mjs", import.meta.url), "utf8");
+  const searchDbHelperSource = await readFile(new URL("../bin/search-db.mjs", import.meta.url), "utf8");
   await writeFile(join(paths.context, "hydrate-files.mjs"), hydrateHelperSource, "utf8");
+  await writeFile(join(paths.context, "search-db.mjs"), searchDbHelperSource, "utf8");
 }
 
 async function listFiles(root: string, workspaceRoot: string): Promise<string[]> {
