@@ -135,6 +135,13 @@ export class StubRuntimeGateway implements RuntimeToolGateway {
     };
   }
 
+  async listWorkspaceFiles() {
+    return {
+      ok: false,
+      error: "Runtime sandboxes are not enabled in this environment.",
+    };
+  }
+
   async destroyWorkspace() {
     return {
       ok: false,
@@ -189,6 +196,12 @@ export class HttpRuntimeGateway implements RuntimeToolGateway {
     const url = new URL("/file", this.baseUrl);
     url.searchParams.set("path", String(args.path ?? ""));
     return this.request(url.pathname + url.search, {
+      method: "GET",
+    });
+  }
+
+  async listWorkspaceFiles() {
+    return this.request("/files", {
       method: "GET",
     });
   }
@@ -338,6 +351,23 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
       { method: "GET" },
     );
     await this.store.updateRuntimeInstance(parsed.runtimeId, {
+      status: "ready",
+      lastUsedAt: nowIso(),
+      expiresAt: addMinutesIso(HARD_LIMITS.MAX_RUNTIME_IDLE_MINUTES),
+    });
+    return result;
+  }
+
+  async listWorkspaceFiles(args: RuntimeToolArgs) {
+    const runtimeId = typeof args.runtimeId === "string" ? args.runtimeId : "";
+    if (!runtimeId) {
+      throw new Error("Runtime tool requires a runtimeId.");
+    }
+    const instance = await this.requireRuntime(runtimeId);
+    await this.ensureMachineRunning(instance);
+    const machineId = instance.providerMachineId ?? runtimeId;
+    const result = await this.callRuntime(machineId, "/files", { method: "GET" });
+    await this.store.updateRuntimeInstance(runtimeId, {
       status: "ready",
       lastUsedAt: nowIso(),
       expiresAt: addMinutesIso(HARD_LIMITS.MAX_RUNTIME_IDLE_MINUTES),

@@ -110,6 +110,9 @@ test("orchestrator streams retrieval tool calls and final answer", async () => {
       async readWorkspaceFile() {
         return { ok: false, error: "disabled" };
       },
+      async listWorkspaceFiles() {
+        return { ok: false, error: "disabled" };
+      },
       async destroyWorkspace() {
         return { ok: false, error: "disabled" };
       },
@@ -270,6 +273,12 @@ test("orchestrator can delegate to a runtime gateway and finish the run", async 
           content: "# Summary",
         };
       },
+      async listWorkspaceFiles() {
+        return {
+          ok: true,
+          files: ["output/summary.md"],
+        };
+      },
       async destroyWorkspace() {
         return {
           ok: true,
@@ -326,6 +335,9 @@ test("auth sign-up route redirects into WorkOS authkit with sign-up hint", async
         return { ok: false, error: "disabled" };
       },
       async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
         return { ok: false, error: "disabled" };
       },
       async destroyWorkspace() {
@@ -533,6 +545,9 @@ test("session endpoints expose chat history for the assistant UI", async () => {
       async readWorkspaceFile() {
         return { ok: false };
       },
+      async listWorkspaceFiles() {
+        return { ok: true, files: [] };
+      },
       async destroyWorkspace() {
         return { ok: true };
       },
@@ -621,6 +636,9 @@ test("workspace args are normalized and run logs are exposed", async () => {
       },
       async readWorkspaceFile() {
         return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: true, files: [] };
       },
       async destroyWorkspace() {
         return { ok: true };
@@ -744,6 +762,9 @@ test("public profile endpoints expose follow state", async () => {
       },
       async readWorkspaceFile() {
         return { ok: false };
+      },
+      async listWorkspaceFiles() {
+        return { ok: true, files: [] };
       },
       async destroyWorkspace() {
         return { ok: true };

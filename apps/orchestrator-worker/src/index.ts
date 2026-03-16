@@ -39,6 +39,7 @@ export interface Env {
   WORKOS_API_KEY?: string;
   WORKOS_CLIENT_ID?: string;
   AUTH_COOKIE_PASSWORD?: string;
+  ADMIN_ALLOWED_EMAIL?: string;
   CORPUS_BUCKET: R2Bucket;
   INGEST_QUEUE: Queue;
   JOBS_QUEUE: Queue;
@@ -120,6 +121,7 @@ function buildFetchHandler(env: Env) {
       ingestName: env.QUEUE_INGEST_NAME ?? "alphabook-ingest",
       jobsName: env.QUEUE_JOBS_NAME ?? "alphabook-jobs",
     },
+    adminAllowedEmail: env.ADMIN_ALLOWED_EMAIL,
   });
 
   return app.fetch;

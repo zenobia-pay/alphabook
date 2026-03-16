@@ -9,7 +9,7 @@ import { ChevronsLeft, ChevronsRight } from "lucide-react";
 
 import { getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type PublicProfileResponse, type UserProfile, type WorkDetail, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
-import { buildSignInUrl, buildSignOutUrl, fetchCurrentUser, fetchMessages, fetchProfile, fetchSessions, fetchWorkDetail, fetchWorks, followProfile, streamChat, unfollowProfile } from "./api";
+import { buildSignInUrl, buildSignOutUrl, fetchAdminAccess, fetchAdminRunLogs, fetchCurrentUser, fetchMessages, fetchProfile, fetchSessions, fetchWorkDetail, fetchWorks, followProfile, streamChat, unfollowProfile } from "./api";
 import { Thread } from "./components/assistant-ui/thread";
 import { Avatar, AvatarFallback, AvatarImage } from "./components/ui/avatar";
 import { Button } from "./components/ui/button";
@@ -52,18 +52,34 @@ type AuthState = {
   error: string | null;
 };
 
-type ViewMode = "explore" | "assistant" | "library" | "profile" | "book";
+type ViewMode = "explore" | "assistant" | "library" | "profile" | "book" | "admin";
 type UrlState = {
   view: ViewMode;
   sessionId: string | null | undefined;
   workId: string | null | undefined;
   profileUserId: string | null | undefined;
+  runId: string | null | undefined;
   debugEnabled: boolean;
+};
+
+type AdminAccessState = {
+  loading: boolean;
+  allowed: boolean;
+  authenticated: boolean;
+  authConfigured: boolean;
+  user: UserProfile | null;
+};
+
+type AdminRunLogState = {
+  loading: boolean;
+  error: string | null;
+  runId: string;
+  payload: Record<string, unknown> | null;
 };
 
 const USER_STORAGE_KEY = "alphabook.localUserId";
 function isViewMode(value: string | null): value is ViewMode {
-  return value === "explore" || value === "assistant" || value === "library" || value === "profile" || value === "book";
+  return value === "explore" || value === "assistant" || value === "library" || value === "profile" || value === "book" || value === "admin";
 }
 
 function readUrlState(): UrlState {
@@ -73,6 +89,7 @@ function readUrlState(): UrlState {
       sessionId: undefined,
       workId: undefined,
       profileUserId: undefined,
+      runId: undefined,
       debugEnabled: false,
     };
   }
@@ -86,6 +103,7 @@ function readUrlState(): UrlState {
     sessionId: params.has("session") ? params.get("session") || null : undefined,
     workId: pathnameMatch ? decodeURIComponent(pathnameMatch[1]) : params.has("work") ? params.get("work") || null : undefined,
     profileUserId: profilePathMatch ? decodeURIComponent(profilePathMatch[1]) : params.has("profile") ? params.get("profile") || null : undefined,
+    runId: params.has("run") ? params.get("run") || null : undefined,
     debugEnabled: params.get("debug") === "true",
   };
 }
@@ -115,6 +133,11 @@ function writeUrlState(next: UrlState) {
     } else {
       url.searchParams.delete("profile");
     }
+  }
+  if (next.view === "admin" && next.runId) {
+    url.searchParams.set("run", next.runId);
+  } else {
+    url.searchParams.delete("run");
   }
 
   if ((next.view === "assistant" || next.view === "book") && next.sessionId) {
@@ -451,6 +474,26 @@ function hueFromSeed(seed: string) {
 
 function pluralize(count: number, singular: string, plural = `${singular}s`) {
   return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function formatJson(value: unknown) {
+  return JSON.stringify(value, null, 2);
+}
+
+function summarizeRunLogPayload(payload: Record<string, unknown> | null) {
+  if (!payload) {
+    return [];
+  }
+  const toolCalls = Array.isArray(payload.toolCalls) ? payload.toolCalls.length : 0;
+  const artifacts = Array.isArray(payload.artifacts) ? payload.artifacts.length : 0;
+  const runtimeInstances = Array.isArray(payload.runtimeInstances) ? payload.runtimeInstances.length : 0;
+  const liveRuntime = Array.isArray(payload.liveRuntime) ? payload.liveRuntime.length : 0;
+  return [
+    `${pluralize(toolCalls, "tool call")}`,
+    `${pluralize(artifacts, "artifact")}`,
+    `${pluralize(runtimeInstances, "runtime")}`,
+    `${pluralize(liveRuntime, "live runtime snapshot")}`,
+  ];
 }
 
 function stripHtmlForFrame(html: string) {
@@ -883,6 +926,27 @@ const NAV_ITEMS: Array<{ id: ViewMode; label: string; icon: ComponentType }> = [
   { id: "profile", label: "Profile", icon: ProfileIcon },
 ];
 
+function AdminJsonBlock({
+  title,
+  value,
+}: {
+  title: string;
+  value: unknown;
+}) {
+  return (
+    <Card className="rounded-[20px] border-[rgba(72,43,37,0.06)] bg-[rgba(255,255,255,0.72)] shadow-none">
+      <CardContent className="space-y-3 p-5">
+        <div>
+          <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-[var(--ink-soft)]">{title}</h2>
+        </div>
+        <pre className="max-h-[28rem] overflow-auto rounded-[16px] bg-[rgba(32,24,18,0.05)] p-4 text-xs leading-6 text-[var(--ink)]">
+          {formatJson(value)}
+        </pre>
+      </CardContent>
+    </Card>
+  );
+}
+
 function LockedState({
   title,
   compact = false,
@@ -981,6 +1045,7 @@ export default function App() {
   const [activeView, setActiveView] = useState<ViewMode>(initialUrlState.view);
   const [sessions, setSessions] = useState<ChatSessionSummary[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null | undefined>(initialUrlState.sessionId);
+  const [selectedAdminRunId, setSelectedAdminRunId] = useState<string | null | undefined>(initialUrlState.runId);
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [sessionsResolved, setSessionsResolved] = useState(false);
@@ -1006,6 +1071,20 @@ export default function App() {
   const [bookReaderLoadVersion, setBookReaderLoadVersion] = useState(0);
   const [publicProfile, setPublicProfile] = useState<PublicProfileResponse | null>(null);
   const [publicProfileLoading, setPublicProfileLoading] = useState(false);
+  const [adminAccess, setAdminAccess] = useState<AdminAccessState>({
+    loading: true,
+    allowed: false,
+    authenticated: false,
+    authConfigured: false,
+    user: null,
+  });
+  const [adminRunInput, setAdminRunInput] = useState(initialUrlState.runId ?? "");
+  const [adminRunLog, setAdminRunLog] = useState<AdminRunLogState>({
+    loading: false,
+    error: null,
+    runId: initialUrlState.runId ?? "",
+    payload: null,
+  });
   const activeRunTokenRef = useRef(0);
   const bookReaderFrameRef = useRef<HTMLIFrameElement | null>(null);
   const bookReaderTextRef = useRef<HTMLPreElement | null>(null);
@@ -1042,10 +1121,15 @@ export default function App() {
       ? activeSession?.title ?? "Assistant"
       : activeView === "book"
         ? activeWork?.title ?? "Book"
+        : activeView === "admin"
+          ? "Admin"
         : NAV_ITEMS.find((item) => item.id === activeView)?.label ?? "AlphaBook";
   const authLocked = authState.authConfigured && !authState.user;
   const hasAuthenticatedUser = Boolean(authState.user);
   const authPending = authState.loading;
+  const navigationItems = adminAccess.allowed
+    ? [...NAV_ITEMS, { id: "admin" as const, label: "Admin", icon: ProfileIcon }]
+    : NAV_ITEMS;
 
   useEffect(() => {
     void (async () => {
@@ -1069,12 +1153,49 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (authState.loading) {
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const next = await fetchAdminAccess();
+        if (!cancelled) {
+          setAdminAccess({
+            loading: false,
+            allowed: next.allowed,
+            authenticated: next.authenticated,
+            authConfigured: next.authConfigured,
+            user: next.user,
+          });
+        }
+      } catch {
+        if (!cancelled) {
+          setAdminAccess({
+            loading: false,
+            allowed: false,
+            authenticated: false,
+            authConfigured: authState.authConfigured,
+            user: null,
+          });
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authState.authConfigured, authState.loading, authState.user?.email, authState.user?.id]);
+
+  useEffect(() => {
     const handlePopState = () => {
       const next = readUrlState();
       setActiveView(next.view);
       setSelectedSessionId(next.sessionId);
       setActiveWorkId(next.workId);
       setActiveProfileUserId(next.profileUserId);
+      setSelectedAdminRunId(next.runId);
+      setAdminRunInput(next.runId ?? "");
       setDebugEnabled(next.debugEnabled);
       setMobileNavOpen(false);
     };
@@ -1089,9 +1210,10 @@ export default function App() {
       sessionId: selectedSessionId,
       workId: activeWorkId,
       profileUserId: activeProfileUserId,
+      runId: selectedAdminRunId,
       debugEnabled,
     });
-  }, [activeView, selectedSessionId, activeWorkId, activeProfileUserId, debugEnabled]);
+  }, [activeView, selectedSessionId, activeWorkId, activeProfileUserId, selectedAdminRunId, debugEnabled]);
 
   useEffect(() => {
     if (activeView === "profile" && currentUserId && !activeProfileUserId) {
@@ -1289,6 +1411,54 @@ export default function App() {
       setSelectedSessionId(nextSessions[0].id);
     }
   }
+
+  async function loadAdminRunLogs(runId: string) {
+    const normalizedRunId = runId.trim();
+    if (!normalizedRunId) {
+      setAdminRunLog({
+        loading: false,
+        error: "Enter a run ID.",
+        runId: "",
+        payload: null,
+      });
+      setSelectedAdminRunId(null);
+      return;
+    }
+
+    try {
+      setAdminRunLog((current) => ({
+        ...current,
+        loading: true,
+        error: null,
+        runId: normalizedRunId,
+      }));
+      const payload = await fetchAdminRunLogs(normalizedRunId);
+      setSelectedAdminRunId(normalizedRunId);
+      setAdminRunInput(normalizedRunId);
+      setAdminRunLog({
+        loading: false,
+        error: null,
+        runId: normalizedRunId,
+        payload,
+      });
+    } catch (error) {
+      setSelectedAdminRunId(normalizedRunId);
+      setAdminRunInput(normalizedRunId);
+      setAdminRunLog({
+        loading: false,
+        error: error instanceof Error ? error.message : "Failed to load run logs.",
+        runId: normalizedRunId,
+        payload: null,
+      });
+    }
+  }
+
+  useEffect(() => {
+    if (!adminAccess.allowed || !selectedAdminRunId || adminRunLog.loading || adminRunLog.payload || adminRunLog.error) {
+      return;
+    }
+    void loadAdminRunLogs(selectedAdminRunId);
+  }, [adminAccess.allowed, adminRunLog.error, adminRunLog.loading, adminRunLog.payload, selectedAdminRunId]);
 
   async function sendPrompt(
     question: string,
@@ -1628,6 +1798,9 @@ export default function App() {
     if (view !== "profile") {
       setActiveProfileUserId(null);
       setPublicProfile(null);
+    }
+    if (view !== "admin") {
+      setSelectedAdminRunId(null);
     }
     if (view === "assistant" && activeView === "assistant") {
       startNewChat();
@@ -2147,6 +2320,92 @@ export default function App() {
     );
   }
 
+  function renderAdminView() {
+    if (adminAccess.loading || authPending) {
+      return (
+        <section className="assistant-page">
+          <div className="assistant-thread-shell">
+            <AuthLoadingState compact />
+          </div>
+        </section>
+      );
+    }
+
+    if (!adminAccess.allowed) {
+      return (
+        <section className="assistant-page">
+          <div className="assistant-thread-shell">
+            <LockedState compact title="This admin page is restricted." />
+          </div>
+        </section>
+      );
+    }
+
+    const summary = summarizeRunLogPayload(adminRunLog.payload);
+
+    return (
+      <div className="view-shell space-y-6">
+        <section className="space-y-4">
+          <header className="space-y-2">
+            <h1 className="font-[Newsreader] text-[clamp(2.2rem,4vw,3.5rem)] font-semibold leading-[0.92] tracking-[-0.05em] text-[var(--ink)]">
+              Run Logs
+            </h1>
+            <p className="max-w-3xl text-sm leading-6 text-[var(--ink-soft)]">
+              Load a run ID to inspect the session, tool calls, persisted artifacts, live runtime files, prompts, and Codex logs in one place.
+            </p>
+          </header>
+
+          <Card className="rounded-[24px] border-[rgba(72,43,37,0.06)] bg-[rgba(255,255,255,0.78)] shadow-none">
+            <CardContent className="space-y-4 p-5">
+              <form
+                className="flex flex-col gap-3 md:flex-row"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void loadAdminRunLogs(adminRunInput);
+                }}
+              >
+                <input
+                  className="min-h-12 flex-1 rounded-[16px] border border-[rgba(72,43,37,0.12)] bg-white px-4 text-sm text-[var(--ink)] outline-none transition focus:border-[rgba(72,43,37,0.28)]"
+                  placeholder="Enter a run ID"
+                  value={adminRunInput}
+                  onChange={(event) => setAdminRunInput(event.currentTarget.value)}
+                />
+                <Button type="submit" disabled={adminRunLog.loading || !adminRunInput.trim()}>
+                  {adminRunLog.loading ? "Loading…" : "Load run"}
+                </Button>
+              </form>
+
+              <div className="flex flex-wrap items-center gap-3 text-sm text-[var(--ink-soft)]">
+                <span>Signed in as {adminAccess.user?.email ?? "unknown user"}.</span>
+                {adminRunLog.runId ? <span>Viewing run {adminRunLog.runId}.</span> : null}
+                {summary.length > 0 ? <span>{summary.join(" · ")}</span> : null}
+              </div>
+
+              {adminRunLog.error ? (
+                <div className="rounded-[16px] border border-[rgba(187,73,44,0.2)] bg-[rgba(187,73,44,0.08)] px-4 py-3 text-sm leading-6 text-[var(--ink)]">
+                  {adminRunLog.error}
+                </div>
+              ) : null}
+            </CardContent>
+          </Card>
+        </section>
+
+        {adminRunLog.payload ? (
+          <section className="space-y-4">
+            <AdminJsonBlock title="Run" value={adminRunLog.payload.run ?? {}} />
+            <AdminJsonBlock title="Session" value={adminRunLog.payload.session ?? {}} />
+            <AdminJsonBlock title="Owner" value={adminRunLog.payload.owner ?? {}} />
+            <AdminJsonBlock title="Messages" value={adminRunLog.payload.messages ?? []} />
+            <AdminJsonBlock title="Tool Calls" value={adminRunLog.payload.toolCalls ?? []} />
+            <AdminJsonBlock title="Runtime Instances" value={adminRunLog.payload.runtimeInstances ?? []} />
+            <AdminJsonBlock title="Artifacts" value={adminRunLog.payload.artifacts ?? []} />
+            <AdminJsonBlock title="Live Runtime" value={adminRunLog.payload.liveRuntime ?? []} />
+          </section>
+        ) : null}
+      </div>
+    );
+  }
+
   function renderMainView() {
     switch (activeView) {
       case "explore":
@@ -2157,6 +2416,8 @@ export default function App() {
         return renderLibraryView();
       case "profile":
         return renderProfileView();
+      case "admin":
+        return renderAdminView();
       case "assistant":
       default:
         return renderAssistantView();
@@ -2204,7 +2465,7 @@ export default function App() {
         </div>
 
         <nav className={cn("sidebar-nav", sidebarCollapsed && "items-center")} aria-label="Primary">
-          {NAV_ITEMS.map((item) => {
+          {navigationItems.map((item) => {
             const Icon = item.icon;
             const isActive = activeView === item.id || (activeView === "book" && item.id === "explore");
             return (

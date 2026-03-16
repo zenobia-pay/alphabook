@@ -230,10 +230,26 @@ async function writeSelectedChunks(paths: ReturnType<typeof createPaths>, payloa
 }
 
 async function writeWorkspaceHelpers(paths: ReturnType<typeof createPaths>) {
-  const hydrateHelperSource = await readFile(new URL("../bin/hydrate-files.mjs", import.meta.url), "utf8");
-  const searchDbHelperSource = await readFile(new URL("../bin/search-db.mjs", import.meta.url), "utf8");
-  await writeFile(join(paths.context, "hydrate-files.mjs"), hydrateHelperSource, "utf8");
-  await writeFile(join(paths.context, "search-db.mjs"), searchDbHelperSource, "utf8");
+  const helperScripts = [
+    {
+      filename: "hydrate-files.mjs",
+      targetUrl: new URL("../bin/hydrate-files.mjs", import.meta.url).href,
+    },
+    {
+      filename: "search-db.mjs",
+      targetUrl: new URL("../bin/search-db.mjs", import.meta.url).href,
+    },
+  ];
+
+  await Promise.all(
+    helperScripts.map(async ({ filename, targetUrl }) => {
+      await writeFile(
+        join(paths.context, filename),
+        `#!/usr/bin/env node\nimport ${JSON.stringify(targetUrl)};\n`,
+        "utf8",
+      );
+    }),
+  );
 }
 
 async function appendProgressEvent(paths: ReturnType<typeof createPaths>, event: Record<string, unknown>) {

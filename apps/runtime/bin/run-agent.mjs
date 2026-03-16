@@ -1072,40 +1072,6 @@ async function ensureDir(path) {
   await mkdir(path, { recursive: true });
 }
 
-async function hydrateChunkCorpusIfNeeded(workspaceRoot, chunksRoot, outputDir) {
-  const chunkFiles = await listChunkFiles(chunksRoot);
-  if (chunkFiles.length > 0) {
-    return chunkFiles;
-  }
-
-  const hydrateHelperPath = join(workspaceRoot, "context", "hydrate-files.mjs");
-  if (!(await fileExists(hydrateHelperPath))) {
-    return [];
-  }
-
-  const hydration = await runProcess(process.execPath, [hydrateHelperPath, "--all", "--kind", "chunks"], {
-    cwd: workspaceRoot,
-    env: process.env,
-  });
-
-  await writeFile(
-    join(outputDir, "download-manifest.json"),
-    hydration.stdout && hydration.stdout.trim().length > 0
-      ? hydration.stdout
-      : JSON.stringify({
-        downloaded: [],
-        count: 0,
-      }, null, 2),
-    "utf8",
-  );
-
-  if (hydration.exitCode !== 0) {
-    throw new Error(`Chunk hydration failed before search: ${hydration.stderr || hydration.stdout}`);
-  }
-
-  return listChunkFiles(chunksRoot);
-}
-
 async function main() {
   const taskPath = process.env.ALPHABOOK_TASK_PATH;
   const outputDir = process.env.ALPHABOOK_OUTPUT_DIR;
@@ -1143,7 +1109,13 @@ async function main() {
       ? manifest.works.map((work) => [String(work.workId || ""), work])
       : [],
   );
-  const chunkFiles = await hydrateChunkCorpusIfNeeded(workspaceRoot, chunksRoot, outputDir);
+  const chunkFiles = await listChunkFiles(chunksRoot);
+  if (chunkFiles.length === 0) {
+    await appendProgressEvent(outputDir, {
+      type: "workspace.local_chunks.missing",
+      message: "No local chunk files are hydrated yet; starting from seed evidence and remote corpus search.",
+    });
+  }
   const allChunks = [];
 
   for (const chunkFile of chunkFiles) {

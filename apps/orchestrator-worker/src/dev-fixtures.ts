@@ -157,6 +157,13 @@ class DemoRuntimeGateway implements RuntimeToolGateway {
     };
   }
 
+  async listWorkspaceFiles() {
+    return {
+      ok: true,
+      files: ["output/summary.md"],
+    };
+  }
+
   async destroyWorkspace(args: Record<string, unknown>) {
     this.outputs.delete(String(args.runtimeId ?? ""));
     return { ok: true };
