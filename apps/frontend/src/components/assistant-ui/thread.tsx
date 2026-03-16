@@ -41,15 +41,15 @@ type MessagePartRecord = {
   isError?: boolean;
 };
 
-function flattenLogLines(value: unknown, prefix: string, lines: string[] = []) {
+function flattenLogLines(value: unknown, prefix = "", lines: string[] = []) {
   if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-    lines.push(`${prefix}: ${String(value)}`);
+    lines.push(prefix ? `${prefix}: ${String(value)}` : String(value));
     return lines;
   }
 
   if (Array.isArray(value)) {
     value.forEach((entry, index) => {
-      flattenLogLines(entry, `${prefix}[${index}]`, lines);
+      flattenLogLines(entry, prefix ? `${prefix}[${index}]` : `[${index}]`, lines);
     });
     return lines;
   }
@@ -59,7 +59,7 @@ function flattenLogLines(value: unknown, prefix: string, lines: string[] = []) {
   }
 
   Object.entries(value).forEach(([key, entry]) => {
-    flattenLogLines(entry, `${prefix}.${key}`, lines);
+    flattenLogLines(entry, prefix ? `${prefix}.${key}` : key, lines);
   });
   return lines;
 }
@@ -85,13 +85,13 @@ function assistantMessageToMarkdown(parts: readonly MessagePartRecord[]) {
 
       const toolSections = [`### Tool Call: ${part.toolName ?? "Tool"}`];
       if (rationale) {
-        toolSections.push(`progress: ${rationale}`);
+        toolSections.push(rationale);
       }
       toolSections.push(
         "```text",
-        ...flattenLogLines(args, "request"),
-        ...progress.map((line) => `progress: ${line}`),
-        ...(part.result !== undefined ? flattenLogLines(part.result, "response") : []),
+        ...flattenLogLines(args),
+        ...progress,
+        ...(part.result !== undefined ? flattenLogLines(part.result) : []),
         "```",
       );
 

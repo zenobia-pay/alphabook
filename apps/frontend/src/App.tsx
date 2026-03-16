@@ -1395,61 +1395,30 @@ function ProfileLoadingState({ publicView = false }: { publicView?: boolean }) {
 
 function BookLoadingState() {
   return (
-    <>
-      <div className="book-reader-pane book-reader-pane-loading" aria-hidden="true">
-        <header className="book-reader-header book-reader-header-loading">
-          <div className="book-loading-copy">
-            <Skeleton className="book-loading-meta" />
-            <Skeleton className="book-loading-title" />
-            <Skeleton className="book-loading-authors" />
-          </div>
-        </header>
+    <div className="book-reader-pane book-reader-pane-loading" aria-hidden="true">
+      <header className="book-reader-header book-reader-header-loading">
+        <div className="book-loading-copy">
+          <Skeleton className="book-loading-meta" />
+          <Skeleton className="book-loading-title" />
+          <Skeleton className="book-loading-authors" />
+        </div>
+      </header>
 
-        <div className="book-reader-surface book-reader-surface-loading">
-          <div className="book-reader-passages book-reader-passages-loading">
-            {[0, 1, 2, 3, 4].map((item) => (
-              <div key={item} className="book-loading-passage">
-                <Skeleton className="book-loading-anchor" />
-                <div className="book-loading-lines">
-                  <Skeleton className="book-loading-line is-wide" />
-                  <Skeleton className="book-loading-line" />
-                  <Skeleton className="book-loading-line is-short" />
-                </div>
+      <div className="book-reader-surface book-reader-surface-loading">
+        <div className="book-reader-passages book-reader-passages-loading">
+          {[0, 1, 2, 3, 4].map((item) => (
+            <div key={item} className="book-loading-passage">
+              <Skeleton className="book-loading-anchor" />
+              <div className="book-loading-lines">
+                <Skeleton className="book-loading-line is-wide" />
+                <Skeleton className="book-loading-line" />
+                <Skeleton className="book-loading-line is-short" />
               </div>
-            ))}
-          </div>
+            </div>
+          ))}
         </div>
       </div>
-
-      <div className="book-assistant-divider" aria-hidden="true" />
-
-      <aside className="book-assistant-pane" aria-hidden="true">
-        <div className="book-assistant-shell">
-          <div className="book-assistant-toolbar">
-            <Skeleton className="book-loading-session-picker" />
-            <Skeleton className="book-loading-new-chat" />
-          </div>
-          <div className="book-loading-thread">
-            <div className="book-loading-thread-messages">
-              {[0, 1].map((item) => (
-                <div key={item} className="book-loading-bubble">
-                  <Skeleton className="book-loading-bubble-title" />
-                  <Skeleton className="book-loading-bubble-line is-wide" />
-                  <Skeleton className="book-loading-bubble-line" />
-                </div>
-              ))}
-            </div>
-            <div className="book-loading-composer">
-              <Skeleton className="book-loading-composer-line is-wide" />
-              <div className="book-loading-composer-footer">
-                <Skeleton className="book-loading-composer-plus" />
-                <Skeleton className="book-loading-composer-send" />
-              </div>
-            </div>
-          </div>
-        </div>
-      </aside>
-    </>
+    </div>
   );
 }
 
@@ -1950,6 +1919,7 @@ export default function App() {
 
   useEffect(() => {
     if (!activeWorkId) {
+      setActiveWorkLoading(false);
       setActiveWork(null);
       setActiveWorkSource(null);
       setActivePassageId(null);
@@ -1957,20 +1927,42 @@ export default function App() {
       return;
     }
 
+    let cancelled = false;
+    const timeoutId = window.setTimeout(() => {
+      if (cancelled) {
+        return;
+      }
+      setActiveWorkLoading(false);
+      setLoadError("Loading this book is taking too long. Try refreshing or opening it again.");
+    }, 12000);
+
     void (async () => {
       try {
         setActiveWorkLoading(true);
         const detail = await fetchWorkDetail(activeWorkId);
+        if (cancelled) {
+          return;
+        }
         setActiveWork(detail.work);
         setActiveWorkSource(detail.source);
         setActivePassageId(null);
         setHighlightedPassageExcerpt(null);
       } catch (error) {
-        setLoadError(error instanceof Error ? error.message : "Failed to load the selected book.");
+        if (!cancelled) {
+          setLoadError(error instanceof Error ? error.message : "Failed to load the selected book.");
+        }
       } finally {
-        setActiveWorkLoading(false);
+        window.clearTimeout(timeoutId);
+        if (!cancelled) {
+          setActiveWorkLoading(false);
+        }
       }
     })();
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
   }, [activeWorkId]);
 
   useEffect(() => {
@@ -2993,78 +2985,78 @@ export default function App() {
           <BookLoadingState />
         ) : (
           <>
-        <div className="book-reader-pane">
-          {activeWork ? (
-            <>
-              <header className="book-reader-header">
-                <div>
-                  <p className="book-reader-meta">
-                    {[activeWork.gutenbergId ? `Gutenberg ${activeWork.gutenbergId}` : null, activeWork.language?.toUpperCase()].filter(Boolean).join(" · ")}
-                  </p>
-                  <h1>{activeWork.title}</h1>
-                  {activeWork.authors.length > 0 ? <p className="book-reader-authors">{activeWork.authors.join(" · ")}</p> : null}
-                </div>
-              </header>
+            <div className="book-reader-pane">
+              {activeWork ? (
+                <>
+                  <header className="book-reader-header">
+                    <div>
+                      <p className="book-reader-meta">
+                        {[activeWork.gutenbergId ? `Gutenberg ${activeWork.gutenbergId}` : null, activeWork.language?.toUpperCase()].filter(Boolean).join(" · ")}
+                      </p>
+                      <h1>{activeWork.title}</h1>
+                      {activeWork.authors.length > 0 ? <p className="book-reader-authors">{activeWork.authors.join(" · ")}</p> : null}
+                    </div>
+                  </header>
 
-              <div className="book-reader-surface">
-                {readerPassages.length > 0 ? (
-                  <div className="book-reader-passages">
-                    {readerPassages.map((passage) => (
-                      <ReaderPassageBlock
-                        key={passage.id}
-                        passage={passage}
-                        isActive={passage.id === activePassageId}
-                        highlight={passage.id === activePassageId ? highlightedPassageExcerpt : null}
-                        onActivate={(passageId) => activatePassage(passageId, null)}
-                      />
-                    ))}
+                  <div className="book-reader-surface">
+                    {readerPassages.length > 0 ? (
+                      <div className="book-reader-passages">
+                        {readerPassages.map((passage) => (
+                          <ReaderPassageBlock
+                            key={passage.id}
+                            passage={passage}
+                            isActive={passage.id === activePassageId}
+                            highlight={passage.id === activePassageId ? highlightedPassageExcerpt : null}
+                            onActivate={(passageId) => activatePassage(passageId, null)}
+                          />
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="book-loading">This book does not have stored source content yet.</div>
+                    )}
                   </div>
+                </>
+              ) : (
+                <div className="book-loading">Book not found.</div>
+              )}
+            </div>
+
+            <div
+              className="book-assistant-divider"
+              onPointerDown={startBookAssistantResize}
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize assistant panel"
+            />
+
+            <aside className="book-assistant-pane">
+              {loadError ? <div className="thread-error-banner">{loadError}</div> : null}
+              <div className="book-assistant-shell" data-testid="book-thread">
+                <BookAssistantToolbar
+                  sessions={sessions}
+                  selectedSessionId={selectedSessionId}
+                  onSelectSession={openBookSession}
+                  onStartNewChat={startNewBookChat}
+                />
+                {authPending ? (
+                  <AssistantLoadingState />
+                ) : authLocked ? (
+                  <LockedState
+                    compact
+                    title="Sign in to ask about this book."
+                  />
                 ) : (
-                  <div className="book-loading">This book does not have stored source content yet.</div>
+                  <AssistantSurface
+                    key={`book-${activeWorkId ?? "unknown"}-${selectedSessionId ?? "new-thread"}`}
+                    messages={messages}
+                    isSending={isSending}
+                    streamingAssistantId={streamingAssistantId}
+                    onPrompt={bookPromptHandler}
+                    suggestions={ASSISTANT_WELCOME_SUGGESTIONS}
+                  />
                 )}
               </div>
-            </>
-          ) : (
-            <div className="book-loading">Book not found.</div>
-          )}
-        </div>
-
-        <div
-          className="book-assistant-divider"
-          onPointerDown={startBookAssistantResize}
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Resize assistant panel"
-        />
-
-        <aside className="book-assistant-pane">
-          {loadError ? <div className="thread-error-banner">{loadError}</div> : null}
-          <div className="book-assistant-shell" data-testid="book-thread">
-            <BookAssistantToolbar
-              sessions={sessions}
-              selectedSessionId={selectedSessionId}
-              onSelectSession={openBookSession}
-              onStartNewChat={startNewBookChat}
-            />
-            {authPending ? (
-              <AssistantLoadingState />
-            ) : authLocked ? (
-              <LockedState
-                compact
-                title="Sign in to ask about this book."
-              />
-            ) : (
-              <AssistantSurface
-                key={`book-${activeWorkId ?? "unknown"}-${selectedSessionId ?? "new-thread"}`}
-                messages={messages}
-                isSending={isSending}
-                streamingAssistantId={streamingAssistantId}
-                onPrompt={bookPromptHandler}
-                suggestions={ASSISTANT_WELCOME_SUGGESTIONS}
-              />
-            )}
-          </div>
-        </aside>
+            </aside>
           </>
         )}
       </section>

@@ -144,13 +144,13 @@ function flattenStructuredLines(
 
 function flattenRawLogLines(
   value: unknown,
-  prefix: string,
+  prefix?: string,
   lines: ToolLogLine[] = [],
 ) {
   const structuredLines = flattenStructuredLines(value);
   for (const line of structuredLines) {
     lines.push({
-      key: `${prefix}.${line.key}`,
+      key: prefix ? `${prefix}.${line.key}` : line.key,
       value: line.value,
     });
   }
@@ -516,17 +516,17 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
   const logLines = useMemo(() => {
     const lines: ToolLogLine[] = [];
     if (cleanedArgs !== undefined && cleanedArgs !== null) {
-      flattenRawLogLines(cleanedArgs, "request", lines);
+      flattenRawLogLines(cleanedArgs, undefined, lines);
     }
     progress.forEach((item) => {
       lines.push({
-        key: "progress",
+        key: "",
         value: item,
         tone: "muted",
       });
     });
     if (resultObject !== undefined && resultObject !== null) {
-      flattenRawLogLines(resultObject, "response", lines);
+      flattenRawLogLines(resultObject, undefined, lines);
     }
     if (errorText) {
       lines.push({

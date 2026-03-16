@@ -625,6 +625,10 @@ button {
   color: rgba(96, 84, 70, 0.72);
 }
 
+.aui-tool-log-line-key:empty {
+  display: none;
+}
+
 .aui-tool-log-line-key-muted {
   color: rgba(96, 84, 70, 0.56);
 }
