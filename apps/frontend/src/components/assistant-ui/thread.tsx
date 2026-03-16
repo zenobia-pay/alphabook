@@ -34,7 +34,7 @@ import {
 } from "lucide-react";
 import type { FC } from "react";
 
-export const Thread: FC = () => {
+export const Thread: FC<{ isRunning?: boolean }> = ({ isRunning = false }) => {
   return (
     <ThreadPrimitive.Root
       className="aui-root aui-thread-root @container flex h-full flex-col bg-background"
@@ -62,7 +62,7 @@ export const Thread: FC = () => {
 
         <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 mx-auto mt-auto flex w-full max-w-(--thread-max-width) flex-col gap-3 overflow-visible bg-background pb-3 md:pb-4">
           <ThreadScrollToBottom />
-          <Composer />
+          <Composer isRunning={isRunning} />
         </ThreadPrimitive.ViewportFooter>
       </ThreadPrimitive.Viewport>
     </ThreadPrimitive.Root>
@@ -130,7 +130,7 @@ const ThreadSuggestionItem: FC = () => {
   );
 };
 
-const Composer: FC = () => {
+const Composer: FC<{ isRunning?: boolean }> = ({ isRunning = false }) => {
   return (
     <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
       <ComposerPrimitive.AttachmentDropzone asChild>
@@ -145,19 +145,20 @@ const Composer: FC = () => {
             rows={1}
             autoFocus
             aria-label="Message input"
+            disabled={isRunning}
           />
-          <ComposerAction />
+          <ComposerAction isRunning={isRunning} />
         </div>
       </ComposerPrimitive.AttachmentDropzone>
     </ComposerPrimitive.Root>
   );
 };
 
-const ComposerAction: FC = () => {
+const ComposerAction: FC<{ isRunning?: boolean }> = ({ isRunning = false }) => {
   return (
     <div className="aui-composer-action-wrapper relative flex items-center justify-between">
-      <ComposerAddAttachment />
-      <AuiIf condition={(s) => !s.thread.isRunning}>
+      {isRunning ? <span className="aui-composer-status text-sm text-muted-foreground">Thinking…</span> : <ComposerAddAttachment />}
+      <AuiIf condition={() => !isRunning}>
         <ComposerPrimitive.Send asChild>
           <TooltipIconButton
             tooltip="Send message"
@@ -167,12 +168,13 @@ const ComposerAction: FC = () => {
             size="icon"
             className="aui-composer-send size-8 rounded-full"
             aria-label="Send message"
+            disabled={isRunning}
           >
             <ArrowUpIcon className="aui-composer-send-icon size-4" />
           </TooltipIconButton>
         </ComposerPrimitive.Send>
       </AuiIf>
-      <AuiIf condition={(s) => s.thread.isRunning}>
+      <AuiIf condition={() => isRunning}>
         <ComposerPrimitive.Cancel asChild>
           <Button
             type="button"
