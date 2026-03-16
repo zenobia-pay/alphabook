@@ -155,7 +155,7 @@ function StructuredValue({
 }) {
   if (isPrimitive(value)) {
     return (
-      <div className={cn("aui-tool-structured-row", depth > 0 && "aui-tool-structured-row-nested")}>
+      <div className={cn("aui-tool-structured-row", !label && "aui-tool-structured-row-unlabeled", depth > 0 && "aui-tool-structured-row-nested")}>
         {label ? <div className="aui-tool-structured-key">{humanizeKey(label)}</div> : null}
         <div className="aui-tool-structured-value">{formatPrimitive(value)}</div>
       </div>
@@ -165,7 +165,7 @@ function StructuredValue({
   if (Array.isArray(value)) {
     if (value.length === 0) {
       return (
-        <div className={cn("aui-tool-structured-row", depth > 0 && "aui-tool-structured-row-nested")}>
+        <div className={cn("aui-tool-structured-row", !label && "aui-tool-structured-row-unlabeled", depth > 0 && "aui-tool-structured-row-nested")}>
           {label ? <div className="aui-tool-structured-key">{humanizeKey(label)}</div> : null}
           <div className="aui-tool-structured-value">[]</div>
         </div>
@@ -174,7 +174,7 @@ function StructuredValue({
 
     const items = value.slice(0, MAX_PREVIEW_ITEMS);
     return (
-      <div className={cn("aui-tool-structured-block", depth > 0 && "aui-tool-structured-block-nested")}>
+      <div className={cn("aui-tool-structured-block", !label && "aui-tool-structured-block-unlabeled", depth > 0 && "aui-tool-structured-block-nested")}>
         {label ? <div className="aui-tool-structured-key">{humanizeKey(label)}</div> : null}
         <div className="aui-tool-structured-array">
           {items.map((item, index) => (
@@ -201,7 +201,7 @@ function StructuredValue({
   }
 
   return (
-    <div className={cn("aui-tool-structured-block", depth > 0 && "aui-tool-structured-block-nested")}>
+    <div className={cn("aui-tool-structured-block", !label && "aui-tool-structured-block-unlabeled", depth > 0 && "aui-tool-structured-block-nested")}>
       {label ? <div className="aui-tool-structured-key">{humanizeKey(label)}</div> : null}
       <div className="aui-tool-structured-group">
         {entries.map(([key, child]) => (

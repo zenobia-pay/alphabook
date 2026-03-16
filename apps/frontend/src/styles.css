@@ -570,6 +570,11 @@ button {
   grid-template-columns: minmax(92px, 128px) minmax(0, 1fr);
 }
 
+.aui-tool-structured-row-unlabeled,
+.aui-tool-structured-block-unlabeled {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .aui-tool-structured-key {
   font-size: 0.8rem;
   line-height: 1.45;
