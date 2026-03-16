@@ -36,6 +36,17 @@ export interface Planner {
   decide(context: PlannerContext): Promise<PlannerDecision>;
 }
 
+const VALID_TOOL_NAMES = new Set<ToolName>([
+  "search_works",
+  "get_work_metadata",
+  "get_relevant_chunks",
+  "get_work_text",
+  "create_workspace",
+  "run_workspace_task",
+  "read_workspace_file",
+  "destroy_workspace",
+]);
+
 function truncateForModel(value: string, maxChars = 240) {
   const normalized = value.replace(/\s+/g, " ").trim();
   if (normalized.length <= maxChars) {
@@ -166,6 +177,35 @@ function summarizePlannerContext(context: PlannerContext) {
       args: summarizePlannerValue(entry.args),
     })),
   };
+}
+
+function coercePlannerDecision(value: unknown): unknown {
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  const record = { ...(value as Record<string, unknown>) };
+  const toolName = typeof record.tool_name === "string" ? record.tool_name : null;
+  const args = record.args;
+  const answer = typeof record.answer === "string" ? record.answer : null;
+
+  if ((!record.type || record.type === "tool") && toolName && VALID_TOOL_NAMES.has(toolName as ToolName)) {
+    return {
+      ...record,
+      type: "tool_call",
+      tool_name: toolName,
+      args: args && typeof args === "object" ? args : {},
+    };
+  }
+
+  if (!record.type && answer) {
+    return {
+      ...record,
+      type: "final_answer",
+      citations: Array.isArray(record.citations) ? record.citations : [],
+    };
+  }
+
+  return record;
 }
 
 function extractCitationsFromChunks(chunks: ChunkSearchResult[]): Citation[] {
@@ -581,7 +621,14 @@ export class OpenAIPlanner implements Planner {
     if (!content) {
       throw new Error("Planner response was empty.");
     }
-    const parsed = PlannerDecisionSchema.parse(parseModelJsonObject<unknown>(content));
+    const parsedJson = parseModelJsonObject<unknown>(content);
+    const parsedCandidate = coercePlannerDecision(parsedJson);
+    const parsedResult = PlannerDecisionSchema.safeParse(parsedCandidate);
+    if (!parsedResult.success) {
+      const fallbackPlanner = new FallbackPlanner();
+      return fallbackPlanner.decide(context);
+    }
+    const parsed = parsedResult.data;
     if (!context.toolHistory.some((entry) => entry.toolName === "create_workspace")) {
       const chunks = seedChunkPayload(context);
       const metadataIds = context.workScope?.length ? context.workScope.slice(0, 12) : metadataWorkIds(context, 12);
