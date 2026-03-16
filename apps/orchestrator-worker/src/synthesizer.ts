@@ -375,7 +375,8 @@ export class OpenAISynthesizer implements Synthesizer {
           role: "system",
           content: `${SYNTHESIZER_SYSTEM_PROMPT}
 Return a single JSON object with answer and citations.
-If exact citation URLs are provided, cite by pasting those exact absolute URLs verbatim in the answer body. Do not invent, shorten, rewrite, or substitute any URL.`,
+If exact citation URLs are provided, cite with short markdown links such as [Open passage](ABSOLUTE_URL).
+Use the exact provided absolute URL as the href. Do not invent, shorten, rewrite, or substitute any URL.`,
         },
         {
           role: "user",
