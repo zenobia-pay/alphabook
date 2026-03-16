@@ -464,13 +464,34 @@ function chunkTextForStream(text: string): string[] {
     return [];
   }
   const chunks: string[] = [];
-  let cursor = 0;
-  while (cursor < cleaned.length) {
-    const nextCursor = Math.min(cleaned.length, cursor + 180);
-    chunks.push(cleaned.slice(cursor, nextCursor));
-    cursor = nextCursor;
+  const words = cleaned.split(/(\s+)/u).filter((part) => part.length > 0);
+  let current = "";
+
+  for (const part of words) {
+    if (current.length > 0 && current.length + part.length > 48) {
+      chunks.push(current);
+      current = part;
+      continue;
+    }
+    current += part;
+  }
+
+  if (current) {
+    chunks.push(current);
   }
   return chunks;
+}
+
+async function streamAssistantText(
+  answer: string,
+  send: (event: string, data: Record<string, unknown>) => Promise<void>,
+) {
+  for (const text of chunkTextForStream(answer)) {
+    await send("assistant.delta", {
+      text,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 16));
+  }
 }
 
 function labelForToolCall(toolName: ToolName, args: Record<string, unknown>) {
@@ -966,11 +987,7 @@ async function synthesizeAnswer(
     toolCalls: summarizedToolHistory,
   });
 
-  for (const text of chunkTextForStream(synthesis.answer)) {
-    await send("assistant.delta", {
-      text,
-    });
-  }
+  await streamAssistantText(synthesis.answer, send);
   await send("assistant.completed", {
     answer: synthesis.answer,
     citations: synthesis.citations,
@@ -1041,11 +1058,7 @@ async function runOrchestrator(
       status: "completed",
       completedAt: new Date().toISOString(),
     });
-    for (const text of chunkTextForStream(routeDecision.answer)) {
-      await send("assistant.delta", {
-        text,
-      });
-    }
+    await streamAssistantText(routeDecision.answer, send);
     await send("assistant.completed", {
       answer: routeDecision.answer,
       citations: [],
@@ -1243,7 +1256,7 @@ async function runOrchestrator(
     phase: "error",
     toolCalls: summarizeToolHistory(toolHistory),
   });
-  await send("assistant.delta", { text: timeoutMessage });
+  await streamAssistantText(timeoutMessage, send);
   await send("assistant.completed", {
     answer: timeoutMessage,
     citations: [],
