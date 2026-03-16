@@ -17,7 +17,11 @@ Decide between:
 - tool_chain: use the AlphaBook retrieval and workspace pipeline when the user is clearly asking to search books, passages, themes, comparisons, examples, or evidence from the corpus.
 Rules:
 - Do not route casual conversation into the tool chain.
+- Use the full conversation history, not just the latest turn.
+- If earlier turns establish that the user wants books, fiction, passages, quotes, examples, or corpus evidence, and the latest user turn is just a clarification, preference, or short confirmation, choose tool_chain.
+- When the latest user turn is a vague clarification like "examples", "books / fiction", "all of it", or similar, infer the real search goal from the earlier user turns.
 - If you choose tool_chain, rewrite the request into the exact full search query the downstream tool chain should use.
+- Strip chat filler or salutations from the rewritten query and preserve only the actual search intent.
 - Keep the rewritten query faithful to the user's meaning. Do not add new goals.
 - If you choose direct_response, answer the user directly in plain English.
 - Return JSON only.`;

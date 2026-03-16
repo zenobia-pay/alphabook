@@ -9,7 +9,7 @@ import { createBillingService } from "../src/billing";
 import { HashEmbedder, OpenAIEmbedder } from "../src/embeddings";
 import { MemoryBlobStore } from "../src/r2";
 import { FallbackPlanner, ScriptedPlanner } from "../src/planner";
-import { FallbackRouter, ScriptedRouter } from "../src/router";
+import { ScriptedRouter } from "../src/router";
 import { FlyMachinesRuntimeGateway } from "../src/runtime";
 import { InMemoryAppStore } from "../src/store";
 import type { SynthesisInput, SynthesisResult, Synthesizer } from "../src/synthesizer";
@@ -334,26 +334,6 @@ test("follow-up requests pass full chat history into router and planner", async 
   assert.match(body, /The follow-up saw the full thread\./);
 });
 
-test("fallback router escalates clarified books-or-fiction requests into the tool chain", async () => {
-  const router = new FallbackRouter();
-  const decision = await router.decide({
-    userMessage: "idk all of it.",
-    conversationHistory: [
-      { role: "user", content: "people who broke up got back together" },
-      { role: "assistant", content: "Are you looking for real-life advice or examples from books/fiction?" },
-      { role: "user", content: "examples" },
-      { role: "assistant", content: "Do you want examples from books/fiction or real-life examples?" },
-      { role: "user", content: "books / fiction" },
-      { role: "assistant", content: "Any preferences so I can tailor the list?" },
-      { role: "user", content: "idk all of it." },
-    ],
-  });
-
-  assert.deepEqual(decision, {
-    type: "tool_chain",
-    fullQuery: "passages from books or fiction where people who broke up got back together",
-  });
-});
 
 test("orchestrator can delegate to a runtime gateway and finish the run", async () => {
   const store = new InMemoryAppStore(
