@@ -28,6 +28,8 @@ export interface Env {
   FLY_RUNTIME_MACHINE_CPU_KIND?: string;
   FLY_RUNTIME_MACHINE_CPUS?: string;
   FLY_RUNTIME_MACHINE_MEMORY_MB?: string;
+  RUNTIME_OPENAI_PROXY_UPSTREAM_BASE_URL?: string;
+  RUNTIME_CODEX_OPENAI_BASE_URL?: string;
   R2_BUCKET_NAME?: string;
   R2_ENDPOINT?: string;
   R2_ACCESS_KEY_ID?: string;
@@ -72,6 +74,8 @@ function resolveRuntimeGateway(env: Env, store: NeonAppStore, blobStore: Cloudfl
           : "shared",
       machineCpus: env.FLY_RUNTIME_MACHINE_CPUS ? Number(env.FLY_RUNTIME_MACHINE_CPUS) : undefined,
       machineMemoryMb: env.FLY_RUNTIME_MACHINE_MEMORY_MB ? Number(env.FLY_RUNTIME_MACHINE_MEMORY_MB) : undefined,
+      codexOpenAIBaseUrl: env.RUNTIME_CODEX_OPENAI_BASE_URL,
+      codexProxyUpstreamBaseUrl: env.RUNTIME_OPENAI_PROXY_UPSTREAM_BASE_URL,
       r2BucketName: env.RUNTIME_R2_BUCKET_NAME ?? env.R2_BUCKET_NAME ?? "alphabook",
       r2Endpoint: env.R2_ENDPOINT,
       r2AccessKeyId: env.R2_ACCESS_KEY_ID,

@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, normalize } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -69,6 +69,10 @@ function createPaths(workspaceRoot: string) {
   };
 }
 
+function nowIso() {
+  return new Date().toISOString();
+}
+
 function json(response: ServerResponse, statusCode: number, payload: unknown) {
   response.statusCode = statusCode;
   response.setHeader("content-type", "application/json; charset=utf-8");
@@ -82,6 +86,14 @@ async function readJson<T>(request: IncomingMessage): Promise<T> {
   }
   const text = Buffer.concat(chunks).toString("utf8");
   return JSON.parse(text) as T;
+}
+
+async function readRequestBody(request: IncomingMessage): Promise<Buffer> {
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of request) {
+    chunks.push(typeof chunk === "string" ? new TextEncoder().encode(chunk) : chunk);
+  }
+  return Buffer.concat(chunks);
 }
 
 async function readJsonIfPresent<T>(path: string, fallback: T): Promise<T> {
@@ -222,6 +234,153 @@ async function writeWorkspaceHelpers(paths: ReturnType<typeof createPaths>) {
   const searchDbHelperSource = await readFile(new URL("../bin/search-db.mjs", import.meta.url), "utf8");
   await writeFile(join(paths.context, "hydrate-files.mjs"), hydrateHelperSource, "utf8");
   await writeFile(join(paths.context, "search-db.mjs"), searchDbHelperSource, "utf8");
+}
+
+async function appendProgressEvent(paths: ReturnType<typeof createPaths>, event: Record<string, unknown>) {
+  await mkdir(paths.output, { recursive: true });
+  await appendFile(
+    join(paths.output, "codex-progress.jsonl"),
+    `${JSON.stringify({
+      timestamp: nowIso(),
+      ...event,
+    })}\n`,
+    "utf8",
+  );
+}
+
+function isLoopbackRequest(request: IncomingMessage) {
+  const address = request.socket.remoteAddress ?? "";
+  return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
+}
+
+function extractPromptPreview(payload: unknown): string | null {
+  const candidates: string[] = [];
+  const walk = (value: unknown) => {
+    if (typeof value === "string") {
+      candidates.push(value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach(walk);
+      return;
+    }
+    if (!value || typeof value !== "object") {
+      return;
+    }
+    const record = value as Record<string, unknown>;
+    if (typeof record.instructions === "string") {
+      candidates.push(record.instructions);
+    }
+    if ("input" in record) {
+      walk(record.input);
+    }
+    if ("content" in record) {
+      walk(record.content);
+    }
+    if (typeof record.text === "string") {
+      candidates.push(record.text);
+    }
+  };
+  walk(payload);
+  const combined = candidates.join("\n").replace(/\s+/g, " ").trim();
+  if (!combined) {
+    return null;
+  }
+  return combined.length > 700 ? `${combined.slice(0, 699)}…` : combined;
+}
+
+async function proxyOpenAIRequest(
+  request: IncomingMessage,
+  response: ServerResponse,
+  paths: ReturnType<typeof createPaths>,
+) {
+  if (!isLoopbackRequest(request)) {
+    return json(response, 403, { error: "Codex proxy only accepts loopback requests." });
+  }
+
+  const upstreamBaseUrl = process.env.RUNTIME_OPENAI_PROXY_UPSTREAM_BASE_URL ?? "https://api.openai.com/v1";
+  const proxyPrefix = "/openai-proxy/v1";
+  const requestUrl = request.url ?? "";
+  const upstreamPath = requestUrl.startsWith(proxyPrefix) ? requestUrl.slice(proxyPrefix.length) || "/" : requestUrl;
+  const upstreamUrl = `${upstreamBaseUrl.replace(/\/+$/u, "")}/${upstreamPath.replace(/^\/+/u, "")}`;
+  const bodyBuffer = await readRequestBody(request);
+  const bodyText = bodyBuffer.toString("utf8");
+
+  let promptPreview: string | null = null;
+  try {
+    promptPreview = extractPromptPreview(JSON.parse(bodyText) as unknown);
+  } catch {
+    promptPreview = null;
+  }
+
+  await appendProgressEvent(paths, {
+    type: "codex.proxy.request",
+    method: request.method ?? "GET",
+    path: upstreamPath,
+    upstreamUrl,
+    promptPreview,
+    message: request.method === "POST" && /\/responses(?:\?|$)/u.test(upstreamPath)
+      ? "Codex sent a model request through the runtime proxy."
+      : `Codex requested ${upstreamPath} through the runtime proxy.`,
+  });
+
+  const headers = new Headers();
+  for (const [key, value] of Object.entries(request.headers)) {
+    if (value === undefined || key.toLowerCase() === "host" || key.toLowerCase() === "content-length") {
+      continue;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        headers.append(key, item);
+      }
+    } else {
+      headers.set(key, value);
+    }
+  }
+
+  try {
+    const upstream = await fetch(upstreamUrl, {
+      method: request.method,
+      headers,
+      body: bodyBuffer.length > 0 ? bodyBuffer : undefined,
+    });
+
+    response.statusCode = upstream.status;
+    upstream.headers.forEach((value, key) => {
+      const lower = key.toLowerCase();
+      if (lower === "content-length" || lower === "transfer-encoding" || lower === "connection") {
+        return;
+      }
+      response.setHeader(key, value);
+    });
+
+    if (upstream.body) {
+      for await (const chunk of upstream.body as AsyncIterable<Uint8Array>) {
+        response.write(chunk);
+      }
+    }
+    response.end();
+
+    await appendProgressEvent(paths, {
+      type: "codex.proxy.response",
+      method: request.method ?? "GET",
+      path: upstreamPath,
+      status: upstream.status,
+      message: upstream.ok
+        ? `The runtime proxy received a ${upstream.status} response from OpenAI.`
+        : `The runtime proxy received a ${upstream.status} error from OpenAI.`,
+    });
+    return undefined;
+  } catch (error) {
+    await appendProgressEvent(paths, {
+      type: "codex.proxy.error",
+      method: request.method ?? "GET",
+      path: upstreamPath,
+      error: error instanceof Error ? error.message : String(error),
+      message: "The runtime proxy failed while talking to OpenAI.",
+    });
+    throw error;
+  }
 }
 
 async function listFiles(root: string, workspaceRoot: string): Promise<string[]> {
@@ -453,6 +612,10 @@ export function createAlphaBookRuntimeServer(options: RuntimeServerOptions = {})
 
   return createServer(async (request, response) => {
     try {
+      if (request.url?.startsWith("/openai-proxy/v1/")) {
+        return await proxyOpenAIRequest(request, response, paths);
+      }
+
       if (!authorized(request, authToken)) {
         return json(response, 401, { error: "Unauthorized" });
       }
@@ -487,6 +650,7 @@ export function createAlphaBookRuntimeServer(options: RuntimeServerOptions = {})
         const payload = await readJson<RunTaskRequest>(request);
         const taskPath = join(paths.context, "task.json");
         await writeFile(taskPath, JSON.stringify(payload.taskSpec, null, 2), "utf8");
+        await writeFile(join(paths.output, "codex-progress.jsonl"), "", "utf8");
         const result = await runExternalAgent(paths, workspaceRoot, {
           runtimeId: payload.runtimeId,
           ...payload.taskSpec,

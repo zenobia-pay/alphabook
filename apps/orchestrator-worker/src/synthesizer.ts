@@ -6,7 +6,6 @@ import {
   type ChunkSearchResult,
   type Citation,
   type ToolName,
-  type WorkSummary,
 } from "@alphabook/shared";
 
 const SynthesizerResponseSchema = z.object({
@@ -88,23 +87,6 @@ function chunkCitation(chunk: ChunkSearchResult): Citation {
   };
 }
 
-function extractWorks(toolHistory: ToolHistoryEntry[]): WorkSummary[] {
-  const works = toolHistory.flatMap((entry) => {
-    if (!Array.isArray(entry.result.works)) {
-      return [];
-    }
-    return entry.result.works as WorkSummary[];
-  });
-  const seen = new Set<string>();
-  return works.filter((work) => {
-    if (seen.has(work.id)) {
-      return false;
-    }
-    seen.add(work.id);
-    return true;
-  });
-}
-
 function extractChunks(toolHistory: ToolHistoryEntry[]): ChunkSearchResult[] {
   return toolHistory.flatMap((entry) => {
     if (!Array.isArray(entry.result.chunks)) {
@@ -137,27 +119,6 @@ function extractRuntimeCitations(toolHistory: ToolHistoryEntry[]): Citation[] {
   return [];
 }
 
-function compactMarkdown(markdown: string): string {
-  return markdown
-    .replace(/^#.*$/gm, "")
-    .replace(/^\s*[-*]\s+/gm, "")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-
-function formatWorkList(works: WorkSummary[]): string {
-  if (!works.length) {
-    return "the current corpus";
-  }
-  if (works.length === 1) {
-    return works[0].title;
-  }
-  if (works.length === 2) {
-    return `${works[0].title} and ${works[1].title}`;
-  }
-  return `${works[0].title}, ${works[1].title}, and ${works.length - 2} more works`;
-}
-
 function failedSteps(toolHistory: ToolHistoryEntry[]) {
   return toolHistory
     .filter((entry) => entry.result.ok === false)
@@ -188,7 +149,6 @@ function userFacingErrorSummary(toolHistory: ToolHistoryEntry[]): string | null 
 
 export class FallbackSynthesizer implements Synthesizer {
   async synthesize(input: SynthesisInput): Promise<SynthesisResult> {
-    const works = extractWorks(input.toolHistory);
     const chunks = extractChunks(input.toolHistory);
     const runtimeSummary = extractRuntimeSummary(input.toolHistory);
     const runtimeCitations = extractRuntimeCitations(input.toolHistory);
@@ -213,25 +173,9 @@ export class FallbackSynthesizer implements Synthesizer {
       };
     }
 
-    const retrievalParagraph = chunks.length
-      ? `I started with the indexed corpus and pulled the strongest passages from ${formatWorkList(works)}. The retrieved evidence points in a consistent direction: ${chunks
-          .slice(0, 2)
-          .map((chunk) => chunk.excerpt.replace(/\s+/g, " ").trim())
-          .join(" ")}`
-      : `I started with the indexed corpus, but the retrieval pass found only thin evidence for this question.`;
-
-    const runtimeParagraph = `The answer below leans on retrieval evidence only because no deeper runtime briefing was available for this run.`;
-
-    const normalizedDraft = input.plannerDraft
-      ? compactMarkdown(input.plannerDraft).replace(/\s+/g, " ").trim()
-      : "";
-    const draftParagraph = normalizedDraft.length > 0
-      ? `Putting those together: ${normalizedDraft}`
-      : "Putting those together, the evidence is strong enough to answer directly from the retrieved passages and workspace notes.";
-
     return {
-      answer: [retrievalParagraph, runtimeParagraph, draftParagraph].join("\n\n"),
-      citations,
+      answer: "The corpus search did not produce a usable briefing for this run, so I am stopping instead of guessing from partial retrieval.",
+      citations: [],
     };
   }
 }

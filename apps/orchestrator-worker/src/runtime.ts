@@ -43,6 +43,8 @@ export interface FlyRuntimeGatewayConfig {
   machineCpuKind?: "shared" | "performance";
   machineCpus?: number;
   machineMemoryMb?: number;
+  codexOpenAIBaseUrl?: string;
+  codexProxyUpstreamBaseUrl?: string;
 }
 
 function nowIso(): string {
@@ -447,7 +449,9 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
             RUNTIME_SHARED_TOKEN: this.config.runtimeSharedToken ?? "",
             DATABASE_URL: this.config.databaseUrl ?? "",
             OPENAI_API_KEY: this.config.openAIApiKey ?? "",
+            OPENAI_BASE_URL: this.config.codexOpenAIBaseUrl ?? "http://127.0.0.1:8080/openai-proxy/v1",
             RUNTIME_AGENT_MODEL: this.config.runtimeAgentModel ?? "gpt-5-codex",
+            RUNTIME_OPENAI_PROXY_UPSTREAM_BASE_URL: this.config.codexProxyUpstreamBaseUrl ?? "https://api.openai.com/v1",
             R2_BUCKET_NAME: this.config.r2BucketName,
             R2_ENDPOINT: this.config.r2Endpoint,
             R2_ACCESS_KEY_ID: this.config.r2AccessKeyId,

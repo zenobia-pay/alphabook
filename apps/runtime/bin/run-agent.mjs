@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
-import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import process from "node:process";
 
@@ -634,56 +634,6 @@ function buildSearchEvidence(question, selectedChunks, runtimeChunks, workById) 
   };
 }
 
-function fallbackBriefing(question, evidence) {
-  const lines = [
-    "# Briefing",
-    "",
-    `Question: ${question}`,
-    "",
-    "## Findings",
-  ];
-
-  if (!evidence.runtimeHits.length && !evidence.selectedChunks.length) {
-    lines.push("I searched the current corpus snapshot, but did not find enough quoted passages to answer confidently.");
-    return lines.join("\n");
-  }
-
-  for (const entry of [...evidence.runtimeHits, ...evidence.selectedChunks].slice(0, 6)) {
-    const sourceLabel = entry.title ? `${entry.title} (${entry.workId}#${entry.chunkIndex})` : `${entry.workId}#${entry.chunkIndex}`;
-    const conceptSummary = Array.isArray(entry.matchedConcepts) && entry.matchedConcepts.length > 0
-      ? `it matches the local search signals for ${entry.matchedConcepts.join(", ")}`
-      : "it surfaced during the local corpus scan";
-    lines.push(
-      `- ${sourceLabel}: "${normalizeWhitespace(entry.excerpt).slice(0, 360)}"`,
-      `  This passage appears relevant to the question because ${conceptSummary}.`,
-    );
-  }
-
-  lines.push("", "## Notes", "- This fallback briefing was assembled from local retrieval evidence.");
-  return lines.join("\n");
-}
-
-function fallbackCitations(evidence) {
-  const seen = new Set();
-  return [...evidence.runtimeHits, ...evidence.selectedChunks]
-    .map((entry) => ({
-      workId: entry.workId,
-      chunkId: entry.id || undefined,
-      label: `${entry.workId}#${entry.chunkIndex}`,
-      excerpt: normalizeWhitespace(entry.excerpt).slice(0, 420),
-      r2Key: entry.r2Key || undefined,
-    }))
-    .filter((citation) => {
-      const key = `${citation.workId}:${citation.chunkId ?? citation.label}`;
-      if (seen.has(key)) {
-        return false;
-      }
-      seen.add(key);
-      return true;
-    })
-    .slice(0, 8);
-}
-
 function buildSearchPrompt(runtimePrompt, manifest, task, evidence, question) {
   const manifestSummary = {
     works: Array.isArray(manifest.works)
@@ -930,6 +880,36 @@ function runProcess(command, args, options = {}) {
   });
 }
 
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function compactText(text, maxLength = 320) {
+  const normalized = String(text || "").replace(/\s+/g, " ").trim();
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 1)}…` : normalized;
+}
+
+function codexStepLabel(step) {
+  if (step === "codex-pass-1-search") {
+    return "Codex evidence search";
+  }
+  if (step === "codex-pass-2-briefing") {
+    return "Codex quoted briefing";
+  }
+  return "Codex step";
+}
+
+async function appendProgressEvent(outputDir, event) {
+  await appendFile(
+    join(outputDir, "codex-progress.jsonl"),
+    `${JSON.stringify({
+      timestamp: nowIso(),
+      ...event,
+    })}\n`,
+    "utf8",
+  );
+}
+
 async function resolveCodexCommand(workspaceRoot) {
   const candidates = [
     process.env.CODEX_CLI_PATH,
@@ -965,6 +945,13 @@ async function runCodexStep({
 
   await writeFile(promptPath, promptText, "utf8");
   await writeFile(schemaPath, JSON.stringify(schema, null, 2), "utf8");
+  await appendProgressEvent(outputDir, {
+    type: "codex.step.prepared",
+    step,
+    promptPath,
+    promptPreview: compactText(promptText, 700),
+    message: `${codexStepLabel(step)} is ready to run.`,
+  });
 
   const attemptLogs = [];
   let result = null;
@@ -972,6 +959,16 @@ async function runCodexStep({
   const maxAttempts = 3;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    await appendProgressEvent(outputDir, {
+      type: "codex.step.attempt",
+      step,
+      attempt,
+      model,
+      baseUrl: process.env.OPENAI_BASE_URL ?? null,
+      message: attempt === 1
+        ? `Sending ${codexStepLabel(step).toLowerCase()} to Codex.`
+        : `Retrying ${codexStepLabel(step).toLowerCase()} with Codex.`,
+    });
     result = await runProcess(
       codexCommand,
       [
@@ -983,6 +980,7 @@ async function runCodexStep({
         "workspace-write",
         "--model",
         model,
+        "--json",
         "--output-schema",
         schemaPath,
         "--output-last-message",
@@ -1011,8 +1009,27 @@ async function runCodexStep({
     );
 
     if (result.exitCode === 0) {
+      await appendProgressEvent(outputDir, {
+        type: "codex.step.completed",
+        step,
+        attempt,
+        logPath,
+        outputPath,
+        message: `${codexStepLabel(step)} completed.`,
+      });
       break;
     }
+
+    await appendProgressEvent(outputDir, {
+      type: "codex.step.attempt_failed",
+      step,
+      attempt,
+      exitCode: result.exitCode,
+      logPath,
+      stderrPreview: compactText(result.stderr, 400),
+      stdoutPreview: compactText(result.stdout, 400),
+      message: `${codexStepLabel(step)} failed on attempt ${attempt}.`,
+    });
 
     if (attempt < maxAttempts) {
       await new Promise((resolve) => setTimeout(resolve, attempt * 2_000));
@@ -1032,6 +1049,13 @@ async function runCodexStep({
   );
 
   if (!result || result.exitCode !== 0) {
+    await appendProgressEvent(outputDir, {
+      type: "codex.step.failed",
+      step,
+      exitCode,
+      logPath,
+      message: `${codexStepLabel(step)} failed.`,
+    });
     throw new Error(`Codex step ${step} failed with exit code ${exitCode}.`);
   }
 
@@ -1101,6 +1125,7 @@ async function main() {
 
   await ensureDir(outputDir);
   await ensureDir(scratchCorpusDir);
+  await writeFile(join(outputDir, "codex-progress.jsonl"), "", "utf8");
 
   const [manifest, task, selectedChunks] = await Promise.all([
     parseJson(manifestPath),
@@ -1180,84 +1205,53 @@ async function main() {
   let briefing = "";
   let citations = [];
 
-  try {
-    if (phase === "collect_evidence" || phase === "collect_and_brief") {
-      const searchRun = await runCodexStep({
-        workspaceRoot,
-        outputDir,
-        model,
-        step: "codex-pass-1-search",
-        promptText: buildSearchPrompt(runtimePrompt, manifest, task, evidence, question),
-        schema: schemaForSearchStep(),
-      });
-      codexRuns.push(searchRun);
-      if (!(await fileExists(join(outputDir, "evidence.json"))) || !(await fileExists(join(outputDir, "evidence-notes.md")))) {
-        await ensureEvidenceArtifacts(outputDir, question, evidence, "Recovered after the Codex evidence pass did not write all expected artifacts.");
-      }
-    }
-
-    if (phase === "write_briefing" || phase === "collect_and_brief") {
-      if (!(await fileExists(join(outputDir, "evidence.json"))) || !(await fileExists(join(outputDir, "evidence-notes.md")))) {
-        await ensureEvidenceArtifacts(outputDir, question, evidence);
-      }
-
-      const briefingRun = await runCodexStep({
-        workspaceRoot,
-        outputDir,
-        model,
-        step: "codex-pass-2-briefing",
-        promptText: buildBriefingPrompt(runtimePrompt, manifest, task, question),
-        schema: schemaForBriefingStep(),
-      });
-      codexRuns.push(briefingRun);
-
-      const briefingJsonPath = join(outputDir, "briefing.json");
-      const briefingMarkdownPath = join(outputDir, "briefing.md");
-      const briefingJson = await readJsonIfPresent(briefingJsonPath, null);
-      const briefingMarkdown = (await fileExists(briefingMarkdownPath))
-        ? await readFile(briefingMarkdownPath, "utf8")
-        : "";
-
-      if (briefingJson && typeof briefingJson === "object") {
-        briefing = typeof briefingJson.briefing === "string" ? briefingJson.briefing : briefingMarkdown;
-        citations = Array.isArray(briefingJson.citations) ? briefingJson.citations : [];
-      } else {
-        briefing = briefingMarkdown;
-      }
-
-      if (!briefing.trim()) {
-        throw new Error("Codex did not produce output/briefing.md or a usable briefing.json.");
-      }
-    }
-  } catch (error) {
-    const fallback = {
-      error: error instanceof Error ? error.message : String(error),
-      note: "Falling back to the built-in deterministic local search summarizer.",
-    };
-    await writeFile(join(outputDir, "codex-fallback.json"), JSON.stringify(fallback, null, 2), "utf8");
-    await ensureEvidenceArtifacts(outputDir, question, evidence, "Recovered from deterministic local search fallback.");
-    if (phase === "write_briefing" || phase === "collect_and_brief") {
-      briefing = fallbackBriefing(question, evidence);
-      citations = fallbackCitations(evidence);
-      await writeFile(join(outputDir, "briefing.md"), briefing, "utf8");
-      await writeFile(
-        join(outputDir, "briefing.json"),
-        JSON.stringify(
-          {
-            question,
-            briefing,
-            citations,
-          },
-          null,
-          2,
-        ),
-        "utf8",
-      );
+  if (phase === "collect_evidence" || phase === "collect_and_brief") {
+    const searchRun = await runCodexStep({
+      workspaceRoot,
+      outputDir,
+      model,
+      step: "codex-pass-1-search",
+      promptText: buildSearchPrompt(runtimePrompt, manifest, task, evidence, question),
+      schema: schemaForSearchStep(),
+    });
+    codexRuns.push(searchRun);
+    if (!(await fileExists(join(outputDir, "evidence.json"))) || !(await fileExists(join(outputDir, "evidence-notes.md")))) {
+      throw new Error("Codex completed the evidence pass but did not write output/evidence.json and output/evidence-notes.md.");
     }
   }
 
-  if (!(await fileExists(join(outputDir, "evidence.json"))) || !(await fileExists(join(outputDir, "evidence-notes.md")))) {
-    await ensureEvidenceArtifacts(outputDir, question, evidence);
+  if (phase === "write_briefing" || phase === "collect_and_brief") {
+    if (!(await fileExists(join(outputDir, "evidence.json"))) || !(await fileExists(join(outputDir, "evidence-notes.md")))) {
+      throw new Error("Cannot run the briefing pass because evidence artifacts are missing.");
+    }
+
+    const briefingRun = await runCodexStep({
+      workspaceRoot,
+      outputDir,
+      model,
+      step: "codex-pass-2-briefing",
+      promptText: buildBriefingPrompt(runtimePrompt, manifest, task, question),
+      schema: schemaForBriefingStep(),
+    });
+    codexRuns.push(briefingRun);
+
+    const briefingJsonPath = join(outputDir, "briefing.json");
+    const briefingMarkdownPath = join(outputDir, "briefing.md");
+    const briefingJson = await readJsonIfPresent(briefingJsonPath, null);
+    const briefingMarkdown = (await fileExists(briefingMarkdownPath))
+      ? await readFile(briefingMarkdownPath, "utf8")
+      : "";
+
+    if (briefingJson && typeof briefingJson === "object") {
+      briefing = typeof briefingJson.briefing === "string" ? briefingJson.briefing : briefingMarkdown;
+      citations = Array.isArray(briefingJson.citations) ? briefingJson.citations : [];
+    } else {
+      briefing = briefingMarkdown;
+    }
+
+    if (!briefing.trim()) {
+      throw new Error("Codex did not produce output/briefing.md or a usable briefing.json.");
+    }
   }
 
   if (phase === "write_briefing" || phase === "collect_and_brief") {

@@ -247,7 +247,7 @@ function workspaceProgressSteps(args: Record<string, unknown>): string[] {
   ];
 }
 
-function startToolProgressEmitter(
+function genericProgressEmitter(
   send: (event: string, data: Record<string, unknown>) => Promise<void>,
   runId: string,
   toolCallId: string,
@@ -284,6 +284,96 @@ function startToolProgressEmitter(
       clearInterval(timer);
     },
   };
+}
+
+function startRuntimeTaskProgressEmitter(
+  runtimeGateway: RuntimeToolGateway,
+  send: (event: string, data: Record<string, unknown>) => Promise<void>,
+  context: { sessionId: string; runId: string },
+  runId: string,
+  toolCallId: string,
+  toolName: ToolName,
+  runtimeId: string,
+) {
+  let stopped = false;
+  let inFlight = false;
+  let seenLines = 0;
+
+  const emit = async (text: string, detail?: Record<string, unknown>) => {
+    await send("tool.progress", {
+      runId,
+      toolCallId,
+      toolName,
+      text,
+      ...(detail ? { detail } : {}),
+    });
+  };
+
+  const poll = async () => {
+    if (stopped || inFlight) {
+      return;
+    }
+    inFlight = true;
+    try {
+      const result = await runtimeGateway.readWorkspaceFile({
+        runtimeId,
+        path: "output/codex-progress.jsonl",
+        sessionId: context.sessionId,
+        runId: context.runId,
+      });
+      const content = typeof result.content === "string" ? result.content : "";
+      const lines = content.split("\n").filter((line) => line.trim().length > 0);
+      if (seenLines > lines.length) {
+        seenLines = 0;
+      }
+      for (let index = seenLines; index < lines.length; index += 1) {
+        try {
+          const event = JSON.parse(lines[index]) as Record<string, unknown>;
+          if (typeof event.message === "string" && event.message.trim().length > 0) {
+            await emit(event.message, event);
+          }
+        } catch {
+          continue;
+        }
+      }
+      seenLines = lines.length;
+    } catch {
+      // Runtime progress is best-effort while the task is still starting up.
+    } finally {
+      inFlight = false;
+    }
+  };
+
+  void emit("Starting the background Codex search.");
+  void poll();
+  const timer = setInterval(() => {
+    void poll();
+  }, 1500);
+
+  return {
+    stop() {
+      stopped = true;
+      clearInterval(timer);
+    },
+  };
+}
+
+function startToolProgressEmitter(
+  runtimeGateway: RuntimeToolGateway,
+  send: (event: string, data: Record<string, unknown>) => Promise<void>,
+  context: { sessionId: string; runId: string },
+  runId: string,
+  toolCallId: string,
+  toolName: ToolName,
+  args: Record<string, unknown>,
+) {
+  if (toolName === "run_workspace_task") {
+    const runtimeId = typeof args.runtimeId === "string" ? args.runtimeId : null;
+    if (runtimeId) {
+      return startRuntimeTaskProgressEmitter(runtimeGateway, send, context, runId, toolCallId, toolName, runtimeId);
+    }
+  }
+  return genericProgressEmitter(send, runId, toolCallId, toolName, args);
 }
 
 function titleFromMessage(message: string): string {
@@ -686,7 +776,18 @@ async function runOrchestrator(
       rationale: toolCall.rationale ?? null,
       args: toolCall.args,
     });
-    const progressEmitter = startToolProgressEmitter(send, run.id, toolRecord.id, toolCall.tool_name, toolCall.args);
+    const progressEmitter = startToolProgressEmitter(
+      deps.runtimeGateway,
+      send,
+      {
+        sessionId: session.id,
+        runId: run.id,
+      },
+      run.id,
+      toolRecord.id,
+      toolCall.tool_name,
+      toolCall.args,
+    );
 
     let result: Record<string, unknown>;
     let status: "completed" | "failed" = "completed";
