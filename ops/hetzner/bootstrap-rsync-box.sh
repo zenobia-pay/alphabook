@@ -20,20 +20,30 @@ mkdir -p "$GUTENBERG_MIRROR_ROOT/cache/epub"
 mkdir -p "$ALPHABOOK_ROOT/logs"
 
 install -m 0755 "$SCRIPT_DIR/bin/gutenberg-rsync.sh" "$ALPHABOOK_ROOT/bin/gutenberg-rsync.sh"
+install -m 0755 "$SCRIPT_DIR/bin/gutenberg-rsync-epub.sh" "$ALPHABOOK_ROOT/bin/gutenberg-rsync-epub.sh"
+install -m 0755 "$SCRIPT_DIR/bin/gutenberg-upload.sh" "$ALPHABOOK_ROOT/bin/gutenberg-upload.sh"
 install -m 0644 "$SCRIPT_DIR/systemd/alphabook-gutenberg-rsync.service" /etc/systemd/system/alphabook-gutenberg-rsync.service
 install -m 0644 "$SCRIPT_DIR/systemd/alphabook-gutenberg-rsync.timer" /etc/systemd/system/alphabook-gutenberg-rsync.timer
+install -m 0644 "$SCRIPT_DIR/systemd/alphabook-gutenberg-rsync-epub.service" /etc/systemd/system/alphabook-gutenberg-rsync-epub.service
+install -m 0644 "$SCRIPT_DIR/systemd/alphabook-gutenberg-rsync-epub.timer" /etc/systemd/system/alphabook-gutenberg-rsync-epub.timer
 
 systemctl daemon-reload
 systemctl enable --now alphabook-gutenberg-rsync.timer
+systemctl enable --now alphabook-gutenberg-rsync-epub.timer
 
 cat <<EOF
 AlphaBook Gutenberg rsync box is bootstrapped.
 
 Mirror root: $GUTENBERG_MIRROR_ROOT
 Runner: $ALPHABOOK_ROOT/bin/gutenberg-rsync.sh
+EPUB runner: $ALPHABOOK_ROOT/bin/gutenberg-rsync-epub.sh
+Uploader: $ALPHABOOK_ROOT/bin/gutenberg-upload.sh
 
 Useful commands:
   systemctl status alphabook-gutenberg-rsync.timer
+  systemctl status alphabook-gutenberg-rsync-epub.timer
   systemctl start alphabook-gutenberg-rsync.service
+  systemctl start alphabook-gutenberg-rsync-epub.service
   journalctl -u alphabook-gutenberg-rsync.service -n 200 --no-pager
+  journalctl -u alphabook-gutenberg-rsync-epub.service -n 200 --no-pager
 EOF

@@ -26,6 +26,7 @@ interface IngestSourceInput {
   language?: string | null;
   releaseDate?: string | null;
   rightsStatus?: string | null;
+  summary?: string | null;
   sourceUrl?: string;
   sourcePath?: string;
   metadata?: Record<string, unknown>;
@@ -246,9 +247,11 @@ async function persistIngestedWork(context: IngestContext, source: IngestSourceI
     title: source.title,
     authors,
     subjects,
+    subtitle: typeof source.metadata?.subtitle === "string" ? source.metadata.subtitle : null,
     language: source.language ?? null,
     releaseDate: source.releaseDate ?? null,
     rightsStatus: source.rightsStatus ?? "public_domain",
+    summary: source.summary ?? null,
     sourceUrl: source.sourceUrl ?? null,
     sourcePath: source.sourcePath ?? null,
     sourceFormat: source.sourceFormat ?? "text",
@@ -277,7 +280,7 @@ async function persistIngestedWork(context: IngestContext, source: IngestSourceI
       source.language ?? null,
       source.releaseDate ?? null,
       source.rightsStatus ?? "public_domain",
-      null,
+      source.summary ?? null,
       JSON.stringify(metadataPayload),
     ],
   );
@@ -434,12 +437,20 @@ async function ingestFromMirror(context: IngestContext, gutenbergId: string, exp
     language: source.language,
     releaseDate: source.releaseDate,
     rightsStatus: source.rightsStatus,
+    summary: source.summary,
     sourcePath: source.sourcePath,
     metadata: {
       source: "local-mirror",
       mirrorRoot,
       metadataPath: source.metadataPath,
       format: source.format,
+      subtitle: source.subtitle,
+      bookshelves: source.bookshelves,
+      publisher: source.publisher,
+      translators: source.translators,
+      illustrators: source.illustrators,
+      editors: source.editors,
+      coverImagePath: source.coverImagePath,
       ...source.metadata,
     },
   });

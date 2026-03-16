@@ -4,11 +4,19 @@ import { basename, join } from "node:path";
 export interface MirrorSource {
   gutenbergId: string;
   title: string | null;
+  subtitle: string | null;
   authors: string[];
   subjects: string[];
+  bookshelves: string[];
   language: string | null;
   releaseDate: string | null;
   rightsStatus: string | null;
+  publisher: string | null;
+  summary: string | null;
+  translators: string[];
+  illustrators: string[];
+  editors: string[];
+  coverImagePath: string | null;
   sourcePath: string;
   metadataPath: string | null;
   format: "text" | "html";
@@ -128,6 +136,11 @@ function parseRdfTitle(raw: string): string | null {
   return match ? decodeEntities(match[1].trim()) : null;
 }
 
+function parseRdfSimpleText(raw: string, tagName: string): string | null {
+  const match = raw.match(new RegExp(`<${tagName}>([\\s\\S]*?)<\\/${tagName}>`, "i"));
+  return match ? decodeEntities(match[1].trim()) : null;
+}
+
 function uniqueValues(values: Array<string | null | undefined>) {
   const seen = new Set<string>();
   const normalized: string[] = [];
@@ -161,6 +174,17 @@ function cleanTitle(title: string | null): string | null {
     .trim()
     .replace(/^["']|["']$/g, "")
     .replace(/[.;,:-]+$/g, "")
+    .trim();
+  return normalized || null;
+}
+
+function cleanDescription(value: string | null): string | null {
+  if (!value) {
+    return null;
+  }
+  const normalized = decodeEntities(value)
+    .replace(/\s+/g, " ")
+    .replace(/^Summary:\s*/i, "")
     .trim();
   return normalized || null;
 }
@@ -245,35 +269,80 @@ function parseRdfList(raw: string, tagName: string) {
   );
 }
 
+function parseAgentNames(raw: string, tagName: string) {
+  return uniqueValues(
+    [...raw.matchAll(new RegExp(`<${tagName}>[\\s\\S]*?<pgterms:name>([^<]+)<\\/pgterms:name>[\\s\\S]*?<\\/${tagName}>`, "gi"))].map((match) => cleanTitle(match[1]?.trim() ?? "") ?? ""),
+  );
+}
+
 function parseRdfMetadata(raw: string | null) {
   if (!raw) {
     return {
       title: null,
+      subtitle: null,
       authors: [] as string[],
       subjects: [] as string[],
+      bookshelves: [] as string[],
       language: null as string | null,
       releaseDate: null as string | null,
       rightsStatus: null as string | null,
+      publisher: null as string | null,
+      summary: null as string | null,
+      translators: [] as string[],
+      illustrators: [] as string[],
+      editors: [] as string[],
     };
   }
 
   const title = cleanTitle(parseRdfTitle(raw));
-  const authors = parseRdfList(raw, "pgterms:name").map((name) => cleanTitle(name) ?? name);
+  const authors = parseAgentNames(raw, "dcterms:creator");
   const subjects = uniqueValues(
     [...raw.matchAll(/<dcterms:subject>[\s\S]*?<rdf:value>([^<]+)<\/rdf:value>[\s\S]*?<\/dcterms:subject>/gi)].map((match) => decodeEntities(match[1]?.trim() ?? "")),
+  );
+  const bookshelves = uniqueValues(
+    [...raw.matchAll(/<pgterms:bookshelf>[\s\S]*?<rdf:value>([^<]+)<\/rdf:value>[\s\S]*?<\/pgterms:bookshelf>/gi)].map((match) => decodeEntities(match[1]?.trim() ?? "")),
   );
   const language = raw.match(/<dcterms:language>[\s\S]*?<rdf:value>([^<]+)<\/rdf:value>/i)?.[1]?.trim().toLowerCase() ?? null;
   const releaseDate = raw.match(/<dcterms:issued>([^<]+)<\/dcterms:issued>/i)?.[1]?.trim() ?? null;
   const rightsStatus = raw.match(/<dcterms:rights>([^<]+)<\/dcterms:rights>/i)?.[1]?.trim() ?? null;
+  const publisher = cleanTitle(parseRdfSimpleText(raw, "dcterms:publisher"));
+  const summary = cleanDescription(parseRdfSimpleText(raw, "dcterms:description"));
+  const subtitle = cleanTitle(parseRdfSimpleText(raw, "pgterms:friendlytitle"));
+  const translators = parseAgentNames(raw, "marcrel:trl");
+  const illustrators = parseAgentNames(raw, "marcrel:ill");
+  const editors = parseAgentNames(raw, "marcrel:edt");
 
   return {
     title,
+    subtitle,
     authors: uniqueValues(authors),
     subjects: uniqueValues(subjects),
+    bookshelves,
     language,
     releaseDate,
     rightsStatus,
+    publisher,
+    summary,
+    translators,
+    illustrators,
+    editors,
   };
+}
+
+async function findCoverImagePath(generatedDir: string, mainDir: string, gutenbergId: string): Promise<string | null> {
+  const candidates = [...(await listFilesRecursive(generatedDir)), ...(await listFilesRecursive(mainDir))]
+    .filter((path) => /\.(png|jpe?g|webp)$/i.test(path))
+    .sort((left, right) => {
+      const leftBase = basename(left).toLowerCase();
+      const rightBase = basename(right).toLowerCase();
+      const score = (base: string) => {
+        if (base.includes("cover")) return 100;
+        if (base === `pg${gutenbergId}.jpg` || base === `pg${gutenbergId}.jpeg` || base === `pg${gutenbergId}.png`) return 90;
+        return 10;
+      };
+      return score(rightBase) - score(leftBase);
+    });
+  return candidates[0] ?? null;
 }
 
 export async function resolveMirrorSource(mirrorRoot: string, gutenbergId: string): Promise<MirrorSource> {
@@ -300,15 +369,24 @@ export async function resolveMirrorSource(mirrorRoot: string, gutenbergId: strin
   const derivedAuthor = format === "html" ? parseHtmlAuthor(rawSource) : parseTextAuthor(rawSource);
   const derivedLanguage = format === "html" ? parseHtmlLanguage(rawSource) : parseTextLanguage(rawSource);
   const rdfMetadata = parseRdfMetadata(metadataRaw);
+  const coverImagePath = await findCoverImagePath(generatedDir, mainDir, gutenbergId);
 
   return {
     gutenbergId,
     title: rdfMetadata.title ?? derivedTitle,
+    subtitle: rdfMetadata.subtitle,
     authors: rdfMetadata.authors.length > 0 ? rdfMetadata.authors : uniqueValues([derivedAuthor]),
     subjects: rdfMetadata.subjects,
+    bookshelves: rdfMetadata.bookshelves,
     language: rdfMetadata.language ?? derivedLanguage,
     releaseDate: rdfMetadata.releaseDate,
     rightsStatus: rdfMetadata.rightsStatus,
+    publisher: rdfMetadata.publisher,
+    summary: rdfMetadata.summary,
+    translators: rdfMetadata.translators,
+    illustrators: rdfMetadata.illustrators,
+    editors: rdfMetadata.editors,
+    coverImagePath,
     sourcePath,
     metadataPath: metadataRaw ? metadataPath : null,
     format,
@@ -319,12 +397,20 @@ export async function resolveMirrorSource(mirrorRoot: string, gutenbergId: strin
       metadataPath: metadataRaw ? metadataPath : null,
       format,
       rdfTitle: rdfMetadata.title,
+      subtitle: rdfMetadata.subtitle,
       derivedTitle,
       authors: rdfMetadata.authors.length > 0 ? rdfMetadata.authors : uniqueValues([derivedAuthor]),
       subjects: rdfMetadata.subjects,
+      bookshelves: rdfMetadata.bookshelves,
       language: rdfMetadata.language ?? derivedLanguage,
       releaseDate: rdfMetadata.releaseDate,
       rightsStatus: rdfMetadata.rightsStatus,
+      publisher: rdfMetadata.publisher,
+      summary: rdfMetadata.summary,
+      translators: rdfMetadata.translators,
+      illustrators: rdfMetadata.illustrators,
+      editors: rdfMetadata.editors,
+      coverImagePath,
     },
   };
 }
