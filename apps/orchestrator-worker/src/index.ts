@@ -11,12 +11,22 @@ import { FlyMachinesRuntimeGateway, HttpRuntimeGateway } from "./runtime";
 import { NeonAppStore } from "./store";
 import { OpenAISynthesizer } from "./synthesizer";
 
+export interface WorkersAiBinding {
+  run<ModelInput extends Record<string, unknown>, ModelOutput = unknown>(
+    model: string,
+    input: ModelInput,
+    options?: Record<string, unknown>,
+  ): Promise<ModelOutput>;
+}
+
 export interface Env {
   DATABASE_URL: string;
+  AI?: WorkersAiBinding;
   OPENAI_API_KEY?: string;
   OPENAI_MODEL?: string;
   OPENAI_SYNTH_MODEL?: string;
   OPENAI_EMBEDDING_MODEL?: string;
+  TOOL_STREAM_CLEANUP_MODEL?: string;
   BILLING_MONTHLY_LIMIT_USD?: string;
   BILLING_MODEL_PRICING_JSON?: string;
   RUNTIME_AGENT_MODEL?: string;

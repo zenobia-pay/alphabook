@@ -24,6 +24,11 @@ const ANIMATION_DURATION = 200;
 const MAX_PREVIEW_ITEMS = 8;
 
 type JsonRecord = Record<string, unknown>;
+type ToolLogLine = {
+  key: string;
+  value: string;
+  tone?: "default" | "error" | "muted";
+};
 
 type ToolStatus = ToolCallMessagePartStatus["type"];
 
@@ -49,15 +54,6 @@ function parseArgs(argsText?: string): JsonRecord | null {
   } catch {
     return null;
   }
-}
-
-function humanizeKey(key: string) {
-  return key
-    .replace(/^__/, "")
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .replace(/[_-]+/g, " ")
-    .trim()
-    .replace(/^\w/, (char) => char.toUpperCase());
 }
 
 function formatValueInline(value: unknown): string {
@@ -142,6 +138,21 @@ function flattenStructuredLines(
       continue;
     }
     flattenStructuredLines(child, depth + 1, nextKey, lines);
+  }
+  return lines;
+}
+
+function flattenRawLogLines(
+  value: unknown,
+  prefix: string,
+  lines: ToolLogLine[] = [],
+) {
+  const structuredLines = flattenStructuredLines(value);
+  for (const line of structuredLines) {
+    lines.push({
+      key: `${prefix}.${line.key}`,
+      value: line.value,
+    });
   }
   return lines;
 }
@@ -294,62 +305,24 @@ function summarizeTool(toolName: string, args: JsonRecord | null, result: JsonRe
   }
 }
 
-function ToolSection({
-  title,
-  value,
+function ToolLogSection({
+  lines,
 }: {
-  title: string;
-  value: unknown;
+  lines: ToolLogLine[];
 }) {
-  if (value === undefined || value === null) {
-    return null;
-  }
-
-  const isEmptyObject = safeObject(value) && Object.keys(omitInternalKeys(safeObject(value)) ?? {}).length === 0;
-  if (isEmptyObject) {
-    return null;
-  }
-
-  const lines = flattenStructuredLines(value);
   if (!lines.length) {
     return null;
   }
 
   return (
     <section className="aui-tool-section">
-      <h4 className="aui-tool-section-title">{title}</h4>
-      <div className="aui-tool-lines">
-        {lines.map((line) => (
-          <div
-            key={`${title}-${line.key}-${line.depth}`}
-            className="aui-tool-line"
-            style={{ ["--tool-line-depth" as string]: String(line.depth) }}
-          >
-            <span className="aui-tool-line-key">{humanizeKey(line.key)}</span>
-            <span className="aui-tool-line-value">{line.value}</span>
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function ToolProgressSection({
-  items,
-}: {
-  items: string[];
-}) {
-  if (!items.length) {
-    return null;
-  }
-
-  return (
-    <section className="aui-tool-section">
-      <h4 className="aui-tool-section-title">Progress</h4>
       <div className="aui-tool-progress-log">
-        {items.map((item, index) => (
-          <div key={`${item}-${index}`} className="aui-tool-progress-line">
-            {item}
+        {lines.map((line, index) => (
+          <div key={`${line.key}-${index}`} className={cn("aui-tool-progress-line", line.tone === "error" && "aui-tool-progress-line-error")}>
+            <span className={cn("aui-tool-line-key aui-tool-log-line-key", line.tone === "muted" && "aui-tool-log-line-key-muted")}>
+              {line.key}
+            </span>
+            <span className="aui-tool-line-value">{line.value}</span>
           </div>
         ))}
       </div>
@@ -528,6 +501,42 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
   const progress = useMemo(() => getProgress(args), [args]);
   const cleanedArgs = useMemo(() => pruneValue(omitInternalKeys(args)), [args]);
   const resultObject = useMemo(() => pruneValue(safeObject(result) ?? result), [result]);
+  const errorText = useMemo(() => {
+    if (status?.type !== "incomplete") {
+      return null;
+    }
+    if (typeof status.error === "string" && status.error.trim()) {
+      return status.error.trim();
+    }
+    if (status.error) {
+      return JSON.stringify(status.error);
+    }
+    return null;
+  }, [status]);
+  const logLines = useMemo(() => {
+    const lines: ToolLogLine[] = [];
+    if (cleanedArgs !== undefined && cleanedArgs !== null) {
+      flattenRawLogLines(cleanedArgs, "request", lines);
+    }
+    progress.forEach((item) => {
+      lines.push({
+        key: "progress",
+        value: item,
+        tone: "muted",
+      });
+    });
+    if (resultObject !== undefined && resultObject !== null) {
+      flattenRawLogLines(resultObject, "response", lines);
+    }
+    if (errorText) {
+      lines.push({
+        key: "error",
+        value: errorText,
+        tone: "error",
+      });
+    }
+    return lines;
+  }, [cleanedArgs, errorText, progress, resultObject]);
   const summary = useMemo(
     () => summarizeTool(toolName, args, safeObject(result), status),
     [toolName, args, result, status],
@@ -537,10 +546,7 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
     <ToolFallbackRoot defaultOpen={status?.type === "running" || progress.length > 0}>
       <ToolFallbackTrigger toolName={toolName} summary={summary} progressPreview={progress} status={status} />
       <ToolFallbackContent>
-        <ToolFallbackError status={status} />
-        <ToolProgressSection items={progress} />
-        <ToolSection title="Request" value={cleanedArgs} />
-        <ToolSection title="Response" value={resultObject} />
+        <ToolLogSection lines={logLines} />
       </ToolFallbackContent>
     </ToolFallbackRoot>
   );

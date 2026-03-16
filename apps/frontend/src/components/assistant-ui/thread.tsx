@@ -41,8 +41,27 @@ type MessagePartRecord = {
   isError?: boolean;
 };
 
-function formatJsonBlock(value: unknown) {
-  return `\`\`\`json\n${JSON.stringify(value, null, 2)}\n\`\`\``;
+function flattenLogLines(value: unknown, prefix: string, lines: string[] = []) {
+  if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    lines.push(`${prefix}: ${String(value)}`);
+    return lines;
+  }
+
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) => {
+      flattenLogLines(entry, `${prefix}[${index}]`, lines);
+    });
+    return lines;
+  }
+
+  if (!value || typeof value !== "object") {
+    return lines;
+  }
+
+  Object.entries(value).forEach(([key, entry]) => {
+    flattenLogLines(entry, `${prefix}.${key}`, lines);
+  });
+  return lines;
 }
 
 function assistantMessageToMarkdown(parts: readonly MessagePartRecord[]) {
@@ -57,18 +76,24 @@ function assistantMessageToMarkdown(parts: readonly MessagePartRecord[]) {
       if ("__rationale" in args) {
         delete args.__rationale;
       }
+      const progress = Array.isArray(args.__progress)
+        ? args.__progress.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+        : [];
+      if ("__progress" in args) {
+        delete args.__progress;
+      }
 
       const toolSections = [`### Tool Call: ${part.toolName ?? "Tool"}`];
       if (rationale) {
-        toolSections.push(`Rationale: ${rationale}`);
+        toolSections.push(`progress: ${rationale}`);
       }
-      toolSections.push("Arguments:");
-      toolSections.push(formatJsonBlock(args));
-
-      if (part.result !== undefined) {
-        toolSections.push(part.isError ? "Error:" : "Result:");
-        toolSections.push(formatJsonBlock(part.result));
-      }
+      toolSections.push(
+        "```text",
+        ...flattenLogLines(args, "request"),
+        ...progress.map((line) => `progress: ${line}`),
+        ...(part.result !== undefined ? flattenLogLines(part.result, "response") : []),
+        "```",
+      );
 
       return [toolSections.join("\n\n")];
     }

@@ -101,6 +101,7 @@ Core variables:
 - `OPENAI_MODEL`
 - `OPENAI_SYNTH_MODEL`
 - `OPENAI_EMBEDDING_MODEL`
+- `TOOL_STREAM_CLEANUP_MODEL`
 - `R2_BUCKET_NAME`
 - `FLY_API_TOKEN`
 - `FLY_RUNTIME_APP_NAME`
@@ -193,6 +194,7 @@ The request/response contracts are documented in [docs/api-contracts.md](/Users/
 ## Notes
 
 - The frontend uses `assistant-ui` for the thread/composer surface and streams `POST /chat` responses over SSE.
+- The orchestrator Worker is now configured for Cloudflare Workers AI as well as OpenAI. The intended cheap lane is `@cf/zai-org/glm-4.7-flash` for future tool-stream cleanup and normalization, while the main research path remains on OpenAI.
 - `GET /me`, `/auth/sign-in`, `/auth/callback`, and `/auth/sign-out` provide the WorkOS-backed login flow.
 - `GET /sessions` plus `GET /sessions/:sessionId/messages` power the session history and sidebar reopening flow.
 - The runtime service is designed to sit behind a Fly app URL and uses the `fly-force-instance-id` header so the Worker can talk to a specific Machine.

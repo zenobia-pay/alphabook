@@ -603,11 +603,30 @@ button {
 }
 
 .aui-tool-progress-line {
-  font-size: 0.79rem;
-  line-height: 1.45;
+  display: grid;
+  grid-template-columns: minmax(5.5rem, auto) minmax(0, 1fr);
+  gap: 0.65rem;
+  align-items: start;
+  font-family: "SFMono-Regular", "SF Mono", "Cascadia Code", "JetBrains Mono", monospace;
+  font-size: 0.75rem;
+  line-height: 1.55;
   color: rgba(43, 38, 33, 0.84);
-  white-space: normal;
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.aui-tool-progress-line-error {
+  color: rgba(126, 52, 44, 0.88);
+}
+
+.aui-tool-log-line-key {
+  min-width: 0;
+  margin-right: 0;
+  color: rgba(96, 84, 70, 0.72);
+}
+
+.aui-tool-log-line-key-muted {
+  color: rgba(96, 84, 70, 0.56);
 }
 
 .aui-tool-section-error .aui-tool-section-title,

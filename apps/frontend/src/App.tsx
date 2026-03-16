@@ -255,12 +255,24 @@ function createGuestProfile(id: string): UserProfile {
 
 function normalizeToolTraceEntry(entry: Record<string, unknown>, index: number): ToolTraceEntry {
   const toolName = typeof entry.toolName === "string" ? entry.toolName : "search_works";
+  const progress = Array.isArray(entry.progress)
+    ? entry.progress.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    : [];
+  const result = entry.result && typeof entry.result === "object" ? (entry.result as Record<string, unknown>) : undefined;
+  const explicitState = entry.state;
+  const status = entry.status;
   const state =
-    entry.state === "running" || entry.state === "completed" || entry.state === "error"
-      ? entry.state
-      : entry.isError === true
-        ? "error"
-        : "completed";
+    explicitState === "running" || explicitState === "completed" || explicitState === "error"
+      ? explicitState
+      : status === "running"
+        ? "running"
+        : status === "failed" || entry.isError === true
+          ? "error"
+          : result
+            ? "completed"
+            : progress.length > 0
+              ? "running"
+              : "completed";
 
   return {
     id:
@@ -272,11 +284,9 @@ function normalizeToolTraceEntry(entry: Record<string, unknown>, index: number):
     toolName,
     label: typeof entry.label === "string" ? entry.label : getToolLabel(toolName),
     rationale: typeof entry.rationale === "string" ? entry.rationale : undefined,
-    progress: Array.isArray(entry.progress)
-      ? entry.progress.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-      : [],
+    progress,
     args: entry.args && typeof entry.args === "object" ? (entry.args as Record<string, unknown>) : {},
-    result: entry.result && typeof entry.result === "object" ? (entry.result as Record<string, unknown>) : undefined,
+    result,
     isError: entry.isError === true || state === "error",
     state,
   };

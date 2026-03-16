@@ -9,6 +9,7 @@ routes = [{ pattern = "api.alpha-book.org", custom_domain = true }]
 OPENAI_MODEL = "gpt-5.2"
 OPENAI_SYNTH_MODEL = "gpt-5.2"
 OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
+TOOL_STREAM_CLEANUP_MODEL = "@cf/zai-org/glm-4.7-flash"
 RUNTIME_AGENT_MODEL = "gpt-5.2-codex"
 ORCHESTRATOR_MAX_TURNS = "10"
 ORCHESTRATOR_MAX_RUNTIME_TASKS_PER_RUN = "4"
@@ -42,3 +43,6 @@ queue = "alphabook-ingest"
 [[queues.producers]]
 binding = "JOBS_QUEUE"
 queue = "alphabook-jobs"
+
+[ai]
+binding = "AI"

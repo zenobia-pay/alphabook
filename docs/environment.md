@@ -11,6 +11,7 @@
 - `OPENAI_MODEL`
 - `OPENAI_SYNTH_MODEL`
 - `OPENAI_EMBEDDING_MODEL`
+- `TOOL_STREAM_CLEANUP_MODEL`
 - `FLY_API_TOKEN`
 - `FLY_RUNTIME_APP_NAME`
 - `FLY_RUNTIME_APP_URL`
@@ -37,6 +38,9 @@ Cloudflare bindings:
 - `CORPUS_BUCKET`
 - `INGEST_QUEUE`
 - `JOBS_QUEUE`
+- `AI`
+
+`TOOL_STREAM_CLEANUP_MODEL` defaults to `@cf/zai-org/glm-4.7-flash` for the low-cost tool-log cleanup lane that will sit beside the main OpenAI planning/synthesis path.
 
 ## Runtime Service
 
