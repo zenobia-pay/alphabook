@@ -965,7 +965,7 @@ function AssistantSurface({
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <Thread />
+      <Thread isRunning={isSending} />
     </AssistantRuntimeProvider>
   );
 }
@@ -1115,6 +1115,12 @@ export default function App() {
       debugEnabled,
     });
   }, [activeView, selectedSessionId, activeWorkId, activeProfileUserId, debugEnabled]);
+
+  useEffect(() => {
+    if (activeView === "profile" && currentUserId && !activeProfileUserId) {
+      setActiveProfileUserId(currentUserId);
+    }
+  }, [activeView, activeProfileUserId, currentUserId]);
 
   useEffect(() => {
     if (!debugEnabled) {
@@ -1443,10 +1449,6 @@ export default function App() {
               ];
               updatePlanMessage((message) => ({
                 ...message,
-                content:
-                  typeof event.data.rationale === "string" && event.data.rationale.trim()
-                    ? event.data.rationale
-                    : message.content,
                 toolCalls: activityLog,
               }));
               return;
@@ -1472,13 +1474,15 @@ export default function App() {
                 ?? activityLog.find((entry) => entry.toolName === toolName);
               updatePlanMessage((message) => ({
                 ...message,
-                content: summarizeToolSentence({
-                  toolName,
-                  args: completedEntry?.args ?? {},
-                  result: completedEntry?.result,
-                  state: completedEntry?.state ?? (event.data.status === "failed" ? "error" : "completed"),
-                  rationale: completedEntry?.rationale,
-                }),
+                content:
+                  message.content ||
+                  summarizeToolSentence({
+                    toolName,
+                    args: completedEntry?.args ?? {},
+                    result: completedEntry?.result,
+                    state: completedEntry?.state ?? (event.data.status === "failed" ? "error" : "completed"),
+                    rationale: completedEntry?.rationale,
+                  }),
                 toolCalls: activityLog,
               }));
               return;
@@ -1498,7 +1502,6 @@ export default function App() {
               );
               updatePlanMessage((message) => ({
                 ...message,
-                content: rationale.trim() ? rationale : message.content,
                 toolCalls: activityLog,
               }));
               return;
@@ -1661,6 +1664,9 @@ export default function App() {
     if (view === "assistant" && activeView === "assistant") {
       startNewChat();
       return;
+    }
+    if (view === "profile" && currentUserId) {
+      setActiveProfileUserId(currentUserId);
     }
     setActiveView(view);
   }
