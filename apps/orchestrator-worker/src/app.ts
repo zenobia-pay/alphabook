@@ -7,8 +7,8 @@ import type { WorkOSAuth } from "./auth";
 import type { BillingService } from "./billing";
 import type { Embedder } from "./embeddings";
 import type { BlobStore } from "./r2";
-import type { Planner } from "./planner";
-import { parseToolCall } from "./planner";
+import type { Planner, PlannerContext } from "./planner";
+import { FallbackPlanner, parseToolCall } from "./planner";
 import type { Router } from "./router";
 import { cleanupToolStreamWithWorkersAi, type ToolStreamCleanupLine } from "./tool-stream-cleanup";
 import type { Synthesizer, ToolHistoryEntry } from "./synthesizer";
@@ -2772,7 +2772,7 @@ async function runOrchestrator(
         turn,
       });
 
-      const decision: PlannerDecision = await deps.planner.decide({
+      const plannerContext: PlannerContext = {
         userMessage: routedQuery,
         conversationHistory,
         turns: turn,
@@ -2790,7 +2790,8 @@ async function runOrchestrator(
           runId: run.id,
           source: "planner",
         },
-      });
+      };
+      const decision: PlannerDecision = await deps.planner.decide(plannerContext);
 
       if (decision.type === "final_answer") {
         await deps.store.updateRun(run.id, {
@@ -2826,7 +2827,11 @@ async function runOrchestrator(
         return;
       }
 
-      const toolCall = parseToolCall(decision);
+      let toolCall = parseToolCall(decision);
+      if (toolCall?.tool_name === "create_workspace" && pendingWorkspaceExecution) {
+        const fallbackDecision = await new FallbackPlanner().decide(plannerContext);
+        toolCall = parseToolCall(fallbackDecision);
+      }
       if (!toolCall) {
         continue;
       }

@@ -315,6 +315,11 @@ function toolCallCount(context: PlannerContext, toolName: ToolName): number {
   return context.toolHistory.filter((entry) => entry.toolName === toolName).length;
 }
 
+function hasToolStarted(context: PlannerContext, toolName: ToolName): boolean {
+  return context.toolHistory.some((entry) => entry.toolName === toolName)
+    || (context.pendingTools ?? []).some((entry) => entry.toolName === toolName);
+}
+
 function lastToolCall(context: PlannerContext): PlannerContext["toolHistory"][number] | null {
   return context.toolHistory.length > 0 ? context.toolHistory[context.toolHistory.length - 1] : null;
 }
@@ -629,7 +634,7 @@ export class OpenAIPlanner implements Planner {
       return fallbackPlanner.decide(context);
     }
     const parsed = parsedResult.data;
-    if (!context.toolHistory.some((entry) => entry.toolName === "create_workspace")) {
+    if (!hasToolStarted(context, "create_workspace")) {
       const chunks = seedChunkPayload(context);
       const metadataIds = context.workScope?.length ? context.workScope.slice(0, 12) : metadataWorkIds(context, 12);
       const workIds = Array.from(new Set([

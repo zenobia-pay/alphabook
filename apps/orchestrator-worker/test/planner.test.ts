@@ -69,3 +69,66 @@ test("OpenAIPlanner starts with workspace creation before later retrieval steps"
   assert.equal(decision.tool_name, "create_workspace");
   assert.match(decision.rationale ?? "", /starting the codex workspace/i);
 });
+
+test("OpenAIPlanner does not force create_workspace again while it is pending", async () => {
+  const planner = new OpenAIPlanner(
+    "test-key",
+    "test-model",
+    async () =>
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  type: "tool_call",
+                  tool_name: "search_works",
+                  rationale: "Keep retrieval moving while the workspace starts.",
+                  args: {
+                    query: "find revealing passages about grief and mourning",
+                    filters: { limit: 12 },
+                  },
+                }),
+              },
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+          },
+        },
+      ),
+  );
+
+  const context: PlannerContext = {
+    userMessage: "find revealing passages about grief and mourning",
+    conversationHistory: [
+      {
+        role: "user",
+        content: "find revealing passages about grief and mourning",
+      },
+    ],
+    turns: 2,
+    toolHistory: [],
+    pendingTools: [
+      {
+        toolName: "create_workspace",
+        args: {
+          workIds: [],
+          chunkIds: [],
+          taskContext: {
+            question: "find revealing passages about grief and mourning",
+          },
+        },
+      },
+    ],
+  };
+
+  const decision = await planner.decide(context);
+
+  assert.equal(decision.type, "tool_call");
+  assert.equal(decision.tool_name, "search_works");
+  assert.match(decision.rationale ?? "", /retrieval moving/i);
+});
