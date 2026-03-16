@@ -30,8 +30,61 @@ export interface Router {
   decide(context: RouterContext): Promise<RouterDecision>;
 }
 
+function stripChatLeadIn(message: string): string {
+  return message
+    .replace(/^(?:hey|hi|hello|yo|sup|please)\b[\s,!.-]*/iu, "")
+    .replace(/^(?:can you|could you|would you|will you)\b[\s,]*/iu, "")
+    .replace(/^(?:find|show|give|pull|look up|search for)\s+(?:me\s+)?/iu, "")
+    .trim();
+}
+
+function normalizeSearchSubject(message: string): string {
+  const stripped = stripChatLeadIn(message)
+    .replace(/^(?:examples?(?:\s+from)?\s+)?(?:books?|fiction)\s+(?:of|where)\s+/iu, "")
+    .replace(/^(?:examples?\s+of\s+)/iu, "")
+    .trim();
+  return stripped.replace(/[.?!\s]+$/u, "").trim();
+}
+
 function shouldUseToolChain(message: string): boolean {
-  return /\b(book|books|novel|novels|story|stories|passage|passages|quote|quotes|theme|themes|motif|motifs|corpus|search|find|show me|look up|examples?|compare|contrast|which works?|which book|who writes|where does)\b/i.test(message);
+  return /\b(book|books|novel|novels|story|stories|fiction|passage|passages|quote|quotes|theme|themes|motif|motifs|corpus|search|find|show me|look up|examples?|compare|contrast|which works?|which book|who writes|where does)\b/i.test(message);
+}
+
+function isLowInformationClarifier(message: string): boolean {
+  return /^(?:examples?|books?(?:\s*\/\s*fiction)?|fiction|novels?|stories|real life|advice|all of it|idk|i don't know|either|both|yes|yeah|yep|no|nope)\b[\s.!?/-]*$/iu.test(message.trim());
+}
+
+function hasCorpusIntent(messages: string[]): boolean {
+  return messages.some((message) => /\b(book|books|novel|novels|story|stories|fiction|passage|passages|quote|quotes|examples?)\b/iu.test(message));
+}
+
+function deriveToolChainQuery(context: RouterContext): string | null {
+  const userMessages = context.conversationHistory
+    .filter((message) => message.role === "user")
+    .map((message) => message.content.trim())
+    .filter((message) => message.length > 0);
+
+  if (userMessages.length === 0) {
+    return null;
+  }
+
+  const latestMessage = userMessages[userMessages.length - 1] ?? "";
+  const normalizedLatest = normalizeSearchSubject(latestMessage);
+  if (shouldUseToolChain(latestMessage) && normalizedLatest) {
+    return normalizedLatest;
+  }
+
+  if (!hasCorpusIntent(userMessages)) {
+    return null;
+  }
+
+  const subjectMessage = userMessages.find((message) => !isLowInformationClarifier(message));
+  const normalizedSubject = subjectMessage ? normalizeSearchSubject(subjectMessage) : "";
+  if (!normalizedSubject) {
+    return null;
+  }
+
+  return `passages from books or fiction where ${normalizedSubject}`;
 }
 
 function fallbackDirectAnswer(message: string): string {
@@ -46,10 +99,11 @@ function fallbackDirectAnswer(message: string): string {
 
 export class FallbackRouter implements Router {
   async decide(context: RouterContext): Promise<RouterDecision> {
-    if (shouldUseToolChain(context.userMessage)) {
+    const derivedQuery = deriveToolChainQuery(context);
+    if (derivedQuery) {
       return {
         type: "tool_chain",
-        fullQuery: context.userMessage.trim(),
+        fullQuery: derivedQuery,
       };
     }
     return {
@@ -83,6 +137,14 @@ export class OpenAIRouter implements Router {
   ) {}
 
   async decide(context: RouterContext): Promise<RouterDecision> {
+    const derivedQuery = deriveToolChainQuery(context);
+    if (derivedQuery) {
+      return {
+        type: "tool_chain",
+        fullQuery: derivedQuery,
+      };
+    }
+
     const body = {
       model: this.model,
       response_format: { type: "json_object" as const },
