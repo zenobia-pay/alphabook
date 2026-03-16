@@ -271,7 +271,7 @@ export class FallbackPlanner implements Planner {
       type: "final_answer",
       answer: typeof summary === "string" && summary.trim().length
         ? summary.slice(0, 1600)
-        : "I completed the corpus search, but the runtime did not return a final briefing payload.",
+        : "The corpus search finished without a readable briefing file, so I cannot show a reliable final answer from this run.",
       citations: Array.isArray(briefingResult.citations) ? briefingResult.citations as Citation[] : extractCitationsFromChunks(chunks),
     };
   }
@@ -293,8 +293,6 @@ export class ScriptedPlanner implements Planner {
 }
 
 export class OpenAIPlanner implements Planner {
-  private readonly fallbackPlanner = new FallbackPlanner();
-
   constructor(
     private readonly apiKey: string,
     private readonly model: string,
@@ -303,96 +301,92 @@ export class OpenAIPlanner implements Planner {
   ) {}
 
   async decide(context: PlannerContext): Promise<PlannerDecision> {
-    try {
-      const body = {
-        model: this.model,
-        response_format: { type: "json_object" as const },
-        messages: [
-          {
-            role: "system",
-            content: `${PLANNER_SYSTEM_PROMPT}\nReturn a single JSON object that matches the requested output shape.`,
-          },
-          {
-            role: "user",
-            content: JSON.stringify({
-              task: "Choose the next AlphaBook action.",
-              responseInstructions: "Reply with JSON only.",
-              hardLimits: HARD_LIMITS,
-              availableTools: [
-                "search_works(query, filters?)",
-                "get_work_metadata(work_ids)",
-                "get_relevant_chunks(query, work_ids?, filters?)",
-                "get_work_text(work_id)",
-                "create_workspace(work_ids, chunk_ids, task_context)",
-                "run_workspace_task(runtime_id, task_spec)",
-                "read_workspace_file(runtime_id, path)",
-                "destroy_workspace(runtime_id)",
-              ],
-              context,
-              plannerNotes: context.workScope?.length
-                ? "A workScope is present. Stay inside those work IDs unless the user explicitly asks to widen scope."
-                : null,
-              outputShape: {
-                type: "tool_call | final_answer",
-                tool_name: "one of the available tools when using tool_call",
-                args: "object",
-                rationale: "optional short plain-English sentence about the next step when using tool_call",
-                answer: "string",
-                citations: "array of {workId, chunkId?, label, excerpt, r2Key?}",
-              },
-            }),
-          },
-        ],
-      };
-      const response = await this.fetchImpl("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${this.apiKey}`,
+    const body = {
+      model: this.model,
+      response_format: { type: "json_object" as const },
+      messages: [
+        {
+          role: "system",
+          content: `${PLANNER_SYSTEM_PROMPT}\nReturn a single JSON object that matches the requested output shape.`,
         },
-        body: JSON.stringify(body),
-      });
-      if (!response.ok) {
-        const text = await response.text();
-        throw new Error(`Planner request failed: ${text}`);
-      }
-      const payload = (await response.json()) as {
-        choices?: Array<{
-          message?: {
-            content?: string;
-          };
-        }>;
-        usage?: Record<string, unknown>;
-        id?: string;
-      };
-      if (this.billing && context.billingContext) {
-        const usage = openAIUsageFromResponse(payload as Record<string, unknown>);
-        if (usage) {
-          await this.billing.track(context.billingContext, {
-            provider: "openai",
-            model: this.model,
-            operation: "chat.completions.create",
-            ...usage,
-            requestId: payload.id ?? null,
-            requestJson: body as unknown as Record<string, unknown>,
-            responseJson: {
-              usage: payload.usage ?? null,
+        {
+          role: "user",
+          content: JSON.stringify({
+            task: "Choose the next AlphaBook action.",
+            responseInstructions: "Reply with JSON only.",
+            hardLimits: HARD_LIMITS,
+            availableTools: [
+              "search_works(query, filters?)",
+              "get_work_metadata(work_ids)",
+              "get_relevant_chunks(query, work_ids?, filters?)",
+              "get_work_text(work_id)",
+              "create_workspace(work_ids, chunk_ids, task_context)",
+              "run_workspace_task(runtime_id, task_spec)",
+              "read_workspace_file(runtime_id, path)",
+              "destroy_workspace(runtime_id)",
+            ],
+            context,
+            plannerNotes: context.workScope?.length
+              ? "A workScope is present. Stay inside those work IDs unless the user explicitly asks to widen scope."
+              : null,
+            outputShape: {
+              type: "tool_call | final_answer",
+              tool_name: "one of the available tools when using tool_call",
+              args: "object",
+              rationale: "optional short plain-English sentence about the next step when using tool_call",
+              answer: "string",
+              citations: "array of {workId, chunkId?, label, excerpt, r2Key?}",
             },
-            metadata: {
-              phase: "planner",
-              turn: context.turns,
-            },
-          });
-        }
-      }
-      const content = payload.choices?.[0]?.message?.content;
-      if (!content) {
-        throw new Error("Planner response was empty.");
-      }
-      return PlannerDecisionSchema.parse(JSON.parse(content));
-    } catch {
-      return this.fallbackPlanner.decide(context);
+          }),
+        },
+      ],
+    };
+    const response = await this.fetchImpl("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${this.apiKey}`,
+      },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Planner request failed: ${text}`);
     }
+    const payload = (await response.json()) as {
+      choices?: Array<{
+        message?: {
+          content?: string;
+        };
+      }>;
+      usage?: Record<string, unknown>;
+      id?: string;
+    };
+    if (this.billing && context.billingContext) {
+      const usage = openAIUsageFromResponse(payload as Record<string, unknown>);
+      if (usage) {
+        await this.billing.track(context.billingContext, {
+          provider: "openai",
+          model: this.model,
+          operation: "chat.completions.create",
+          ...usage,
+          requestId: payload.id ?? null,
+          requestJson: body as unknown as Record<string, unknown>,
+          responseJson: {
+            usage: payload.usage ?? null,
+          },
+          metadata: {
+            phase: "planner",
+            turn: context.turns,
+          },
+        });
+      }
+    }
+    const content = payload.choices?.[0]?.message?.content;
+    if (!content) {
+      throw new Error("Planner response was empty.");
+    }
+    return PlannerDecisionSchema.parse(JSON.parse(content));
   }
 }
 

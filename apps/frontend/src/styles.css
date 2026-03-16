@@ -501,6 +501,10 @@ button {
   color: rgba(92, 81, 68, 0.82);
 }
 
+.aui-tool-fallback-status-shell-error {
+  color: rgba(126, 52, 44, 0.86);
+}
+
 .aui-tool-fallback-head {
   display: flex;
   align-items: baseline;
@@ -517,6 +521,10 @@ button {
   font-size: 0.72rem;
   font-weight: 500;
   color: rgba(97, 85, 73, 0.62);
+}
+
+.aui-tool-fallback-badge-error {
+  color: rgba(126, 52, 44, 0.82);
 }
 
 .aui-tool-fallback-summary {

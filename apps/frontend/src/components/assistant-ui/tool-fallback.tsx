@@ -336,8 +336,9 @@ function ToolFallbackTrigger({
   const statusType = status?.type ?? "complete";
   const isRunning = statusType === "running";
   const isCancelled = status?.type === "incomplete" && status.reason === "cancelled";
+  const isFailed = status?.type === "incomplete" && status.reason !== "cancelled";
   const Icon = statusIconMap[statusType];
-  const badge = isCancelled ? "Cancelled" : isRunning ? "Running" : "Done";
+  const badge = isCancelled ? "Cancelled" : isFailed ? "Failed" : isRunning ? "Running" : "Done";
 
   return (
     <CollapsibleTrigger
@@ -345,13 +346,13 @@ function ToolFallbackTrigger({
       className={cn("aui-tool-fallback-trigger group/trigger flex w-full items-start gap-3 text-left", className)}
       {...props}
     >
-      <span className="aui-tool-fallback-status-shell">
+      <span className={cn("aui-tool-fallback-status-shell", isFailed && "aui-tool-fallback-status-shell-error")}>
         <Icon className={cn("size-3.5", isRunning && "animate-spin")} />
       </span>
       <span className="min-w-0 grow">
         <span className="aui-tool-fallback-head">
           <b className="aui-tool-fallback-title">{toolName}</b>
-          <span className="aui-tool-fallback-badge">{badge}</span>
+          <span className={cn("aui-tool-fallback-badge", isFailed && "aui-tool-fallback-badge-error")}>{badge}</span>
         </span>
         <span className="aui-tool-fallback-summary">{summary}</span>
       </span>

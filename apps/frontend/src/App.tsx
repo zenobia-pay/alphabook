@@ -845,6 +845,19 @@ function messageToThreadMessage(message: UiMessage, streamingAssistantId: string
           toolName: entry.label,
           args,
           argsText: JSON.stringify(args),
+          status:
+            entry.state === "running"
+              ? ({ type: "running" } as const)
+              : entry.isError
+                ? ({
+                    type: "incomplete",
+                    reason: "error",
+                    error:
+                      typeof entry.result?.error === "string"
+                        ? entry.result.error
+                        : "This step failed.",
+                  } as const)
+                : ({ type: "complete" } as const),
           ...(entry.state === "running"
             ? {}
             : {
@@ -861,7 +874,7 @@ function messageToThreadMessage(message: UiMessage, streamingAssistantId: string
           },
         ]
       : [];
-    const content = [...textParts, ...toolParts];
+    const content = toolParts.length > 0 ? [...toolParts, ...textParts] : textParts;
 
     return {
       id: message.id,

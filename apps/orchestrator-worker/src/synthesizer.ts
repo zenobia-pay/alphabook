@@ -139,9 +139,17 @@ function userFacingErrorSummary(toolHistory: ToolHistoryEntry[]): string | null 
   const metadataFailure = failures.find((failure) => failure.toolName === "search_works");
   const workspaceFailure = failures.find((failure) => failure.toolName === "create_workspace");
   const runtimeFailure = failures.find((failure) => failure.toolName === "run_workspace_task");
+  const searchNotesFailure = failures.find((failure) => failure.toolName === "read_workspace_file");
+
+  if (runtimeFailure?.error.includes("evidence artifacts are missing")) {
+    return "I could not finish the quoted briefing because the runtime never produced the evidence artifacts that briefing depends on.";
+  }
+  if (searchNotesFailure?.error.includes("ENOENT") || searchNotesFailure?.error.includes("no such file or directory")) {
+    return "I tried to read the search notes back from the runtime, but that file was never written, so I do not have usable evidence notes to show you.";
+  }
 
   if (workspaceFailure || runtimeFailure) {
-    return "The full corpus search did not complete for this run, so I do not have a reliable briefing yet.";
+    return "The full corpus search failed before it could return a usable briefing, so I do not have a reliable final answer for this run.";
   }
   if (metadataFailure) {
     return "The library scan failed early, so this run never built a reliable search plan.";
