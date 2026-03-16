@@ -75,8 +75,45 @@ function normalizeText(input: string): string {
     .trim();
 }
 
+function splitOversizedSegment(segment: string, targetSize: number): string[] {
+  const normalized = segment.trim();
+  if (!normalized) {
+    return [];
+  }
+  if (normalized.length <= targetSize) {
+    return [normalized];
+  }
+
+  const pieces: string[] = [];
+  let start = 0;
+  while (start < normalized.length) {
+    let end = Math.min(start + targetSize, normalized.length);
+    if (end < normalized.length) {
+      const newline = normalized.lastIndexOf("\n", end);
+      const whitespace = normalized.slice(start, end).search(/\s\S*$/);
+      if (newline > start + Math.floor(targetSize * 0.5)) {
+        end = newline;
+      } else if (whitespace > 0) {
+        end = start + whitespace;
+      }
+    }
+    const piece = normalized.slice(start, end).trim();
+    if (piece) {
+      pieces.push(piece);
+    }
+    start = end;
+    while (start < normalized.length && /\s/.test(normalized[start] ?? "")) {
+      start += 1;
+    }
+  }
+  return pieces;
+}
+
 function chunkText(text: string, targetSize = 1400): string[] {
-  const paragraphs = text.split(/\n{2,}/).map((chunk) => chunk.trim()).filter(Boolean);
+  const paragraphs = text
+    .split(/\n{2,}/)
+    .flatMap((chunk) => splitOversizedSegment(chunk, targetSize))
+    .filter(Boolean);
   const chunks: string[] = [];
   let buffer = "";
   for (const paragraph of paragraphs) {
