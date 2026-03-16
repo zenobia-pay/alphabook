@@ -488,6 +488,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
             PORT: "8080",
             RUNTIME_WORKSPACE_ROOT: "/workspace",
             RUNTIME_SHARED_TOKEN: this.config.runtimeSharedToken ?? "",
+            RUNTIME_AGENT_COMMAND: "/app/apps/runtime/bin/run-agent.mjs",
             DATABASE_URL: this.config.databaseUrl ?? "",
             CODEX_AUTH_JSON: this.config.codexAuthJson ?? "",
             RUNTIME_AGENT_MODEL: this.config.runtimeAgentModel ?? "gpt-5-codex",

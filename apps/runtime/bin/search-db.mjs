@@ -213,7 +213,7 @@ function buildChunkFilterWhere(options, literals, startParam = 1) {
   let param = startParam;
 
   if (options.works.length > 0) {
-    clauses.push(`c.work_id = ANY($${param}::text[])`);
+    clauses.push(`c.work_id = ANY($${param}::uuid[])`);
     params.push(options.works);
     param += 1;
   }

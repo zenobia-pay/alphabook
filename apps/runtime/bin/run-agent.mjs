@@ -634,7 +634,14 @@ function buildSearchEvidence(question, selectedChunks, runtimeChunks, workById) 
   };
 }
 
-function buildSearchPrompt(runtimePrompt, manifest, task, evidence, question) {
+function buildBriefingPrompt(runtimePrompt, manifest, task, evidence, question) {
+  const taskContext = manifest.taskContext && typeof manifest.taskContext === "object"
+    ? manifest.taskContext
+    : {};
+  const hydratedWorkIds = Array.isArray(taskContext.hydratedWorkIds)
+    ? taskContext.hydratedWorkIds.filter((value) => typeof value === "string")
+    : [];
+  const openBookMode = taskContext.mode === "open_book_analysis";
   const manifestSummary = {
     works: Array.isArray(manifest.works)
       ? manifest.works.slice(0, 30).map((work) => ({
@@ -660,12 +667,23 @@ function buildSearchPrompt(runtimePrompt, manifest, task, evidence, question) {
   return [
     runtimePrompt,
     "",
-    "You are running pass 1 of 2.",
-    "Goal: find as many relevant primary-source passages from across the corpus as possible for the user question, then assemble the strongest quoted evidence set for the final briefing.",
+    "You are running the single AlphaBook Codex workspace pass.",
+    openBookMode
+      ? "Goal: answer the question from the currently open book, using the hydrated local files first and widening scope only if absolutely necessary."
+      : "Goal: search as broadly as needed across the corpus, collect the strongest primary-source passages, and write the final user-facing briefing in one run.",
     "Constraints:",
     "- Only use local files under /workspace.",
     "- Start from the local schema, the book metadata, the file catalog, and any seed evidence already in the workspace.",
-    "- First use the remote Postgres database through the local corpus CLI at node /workspace/context/search-db.mjs before downloading local files.",
+    openBookMode
+      ? "- Stay inside the current hydrated book unless the local evidence is clearly insufficient."
+      : "- Start from the best available seed evidence, but widen across the full corpus whenever the prompt asks for a broad theme, comparison, or survey.",
+    openBookMode
+      ? "- Use at most 5 shell commands total before you return your answer."
+      : "- Keep the search bounded: use at most 10 shell commands total before you return your answer.",
+    "- Prefer finishing with a good briefing over exhaustively exploring every possible lead.",
+    openBookMode
+      ? "- Search the local clean text and local chunks first with rg and sed. Use the remote Postgres corpus CLI only as a fallback."
+      : "- Use the remote Postgres database through the local corpus CLI at node /workspace/context/search-db.mjs as your main corpus-wide search surface.",
     "- The CLI turns corpus-wide search requests into SQL over the remote chunks table and returns results in plain text or JSON so you can keep working with normal shell tools.",
     "- node /workspace/context/search-db.mjs rg behaves like ripgrep over the remote chunks table and can be piped into sed, awk, jq, and other shell tools.",
     "- node /workspace/context/search-db.mjs works searches book metadata in the remote DB to help decide where to search next.",
@@ -676,24 +694,33 @@ function buildSearchPrompt(runtimePrompt, manifest, task, evidence, question) {
     "  node /workspace/context/search-db.mjs rg -i 'anger|rage' | sed -n '1,40p'",
     "  node /workspace/context/search-db.mjs works --query 'break up reconcile lovers'",
     "  node /workspace/context/search-db.mjs neighbors --chunk-id <chunkId> --radius 2",
-    "- Use repeated regex, keyword, metadata, and neighbor queries against the remote DB until the candidate search space is exhausted or clearly irrelevant.",
-    "- After the corpus-wide search identifies strong candidates, decide which books to pull locally and which clean text files are worth hydrating for deeper context.",
+    "- Use repeated regex, keyword, metadata, and neighbor queries until you have enough direct quoted evidence to answer the question or until you exhaust the command budget.",
+    openBookMode
+      ? "- You do not need to hydrate more books for this task unless the question explicitly asks for a comparison."
+      : "- After the corpus-wide search identifies strong candidates, decide which books to pull locally and which clean text files are worth hydrating for deeper context.",
     "- Use shell tools like rg, sed, and jq to inspect local files and Postgres-backed search results.",
     "- To pull files into the workspace, run node /workspace/context/hydrate-files.mjs with one or more of these forms:",
     "  node /workspace/context/hydrate-files.mjs --work <workId> --kind chunks",
     "  node /workspace/context/hydrate-files.mjs --work <workId> --kind clean",
     "- Use the schema, books, and metadata to decide what to hydrate only after the corpus-wide search narrows the scope.",
     "- Do not browse the internet.",
-    "- Do not answer the user yet.",
     "- Expand across more books until the candidate search space is exhausted or clearly irrelevant.",
     "- Create a focused local corpus in /workspace/scratch/research-corpus by copying or excerpting only the most relevant passages or files.",
-    "- You do not need to write output files yourself.",
-    "- Instead, your final response must be JSON that includes:",
-    "  - searchPlan: the search strategy, which books you chose, which regex or keyword searches you ran, and why they matter.",
-    "  - downloadManifest: the books, chunk files, clean texts, and excerpts you pulled into the workspace or into scratch/research-corpus.",
-    "  - evidence: an array of objects shaped like { workId, chunkId?, chunkIndex?, sourcePath, label, excerpt, rationale, r2Key? }.",
-    "  - notesMarkdown: markdown notes summarizing what you found so far and which texts look most relevant.",
+    "- You must write these files yourself before exiting:",
+    "  - /workspace/output/evidence.json",
+    "  - /workspace/output/evidence-notes.md",
+    "  - /workspace/output/briefing.md",
+    "  - /workspace/output/briefing.json",
+    "- /workspace/output/evidence.json must be JSON shaped like:",
+    "  { question, evidence: [{ workId, chunkId?, chunkIndex?, sourcePath, label, excerpt, rationale, r2Key? }] }",
+    "- /workspace/output/briefing.json must be JSON shaped like:",
+    "  { question, briefing, summary, briefingPath, citationCount, citations: [{ workId, chunkId?, chunkIndex?, label, excerpt, r2Key?, sourcePath? }] }",
+    "- The markdown briefing should mix primary-source quotes with short explanations.",
+    "- Every quote must include an adjacent source reference that maps back to the original work and chunk when available.",
     "- Prefer primary-source quotations, preserve source identifiers, and favor recall over premature narrowing.",
+    "- Once you have 2 to 8 strong quotations, stop searching and write the briefing.",
+    "- If you cannot find strong quotations after the search budget, still write all required output files and explain that the evidence is thin.",
+    "- Your final assistant message should be one short sentence confirming that the workspace files were written.",
     "",
     `Question: ${question}`,
     "",
@@ -706,134 +733,8 @@ function buildSearchPrompt(runtimePrompt, manifest, task, evidence, question) {
     "Seed evidence from the orchestrator:",
     JSON.stringify(evidence, null, 2),
     "",
-    "When finished, reply with JSON only. The runtime will write the output files from your JSON response.",
+    "When finished, reply with one short plain-text sentence only.",
   ].join("\n");
-}
-
-function buildBriefingPrompt(runtimePrompt, manifest, task, question) {
-  const manifestSummary = {
-    works: Array.isArray(manifest.works)
-      ? manifest.works.slice(0, 30).map((work) => ({
-        workId: work.workId,
-        title: work.title,
-        authors: work.authors ?? [],
-        language: work.language ?? null,
-      }))
-      : [],
-    selectedChunkIds: manifest.selectedChunkIds,
-    selectedChunks: Array.isArray(manifest.selectedChunks)
-      ? manifest.selectedChunks.slice(0, 12).map((chunk) => ({
-        workId: chunk.workId,
-        chunkId: chunk.chunkId,
-        excerpt: typeof chunk.excerpt === "string" ? normalizeWhitespace(chunk.excerpt).slice(0, 220) : "",
-      }))
-      : [],
-  };
-  return [
-    runtimePrompt,
-    "",
-    "You are running pass 2 of 2.",
-    "Goal: produce the final briefing for the chat based on the focused evidence assembled in pass 1.",
-    "Constraints:",
-    "- Only use local files under /workspace.",
-    "- Read /workspace/output/evidence.json, /workspace/output/evidence-notes.md, and the files under /workspace/scratch/research-corpus.",
-    "- You do not need to write output files yourself.",
-    "- Your final response must be JSON with:",
-    "  - briefingPath",
-    "  - citationCount",
-    "  - summary",
-    "  - briefing: polished markdown for the user",
-    "  - citations: an array of { workId, chunkId?, label, excerpt, r2Key?, sourcePath? }",
-    "- The markdown briefing should mix primary-source quotes with short explanations.",
-    "- Every quote must include an adjacent source reference that maps back to the original work.",
-    "- Prefer many grounded quotes over broad unsupported claims.",
-    "",
-    `Question: ${question}`,
-    "",
-    "Task spec:",
-    JSON.stringify(task, null, 2),
-    "",
-    "Existing evidence:",
-    "Read /workspace/output/evidence.json and /workspace/output/evidence-notes.md before writing the briefing.",
-    "",
-    "Workspace manifest summary:",
-    JSON.stringify(manifestSummary, null, 2),
-    "",
-    "When finished, reply with JSON only. The runtime will write the final briefing files from your JSON response.",
-  ].join("\n");
-}
-
-function schemaForSearchStep() {
-  return {
-    type: "object",
-    additionalProperties: false,
-    properties: {
-      strongestWorkIds: {
-        type: "array",
-        items: { type: "string" },
-      },
-      searchPlan: {
-        type: "object",
-        additionalProperties: true,
-      },
-      downloadManifest: {
-        type: "object",
-        additionalProperties: true,
-      },
-      evidence: {
-        type: "array",
-        items: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            workId: { type: "string" },
-            chunkId: { type: "string" },
-            chunkIndex: { type: "integer" },
-            sourcePath: { type: "string" },
-            label: { type: "string" },
-            excerpt: { type: "string" },
-            rationale: { type: "string" },
-            r2Key: { type: "string" },
-          },
-          required: ["workId", "sourcePath", "label", "excerpt", "rationale"],
-        },
-      },
-      notesMarkdown: {
-        type: "string",
-      },
-    },
-    required: ["strongestWorkIds", "searchPlan", "downloadManifest", "evidence", "notesMarkdown"],
-  };
-}
-
-function schemaForBriefingStep() {
-  return {
-    type: "object",
-    additionalProperties: false,
-    properties: {
-      briefingPath: { type: "string" },
-      citationCount: { type: "integer" },
-      summary: { type: "string" },
-      briefing: { type: "string" },
-      citations: {
-        type: "array",
-        items: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            workId: { type: "string" },
-            chunkId: { type: "string" },
-            label: { type: "string" },
-            excerpt: { type: "string" },
-            r2Key: { type: "string" },
-            sourcePath: { type: "string" },
-          },
-          required: ["workId", "label", "excerpt"],
-        },
-      },
-    },
-    required: ["briefingPath", "citationCount", "summary", "briefing", "citations"],
-  };
 }
 
 function normalizePhase(task) {
@@ -936,16 +837,6 @@ async function persistCodexEvidenceArtifacts(outputDir, question, codexOutput) {
   }
 
   await writeFile(
-    join(outputDir, "search-plan.json"),
-    JSON.stringify(codexOutput.searchPlan ?? {}, null, 2),
-    "utf8",
-  );
-  await writeFile(
-    join(outputDir, "download-manifest.json"),
-    JSON.stringify(codexOutput.downloadManifest ?? {}, null, 2),
-    "utf8",
-  );
-  await writeFile(
     join(outputDir, "evidence.json"),
     JSON.stringify(
       {
@@ -981,6 +872,7 @@ function normalizeCodexCitations(citations) {
       label: record.label,
       excerpt: record.excerpt,
       ...(typeof record.chunkId === "string" ? { chunkId: record.chunkId } : {}),
+      ...(typeof record.chunkIndex === "number" ? { chunkIndex: record.chunkIndex } : {}),
       ...(typeof record.r2Key === "string" ? { r2Key: record.r2Key } : {}),
       ...(typeof record.sourcePath === "string" ? { sourcePath: record.sourcePath } : {}),
     }];
@@ -1052,11 +944,8 @@ function compactText(text, maxLength = 320) {
 }
 
 function codexStepLabel(step) {
-  if (step === "codex-pass-1-search") {
-    return "Codex evidence search";
-  }
-  if (step === "codex-pass-2-briefing") {
-    return "Codex quoted briefing";
+  if (step === "codex-briefing") {
+    return "Codex corpus briefing";
   }
   return "Codex step";
 }
@@ -1070,6 +959,35 @@ async function appendProgressEvent(outputDir, event) {
     })}\n`,
     "utf8",
   );
+}
+
+async function sleep(ms) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function readStructuredOutput(outputPath) {
+  const content = await readFile(outputPath, "utf8");
+  if (!content.trim()) {
+    throw new Error("Structured output file is still empty.");
+  }
+  return JSON.parse(content);
+}
+
+async function readStructuredOutputWithRetries(outputPath, validate) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= 12; attempt += 1) {
+    try {
+      const parsed = await readStructuredOutput(outputPath);
+      if (!validate || validate(parsed)) {
+        return parsed;
+      }
+      lastError = new Error("Structured output did not satisfy validation yet.");
+    } catch (error) {
+      lastError = error;
+    }
+    await sleep(500);
+  }
+  throw lastError ?? new Error("Structured output never became readable.");
 }
 
 async function resolveCodexCommand(workspaceRoot) {
@@ -1097,16 +1015,13 @@ async function runCodexStep({
   model,
   step,
   promptText,
-  schema,
 }) {
   const codexCommand = await resolveCodexCommand(workspaceRoot);
   const promptPath = join(outputDir, `${step}.prompt.md`);
-  const schemaPath = join(outputDir, `${step}.schema.json`);
-  const outputPath = join(outputDir, `${step}.last-message.json`);
+  const outputPath = join(outputDir, `${step}.last-message.txt`);
   const logPath = join(outputDir, `${step}.log.txt`);
 
   await writeFile(promptPath, promptText, "utf8");
-  await writeFile(schemaPath, JSON.stringify(schema, null, 2), "utf8");
   await appendProgressEvent(outputDir, {
     type: "codex.step.prepared",
     step,
@@ -1138,13 +1053,9 @@ async function runCodexStep({
         "--skip-git-repo-check",
         "-C",
         workspaceRoot,
-        "--sandbox",
-        "workspace-write",
+        "--dangerously-bypass-approvals-and-sandbox",
         "--model",
         model,
-        "--json",
-        "--output-schema",
-        schemaPath,
         "--output-last-message",
         outputPath,
         "-",
@@ -1221,7 +1132,7 @@ async function runCodexStep({
     throw new Error(`Codex step ${step} failed with exit code ${exitCode}.`);
   }
 
-  const parsedOutput = parseJson(outputPath);
+  const lastMessage = await readFile(outputPath, "utf8").catch(() => "");
 
   return {
     step,
@@ -1229,7 +1140,7 @@ async function runCodexStep({
     outputPath,
     logPath,
     exitCode: result.exitCode,
-    parsedOutput,
+    lastMessage,
   };
 }
 
@@ -1342,35 +1253,31 @@ async function main() {
   let briefing = "";
   let citations = [];
 
-  if (phase === "collect_evidence" || phase === "collect_and_brief") {
-    const searchRun = await runCodexStep({
-      workspaceRoot,
-      outputDir,
-      model,
-      step: "codex-pass-1-search",
-      promptText: buildSearchPrompt(runtimePrompt, manifest, task, evidence, question),
-      schema: schemaForSearchStep(),
-    });
-    codexRuns.push(searchRun);
-    await persistCodexEvidenceArtifacts(outputDir, question, searchRun.parsedOutput);
-  }
-
-  if (phase === "write_briefing" || phase === "collect_and_brief") {
-    if (!(await fileExists(join(outputDir, "evidence.json"))) || !(await fileExists(join(outputDir, "evidence-notes.md")))) {
-      throw new Error("Cannot run the briefing pass because evidence artifacts are missing.");
-    }
-
+  if (phase === "collect_evidence" || phase === "write_briefing" || phase === "collect_and_brief") {
     const briefingRun = await runCodexStep({
       workspaceRoot,
       outputDir,
       model,
-      step: "codex-pass-2-briefing",
-      promptText: buildBriefingPrompt(runtimePrompt, manifest, task, question),
-      schema: schemaForBriefingStep(),
+      step: "codex-briefing",
+      promptText: buildBriefingPrompt(runtimePrompt, manifest, task, evidence, question),
     });
     codexRuns.push(briefingRun);
-    citations = await persistCodexBriefingArtifacts(outputDir, question, briefingRun.parsedOutput);
-    briefing = typeof briefingRun.parsedOutput.briefing === "string" ? briefingRun.parsedOutput.briefing : "";
+    const evidenceJson = await readJsonIfPresent(join(outputDir, "evidence.json"), null);
+    const notesMarkdown = (await fileExists(join(outputDir, "evidence-notes.md")))
+      ? await readFile(join(outputDir, "evidence-notes.md"), "utf8")
+      : "";
+    const briefingJson = await readJsonIfPresent(join(outputDir, "briefing.json"), null);
+    if (!evidenceJson || typeof evidenceJson !== "object" || !Array.isArray(evidenceJson.evidence)) {
+      throw new Error("Codex did not write a usable /workspace/output/evidence.json file.");
+    }
+    if (!notesMarkdown.trim()) {
+      throw new Error("Codex did not write a usable /workspace/output/evidence-notes.md file.");
+    }
+    if (!briefingJson || typeof briefingJson !== "object" || typeof briefingJson.briefing !== "string" || briefingJson.briefing.trim().length === 0) {
+      throw new Error("Codex did not write a usable /workspace/output/briefing.json file.");
+    }
+    citations = normalizeCodexCitations(briefingJson.citations);
+    briefing = briefingJson.briefing;
   }
 
   const previousCodexRuns = await readJsonIfPresent(join(outputDir, "codex-runs.json"), []);

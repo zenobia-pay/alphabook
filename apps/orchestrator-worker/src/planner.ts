@@ -88,6 +88,16 @@ function phaseRuntimeId(context: PlannerContext, phase: string): string | null {
   return typeof result?.runtimeId === "string" ? result.runtimeId : null;
 }
 
+function latestRuntimeResult(context: PlannerContext): Record<string, unknown> | null {
+  for (let index = context.toolHistory.length - 1; index >= 0; index -= 1) {
+    const entry = context.toolHistory[index];
+    if (entry.toolName === "run_workspace_task") {
+      return entry.result;
+    }
+  }
+  return null;
+}
+
 function hasReadWorkspacePath(context: PlannerContext, path: string): boolean {
   return context.toolHistory.some((entry) =>
     entry.toolName === "read_workspace_file" && entry.args.path === path,
@@ -194,54 +204,22 @@ export class FallbackPlanner implements Planner {
       };
     }
 
-    const collectResult = phaseResult(context, "collect_evidence");
-    if (!collectResult) {
+    const briefingResult = latestRuntimeResult(context);
+    if (!briefingResult) {
       return {
         type: "tool_call",
         tool_name: "run_workspace_task",
-        rationale: "Searching the corpus and gathering quoted evidence.",
+        rationale: "Running the full corpus search and writing the briefing.",
         args: {
           runtimeId,
           taskSpec: {
             kind: "briefing_search",
-            phase: "collect_evidence",
+            phase: "collect_and_brief",
             question: context.userMessage,
             workIds,
             chunkIds: chunks.slice(0, 24).map((chunk) => chunk.id),
             evidenceFile: "output/evidence.json",
             evidenceNotesFile: "output/evidence-notes.md",
-          },
-        },
-      };
-    }
-
-    const evidenceNotesPath = artifactPath(collectResult, [/output\/evidence-notes\.md$/u]) ?? "output/evidence-notes.md";
-    if (!hasReadWorkspacePath(context, evidenceNotesPath)) {
-      return {
-        type: "tool_call",
-        tool_name: "read_workspace_file",
-        rationale: "Bringing the current search notes into the chat.",
-        args: {
-          runtimeId: phaseRuntimeId(context, "collect_evidence") ?? runtimeId,
-          path: evidenceNotesPath,
-        },
-      };
-    }
-
-    const briefingResult = phaseResult(context, "write_briefing");
-    if (!briefingResult) {
-      return {
-        type: "tool_call",
-        tool_name: "run_workspace_task",
-        rationale: "Turning the evidence into a quoted briefing.",
-        args: {
-          runtimeId,
-          taskSpec: {
-            kind: "briefing_search",
-            phase: "write_briefing",
-            question: context.userMessage,
-            workIds,
-            chunkIds: chunks.slice(0, 24).map((chunk) => chunk.id),
             briefingFile: "output/briefing.md",
             briefingJsonFile: "output/briefing.json",
           },
@@ -264,7 +242,7 @@ export class FallbackPlanner implements Planner {
         tool_name: "read_workspace_file",
         rationale: "Bringing the finished briefing back into the chat.",
         args: {
-          runtimeId,
+          runtimeId: typeof briefingResult.runtimeId === "string" ? briefingResult.runtimeId : runtimeId,
           path: finalBriefingPath,
         },
       };

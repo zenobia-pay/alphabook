@@ -1,14 +1,11 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { appendFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, normalize } from "node:path";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { spawn } from "node:child_process";
 import process from "node:process";
 
 import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { RUNTIME_AGENT_PROMPT, type RuntimeTaskResult, type WorkspaceManifest } from "@alphabook/shared";
-
-const execFileAsync = promisify(execFile);
 
 export interface RuntimeServerOptions {
   port?: number;
@@ -187,6 +184,68 @@ async function ensureWorkspace(paths: ReturnType<typeof createPaths>) {
       await mkdir(path, { recursive: true });
     }),
   );
+}
+
+async function runProcess(
+  executable: string,
+  args: string[],
+  options: {
+    cwd: string;
+    env: NodeJS.ProcessEnv;
+    timeoutMs?: number;
+  },
+): Promise<{ stdout: string; stderr: string; exitCode: number | null; timedOut: boolean }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(executable, args, {
+      cwd: options.cwd,
+      env: options.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    let timedOut = false;
+    let timeout: NodeJS.Timeout | null = null;
+
+    const finish = (result: { stdout: string; stderr: string; exitCode: number | null; timedOut: boolean }) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+      resolve(result);
+    };
+
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+
+    child.on("error", reject);
+    child.on("close", (code) => {
+      finish({ stdout, stderr, exitCode: code, timedOut });
+    });
+
+    if (options.timeoutMs && options.timeoutMs > 0) {
+      timeout = setTimeout(() => {
+        timedOut = true;
+        child.kill("SIGTERM");
+        setTimeout(() => {
+          if (!settled) {
+            child.kill("SIGKILL");
+          }
+        }, 5_000).unref();
+      }, options.timeoutMs);
+      timeout.unref();
+    }
+  });
 }
 
 async function resetWorkspace(paths: ReturnType<typeof createPaths>) {
@@ -689,11 +748,18 @@ async function runExternalAgent(
   delete childEnv.OPENAI_API_KEY;
   delete childEnv.OPENAI_BASE_URL;
   delete childEnv.RUNTIME_OPENAI_PROXY_UPSTREAM_BASE_URL;
-  const { stdout, stderr } = await execFileAsync(executable, args, {
+  const processResult = await runProcess(executable, args, {
     cwd: workspaceRoot,
     env: childEnv,
-    timeout: 180_000,
+    timeoutMs: 180_000,
   });
+  if (processResult.exitCode !== 0) {
+    const timeoutSuffix = processResult.timedOut ? " (timed out)" : "";
+    throw new Error(
+      `Runtime agent failed with exit code ${processResult.exitCode ?? "unknown"}${timeoutSuffix}\nstdout:\n${processResult.stdout}\nstderr:\n${processResult.stderr}`,
+    );
+  }
+  const { stdout, stderr } = processResult;
 
   const outputFiles = await listFiles(paths.output, workspaceRoot);
   const briefingJsonPath = join(paths.output, "briefing.json");
