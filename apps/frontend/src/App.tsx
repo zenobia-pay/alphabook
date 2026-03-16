@@ -4133,6 +4133,8 @@ export default function App() {
                       className="min-h-12 flex-1 rounded-[16px] border border-[rgba(72,43,37,0.12)] bg-white px-4 text-sm text-[var(--ink)] outline-none transition focus:border-[rgba(72,43,37,0.28)]"
                       value={adminAnalytics.draft}
                       onChange={(event) => setAdminAnalytics((current) => ({ ...current, draft: event.currentTarget.value }))}
+                      onKeyDown={(event) => event.stopPropagation()}
+                      onKeyUp={(event) => event.stopPropagation()}
                       placeholder="Ask an analytics question"
                       spellCheck={false}
                     />
