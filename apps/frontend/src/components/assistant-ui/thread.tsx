@@ -29,7 +29,7 @@ import {
   RefreshCwIcon,
   SquareIcon,
 } from "lucide-react";
-import { type FC, useCallback, useMemo, useState } from "react";
+import { type FC, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuiState } from "@assistant-ui/store";
 
 type MessagePartRecord = {
@@ -141,6 +141,33 @@ export const Thread: FC<{
   onCancel,
 }) => {
   const isEmpty = useAuiState((state) => state.thread.isEmpty);
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const shouldAutoFollowRef = useRef(true);
+
+  useEffect(() => {
+    const element = viewportRef.current;
+    if (!element) {
+      return;
+    }
+
+    const handleScroll = () => {
+      const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
+      shouldAutoFollowRef.current = distanceFromBottom < 96;
+    };
+
+    handleScroll();
+    element.addEventListener("scroll", handleScroll, { passive: true });
+    return () => {
+      element.removeEventListener("scroll", handleScroll);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isRunning || !viewportRef.current || !shouldAutoFollowRef.current) {
+      return;
+    }
+    viewportRef.current.scrollTop = viewportRef.current.scrollHeight;
+  }, [isRunning]);
 
   return (
     <ThreadPrimitive.Root
@@ -152,6 +179,7 @@ export const Thread: FC<{
       }}
     >
       <ThreadPrimitive.Viewport
+        ref={viewportRef}
         turnAnchor="top"
         className="aui-thread-viewport relative flex flex-1 flex-col overflow-x-auto overflow-y-auto px-4 pt-4"
       >
@@ -166,6 +194,8 @@ export const Thread: FC<{
           }}
         />
 
+        <ThreadAutoFollow active={isRunning} viewportRef={viewportRef} shouldAutoFollowRef={shouldAutoFollowRef} />
+
         <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 mx-auto mt-auto flex w-full max-w-(--thread-max-width) flex-col gap-3 overflow-visible pb-3 md:pb-4">
           <ThreadScrollToBottom />
           <Composer isRunning={isRunning} onCancel={onCancel} />
@@ -176,6 +206,27 @@ export const Thread: FC<{
       </ThreadPrimitive.Viewport>
     </ThreadPrimitive.Root>
   );
+};
+
+const ThreadAutoFollow: FC<{
+  active: boolean;
+  viewportRef: React.RefObject<HTMLDivElement | null>;
+  shouldAutoFollowRef: React.MutableRefObject<boolean>;
+}> = ({
+  active,
+  viewportRef,
+  shouldAutoFollowRef,
+}) => {
+  const messages = useAuiState((state) => state.thread.messages);
+
+  useEffect(() => {
+    if (!active || !viewportRef.current || !shouldAutoFollowRef.current) {
+      return;
+    }
+    viewportRef.current.scrollTop = viewportRef.current.scrollHeight;
+  }, [active, messages, viewportRef, shouldAutoFollowRef]);
+
+  return null;
 };
 
 const ThreadScrollToBottom: FC = () => {

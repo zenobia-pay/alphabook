@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useCallback, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircleIcon,
   CheckIcon,
@@ -317,16 +317,27 @@ function summarizeTool(toolName: string, args: JsonRecord | null, result: JsonRe
 
 function ToolLogSection({
   lines,
+  autoFollow = false,
 }: {
   lines: ToolLogLine[];
+  autoFollow?: boolean;
 }) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!autoFollow || !containerRef.current) {
+      return;
+    }
+    containerRef.current.scrollTop = containerRef.current.scrollHeight;
+  }, [autoFollow, lines]);
+
   if (!lines.length) {
     return null;
   }
 
   return (
     <section className="aui-tool-section">
-      <div className="aui-tool-progress-log">
+      <div ref={containerRef} className="aui-tool-progress-log">
         {lines.map((line, index) => (
           <div key={`${line.key}-${index}`} className={cn("aui-tool-progress-line", line.tone === "error" && "aui-tool-progress-line-error")}>
             <span className={cn("aui-tool-line-key aui-tool-log-line-key", line.tone === "muted" && "aui-tool-log-line-key-muted")}>
@@ -593,7 +604,7 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
         hasDetailLines={logLines.length > 0}
       />
       <ToolFallbackContent>
-        <ToolLogSection lines={logLines} />
+        <ToolLogSection lines={logLines} autoFollow={open} />
       </ToolFallbackContent>
     </ToolFallbackRoot>
   );
