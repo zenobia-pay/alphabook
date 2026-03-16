@@ -6,6 +6,13 @@ import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import {
   ActionBarMorePrimitive,
@@ -25,6 +32,7 @@ import {
   ChevronRightIcon,
   CopyIcon,
   DownloadIcon,
+  FileTextIcon,
   MoreHorizontalIcon,
   RefreshCwIcon,
   SquareIcon,
@@ -218,39 +226,91 @@ export const Thread: FC<{
 const ThreadArtifacts: FC<{
   artifacts: RunArtifactRecord[];
 }> = ({ artifacts }) => {
-  if (artifacts.length === 0) {
+  const visibleArtifacts = useMemo(() => selectVisibleArtifacts(artifacts), [artifacts]);
+
+  if (visibleArtifacts.length === 0) {
     return null;
   }
 
   return (
-    <section className="assistant-artifacts">
-      <div className="assistant-artifacts-header">
-        <span>Artifacts</span>
-        <span>{artifacts.length}</span>
-      </div>
-      <div className="assistant-artifacts-list">
-        {artifacts.map((artifact) => {
-          const title =
-            typeof artifact.metadata?.title === "string"
-              ? artifact.metadata.title
-              : artifact.filename;
-          const content = typeof artifact.content === "string" ? artifact.content.trim() : "";
-          return (
-            <details key={`${artifact.r2Key ?? artifact.filename}-${artifact.createdAt ?? ""}`} className="assistant-artifact-card">
-              <summary className="assistant-artifact-summary">
-                <span className="assistant-artifact-title">{title}</span>
-                <span className="assistant-artifact-meta">{artifact.filename}</span>
-              </summary>
-              {content ? (
-                <pre className="assistant-artifact-content">{content}</pre>
-              ) : (
-                <div className="assistant-artifact-empty">Stored in R2 for this run.</div>
-              )}
-            </details>
-          );
-        })}
-      </div>
+    <section className="assistant-artifact-strip" aria-label="Run files">
+      {visibleArtifacts.map((artifact) => (
+        <ArtifactChip
+          key={`${artifact.r2Key ?? artifact.filename}-${artifact.createdAt ?? ""}`}
+          artifact={artifact}
+        />
+      ))}
     </section>
+  );
+};
+
+function selectVisibleArtifacts(artifacts: RunArtifactRecord[]) {
+  const relevant = artifacts.filter((artifact) => {
+    const kind = typeof artifact.metadata?.kind === "string" ? artifact.metadata.kind : "";
+    return (
+      artifact.filename === "briefing.md"
+      || artifact.filename === "every-single-reference.md"
+      || artifact.filename === "evidence-notes.md"
+      || kind === "reference_file"
+    );
+  });
+
+  const byFilename = new Map<string, RunArtifactRecord>();
+  for (const artifact of relevant) {
+    if (!byFilename.has(artifact.filename)) {
+      byFilename.set(artifact.filename, artifact);
+    }
+  }
+
+  const priority = new Map<string, number>([
+    ["briefing.md", 0],
+    ["every-single-reference.md", 1],
+    ["evidence-notes.md", 2],
+  ]);
+
+  return [...byFilename.values()].sort((left, right) => {
+    const leftPriority = priority.get(left.filename) ?? 10;
+    const rightPriority = priority.get(right.filename) ?? 10;
+    if (leftPriority !== rightPriority) {
+      return leftPriority - rightPriority;
+    }
+    return left.filename.localeCompare(right.filename);
+  });
+}
+
+const ArtifactChip: FC<{
+  artifact: RunArtifactRecord;
+}> = ({ artifact }) => {
+  const title =
+    typeof artifact.metadata?.title === "string"
+      ? artifact.metadata.title
+      : artifact.filename === "briefing.md"
+        ? "Briefing"
+        : artifact.filename === "evidence-notes.md"
+          ? "Search Notes"
+          : artifact.filename;
+  const content = typeof artifact.content === "string" ? artifact.content.trim() : "";
+
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <button type="button" className="assistant-artifact-chip">
+          <FileTextIcon className="assistant-artifact-chip-icon" />
+          <span className="assistant-artifact-chip-label">{title}</span>
+        </button>
+      </DialogTrigger>
+      <DialogContent className="assistant-artifact-dialog">
+        <DialogHeader className="assistant-artifact-dialog-header">
+          <DialogTitle>{title}</DialogTitle>
+          <div className="assistant-artifact-dialog-meta">{artifact.filename}</div>
+        </DialogHeader>
+        {content ? (
+          <pre className="assistant-artifact-dialog-content">{content}</pre>
+        ) : (
+          <div className="assistant-artifact-dialog-empty">Stored in R2 for this run.</div>
+        )}
+      </DialogContent>
+    </Dialog>
   );
 };
 
