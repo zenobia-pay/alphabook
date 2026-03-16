@@ -540,6 +540,21 @@ button {
   color: rgba(61, 54, 47, 0.72);
 }
 
+.aui-tool-fallback-progress-preview {
+  display: grid;
+  gap: 0.18rem;
+  margin-top: 0.45rem;
+}
+
+.aui-tool-fallback-progress-preview-line {
+  display: block;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: rgba(43, 38, 33, 0.84);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .aui-tool-fallback-detail-shell {
   padding: 0 0 0.8rem 2.2rem;
   max-height: 14rem;

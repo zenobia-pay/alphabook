@@ -2378,10 +2378,16 @@ export default function App() {
                   ? {
                       ...entry,
                       label,
-                      rationale: typeof event.data.rationale === "string" ? event.data.rationale : entry.rationale,
+                      rationale:
+                        entry.progress.length > 0
+                          ? entry.progress[entry.progress.length - 1]
+                          : typeof event.data.rationale === "string"
+                            ? event.data.rationale
+                            : entry.rationale,
                       progress:
                         typeof event.data.rationale === "string"
                         && event.data.rationale.trim().length > 0
+                        && entry.progress.length === 0
                         && !entry.progress.includes(event.data.rationale)
                           ? [...entry.progress, event.data.rationale]
                           : entry.progress,

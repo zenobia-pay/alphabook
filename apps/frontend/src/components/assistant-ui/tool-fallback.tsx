@@ -209,6 +209,7 @@ function pruneValue(value: unknown): unknown {
     "logPath",
     "billingEvents",
     "baseUrl",
+    "hydratedWorkCount",
   ]);
   const nextEntries = Object.entries(record)
     .filter(([key]) => !hiddenKeys.has(key))
@@ -239,6 +240,11 @@ function getRationale(args: JsonRecord | null) {
 }
 
 function summarizeTool(toolName: string, args: JsonRecord | null, result: JsonRecord | null, status?: ToolCallMessagePartStatus) {
+  const progress = getProgress(args);
+  if (progress.length > 0) {
+    return progress[progress.length - 1];
+  }
+
   const rationale = getRationale(args);
   if (rationale) {
     return rationale;
@@ -407,11 +413,13 @@ function ToolFallbackTrigger({
   toolName,
   status,
   summary,
+  progressPreview,
   className,
   ...props
 }: React.ComponentProps<typeof CollapsibleTrigger> & {
   toolName: string;
   summary: string;
+  progressPreview?: string[];
   status?: ToolCallMessagePartStatus;
 }) {
   const statusType = status?.type ?? "complete";
@@ -436,6 +444,15 @@ function ToolFallbackTrigger({
           <span className={cn("aui-tool-fallback-badge", isFailed && "aui-tool-fallback-badge-error")}>{badge}</span>
         </span>
         <span className="aui-tool-fallback-summary">{summary}</span>
+        {progressPreview && progressPreview.length > 0 ? (
+          <span className="aui-tool-fallback-progress-preview">
+            {progressPreview.slice(-4).map((item, index) => (
+              <span key={`${item}-${index}`} className="aui-tool-fallback-progress-preview-line">
+                {item}
+              </span>
+            ))}
+          </span>
+        ) : null}
       </span>
       <ChevronDownIcon
         className={cn(
@@ -517,8 +534,8 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
   );
 
   return (
-    <ToolFallbackRoot defaultOpen={status?.type === "running"}>
-      <ToolFallbackTrigger toolName={toolName} summary={summary} status={status} />
+    <ToolFallbackRoot defaultOpen={status?.type === "running" || progress.length > 0}>
+      <ToolFallbackTrigger toolName={toolName} summary={summary} progressPreview={progress} status={status} />
       <ToolFallbackContent>
         <ToolFallbackError status={status} />
         <ToolProgressSection items={progress} />

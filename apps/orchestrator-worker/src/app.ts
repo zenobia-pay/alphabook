@@ -683,9 +683,9 @@ async function executeTool(
 function workspaceProgressSteps(args: Record<string, unknown>): string[] {
   if ("taskContext" in args && !("taskSpec" in args)) {
     return [
-      "Preparing the deeper research workspace.",
-      "Connecting the workspace to the corpus search tools.",
-      "Getting the deeper research run ready.",
+      "Preparing the deeper research run.",
+      "Connecting the research engine to the corpus search tools.",
+      "Getting the full search ready.",
     ];
   }
   const taskSpec = args.taskSpec && typeof args.taskSpec === "object" ? args.taskSpec as Record<string, unknown> : null;
@@ -752,10 +752,61 @@ function genericProgressEmitter(
   }, 3000);
 
   return {
-    stop() {
+    async stop() {
       clearInterval(timer);
     },
   };
+}
+
+function normalizeRuntimeProgressLine(event: Record<string, unknown>): string | null {
+  const rawMessage = typeof event.message === "string" ? event.message.trim() : "";
+  if (!rawMessage) {
+    return null;
+  }
+
+  const type = typeof event.type === "string" ? event.type : "";
+  const line = typeof event.line === "string" ? event.line.trim() : "";
+
+  if (type === "codex.stdout" || type === "codex.stderr") {
+    return line || null;
+  }
+
+  if (type === "codex.step.prepared") {
+    return "The deeper research pass is ready to run.";
+  }
+  if (type === "codex.step.attempt") {
+    return "Starting the deeper research pass.";
+  }
+  if (type === "codex.step.completed") {
+    return "The deeper research pass finished writing the briefing.";
+  }
+  if (type === "codex.step.attempt_failed") {
+    return "The deeper research pass hit an error and is retrying.";
+  }
+  if (type === "codex.step.failed") {
+    return "The deeper research pass failed.";
+  }
+  if (type === "workspace.local_chunks.missing") {
+    return "Starting from the best current evidence and searching the full corpus directly.";
+  }
+
+  return rawMessage
+    .replace(/^codex-briefing:\s*/i, "")
+    .replace(/\bCodex corpus briefing\b/gi, "Deep research")
+    .replace(/\bCodex step\b/gi, "Research step")
+    .replace(/\bCodex\b/gi, "the research engine");
+}
+
+function sanitizeUserFacingToolText(text: string | null | undefined): string | null {
+  if (!text || !text.trim()) {
+    return null;
+  }
+  return text
+    .replace(/\bCodex\b/gi, "deep research")
+    .replace(/\bcodex\b/gi, "deep research")
+    .replace(/\bhydrat(?:e|ed|ing)\b/gi, "load")
+    .replace(/\bworkspace\b/gi, "research run")
+    .trim();
 }
 
 function startRuntimeTaskProgressEmitter(
@@ -782,7 +833,7 @@ function startRuntimeTaskProgressEmitter(
   };
 
   const poll = async () => {
-    if (stopped || inFlight) {
+    if ((stopped && !inFlight) || inFlight) {
       return;
     }
     inFlight = true;
@@ -801,9 +852,9 @@ function startRuntimeTaskProgressEmitter(
       for (let index = seenLines; index < lines.length; index += 1) {
         try {
           const event = JSON.parse(lines[index]) as Record<string, unknown>;
-          if (typeof event.message === "string" && event.message.trim().length > 0) {
-            const prefix = typeof event.step === "string" ? `${event.step}: ` : "";
-            await emit(`${prefix}${event.message}`, event);
+          const text = normalizeRuntimeProgressLine(event);
+          if (text) {
+            await emit(text, event);
           }
         } catch {
           continue;
@@ -824,9 +875,12 @@ function startRuntimeTaskProgressEmitter(
   }, 1500);
 
   return {
-    stop() {
+    async stop() {
       stopped = true;
       clearInterval(timer);
+      await poll();
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      await poll();
     },
   };
 }
@@ -928,13 +982,13 @@ function clientSafeToolResult(toolName: ToolName, result: Record<string, unknown
     const manifest = result.manifest && typeof result.manifest === "object"
       ? result.manifest as Record<string, unknown>
       : null;
-    const hydratedWorkCount = manifest && Array.isArray(manifest.works) ? manifest.works.length : 0;
+    const bookCount = manifest && Array.isArray(manifest.works) ? manifest.works.length : 0;
     return {
       ok: result.ok === true,
       reused: result.reused === true,
       runtimeId: typeof result.runtimeId === "string" ? result.runtimeId : undefined,
-      hydratedWorkCount,
-      manifest: hydratedWorkCount > 0 ? { works: new Array(hydratedWorkCount).fill(null) } : undefined,
+      bookCount,
+      manifest: bookCount > 0 ? { works: new Array(bookCount).fill(null) } : undefined,
       error: typeof result.error === "string" ? result.error : undefined,
     };
   }
@@ -1001,6 +1055,15 @@ type LiveToolTraceEntry = {
   isError?: boolean;
 };
 
+function appendToolProgress(entry: LiveToolTraceEntry, nextText: string): LiveToolTraceEntry {
+  const progress = entry.progress.includes(nextText) ? entry.progress : [...entry.progress, nextText];
+  return {
+    ...entry,
+    rationale: progress[progress.length - 1] ?? entry.rationale,
+    progress,
+  };
+}
+
 async function persistPlanToolTrace(
   deps: AppDeps,
   messageId: string | null,
@@ -1048,6 +1111,13 @@ function describePlannerAction(
     default:
       return "I’m working through this now and I’ll bring back the strongest results.";
   }
+}
+
+function initialAssistantPlan(userMessage: string) {
+  const normalizedMessage = userMessage.trim();
+  return normalizedMessage
+    ? `I’m going to search broadly for “${normalizedMessage},” pull the strongest passages, and bring back a quoted briefing.`
+    : "I’m going to search broadly, pull the strongest passages, and bring back a quoted briefing.";
 }
 
 function isTextArtifact(filename: string, mimeType: string) {
@@ -1675,7 +1745,7 @@ async function runOrchestrator(
 
       const toolRecord = await deps.store.startToolCall(run.id, toolCall.tool_name, toolCall.args);
       if (!initialPlanSent) {
-        const planText = describePlannerAction(toolCall.tool_name, toolCall.rationale, routedQuery);
+        const planText = initialAssistantPlan(routedQuery);
         const planMessage = await deps.store.appendMessage(session.id, "assistant", planText, {
           phase: "plan",
           runId: run.id,
@@ -1695,7 +1765,7 @@ async function runOrchestrator(
         toolCallId: toolRecord.id,
         toolName: toolCall.tool_name,
         label: labelForToolCall(toolCall.tool_name, toolCall.args),
-        rationale: toolCall.rationale ?? null,
+        rationale: sanitizeUserFacingToolText(toolCall.rationale) ?? null,
         args: toolCall.args,
       });
       liveToolTrace = [
@@ -1704,8 +1774,8 @@ async function runOrchestrator(
           id: toolRecord.id,
           toolName: toolCall.tool_name,
           label: labelForToolCall(toolCall.tool_name, toolCall.args),
-          rationale: toolCall.rationale ?? undefined,
-          progress: toolCall.rationale ? [toolCall.rationale] : [],
+          rationale: sanitizeUserFacingToolText(toolCall.rationale) ?? undefined,
+          progress: sanitizeUserFacingToolText(toolCall.rationale) ? [sanitizeUserFacingToolText(toolCall.rationale)!] : [],
           args: toolCall.args,
           state: "running",
         },
@@ -1723,11 +1793,7 @@ async function runOrchestrator(
             const progressText = data.text;
             liveToolTrace = liveToolTrace.map((entry) =>
               entry.id === data.toolCallId
-                ? {
-                    ...entry,
-                    rationale: progressText,
-                    progress: entry.progress.includes(progressText) ? entry.progress : [...entry.progress, progressText],
-                  }
+                ? appendToolProgress(entry, sanitizeUserFacingToolText(progressText) ?? progressText)
                 : entry,
             );
             await persistPlanToolTrace(deps, planMessageId, run.id, liveToolTrace);
@@ -1792,7 +1858,7 @@ async function runOrchestrator(
           // Error reporting should not block the user-facing run result.
         }
       } finally {
-        progressEmitter.stop();
+        await progressEmitter.stop();
       }
 
       await deps.store.finishToolCall(toolRecord.id, status, result);
@@ -1819,11 +1885,11 @@ async function runOrchestrator(
           ? {
               ...entry,
               label: labelForToolCall(toolCall.tool_name, toolCall.args),
-              rationale: toolCall.rationale ?? entry.rationale,
-              progress:
-                toolCall.rationale && !entry.progress.includes(toolCall.rationale)
-                  ? [...entry.progress, toolCall.rationale]
-                  : entry.progress,
+              rationale:
+                entry.progress.length > 0
+                  ? entry.progress[entry.progress.length - 1]
+                  : sanitizeUserFacingToolText(toolCall.rationale) ?? entry.rationale,
+              progress: entry.progress,
               result: streamedResult,
               isError: status === "failed",
               state: status === "failed" ? "error" : "completed",
@@ -1836,13 +1902,13 @@ async function runOrchestrator(
         toolCallId: toolRecord.id,
         toolName: toolCall.tool_name,
         label: labelForToolCall(toolCall.tool_name, toolCall.args),
-        rationale: toolCall.rationale ?? null,
+        rationale: sanitizeUserFacingToolText(toolCall.rationale) ?? null,
         status,
         result: streamedResult,
       });
       toolHistory.push({
         toolName: toolCall.tool_name,
-        rationale: toolCall.rationale,
+        rationale: sanitizeUserFacingToolText(toolCall.rationale) ?? undefined,
         args: toolCall.args,
         result,
       });
