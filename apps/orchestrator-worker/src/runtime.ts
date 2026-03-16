@@ -579,37 +579,24 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
       this.store.getWorkFiles(resolvedWorkIds, ["clean", "chunks"] satisfies WorkFileKind[]),
       chunkIds.length > 0 ? this.store.getChunksByIds(chunkIds) : Promise.resolve([]),
     ]);
-    const downloads: WorkspaceDownload[] = [];
     let totalBytes = 0;
-
-    for (const file of dedupeByKey(workFiles)) {
-      totalBytes += file.byteSize ?? 0;
-      downloads.push({
-        r2Key: file.r2Key,
-        destinationPath:
-          file.kind === "clean"
-            ? `books/${file.workId}/clean.txt`
-            : `chunks/${file.workId}/chunks.jsonl`,
-        byteSize: file.byteSize,
-        mimeType: file.kind === "clean" ? "text/plain; charset=utf-8" : "application/x-ndjson",
-      });
-    }
+    const fileCatalog = dedupeByKey(workFiles).map((file) => ({
+      workId: file.workId,
+      kind: file.kind,
+      r2Key: file.r2Key,
+      destinationPath:
+        file.kind === "clean"
+          ? `books/${file.workId}/clean.txt`
+          : `chunks/${file.workId}/chunks.jsonl`,
+      byteSize: file.byteSize ?? null,
+    }));
 
     const manifest = {
       runtimeId,
       sessionId,
       works: groupWorkFiles(resolvedWorkIds, workFiles, workMetadata),
       dataSchema: WORKSPACE_POSTGRES_SCHEMA,
-      fileCatalog: downloads.map((download) => {
-        const pathSegments = download.destinationPath.split("/");
-        return {
-          workId: pathSegments[1] ?? "unknown-work",
-          kind: pathSegments[0] === "chunks" ? "chunks" : "clean",
-          r2Key: download.r2Key,
-          destinationPath: download.destinationPath,
-          byteSize: download.byteSize ?? null,
-        };
-      }),
+      fileCatalog,
       selectedChunkIds: chunkIds,
       selectedChunks: selectedChunks.map((chunk) => ({
         id: chunk.id,
@@ -656,12 +643,6 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
           chunkIds,
         },
       });
-      downloads.push({
-        r2Key: selectedChunksKey,
-        destinationPath: "context/selected-chunks.json",
-        byteSize: selectedChunksText.length,
-        mimeType: "application/json",
-      });
     }
 
     if (totalBytes > HARD_LIMITS.MAX_WORKSPACE_BYTES) {
@@ -670,7 +651,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
 
     return {
       manifest,
-      downloads,
+      downloads: [] as WorkspaceDownload[],
       totalBytes,
     };
   }

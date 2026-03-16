@@ -209,6 +209,19 @@ async function writeManifest(paths: ReturnType<typeof createPaths>, payload: Pre
   await writeFile(join(paths.context, "manifest.json"), JSON.stringify(manifest, null, 2), "utf8");
 }
 
+async function writeSelectedChunks(paths: ReturnType<typeof createPaths>, payload: PrepareRequest) {
+  await writeFile(
+    join(paths.context, "selected-chunks.json"),
+    JSON.stringify(payload.selectedChunks ?? [], null, 2),
+    "utf8",
+  );
+}
+
+async function writeWorkspaceHelpers(paths: ReturnType<typeof createPaths>) {
+  const hydrateHelperSource = await readFile(new URL("../bin/hydrate-files.mjs", import.meta.url), "utf8");
+  await writeFile(join(paths.context, "hydrate-files.mjs"), hydrateHelperSource, "utf8");
+}
+
 async function listFiles(root: string, workspaceRoot: string): Promise<string[]> {
   const entries = await readdir(root, { withFileTypes: true });
   const files = await Promise.all(
@@ -455,6 +468,8 @@ export function createAlphaBookRuntimeServer(options: RuntimeServerOptions = {})
         const payload = await readJson<PrepareRequest>(request);
         await resetWorkspace(paths);
         await writeManifest(paths, payload);
+        await writeSelectedChunks(paths, payload);
+        await writeWorkspaceHelpers(paths);
         if (payload.downloads?.length) {
           await downloadFiles(payload.downloads, workspaceRoot, r2Client, r2BucketName);
         }

@@ -711,15 +711,23 @@ function buildSearchPrompt(runtimePrompt, manifest, task, evidence, question) {
     runtimePrompt,
     "",
     "You are running pass 1 of 2.",
-    "Goal: use the local workspace metadata and files to assemble a focused evidence set for the user question.",
+    "Goal: find all passages in all books where the user question appears relevant, then assemble the strongest quoted evidence set.",
     "Constraints:",
     "- Only use local files under /workspace.",
-    "- Use shell tools like rg, sed, and jq to inspect local files.",
+    "- Start from the local schema, the book metadata, the file catalog, and any seed evidence already in the workspace.",
+    "- Decide which books to pull first, which chunk files to inspect, and which clean text files are worth hydrating for deeper context.",
+    "- Use shell tools like rg, sed, and jq to inspect local files and run keyword or regex searches over hydrated chunk files.",
+    "- To pull files into the workspace, run node /workspace/context/hydrate-files.mjs with one or more of these forms:",
+    "  node /workspace/context/hydrate-files.mjs --work <workId> --kind chunks",
+    "  node /workspace/context/hydrate-files.mjs --work <workId> --kind clean",
+    "  node /workspace/context/hydrate-files.mjs --all --kind chunks",
+    "- Use the schema, books, and metadata to decide what to hydrate before you search.",
     "- Do not browse the internet.",
     "- Do not answer the user yet.",
-    "- Create a focused local corpus in /workspace/scratch/research-corpus by copying or excerpting only the most relevant passages/files.",
-    "- Write /workspace/output/search-plan.json with the search strategy, chosen files, and why they matter.",
-    "- Write /workspace/output/download-manifest.json with the files or excerpts you copied into scratch/research-corpus.",
+    "- Expand across more books until the candidate search space is exhausted or clearly irrelevant.",
+    "- Create a focused local corpus in /workspace/scratch/research-corpus by copying or excerpting only the most relevant passages or files.",
+    "- Write /workspace/output/search-plan.json with the search strategy, which books you chose, which regex or keyword searches you ran, and why they matter.",
+    "- Write /workspace/output/download-manifest.json with the books, chunk files, clean texts, and excerpts you pulled into the workspace or into scratch/research-corpus.",
     "- Write /workspace/output/evidence.json as JSON with an array field named evidence containing objects shaped like { workId, chunkId?, chunkIndex?, sourcePath, label, excerpt, rationale, r2Key? }.",
     "- Write /workspace/output/evidence-notes.md as markdown notes summarizing what you found so far and which texts look most relevant.",
     "- Prefer exact quotes and preserve source identifiers.",
@@ -765,7 +773,7 @@ function buildBriefingPrompt(runtimePrompt, manifest, task, question) {
     "Goal: produce the final briefing for the chat based on the focused evidence assembled in pass 1.",
     "Constraints:",
     "- Only use local files under /workspace.",
-    "- Read /workspace/output/evidence.json and the files under /workspace/scratch/research-corpus.",
+    "- Read /workspace/output/evidence.json, /workspace/output/evidence-notes.md, and the files under /workspace/scratch/research-corpus.",
     "- Write /workspace/output/briefing.md as polished markdown for the user.",
     "- Write /workspace/output/briefing.json as JSON shaped like { question, briefing, citations }.",
     "- citations must be an array of { workId, chunkId?, label, excerpt, r2Key?, sourcePath? }.",
@@ -1029,6 +1037,40 @@ async function ensureDir(path) {
   await mkdir(path, { recursive: true });
 }
 
+async function hydrateChunkCorpusIfNeeded(workspaceRoot, chunksRoot, outputDir) {
+  const chunkFiles = await listChunkFiles(chunksRoot);
+  if (chunkFiles.length > 0) {
+    return chunkFiles;
+  }
+
+  const hydrateHelperPath = join(workspaceRoot, "context", "hydrate-files.mjs");
+  if (!(await fileExists(hydrateHelperPath))) {
+    return [];
+  }
+
+  const hydration = await runProcess(process.execPath, [hydrateHelperPath, "--all", "--kind", "chunks"], {
+    cwd: workspaceRoot,
+    env: process.env,
+  });
+
+  await writeFile(
+    join(outputDir, "download-manifest.json"),
+    hydration.stdout && hydration.stdout.trim().length > 0
+      ? hydration.stdout
+      : JSON.stringify({
+        downloaded: [],
+        count: 0,
+      }, null, 2),
+    "utf8",
+  );
+
+  if (hydration.exitCode !== 0) {
+    throw new Error(`Chunk hydration failed before search: ${hydration.stderr || hydration.stdout}`);
+  }
+
+  return listChunkFiles(chunksRoot);
+}
+
 async function main() {
   const taskPath = process.env.ALPHABOOK_TASK_PATH;
   const outputDir = process.env.ALPHABOOK_OUTPUT_DIR;
@@ -1065,7 +1107,7 @@ async function main() {
       ? manifest.works.map((work) => [String(work.workId || ""), work])
       : [],
   );
-  const chunkFiles = await listChunkFiles(chunksRoot);
+  const chunkFiles = await hydrateChunkCorpusIfNeeded(workspaceRoot, chunksRoot, outputDir);
   const allChunks = [];
 
   for (const chunkFile of chunkFiles) {
