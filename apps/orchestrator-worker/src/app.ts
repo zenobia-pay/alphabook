@@ -1052,8 +1052,60 @@ function startToolProgressEmitter(
     if (runtimeId) {
       return startRuntimeTaskProgressEmitter(runtimeGateway, send, context, runId, toolCallId, toolName, runtimeId);
     }
+    return {
+      async stop() {},
+    };
   }
   return genericProgressEmitter(send, runId, toolCallId, toolName, args);
+}
+
+function extractCompletedBriefing(
+  toolName: ToolName,
+  args: Record<string, unknown>,
+  result: Record<string, unknown>,
+): { answer: string; citations: Citation[] } | null {
+  if (
+    toolName === "run_workspace_task"
+    && typeof result.briefing === "string"
+    && result.briefing.trim().length > 0
+  ) {
+    return {
+      answer: result.briefing.trim(),
+      citations: Array.isArray(result.citations) ? result.citations as Citation[] : [],
+    };
+  }
+
+  if (
+    toolName === "read_workspace_file"
+    && typeof args.path === "string"
+    && /briefing\.md$/u.test(args.path)
+    && typeof result.content === "string"
+    && result.content.trim().length > 0
+  ) {
+    return {
+      answer: result.content.trim(),
+      citations: [],
+    };
+  }
+
+  return null;
+}
+
+function latestCompletedBriefing(
+  toolHistory: Array<{
+    toolName: ToolName;
+    args: Record<string, unknown>;
+    result: Record<string, unknown>;
+  }>,
+): { answer: string; citations: Citation[] } | null {
+  for (let index = toolHistory.length - 1; index >= 0; index -= 1) {
+    const candidate = toolHistory[index];
+    const briefing = extractCompletedBriefing(candidate.toolName, candidate.args, candidate.result);
+    if (briefing) {
+      return briefing;
+    }
+  }
+  return null;
 }
 
 function titleFromMessage(message: string): string {
@@ -2441,39 +2493,109 @@ async function runOrchestrator(
         result,
       });
       toolResults.push(result);
+
+      const completedBriefing = status === "completed"
+        ? extractCompletedBriefing(toolCall.tool_name, normalizedToolArgs, result)
+        : null;
+      if (completedBriefing) {
+        await deps.store.updateRun(run.id, {
+          status: "completed",
+          plannerTurns: turn,
+          completedAt: new Date().toISOString(),
+        });
+        await synthesizeAnswer(
+          deps,
+          {
+            request,
+            userId: session.userId,
+            sessionId: session.id,
+            runId: run.id,
+            userMessage: input.message,
+            conversationHistory,
+            plannerDraft: completedBriefing.answer,
+            plannerCitations: completedBriefing.citations,
+            toolHistory,
+          },
+          send,
+        );
+        await send("run.completed", {
+          runId: run.id,
+          sessionId: session.id,
+          status: "completed",
+        });
+        recordRawLog("run.completed", {
+          runId: run.id,
+          sessionId: session.id,
+          status: "completed",
+        });
+        return;
+      }
     }
 
-    await deps.store.updateRun(run.id, {
-      status: "timed_out",
-      completedAt: new Date().toISOString(),
-    });
-    const timeoutMessage = "The run hit its hard limits before it produced a valid answer.";
-    await deps.store.appendMessage(session.id, "assistant", timeoutMessage, {
-      runId: run.id,
-      phase: "error",
-      toolCalls: summarizeToolHistory(toolHistory),
-    });
-    await streamAssistantText(timeoutMessage, send);
-    await send("assistant.completed", {
-      answer: timeoutMessage,
-      citations: [],
-      artifactKey: null,
-    });
-    recordRawLog("assistant.completed", {
-      answer: timeoutMessage,
-      citations: [],
-      artifactKey: null,
-    });
-    await send("run.completed", {
-      runId: run.id,
-      sessionId: session.id,
-      status: "timed_out",
-    });
-    recordRawLog("run.completed", {
-      runId: run.id,
-      sessionId: session.id,
-      status: "timed_out",
-    });
+    const completedBriefing = latestCompletedBriefing(toolHistory);
+    if (completedBriefing) {
+      await deps.store.updateRun(run.id, {
+        status: "completed",
+        completedAt: new Date().toISOString(),
+      });
+      await synthesizeAnswer(
+        deps,
+        {
+          request,
+          userId: session.userId,
+          sessionId: session.id,
+          runId: run.id,
+          userMessage: input.message,
+          conversationHistory,
+          plannerDraft: completedBriefing.answer,
+          plannerCitations: completedBriefing.citations,
+          toolHistory,
+        },
+        send,
+      );
+      await send("run.completed", {
+        runId: run.id,
+        sessionId: session.id,
+        status: "completed",
+      });
+      recordRawLog("run.completed", {
+        runId: run.id,
+        sessionId: session.id,
+        status: "completed",
+      });
+    } else {
+      await deps.store.updateRun(run.id, {
+        status: "timed_out",
+        completedAt: new Date().toISOString(),
+      });
+      const timeoutMessage = "The run hit its hard limits before it produced a valid answer.";
+      await deps.store.appendMessage(session.id, "assistant", timeoutMessage, {
+        runId: run.id,
+        phase: "error",
+        toolCalls: summarizeToolHistory(toolHistory),
+      });
+      await streamAssistantText(timeoutMessage, send);
+      await send("assistant.completed", {
+        answer: timeoutMessage,
+        citations: [],
+        artifactKey: null,
+      });
+      recordRawLog("assistant.completed", {
+        answer: timeoutMessage,
+        citations: [],
+        artifactKey: null,
+      });
+      await send("run.completed", {
+        runId: run.id,
+        sessionId: session.id,
+        status: "timed_out",
+      });
+      recordRawLog("run.completed", {
+        runId: run.id,
+        sessionId: session.id,
+        status: "timed_out",
+      });
+    }
   } finally {
     await flushAllToolProgress(async (toolCallId, toolName, text) => {
       await send("tool.progress", {
