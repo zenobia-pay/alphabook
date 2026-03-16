@@ -576,6 +576,7 @@ button {
 }
 
 .aui-tool-structured-key {
+  display: block;
   font-size: 0.8rem;
   line-height: 1.45;
   color: rgba(96, 84, 70, 0.62);
@@ -585,9 +586,14 @@ button {
 .aui-tool-structured-value,
 .aui-tool-error-text,
 .aui-tool-structured-more {
+  display: block;
+  width: 100%;
+  max-width: 100%;
   font-size: 0.9rem;
   line-height: 1.55;
   color: rgba(43, 38, 33, 0.82);
+  white-space: normal;
+  overflow-wrap: anywhere;
   word-break: break-word;
 }
 
@@ -595,6 +601,8 @@ button {
 .aui-tool-structured-array {
   display: grid;
   gap: 0.15rem;
+  width: 100%;
+  min-width: 0;
 }
 
 .aui-tool-structured-block-nested {
