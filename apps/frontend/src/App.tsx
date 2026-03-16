@@ -855,12 +855,12 @@ function summarizeToolSentence({
         if (planned) {
           return planned;
         }
-        return "Starting the Codex search session.";
+        return "Preparing the deeper research workspace.";
       }
       if (state === "error") {
-        return `Starting the Codex session failed${errorMessage ? `: ${errorMessage}` : "."}`;
+        return `Preparing the deeper research workspace failed${errorMessage ? `: ${errorMessage}` : "."}`;
       }
-      return "Started the Codex search session.";
+      return "Prepared the deeper research workspace.";
 
     case "run_workspace_task":
       if (state === "running") {
@@ -868,12 +868,12 @@ function summarizeToolSentence({
           return planned;
         }
         if (runtimePhase === "collect_evidence") {
-          return query ? `Codex is searching the corpus for evidence about ${query}.` : "Codex is searching the corpus for evidence.";
+          return query ? `Searching the corpus for evidence about ${query}.` : "Searching the corpus for evidence.";
         }
         if (runtimePhase === "write_briefing") {
-          return query ? `Codex is writing the quoted briefing for ${query}.` : "Codex is writing the quoted briefing.";
+          return query ? `Writing the quoted briefing for ${query}.` : "Writing the quoted briefing.";
         }
-        return query ? `Codex is searching the corpus for ${query}.` : "Codex is searching the corpus.";
+        return query ? `Searching the corpus for ${query}.` : "Searching the corpus.";
       }
       if (state === "error") {
         if (runtimePhase === "collect_evidence") {
@@ -887,8 +887,8 @@ function summarizeToolSentence({
             : `Writing the briefing failed${errorMessage ? `: ${errorMessage}` : "."}`;
         }
         return query
-          ? `The Codex search for ${query} failed${errorMessage ? `: ${errorMessage}` : "."}`
-          : `The Codex search failed${errorMessage ? `: ${errorMessage}` : "."}`;
+          ? `The deeper research run for ${query} failed${errorMessage ? `: ${errorMessage}` : "."}`
+          : `The deeper research run failed${errorMessage ? `: ${errorMessage}` : "."}`;
       }
       if (runtimePhase === "collect_evidence") {
         return query ? `Finished gathering evidence for ${query}.` : "Finished gathering evidence.";
@@ -896,7 +896,7 @@ function summarizeToolSentence({
       if (runtimePhase === "write_briefing") {
         return query ? `Finished the quoted briefing for ${query}.` : "Finished the quoted briefing.";
       }
-      return query ? `Finished the Codex search for ${query}.` : "Finished the Codex search.";
+      return query ? `Finished the deeper research run for ${query}.` : "Finished the deeper research run.";
 
     case "read_workspace_file":
       if (state === "running") {
@@ -985,6 +985,39 @@ function buildExplorePrompt(question: string, works: WorkSummary[]) {
     return `Give me a concise overview of ${titles}.`;
   }
   return `${normalized}\n\nFocus on these books: ${titles}.`;
+}
+
+function buildBookAssistantPrompt(
+  question: string,
+  work: WorkDetail | null,
+  activePassage: ReaderPassage | null,
+) {
+  const normalized = question.trim();
+  if (!normalized || !work) {
+    return normalized;
+  }
+
+  const header = [
+    "You are answering about the book currently open in the reading view.",
+    `Title: ${work.title}`,
+    work.subtitle ? `Subtitle: ${work.subtitle}` : null,
+    work.authors.length > 0 ? `Authors: ${work.authors.join(", ")}` : null,
+    work.language ? `Language: ${work.language}` : null,
+    activePassage
+      ? [
+          "Current open passage:",
+          `Passage id: ${activePassage.id}`,
+          `Passage kind: ${activePassage.kind}`,
+          `Passage text: ${activePassage.text.slice(0, 1400)}`,
+        ].join("\n")
+      : "No specific passage is currently selected.",
+    "",
+    `User question: ${normalized}`,
+    "",
+    "Answer using this current book context unless the user explicitly asks to switch books.",
+  ].filter(Boolean).join("\n");
+
+  return header;
 }
 
 function messageToThreadMessage(message: UiMessage, streamingAssistantId: string | null, isSending: boolean) {
@@ -2159,7 +2192,7 @@ export default function App() {
 
   async function sendPrompt(
     question: string,
-    options: { sessionIdOverride?: string | null; workIdsOverride?: string[]; viewOverride?: ViewMode } = {},
+    options: { sessionIdOverride?: string | null; workIdsOverride?: string[]; viewOverride?: ViewMode; transportMessageOverride?: string } = {},
   ) {
     const normalizedQuestion = question.trim();
     if (!normalizedQuestion || isSending || authState.loading) {
@@ -2171,6 +2204,7 @@ export default function App() {
     }
 
     const initialSessionId = options.sessionIdOverride !== undefined ? options.sessionIdOverride : selectedSessionId;
+    const transportQuestion = options.transportMessageOverride?.trim() || normalizedQuestion;
     if (initialSessionId) {
       track("assistant_followup_message", {
         sessionId: initialSessionId,
@@ -2215,7 +2249,7 @@ export default function App() {
         {
           sessionId: initialSessionId ?? undefined,
           userId: authState.authConfigured ? undefined : currentUserId,
-          message: normalizedQuestion,
+          message: transportQuestion,
           workIds: options.workIdsOverride,
         },
         {
@@ -2688,10 +2722,14 @@ export default function App() {
       if (!activeWorkId) {
         return;
       }
+      const activePassage = activePassageId
+        ? readerPassages.find((passage) => passage.id === activePassageId) ?? null
+        : null;
       await sendPrompt(prompt, {
         sessionIdOverride: selectedSessionId ?? null,
         workIdsOverride: [activeWorkId],
         viewOverride: "book",
+        transportMessageOverride: buildBookAssistantPrompt(prompt, activeWork, activePassage),
       });
     };
 
