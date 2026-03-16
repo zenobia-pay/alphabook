@@ -2388,7 +2388,6 @@ async function synthesizeAnswer(
     citations: synthesis.citations,
     artifactKey,
     researchLog: summarizedToolHistory,
-    toolCalls: summarizedToolHistory,
   });
 
   const citedWorkIds = uniqueWorkIds(synthesis.citations.map((citation) => citation.workId));
@@ -3307,7 +3306,6 @@ async function runOrchestrator(
       await appendRunErrorMessageOnce(deps, session.id, run.id, timeoutMessage, {
         runId: run.id,
         phase: "error",
-        toolCalls: summarizeToolHistory(toolHistory),
       });
       await streamAssistantText(timeoutMessage, send);
       await send("assistant.completed", {
@@ -3366,12 +3364,9 @@ async function runOrchestrator(
     });
 
     const failureMessage = userFacingRunFailureMessage(error);
-    const recoveredTrace = buildRecoveredToolTrace(refreshedToolCalls);
     await appendRunErrorMessageOnce(deps, session.id, run.id, failureMessage, {
       runId: run.id,
       phase: "error",
-      toolCalls: recoveredTrace,
-      researchLog: recoveredTrace,
     });
     await streamAssistantText(failureMessage, send);
     await send("assistant.completed", {

@@ -312,10 +312,11 @@ function toReadonlyJsonObject(args: Record<string, unknown>): ReadonlyJSONObject
 }
 
 function hydrateStoredMessage(message: RawUiMessage): UiMessage {
+  const phase = typeof message.metadata?.phase === "string" ? message.metadata.phase : null;
   return {
     ...message,
     citations: message.citations ?? [],
-    toolCalls: Array.isArray(message.toolCalls)
+    toolCalls: phase === "plan" && Array.isArray(message.toolCalls)
       ? message.toolCalls.map((entry, index) =>
           entry && typeof entry === "object"
             ? normalizeToolTraceEntry(entry as Record<string, unknown>, index)
