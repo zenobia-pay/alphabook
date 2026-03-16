@@ -415,6 +415,11 @@ function ToolFallbackTrigger({
   const isFailed = status?.type === "incomplete" && status.reason !== "cancelled";
   const Icon = statusIconMap[statusType];
   const badge = isCancelled ? "Cancelled" : isFailed ? "Failed" : isRunning ? "Running" : "Done";
+  const latestProgress = progressPreview && progressPreview.length > 0
+    ? progressPreview[progressPreview.length - 1]
+    : null;
+  const showHeaderSummary = !open || !hasDetailLines;
+  const showProgressPreview = Boolean(latestProgress) && showHeaderSummary && latestProgress !== summary;
 
   return (
     <CollapsibleTrigger
@@ -430,11 +435,11 @@ function ToolFallbackTrigger({
           <b className="aui-tool-fallback-title">{toolName}</b>
           <span className={cn("aui-tool-fallback-badge", isFailed && "aui-tool-fallback-badge-error")}>{badge}</span>
         </span>
-        {(!open || !hasDetailLines) ? <span className="aui-tool-fallback-summary">{summary}</span> : null}
-        {progressPreview && progressPreview.length > 0 && (!open || !hasDetailLines) ? (
+        {showHeaderSummary ? <span className="aui-tool-fallback-summary">{summary}</span> : null}
+        {showProgressPreview ? (
           <span className="aui-tool-fallback-progress-preview">
             <span className="aui-tool-fallback-progress-preview-line line-clamp-1">
-              {progressPreview[progressPreview.length - 1]}
+              {latestProgress}
             </span>
           </span>
         ) : null}
