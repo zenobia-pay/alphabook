@@ -741,6 +741,30 @@ function normalizePhase(task) {
   return typeof task.phase === "string" ? task.phase : "collect_and_brief";
 }
 
+function schemaForBriefingCompletion() {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["status", "message", "filesWritten"],
+    properties: {
+      status: {
+        type: "string",
+        enum: ["ok", "thin_evidence"],
+      },
+      message: {
+        type: "string",
+      },
+      filesWritten: {
+        type: "array",
+        items: {
+          type: "string",
+        },
+        minItems: 1,
+      },
+    },
+  };
+}
+
 function evidenceItemsFromSeed(evidence) {
   return [...evidence.runtimeHits, ...evidence.selectedChunks].slice(0, 10).map((entry) => ({
     workId: entry.workId,
@@ -1015,17 +1039,23 @@ async function runCodexStep({
   model,
   step,
   promptText,
+  outputSchema,
 }) {
   const codexCommand = await resolveCodexCommand(workspaceRoot);
   const promptPath = join(outputDir, `${step}.prompt.md`);
   const outputPath = join(outputDir, `${step}.last-message.txt`);
   const logPath = join(outputDir, `${step}.log.txt`);
+  const schemaPath = outputSchema ? join(outputDir, `${step}.schema.json`) : null;
 
   await writeFile(promptPath, promptText, "utf8");
+  if (schemaPath) {
+    await writeFile(schemaPath, JSON.stringify(outputSchema, null, 2), "utf8");
+  }
   await appendProgressEvent(outputDir, {
     type: "codex.step.prepared",
     step,
     promptPath,
+    ...(schemaPath ? { schemaPath } : {}),
     promptPreview: compactText(promptText, 700),
     message: `${codexStepLabel(step)} is ready to run.`,
   });
@@ -1056,6 +1086,7 @@ async function runCodexStep({
         "--dangerously-bypass-approvals-and-sandbox",
         "--model",
         model,
+        ...(schemaPath ? ["--output-schema", schemaPath] : []),
         "--output-last-message",
         outputPath,
         "-",
@@ -1260,6 +1291,7 @@ async function main() {
       model,
       step: "codex-briefing",
       promptText: buildBriefingPrompt(runtimePrompt, manifest, task, evidence, question),
+      outputSchema: schemaForBriefingCompletion(),
     });
     codexRuns.push(briefingRun);
     const evidenceJson = await readJsonIfPresent(join(outputDir, "evidence.json"), null);

@@ -352,19 +352,34 @@ async function writeWorkspaceHelpers(paths: ReturnType<typeof createPaths>) {
   const helperScripts = [
     {
       filename: "hydrate-files.mjs",
-      targetUrl: new URL("../bin/hydrate-files.mjs", import.meta.url).href,
+      targetPath: "/app/apps/runtime/bin/hydrate-files.mjs",
     },
     {
       filename: "search-db.mjs",
-      targetUrl: new URL("../bin/search-db.mjs", import.meta.url).href,
+      targetPath: "/app/apps/runtime/bin/search-db.mjs",
     },
   ];
 
   await Promise.all(
-    helperScripts.map(async ({ filename, targetUrl }) => {
+    helperScripts.map(async ({ filename, targetPath }) => {
       await writeFile(
         join(paths.context, filename),
-        `#!/usr/bin/env node\nimport ${JSON.stringify(targetUrl)};\n`,
+        `#!/usr/bin/env node
+import { spawn } from "node:child_process";
+
+const child = spawn(process.execPath, [${JSON.stringify(targetPath)}, ...process.argv.slice(2)], {
+  stdio: "inherit",
+  env: process.env,
+});
+
+child.on("exit", (code, signal) => {
+  if (signal) {
+    process.kill(process.pid, signal);
+    return;
+  }
+  process.exit(code ?? 0);
+});
+`,
         "utf8",
       );
     }),
