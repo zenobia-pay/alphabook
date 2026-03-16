@@ -2444,6 +2444,20 @@ async function rewriteAnswerWithCitationLinks(
     rewritten = rewritten.replace(fullMatch, `(${title.trim()}, ${formatPassageLink(link)})`);
   }
 
+  const workChunkRefMatches = [...rewritten.matchAll(/\(([0-9a-f-]{36})#(\d+)\)/giu)];
+  for (const match of workChunkRefMatches) {
+    const [fullMatch, workId, chunkIndexRaw] = match;
+    const chunkIndex = Number.parseInt(chunkIndexRaw, 10);
+    if (!Number.isFinite(chunkIndex)) {
+      continue;
+    }
+    const link = await buildChunkIndexPassageUrl(deps, sessionId, workId, chunkIndex);
+    if (!link) {
+      continue;
+    }
+    rewritten = rewritten.replace(fullMatch, `(${formatPassageLink(link)})`);
+  }
+
   const chunkLineMatches = [...rewritten.matchAll(/(^|\n)([^\n]+?)\s+—\s+workId\s+([0-9a-f-]{36}),\s*chunk\s+#(\d+)(?=\n|$)/giu)];
   for (const match of chunkLineMatches) {
     const [fullMatch, linePrefix, title, workId, chunkIndexRaw] = match;
