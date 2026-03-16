@@ -3,11 +3,11 @@ import { createNeonDb } from "@alphabook/db";
 import { createApp } from "./app";
 import { WorkOSAuth } from "./auth";
 import { HashEmbedder, OpenAIEmbedder } from "./embeddings";
-import { FallbackPlanner } from "./planner";
+import { FallbackPlanner, OpenAIPlanner } from "./planner";
 import { CloudflareR2Store } from "./r2";
 import { FlyMachinesRuntimeGateway, HttpRuntimeGateway, StubRuntimeGateway } from "./runtime";
 import { NeonAppStore } from "./store";
-import { FallbackSynthesizer } from "./synthesizer";
+import { FallbackSynthesizer, OpenAISynthesizer } from "./synthesizer";
 
 export interface Env {
   DATABASE_URL: string;
@@ -19,6 +19,7 @@ export interface Env {
   RUNTIME_R2_BUCKET_NAME?: string;
   RUNTIME_SERVICE_URL?: string;
   RUNTIME_SERVICE_TOKEN?: string;
+  CODEX_AUTH_JSON?: string;
   FLY_API_TOKEN?: string;
   FLY_RUNTIME_APP_NAME?: string;
   FLY_RUNTIME_APP_URL?: string;
@@ -64,6 +65,7 @@ function resolveRuntimeGateway(env: Env, store: NeonAppStore, blobStore: Cloudfl
       appName: env.FLY_RUNTIME_APP_NAME,
       runtimeAppUrl: env.FLY_RUNTIME_APP_URL,
       databaseUrl: env.DATABASE_URL,
+      codexAuthJson: env.CODEX_AUTH_JSON,
       openAIApiKey: env.OPENAI_API_KEY,
       runtimeAgentModel: env.RUNTIME_AGENT_MODEL,
       image: env.FLY_RUNTIME_IMAGE,
@@ -93,11 +95,15 @@ function buildFetchHandler(env: Env) {
   const db = createNeonDb(env.DATABASE_URL);
   const store = new NeonAppStore(db);
   const blobStore = new CloudflareR2Store(env.CORPUS_BUCKET);
-  const planner = new FallbackPlanner();
+  const planner = env.OPENAI_API_KEY
+    ? new OpenAIPlanner(env.OPENAI_API_KEY, env.OPENAI_MODEL ?? "gpt-5.2")
+    : new FallbackPlanner();
   const embedder = env.OPENAI_API_KEY
     ? new OpenAIEmbedder(env.OPENAI_API_KEY, env.OPENAI_EMBEDDING_MODEL ?? "text-embedding-3-small")
     : new HashEmbedder();
-  const synthesizer = new FallbackSynthesizer();
+  const synthesizer = env.OPENAI_API_KEY
+    ? new OpenAISynthesizer(env.OPENAI_API_KEY, env.OPENAI_SYNTH_MODEL ?? env.OPENAI_MODEL ?? "gpt-5.2")
+    : new FallbackSynthesizer();
 
   const app = createApp({
     store,

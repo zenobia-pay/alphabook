@@ -113,6 +113,17 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
+async function ensureCodexAuthConfigured() {
+  const authJson = process.env.CODEX_AUTH_JSON;
+  if (!authJson || !authJson.trim()) {
+    return;
+  }
+  const homeDir = process.env.HOME ?? "/root";
+  const codexDir = join(homeDir, ".codex");
+  await mkdir(codexDir, { recursive: true });
+  await writeFile(join(codexDir, "auth.json"), authJson, { encoding: "utf8", mode: 0o600 });
+}
+
 function safeJoin(root: string, targetPath: string): string {
   const fullPath = normalize(join(root, targetPath.replace(/^\/+/, "")));
   if (!fullPath.startsWith(root)) {
@@ -536,8 +547,10 @@ async function runExternalAgent(
 ): Promise<RuntimeTaskResult> {
   const command = process.env.RUNTIME_AGENT_COMMAND;
   if (!command) {
-    return runStubAgent(paths, workspaceRoot, taskSpec);
+    throw new Error("RUNTIME_AGENT_COMMAND is not configured; runtime cannot invoke Codex.");
   }
+
+  await ensureCodexAuthConfigured();
 
   const taskPath = join(paths.context, "task.json");
   await writeFile(taskPath, JSON.stringify(taskSpec, null, 2), "utf8");
