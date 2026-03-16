@@ -15,7 +15,6 @@ import {
   ComposerPrimitive,
   ErrorPrimitive,
   MessagePrimitive,
-  SuggestionPrimitive,
   ThreadPrimitive,
 } from "@assistant-ui/react";
 import {
@@ -80,7 +79,23 @@ function assistantMessageToMarkdown(parts: readonly MessagePartRecord[]) {
   return sections.join("\n\n");
 }
 
-export const Thread: FC<{ isRunning?: boolean }> = ({ isRunning = false }) => {
+type ThreadSuggestion = {
+  title: string;
+  description?: string;
+  prompt: string;
+};
+
+export const Thread: FC<{
+  isRunning?: boolean;
+  suggestions?: ThreadSuggestion[];
+  onSuggestionSelect?: (prompt: string) => void;
+}> = ({
+  isRunning = false,
+  suggestions = [],
+  onSuggestionSelect,
+}) => {
+  const isEmpty = useAuiState((state) => state.thread.isEmpty);
+
   return (
     <ThreadPrimitive.Root
       className="aui-root aui-thread-root @container flex h-full flex-col bg-background"
@@ -108,6 +123,9 @@ export const Thread: FC<{ isRunning?: boolean }> = ({ isRunning = false }) => {
         <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 mx-auto mt-auto flex w-full max-w-(--thread-max-width) flex-col gap-3 overflow-visible pb-3 md:pb-4">
           <ThreadScrollToBottom />
           <Composer isRunning={isRunning} />
+          {isEmpty && !isRunning && suggestions.length > 0 ? (
+            <ThreadSuggestions suggestions={suggestions} onSuggestionSelect={onSuggestionSelect} />
+          ) : null}
         </ThreadPrimitive.ViewportFooter>
       </ThreadPrimitive.Viewport>
     </ThreadPrimitive.Root>
@@ -142,35 +160,50 @@ const ThreadWelcome: FC = () => {
           </p>
         </div>
       </div>
-      <ThreadSuggestions />
     </div>
   );
 };
 
-const ThreadSuggestions: FC = () => {
+const ThreadSuggestions: FC<{
+  suggestions: ThreadSuggestion[];
+  onSuggestionSelect?: (prompt: string) => void;
+}> = ({
+  suggestions,
+  onSuggestionSelect,
+}) => {
   return (
     <div className="aui-thread-welcome-suggestions grid w-full @md:grid-cols-2 gap-2 pb-4">
-      <ThreadPrimitive.Suggestions
-        components={{
-          Suggestion: ThreadSuggestionItem,
-        }}
-      />
+      {suggestions.map((suggestion) => (
+        <ThreadSuggestionItem
+          key={suggestion.prompt}
+          suggestion={suggestion}
+          onSuggestionSelect={onSuggestionSelect}
+        />
+      ))}
     </div>
   );
 };
 
-const ThreadSuggestionItem: FC = () => {
+const ThreadSuggestionItem: FC<{
+  suggestion: ThreadSuggestion;
+  onSuggestionSelect?: (prompt: string) => void;
+}> = ({
+  suggestion,
+  onSuggestionSelect,
+}) => {
   return (
     <div className="aui-thread-welcome-suggestion-display fade-in slide-in-from-bottom-2 @md:nth-[n+3]:block nth-[n+3]:hidden animate-in fill-mode-both duration-200">
-      <SuggestionPrimitive.Trigger send asChild>
-        <Button
-          variant="ghost"
-          className="aui-thread-welcome-suggestion h-auto w-full @md:flex-col flex-wrap items-start justify-start gap-1 rounded-3xl border bg-background px-4 py-3 text-left text-sm transition-colors hover:bg-muted"
-        >
-          <SuggestionPrimitive.Title className="aui-thread-welcome-suggestion-text-1 font-medium" />
-          <SuggestionPrimitive.Description className="aui-thread-welcome-suggestion-text-2 text-muted-foreground empty:hidden" />
-        </Button>
-      </SuggestionPrimitive.Trigger>
+      <Button
+        type="button"
+        variant="ghost"
+        className="aui-thread-welcome-suggestion h-auto w-full @md:flex-col flex-wrap items-start justify-start gap-1 rounded-3xl border bg-background px-4 py-3 text-left text-sm transition-colors hover:bg-muted"
+        onClick={() => onSuggestionSelect?.(suggestion.prompt)}
+      >
+        <span className="aui-thread-welcome-suggestion-text-1 font-medium">{suggestion.title}</span>
+        {suggestion.description ? (
+          <span className="aui-thread-welcome-suggestion-text-2 text-muted-foreground">{suggestion.description}</span>
+        ) : null}
+      </Button>
     </div>
   );
 };

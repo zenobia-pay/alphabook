@@ -1,11 +1,11 @@
-import { createContext, type ComponentType, type CSSProperties, type FormEvent, type ReactNode, type UIEvent, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, type ComponentType, type CSSProperties, type FormEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type UIEvent, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   AssistantRuntimeProvider,
   useExternalStoreRuntime,
 } from "@assistant-ui/react";
 import type { ReadonlyJSONObject, ReadonlyJSONValue } from "assistant-stream/utils";
 import type { AgentationProps } from "agentation";
-import { ChevronsLeft, ChevronsRight } from "lucide-react";
+import { ChevronsLeft, ChevronsRight, GripVertical, Link2, MessageSquarePlus } from "lucide-react";
 
 import { getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type PublicProfileResponse, type UserProfile, type WorkDetail, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
@@ -93,7 +93,38 @@ type AdminAnalyticsState = {
   payload: Record<string, unknown> | null;
 };
 
+type ThreadSuggestion = {
+  title: string;
+  description?: string;
+  prompt: string;
+};
+
+type ReaderPassageKind = "heading" | "paragraph" | "quote" | "list-item" | "preformatted";
+
+type ReaderPassage = {
+  id: string;
+  kind: ReaderPassageKind;
+  text: string;
+  searchText: string;
+};
+
 const USER_STORAGE_KEY = "alphabook.localUserId";
+const BOOK_ASSISTANT_WIDTH_STORAGE_KEY = "alphabook.bookAssistantWidth";
+const BOOK_ASSISTANT_MIN_WIDTH = 320;
+const BOOK_ASSISTANT_MAX_WIDTH = 720;
+const ASSISTANT_WELCOME_SUGGESTIONS: ThreadSuggestion[] = [
+  {
+    title: "Find a Passage",
+    description: "Pull a tight set of passages on grief and mourning.",
+    prompt: "Find the most revealing passages about grief and mourning.",
+  },
+  {
+    title: "Theme Search",
+    description: "Contrast eras and authorial treatment of grief.",
+    prompt: "summarize grief in 19th century romantic versus 20th century authors.",
+  },
+];
+
 function isViewMode(value: string | null): value is ViewMode {
   return value === "explore" || value === "assistant" || value === "profile" || value === "book" || value === "admin";
 }
@@ -358,15 +389,58 @@ function buildNormalizedSearchIndex(raw: string) {
   return { normalized, map };
 }
 
-function buildCitationCandidates(citation: Citation) {
-  const decodedExcerpt = decodeHtmlText(citation.excerpt).replace(/\s+/g, " ").trim();
+function stripGutenbergBoilerplate(text: string) {
+  let normalized = text.replace(/\r\n/g, "\n");
+  const startMatch = normalized.match(/^[^\n]*\*\*\*\s*START OF[\s\S]*?\*\*\*[^\n]*\n?/im);
+  if (startMatch && typeof startMatch.index === "number") {
+    normalized = normalized.slice(startMatch.index + startMatch[0].length);
+  }
+
+  const endMatch = normalized.match(/\n?[^\n]*\*\*\*\s*END OF[\s\S]*?\*\*\*[^\n]*$/im);
+  if (endMatch && typeof endMatch.index === "number") {
+    normalized = normalized.slice(0, endMatch.index);
+  }
+
+  return normalized
+    .replace(/^\s*(?:start of )?the project gutenberg e(?:book|text).*$\n?/gim, "")
+    .replace(/^\s*project gutenberg(?:'s)? e(?:book|text).*$\n?/gim, "")
+    .trim();
+}
+
+function normalizeReaderText(input: string, preserveLineBreaks = false) {
+  const normalized = decodeHtmlText(input)
+    .replace(/\u00a0/g, " ")
+    .replace(/\r\n/g, "\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .trim();
+
+  if (preserveLineBreaks) {
+    return normalized.replace(/\n{3,}/g, "\n\n").trim();
+  }
+
+  return normalized.replace(/\s+/g, " ").trim();
+}
+
+function hashText(value: string) {
+  let hash = 0;
+  for (const character of value) {
+    hash = (hash * 33 + character.charCodeAt(0)) >>> 0;
+  }
+  return hash.toString(36);
+}
+
+function createReaderPassageId(index: number, text: string) {
+  return `passage-${index + 1}-${hashText(text).slice(0, 6)}`;
+}
+
+function buildExcerptCandidates(excerpt: string) {
+  const decodedExcerpt = decodeHtmlText(excerpt).replace(/\s+/g, " ").trim();
   const cleanedExcerpt = decodedExcerpt.replace(/^[`"'“”‘’]+|[`"'“”‘’.,;:!?]+$/g, "").trim();
   const excerptSegments = cleanedExcerpt
     .split(/[.;!?]\s+|\s+[—–-]\s+/)
     .map((segment) => segment.trim())
     .filter((segment) => segment.length >= 24);
-  const labelCandidate = decodeHtmlText(citation.label).replace(/\s+/g, " ").trim();
-  const candidates = [decodedExcerpt, cleanedExcerpt, ...excerptSegments, labelCandidate]
+  const candidates = [decodedExcerpt, cleanedExcerpt, ...excerptSegments]
     .filter((candidate, index, values) => candidate.length >= 12 && values.indexOf(candidate) === index)
     .sort((left, right) => right.length - left.length);
 
@@ -376,52 +450,149 @@ function buildCitationCandidates(citation: Citation) {
   return candidates;
 }
 
-function clearReaderHighlights(root: ParentNode) {
-  for (const mark of root.querySelectorAll("mark.alphabook-inline-highlight")) {
-    const parent = mark.parentNode;
-    if (!parent) {
+function buildCitationCandidates(citation: Citation) {
+  const excerptCandidates = buildExcerptCandidates(citation.excerpt);
+  const labelCandidate = decodeHtmlText(citation.label).replace(/\s+/g, " ").trim();
+  const candidates = [...excerptCandidates, labelCandidate]
+    .filter((candidate, index, values) => candidate.length >= 12 && values.indexOf(candidate) === index)
+    .sort((left, right) => right.length - left.length);
+
+  return candidates;
+}
+
+function toSearchText(value: string) {
+  return buildNormalizedSearchIndex(value).normalized.trim();
+}
+
+function finalizeReaderPassages(passages: Array<{ kind: ReaderPassageKind; text: string }>): ReaderPassage[] {
+  let started = false;
+  let ended = false;
+  const cleaned: Array<{ kind: ReaderPassageKind; text: string }> = [];
+
+  for (const passage of passages) {
+    if (ended) {
+      break;
+    }
+
+    let text = passage.text;
+    const startMatch = text.match(/\*\*\*\s*START OF[\s\S]*?\*\*\*/i);
+    if (startMatch) {
+      started = true;
+      text = text.slice(startMatch.index! + startMatch[0].length).trim();
+    }
+
+    const endMatch = text.match(/\*\*\*\s*END OF[\s\S]*?\*\*\*/i);
+    if (endMatch) {
+      text = text.slice(0, endMatch.index).trim();
+      ended = true;
+    }
+
+    const shouldKeep = started || !/project gutenberg/i.test(text);
+    const normalized = normalizeReaderText(text, passage.kind === "preformatted");
+    if (!shouldKeep || !normalized) {
       continue;
     }
-    parent.replaceChild(mark.ownerDocument.createTextNode(mark.textContent ?? ""), mark);
-    parent.normalize();
+
+    cleaned.push({
+      kind: passage.kind,
+      text: normalized,
+    });
   }
 
-  for (const block of root.querySelectorAll(".alphabook-highlight-block")) {
-    block.classList.remove("alphabook-highlight-block");
-  }
+  const fallback = stripGutenbergBoilerplate(cleaned.map((passage) => passage.text).join("\n\n"));
+  const output = cleaned.length > 0
+    ? cleaned
+    : fallback
+      ? fallback.split(/\n{2,}/).map((text) => ({
+          kind: "paragraph" as const,
+          text: normalizeReaderText(text, true),
+        })).filter((passage) => passage.text.length > 0)
+      : [];
+
+  return output.map((passage, index) => ({
+    ...passage,
+    id: createReaderPassageId(index, passage.text),
+    searchText: toSearchText(passage.text),
+  }));
 }
 
-function highlightTextNodeRange(node: Text, startOffset: number, endOffset: number, className: string) {
-  if (startOffset >= endOffset) {
-    return null;
-  }
-
-  let target = node;
-  if (startOffset > 0) {
-    target = target.splitText(startOffset);
-  }
-  if (endOffset - startOffset < target.length) {
-    target.splitText(endOffset - startOffset);
-  }
-
-  const mark = target.ownerDocument.createElement("mark");
-  mark.className = className;
-  target.parentNode?.replaceChild(mark, target);
-  mark.appendChild(target);
-  return mark;
+function buildTextReaderPassages(content: string): ReaderPassage[] {
+  const cleaned = stripGutenbergBoilerplate(content);
+  return finalizeReaderPassages(
+    cleaned
+      .split(/\n{2,}/)
+      .map((chunk) => normalizeReaderText(chunk, true))
+      .filter(Boolean)
+      .map((text) => ({
+        kind: "paragraph" as const,
+        text,
+      })),
+  );
 }
 
-function highlightExcerptInTextContainer(container: HTMLElement, citation: Citation) {
-  clearReaderHighlights(container);
-
-  const textNode = container.firstChild instanceof Text ? container.firstChild : null;
-  if (!textNode?.textContent) {
-    return false;
+function buildHtmlReaderPassages(content: string): ReaderPassage[] {
+  if (typeof DOMParser === "undefined") {
+    return buildTextReaderPassages(content);
   }
 
-  const rawText = textNode.textContent;
+  const doc = new DOMParser().parseFromString(content, "text/html");
+  for (const node of doc.querySelectorAll("script, style, link, meta, base, noscript, iframe")) {
+    node.remove();
+  }
+  for (const anchor of doc.querySelectorAll("a")) {
+    anchor.replaceWith(...Array.from(anchor.childNodes));
+  }
+
+  const selector = "h1, h2, h3, h4, h5, h6, p, li, blockquote, pre";
+  const blocks = Array.from(doc.body.querySelectorAll(selector)).filter((element) => !element.parentElement?.closest(selector));
+  const passages = blocks
+    .map((element) => {
+      const tagName = element.tagName.toLowerCase();
+      const rawText = tagName === "pre"
+        ? element.textContent ?? ""
+        : element.textContent?.replace(/\s+/g, " ") ?? "";
+      const text = normalizeReaderText(rawText, tagName === "pre");
+      if (!text) {
+        return null;
+      }
+
+      const kind: ReaderPassageKind =
+        /^h[1-6]$/.test(tagName)
+          ? "heading"
+          : tagName === "blockquote"
+            ? "quote"
+            : tagName === "li"
+              ? "list-item"
+              : tagName === "pre"
+                ? "preformatted"
+                : "paragraph";
+
+      return {
+        kind,
+        text: kind === "list-item" ? `• ${text}` : text,
+      };
+    })
+    .filter((passage): passage is { kind: ReaderPassageKind; text: string } => Boolean(passage));
+
+  if (passages.length === 0) {
+    return buildTextReaderPassages(doc.body.textContent ?? "");
+  }
+
+  return finalizeReaderPassages(passages);
+}
+
+function buildReaderPassages(source: WorkSource | null): ReaderPassage[] {
+  if (!source?.content) {
+    return [];
+  }
+  return source.format === "html"
+    ? buildHtmlReaderPassages(source.content)
+    : buildTextReaderPassages(source.content);
+}
+
+function findHighlightRange(rawText: string, candidates: string[]) {
   const { normalized, map } = buildNormalizedSearchIndex(rawText);
-  for (const candidate of buildCitationCandidates(citation)) {
+  for (const candidate of candidates) {
     const normalizedCandidate = buildNormalizedSearchIndex(candidate).normalized.trim();
     if (!normalizedCandidate) {
       continue;
@@ -431,66 +602,37 @@ function highlightExcerptInTextContainer(container: HTMLElement, citation: Citat
       continue;
     }
 
-    const rawStart = map[matchIndex];
-    const rawEnd = map[matchIndex + normalizedCandidate.length - 1] + 1;
-    const mark = highlightTextNodeRange(textNode, rawStart, rawEnd, "alphabook-inline-highlight");
-    mark?.parentElement?.classList.add("alphabook-highlight-block");
-    mark?.scrollIntoView({ behavior: "smooth", block: "center" });
-    return true;
+    return {
+      start: map[matchIndex],
+      end: map[matchIndex + normalizedCandidate.length - 1] + 1,
+    };
   }
-
-  return false;
+  return null;
 }
 
-function highlightExcerptInIframe(iframe: HTMLIFrameElement, citation: Citation) {
-  const doc = iframe.contentDocument;
-  const win = iframe.contentWindow;
-  if (!doc || !win || !doc.body) {
-    return false;
-  }
-
-  clearReaderHighlights(doc);
-  const searchableWindow = win as Window & {
-    find?: (
-      string: string,
-      caseSensitive?: boolean,
-      backwards?: boolean,
-      wrapAround?: boolean,
-      wholeWord?: boolean,
-      searchInFrames?: boolean,
-      showDialog?: boolean,
-    ) => boolean;
-  };
-  const finder = typeof searchableWindow.find === "function" ? searchableWindow.find.bind(searchableWindow) : null;
-  if (!finder) {
-    return false;
-  }
-
-  for (const candidate of buildCitationCandidates(citation)) {
-    const found = finder(candidate, false, false, true, false, false, false);
-    if (!found) {
+function findPassageForCitation(passages: ReaderPassage[], citation: Citation) {
+  const candidates = buildCitationCandidates(citation);
+  for (const candidate of candidates) {
+    const normalizedCandidate = toSearchText(candidate);
+    if (!normalizedCandidate) {
       continue;
     }
 
-    const selection = win.getSelection();
-    const anchorNode = selection?.anchorNode ?? selection?.focusNode ?? null;
-    const anchorElement =
-      anchorNode instanceof Element
-        ? anchorNode
-        : anchorNode?.parentElement ?? null;
-    const block = anchorElement?.closest("p, li, blockquote, h1, h2, h3, h4, h5, h6, div");
-
-    if (block instanceof HTMLElement) {
-      block.classList.add("alphabook-highlight-block");
-      block.scrollIntoView({ behavior: "smooth", block: "center" });
-      selection?.removeAllRanges();
-      return true;
+    const matchingPassage = passages.find((passage) => passage.searchText.includes(normalizedCandidate));
+    if (matchingPassage) {
+      return {
+        passageId: matchingPassage.id,
+        highlight: candidate,
+      };
     }
-
-    selection?.removeAllRanges();
   }
 
-  return false;
+  return passages[0]
+    ? {
+        passageId: passages[0].id,
+        highlight: null,
+      }
+    : null;
 }
 
 function initialsFromSeed(seed: string) {
@@ -1095,11 +1237,13 @@ function AssistantSurface({
   isSending,
   streamingAssistantId,
   onPrompt,
+  suggestions = ASSISTANT_WELCOME_SUGGESTIONS,
 }: {
   messages: UiMessage[];
   isSending: boolean;
   streamingAssistantId: string | null;
   onPrompt: (prompt: string) => Promise<void>;
+  suggestions?: ThreadSuggestion[];
 }) {
   const runtime = useExternalStoreRuntime({
     isRunning: isSending,
@@ -1117,8 +1261,106 @@ function AssistantSurface({
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <Thread isRunning={isSending} />
+      <Thread
+        isRunning={isSending}
+        suggestions={suggestions}
+        onSuggestionSelect={(prompt) => {
+          void onPrompt(prompt);
+        }}
+      />
     </AssistantRuntimeProvider>
+  );
+}
+
+function BookAssistantToolbar({
+  sessions,
+  selectedSessionId,
+  onSelectSession,
+  onStartNewChat,
+}: {
+  sessions: ChatSessionSummary[];
+  selectedSessionId: string | null | undefined;
+  onSelectSession: (sessionId: string | null) => void;
+  onStartNewChat: () => void;
+}) {
+  return (
+    <div className="book-assistant-toolbar">
+      <label className="book-assistant-session-picker">
+        <span className="sr-only">Assistant session</span>
+        <select
+          value={selectedSessionId ?? ""}
+          onChange={(event) => onSelectSession(event.currentTarget.value || null)}
+          aria-label="Assistant session"
+        >
+          <option value="">New chat</option>
+          {sessions.map((session) => (
+            <option key={session.id} value={session.id}>
+              {(session.title ?? "Untitled chat").slice(0, 72)}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        className="book-assistant-new-chat"
+        onClick={onStartNewChat}
+        aria-label="Start a new chat"
+      >
+        <MessageSquarePlus />
+      </Button>
+    </div>
+  );
+}
+
+function ReaderPassageBlock({
+  passage,
+  isActive,
+  highlight,
+  onActivate,
+}: {
+  passage: ReaderPassage;
+  isActive: boolean;
+  highlight: string | null;
+  onActivate: (passageId: string) => void;
+}) {
+  const range = useMemo(
+    () => (highlight ? findHighlightRange(passage.text, buildExcerptCandidates(highlight)) : null),
+    [highlight, passage.text],
+  );
+  const before = range ? passage.text.slice(0, range.start) : passage.text;
+  const marked = range ? passage.text.slice(range.start, range.end) : "";
+  const after = range ? passage.text.slice(range.end) : "";
+  const Tag = passage.kind === "heading" ? "h2" : passage.kind === "quote" ? "blockquote" : "p";
+
+  return (
+    <article
+      id={passage.id}
+      className={cn("book-passage", isActive && "is-active", `is-${passage.kind}`)}
+      data-passage-id={passage.id}
+    >
+      <button
+        type="button"
+        className="book-passage-anchor"
+        onClick={() => onActivate(passage.id)}
+        aria-label="Link to this passage"
+      >
+        <Link2 />
+      </button>
+      <Tag className="book-passage-text">
+        {range ? (
+          <>
+            {before}
+            <mark className="alphabook-inline-highlight">{marked}</mark>
+            {after}
+          </>
+        ) : (
+          passage.text
+        )}
+      </Tag>
+    </article>
   );
 }
 
@@ -1176,7 +1418,16 @@ export default function App() {
   const [activeWorkSource, setActiveWorkSource] = useState<WorkSource | null>(null);
   const [activeWorkLoading, setActiveWorkLoading] = useState(false);
   const [pendingCitation, setPendingCitation] = useState<Citation | null>(null);
-  const [bookReaderLoadVersion, setBookReaderLoadVersion] = useState(0);
+  const [activePassageId, setActivePassageId] = useState<string | null>(null);
+  const [highlightedPassageExcerpt, setHighlightedPassageExcerpt] = useState<string | null>(null);
+  const [bookAssistantWidth, setBookAssistantWidth] = useState(() => {
+    if (typeof window === "undefined") {
+      return 420;
+    }
+    const saved = Number.parseInt(window.localStorage.getItem(BOOK_ASSISTANT_WIDTH_STORAGE_KEY) ?? "", 10);
+    return Number.isFinite(saved) ? Math.min(BOOK_ASSISTANT_MAX_WIDTH, Math.max(BOOK_ASSISTANT_MIN_WIDTH, saved)) : 420;
+  });
+  const [isDraggingBookAssistant, setIsDraggingBookAssistant] = useState(false);
   const [publicProfile, setPublicProfile] = useState<PublicProfileResponse | null>(null);
   const [publicProfileLoading, setPublicProfileLoading] = useState(false);
   const [adminAccess, setAdminAccess] = useState<AdminAccessState>({
@@ -1216,8 +1467,7 @@ export default function App() {
     payload: null,
   });
   const activeRunTokenRef = useRef(0);
-  const bookReaderFrameRef = useRef<HTMLIFrameElement | null>(null);
-  const bookReaderTextRef = useRef<HTMLPreElement | null>(null);
+  const bookPageRef = useRef<HTMLElement | null>(null);
 
   const currentUser = useMemo(
     () => {
@@ -1242,6 +1492,7 @@ export default function App() {
   );
   const assistantMessages = useMemo(() => messages.filter((message) => message.role === "assistant"), [messages]);
   const citationCount = useMemo(() => messages.reduce((count, message) => count + message.citations.length, 0), [messages]);
+  const readerPassages = useMemo(() => buildReaderPassages(activeWorkSource), [activeWorkSource]);
   const profileSeed = currentUser?.email ?? currentUser?.id ?? guestUserId;
   const profileHue = useMemo(() => hueFromSeed(profileSeed), [profileSeed]);
   const displayProfileName = displayName(currentUser);
@@ -1398,7 +1649,8 @@ export default function App() {
     if (!activeWorkId) {
       setActiveWork(null);
       setActiveWorkSource(null);
-      setBookReaderLoadVersion((current) => current + 1);
+      setActivePassageId(null);
+      setHighlightedPassageExcerpt(null);
       return;
     }
 
@@ -1408,6 +1660,8 @@ export default function App() {
         const detail = await fetchWorkDetail(activeWorkId);
         setActiveWork(detail.work);
         setActiveWorkSource(detail.source);
+        setActivePassageId(null);
+        setHighlightedPassageExcerpt(null);
       } catch (error) {
         setLoadError(error instanceof Error ? error.message : "Failed to load the selected book.");
       } finally {
@@ -1449,32 +1703,85 @@ export default function App() {
   }, [activeProfileUserId, currentUserId]);
 
   useEffect(() => {
-    if (!pendingCitation || !activeWorkSource || !activeWork || activeWork.id !== pendingCitation.workId) {
+    if (!pendingCitation || !activeWork || activeWork.id !== pendingCitation.workId || readerPassages.length === 0) {
       return;
     }
 
-    let cancelled = false;
-    const applyHighlight = () => {
-      if (cancelled) {
+    const match = findPassageForCitation(readerPassages, pendingCitation);
+    if (match) {
+      setActivePassageId(match.passageId);
+      setHighlightedPassageExcerpt(match.highlight);
+      const url = new URL(window.location.href);
+      url.hash = match.passageId;
+      window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+    }
+    setPendingCitation(null);
+  }, [activeWork, pendingCitation, readerPassages]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const syncPassageFromHash = () => {
+      const hash = decodeURIComponent(window.location.hash.replace(/^#/, "").trim());
+      if (!hash) {
+        setActivePassageId(null);
+        setHighlightedPassageExcerpt(null);
         return;
       }
-
-      const highlighted =
-        activeWorkSource.format === "html"
-          ? (bookReaderFrameRef.current ? highlightExcerptInIframe(bookReaderFrameRef.current, pendingCitation) : false)
-          : (bookReaderTextRef.current ? highlightExcerptInTextContainer(bookReaderTextRef.current, pendingCitation) : false);
-
-      if (highlighted || activeWorkSource.format === "text") {
-        setPendingCitation(null);
+      if (readerPassages.some((passage) => passage.id === hash)) {
+        setActivePassageId(hash);
       }
     };
 
-    const timeout = window.setTimeout(applyHighlight, 60);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timeout);
+    syncPassageFromHash();
+    window.addEventListener("hashchange", syncPassageFromHash);
+    return () => window.removeEventListener("hashchange", syncPassageFromHash);
+  }, [readerPassages]);
+
+  useEffect(() => {
+    if (!activePassageId) {
+      return;
+    }
+    const target = document.getElementById(activePassageId);
+    if (target instanceof HTMLElement) {
+      target.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [activePassageId]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    window.localStorage.setItem(BOOK_ASSISTANT_WIDTH_STORAGE_KEY, String(bookAssistantWidth));
+  }, [bookAssistantWidth]);
+
+  useEffect(() => {
+    if (!isDraggingBookAssistant) {
+      return;
+    }
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const rect = bookPageRef.current?.getBoundingClientRect();
+      if (!rect) {
+        return;
+      }
+      const nextWidth = rect.right - event.clientX;
+      const maxWidth = Math.min(BOOK_ASSISTANT_MAX_WIDTH, Math.max(BOOK_ASSISTANT_MIN_WIDTH, rect.width - 360));
+      setBookAssistantWidth(Math.min(maxWidth, Math.max(BOOK_ASSISTANT_MIN_WIDTH, nextWidth)));
     };
-  }, [activeWork, activeWorkSource, bookReaderLoadVersion, pendingCitation]);
+    const stopDragging = () => {
+      setIsDraggingBookAssistant(false);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", stopDragging);
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", stopDragging);
+    };
+  }, [isDraggingBookAssistant]);
 
   useEffect(() => {
     if (authState.loading) {
@@ -1494,9 +1801,6 @@ export default function App() {
         setSessionsLoading(true);
         const nextSessions = await fetchSessions(authState.authConfigured ? undefined : currentUserId);
         setSessions(nextSessions);
-        if (selectedSessionId === undefined && nextSessions[0]) {
-          setSelectedSessionId(nextSessions[0].id);
-        }
       } catch (error) {
         setLoadError(error instanceof Error ? error.message : "Failed to load sessions.");
       } finally {
@@ -1537,10 +1841,6 @@ export default function App() {
     setSessions(nextSessions);
     if (preferredSessionId !== undefined) {
       setSelectedSessionId(preferredSessionId);
-      return;
-    }
-    if (selectedSessionId === undefined && nextSessions[0]) {
-      setSelectedSessionId(nextSessions[0].id);
     }
   }
 
@@ -2033,6 +2333,7 @@ export default function App() {
     setLoadError(null);
     setIsSending(false);
     setStreamingAssistantId(null);
+    setHighlightedPassageExcerpt(null);
     setActiveView("book");
   }
 
@@ -2072,7 +2373,7 @@ export default function App() {
       setSelectedAdminRunId(null);
       setAdminSection("runs");
     }
-    if (view === "assistant" && activeView === "assistant") {
+    if (view === "assistant") {
       startNewChat();
       return;
     }
@@ -2150,6 +2451,35 @@ export default function App() {
     }
   }
 
+  function activatePassage(passageId: string, highlight: string | null = null, replaceHistory = false) {
+    setActivePassageId(passageId);
+    setHighlightedPassageExcerpt(highlight);
+    const url = new URL(window.location.href);
+    url.hash = passageId;
+    const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+    if (replaceHistory) {
+      window.history.replaceState({}, "", nextUrl);
+    } else {
+      window.history.pushState({}, "", nextUrl);
+    }
+  }
+
+  function startBookAssistantResize(event: ReactPointerEvent<HTMLDivElement>) {
+    if (window.innerWidth <= 980) {
+      return;
+    }
+    event.preventDefault();
+    setIsDraggingBookAssistant(true);
+  }
+
+  function openBookSession(sessionId: string | null) {
+    setSelectedSessionId(sessionId);
+    setLoadError(null);
+    setIsSending(false);
+    setStreamingAssistantId(null);
+    setActiveView("book");
+  }
+
   function renderAssistantView() {
     const assistantHistoryLoading =
       !authPending
@@ -2196,7 +2526,6 @@ export default function App() {
   }
 
   function renderBookView() {
-    const showWelcome = !authState.loading && !authLocked && selectedSessionId == null && messages.length === 0 && !isSending;
     const bookPromptHandler = async (prompt: string) => {
       if (!activeWorkId) {
         return;
@@ -2209,7 +2538,11 @@ export default function App() {
     };
 
     return (
-      <section className="book-page">
+      <section
+        ref={bookPageRef}
+        className={cn("book-page", isDraggingBookAssistant && "is-resizing")}
+        style={{ ["--book-assistant-width" as string]: `${bookAssistantWidth}px` }}
+      >
         <div className="book-reader-pane">
           {activeWorkLoading ? (
             <div className="book-loading">Loading the book…</div>
@@ -2226,19 +2559,18 @@ export default function App() {
               </header>
 
               <div className="book-reader-surface">
-                {activeWorkSource ? (
-                  activeWorkSource.format === "html" ? (
-                    <iframe
-                      title={activeWork.title}
-                      className="book-reader-frame"
-                      ref={bookReaderFrameRef}
-                      sandbox="allow-same-origin"
-                      srcDoc={buildReaderDocument(activeWorkSource, activeWork)}
-                      onLoad={() => setBookReaderLoadVersion((current) => current + 1)}
-                    />
-                  ) : (
-                    <pre ref={bookReaderTextRef} className="book-reader-text">{activeWorkSource.content}</pre>
-                  )
+                {readerPassages.length > 0 ? (
+                  <div className="book-reader-passages">
+                    {readerPassages.map((passage) => (
+                      <ReaderPassageBlock
+                        key={passage.id}
+                        passage={passage}
+                        isActive={passage.id === activePassageId}
+                        highlight={passage.id === activePassageId ? highlightedPassageExcerpt : null}
+                        onActivate={(passageId) => activatePassage(passageId, null)}
+                      />
+                    ))}
+                  </div>
                 ) : (
                   <div className="book-loading">This book does not have stored source content yet.</div>
                 )}
@@ -2249,9 +2581,25 @@ export default function App() {
           )}
         </div>
 
+        <div
+          className="book-assistant-divider"
+          onPointerDown={startBookAssistantResize}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize assistant panel"
+        >
+          <GripVertical />
+        </div>
+
         <aside className="book-assistant-pane">
           {loadError ? <div className="thread-error-banner">{loadError}</div> : null}
           <div className="book-assistant-shell" data-testid="book-thread">
+            <BookAssistantToolbar
+              sessions={sessions}
+              selectedSessionId={selectedSessionId}
+              onSelectSession={openBookSession}
+              onStartNewChat={startNewBookChat}
+            />
             {authPending ? (
               <AuthLoadingState compact />
             ) : authLocked ? (
@@ -2266,6 +2614,7 @@ export default function App() {
                 isSending={isSending}
                 streamingAssistantId={streamingAssistantId}
                 onPrompt={bookPromptHandler}
+                suggestions={ASSISTANT_WELCOME_SUGGESTIONS}
               />
             )}
           </div>

@@ -45,12 +45,21 @@ interface MirrorBackfillCheckpoint {
 }
 
 function stripGutenbergBoilerplate(text: string): string {
-  const startMarker = "*** START OF";
-  const endMarker = "*** END OF";
-  const startIndex = text.indexOf(startMarker);
-  const endIndex = text.indexOf(endMarker);
-  const withoutHeader = startIndex >= 0 ? text.slice(startIndex) : text;
-  return (endIndex >= 0 ? withoutHeader.slice(0, endIndex) : withoutHeader).trim();
+  let normalized = text.replace(/\r\n/g, "\n");
+  const startMatch = normalized.match(/^[^\n]*\*\*\*\s*START OF[\s\S]*?\*\*\*[^\n]*\n?/im);
+  if (startMatch && typeof startMatch.index === "number") {
+    normalized = normalized.slice(startMatch.index + startMatch[0].length);
+  }
+
+  const endMatch = normalized.match(/\n?[^\n]*\*\*\*\s*END OF[\s\S]*?\*\*\*[^\n]*$/im);
+  if (endMatch && typeof endMatch.index === "number") {
+    normalized = normalized.slice(0, endMatch.index);
+  }
+
+  return normalized
+    .replace(/^\s*(?:start of )?the project gutenberg e(?:book|text).*$\n?/gim, "")
+    .replace(/^\s*project gutenberg(?:'s)? e(?:book|text).*$\n?/gim, "")
+    .trim();
 }
 
 function normalizeText(input: string): string {
