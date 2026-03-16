@@ -842,6 +842,9 @@ async function runAnalyticsQuery(
 
   if (!response.ok) {
     const detail = await response.text();
+    if (detail.includes("invalid_api_key") || detail.includes("Incorrect API key provided")) {
+      throw new Error("Analytics is temporarily unavailable because the server-side OpenAI key is invalid.");
+    }
     throw new Error(`Analytics query failed: ${detail}`);
   }
 
