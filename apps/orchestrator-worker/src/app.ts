@@ -23,6 +23,7 @@ export interface RuntimeToolGateway {
   createWorkspace(args: Record<string, unknown>): Promise<Record<string, unknown>>;
   runWorkspaceTask(args: Record<string, unknown>): Promise<Record<string, unknown>>;
   cancelWorkspaceTask?(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+  getWorkspaceTaskStatus?(args: Record<string, unknown>): Promise<Record<string, unknown>>;
   readWorkspaceFile(args: Record<string, unknown>): Promise<Record<string, unknown>>;
   listWorkspaceFiles?(args: Record<string, unknown>): Promise<Record<string, unknown>>;
   destroyWorkspace(args: Record<string, unknown>): Promise<Record<string, unknown>>;
@@ -1108,6 +1109,153 @@ function latestCompletedBriefing(
   return null;
 }
 
+function runtimeIdFromToolCall(toolCall: Awaited<ReturnType<AppStore["listToolCalls"]>>[number]) {
+  const argsRuntimeId = typeof toolCall.argsJson?.runtimeId === "string" ? toolCall.argsJson.runtimeId : null;
+  const resultRuntimeId = typeof toolCall.resultJson?.runtimeId === "string" ? toolCall.resultJson.runtimeId : null;
+  return resultRuntimeId ?? argsRuntimeId;
+}
+
+async function recoverRunCompletion(
+  deps: AppDeps,
+  request: Request,
+  session: SessionRecord,
+  run: { id: string; status: string },
+  toolCalls: Awaited<ReturnType<AppStore["listToolCalls"]>>,
+) {
+  const toolHistory = toolCalls
+    .filter((toolCall) => toolCall.resultJson && toolCall.status === "completed")
+    .map((toolCall) => ({
+      toolName: toolCall.toolName,
+      rationale: undefined,
+      args: toolCall.argsJson,
+      result: toolCall.resultJson as Record<string, unknown>,
+    }));
+
+  const completedBriefing = latestCompletedBriefing(toolHistory);
+  if (!completedBriefing) {
+    return false;
+  }
+
+  const conversationHistory = formatConversationHistory(await deps.store.listMessages(session.id));
+  await deps.store.updateRun(run.id, {
+    status: "completed",
+    completedAt: new Date().toISOString(),
+  });
+  await persistRecoveredPlanToolTrace(deps, session.id, run.id, toolCalls);
+  await synthesizeAnswer(
+    deps,
+    {
+      request,
+      userId: session.userId,
+      sessionId: session.id,
+      runId: run.id,
+      userMessage:
+        [...conversationHistory].reverse().find((message) => message.role === "user")?.content ?? "",
+      conversationHistory,
+      plannerDraft: completedBriefing.answer,
+      plannerCitations: completedBriefing.citations,
+      toolHistory,
+    },
+    async () => {},
+  );
+  return true;
+}
+
+async function reconcilePersistentRun(
+  deps: AppDeps,
+  request: Request,
+  run: Awaited<ReturnType<AppStore["getRun"]>>,
+) {
+  if (!run || (run.status !== "running" && run.status !== "queued")) {
+    return run;
+  }
+
+  const session = await deps.store.getSession(run.sessionId);
+  if (!session) {
+    return run;
+  }
+
+  const toolCalls = await deps.store.listToolCalls(run.id);
+  if (await recoverRunCompletion(deps, request, session, run, toolCalls)) {
+    return deps.store.getRun(run.id);
+  }
+
+  const runningToolCall = [...toolCalls].reverse().find((toolCall) => toolCall.status === "running");
+  if (!runningToolCall) {
+    return run;
+  }
+
+  const runtimeId = runtimeIdFromToolCall(runningToolCall);
+  if (!runtimeId || !deps.runtimeGateway.getWorkspaceTaskStatus) {
+    return run;
+  }
+
+  let taskStatus: Record<string, unknown>;
+  try {
+    taskStatus = await deps.runtimeGateway.getWorkspaceTaskStatus({
+      runtimeId,
+      sessionId: session.id,
+      runId: run.id,
+    });
+  } catch {
+    return run;
+  }
+
+  if (taskStatus.status === "running" || taskStatus.status === "idle") {
+    return run;
+  }
+
+  if (taskStatus.status === "failed") {
+    const failedResult = {
+      ok: false,
+      error:
+        typeof taskStatus.error === "string"
+          ? taskStatus.error
+          : "Deep research failed in the runtime.",
+      billingEvents: Array.isArray(taskStatus.billingEvents) ? taskStatus.billingEvents : undefined,
+      runtimeId,
+    };
+    await deps.store.finishToolCall(runningToolCall.id, "failed", failedResult);
+    const refreshedToolCalls = await deps.store.listToolCalls(run.id);
+    await persistRecoveredPlanToolTrace(deps, session.id, run.id, refreshedToolCalls);
+    await deps.store.updateRun(run.id, {
+      status: "failed",
+      completedAt: new Date().toISOString(),
+    });
+    return deps.store.getRun(run.id);
+  }
+
+  if (taskStatus.status === "completed" && taskStatus.result && typeof taskStatus.result === "object") {
+    const result: Record<string, unknown> = {
+      ...(taskStatus.result as Record<string, unknown>),
+      runtimeId,
+    };
+    await deps.store.finishToolCall(runningToolCall.id, "completed", result);
+    if (runningToolCall.toolName === "run_workspace_task") {
+      await trackRuntimeBillingEvents(deps, session, run, result.billingEvents);
+    }
+    const refreshedToolCalls = await deps.store.listToolCalls(run.id);
+    await persistRecoveredPlanToolTrace(deps, session.id, run.id, refreshedToolCalls);
+    await recoverRunCompletion(deps, request, session, run, refreshedToolCalls);
+    return deps.store.getRun(run.id);
+  }
+
+  return run;
+}
+
+async function reconcileSessionRuns(
+  deps: AppDeps,
+  request: Request,
+  sessionId: string,
+) {
+  const runs = await deps.store.listRuns(sessionId);
+  for (const run of runs) {
+    if (run.status === "running" || run.status === "queued") {
+      await reconcilePersistentRun(deps, request, run);
+    }
+  }
+}
+
 function titleFromMessage(message: string): string {
   return message
     .trim()
@@ -1283,6 +1431,76 @@ async function persistPlanToolTrace(
     runId,
     toolCalls,
     researchLog: toolCalls,
+  });
+}
+
+function buildRecoveredToolTrace(
+  toolCalls: Awaited<ReturnType<AppStore["listToolCalls"]>>,
+): LiveToolTraceEntry[] {
+  return toolCalls.map((toolCall) => {
+    const normalizedArgs = normalizeToolArgs(toolCall.toolName, toolCall.argsJson);
+    const safeResult = toolCall.resultJson
+      ? clientSafeToolResult(toolCall.toolName, toolCall.resultJson)
+      : undefined;
+    const startedLogLines = flattenValueForCleanup(normalizedArgs).map((line) => ({
+      ...line,
+      toolName: toolCall.toolName,
+    }));
+    const completedLogLines = safeResult
+      ? flattenValueForCleanup(safeResult).map((line) => ({
+          ...line,
+          toolName: toolCall.toolName,
+        }))
+      : [];
+
+    return {
+      id: toolCall.id,
+      toolName: toolCall.toolName,
+      label: labelForToolCall(toolCall.toolName, normalizedArgs),
+      progress: [],
+      args: {
+        __logLines: startedLogLines,
+      },
+      result: safeResult
+        ? {
+            __logLines: completedLogLines,
+            error: typeof safeResult.error === "string" ? safeResult.error : undefined,
+          }
+        : undefined,
+      state:
+        toolCall.status === "failed" || toolCall.status === "timed_out"
+          ? "error"
+          : toolCall.status === "completed"
+            ? "completed"
+            : "running",
+      isError: toolCall.status === "failed" || toolCall.status === "timed_out",
+    };
+  });
+}
+
+async function persistRecoveredPlanToolTrace(
+  deps: AppDeps,
+  sessionId: string,
+  runId: string,
+  toolCalls: Awaited<ReturnType<AppStore["listToolCalls"]>>,
+) {
+  const messages = await deps.store.listMessages(sessionId);
+  const planMessage = [...messages].reverse().find((message) => (
+    message.role === "assistant"
+    && message.metadata?.phase === "plan"
+    && message.metadata?.runId === runId
+  ));
+  if (!planMessage) {
+    return;
+  }
+
+  const recoveredTrace = buildRecoveredToolTrace(toolCalls);
+  await deps.store.updateMessageMetadata(planMessage.id, {
+    ...planMessage.metadata,
+    phase: "plan",
+    runId,
+    toolCalls: recoveredTrace,
+    researchLog: recoveredTrace,
   });
 }
 
@@ -3081,23 +3299,40 @@ export function createApp(deps: AppDeps) {
     }
 
     const activeRun = activeRuns.get(runId);
-    if (!activeRun) {
-      return c.json({ ok: true, runId, cancelled: false, active: false });
+    if (activeRun) {
+      activeRun.cancelRequested = true;
     }
-
-    activeRun.cancelRequested = true;
+    const toolCalls = await deps.store.listToolCalls(runId);
+    const runtimeIds = new Set<string>([
+      ...Array.from(activeRun?.runtimeIds ?? []),
+      ...collectRuntimeIds(toolCalls),
+    ]);
     await Promise.all(
-      Array.from(activeRun.runtimeIds).map((runtimeId) =>
+      Array.from(runtimeIds).map((runtimeId) =>
         deps.runtimeGateway.cancelWorkspaceTask?.({ runtimeId }).catch(() => {}),
       ),
     );
+    await Promise.all(
+      toolCalls
+        .filter((toolCall) => toolCall.status === "running" || toolCall.status === "queued")
+        .map((toolCall) => deps.store.finishToolCall(toolCall.id, "failed", {
+          ok: false,
+          error: "Run cancelled by user.",
+          runtimeId: runtimeIdFromToolCall(toolCall) ?? undefined,
+        })),
+    );
+    await deps.store.updateRun(runId, {
+      status: "failed",
+      completedAt: new Date().toISOString(),
+    });
+    await persistRecoveredPlanToolTrace(deps, session.id, runId, await deps.store.listToolCalls(runId));
 
     return c.json({
       ok: true,
       runId,
       cancelled: true,
-      active: true,
-      runtimeIds: Array.from(activeRun.runtimeIds),
+      active: Boolean(activeRun) || run.status === "running" || run.status === "queued",
+      runtimeIds: Array.from(runtimeIds),
     });
   });
 
@@ -3119,6 +3354,7 @@ export function createApp(deps: AppDeps) {
     if (!(await canAccessSession(c, session))) {
       return c.json({ error: "Not authorized for this session." }, 403);
     }
+    await reconcileSessionRuns(deps, c.req.raw, sessionId);
     const messages = await deps.store.listMessages(sessionId);
     return c.json({ messages });
   });
@@ -3133,6 +3369,7 @@ export function createApp(deps: AppDeps) {
       return c.json({ error: "Not authorized for this session." }, 403);
     }
 
+    await reconcileSessionRuns(deps, c.req.raw, sessionId);
     const runs = await deps.store.listRuns(sessionId);
     return c.json({ runs });
   });
@@ -3152,6 +3389,7 @@ export function createApp(deps: AppDeps) {
     if (!run || run.sessionId !== sessionId) {
       return c.json({ error: "Run not found." }, 404);
     }
+    const reconciledRun = await reconcilePersistentRun(deps, c.req.raw, run);
 
     const [toolCalls, runtimeInstances] = await Promise.all([
       deps.store.listToolCalls(runId),
@@ -3159,7 +3397,7 @@ export function createApp(deps: AppDeps) {
     ]);
 
     return c.json({
-      run,
+      run: reconciledRun ?? run,
       toolCalls,
       runtimeInstances,
     });
@@ -3175,6 +3413,7 @@ export function createApp(deps: AppDeps) {
       return c.json({ error: "Not authorized for this session." }, 403);
     }
 
+    await reconcileSessionRuns(deps, c.req.raw, sessionId);
     const [messages, runs, runtimeInstances, artifacts] = await Promise.all([
       deps.store.listMessages(sessionId),
       deps.store.listRuns(sessionId),
@@ -3212,6 +3451,7 @@ export function createApp(deps: AppDeps) {
     if (!run || run.sessionId !== sessionId) {
       return c.json({ error: "Run not found." }, 404);
     }
+    const reconciledRun = await reconcilePersistentRun(deps, c.req.raw, run);
 
     const [messages, toolCalls, runtimeInstances, artifacts] = await Promise.all([
       deps.store.listMessages(sessionId),
@@ -3222,7 +3462,7 @@ export function createApp(deps: AppDeps) {
 
     return c.json({
       session,
-      run,
+      run: reconciledRun ?? run,
       messages,
       toolCalls,
       runtimeInstances,
@@ -3245,6 +3485,7 @@ export function createApp(deps: AppDeps) {
     if (!run || run.sessionId !== sessionId) {
       return c.json({ error: "Run not found." }, 404);
     }
+    const reconciledRun = await reconcilePersistentRun(deps, c.req.raw, run);
 
     const [messages, toolCalls, runtimeInstances] = await Promise.all([
       deps.store.listMessages(sessionId),
@@ -3255,7 +3496,7 @@ export function createApp(deps: AppDeps) {
 
     return c.json({
       session,
-      run,
+      run: reconciledRun ?? run,
       messages,
       toolCalls,
       runtimeInstances,
@@ -3274,20 +3515,21 @@ export function createApp(deps: AppDeps) {
     if (!run) {
       return c.json({ error: "Run not found." }, 404);
     }
+    const reconciledRun = await reconcilePersistentRun(deps, c.req.raw, run);
 
-    const session = await deps.store.getSession(run.sessionId);
+    const session = await deps.store.getSession((reconciledRun ?? run).sessionId);
     if (!session) {
       return c.json({ error: "Session not found." }, 404);
     }
 
     const [messages, toolCalls, runtimeInstances, owner] = await Promise.all([
-      deps.store.listMessages(run.sessionId),
+      deps.store.listMessages(session.id),
       deps.store.listToolCalls(runId),
-      deps.store.listRuntimeInstances(run.sessionId),
+      deps.store.listRuntimeInstances(session.id),
       deps.store.getUserProfile(session.userId),
     ]);
-    const artifacts = await loadRunArtifacts(deps, run.sessionId, runId, toolCalls);
-    const liveRuntime = await loadLiveRuntimeLogs(deps, run.sessionId, runId, collectRuntimeIds(toolCalls));
+    const artifacts = await loadRunArtifacts(deps, session.id, runId, toolCalls);
+    const liveRuntime = await loadLiveRuntimeLogs(deps, session.id, runId, collectRuntimeIds(toolCalls));
 
     return c.json({
       requestedBy: {
@@ -3297,7 +3539,7 @@ export function createApp(deps: AppDeps) {
       },
       owner,
       session,
-      run,
+      run: reconciledRun ?? run,
       messages,
       toolCalls,
       runtimeInstances,

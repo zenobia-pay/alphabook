@@ -135,6 +135,13 @@ export class StubRuntimeGateway implements RuntimeToolGateway {
     };
   }
 
+  async getWorkspaceTaskStatus() {
+    return {
+      ok: false,
+      error: "Runtime sandboxes are not enabled in this environment.",
+    };
+  }
+
   async readWorkspaceFile() {
     return {
       ok: false,
@@ -205,6 +212,12 @@ export class HttpRuntimeGateway implements RuntimeToolGateway {
     return this.request("/cancel-task", {
       method: "POST",
       body: JSON.stringify(args),
+    });
+  }
+
+  async getWorkspaceTaskStatus() {
+    return this.request("/task-status", {
+      method: "GET",
     });
   }
 
@@ -407,6 +420,52 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
       expiresAt: addMinutesIso(HARD_LIMITS.MAX_RUNTIME_IDLE_MINUTES),
     });
     return result;
+  }
+
+  async getWorkspaceTaskStatus(args: RuntimeToolArgs) {
+    const runtimeId = typeof args.runtimeId === "string" ? args.runtimeId : "";
+    if (!runtimeId) {
+      throw new Error("Runtime tool requires a runtimeId.");
+    }
+    const instance = await this.requireRuntime(runtimeId);
+    await this.ensureMachineRunning(instance);
+    const machineId = instance.providerMachineId ?? runtimeId;
+    const status = await this.callRuntime(machineId, "/task-status", {
+      method: "GET",
+    });
+
+    if (status.status === "completed" && status.result && typeof status.result === "object") {
+      const result = status.result as Record<string, unknown>;
+      const uploadedArtifacts = await this.persistRuntimeArtifacts(instance, result);
+      await this.store.updateRuntimeInstance(runtimeId, {
+        status: "ready",
+        lastUsedAt: nowIso(),
+        expiresAt: addMinutesIso(HARD_LIMITS.MAX_RUNTIME_IDLE_MINUTES),
+      });
+      return {
+        ...status,
+        result: {
+          ...result,
+          artifacts: uploadedArtifacts,
+        },
+      };
+    }
+
+    if (status.status === "failed") {
+      await this.store.updateRuntimeInstance(runtimeId, {
+        status: "failed",
+        lastUsedAt: nowIso(),
+        expiresAt: addMinutesIso(1),
+      });
+      return status;
+    }
+
+    await this.store.updateRuntimeInstance(runtimeId, {
+      status: "busy",
+      lastUsedAt: nowIso(),
+      expiresAt: addMinutesIso(HARD_LIMITS.MAX_RUNTIME_IDLE_MINUTES),
+    });
+    return status;
   }
 
   async readWorkspaceFile(args: RuntimeToolArgs) {
@@ -773,6 +832,8 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     const artifacts = Array.isArray(result.artifacts)
       ? (result.artifacts as Array<Record<string, unknown>>)
       : [];
+    const existingArtifacts = await this.store.listArtifacts(instance.sessionId, instance.runtimeId);
+    const existingByFilename = new Map(existingArtifacts.map((artifact) => [artifact.filename, artifact]));
     const uploaded = [];
 
     for (const artifact of artifacts) {
@@ -780,6 +841,16 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
       const filename = typeof artifact.filename === "string" ? artifact.filename : null;
       const mimeType = typeof artifact.mimeType === "string" ? artifact.mimeType : "application/octet-stream";
       if (!path || !filename) {
+        continue;
+      }
+      const existing = existingByFilename.get(filename);
+      if (existing) {
+        uploaded.push({
+          filename,
+          path,
+          mimeType: existing.mimeType,
+          r2Key: existing.r2Key,
+        });
         continue;
       }
 
