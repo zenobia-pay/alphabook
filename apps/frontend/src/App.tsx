@@ -2916,7 +2916,7 @@ export default function App() {
         <section className="work-feed" aria-label="Corpus feed">
           {feedWorks.map((work) => {
             const selected = selectedWorkIds.includes(work.id);
-            const previewMeta = [work.feedLabel, formatReleaseYear(work.releaseDate), work.publisher].filter(Boolean).join(" · ");
+            const previewMeta = [formatReleaseYear(work.releaseDate), work.publisher].filter(Boolean).join(" · ");
             const secondaryTags = work.bookshelves?.length
               ? work.bookshelves.slice(0, 2)
               : work.subjects.slice(0, 3);
