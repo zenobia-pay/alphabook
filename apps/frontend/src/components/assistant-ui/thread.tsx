@@ -32,7 +32,55 @@ import {
   RefreshCwIcon,
   SquareIcon,
 } from "lucide-react";
-import type { FC } from "react";
+import { type FC, useCallback, useMemo, useState } from "react";
+import { useAuiState } from "@assistant-ui/store";
+
+type MessagePartRecord = {
+  type?: string;
+  text?: string;
+  toolName?: string;
+  args?: Record<string, unknown>;
+  result?: unknown;
+  isError?: boolean;
+};
+
+function formatJsonBlock(value: unknown) {
+  return `\`\`\`json\n${JSON.stringify(value, null, 2)}\n\`\`\``;
+}
+
+function assistantMessageToMarkdown(parts: readonly MessagePartRecord[]) {
+  const sections = parts.flatMap((part) => {
+    if (part.type === "text" && typeof part.text === "string" && part.text.trim().length > 0) {
+      return [part.text.trim()];
+    }
+
+    if (part.type === "tool-call") {
+      const args = part.args && typeof part.args === "object" ? { ...part.args } : {};
+      const rationale = typeof args.__rationale === "string" ? args.__rationale : null;
+      if ("__rationale" in args) {
+        delete args.__rationale;
+      }
+
+      const toolSections = [`### Tool Call: ${part.toolName ?? "Tool"}`];
+      if (rationale) {
+        toolSections.push(`Rationale: ${rationale}`);
+      }
+      toolSections.push("Arguments:");
+      toolSections.push(formatJsonBlock(args));
+
+      if (part.result !== undefined) {
+        toolSections.push(part.isError ? "Error:" : "Result:");
+        toolSections.push(formatJsonBlock(part.result));
+      }
+
+      return [toolSections.join("\n\n")];
+    }
+
+    return [];
+  });
+
+  return sections.join("\n\n");
+}
 
 export const Thread: FC<{ isRunning?: boolean }> = ({ isRunning = false }) => {
   return (
@@ -226,22 +274,48 @@ const AssistantMessage: FC = () => {
 };
 
 const AssistantActionBar: FC = () => {
+  const parts = useAuiState((s) => s.message.content) as MessagePartRecord[];
+  const isRunning = useAuiState((s) => s.message.status?.type === "running");
+  const [isCopied, setIsCopied] = useState(false);
+  const markdown = useMemo(() => assistantMessageToMarkdown(parts), [parts]);
+
+  const handleCopy = useCallback(() => {
+    if (!markdown) {
+      return;
+    }
+    void navigator.clipboard.writeText(markdown).then(() => {
+      setIsCopied(true);
+      window.setTimeout(() => setIsCopied(false), 3000);
+    });
+  }, [markdown]);
+
+  const handleExport = useCallback(() => {
+    if (!markdown) {
+      return;
+    }
+    const blob = new Blob([markdown], { type: "text/markdown" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `message-${Date.now()}.md`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }, [markdown]);
+
   return (
     <ActionBarPrimitive.Root
       hideWhenRunning
       autohide="not-last"
       className="aui-assistant-action-bar-root col-start-3 row-start-2 -ml-1 flex gap-1 text-muted-foreground"
     >
-      <ActionBarPrimitive.Copy asChild>
-        <TooltipIconButton tooltip="Copy">
-          <AuiIf condition={(s) => s.message.isCopied}>
+      <TooltipIconButton tooltip="Copy" onClick={handleCopy} disabled={!markdown || isRunning}>
+          <AuiIf condition={() => isCopied}>
             <CheckIcon />
           </AuiIf>
-          <AuiIf condition={(s) => !s.message.isCopied}>
+          <AuiIf condition={() => !isCopied}>
             <CopyIcon />
           </AuiIf>
-        </TooltipIconButton>
-      </ActionBarPrimitive.Copy>
+      </TooltipIconButton>
       <ActionBarPrimitive.Reload asChild>
         <TooltipIconButton tooltip="Refresh">
           <RefreshCwIcon />
@@ -261,12 +335,14 @@ const AssistantActionBar: FC = () => {
           align="start"
           className="aui-action-bar-more-content z-50 min-w-32 overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
         >
-          <ActionBarPrimitive.ExportMarkdown asChild>
-            <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
+          <ActionBarMorePrimitive.Item
+            className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled=true]:pointer-events-none data-[disabled=true]:opacity-50"
+            onSelect={handleExport}
+            data-disabled={!markdown || isRunning ? "true" : undefined}
+          >
               <DownloadIcon className="size-4" />
               Export as Markdown
-            </ActionBarMorePrimitive.Item>
-          </ActionBarPrimitive.ExportMarkdown>
+          </ActionBarMorePrimitive.Item>
         </ActionBarMorePrimitive.Content>
       </ActionBarMorePrimitive.Root>
     </ActionBarPrimitive.Root>
