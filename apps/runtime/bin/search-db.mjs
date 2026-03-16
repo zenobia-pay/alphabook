@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 
 import process from "node:process";
+import { pathToFileURL } from "node:url";
 
 import { Pool } from "@neondatabase/serverless";
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   const args = {
     _: [],
     pattern: "",
@@ -13,6 +14,8 @@ function parseArgs(argv) {
     title: "",
     works: [],
     chunkIds: [],
+    globs: [],
+    kinds: [],
     limit: 100,
     offset: 0,
     before: 0,
@@ -27,6 +30,8 @@ function parseArgs(argv) {
     field: "excerpt",
     heading: false,
     noFilename: false,
+    multiline: false,
+    window: 0,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -69,6 +74,10 @@ function parseArgs(argv) {
       args.noFilename = true;
       continue;
     }
+    if (arg === "-U" || arg === "--multiline") {
+      args.multiline = true;
+      continue;
+    }
     if (arg === "-A" || arg === "--after-context") {
       args.after = Math.max(0, Number.parseInt(next ?? "0", 10) || 0);
       index += 1;
@@ -107,6 +116,11 @@ function parseArgs(argv) {
       index += 1;
       continue;
     }
+    if (arg === "--window") {
+      args.window = Math.max(0, Math.min(8, Number.parseInt(next ?? "0", 10) || 0));
+      index += 1;
+      continue;
+    }
     if (arg === "--pattern") {
       args.pattern = next ?? "";
       index += 1;
@@ -125,6 +139,20 @@ function parseArgs(argv) {
     if (arg === "--title") {
       args.title = next ?? "";
       index += 1;
+      continue;
+    }
+    if (arg === "--glob" || arg === "-g") {
+      if (next) {
+        args.globs.push(next);
+        index += 1;
+      }
+      continue;
+    }
+    if (arg === "--kind") {
+      if (next) {
+        args.kinds.push(next);
+        index += 1;
+      }
       continue;
     }
     if (arg === "--work") {
@@ -150,7 +178,38 @@ function parseArgs(argv) {
     args._.push(arg);
   }
 
+  if (args.multiline && args.window === 0) {
+    args.window = 1;
+  }
+
+  args.kinds = normalizeKinds(args.kinds);
+
   return args;
+}
+
+function normalizeKinds(kinds) {
+  const aliasMap = new Map([
+    ["clean_text", "clean"],
+    ["clean", "clean"],
+    ["chunks_jsonl", "chunks"],
+    ["chunk_jsonl", "chunks"],
+    ["chunks", "chunks"],
+    ["raw_text", "raw"],
+    ["raw", "raw"],
+    ["metadata_json", "metadata"],
+    ["metadata", "metadata"],
+    ["cover_image", "cover"],
+    ["cover", "cover"],
+  ]);
+
+  return Array.from(
+    new Set(
+      kinds
+        .map((kind) => String(kind || "").trim().toLowerCase())
+        .filter(Boolean)
+        .map((kind) => aliasMap.get(kind) ?? kind),
+    ),
+  );
 }
 
 function normalizePattern(pattern, ignoreCase) {
@@ -165,19 +224,93 @@ function extractLiteralHints(pattern) {
   return Array.from(new Set(matches.map((token) => token.toLowerCase()))).slice(0, 8);
 }
 
-function matchExcerpt(text, pattern, ignoreCase) {
-  try {
-    const regex = new RegExp(pattern, ignoreCase ? "i" : "");
-    const match = text.match(regex);
-    if (!match || typeof match.index !== "number") {
-      return text.slice(0, 420);
+export function globToRegex(glob) {
+  let regex = "^";
+  for (let index = 0; index < glob.length; index += 1) {
+    const char = glob[index];
+    if (char === "*") {
+      const next = glob[index + 1];
+      if (next === "*") {
+        regex += ".*";
+        index += 1;
+      } else {
+        regex += "[^/]*";
+      }
+      continue;
     }
-    const start = Math.max(0, match.index - 120);
-    const end = Math.min(text.length, match.index + (match[0]?.length ?? 0) + 240);
-    return text.slice(start, end);
-  } catch {
-    return text.slice(0, 420);
+    if (char === "?") {
+      regex += ".";
+      continue;
+    }
+    if ("\\.[]{}()+-^$|".includes(char)) {
+      regex += `\\${char}`;
+      continue;
+    }
+    regex += char;
   }
+  regex += "$";
+  return regex;
+}
+
+function compileRegex(pattern, ignoreCase, multiline = false) {
+  return new RegExp(pattern, `${ignoreCase ? "i" : ""}${multiline ? "ms" : ""}`);
+}
+
+function safeRegex(pattern, ignoreCase, multiline = false) {
+  try {
+    return compileRegex(pattern, ignoreCase, multiline);
+  } catch (error) {
+    throw new Error(`Invalid regular expression: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function compactWhitespace(text) {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function lineColFromIndex(text, index) {
+  const safeIndex = Math.max(0, Math.min(text.length, index));
+  let line = 1;
+  let column = 1;
+  for (let i = 0; i < safeIndex; i += 1) {
+    if (text[i] === "\n") {
+      line += 1;
+      column = 1;
+    } else {
+      column += 1;
+    }
+  }
+  return { line, column };
+}
+
+function snippetAround(text, start, end, radius = 180) {
+  const from = Math.max(0, start - radius);
+  const to = Math.min(text.length, end + radius);
+  return text.slice(from, to);
+}
+
+function matchSegments(text, regex) {
+  const flags = regex.flags.includes("g") ? regex.flags : `${regex.flags}g`;
+  const globalRegex = new RegExp(regex.source, flags);
+  const segments = [];
+  let match;
+  while ((match = globalRegex.exec(text)) !== null) {
+    const matched = match[0] ?? "";
+    const start = match.index ?? 0;
+    const end = start + matched.length;
+    segments.push({
+      text: matched,
+      start,
+      end,
+      ...lineColFromIndex(text, start),
+      endLine: lineColFromIndex(text, end).line,
+      endColumn: lineColFromIndex(text, end).column,
+    });
+    if (matched.length === 0) {
+      globalRegex.lastIndex += 1;
+    }
+  }
+  return segments;
 }
 
 async function withClient(fn) {
@@ -227,6 +360,31 @@ function buildChunkFilterWhere(options, literals, startParam = 1) {
     params.push(options.title);
     param += 1;
   }
+  if (options.kinds.length > 0) {
+    clauses.push(`
+      EXISTS (
+        SELECT 1
+        FROM work_files wf_kind
+        WHERE wf_kind.work_id = c.work_id
+          AND wf_kind.kind = ANY($${param}::text[])
+      )
+    `);
+    params.push(options.kinds);
+    param += 1;
+  }
+  if (options.globs.length > 0) {
+    clauses.push(`
+      EXISTS (
+        SELECT 1
+        FROM work_files wf_glob
+        WHERE wf_glob.work_id = c.work_id
+          AND wf_glob.r2_key IS NOT NULL
+          AND wf_glob.r2_key ~ ANY($${param}::text[])
+      )
+    `);
+    params.push(options.globs.map(globToRegex));
+    param += 1;
+  }
   if (!options.invertMatch && literals.length > 0) {
     clauses.push(`
       EXISTS (
@@ -246,17 +404,114 @@ function buildChunkFilterWhere(options, literals, startParam = 1) {
   };
 }
 
+function groupByWork(rows) {
+  const byWork = new Map();
+  for (const row of rows) {
+    const workId = String(row.work_id);
+    const existing = byWork.get(workId) ?? [];
+    existing.push(row);
+    byWork.set(workId, existing);
+  }
+  for (const rowsForWork of byWork.values()) {
+    rowsForWork.sort((left, right) => Number(left.chunk_index) - Number(right.chunk_index));
+  }
+  return byWork;
+}
+
+function buildWindow(rowsForWork, index, windowRadius) {
+  const startIndex = Math.max(0, index - windowRadius);
+  const endIndex = Math.min(rowsForWork.length - 1, index + windowRadius);
+  const windowRows = rowsForWork.slice(startIndex, endIndex + 1);
+  const joiner = "\n";
+  let cursor = 0;
+  const pieces = [];
+  const rowOffsets = [];
+  for (const row of windowRows) {
+    const text = String(row.text ?? "");
+    const start = cursor;
+    const end = start + text.length;
+    rowOffsets.push({
+      chunkId: row.id,
+      chunkIndex: row.chunk_index,
+      start,
+      end,
+    });
+    pieces.push(text);
+    cursor = end + joiner.length;
+  }
+  return {
+    windowRows,
+    text: pieces.join(joiner),
+    rowOffsets,
+    startChunkIndex: windowRows[0]?.chunk_index ?? null,
+    endChunkIndex: windowRows.at(-1)?.chunk_index ?? null,
+  };
+}
+
+function findPrimaryChunkId(rowOffsets, matchStart, fallbackChunkId) {
+  for (const row of rowOffsets) {
+    if (matchStart >= row.start && matchStart <= row.end) {
+      return row.chunkId;
+    }
+  }
+  return fallbackChunkId;
+}
+
+function formatRgHit({
+  row,
+  work,
+  pattern,
+  regex,
+  options,
+  window,
+}) {
+  const segments = matchSegments(window.text, regex);
+  const matches = options.invertMatch ? [] : segments;
+  const primaryMatch = matches[0] ?? null;
+  const excerpt = primaryMatch
+    ? snippetAround(window.text, primaryMatch.start, primaryMatch.end, 180)
+    : compactWhitespace(window.text).slice(0, 420);
+
+  return {
+    chunkId: row.id,
+    primaryChunkId: findPrimaryChunkId(window.rowOffsets, primaryMatch?.start ?? 0, row.id),
+    workId: row.work_id,
+    chunkIndex: row.chunk_index,
+    title: row.title,
+    language: row.language,
+    gutenbergId: work?.gutenberg_id ?? null,
+    releaseDate: work?.release_date ?? null,
+    rightsStatus: work?.rights_status ?? null,
+    summary: work?.summary ?? null,
+    r2Key: row.r2_key,
+    sourcePath: row.clean_text_key ?? row.r2_key ?? null,
+    text: window.text,
+    excerpt,
+    label: `${row.work_id}#${row.chunk_index}`,
+    matchCount: matches.length,
+    matches,
+    literalHints: extractLiteralHints(pattern),
+    windowStartChunkIndex: window.startChunkIndex,
+    windowEndChunkIndex: window.endChunkIndex,
+    matchedChunkIds: window.windowRows.map((item) => item.id),
+    fileKinds: Array.isArray(row.file_kinds) ? row.file_kinds : [],
+  };
+}
+
 async function runRg(client, options) {
   const pattern = options.pattern || options.query || options._[1] || options._[0] || "";
   if (!pattern) {
     throw new Error("rg requires a pattern.");
   }
 
-  const regex = normalizePattern(pattern, options.ignoreCase);
+  const regex = safeRegex(pattern, options.ignoreCase, options.multiline);
+  const sqlRegex = normalizePattern(pattern, options.ignoreCase);
   const literals = extractLiteralHints(pattern);
   const filter = buildChunkFilterWhere(options, literals);
   const operator = options.invertMatch ? "!~" : "~";
   const effectiveLimit = options.maxCount ?? options.limit;
+  const widenedLimit = Math.min(Math.max((effectiveLimit + options.offset) * (options.window > 0 ? 6 : 3), 200), 4000);
+
   const rows = await client.query(
     `
       WITH filtered_chunks AS (
@@ -267,10 +522,21 @@ async function runRg(client, options) {
           c.text,
           c.r2_key,
           w.title,
-          w.language
+          w.language,
+          w.gutenberg_id,
+          w.release_date,
+          w.rights_status,
+          w.summary,
+          clean_file.r2_key AS clean_text_key,
+          ARRAY_REMOVE(ARRAY_AGG(DISTINCT wf.kind), NULL) AS file_kinds
         FROM chunks c
         JOIN works w ON w.id = c.work_id
+        LEFT JOIN work_files wf ON wf.work_id = c.work_id
+        LEFT JOIN work_files clean_file
+          ON clean_file.work_id = c.work_id
+         AND clean_file.kind = 'clean'
         WHERE ${filter.where}
+        GROUP BY c.id, w.id, clean_file.r2_key
       )
       SELECT
         id,
@@ -278,37 +544,81 @@ async function runRg(client, options) {
         chunk_index,
         title,
         language,
+        gutenberg_id,
+        release_date,
+        rights_status,
+        summary,
         r2_key,
+        clean_text_key,
+        file_kinds,
         left(text, 4000) AS text
       FROM filtered_chunks
       WHERE text ${operator} $${filter.nextParam}
       ORDER BY work_id, chunk_index
       LIMIT $${filter.nextParam + 1}
-      OFFSET $${filter.nextParam + 2}
+      OFFSET 0
     `,
     [
       ...filter.params,
-      regex,
-      effectiveLimit,
-      options.offset,
+      sqlRegex,
+      widenedLimit,
     ],
   );
 
-  const hits = rows.rows.map((row) => ({
-    chunkId: row.id,
-    workId: row.work_id,
-    chunkIndex: row.chunk_index,
-    title: row.title,
-    language: row.language,
-    r2Key: row.r2_key,
-    text: row.text,
-    excerpt: matchExcerpt(row.text, pattern, options.ignoreCase),
-    label: `${row.work_id}#${row.chunk_index}`,
-  }));
+  const byWork = groupByWork(rows.rows);
+  const worksById = new Map();
+  const candidates = [];
+  const seenWindows = new Set();
+
+  for (const row of rows.rows) {
+    worksById.set(String(row.work_id), row);
+  }
+
+  for (const rowsForWork of byWork.values()) {
+    for (let index = 0; index < rowsForWork.length; index += 1) {
+      const row = rowsForWork[index];
+      const windowRadius = options.multiline || options.window > 0 ? Math.max(options.window, 1) : 0;
+      const window = buildWindow(rowsForWork, index, windowRadius);
+      const windowKey = `${row.work_id}:${window.startChunkIndex}:${window.endChunkIndex}`;
+      if (seenWindows.has(windowKey)) {
+        continue;
+      }
+      const matched = regex.test(window.text);
+      regex.lastIndex = 0;
+      if (options.invertMatch ? matched : !matched) {
+        continue;
+      }
+      seenWindows.add(windowKey);
+      candidates.push(formatRgHit({
+        row,
+        work: worksById.get(String(row.work_id)),
+        pattern,
+        regex,
+        options,
+        window,
+      }));
+    }
+  }
+
+  const hits = candidates.slice(options.offset, options.offset + effectiveLimit);
+  const workMap = new Map();
+  for (const hit of hits) {
+    if (!workMap.has(hit.workId)) {
+      workMap.set(hit.workId, {
+        workId: hit.workId,
+        title: hit.title,
+        language: hit.language,
+        gutenbergId: hit.gutenbergId,
+        releaseDate: hit.releaseDate,
+        matchCount: 0,
+      });
+    }
+    workMap.get(hit.workId).matchCount += 1;
+  }
 
   let contextRows = [];
   if ((options.before > 0 || options.after > 0) && hits.length > 0) {
-    const hitChunkIds = hits.map((hit) => hit.chunkId);
+    const hitChunkIds = Array.from(new Set(hits.map((hit) => hit.primaryChunkId || hit.chunkId)));
     const context = await client.query(
       `
         WITH seeds AS (
@@ -338,23 +648,12 @@ async function runRg(client, options) {
       chunkIndex: row.chunk_index,
       title: row.title,
       r2Key: row.r2_key,
+      sourcePath: row.r2_key ?? null,
       text: row.text,
+      excerpt: row.text,
       label: `${row.work_id}#${row.chunk_index}`,
       isMatch: hitChunkIds.includes(row.id),
     }));
-  }
-
-  const workMap = new Map();
-  for (const hit of hits) {
-    if (!workMap.has(hit.workId)) {
-      workMap.set(hit.workId, {
-        workId: hit.workId,
-        title: hit.title,
-        language: hit.language,
-        matchCount: 0,
-      });
-    }
-    workMap.get(hit.workId).matchCount += 1;
   }
 
   return {
@@ -362,11 +661,20 @@ async function runRg(client, options) {
     pattern,
     ignoreCase: options.ignoreCase,
     invertMatch: options.invertMatch,
+    multiline: options.multiline,
+    window: options.window,
     literalHints: literals,
     count: hits.length,
     works: [...workMap.values()],
     hits,
     context: contextRows,
+    filters: {
+      workIds: options.works,
+      language: options.language || null,
+      titleRegex: options.title || null,
+      globs: options.globs,
+      kinds: options.kinds,
+    },
   };
 }
 
@@ -383,9 +691,11 @@ async function runWorks(client, options) {
       )
       SELECT
         w.id,
+        w.gutenberg_id,
         w.title,
         w.language,
         w.summary,
+        w.release_date,
         ts_rank_cd(
           setweight(to_tsvector('english', COALESCE(w.title, '')), 'A') ||
           setweight(to_tsvector('english', COALESCE(w.summary, '')), 'B'),
@@ -409,9 +719,11 @@ async function runWorks(client, options) {
     count: rows.rows.length,
     works: rows.rows.map((row) => ({
       workId: row.id,
+      gutenbergId: row.gutenberg_id,
       title: row.title,
       language: row.language,
       summary: row.summary,
+      releaseDate: row.release_date,
       score: row.score,
     })),
   };
@@ -435,6 +747,7 @@ async function runNeighbors(client, options) {
         c.chunk_index,
         c.r2_key,
         w.title,
+        w.gutenberg_id,
         left(c.text, 4000) AS text
       FROM chunks c
       JOIN seeds s
@@ -454,9 +767,11 @@ async function runNeighbors(client, options) {
     hits: rows.rows.map((row) => ({
       chunkId: row.id,
       workId: row.work_id,
+      gutenbergId: row.gutenberg_id,
       chunkIndex: row.chunk_index,
       title: row.title,
       r2Key: row.r2_key,
+      sourcePath: row.r2_key ?? null,
       text: row.text,
       excerpt: row.text.slice(0, 420),
       label: `${row.work_id}#${row.chunk_index}`,
@@ -513,7 +828,7 @@ function printText(result, options) {
   }
 
   if (result.mode === "rg" && Array.isArray(result.context) && result.context.length > 0) {
-    const matchIds = new Set(result.hits.map((hit) => hit.chunkId));
+    const matchIds = new Set(result.hits.map((hit) => hit.primaryChunkId ?? hit.chunkId));
     let lastWorkId = "";
     for (const row of result.context) {
       if (options.heading && row.workId !== lastWorkId) {
@@ -535,8 +850,8 @@ function printText(result, options) {
   }
 }
 
-async function main() {
-  const args = parseArgs(process.argv.slice(2));
+export async function main(argv = process.argv.slice(2)) {
+  const args = parseArgs(argv);
   const command = args._[0] ?? "rg";
 
   const result = await withClient(async (client) => {
@@ -557,13 +872,18 @@ async function main() {
 
   if (args.json) {
     process.stdout.write(JSON.stringify(result, null, 2));
-    return;
+    return result;
   }
 
   printText(result, args);
+  return result;
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.stack || error.message : String(error));
-  process.exit(1);
-});
+const entryHref = process.argv[1] ? pathToFileURL(process.argv[1]).href : null;
+
+if (entryHref && import.meta.url === entryHref) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.stack || error.message : String(error));
+    process.exit(1);
+  });
+}
