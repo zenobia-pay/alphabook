@@ -2235,10 +2235,24 @@ export default function App() {
     let planMessageId: string | null = null;
     let finalAssistantMessageId: string | null = null;
     let runSettled = false;
+    let streamIdleTimer: number | null = null;
+    const clearStreamIdleTimer = () => {
+      if (streamIdleTimer !== null) {
+        window.clearTimeout(streamIdleTimer);
+        streamIdleTimer = null;
+      }
+    };
+    const scheduleStreamIdleSettle = () => {
+      clearStreamIdleTimer();
+      streamIdleTimer = window.setTimeout(() => {
+        settleRunUi();
+      }, 1200);
+    };
     const settleRunUi = () => {
       if (runSettled || activeRunTokenRef.current !== runToken) {
         return;
       }
+      clearStreamIdleTimer();
       runSettled = true;
       setIsSending(false);
       setStreamingAssistantId(null);
@@ -2434,6 +2448,7 @@ export default function App() {
                     : message,
                 ),
               );
+              scheduleStreamIdleSettle();
               return;
             }
 
@@ -2486,6 +2501,7 @@ export default function App() {
         setLoadError(error instanceof Error ? error.message : "Failed to stream the assistant run.");
       }
     } finally {
+      clearStreamIdleTimer();
       if (activeRunTokenRef.current === runToken) {
         settleRunUi();
         await refreshSessions(workingSessionId ?? null);
