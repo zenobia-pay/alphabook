@@ -3676,6 +3676,7 @@ export function createApp(deps: AppDeps) {
           const assistantMessage = [...messages].reverse().find((message) => (
             message.role === "assistant"
             && message.metadata?.phase !== "plan"
+            && message.metadata?.runId === runId
           ));
           const assistantSignature = assistantMessage
             ? JSON.stringify({
@@ -3689,6 +3690,13 @@ export function createApp(deps: AppDeps) {
             await send("assistant.completed", {
               runId,
               sessionId,
+              answer: assistantMessage?.content ?? "",
+              citations: Array.isArray(assistantMessage?.metadata?.citations)
+                ? assistantMessage?.metadata?.citations as Citation[]
+                : [],
+              phase: typeof assistantMessage?.metadata?.phase === "string"
+                ? assistantMessage.metadata.phase
+                : null,
             });
           }
 
