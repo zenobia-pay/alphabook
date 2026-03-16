@@ -3297,6 +3297,32 @@ export default function App() {
                   </p>
                 </div>
 
+                <div className="grid gap-4 rounded-[20px] bg-[rgba(26,33,52,0.03)] p-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <h3 className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--ink-soft)]">Tracked Events</h3>
+                    <div className="space-y-1 text-sm leading-6 text-[var(--ink)]">
+                      <p>`book_impression`: a book became visible in the explore feed.</p>
+                      <p>`book_open`: a book page was opened.</p>
+                      <p>`book_selected_for_ask`: a book was added into an ask.</p>
+                      <p>`book_citation_open`: a citation opened a book.</p>
+                      <p>`book_candidate_in_run`: the orchestrator elevated a book into a serious candidate set.</p>
+                      <p>`book_cited`: the final answer cited the book.</p>
+                      <p>`book_used_in_successful_answer`: the book contributed to a completed answer.</p>
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <h3 className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--ink-soft)]">Good Questions</h3>
+                    <div className="space-y-1 text-sm leading-6 text-[var(--ink)]">
+                      <p>Which books are trending this week by opens, asks, and citations?</p>
+                      <p>What books are rising quickly even if total volume is still low?</p>
+                      <p>Which books get many impressions but few opens?</p>
+                      <p>Which books are most used in successful answers?</p>
+                      <p>Which subjects or shelves are overperforming in explore?</p>
+                      <p>Which books are selected for asks most often after being seen in the feed?</p>
+                    </div>
+                  </div>
+                </div>
+
                 <form
                   className="space-y-3"
                   onSubmit={(event) => {
