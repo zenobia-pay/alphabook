@@ -6,13 +6,12 @@ import {
   CheckIcon,
   ChevronDownIcon,
   LoaderIcon,
-  SparklesIcon,
   XCircleIcon,
 } from "lucide-react";
 import {
   useScrollLock,
-  type ToolCallMessagePartStatus,
   type ToolCallMessagePartComponent,
+  type ToolCallMessagePartStatus,
 } from "@assistant-ui/react";
 import {
   Collapsible,
@@ -22,30 +21,11 @@ import {
 import { cn } from "@/lib/utils";
 
 const ANIMATION_DURATION = 200;
+const MAX_PREVIEW_ITEMS = 8;
 
 type JsonRecord = Record<string, unknown>;
 
-export type ToolFallbackRootProps = Omit<
-  React.ComponentProps<typeof Collapsible>,
-  "open" | "onOpenChange"
-> & {
-  open?: boolean;
-  onOpenChange?: (open: boolean) => void;
-  defaultOpen?: boolean;
-};
-
 type ToolStatus = ToolCallMessagePartStatus["type"];
-
-type ToolCardData = {
-  rationale: string | null;
-  summary: string | null;
-  query: string | null;
-  filePath: string | null;
-  phase: string | null;
-  metrics: Array<{ label: string; value: string }>;
-  preview: string | null;
-  error: string | null;
-};
 
 const statusIconMap: Record<ToolStatus, React.ElementType> = {
   running: LoaderIcon,
@@ -71,162 +51,201 @@ function parseArgs(argsText?: string): JsonRecord | null {
   }
 }
 
-function quoted(value: unknown) {
-  return typeof value === "string" && value.trim() ? `“${value.trim()}”` : null;
+function humanizeKey(key: string) {
+  return key
+    .replace(/^__/, "")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .trim()
+    .replace(/^\w/, (char) => char.toUpperCase());
 }
 
-function countLabel(value: unknown, singular: string, plural = `${singular}s`) {
-  if (!Array.isArray(value)) {
+function isPrimitive(value: unknown): value is string | number | boolean | null {
+  return (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  );
+}
+
+function formatPrimitive(value: string | number | boolean | null) {
+  if (value === null) {
+    return "null";
+  }
+  if (typeof value === "boolean") {
+    return value ? "true" : "false";
+  }
+  return String(value);
+}
+
+function omitInternalKeys(record: JsonRecord | null) {
+  if (!record) {
     return null;
   }
-  const count = value.length;
-  return `${count} ${count === 1 ? singular : plural}`;
+  const filtered = Object.fromEntries(
+    Object.entries(record).filter(([key]) => key !== "__rationale"),
+  );
+  return Object.keys(filtered).length ? filtered : null;
 }
 
-function phaseLabel(value: unknown) {
-  if (value === "collect_evidence") {
-    return "evidence search";
-  }
-  if (value === "write_briefing") {
-    return "briefing draft";
-  }
-  return typeof value === "string" ? value.replaceAll("_", " ") : null;
+function getRationale(args: JsonRecord | null) {
+  const value = args?.__rationale;
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
-function summarizeToolCard(
-  toolName: string,
-  args: JsonRecord | null,
-  result: unknown,
-  status?: ToolCallMessagePartStatus,
-): ToolCardData {
-  const resultObject = safeObject(result);
-  const taskSpec = safeObject(args?.taskSpec);
-  const rationale =
-    typeof args?.__rationale === "string" && args.__rationale.trim()
-      ? args.__rationale.trim()
-      : null;
+function summarizeTool(toolName: string, args: JsonRecord | null, result: JsonRecord | null, status?: ToolCallMessagePartStatus) {
+  const rationale = getRationale(args);
+  if (rationale) {
+    return rationale;
+  }
+
   const query =
-    quoted(args?.query) ??
-    quoted(taskSpec?.query) ??
-    quoted(taskSpec?.goal) ??
-    quoted(taskSpec?.question);
-  const filePath =
-    typeof args?.path === "string"
-      ? args.path
-      : typeof resultObject?.path === "string"
-        ? resultObject.path
-        : null;
-  const phase = phaseLabel(taskSpec?.phase);
-  const metrics: Array<{ label: string; value: string }> = [];
+    typeof args?.query === "string"
+      ? args.query
+      : safeObject(args?.taskSpec)?.question;
+  const quotedQuery =
+    typeof query === "string" && query.trim() ? `“${query.trim()}”` : null;
 
-  const worksCount = countLabel(resultObject?.works, "book");
-  if (worksCount) {
-    metrics.push({ label: "Matches", value: worksCount });
-  }
-  const chunksCount = countLabel(resultObject?.chunks, "passage");
-  if (chunksCount) {
-    metrics.push({ label: "Passages", value: chunksCount });
-  }
-  const workScope = countLabel(args?.workIds, "book");
-  if (workScope) {
-    metrics.push({ label: "Scope", value: workScope });
-  }
-  const seedCount = countLabel(args?.chunkIds, "seed");
-  if (seedCount) {
-    metrics.push({ label: "Seeds", value: seedCount });
-  }
-  if (typeof resultObject?.hydratedWorkCount === "number") {
-    metrics.push({
-      label: "Hydrated",
-      value: `${resultObject.hydratedWorkCount} book${resultObject.hydratedWorkCount === 1 ? "" : "s"}`,
-    });
-  }
-  if (typeof resultObject?.artifactCount === "number") {
-    metrics.push({
-      label: "Artifacts",
-      value: `${resultObject.artifactCount}`,
-    });
-  }
-  if (typeof resultObject?.citationCount === "number") {
-    metrics.push({
-      label: "Citations",
-      value: `${resultObject.citationCount}`,
-    });
-  }
-
-  const preview =
-    typeof resultObject?.contentPreview === "string" && resultObject.contentPreview.trim()
-      ? resultObject.contentPreview.trim()
-      : typeof resultObject?.briefing === "string" && resultObject.briefing.trim()
-        ? resultObject.briefing.trim().slice(0, 220)
-        : null;
-
-  const error =
-    status?.type === "incomplete"
-      ? typeof status.error === "string"
+  if (status?.type === "incomplete") {
+    const error =
+      typeof status.error === "string"
         ? status.error
-        : status.error
-          ? JSON.stringify(status.error)
-          : null
-      : typeof resultObject?.error === "string"
-        ? resultObject.error
-        : null;
-
-  let summary = rationale;
-  if (!summary) {
-    switch (toolName.toLowerCase()) {
-      case "library scan":
-        summary = query ? `Looking across the current library for books related to ${query}.` : "Looking across the current library for likely books.";
-        break;
-      case "seed passages":
-        summary = query ? `Pulling a first set of passages for ${query}.` : "Pulling a first set of passages from the corpus.";
-        break;
-      case "workspace setup":
-        summary = "Preparing the workspace that will run the deeper corpus search.";
-        break;
-      case "evidence search":
-      case "deep search":
-        summary = phase
-          ? `Running the ${phase} inside the workspace.`
-          : "Running a deeper local search across the hydrated corpus files.";
-        break;
-      case "search notes":
-      case "workspace output":
-      case "briefing import":
-        summary = filePath
-          ? `Reading ${filePath.split("/").pop()} back into the thread.`
-          : "Reading the workspace output back into the thread.";
-        break;
-      default:
-        summary = "Running the next research step.";
-        break;
-    }
+        : typeof result?.error === "string"
+          ? result.error
+          : null;
+    return error ? `This step failed: ${error}` : "This step failed.";
   }
 
-  if ((status?.type ?? "complete") === "complete" && !error) {
-    if (Array.isArray(resultObject?.works) && resultObject.works.length === 0) {
-      summary = query
-        ? `No strong book matches surfaced yet for ${query}.`
-        : "No strong book matches surfaced yet.";
-    }
-    if (Array.isArray(resultObject?.chunks) && resultObject.chunks.length === 0) {
-      summary = query
-        ? `No seed passages surfaced yet for ${query}.`
-        : "No seed passages surfaced yet.";
-    }
+  switch (toolName.toLowerCase()) {
+    case "library scan":
+      return quotedQuery
+        ? `Looking across the current library for books related to ${quotedQuery}.`
+        : "Looking across the current library for likely books.";
+    case "seed passages":
+      return quotedQuery
+        ? `Pulling a first set of passages for ${quotedQuery}.`
+        : "Pulling a first set of passages.";
+    case "book metadata":
+      return "Loading metadata for the books currently in scope.";
+    case "full text lookup":
+      return "Opening the source text directly.";
+    case "workspace setup":
+      return "Preparing the workspace for the longer-running search.";
+    case "evidence search":
+    case "deep search":
+      return "Running the longer workspace search over the selected corpus files.";
+    case "search notes":
+    case "workspace output":
+    case "briefing import":
+      return "Reading the latest workspace output back into the thread.";
+    default:
+      return "Running the next research step.";
   }
-
-  return {
-    rationale,
-    summary,
-    query,
-    filePath,
-    phase,
-    metrics,
-    preview,
-    error,
-  };
 }
+
+function StructuredValue({
+  label,
+  value,
+  depth = 0,
+}: {
+  label?: string;
+  value: unknown;
+  depth?: number;
+}) {
+  if (isPrimitive(value)) {
+    return (
+      <div className={cn("aui-tool-structured-row", depth > 0 && "aui-tool-structured-row-nested")}>
+        {label ? <dt className="aui-tool-structured-key">{humanizeKey(label)}</dt> : null}
+        <dd className="aui-tool-structured-value">{formatPrimitive(value)}</dd>
+      </div>
+    );
+  }
+
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      return (
+        <div className={cn("aui-tool-structured-row", depth > 0 && "aui-tool-structured-row-nested")}>
+          {label ? <dt className="aui-tool-structured-key">{humanizeKey(label)}</dt> : null}
+          <dd className="aui-tool-structured-value">[]</dd>
+        </div>
+      );
+    }
+
+    const items = value.slice(0, MAX_PREVIEW_ITEMS);
+    return (
+      <div className={cn("aui-tool-structured-block", depth > 0 && "aui-tool-structured-block-nested")}>
+        {label ? <dt className="aui-tool-structured-key">{humanizeKey(label)}</dt> : null}
+        <dd className="aui-tool-structured-array">
+          {items.map((item, index) => (
+            <StructuredValue key={`${label ?? "item"}-${index}`} value={item} depth={depth + 1} />
+          ))}
+          {value.length > MAX_PREVIEW_ITEMS ? (
+            <div className="aui-tool-structured-more">
+              +{value.length - MAX_PREVIEW_ITEMS} more
+            </div>
+          ) : null}
+        </dd>
+      </div>
+    );
+  }
+
+  const objectValue = safeObject(value);
+  if (!objectValue) {
+    return null;
+  }
+
+  const entries = Object.entries(objectValue).filter(([key]) => key !== "__rationale");
+  if (entries.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className={cn("aui-tool-structured-block", depth > 0 && "aui-tool-structured-block-nested")}>
+      {label ? <dt className="aui-tool-structured-key">{humanizeKey(label)}</dt> : null}
+      <dd className="aui-tool-structured-group">
+        {entries.map(([key, child]) => (
+          <StructuredValue key={`${label ?? "root"}-${key}`} label={key} value={child} depth={depth + 1} />
+        ))}
+      </dd>
+    </div>
+  );
+}
+
+function ToolSection({
+  title,
+  value,
+}: {
+  title: string;
+  value: unknown;
+}) {
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  const isEmptyObject = safeObject(value) && Object.keys(omitInternalKeys(safeObject(value)) ?? {}).length === 0;
+  if (isEmptyObject) {
+    return null;
+  }
+
+  return (
+    <section className="aui-tool-section">
+      <h4 className="aui-tool-section-title">{title}</h4>
+      <dl className="aui-tool-structured-list">
+        <StructuredValue value={value} />
+      </dl>
+    </section>
+  );
+}
+
+export type ToolFallbackRootProps = Omit<
+  React.ComponentProps<typeof Collapsible>,
+  "open" | "onOpenChange"
+> & {
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  defaultOpen?: boolean;
+};
 
 function ToolFallbackRoot({
   className,
@@ -253,7 +272,7 @@ function ToolFallbackRoot({
       }
       controlledOnOpenChange?.(open);
     },
-    [lockScroll, isControlled, controlledOnOpenChange],
+    [controlledOnOpenChange, isControlled, lockScroll],
   );
 
   return (
@@ -262,15 +281,8 @@ function ToolFallbackRoot({
       data-slot="tool-fallback-root"
       open={isOpen}
       onOpenChange={handleOpenChange}
-      className={cn(
-        "aui-tool-fallback-root group/tool-fallback-root w-full overflow-hidden rounded-2xl",
-        className,
-      )}
-      style={
-        {
-          "--animation-duration": `${ANIMATION_DURATION}ms`,
-        } as React.CSSProperties
-      }
+      className={cn("aui-tool-fallback-root group/tool-fallback-root w-full", className)}
+      style={{ ["--animation-duration" as string]: `${ANIMATION_DURATION}ms` }}
       {...props}
     >
       {children}
@@ -286,65 +298,39 @@ function ToolFallbackTrigger({
   ...props
 }: React.ComponentProps<typeof CollapsibleTrigger> & {
   toolName: string;
-  summary: string | null;
+  summary: string;
   status?: ToolCallMessagePartStatus;
 }) {
   const statusType = status?.type ?? "complete";
   const isRunning = statusType === "running";
-  const isCancelled =
-    status?.type === "incomplete" && status.reason === "cancelled";
-
+  const isCancelled = status?.type === "incomplete" && status.reason === "cancelled";
   const Icon = statusIconMap[statusType];
-  const badge = isCancelled ? "Cancelled" : isRunning ? "Working" : "Done";
+  const badge = isCancelled ? "Cancelled" : isRunning ? "Running" : "Done";
 
   return (
     <CollapsibleTrigger
       data-slot="tool-fallback-trigger"
-      className={cn(
-        "aui-tool-fallback-trigger group/trigger flex w-full items-start gap-3 px-4 py-3.5 text-left transition-colors",
-        className,
-      )}
+      className={cn("aui-tool-fallback-trigger group/trigger flex w-full items-start gap-3 text-left", className)}
       {...props}
     >
-      <span className="aui-tool-fallback-status-shell mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full">
-        <Icon
-          data-slot="tool-fallback-trigger-icon"
-          className={cn(
-            "aui-tool-fallback-trigger-icon size-3.5 shrink-0",
-            isCancelled && "text-muted-foreground",
-            isRunning && "animate-spin",
-          )}
-        />
+      <span className="aui-tool-fallback-status-shell">
+        <Icon className={cn("size-3.5", isRunning && "animate-spin")} />
       </span>
       <span className="min-w-0 grow">
-        <span className="aui-tool-fallback-trigger-head flex items-center gap-2">
+        <span className="aui-tool-fallback-head">
           <b className="aui-tool-fallback-title">{toolName}</b>
           <span className="aui-tool-fallback-badge">{badge}</span>
         </span>
-        {summary ? (
-          <span className="aui-tool-fallback-trigger-summary mt-1 block">
-            {summary}
-          </span>
-        ) : null}
+        <span className="aui-tool-fallback-summary">{summary}</span>
       </span>
       <ChevronDownIcon
-        data-slot="tool-fallback-trigger-chevron"
         className={cn(
-          "aui-tool-fallback-trigger-chevron mt-1 size-4 shrink-0 transition-transform duration-(--animation-duration) ease-out",
+          "aui-tool-fallback-chevron size-4 shrink-0 transition-transform duration-(--animation-duration) ease-out",
           "group-data-[state=closed]/trigger:-rotate-90",
           "group-data-[state=open]/trigger:rotate-0",
         )}
       />
     </CollapsibleTrigger>
-  );
-}
-
-function ToolMetricRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="aui-tool-fallback-metric">
-      <span className="aui-tool-fallback-metric-label">{label}</span>
-      <span className="aui-tool-fallback-metric-value">{value}</span>
-    </div>
   );
 }
 
@@ -357,7 +343,7 @@ function ToolFallbackContent({
     <CollapsibleContent
       data-slot="tool-fallback-content"
       className={cn(
-        "aui-tool-fallback-content relative overflow-hidden text-sm outline-none",
+        "aui-tool-fallback-content overflow-hidden outline-none",
         "group/collapsible-content ease-out",
         "data-[state=closed]:animate-collapsible-up",
         "data-[state=open]:animate-collapsible-down",
@@ -374,69 +360,30 @@ function ToolFallbackContent({
   );
 }
 
-function ToolFallbackDetails({
-  data,
-  className,
-  ...props
-}: React.ComponentProps<"div"> & {
-  data: ToolCardData;
+function ToolFallbackError({
+  status,
+}: {
+  status?: ToolCallMessagePartStatus;
 }) {
-  if (!data.metrics.length && !data.filePath && !data.phase && !data.preview) {
+  if (status?.type !== "incomplete") {
+    return null;
+  }
+
+  const error =
+    typeof status.error === "string"
+      ? status.error
+      : status.error
+        ? JSON.stringify(status.error)
+        : null;
+  if (!error) {
     return null;
   }
 
   return (
-    <div
-      data-slot="tool-fallback-details"
-      className={cn("aui-tool-fallback-details", className)}
-      {...props}
-    >
-      {data.metrics.length ? (
-        <div className="aui-tool-fallback-metrics">
-          {data.metrics.map((metric) => (
-            <ToolMetricRow key={`${metric.label}-${metric.value}`} label={metric.label} value={metric.value} />
-          ))}
-        </div>
-      ) : null}
-      {data.phase ? <ToolMetricRow label="Phase" value={data.phase} /> : null}
-      {data.filePath ? <ToolMetricRow label="File" value={data.filePath} /> : null}
-      {data.preview ? (
-        <div className="aui-tool-fallback-preview">
-          <SparklesIcon className="aui-tool-fallback-preview-icon" />
-          <p>{data.preview}</p>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function ToolFallbackError({
-  status,
-  className,
-  ...props
-}: React.ComponentProps<"div"> & {
-  status?: ToolCallMessagePartStatus;
-}) {
-  if (status?.type !== "incomplete") return null;
-
-  const error = status.error;
-  const errorText = error
-    ? typeof error === "string"
-      ? error
-      : JSON.stringify(error)
-    : null;
-
-  if (!errorText) return null;
-
-  return (
-    <div
-      data-slot="tool-fallback-error"
-      className={cn("aui-tool-fallback-error", className)}
-      {...props}
-    >
-      <p className="aui-tool-fallback-error-title">Something went wrong</p>
-      <p className="aui-tool-fallback-error-reason">{errorText}</p>
-    </div>
+    <section className="aui-tool-section aui-tool-section-error">
+      <h4 className="aui-tool-section-title">Error</h4>
+      <p className="aui-tool-error-text">{error}</p>
+    </section>
   );
 }
 
@@ -446,22 +393,21 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
   result,
   status,
 }) => {
-  const isCancelled =
-    status?.type === "incomplete" && status.reason === "cancelled";
   const args = useMemo(() => parseArgs(argsText), [argsText]);
-  const cardData = useMemo(
-    () => summarizeToolCard(toolName, args, result, status),
+  const cleanedArgs = useMemo(() => omitInternalKeys(args), [args]);
+  const resultObject = useMemo(() => safeObject(result) ?? result, [result]);
+  const summary = useMemo(
+    () => summarizeTool(toolName, args, safeObject(result), status),
     [toolName, args, result, status],
   );
 
   return (
-    <ToolFallbackRoot
-      className={cn(isCancelled && "aui-tool-fallback-root-cancelled")}
-    >
-      <ToolFallbackTrigger toolName={toolName} status={status} summary={cardData.summary} />
+    <ToolFallbackRoot>
+      <ToolFallbackTrigger toolName={toolName} summary={summary} status={status} />
       <ToolFallbackContent>
         <ToolFallbackError status={status} />
-        {!isCancelled ? <ToolFallbackDetails data={cardData} /> : null}
+        <ToolSection title="Request" value={cleanedArgs} />
+        <ToolSection title="Response" value={resultObject} />
       </ToolFallbackContent>
     </ToolFallbackRoot>
   );
