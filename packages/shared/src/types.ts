@@ -333,5 +333,17 @@ export interface RuntimeTaskResult {
     logPath: string;
     exitCode: number;
   }>;
+  billingEvents?: Array<{
+    provider: string;
+    model: string;
+    operation: string;
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    cachedInputTokens: number;
+    requestId?: string | null;
+    createdAt?: string;
+    metadata?: Record<string, unknown>;
+  }>;
   artifacts: Array<{ path: string; filename: string; mimeType: string }>;
 }

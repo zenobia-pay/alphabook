@@ -73,6 +73,10 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function usageLogPath(paths: ReturnType<typeof createPaths>) {
+  return join(paths.output, "openai-usage.jsonl");
+}
+
 function json(response: ServerResponse, statusCode: number, payload: unknown) {
   response.statusCode = statusCode;
   response.setHeader("content-type", "application/json; charset=utf-8");
@@ -275,6 +279,46 @@ async function appendProgressEvent(paths: ReturnType<typeof createPaths>, event:
   );
 }
 
+async function appendUsageEvent(paths: ReturnType<typeof createPaths>, event: Record<string, unknown>) {
+  await mkdir(paths.output, { recursive: true });
+  await appendFile(
+    usageLogPath(paths),
+    `${JSON.stringify({
+      timestamp: nowIso(),
+      ...event,
+    })}\n`,
+    "utf8",
+  );
+}
+
+function extractOpenAIUsage(payload: unknown) {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+  const record = payload as Record<string, unknown>;
+  const usage = record.usage && typeof record.usage === "object" ? record.usage as Record<string, unknown> : null;
+  if (!usage) {
+    return null;
+  }
+  const inputTokens = Number(usage.input_tokens ?? usage.prompt_tokens ?? 0);
+  const outputTokens = Number(usage.output_tokens ?? usage.completion_tokens ?? 0);
+  const totalTokens = Number(usage.total_tokens ?? inputTokens + outputTokens);
+  const details = usage.input_tokens_details && typeof usage.input_tokens_details === "object"
+    ? usage.input_tokens_details as Record<string, unknown>
+    : usage.prompt_tokens_details && typeof usage.prompt_tokens_details === "object"
+      ? usage.prompt_tokens_details as Record<string, unknown>
+      : null;
+  const cachedInputTokens = Number(details?.cached_tokens ?? 0);
+  return {
+    inputTokens: Number.isFinite(inputTokens) ? inputTokens : 0,
+    outputTokens: Number.isFinite(outputTokens) ? outputTokens : 0,
+    totalTokens: Number.isFinite(totalTokens) ? totalTokens : 0,
+    cachedInputTokens: Number.isFinite(cachedInputTokens) ? cachedInputTokens : 0,
+    requestId: typeof record.id === "string" ? record.id : null,
+    model: typeof record.model === "string" ? record.model : null,
+  };
+}
+
 function isLoopbackRequest(request: IncomingMessage) {
   const address = request.socket.remoteAddress ?? "";
   return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
@@ -334,10 +378,14 @@ async function proxyOpenAIRequest(
   const bodyText = bodyBuffer.toString("utf8");
 
   let promptPreview: string | null = null;
+  let requestedModel: string | null = null;
   try {
-    promptPreview = extractPromptPreview(JSON.parse(bodyText) as unknown);
+    const parsedRequest = JSON.parse(bodyText) as Record<string, unknown>;
+    promptPreview = extractPromptPreview(parsedRequest);
+    requestedModel = typeof parsedRequest.model === "string" ? parsedRequest.model : null;
   } catch {
     promptPreview = null;
+    requestedModel = null;
   }
 
   await appendProgressEvent(paths, {
@@ -371,6 +419,35 @@ async function proxyOpenAIRequest(
       headers,
       body: bodyBuffer.length > 0 ? bodyBuffer : undefined,
     });
+    const contentType = upstream.headers.get("content-type") ?? "";
+    const usagePromise = contentType.includes("application/json")
+      ? upstream.clone().text().then(async (body) => {
+        try {
+          const parsed = JSON.parse(body) as Record<string, unknown>;
+          const usage = extractOpenAIUsage(parsed);
+          if (!usage) {
+            return;
+          }
+          await appendUsageEvent(paths, {
+            provider: "openai",
+            model: usage.model ?? requestedModel ?? "unknown",
+            operation: upstreamPath.replace(/^\/+/u, ""),
+            inputTokens: usage.inputTokens,
+            outputTokens: usage.outputTokens,
+            totalTokens: usage.totalTokens,
+            cachedInputTokens: usage.cachedInputTokens,
+            requestId: usage.requestId,
+            metadata: {
+              method: request.method ?? "GET",
+              path: upstreamPath,
+              promptPreview,
+            },
+          });
+        } catch {
+          // Best-effort usage capture for runtime-side requests.
+        }
+      }).catch(() => {})
+      : Promise.resolve();
 
     response.statusCode = upstream.status;
     upstream.headers.forEach((value, key) => {
@@ -387,6 +464,7 @@ async function proxyOpenAIRequest(
       }
     }
     response.end();
+    await usagePromise;
 
     await appendProgressEvent(paths, {
       type: "codex.proxy.response",
@@ -571,9 +649,13 @@ async function runExternalAgent(
   const outputFiles = await listFiles(paths.output, workspaceRoot);
   const briefingJsonPath = join(paths.output, "briefing.json");
   const codexRunsPath = join(paths.output, "codex-runs.json");
+  const usageLogFile = usageLogPath(paths);
   const evidenceNotesPath = join(paths.output, "evidence-notes.md");
   const briefingJson = await readJsonIfPresent<Record<string, unknown> | null>(briefingJsonPath, null);
   const codexRuns = await readJsonIfPresent<unknown[]>(codexRunsPath, []);
+  const usageLines = (await fileExists(usageLogFile))
+    ? (await readFile(usageLogFile, "utf8")).split("\n").filter((line) => line.trim().length > 0)
+    : [];
   const evidenceNotes = (await fileExists(evidenceNotesPath))
     ? await readFile(evidenceNotesPath, "utf8")
     : undefined;
@@ -601,6 +683,32 @@ async function runExternalAgent(
       }];
     })
     : [];
+  const billingEvents = usageLines.flatMap((line) => {
+    try {
+      const record = JSON.parse(line) as Record<string, unknown>;
+      if (
+        typeof record.provider !== "string"
+        || typeof record.model !== "string"
+        || typeof record.operation !== "string"
+      ) {
+        return [];
+      }
+      return [{
+        provider: record.provider,
+        model: record.model,
+        operation: record.operation,
+        inputTokens: Number(record.inputTokens ?? 0),
+        outputTokens: Number(record.outputTokens ?? 0),
+        totalTokens: Number(record.totalTokens ?? 0),
+        cachedInputTokens: Number(record.cachedInputTokens ?? 0),
+        requestId: typeof record.requestId === "string" ? record.requestId : null,
+        createdAt: typeof record.timestamp === "string" ? record.timestamp : nowIso(),
+        metadata: record.metadata && typeof record.metadata === "object" ? record.metadata as Record<string, unknown> : {},
+      }];
+    } catch {
+      return [];
+    }
+  });
   return {
     runtimeId: String(taskSpec.runtimeId ?? "runtime"),
     stdout,
@@ -616,6 +724,7 @@ async function runExternalAgent(
         ? briefingJson.citations
         : [],
     codexRuns: normalizedCodexRuns,
+    billingEvents,
     artifacts: outputFiles.map((file) => ({
       path: file,
       filename: file.split("/").at(-1) ?? file,

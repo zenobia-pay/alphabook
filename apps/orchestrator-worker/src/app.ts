@@ -737,8 +737,20 @@ function daysAgoIso(days: number) {
   return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
 }
 
-function dayKey(value: string) {
-  return value.slice(0, 10);
+function dayKey(value: unknown) {
+  if (typeof value === "string") {
+    return value.slice(0, 10);
+  }
+  if (value instanceof Date) {
+    return value.toISOString().slice(0, 10);
+  }
+  if (value && typeof value === "object" && typeof (value as { toString?: () => string }).toString === "function") {
+    const normalized = (value as { toString: () => string }).toString();
+    if (normalized) {
+      return normalized.slice(0, 10);
+    }
+  }
+  return new Date().toISOString().slice(0, 10);
 }
 
 async function runAnalyticsQuery(
