@@ -1481,7 +1481,7 @@ async function reconcileSessionRuns(
 ) {
   const runs = await deps.store.listRuns(sessionId);
   for (const run of runs) {
-    if (run.status === "running" || run.status === "queued" || run.status === "completed") {
+    if (run.status === "running" || run.status === "queued") {
       await reconcilePersistentRun(deps, request, run);
     }
   }
