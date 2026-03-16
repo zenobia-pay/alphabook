@@ -11,6 +11,7 @@ export interface SessionRecord {
 export interface UserRecord {
   id: string;
   email: string | null;
+  handle: string | null;
   name: string | null;
   avatarUrl: string | null;
   createdAt: string;
@@ -254,6 +255,27 @@ function normalizeGutenbergId(value: number | string | null | undefined): number
   return null;
 }
 
+function slugifyProfileHandle(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40);
+}
+
+function deriveUserHandle(user: { email?: string | null; name?: string | null; id?: string | null }): string | null {
+  const emailLocalPart = typeof user.email === "string" ? user.email.split("@")[0]?.trim() : "";
+  if (emailLocalPart) {
+    return slugifyProfileHandle(emailLocalPart);
+  }
+  const nameSlug = typeof user.name === "string" ? slugifyProfileHandle(user.name) : "";
+  if (nameSlug) {
+    return nameSlug;
+  }
+  return null;
+}
+
 function readMetadataText(metadata: Record<string, unknown> | undefined, keys: string[]): string | null {
   if (!metadata) {
     return null;
@@ -292,7 +314,9 @@ function splitSubtitleFromTitle(title: string): { title: string; subtitle: strin
 }
 
 function toWorkSummary(
-  work: Pick<SeedWork, "id" | "gutenbergId" | "title" | "language" | "releaseDate" | "rightsStatus" | "summary" | "authors" | "subjects" | "score" | "metadata">,
+  work: Pick<SeedWork, "id" | "gutenbergId" | "title" | "language" | "releaseDate" | "rightsStatus" | "summary" | "authors" | "subjects" | "score" | "metadata"> & {
+    feedLabel?: string | null;
+  },
 ): WorkSummary {
   const explicitSubtitle = readMetadataText(work.metadata, ["subtitle", "subTitle", "secondaryTitle"]);
   const explicitCoverImageUrl = readMetadataText(work.metadata, ["coverImageUrl", "coverUrl", "imageUrl", "thumbnailUrl"]);
@@ -322,6 +346,7 @@ function toWorkSummary(
     illustrators,
     editors,
     score: work.score,
+    feedLabel: work.feedLabel ?? null,
   };
 }
 
@@ -501,6 +526,7 @@ export class InMemoryAppStore implements AppStore {
       this.userProfiles.set(userId, {
         id: userId,
         email: null,
+        handle: null,
         name: "AlphaBook User",
         avatarUrl: null,
         createdAt: nowIso(),
@@ -515,6 +541,11 @@ export class InMemoryAppStore implements AppStore {
     const record: UserRecord = {
       id: input.id,
       email: input.email ?? existing?.email ?? null,
+      handle: deriveUserHandle({
+        email: input.email ?? existing?.email ?? null,
+        name: input.name ?? existing?.name ?? "AlphaBook User",
+        id: input.id,
+      }),
       name: input.name ?? existing?.name ?? "AlphaBook User",
       avatarUrl: input.avatarUrl ?? existing?.avatarUrl ?? null,
       createdAt: existing?.createdAt ?? nowIso(),
@@ -810,7 +841,29 @@ export class InMemoryAppStore implements AppStore {
 
   async listWorks(offset = 0, limit = 12): Promise<WorkSummary[]> {
     return [...this.works]
+      .map((work) => {
+        const metadata = work.metadata ?? {};
+        const hasCover = Boolean(
+          readMetadataText(metadata, ["coverImageKey", "coverImageUrl", "coverUrl", "imageUrl", "thumbnailUrl"]),
+        );
+        const bookshelves = readMetadataTextList(metadata, ["bookshelves"]);
+        const score =
+          (hasCover ? 0.9 : 0)
+          + (work.summary ? 0.8 : 0)
+          + (work.authors.length > 0 ? 0.35 : 0)
+          + Math.min(bookshelves.length, 3) * 0.18;
+        const feedLabel = hasCover && work.summary
+          ? "Worth opening"
+          : bookshelves.length > 0
+            ? "Shelved to discover"
+            : "From the stack";
+        return { ...work, score, feedLabel };
+      })
       .sort((left, right) => {
+        const scoreDelta = (right.score ?? 0) - (left.score ?? 0);
+        if (scoreDelta !== 0) {
+          return scoreDelta;
+        }
         const leftRelease = left.releaseDate ?? "";
         const rightRelease = right.releaseDate ?? "";
         if (leftRelease !== rightRelease) {
@@ -819,7 +872,7 @@ export class InMemoryAppStore implements AppStore {
         return left.title.localeCompare(right.title);
       })
       .slice(offset, offset + limit)
-      .map((work) => toWorkSummary({ ...work, score: undefined }));
+      .map((work) => toWorkSummary(work));
   }
 
   async getWorkById(workId: string): Promise<WorkDetailRecord | null> {
@@ -1136,6 +1189,7 @@ export class NeonAppStore implements AppStore {
     return {
       id: row.id,
       email: row.email,
+      handle: deriveUserHandle({ email: row.email, name: row.name, id: row.id }),
       name: row.name,
       avatarUrl: row.avatar_url,
       createdAt: row.created_at,
@@ -1186,6 +1240,7 @@ export class NeonAppStore implements AppStore {
     return {
       id: row.id,
       email: row.email,
+      handle: deriveUserHandle({ email: row.email, name: row.name, id: row.id }),
       name: row.name,
       avatarUrl: row.avatar_url,
       createdAt: row.created_at,
@@ -1262,6 +1317,7 @@ export class NeonAppStore implements AppStore {
     return result.rows.map((row) => ({
       id: row.id,
       email: row.email,
+      handle: deriveUserHandle({ email: row.email, name: row.name, id: row.id }),
       name: row.name,
       avatarUrl: row.avatar_url,
       createdAt: row.created_at,
@@ -1840,6 +1896,7 @@ export class NeonAppStore implements AppStore {
   }
 
   async listWorks(offset = 0, limit = 12): Promise<WorkSummary[]> {
+    await this.ensureAnalyticsSchema();
     const result = await this.db.query<{
       id: string;
       gutenberg_id: number | string | null;
@@ -1851,8 +1908,20 @@ export class NeonAppStore implements AppStore {
       summary: string | null;
       authors: string[];
       subjects: string[];
+      score: number;
+      feed_label: string | null;
     }>(
       `
+        WITH engagement AS (
+          SELECT
+            properties_json->>'workId' AS work_id,
+            COUNT(*) FILTER (WHERE created_at >= now() - interval '3 days')::int AS opens_3d,
+            COUNT(*) FILTER (WHERE created_at >= now() - interval '14 days')::int AS opens_14d,
+            MAX(created_at) AS last_opened_at
+          FROM analytics_events
+          WHERE event = 'book_open' AND properties_json ? 'workId'
+          GROUP BY properties_json->>'workId'
+        )
         SELECT
           w.id,
           w.gutenberg_id,
@@ -1863,14 +1932,59 @@ export class NeonAppStore implements AppStore {
           w.rights_status,
           w.summary,
           ARRAY_REMOVE(ARRAY_AGG(DISTINCT a.name), NULL) AS authors,
-          ARRAY_REMOVE(ARRAY_AGG(DISTINCT s.label), NULL) AS subjects
+          ARRAY_REMOVE(ARRAY_AGG(DISTINCT s.label), NULL) AS subjects,
+          (
+            COALESCE(e.opens_3d, 0) * 5.0
+            + COALESCE(e.opens_14d, 0) * 1.8
+            + CASE
+                WHEN e.last_opened_at >= now() - interval '1 day' THEN 2.4
+                WHEN e.last_opened_at >= now() - interval '7 days' THEN 1.2
+                ELSE 0
+              END
+            + CASE
+                WHEN COALESCE(w.summary, '') <> '' THEN 0.9
+                ELSE 0
+              END
+            + CASE
+                WHEN COALESCE(w.metadata_json->>'coverImageKey', w.metadata_json->>'coverImageUrl', w.metadata_json->>'coverUrl', w.metadata_json->>'imageUrl', w.metadata_json->>'thumbnailUrl') IS NOT NULL THEN 0.85
+                ELSE 0
+              END
+            + CASE
+                WHEN COALESCE(jsonb_typeof(w.metadata_json->'bookshelves'), '') = 'array' THEN LEAST(jsonb_array_length(w.metadata_json->'bookshelves'), 3) * 0.2
+                ELSE 0
+              END
+            + CASE
+                WHEN EXISTS (SELECT 1 FROM work_authors wa_check WHERE wa_check.work_id = w.id) THEN 0.3
+                ELSE 0
+              END
+          ) AS score,
+          CASE
+            WHEN COALESCE(e.opens_3d, 0) >= 4 THEN 'Trending now'
+            WHEN COALESCE(e.opens_14d, 0) >= 2 THEN 'Readers are revisiting this'
+            WHEN e.last_opened_at >= now() - interval '14 days' THEN 'Circulating this week'
+            WHEN COALESCE(w.metadata_json->>'coverImageKey', w.metadata_json->>'coverImageUrl', w.metadata_json->>'coverUrl', w.metadata_json->>'imageUrl', w.metadata_json->>'thumbnailUrl') IS NOT NULL
+              AND COALESCE(w.summary, '') <> '' THEN 'Worth opening'
+            ELSE 'From the stack'
+          END AS feed_label
         FROM works w
+        LEFT JOIN engagement e ON e.work_id = w.id::text
         LEFT JOIN work_authors wa ON wa.work_id = w.id
         LEFT JOIN authors a ON a.id = wa.author_id
         LEFT JOIN work_subjects ws ON ws.work_id = w.id
         LEFT JOIN subjects s ON s.id = ws.subject_id
-        GROUP BY w.id, w.gutenberg_id, w.title, w.metadata_json, w.language, w.release_date, w.rights_status, w.summary
-        ORDER BY w.release_date DESC NULLS LAST, w.title ASC
+        GROUP BY
+          w.id,
+          w.gutenberg_id,
+          w.title,
+          w.metadata_json,
+          w.language,
+          w.release_date,
+          w.rights_status,
+          w.summary,
+          e.opens_3d,
+          e.opens_14d,
+          e.last_opened_at
+        ORDER BY score DESC, COALESCE(e.opens_3d, 0) DESC, w.release_date DESC NULLS LAST, w.title ASC
         OFFSET $1
         LIMIT $2
       `,
@@ -1888,6 +2002,8 @@ export class NeonAppStore implements AppStore {
         summary: row.summary,
         authors: row.authors ?? [],
         subjects: row.subjects ?? [],
+        score: Number(row.score ?? 0),
+        feedLabel: row.feed_label ?? null,
         metadata: row.metadata_json ?? {},
       }),
     );

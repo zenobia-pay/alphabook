@@ -176,6 +176,7 @@ export type MessageListResponse = z.infer<typeof MessageListResponseSchema>;
 export const UserProfileSchema = z.object({
   id: z.string(),
   email: z.string().email().nullable(),
+  handle: z.string().nullable().default(null),
   name: z.string().nullable(),
   avatarUrl: z.string().url().nullable(),
   createdAt: z.string(),
@@ -228,6 +229,7 @@ export const WorkSummarySchema = z.object({
   illustrators: z.array(z.string()).optional(),
   editors: z.array(z.string()).optional(),
   score: z.number().optional(),
+  feedLabel: z.string().nullable().optional(),
 });
 
 export type WorkSummary = z.infer<typeof WorkSummarySchema>;

@@ -93,6 +93,81 @@ async function recordAnalyticsEvent(
   });
 }
 
+function uniqueWorkIds(values: Array<string | null | undefined>) {
+  const seen = new Set<string>();
+  for (const value of values) {
+    if (typeof value !== "string" || value.length === 0) {
+      continue;
+    }
+    seen.add(value);
+  }
+  return [...seen];
+}
+
+async function recordBookAnalyticsEvents(
+  deps: AppDeps,
+  request: Request,
+  eventName: string,
+  context: {
+    userId: string;
+    sessionId: string;
+    runId?: string;
+    source: string;
+    toolName?: ToolName | string;
+    query?: string;
+    status?: string;
+  },
+  workIds: Array<string | null | undefined>,
+) {
+  const uniqueIds = uniqueWorkIds(workIds);
+  await Promise.all(
+    uniqueIds.map((workId, index) =>
+      recordAnalyticsEvent(deps, request, eventName, {
+        userId: context.userId,
+        sessionId: context.sessionId,
+        runId: context.runId ?? null,
+        workId,
+        source: context.source,
+        toolName: context.toolName ?? null,
+        query: context.query ?? null,
+        status: context.status ?? null,
+        rank: index + 1,
+      }).catch(() => {}),
+    ),
+  );
+}
+
+function extractCandidateWorkIds(
+  toolName: ToolName,
+  args: Record<string, unknown>,
+  result: Record<string, unknown>,
+) {
+  switch (toolName) {
+    case "search_works": {
+      const works = Array.isArray(result.works) ? result.works as Array<Record<string, unknown>> : [];
+      return uniqueWorkIds(works.map((work) => (typeof work.id === "string" ? work.id : null)));
+    }
+    case "get_work_metadata": {
+      return Array.isArray(args.workIds) ? uniqueWorkIds(args.workIds.filter((value): value is string => typeof value === "string")) : [];
+    }
+    case "get_relevant_chunks": {
+      const chunks = Array.isArray(result.chunks) ? result.chunks as Array<Record<string, unknown>> : [];
+      return uniqueWorkIds(chunks.map((chunk) => (typeof chunk.workId === "string" ? chunk.workId : null)));
+    }
+    case "create_workspace": {
+      return Array.isArray(args.workIds) ? uniqueWorkIds(args.workIds.filter((value): value is string => typeof value === "string")) : [];
+    }
+    case "run_workspace_task": {
+      const taskSpec = args.taskSpec && typeof args.taskSpec === "object" ? args.taskSpec as Record<string, unknown> : null;
+      return Array.isArray(taskSpec?.workIds)
+        ? uniqueWorkIds((taskSpec.workIds as unknown[]).filter((value): value is string => typeof value === "string"))
+        : [];
+    }
+    default:
+      return [];
+  }
+}
+
 function normalizeToolArgs(toolName: ToolName, args: Record<string, unknown>): Record<string, unknown> {
   const normalized = { ...args };
   switch (toolName) {
@@ -959,6 +1034,7 @@ function formatConversationHistory(messages: MessageRecord[]) {
 async function synthesizeAnswer(
   deps: AppDeps,
   params: {
+    request: Request;
     userId: string;
     sessionId: string;
     runId: string;
@@ -1002,6 +1078,34 @@ async function synthesizeAnswer(
     toolCalls: summarizedToolHistory,
   });
 
+  const citedWorkIds = uniqueWorkIds(synthesis.citations.map((citation) => citation.workId));
+  void recordBookAnalyticsEvents(
+    deps,
+    params.request,
+    "book_cited",
+    {
+      userId: params.userId,
+      sessionId: params.sessionId,
+      runId: params.runId,
+      source: "synthesizer",
+      status: "completed",
+    },
+    citedWorkIds,
+  );
+  void recordBookAnalyticsEvents(
+    deps,
+    params.request,
+    "book_used_in_successful_answer",
+    {
+      userId: params.userId,
+      sessionId: params.sessionId,
+      runId: params.runId,
+      source: "synthesizer",
+      status: "completed",
+    },
+    citedWorkIds,
+  );
+
   await streamAssistantText(synthesis.answer, send);
   await send("assistant.completed", {
     answer: synthesis.answer,
@@ -1012,6 +1116,7 @@ async function synthesizeAnswer(
 
 async function runOrchestrator(
   deps: AppDeps,
+  request: Request,
   input: ChatRequest,
   send: (event: string, data: Record<string, unknown>) => Promise<void>,
 ): Promise<void> {
@@ -1136,6 +1241,7 @@ async function runOrchestrator(
       await synthesizeAnswer(
         deps,
         {
+          request,
           userId: session.userId,
           sessionId: session.id,
           runId: run.id,
@@ -1242,6 +1348,23 @@ async function runOrchestrator(
     }
 
     await deps.store.finishToolCall(toolRecord.id, status, result);
+    if (status === "completed") {
+      void recordBookAnalyticsEvents(
+        deps,
+        request,
+        "book_candidate_in_run",
+        {
+          userId: session.userId,
+          sessionId: session.id,
+          runId: run.id,
+          source: "orchestrator",
+          toolName: toolCall.tool_name,
+          query: routedQuery,
+          status,
+        },
+        extractCandidateWorkIds(toolCall.tool_name, toolCall.args, result),
+      );
+    }
     const streamedResult = clientSafeToolResult(toolCall.tool_name, result);
     await send("tool.completed", {
       runId: run.id,
@@ -1636,7 +1759,7 @@ export function createApp(deps: AppDeps) {
         windowStartedAt: billingCheck.windowStartedAt,
       }, 402);
     }
-    return streamResponse((send) => runOrchestrator(deps, requestPayload, send));
+    return streamResponse((send) => runOrchestrator(deps, c.req.raw, requestPayload, send));
   });
 
   app.get("/sessions", async (c) => {
