@@ -9,7 +9,7 @@ RSYNC_TIMEOUT="${RSYNC_TIMEOUT:-600}"
 mkdir -p "$GUTENBERG_MIRROR_ROOT/cache/epub"
 
 RSYNC_FLAGS=(
-  -aH
+  -az
   --delete
   --partial
   --partial-dir=.rsync-partial
@@ -20,8 +20,18 @@ RSYNC_FLAGS=(
   --info=stats2,flist0,name0
 )
 
+EPUB_FILTERS=(
+  --include='*/'
+  --include='*.rdf'
+  --include='*cover*.jpg'
+  --include='*cover*.jpeg'
+  --include='*cover*.png'
+  --include='*cover*.webp'
+  --exclude='*'
+)
+
 echo "[$(date -Is)] Syncing Project Gutenberg generated EPUB/cache corpus into $GUTENBERG_MIRROR_ROOT/cache/epub"
-rsync "${RSYNC_FLAGS[@]}" --exclude '*/mbt-*' \
+rsync "${RSYNC_FLAGS[@]}" --exclude '*/mbt-*' "${EPUB_FILTERS[@]}" \
   "$PG_RSYNC_HOST::gutenberg-epub" \
   "$GUTENBERG_MIRROR_ROOT/cache/epub"
 

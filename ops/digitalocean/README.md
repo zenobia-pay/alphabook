@@ -88,12 +88,12 @@ in the systemd service environment or shell before running `gutenberg-rsync.sh`.
 
 ## Notes
 
-The sync scripts mirror:
+The sync scripts mirror only the data the ingest path actually needs:
 
-- the `gutenberg` rsync module into `/srv/alphabook/gutenberg`
-- the `gutenberg-epub` rsync module into `/srv/alphabook/gutenberg/cache/epub`
+- from the `gutenberg` rsync module: text/HTML source files plus index/readme files
+- from the `gutenberg-epub` rsync module: RDF metadata plus cover images
 
-That follows Project Gutenberg’s published mirroring pattern for combining the main corpus with generated EPUB/cache content.
+That keeps the mirror aligned with the current ingest code without pulling unnecessary EPUB, MOBI, ZIP, DOC, and PDF derivatives.
 
 The EPUB/RDF mirror can run independently from the main corpus mirror so generated metadata does not wait behind the initial full-text sync.
 
