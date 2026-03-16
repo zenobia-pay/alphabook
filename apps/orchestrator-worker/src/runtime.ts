@@ -321,13 +321,46 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     });
 
     const machineId = instance.providerMachineId ?? parsed.runtimeId;
-    const result = await this.callRuntime(machineId, "/run-task", {
+    await this.callRuntime(machineId, "/run-task", {
       method: "POST",
       body: JSON.stringify({
         runtimeId: parsed.runtimeId,
         taskSpec: parsed.taskSpec,
       }),
     });
+
+    const startedAt = Date.now();
+    let result: Record<string, unknown> | null = null;
+    while (Date.now() - startedAt < HARD_LIMITS.MAX_RUN_WALL_CLOCK_SECONDS * 1000) {
+      const status = await this.callRuntime(machineId, "/task-status", {
+        method: "GET",
+      });
+      if (status.status === "completed" && status.result && typeof status.result === "object") {
+        result = status.result as Record<string, unknown>;
+        break;
+      }
+      if (status.status === "failed") {
+        const error = new Error(
+          typeof status.error === "string"
+            ? status.error
+            : "Deep research failed in the runtime.",
+        ) as Error & { runtimePayload?: Record<string, unknown> };
+        error.runtimePayload = status;
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+
+    if (!result) {
+      const error = new Error("Deep research timed out before the runtime produced a briefing.") as Error & {
+        runtimePayload?: Record<string, unknown>;
+      };
+      error.runtimePayload = {
+        ok: false,
+        error: "Deep research timed out before the runtime produced a briefing.",
+      };
+      throw error;
+    }
 
     const uploadedArtifacts = await this.persistRuntimeArtifacts(instance, result);
     await this.store.updateRuntimeInstance(parsed.runtimeId, {

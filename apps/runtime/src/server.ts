@@ -38,6 +38,32 @@ interface RunTaskRequest {
   taskSpec: Record<string, unknown>;
 }
 
+type RuntimeTaskStatusRecord =
+  | {
+      status: "idle";
+      runtimeId?: string;
+    }
+  | {
+      status: "running";
+      runtimeId: string;
+      startedAt: string;
+    }
+  | {
+      status: "completed";
+      runtimeId: string;
+      startedAt: string;
+      completedAt: string;
+      result: RuntimeTaskResult;
+    }
+  | {
+      status: "failed";
+      runtimeId: string;
+      startedAt: string;
+      completedAt: string;
+      error: string;
+      billingEvents?: Array<Record<string, unknown>>;
+    };
+
 function requireAuthToken(authToken?: string): string {
   const normalized = authToken?.trim();
   if (!normalized) {
@@ -72,6 +98,10 @@ function createPaths(workspaceRoot: string) {
     output: join(workspaceRoot, "output"),
     scratch: join(workspaceRoot, "scratch"),
   };
+}
+
+function runtimeTaskStatusPath(paths: ReturnType<typeof createPaths>) {
+  return join(paths.output, "run-status.json");
 }
 
 function nowIso() {
@@ -117,6 +147,17 @@ async function readRuntimeBillingEvents(paths: ReturnType<typeof createPaths>) {
       return [];
     }
   });
+}
+
+async function writeRuntimeTaskStatus(
+  paths: ReturnType<typeof createPaths>,
+  status: RuntimeTaskStatusRecord,
+) {
+  await writeFile(runtimeTaskStatusPath(paths), JSON.stringify(status, null, 2), "utf8");
+}
+
+async function readRuntimeTaskStatus(paths: ReturnType<typeof createPaths>): Promise<RuntimeTaskStatusRecord> {
+  return readJsonIfPresent<RuntimeTaskStatusRecord>(runtimeTaskStatusPath(paths), { status: "idle" });
 }
 
 function json(response: ServerResponse, statusCode: number, payload: unknown) {
@@ -840,6 +881,44 @@ async function runExternalAgent(
   };
 }
 
+async function startExternalAgentTask(
+  paths: ReturnType<typeof createPaths>,
+  workspaceRoot: string,
+  payload: RunTaskRequest,
+) {
+  const startedAt = nowIso();
+  await writeRuntimeTaskStatus(paths, {
+    status: "running",
+    runtimeId: payload.runtimeId,
+    startedAt,
+  });
+
+  void (async () => {
+    try {
+      const result = await runExternalAgent(paths, workspaceRoot, {
+        runtimeId: payload.runtimeId,
+        ...payload.taskSpec,
+      });
+      await writeRuntimeTaskStatus(paths, {
+        status: "completed",
+        runtimeId: payload.runtimeId,
+        startedAt,
+        completedAt: nowIso(),
+        result,
+      });
+    } catch (error) {
+      await writeRuntimeTaskStatus(paths, {
+        status: "failed",
+        runtimeId: payload.runtimeId,
+        startedAt,
+        completedAt: nowIso(),
+        error: error instanceof Error ? error.message : "Unknown runtime error",
+        billingEvents: await readRuntimeBillingEvents(paths),
+      });
+    }
+  })();
+}
+
 function authorized(request: IncomingMessage, authToken?: string): boolean {
   const header = request.headers.authorization;
   return header === `Bearer ${authToken}`;
@@ -851,6 +930,7 @@ export function createAlphaBookRuntimeServer(options: RuntimeServerOptions = {})
   const r2Client = options.r2Client ?? createR2ClientFromEnv();
   const r2BucketName = options.r2BucketName ?? process.env.R2_BUCKET_NAME ?? null;
   const paths = createPaths(workspaceRoot);
+  const activeTasks = new Map<string, true>();
 
   return createServer(async (request, response) => {
     try {
@@ -894,18 +974,34 @@ export function createAlphaBookRuntimeServer(options: RuntimeServerOptions = {})
         await writeFile(taskPath, JSON.stringify(payload.taskSpec, null, 2), "utf8");
         await writeFile(join(paths.output, "codex-progress.jsonl"), "", "utf8");
         await writeFile(usageLogPath(paths), "", "utf8");
-        try {
-          const result = await runExternalAgent(paths, workspaceRoot, {
-            runtimeId: payload.runtimeId,
-            ...payload.taskSpec,
-          });
-          return json(response, 200, result);
-        } catch (error) {
-          return json(response, 500, {
-            error: error instanceof Error ? error.message : "Unknown runtime error",
-            billingEvents: await readRuntimeBillingEvents(paths),
-          });
+        const existing = await readRuntimeTaskStatus(paths);
+        if (existing.status === "running" && existing.runtimeId === payload.runtimeId) {
+          return json(response, 202, existing);
         }
+        if (!activeTasks.has(payload.runtimeId)) {
+          activeTasks.set(payload.runtimeId, true);
+          await startExternalAgentTask(paths, workspaceRoot, payload);
+          const taskPoller = async () => {
+            const current = await readRuntimeTaskStatus(paths);
+            if (current.status !== "running") {
+              activeTasks.delete(payload.runtimeId);
+            } else {
+              setTimeout(() => {
+                void taskPoller();
+              }, 1000).unref();
+            }
+          };
+          void taskPoller();
+        }
+        return json(response, 202, {
+          ok: true,
+          runtimeId: payload.runtimeId,
+          status: "running",
+        });
+      }
+
+      if (request.method === "GET" && request.url === "/task-status") {
+        return json(response, 200, await readRuntimeTaskStatus(paths));
       }
 
       if (request.method === "GET" && request.url?.startsWith("/file?")) {
