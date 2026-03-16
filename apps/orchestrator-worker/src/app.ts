@@ -1850,7 +1850,8 @@ async function runOrchestrator(
         continue;
       }
 
-      const toolRecord = await deps.store.startToolCall(run.id, toolCall.tool_name, toolCall.args);
+      const normalizedToolArgs = normalizeToolArgs(toolCall.tool_name, toolCall.args);
+      const toolRecord = await deps.store.startToolCall(run.id, toolCall.tool_name, normalizedToolArgs);
       if (!initialPlanSent) {
         const planText = initialAssistantPlan(routedQuery);
         const planMessage = await deps.store.appendMessage(session.id, "assistant", planText, {
@@ -1871,19 +1872,19 @@ async function runOrchestrator(
         runId: run.id,
         toolCallId: toolRecord.id,
         toolName: toolCall.tool_name,
-        label: labelForToolCall(toolCall.tool_name, toolCall.args),
+        label: labelForToolCall(toolCall.tool_name, normalizedToolArgs),
         rationale: sanitizeUserFacingToolText(toolCall.rationale) ?? null,
-        args: toolCall.args,
+        args: normalizedToolArgs,
       });
       liveToolTrace = [
         ...liveToolTrace,
         {
           id: toolRecord.id,
           toolName: toolCall.tool_name,
-          label: labelForToolCall(toolCall.tool_name, toolCall.args),
+          label: labelForToolCall(toolCall.tool_name, normalizedToolArgs),
           rationale: sanitizeUserFacingToolText(toolCall.rationale) ?? undefined,
           progress: sanitizeUserFacingToolText(toolCall.rationale) ? [sanitizeUserFacingToolText(toolCall.rationale)!] : [],
-          args: toolCall.args,
+          args: normalizedToolArgs,
           state: "running",
         },
       ];
@@ -1913,18 +1914,18 @@ async function runOrchestrator(
         run.id,
         toolRecord.id,
         toolCall.tool_name,
-        toolCall.args,
+        normalizedToolArgs,
       );
 
       let result: Record<string, unknown>;
       let status: "completed" | "failed" = "completed";
       try {
-        result = await executeTool(deps, toolCall.tool_name, toolCall.args, {
+        result = await executeTool(deps, toolCall.tool_name, normalizedToolArgs, {
           userId: session.userId,
           sessionId: session.id,
           runId: run.id,
         });
-        addRuntimeIds(runtimeIdsToCleanup, toolCall.args, result);
+        addRuntimeIds(runtimeIdsToCleanup, normalizedToolArgs, result);
         if (toolCall.tool_name === "run_workspace_task") {
           await trackRuntimeBillingEvents(deps, session, run, result.billingEvents);
         }
@@ -1932,7 +1933,7 @@ async function runOrchestrator(
           runtimeTasks += 1;
         }
       } catch (error) {
-        addRuntimeIds(runtimeIdsToCleanup, toolCall.args);
+        addRuntimeIds(runtimeIdsToCleanup, normalizedToolArgs);
         if (
           toolCall.tool_name === "run_workspace_task"
           && error
@@ -1958,7 +1959,7 @@ async function runOrchestrator(
             sessionId: session.id,
             userId: session.userId,
             extra: {
-              toolArgs: toolCall.args,
+              toolArgs: normalizedToolArgs,
             },
           });
         } catch {
@@ -1983,7 +1984,7 @@ async function runOrchestrator(
             query: routedQuery,
             status,
           },
-          extractCandidateWorkIds(toolCall.tool_name, toolCall.args, result),
+          extractCandidateWorkIds(toolCall.tool_name, normalizedToolArgs, result),
         );
       }
       const streamedResult = clientSafeToolResult(toolCall.tool_name, result);
@@ -1991,7 +1992,7 @@ async function runOrchestrator(
         entry.id === toolRecord.id
           ? {
               ...entry,
-              label: labelForToolCall(toolCall.tool_name, toolCall.args),
+              label: labelForToolCall(toolCall.tool_name, normalizedToolArgs),
               rationale:
                 entry.progress.length > 0
                   ? entry.progress[entry.progress.length - 1]
@@ -2008,7 +2009,7 @@ async function runOrchestrator(
         runId: run.id,
         toolCallId: toolRecord.id,
         toolName: toolCall.tool_name,
-        label: labelForToolCall(toolCall.tool_name, toolCall.args),
+        label: labelForToolCall(toolCall.tool_name, normalizedToolArgs),
         rationale: sanitizeUserFacingToolText(toolCall.rationale) ?? null,
         status,
         result: streamedResult,
@@ -2016,7 +2017,7 @@ async function runOrchestrator(
       toolHistory.push({
         toolName: toolCall.tool_name,
         rationale: sanitizeUserFacingToolText(toolCall.rationale) ?? undefined,
-        args: toolCall.args,
+        args: normalizedToolArgs,
         result,
       });
       toolResults.push(result);
@@ -2719,6 +2720,19 @@ export function createApp(deps: AppDeps) {
       return c.json({ error: "Work not found." }, 404);
     }
 
+    return c.json({
+      work: decorateWork(c, work),
+      source: null,
+    });
+  });
+
+  app.get("/works/:workId/source", async (c) => {
+    const workId = c.req.param("workId");
+    const work = await deps.store.getWorkById(workId);
+    if (!work) {
+      return c.json({ error: "Work not found." }, 404);
+    }
+
     const files = await deps.store.getWorkFiles([workId], ["raw", "clean"]);
     const rawFile = files.find((file) => file.kind === "raw") ?? null;
     const cleanFile = files.find((file) => file.kind === "clean") ?? null;
@@ -2733,7 +2747,6 @@ export function createApp(deps: AppDeps) {
           : "text";
 
     return c.json({
-      work: decorateWork(c, work),
       source: content
         ? {
             format: sourceFormat,
