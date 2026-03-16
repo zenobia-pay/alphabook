@@ -4007,10 +4007,12 @@ export default function App() {
                   }}
                 >
                   <div className="relative">
-                    <Textarea
-                      className="min-h-[150px] rounded-[18px] border-[rgba(72,43,37,0.12)] bg-white px-4 py-4 pr-18 text-sm leading-6 focus-visible:border-[rgba(72,43,37,0.28)] focus-visible:ring-[rgba(72,43,37,0.14)]"
+                    <textarea
+                      className="min-h-[150px] w-full resize-y rounded-[18px] border border-[rgba(72,43,37,0.12)] bg-white px-4 py-4 pr-18 text-sm leading-6 text-[var(--ink)] shadow-sm outline-none transition-colors placeholder:text-[var(--ink-soft)] focus:border-[rgba(72,43,37,0.28)] focus:ring-2 focus:ring-[rgba(72,43,37,0.14)]"
                       value={adminAnalytics.draft}
                       onChange={(event) => setAdminAnalytics((current) => ({ ...current, draft: event.currentTarget.value }))}
+                      onClick={(event) => event.stopPropagation()}
+                      onFocus={(event) => event.stopPropagation()}
                       onKeyDown={(event) => {
                         event.stopPropagation();
                         if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
@@ -4020,6 +4022,7 @@ export default function App() {
                           }
                         }
                       }}
+                      onKeyUp={(event) => event.stopPropagation()}
                       placeholder="Give me signups per day over the past seven days."
                       spellCheck={false}
                     />
