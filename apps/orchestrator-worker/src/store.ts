@@ -175,6 +175,7 @@ export interface AppStore {
   listAdminSessions(): Promise<AdminSessionRecord[]>;
   listMessages(sessionId: string): Promise<MessageRecord[]>;
   appendMessage(sessionId: string, role: MessageRecord["role"], content: string, metadata?: Record<string, unknown>): Promise<MessageRecord>;
+  updateMessageMetadata(messageId: string, metadata: Record<string, unknown>): Promise<void>;
   createRun(sessionId: string): Promise<RunRecord>;
   getRun(runId: string): Promise<RunRecord | null>;
   listRuns(sessionId: string): Promise<RunRecord[]>;
@@ -207,6 +208,7 @@ export interface AppStore {
   getWorkFiles(workIds: string[], kinds?: WorkFileKind[]): Promise<WorkFileRecord[]>;
   getChunksByIds(chunkIds: string[]): Promise<ChunkSearchResult[]>;
   listRuntimeInstances(sessionId: string): Promise<RuntimeInstanceRecord[]>;
+  listExpiredRuntimeInstances(limit?: number): Promise<RuntimeInstanceRecord[]>;
   getRuntimeInstance(runtimeId: string): Promise<RuntimeInstanceRecord | null>;
   saveRuntimeInstance(
     input: Omit<RuntimeInstanceRecord, "id" | "createdAt"> & { id?: string; createdAt?: string },
@@ -705,6 +707,22 @@ export class InMemoryAppStore implements AppStore {
     return message;
   }
 
+  async updateMessageMetadata(messageId: string, metadata: Record<string, unknown>): Promise<void> {
+    for (const [sessionId, messages] of this.messages.entries()) {
+      const index = messages.findIndex((message) => message.id === messageId);
+      if (index === -1) {
+        continue;
+      }
+      const next = [...messages];
+      next[index] = {
+        ...next[index],
+        metadata,
+      };
+      this.messages.set(sessionId, next);
+      return;
+    }
+  }
+
   async createRun(sessionId: string): Promise<RunRecord> {
     const run: RunRecord = {
       id: crypto.randomUUID(),
@@ -995,6 +1013,22 @@ export class InMemoryAppStore implements AppStore {
         const rightValue = right.lastUsedAt ?? right.createdAt;
         return rightValue.localeCompare(leftValue);
       });
+  }
+
+  async listExpiredRuntimeInstances(limit = 50): Promise<RuntimeInstanceRecord[]> {
+    return [...this.runtimeInstances.values()]
+      .filter((instance) =>
+        instance.status !== "destroyed" &&
+        instance.status !== "expired" &&
+        instance.expiresAt !== null &&
+        Date.parse(instance.expiresAt) <= Date.now(),
+      )
+      .sort((left, right) => {
+        const leftValue = left.expiresAt ?? left.lastUsedAt ?? left.createdAt;
+        const rightValue = right.expiresAt ?? right.lastUsedAt ?? right.createdAt;
+        return leftValue.localeCompare(rightValue);
+      })
+      .slice(0, Math.max(0, limit));
   }
 
   async getRuntimeInstance(runtimeId: string): Promise<RuntimeInstanceRecord | null> {
@@ -1567,6 +1601,17 @@ export class NeonAppStore implements AppStore {
       metadata,
       createdAt,
     };
+  }
+
+  async updateMessageMetadata(messageId: string, metadata: Record<string, unknown>): Promise<void> {
+    await this.db.query(
+      `
+        UPDATE messages
+        SET metadata_json = $2::jsonb
+        WHERE id = $1::uuid
+      `,
+      [messageId, JSON.stringify(metadata)],
+    );
   }
 
   async createRun(sessionId: string): Promise<RunRecord> {
@@ -2554,6 +2599,54 @@ export class NeonAppStore implements AppStore {
         ORDER BY COALESCE(last_used_at, created_at) DESC
       `,
       [sessionId],
+    );
+    return result.rows.map((row) => ({
+      id: row.id,
+      sessionId: row.session_id,
+      runtimeId: row.runtime_id,
+      provider: row.provider,
+      providerMachineId: row.provider_machine_id,
+      status: row.status,
+      manifestJson: row.manifest_json,
+      lastUsedAt: row.last_used_at,
+      expiresAt: row.expires_at,
+      createdAt: row.created_at,
+    }));
+  }
+
+  async listExpiredRuntimeInstances(limit = 50): Promise<RuntimeInstanceRecord[]> {
+    const result = await this.db.query<{
+      id: string;
+      session_id: string;
+      runtime_id: string;
+      provider: string;
+      provider_machine_id: string | null;
+      status: RuntimeInstanceRecord["status"];
+      manifest_json: Record<string, unknown>;
+      last_used_at: string | null;
+      expires_at: string | null;
+      created_at: string;
+    }>(
+      `
+        SELECT
+          id,
+          session_id,
+          runtime_id,
+          provider,
+          provider_machine_id,
+          status,
+          manifest_json,
+          last_used_at,
+          expires_at,
+          created_at
+        FROM runtime_instances
+        WHERE status NOT IN ('destroyed', 'expired')
+          AND expires_at IS NOT NULL
+          AND expires_at <= now()
+        ORDER BY expires_at ASC
+        LIMIT $1
+      `,
+      [Math.max(0, limit)],
     );
     return result.rows.map((row) => ({
       id: row.id,

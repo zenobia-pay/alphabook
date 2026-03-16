@@ -1513,6 +1513,7 @@ async function runOrchestrator(
       sessionId: session.id,
       status: "completed",
     });
+    await reapExpiredRuntimeInstances(deps, { runId: run.id });
     return;
   }
 
@@ -1524,281 +1525,288 @@ async function runOrchestrator(
     args: Record<string, unknown>;
     result: Record<string, unknown>;
   }> = [];
+  const runtimeIdsToCleanup = new Set<string>();
   const toolResults: Record<string, unknown>[] = [];
   let liveToolTrace: LiveToolTraceEntry[] = [];
   let runtimeTasks = 0;
   let initialPlanSent = false;
   let planMessageId: string | null = null;
+  try {
+    for (let turn = 1; turn <= HARD_LIMITS.MAX_TURNS; turn += 1) {
+      if ((deps.now?.() ?? Date.now()) - started > HARD_LIMITS.MAX_RUN_WALL_CLOCK_SECONDS * 1000) {
+        break;
+      }
 
-  for (let turn = 1; turn <= HARD_LIMITS.MAX_TURNS; turn += 1) {
-    if ((deps.now?.() ?? Date.now()) - started > HARD_LIMITS.MAX_RUN_WALL_CLOCK_SECONDS * 1000) {
-      break;
+      await deps.store.updateRun(run.id, {
+        plannerTurns: turn,
+      });
+
+      await send("planner.turn", {
+        runId: run.id,
+        turn,
+      });
+
+      const decision: PlannerDecision = await deps.planner.decide({
+        userMessage: routedQuery,
+        conversationHistory,
+        turns: turn,
+        toolHistory,
+        workScope: input.workIds,
+        billingContext: {
+          userId: session.userId,
+          sessionId: session.id,
+          runId: run.id,
+          source: "planner",
+        },
+      });
+
+      if (decision.type === "final_answer") {
+        await deps.store.updateRun(run.id, {
+          status: "completed",
+          plannerTurns: turn,
+          completedAt: new Date().toISOString(),
+        });
+        await synthesizeAnswer(
+          deps,
+          {
+            request,
+            userId: session.userId,
+            sessionId: session.id,
+            runId: run.id,
+            userMessage: input.message,
+            conversationHistory,
+            plannerDraft: decision.answer,
+            plannerCitations: decision.citations,
+            toolHistory,
+          },
+          send,
+        );
+        await send("run.completed", {
+          runId: run.id,
+          sessionId: session.id,
+          status: "completed",
+        });
+        return;
+      }
+
+      const toolCall = parseToolCall(decision);
+      if (!toolCall) {
+        continue;
+      }
+
+      if (
+        (toolCall.tool_name === "create_workspace" || toolCall.tool_name === "run_workspace_task") &&
+        runtimeTasks >= HARD_LIMITS.MAX_RUNTIME_TASKS_PER_RUN
+      ) {
+        toolResults.push({
+          toolName: toolCall.tool_name,
+          ok: false,
+          error: "MAX_RUNTIME_TASKS_PER_RUN exceeded",
+        });
+        continue;
+      }
+
+      const toolRecord = await deps.store.startToolCall(run.id, toolCall.tool_name, toolCall.args);
+      if (!initialPlanSent) {
+        const planText = describePlannerAction(toolCall.tool_name, toolCall.rationale, routedQuery);
+        const planMessage = await deps.store.appendMessage(session.id, "assistant", planText, {
+          phase: "plan",
+          runId: run.id,
+        });
+        planMessageId = planMessage.id;
+        await send("assistant.plan", {
+          runId: run.id,
+          sessionId: session.id,
+          messageId: planMessage.id,
+          text: planText,
+        });
+        await persistPlanToolTrace(deps, planMessageId, run.id, liveToolTrace);
+        initialPlanSent = true;
+      }
+      await send("tool.started", {
+        runId: run.id,
+        toolCallId: toolRecord.id,
+        toolName: toolCall.tool_name,
+        label: labelForToolCall(toolCall.tool_name, toolCall.args),
+        rationale: toolCall.rationale ?? null,
+        args: toolCall.args,
+      });
+      liveToolTrace = [
+        ...liveToolTrace,
+        {
+          id: toolRecord.id,
+          toolName: toolCall.tool_name,
+          label: labelForToolCall(toolCall.tool_name, toolCall.args),
+          rationale: toolCall.rationale ?? undefined,
+          progress: toolCall.rationale ? [toolCall.rationale] : [],
+          args: toolCall.args,
+          state: "running",
+        },
+      ];
+      await persistPlanToolTrace(deps, planMessageId, run.id, liveToolTrace);
+      const progressEmitter = startToolProgressEmitter(
+        deps.runtimeGateway,
+        async (eventName, data) => {
+          await send(eventName, data);
+          if (
+            eventName === "tool.progress"
+            && typeof data.toolCallId === "string"
+            && typeof data.text === "string"
+          ) {
+            const progressText = data.text;
+            liveToolTrace = liveToolTrace.map((entry) =>
+              entry.id === data.toolCallId
+                ? {
+                    ...entry,
+                    rationale: progressText,
+                    progress: entry.progress.includes(progressText) ? entry.progress : [...entry.progress, progressText],
+                  }
+                : entry,
+            );
+            await persistPlanToolTrace(deps, planMessageId, run.id, liveToolTrace);
+          }
+        },
+        {
+          sessionId: session.id,
+          runId: run.id,
+        },
+        run.id,
+        toolRecord.id,
+        toolCall.tool_name,
+        toolCall.args,
+      );
+
+      let result: Record<string, unknown>;
+      let status: "completed" | "failed" = "completed";
+      try {
+        result = await executeTool(deps, toolCall.tool_name, toolCall.args, {
+          userId: session.userId,
+          sessionId: session.id,
+          runId: run.id,
+        });
+        addRuntimeIds(runtimeIdsToCleanup, toolCall.args, result);
+        if (toolCall.tool_name === "run_workspace_task") {
+          await trackRuntimeBillingEvents(deps, session, run, result.billingEvents);
+        }
+        if (toolCall.tool_name === "create_workspace" || toolCall.tool_name === "run_workspace_task") {
+          runtimeTasks += 1;
+        }
+      } catch (error) {
+        addRuntimeIds(runtimeIdsToCleanup, toolCall.args);
+        if (
+          toolCall.tool_name === "run_workspace_task"
+          && error
+          && typeof error === "object"
+          && "runtimePayload" in error
+        ) {
+          const runtimePayload = (error as { runtimePayload?: Record<string, unknown> }).runtimePayload;
+          await trackRuntimeBillingEvents(deps, session, run, runtimePayload?.billingEvents);
+        }
+        status = "failed";
+        result = {
+          ok: false,
+          error: error instanceof Error ? error.message : "Unknown tool error",
+        };
+        try {
+          await recordUnexpectedError(deps, error, {
+            request,
+            route: "/chat",
+            method: "POST",
+            source: "tool_execution",
+            toolName: toolCall.tool_name,
+            runId: run.id,
+            sessionId: session.id,
+            userId: session.userId,
+            extra: {
+              toolArgs: toolCall.args,
+            },
+          });
+        } catch {
+          // Error reporting should not block the user-facing run result.
+        }
+      } finally {
+        progressEmitter.stop();
+      }
+
+      await deps.store.finishToolCall(toolRecord.id, status, result);
+      if (status === "completed") {
+        void recordBookAnalyticsEvents(
+          deps,
+          request,
+          "book_candidate_in_run",
+          {
+            userId: session.userId,
+            sessionId: session.id,
+            runId: run.id,
+            source: "orchestrator",
+            toolName: toolCall.tool_name,
+            query: routedQuery,
+            status,
+          },
+          extractCandidateWorkIds(toolCall.tool_name, toolCall.args, result),
+        );
+      }
+      const streamedResult = clientSafeToolResult(toolCall.tool_name, result);
+      liveToolTrace = liveToolTrace.map((entry) =>
+        entry.id === toolRecord.id
+          ? {
+              ...entry,
+              label: labelForToolCall(toolCall.tool_name, toolCall.args),
+              rationale: toolCall.rationale ?? entry.rationale,
+              progress:
+                toolCall.rationale && !entry.progress.includes(toolCall.rationale)
+                  ? [...entry.progress, toolCall.rationale]
+                  : entry.progress,
+              result: streamedResult,
+              isError: status === "failed",
+              state: status === "failed" ? "error" : "completed",
+            }
+          : entry,
+      );
+      await persistPlanToolTrace(deps, planMessageId, run.id, liveToolTrace);
+      await send("tool.completed", {
+        runId: run.id,
+        toolCallId: toolRecord.id,
+        toolName: toolCall.tool_name,
+        label: labelForToolCall(toolCall.tool_name, toolCall.args),
+        rationale: toolCall.rationale ?? null,
+        status,
+        result: streamedResult,
+      });
+      toolHistory.push({
+        toolName: toolCall.tool_name,
+        rationale: toolCall.rationale,
+        args: toolCall.args,
+        result,
+      });
+      toolResults.push(result);
     }
 
     await deps.store.updateRun(run.id, {
-      plannerTurns: turn,
+      status: "timed_out",
+      completedAt: new Date().toISOString(),
     });
-
-    await send("planner.turn", {
+    const timeoutMessage = "The run hit its hard limits before it produced a valid answer.";
+    await deps.store.appendMessage(session.id, "assistant", timeoutMessage, {
       runId: run.id,
-      turn,
+      phase: "error",
+      toolCalls: summarizeToolHistory(toolHistory),
     });
-
-    const decision: PlannerDecision = await deps.planner.decide({
-      userMessage: routedQuery,
-      conversationHistory,
-      turns: turn,
-      toolHistory,
-      workScope: input.workIds,
-      billingContext: {
-        userId: session.userId,
-        sessionId: session.id,
-        runId: run.id,
-        source: "planner",
-      },
+    await streamAssistantText(timeoutMessage, send);
+    await send("assistant.completed", {
+      answer: timeoutMessage,
+      citations: [],
+      artifactKey: null,
     });
-
-    if (decision.type === "final_answer") {
-      await deps.store.updateRun(run.id, {
-        status: "completed",
-        plannerTurns: turn,
-        completedAt: new Date().toISOString(),
-      });
-      await synthesizeAnswer(
-        deps,
-        {
-          request,
-          userId: session.userId,
-          sessionId: session.id,
-          runId: run.id,
-          userMessage: input.message,
-          conversationHistory,
-          plannerDraft: decision.answer,
-          plannerCitations: decision.citations,
-          toolHistory,
-        },
-        send,
-      );
-      await send("run.completed", {
-        runId: run.id,
-        sessionId: session.id,
-        status: "completed",
-      });
-      return;
-    }
-
-    const toolCall = parseToolCall(decision);
-    if (!toolCall) {
-      continue;
-    }
-
-    if (
-      (toolCall.tool_name === "create_workspace" || toolCall.tool_name === "run_workspace_task") &&
-      runtimeTasks >= HARD_LIMITS.MAX_RUNTIME_TASKS_PER_RUN
-    ) {
-      toolResults.push({
-        toolName: toolCall.tool_name,
-        ok: false,
-        error: "MAX_RUNTIME_TASKS_PER_RUN exceeded",
-      });
-      continue;
-    }
-
-    const toolRecord = await deps.store.startToolCall(run.id, toolCall.tool_name, toolCall.args);
-    if (!initialPlanSent) {
-      const planText = describePlannerAction(toolCall.tool_name, toolCall.rationale, routedQuery);
-      const planMessage = await deps.store.appendMessage(session.id, "assistant", planText, {
-        phase: "plan",
-        runId: run.id,
-      });
-      planMessageId = planMessage.id;
-      await send("assistant.plan", {
-        runId: run.id,
-        sessionId: session.id,
-        messageId: planMessage.id,
-        text: planText,
-      });
-      await persistPlanToolTrace(deps, planMessageId, run.id, liveToolTrace);
-      initialPlanSent = true;
-    }
-    await send("tool.started", {
+    await send("run.completed", {
       runId: run.id,
-      toolCallId: toolRecord.id,
-      toolName: toolCall.tool_name,
-      label: labelForToolCall(toolCall.tool_name, toolCall.args),
-      rationale: toolCall.rationale ?? null,
-      args: toolCall.args,
+      sessionId: session.id,
+      status: "timed_out",
     });
-    liveToolTrace = [
-      ...liveToolTrace,
-      {
-        id: toolRecord.id,
-        toolName: toolCall.tool_name,
-        label: labelForToolCall(toolCall.tool_name, toolCall.args),
-        rationale: toolCall.rationale ?? undefined,
-        progress: toolCall.rationale ? [toolCall.rationale] : [],
-        args: toolCall.args,
-        state: "running",
-      },
-    ];
-    await persistPlanToolTrace(deps, planMessageId, run.id, liveToolTrace);
-    const progressEmitter = startToolProgressEmitter(
-      deps.runtimeGateway,
-      async (eventName, data) => {
-        await send(eventName, data);
-        if (
-          eventName === "tool.progress"
-          && typeof data.toolCallId === "string"
-          && typeof data.text === "string"
-        ) {
-          const progressText = data.text;
-          liveToolTrace = liveToolTrace.map((entry) =>
-            entry.id === data.toolCallId
-              ? {
-                  ...entry,
-                  rationale: progressText,
-                  progress: entry.progress.includes(progressText) ? entry.progress : [...entry.progress, progressText],
-                }
-              : entry,
-          );
-          await persistPlanToolTrace(deps, planMessageId, run.id, liveToolTrace);
-        }
-      },
-      {
-        sessionId: session.id,
-        runId: run.id,
-      },
-      run.id,
-      toolRecord.id,
-      toolCall.tool_name,
-      toolCall.args,
-    );
-
-    let result: Record<string, unknown>;
-    let status: "completed" | "failed" = "completed";
-    try {
-      result = await executeTool(deps, toolCall.tool_name, toolCall.args, {
-        userId: session.userId,
-        sessionId: session.id,
-        runId: run.id,
-      });
-      if (toolCall.tool_name === "run_workspace_task") {
-        await trackRuntimeBillingEvents(deps, session, run, result.billingEvents);
-      }
-      if (toolCall.tool_name === "create_workspace" || toolCall.tool_name === "run_workspace_task") {
-        runtimeTasks += 1;
-      }
-    } catch (error) {
-      if (
-        toolCall.tool_name === "run_workspace_task"
-        && error
-        && typeof error === "object"
-        && "runtimePayload" in error
-      ) {
-        const runtimePayload = (error as { runtimePayload?: Record<string, unknown> }).runtimePayload;
-        await trackRuntimeBillingEvents(deps, session, run, runtimePayload?.billingEvents);
-      }
-      status = "failed";
-      result = {
-        ok: false,
-        error: error instanceof Error ? error.message : "Unknown tool error",
-      };
-      try {
-        await recordUnexpectedError(deps, error, {
-          request,
-          route: "/chat",
-          method: "POST",
-          source: "tool_execution",
-          toolName: toolCall.tool_name,
-          runId: run.id,
-          sessionId: session.id,
-          userId: session.userId,
-          extra: {
-            toolArgs: toolCall.args,
-          },
-        });
-      } catch {
-        // Error reporting should not block the user-facing run result.
-      }
-    } finally {
-      progressEmitter.stop();
-    }
-
-    await deps.store.finishToolCall(toolRecord.id, status, result);
-    if (status === "completed") {
-      void recordBookAnalyticsEvents(
-        deps,
-        request,
-        "book_candidate_in_run",
-        {
-          userId: session.userId,
-          sessionId: session.id,
-          runId: run.id,
-          source: "orchestrator",
-          toolName: toolCall.tool_name,
-          query: routedQuery,
-          status,
-        },
-        extractCandidateWorkIds(toolCall.tool_name, toolCall.args, result),
-      );
-    }
-    const streamedResult = clientSafeToolResult(toolCall.tool_name, result);
-    liveToolTrace = liveToolTrace.map((entry) =>
-      entry.id === toolRecord.id
-        ? {
-            ...entry,
-            label: labelForToolCall(toolCall.tool_name, toolCall.args),
-            rationale: toolCall.rationale ?? entry.rationale,
-            progress:
-              toolCall.rationale && !entry.progress.includes(toolCall.rationale)
-                ? [...entry.progress, toolCall.rationale]
-                : entry.progress,
-            result: streamedResult,
-            isError: status === "failed",
-            state: status === "failed" ? "error" : "completed",
-          }
-        : entry,
-    );
-    await persistPlanToolTrace(deps, planMessageId, run.id, liveToolTrace);
-    await send("tool.completed", {
-      runId: run.id,
-      toolCallId: toolRecord.id,
-      toolName: toolCall.tool_name,
-      label: labelForToolCall(toolCall.tool_name, toolCall.args),
-      rationale: toolCall.rationale ?? null,
-      status,
-      result: streamedResult,
-    });
-    toolHistory.push({
-      toolName: toolCall.tool_name,
-      rationale: toolCall.rationale,
-      args: toolCall.args,
-      result,
-    });
-    toolResults.push(result);
+  } finally {
+    await destroyTrackedRuntimes(deps, { sessionId: session.id, runId: run.id }, runtimeIdsToCleanup);
+    await reapExpiredRuntimeInstances(deps, { runId: run.id });
   }
-
-  await deps.store.updateRun(run.id, {
-    status: "timed_out",
-    completedAt: new Date().toISOString(),
-  });
-  const timeoutMessage = "The run hit its hard limits before it produced a valid answer.";
-  await deps.store.appendMessage(session.id, "assistant", timeoutMessage, {
-    runId: run.id,
-    phase: "error",
-    toolCalls: summarizeToolHistory(toolHistory),
-  });
-  await streamAssistantText(timeoutMessage, send);
-  await send("assistant.completed", {
-    answer: timeoutMessage,
-    citations: [],
-    artifactKey: null,
-  });
-  await send("run.completed", {
-    runId: run.id,
-    sessionId: session.id,
-    status: "timed_out",
-  });
 }
 
 export function createApp(deps: AppDeps) {

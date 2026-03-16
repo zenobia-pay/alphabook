@@ -937,6 +937,12 @@ test("fallback planner can create a Fly workspace, run a task, read summary.md, 
           content: "# Summary\n\nComparative answer across the two novels.",
         });
       }
+      if (url === "https://alphabook-runtime.fly.dev/destroy" && method === "POST") {
+        return Response.json({ ok: true });
+      }
+      if (url === "https://api.machines.dev/v1/apps/alphabook-runtime/machines/machine-1?force=true" && method === "DELETE") {
+        return Response.json({ ok: true });
+      }
 
       throw new Error(`Unexpected fetch: ${method} ${url}`);
     },
@@ -975,11 +981,94 @@ test("fallback planner can create a Fly workspace, run a task, read summary.md, 
   assert.match(body, /read_workspace_file/);
   assert.match(body, /Comparative answer across the two novels/);
   assert.match(body, /event: run\.completed/);
+  assert.ok(calls.includes("POST https://alphabook-runtime.fly.dev/destroy"));
+  assert.ok(calls.includes("DELETE https://api.machines.dev/v1/apps/alphabook-runtime/machines/machine-1?force=true"));
 
   const artifact = await blobStore.getText(R2_PREFIXES.runtimeArtifact("machine-1", "summary.md"));
   assert.match(artifact ?? "", /Comparative answer across the two novels/);
   assert.ok(calls.some((call) => call.includes("api.machines.dev")));
   assert.ok(calls.some((call) => call.includes("/run-task")));
+});
+
+test("orchestrator reaps expired runtimes from older sessions", async () => {
+  const store = new InMemoryAppStore();
+  const expiredSession = await store.createSession("expired-user", "Expired runtime");
+  await store.saveRuntimeInstance({
+    sessionId: expiredSession.id,
+    runtimeId: "runtime-expired-1",
+    provider: "fly-machines",
+    providerMachineId: "machine-expired-1",
+    status: "ready",
+    manifestJson: {},
+    lastUsedAt: "2026-03-16T00:00:00.000Z",
+    expiresAt: "2026-03-16T00:05:00.000Z",
+  });
+
+  const destroyed: string[] = [];
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    router: new ScriptedRouter([
+      {
+        type: "direct_response",
+        answer: "No search needed.",
+      },
+    ]),
+    planner: new ScriptedPlanner([
+      {
+        type: "final_answer",
+        answer: "planner should not run",
+        citations: [],
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+      async runWorkspaceTask() {
+        return { ok: false, error: "disabled" };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: false, error: "disabled" };
+      },
+      async destroyWorkspace(args) {
+        destroyed.push(String(args.runtimeId ?? ""));
+        await store.updateRuntimeInstance(String(args.runtimeId ?? ""), {
+          status: "destroyed",
+          lastUsedAt: new Date().toISOString(),
+          expiresAt: new Date().toISOString(),
+        });
+        return { ok: true };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const response = await app.request("/chat", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      userId: "fresh-user",
+      message: "hello",
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  await response.text();
+  assert.deepEqual(destroyed, ["runtime-expired-1"]);
+  const expiredRuntime = await store.getRuntimeInstance("runtime-expired-1");
+  assert.equal(expiredRuntime?.status, "destroyed");
 });
 
 test("session endpoints expose chat history for the assistant UI", async () => {
