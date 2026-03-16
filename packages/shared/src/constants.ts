@@ -23,8 +23,8 @@ export const TOOL_LABELS = {
   get_work_metadata: "Book Context",
   get_relevant_chunks: "Passage Search",
   get_work_text: "Text Lookup",
-  create_workspace: "Codex Session",
-  run_workspace_task: "Codex Search",
+  create_workspace: "Research Setup",
+  run_workspace_task: "Deep Research",
   read_workspace_file: "Search Notes",
   destroy_workspace: "Cleanup",
 } as const;

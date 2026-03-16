@@ -777,9 +777,13 @@ async function runExternalAgent(
   const { stdout, stderr } = processResult;
 
   const outputFiles = await listFiles(paths.output, workspaceRoot);
+  const briefingMarkdownPath = join(paths.output, "briefing.md");
   const briefingJsonPath = join(paths.output, "briefing.json");
   const codexRunsPath = join(paths.output, "codex-runs.json");
   const evidenceNotesPath = join(paths.output, "evidence-notes.md");
+  const briefingMarkdown = (await fileExists(briefingMarkdownPath))
+    ? await readFile(briefingMarkdownPath, "utf8")
+    : undefined;
   const briefingJson = await readJsonIfPresent<Record<string, unknown> | null>(briefingJsonPath, null);
   const codexRuns = await readJsonIfPresent<unknown[]>(codexRunsPath, []);
   const evidenceNotes = (await fileExists(evidenceNotesPath))
@@ -817,9 +821,11 @@ async function runExternalAgent(
     exitCode: 0,
     evidenceNotes,
     briefing:
-      briefingJson && typeof briefingJson === "object" && typeof briefingJson.briefing === "string"
-        ? briefingJson.briefing
-        : undefined,
+      typeof briefingMarkdown === "string" && briefingMarkdown.trim().length > 0
+        ? briefingMarkdown
+        : briefingJson && typeof briefingJson === "object" && typeof briefingJson.briefing === "string"
+          ? briefingJson.briefing
+          : undefined,
     citations:
       briefingJson && typeof briefingJson === "object" && Array.isArray(briefingJson.citations)
         ? briefingJson.citations

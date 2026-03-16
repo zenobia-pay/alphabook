@@ -709,23 +709,14 @@ function buildBriefingPrompt(runtimePrompt, manifest, task, evidence, question) 
     "- Do not browse the internet.",
     "- Expand across more books until the candidate search space is exhausted or clearly irrelevant.",
     "- Create a focused local corpus in /workspace/scratch/research-corpus by copying or excerpting only the most relevant passages or files.",
-    "- You must write these files yourself before exiting:",
-    "  - /workspace/output/evidence.json",
-    "  - /workspace/output/evidence-notes.md",
-    "  - /workspace/output/briefing.md",
-    "  - /workspace/output/briefing.json",
-    "- /workspace/output/evidence.json must be JSON shaped like:",
-    "  { question, evidence: [{ workId, chunkId?, chunkIndex?, sourcePath, label, excerpt, rationale, r2Key? }] }",
-    "- /workspace/output/briefing.json must be JSON shaped like:",
-    "  { question, briefing, summary, briefingPath, citationCount, citations: [{ workId, chunkId?, chunkIndex?, label, excerpt, r2Key?, sourcePath? }] }",
-    "- The markdown briefing should mix primary-source quotes with short explanations.",
-    "- Every quote must include an adjacent source reference that maps back to the original work and chunk when available.",
-    "- Prefer primary-source quotations, preserve source identifiers, and favor recall over premature narrowing.",
+    "- Your required deliverable is one file: /workspace/output/briefing.md",
+    "- The briefing should mix primary-source quotes with short explanations.",
+    "- Every quote should include a nearby source reference using the work title and chunk/source identifier when available.",
+    "- Prefer primary-source quotations and preserve source identifiers.",
     "- Once you have 2 to 8 strong quotations, stop searching and write the briefing.",
-    "- If you cannot find strong quotations after the search budget, still write all required output files and explain that the evidence is thin.",
-    "- Success requires both: writing the four output files above and returning a final JSON object that matches the provided output schema.",
-    "- In that final JSON object, set status to ok or thin_evidence, set message to one concise sentence describing the result, and set filesWritten to the exact output file paths you wrote.",
-    "- Do not stop after searching. A run is incomplete until all required output files exist and your final JSON object has been returned.",
+    "- If the evidence is thin, still write /workspace/output/briefing.md and say that clearly.",
+    "- You may optionally write helper notes under /workspace/output, but only /workspace/output/briefing.md is required.",
+    "- Do not stop after searching. A run is incomplete until /workspace/output/briefing.md exists with real content.",
     "",
     `Question: ${question}`,
     "",
@@ -738,199 +729,12 @@ function buildBriefingPrompt(runtimePrompt, manifest, task, evidence, question) 
     "Seed evidence from the orchestrator:",
     JSON.stringify(evidence, null, 2),
     "",
-    "When finished, return only a JSON object that matches the provided output schema.",
+    "When finished, return one short plain-text sentence confirming that the briefing has been written.",
   ].join("\n");
 }
 
 function normalizePhase(task) {
   return typeof task.phase === "string" ? task.phase : "collect_and_brief";
-}
-
-function schemaForBriefingCompletion() {
-  return {
-    type: "object",
-    additionalProperties: false,
-    required: ["status", "message", "filesWritten"],
-    properties: {
-      status: {
-        type: "string",
-        enum: ["ok", "thin_evidence"],
-      },
-      message: {
-        type: "string",
-      },
-      filesWritten: {
-        type: "array",
-        items: {
-          type: "string",
-        },
-        minItems: 1,
-      },
-    },
-  };
-}
-
-function evidenceItemsFromSeed(evidence) {
-  return [...evidence.runtimeHits, ...evidence.selectedChunks].slice(0, 10).map((entry) => ({
-    workId: entry.workId,
-    chunkId: entry.id || undefined,
-    chunkIndex: entry.chunkIndex,
-    sourcePath: `chunks/${entry.workId}/chunks.jsonl`,
-    label: `${entry.workId}#${entry.chunkIndex}`,
-    title: entry.title || undefined,
-    excerpt: entry.excerpt,
-    rationale:
-      Array.isArray(entry.matchedConcepts) && entry.matchedConcepts.length > 0
-        ? `Recovered from deterministic local search results matching ${entry.matchedConcepts.join(", ")}.`
-        : "Recovered from deterministic local search results.",
-    r2Key: entry.r2Key || undefined,
-  }));
-}
-
-async function ensureEvidenceArtifacts(outputDir, question, evidence, reason = "Recovered from deterministic local search results.") {
-  const evidenceJsonPath = join(outputDir, "evidence.json");
-  const notesPath = join(outputDir, "evidence-notes.md");
-  const items = evidenceItemsFromSeed(evidence).map((entry) => ({
-    ...entry,
-    rationale: reason,
-  }));
-  await writeFile(
-    evidenceJsonPath,
-    JSON.stringify(
-      {
-        question,
-        evidence: items,
-      },
-      null,
-      2,
-    ),
-    "utf8",
-  );
-  await writeFile(
-    notesPath,
-    [
-      "# Evidence Notes",
-      "",
-      `Question: ${question}`,
-      "",
-      "## Current Leads",
-      ...items.slice(0, 8).map((entry) =>
-        `- ${entry.title ? `${entry.title} (${entry.label})` : entry.label}: "${normalizeWhitespace(entry.excerpt).slice(0, 360)}"`,
-      ),
-      "",
-      "## Notes",
-      "- These notes summarize the current evidence set before the final briefing step.",
-    ].join("\n"),
-    "utf8",
-  );
-}
-
-function normalizeCodexEvidence(output) {
-  if (!output || typeof output !== "object" || !Array.isArray(output.evidence)) {
-    return [];
-  }
-  return output.evidence.flatMap((entry) => {
-    if (!entry || typeof entry !== "object") {
-      return [];
-    }
-    const record = entry;
-    if (
-      typeof record.workId !== "string"
-      || typeof record.sourcePath !== "string"
-      || typeof record.label !== "string"
-      || typeof record.excerpt !== "string"
-      || typeof record.rationale !== "string"
-    ) {
-      return [];
-    }
-    return [{
-      workId: record.workId,
-      ...(typeof record.chunkId === "string" ? { chunkId: record.chunkId } : {}),
-      ...(typeof record.chunkIndex === "number" ? { chunkIndex: record.chunkIndex } : {}),
-      sourcePath: record.sourcePath,
-      label: record.label,
-      excerpt: record.excerpt,
-      rationale: record.rationale,
-      ...(typeof record.r2Key === "string" ? { r2Key: record.r2Key } : {}),
-    }];
-  });
-}
-
-async function persistCodexEvidenceArtifacts(outputDir, question, codexOutput) {
-  const evidence = normalizeCodexEvidence(codexOutput);
-  if (evidence.length === 0) {
-    throw new Error("Codex returned no usable evidence items.");
-  }
-  if (typeof codexOutput.notesMarkdown !== "string" || codexOutput.notesMarkdown.trim().length === 0) {
-    throw new Error("Codex returned no evidence notes.");
-  }
-
-  await writeFile(
-    join(outputDir, "evidence.json"),
-    JSON.stringify(
-      {
-        question,
-        evidence,
-      },
-      null,
-      2,
-    ),
-    "utf8",
-  );
-  await writeFile(join(outputDir, "evidence-notes.md"), codexOutput.notesMarkdown, "utf8");
-}
-
-function normalizeCodexCitations(citations) {
-  if (!Array.isArray(citations)) {
-    return [];
-  }
-  return citations.flatMap((entry) => {
-    if (!entry || typeof entry !== "object") {
-      return [];
-    }
-    const record = entry;
-    if (
-      typeof record.workId !== "string"
-      || typeof record.label !== "string"
-      || typeof record.excerpt !== "string"
-    ) {
-      return [];
-    }
-    return [{
-      workId: record.workId,
-      label: record.label,
-      excerpt: record.excerpt,
-      ...(typeof record.chunkId === "string" ? { chunkId: record.chunkId } : {}),
-      ...(typeof record.chunkIndex === "number" ? { chunkIndex: record.chunkIndex } : {}),
-      ...(typeof record.r2Key === "string" ? { r2Key: record.r2Key } : {}),
-      ...(typeof record.sourcePath === "string" ? { sourcePath: record.sourcePath } : {}),
-    }];
-  });
-}
-
-async function persistCodexBriefingArtifacts(outputDir, question, codexOutput) {
-  if (typeof codexOutput.briefing !== "string" || codexOutput.briefing.trim().length === 0) {
-    throw new Error("Codex returned no usable briefing.");
-  }
-  const citations = normalizeCodexCitations(codexOutput.citations);
-  await writeFile(join(outputDir, "briefing.md"), codexOutput.briefing, "utf8");
-  await writeFile(
-    join(outputDir, "briefing.json"),
-    JSON.stringify(
-      {
-        question,
-        briefing: codexOutput.briefing,
-        citations,
-        summary: typeof codexOutput.summary === "string" ? codexOutput.summary : "",
-        briefingPath: typeof codexOutput.briefingPath === "string" ? codexOutput.briefingPath : "output/briefing.md",
-        citationCount: typeof codexOutput.citationCount === "number" ? codexOutput.citationCount : citations.length,
-      },
-      null,
-      2,
-    ),
-    "utf8",
-  );
-  return citations;
 }
 
 function emitStreamLines(bufferRef, chunk, onLine) {
@@ -1012,35 +816,6 @@ async function appendProgressEvent(outputDir, event) {
   );
 }
 
-async function sleep(ms) {
-  await new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function readStructuredOutput(outputPath) {
-  const content = await readFile(outputPath, "utf8");
-  if (!content.trim()) {
-    throw new Error("Structured output file is still empty.");
-  }
-  return JSON.parse(content);
-}
-
-async function readStructuredOutputWithRetries(outputPath, validate) {
-  let lastError = null;
-  for (let attempt = 1; attempt <= 12; attempt += 1) {
-    try {
-      const parsed = await readStructuredOutput(outputPath);
-      if (!validate || validate(parsed)) {
-        return parsed;
-      }
-      lastError = new Error("Structured output did not satisfy validation yet.");
-    } catch (error) {
-      lastError = error;
-    }
-    await sleep(500);
-  }
-  throw lastError ?? new Error("Structured output never became readable.");
-}
-
 async function resolveCodexCommand(workspaceRoot) {
   const candidates = [
     process.env.CODEX_CLI_PATH,
@@ -1066,23 +841,17 @@ async function runCodexStep({
   model,
   step,
   promptText,
-  outputSchema,
 }) {
   const codexCommand = await resolveCodexCommand(workspaceRoot);
   const promptPath = join(outputDir, `${step}.prompt.md`);
   const outputPath = join(outputDir, `${step}.last-message.txt`);
   const logPath = join(outputDir, `${step}.log.txt`);
-  const schemaPath = outputSchema ? join(outputDir, `${step}.schema.json`) : null;
 
   await writeFile(promptPath, promptText, "utf8");
-  if (schemaPath) {
-    await writeFile(schemaPath, JSON.stringify(outputSchema, null, 2), "utf8");
-  }
   await appendProgressEvent(outputDir, {
     type: "codex.step.prepared",
     step,
     promptPath,
-    ...(schemaPath ? { schemaPath } : {}),
     promptPreview: compactText(promptText, 700),
     message: `${codexStepLabel(step)} is ready to run.`,
   });
@@ -1113,7 +882,6 @@ async function runCodexStep({
         "--dangerously-bypass-approvals-and-sandbox",
         "--model",
         model,
-        ...(schemaPath ? ["--output-schema", schemaPath] : []),
         "--output-last-message",
         outputPath,
         "-",
@@ -1325,7 +1093,6 @@ async function main() {
   const phase = normalizePhase(task);
   const codexRuns = [];
   let briefing = "";
-  let citations = [];
 
   if (phase === "collect_evidence" || phase === "write_briefing" || phase === "collect_and_brief") {
     const briefingRun = await runCodexStep({
@@ -1334,25 +1101,30 @@ async function main() {
       model,
       step: "codex-briefing",
       promptText: buildBriefingPrompt(runtimePrompt, manifest, task, evidence, question),
-      outputSchema: schemaForBriefingCompletion(),
     });
     codexRuns.push(briefingRun);
-    const evidenceJson = await readJsonIfPresent(join(outputDir, "evidence.json"), null);
-    const notesMarkdown = (await fileExists(join(outputDir, "evidence-notes.md")))
-      ? await readFile(join(outputDir, "evidence-notes.md"), "utf8")
-      : "";
-    const briefingJson = await readJsonIfPresent(join(outputDir, "briefing.json"), null);
-    if (!evidenceJson || typeof evidenceJson !== "object" || !Array.isArray(evidenceJson.evidence)) {
-      throw new Error("Codex did not write a usable /workspace/output/evidence.json file.");
+    const briefingPath = join(outputDir, "briefing.md");
+    const notesPath = join(outputDir, "evidence-notes.md");
+    if (!(await fileExists(briefingPath))) {
+      throw new Error("Codex did not write /workspace/output/briefing.md.");
     }
-    if (!notesMarkdown.trim()) {
-      throw new Error("Codex did not write a usable /workspace/output/evidence-notes.md file.");
+    briefing = await readFile(briefingPath, "utf8");
+    if (!briefing.trim()) {
+      throw new Error("Codex wrote an empty /workspace/output/briefing.md.");
     }
-    if (!briefingJson || typeof briefingJson !== "object" || typeof briefingJson.briefing !== "string" || briefingJson.briefing.trim().length === 0) {
-      throw new Error("Codex did not write a usable /workspace/output/briefing.json file.");
+    if (!(await fileExists(notesPath))) {
+      await writeFile(
+        notesPath,
+        [
+          "# Search Notes",
+          "",
+          "This run did not write separate notes, so the final briefing is the primary artifact.",
+          "",
+          `Codex completion: ${briefingRun.lastMessage.trim() || "completed"}`,
+        ].join("\n"),
+        "utf8",
+      );
     }
-    citations = normalizeCodexCitations(briefingJson.citations);
-    briefing = briefingJson.briefing;
   }
 
   const previousCodexRuns = await readJsonIfPresent(join(outputDir, "codex-runs.json"), []);

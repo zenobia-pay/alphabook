@@ -2234,6 +2234,15 @@ export default function App() {
     let activityLog: ToolTraceEntry[] = [];
     let planMessageId: string | null = null;
     let finalAssistantMessageId: string | null = null;
+    let runSettled = false;
+    const settleRunUi = () => {
+      if (runSettled || activeRunTokenRef.current !== runToken) {
+        return;
+      }
+      runSettled = true;
+      setIsSending(false);
+      setStreamingAssistantId(null);
+    };
     const updatePlanMessage = (updater: (message: UiMessage) => UiMessage) => {
       setMessages((current) =>
         current.map((message) =>
@@ -2456,11 +2465,18 @@ export default function App() {
                     : message,
                 ),
               );
+              settleRunUi();
+              return;
+            }
+
+            if (event.event === "run.completed") {
+              settleRunUi();
               return;
             }
 
             if (event.event === "error") {
               setLoadError(typeof event.data.message === "string" ? event.data.message : "The assistant run failed.");
+              settleRunUi();
             }
           },
         },
@@ -2471,8 +2487,7 @@ export default function App() {
       }
     } finally {
       if (activeRunTokenRef.current === runToken) {
-        setIsSending(false);
-        setStreamingAssistantId(null);
+        settleRunUi();
         await refreshSessions(workingSessionId ?? null);
       }
     }

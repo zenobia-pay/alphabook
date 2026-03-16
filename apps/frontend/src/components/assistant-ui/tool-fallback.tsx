@@ -275,7 +275,7 @@ function summarizeTool(toolName: string, args: JsonRecord | null, result: JsonRe
     case "full text lookup":
       return "Opening the source text directly.";
     case "workspace setup":
-      return "Starting the Codex session for the longer-running search.";
+      return "Preparing the workspace for the longer-running search.";
     case "evidence search":
     case "deep search":
       return "Running the longer workspace search over the selected corpus files.";
