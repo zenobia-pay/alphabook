@@ -57,6 +57,15 @@ export interface AdminRunRecord extends RunRecord {
   lastMessagePreview: string | null;
 }
 
+export interface AnalyticsEventRecord {
+  id: string;
+  event: string;
+  userId: string | null;
+  sessionId: string | null;
+  properties: Record<string, unknown>;
+  createdAt: string;
+}
+
 export interface ToolCallRecord {
   id: string;
   runId: string;
@@ -100,6 +109,32 @@ export interface RuntimeInstanceRecord {
   createdAt: string;
 }
 
+export interface BillingEventRecord {
+  id: string;
+  userId: string;
+  sessionId: string | null;
+  runId: string | null;
+  source: string;
+  provider: string;
+  model: string;
+  operation: string;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  cachedInputTokens: number;
+  costUsd: number;
+  requestId: string | null;
+  requestJson: Record<string, unknown> | null;
+  responseJson: Record<string, unknown> | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface BillingSpendSummary {
+  totalCostUsd: number;
+  eventCount: number;
+}
+
 export interface ArtifactRecord {
   id: string;
   sessionId: string;
@@ -128,6 +163,21 @@ export interface AppStore {
   getRun(runId: string): Promise<RunRecord | null>;
   listRuns(sessionId: string): Promise<RunRecord[]>;
   listAllRuns(): Promise<AdminRunRecord[]>;
+  saveAnalyticsEvent(input: {
+    event: string;
+    userId?: string | null;
+    sessionId?: string | null;
+    properties?: Record<string, unknown>;
+    createdAt?: string;
+  }): Promise<AnalyticsEventRecord>;
+  listAnalyticsEvents(options?: { since?: string; limit?: number }): Promise<AnalyticsEventRecord[]>;
+  listUserMessages(options?: { since?: string; limit?: number }): Promise<Array<{
+    id: string;
+    sessionId: string;
+    userId: string;
+    content: string;
+    createdAt: string;
+  }>>;
   updateRun(runId: string, updates: Partial<Pick<RunRecord, "status" | "plannerTurns" | "completedAt">>): Promise<void>;
   startToolCall(runId: string, toolName: ToolName, argsJson: Record<string, unknown>): Promise<ToolCallRecord>;
   listToolCalls(runId: string): Promise<ToolCallRecord[]>;
@@ -153,6 +203,10 @@ export interface AppStore {
     input: Omit<ArtifactRecord, "id" | "createdAt"> & { id?: string; createdAt?: string },
   ): Promise<ArtifactRecord>;
   listArtifacts(sessionId: string, runtimeId?: string | null): Promise<ArtifactRecord[]>;
+  createBillingEvent(
+    input: Omit<BillingEventRecord, "id" | "createdAt"> & { id?: string; createdAt?: string },
+  ): Promise<BillingEventRecord>;
+  getBillingSpend(userId: string, since: string): Promise<BillingSpendSummary>;
   healthCheck(): Promise<"ok" | "error">;
 }
 
@@ -418,6 +472,8 @@ export class InMemoryAppStore implements AppStore {
   private readonly toolCalls = new Map<string, ToolCallRecord>();
   private readonly runtimeInstances = new Map<string, RuntimeInstanceRecord>();
   private readonly artifacts = new Map<string, ArtifactRecord>();
+  private readonly billingEvents = new Map<string, BillingEventRecord>();
+  private readonly analyticsEvents = new Map<string, AnalyticsEventRecord>();
 
   constructor(
     private readonly works: SeedWork[] = [],
@@ -612,6 +668,51 @@ export class InMemoryAppStore implements AppStore {
         };
       })
       .sort((left, right) => right.startedAt.localeCompare(left.startedAt));
+  }
+
+  async saveAnalyticsEvent(input: {
+    event: string;
+    userId?: string | null;
+    sessionId?: string | null;
+    properties?: Record<string, unknown>;
+    createdAt?: string;
+  }): Promise<AnalyticsEventRecord> {
+    const record: AnalyticsEventRecord = {
+      id: crypto.randomUUID(),
+      event: input.event,
+      userId: input.userId ?? null,
+      sessionId: input.sessionId ?? null,
+      properties: input.properties ?? {},
+      createdAt: input.createdAt ?? nowIso(),
+    };
+    this.analyticsEvents.set(record.id, record);
+    return record;
+  }
+
+  async listAnalyticsEvents(options: { since?: string; limit?: number } = {}): Promise<AnalyticsEventRecord[]> {
+    const sinceTs = options.since ? Date.parse(options.since) : Number.NEGATIVE_INFINITY;
+    const limit = options.limit ?? 500;
+    return [...this.analyticsEvents.values()]
+      .filter((event) => Date.parse(event.createdAt) >= sinceTs)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .slice(0, limit);
+  }
+
+  async listUserMessages(options: { since?: string; limit?: number } = {}) {
+    const sinceTs = options.since ? Date.parse(options.since) : Number.NEGATIVE_INFINITY;
+    const limit = options.limit ?? 500;
+    return [...this.messages.values()]
+      .flat()
+      .filter((message) => message.role === "user" && Date.parse(message.createdAt) >= sinceTs)
+      .map((message) => ({
+        id: message.id,
+        sessionId: message.sessionId,
+        userId: this.sessions.get(message.sessionId)?.userId ?? "unknown",
+        content: message.content,
+        createdAt: message.createdAt,
+      }))
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .slice(0, limit);
   }
 
   async updateRun(runId: string, updates: Partial<Pick<RunRecord, "status" | "plannerTurns" | "completedAt">>): Promise<void> {
@@ -853,6 +954,44 @@ export class InMemoryAppStore implements AppStore {
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   }
 
+  async createBillingEvent(
+    input: Omit<BillingEventRecord, "id" | "createdAt"> & { id?: string; createdAt?: string },
+  ): Promise<BillingEventRecord> {
+    const record: BillingEventRecord = {
+      id: input.id ?? crypto.randomUUID(),
+      userId: input.userId,
+      sessionId: input.sessionId,
+      runId: input.runId,
+      source: input.source,
+      provider: input.provider,
+      model: input.model,
+      operation: input.operation,
+      inputTokens: input.inputTokens,
+      outputTokens: input.outputTokens,
+      totalTokens: input.totalTokens,
+      cachedInputTokens: input.cachedInputTokens,
+      costUsd: input.costUsd,
+      requestId: input.requestId,
+      requestJson: input.requestJson,
+      responseJson: input.responseJson,
+      metadata: input.metadata,
+      createdAt: input.createdAt ?? nowIso(),
+    };
+    this.billingEvents.set(record.id, record);
+    return record;
+  }
+
+  async getBillingSpend(userId: string, since: string): Promise<BillingSpendSummary> {
+    const sinceMs = Date.parse(since);
+    const events = [...this.billingEvents.values()].filter((event) =>
+      event.userId === userId && Date.parse(event.createdAt) >= sinceMs,
+    );
+    return {
+      totalCostUsd: Math.round(events.reduce((total, event) => total + event.costUsd, 0) * 1_000_000) / 1_000_000,
+      eventCount: events.length,
+    };
+  }
+
   async healthCheck(): Promise<"ok" | "error"> {
     return "ok";
   }
@@ -879,7 +1018,30 @@ export class InMemoryAppStore implements AppStore {
 }
 
 export class NeonAppStore implements AppStore {
+  private analyticsSchemaReady: Promise<void> | null = null;
+
   constructor(private readonly db: DbClient) {}
+
+  private ensureAnalyticsSchema() {
+    if (!this.analyticsSchemaReady) {
+      this.analyticsSchemaReady = this.db.query(
+        `
+          CREATE TABLE IF NOT EXISTS analytics_events (
+            id uuid PRIMARY KEY,
+            event text NOT NULL,
+            user_id text REFERENCES users(id) ON DELETE SET NULL,
+            session_id uuid REFERENCES chat_sessions(id) ON DELETE SET NULL,
+            properties_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+            created_at timestamptz NOT NULL DEFAULT now()
+          );
+          CREATE INDEX IF NOT EXISTS idx_analytics_events_created_at ON analytics_events(created_at DESC);
+          CREATE INDEX IF NOT EXISTS idx_analytics_events_event_created_at ON analytics_events(event, created_at DESC);
+          CREATE INDEX IF NOT EXISTS idx_analytics_events_session_id ON analytics_events(session_id);
+        `,
+      ).then(() => {});
+    }
+    return this.analyticsSchemaReady;
+  }
 
   async ensureUser(userId: string): Promise<void> {
     await this.db.query(
@@ -980,6 +1142,7 @@ export class NeonAppStore implements AppStore {
   }
 
   async listUsers(): Promise<AdminUserRecord[]> {
+    await this.ensureAnalyticsSchema();
     const result = await this.db.query<{
       id: string;
       email: string | null;
@@ -1013,7 +1176,7 @@ export class NeonAppStore implements AppStore {
           GROUP BY cs.user_id
         ) AS run_counts ON run_counts.user_id = u.id
         LEFT JOIN (
-          SELECT cs.user_id, MAX(m.created_at)::text AS last_seen_at
+          SELECT cs.user_id, MAX(m.created_at) AS last_seen_at
           FROM chat_sessions cs
           LEFT JOIN messages m ON m.session_id = cs.id
           GROUP BY cs.user_id
@@ -1283,6 +1446,7 @@ export class NeonAppStore implements AppStore {
   }
 
   async listAllRuns(): Promise<AdminRunRecord[]> {
+    await this.ensureAnalyticsSchema();
     const result = await this.db.query<{
       id: string;
       session_id: string;
@@ -1346,6 +1510,97 @@ export class NeonAppStore implements AppStore {
       toolCallCount: Number(row.tool_call_count ?? 0),
       messageCount: Number(row.message_count ?? 0),
       lastMessagePreview: row.last_message_preview?.slice(0, 160) ?? null,
+    }));
+  }
+
+  async saveAnalyticsEvent(input: {
+    event: string;
+    userId?: string | null;
+    sessionId?: string | null;
+    properties?: Record<string, unknown>;
+    createdAt?: string;
+  }): Promise<AnalyticsEventRecord> {
+    await this.ensureAnalyticsSchema();
+    const id = crypto.randomUUID();
+    const createdAt = input.createdAt ?? nowIso();
+    await this.db.query(
+      `
+        INSERT INTO analytics_events (id, event, user_id, session_id, properties_json, created_at)
+        VALUES ($1::uuid, $2, $3, $4::uuid, $5::jsonb, $6::timestamptz)
+      `,
+      [
+        id,
+        input.event,
+        input.userId ?? null,
+        input.sessionId ?? null,
+        JSON.stringify(input.properties ?? {}),
+        createdAt,
+      ],
+    );
+    return {
+      id,
+      event: input.event,
+      userId: input.userId ?? null,
+      sessionId: input.sessionId ?? null,
+      properties: input.properties ?? {},
+      createdAt,
+    };
+  }
+
+  async listAnalyticsEvents(options: { since?: string; limit?: number } = {}): Promise<AnalyticsEventRecord[]> {
+    await this.ensureAnalyticsSchema();
+    const result = await this.db.query<{
+      id: string;
+      event: string;
+      user_id: string | null;
+      session_id: string | null;
+      properties_json: Record<string, unknown>;
+      created_at: string;
+    }>(
+      `
+        SELECT id, event, user_id, session_id, properties_json, created_at
+        FROM analytics_events
+        WHERE ($1::timestamptz IS NULL OR created_at >= $1::timestamptz)
+        ORDER BY created_at DESC
+        LIMIT $2
+      `,
+      [options.since ?? null, options.limit ?? 500],
+    );
+    return result.rows.map((row) => ({
+      id: row.id,
+      event: row.event,
+      userId: row.user_id,
+      sessionId: row.session_id,
+      properties: row.properties_json ?? {},
+      createdAt: row.created_at,
+    }));
+  }
+
+  async listUserMessages(options: { since?: string; limit?: number } = {}) {
+    const result = await this.db.query<{
+      id: string;
+      session_id: string;
+      user_id: string;
+      content: string;
+      created_at: string;
+    }>(
+      `
+        SELECT m.id, m.session_id, cs.user_id, m.content, m.created_at
+        FROM messages m
+        JOIN chat_sessions cs ON cs.id = m.session_id
+        WHERE m.role = 'user'
+          AND ($1::timestamptz IS NULL OR m.created_at >= $1::timestamptz)
+        ORDER BY m.created_at DESC
+        LIMIT $2
+      `,
+      [options.since ?? null, options.limit ?? 500],
+    );
+    return result.rows.map((row) => ({
+      id: row.id,
+      sessionId: row.session_id,
+      userId: row.user_id,
+      content: row.content,
+      createdAt: row.created_at,
     }));
   }
 
@@ -2290,6 +2545,158 @@ export class NeonAppStore implements AppStore {
       metadata: row.metadata_json,
       createdAt: row.created_at,
     }));
+  }
+
+  async createBillingEvent(
+    input: Omit<BillingEventRecord, "id" | "createdAt"> & { id?: string; createdAt?: string },
+  ): Promise<BillingEventRecord> {
+    const billingEventId = input.id ?? crypto.randomUUID();
+    const createdAt = input.createdAt ?? nowIso();
+    const result = await this.db.query<{
+      id: string;
+      user_id: string;
+      session_id: string | null;
+      run_id: string | null;
+      source: string;
+      provider: string;
+      model: string;
+      operation: string;
+      input_tokens: number;
+      output_tokens: number;
+      total_tokens: number;
+      cached_input_tokens: number;
+      cost_usd: string | number;
+      request_id: string | null;
+      request_json: Record<string, unknown> | null;
+      response_json: Record<string, unknown> | null;
+      metadata_json: Record<string, unknown>;
+      created_at: string;
+    }>(
+      `
+        INSERT INTO billing_events (
+          id,
+          user_id,
+          session_id,
+          run_id,
+          source,
+          provider,
+          model,
+          operation,
+          input_tokens,
+          output_tokens,
+          total_tokens,
+          cached_input_tokens,
+          cost_usd,
+          request_id,
+          request_json,
+          response_json,
+          metadata_json,
+          created_at
+        )
+        VALUES (
+          $1::uuid,
+          $2,
+          $3::uuid,
+          $4::uuid,
+          $5,
+          $6,
+          $7,
+          $8,
+          $9,
+          $10,
+          $11,
+          $12,
+          $13,
+          $14,
+          $15::jsonb,
+          $16::jsonb,
+          $17::jsonb,
+          $18::timestamptz
+        )
+        RETURNING
+          id,
+          user_id,
+          session_id,
+          run_id,
+          source,
+          provider,
+          model,
+          operation,
+          input_tokens,
+          output_tokens,
+          total_tokens,
+          cached_input_tokens,
+          cost_usd,
+          request_id,
+          request_json,
+          response_json,
+          metadata_json,
+          created_at
+      `,
+      [
+        billingEventId,
+        input.userId,
+        input.sessionId,
+        input.runId,
+        input.source,
+        input.provider,
+        input.model,
+        input.operation,
+        input.inputTokens,
+        input.outputTokens,
+        input.totalTokens,
+        input.cachedInputTokens,
+        input.costUsd,
+        input.requestId,
+        input.requestJson ? JSON.stringify(input.requestJson) : null,
+        input.responseJson ? JSON.stringify(input.responseJson) : null,
+        JSON.stringify(input.metadata),
+        createdAt,
+      ],
+    );
+    const row = result.rows[0];
+    return {
+      id: row.id,
+      userId: row.user_id,
+      sessionId: row.session_id,
+      runId: row.run_id,
+      source: row.source,
+      provider: row.provider,
+      model: row.model,
+      operation: row.operation,
+      inputTokens: Number(row.input_tokens ?? 0),
+      outputTokens: Number(row.output_tokens ?? 0),
+      totalTokens: Number(row.total_tokens ?? 0),
+      cachedInputTokens: Number(row.cached_input_tokens ?? 0),
+      costUsd: Number(row.cost_usd ?? 0),
+      requestId: row.request_id,
+      requestJson: row.request_json,
+      responseJson: row.response_json,
+      metadata: row.metadata_json ?? {},
+      createdAt: row.created_at,
+    };
+  }
+
+  async getBillingSpend(userId: string, since: string): Promise<BillingSpendSummary> {
+    const result = await this.db.query<{
+      total_cost_usd: string | number | null;
+      event_count: number;
+    }>(
+      `
+        SELECT
+          COALESCE(SUM(cost_usd), 0) AS total_cost_usd,
+          COUNT(*)::int AS event_count
+        FROM billing_events
+        WHERE user_id = $1
+          AND created_at >= $2::timestamptz
+      `,
+      [userId, since],
+    );
+    const row = result.rows[0];
+    return {
+      totalCostUsd: Number(row?.total_cost_usd ?? 0),
+      eventCount: Number(row?.event_count ?? 0),
+    };
   }
 
   async healthCheck(): Promise<"ok" | "error"> {

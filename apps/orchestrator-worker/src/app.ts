@@ -3,6 +3,7 @@ import { cors } from "hono/cors";
 import { ChatRequestSchema, HARD_LIMITS, R2_PREFIXES, ToolArgsSchemas, getToolLabel, type ChatRequest, type ChunkSearchResult, type Citation, type PlannerDecision, type ToolName, type WorkSummary } from "@alphabook/shared";
 
 import type { WorkOSAuth } from "./auth";
+import type { BillingService } from "./billing";
 import type { Embedder } from "./embeddings";
 import type { BlobStore } from "./r2";
 import type { Planner } from "./planner";
@@ -25,6 +26,7 @@ export interface RuntimeToolGateway {
 
 export interface AppDeps {
   store: AppStore;
+  billing: BillingService;
   planner: Planner;
   embedder: Embedder;
   synthesizer: Synthesizer;
@@ -34,6 +36,8 @@ export interface AppDeps {
   auth?: WorkOSAuth;
   now?: () => number;
   adminAllowedEmail?: string;
+  openAIApiKey?: string;
+  openAIModel?: string;
 }
 
 function sseEvent(event: string, data: Record<string, unknown>): string {
@@ -54,17 +58,23 @@ async function recordAnalyticsEvent(
 ) {
   const forwardedFor = request.headers.get("cf-connecting-ip") ?? request.headers.get("x-forwarded-for");
   const userAgent = request.headers.get("user-agent");
-  await deps.blobStore.putJson(
-    analyticsKey(eventName),
-    {
-      event: eventName,
-      timestamp: new Date().toISOString(),
-      source: "alphabook-web",
-      userAgent,
-      ip: forwardedFor ?? null,
-      ...payload,
-    },
-  );
+  const properties: Record<string, unknown> = {
+    source: "alphabook-web",
+    userAgent,
+    ip: forwardedFor ?? null,
+    ...payload,
+  };
+  await deps.store.saveAnalyticsEvent({
+    event: eventName,
+    userId: typeof properties.userId === "string" ? properties.userId : null,
+    sessionId: typeof properties.sessionId === "string" ? properties.sessionId : null,
+    properties,
+  });
+  await deps.blobStore.putJson(analyticsKey(eventName), {
+    event: eventName,
+    timestamp: new Date().toISOString(),
+    ...properties,
+  });
 }
 
 function normalizeToolArgs(toolName: ToolName, args: Record<string, unknown>): Record<string, unknown> {
@@ -185,7 +195,7 @@ async function executeTool(
   deps: AppDeps,
   toolName: ToolName,
   args: Record<string, unknown>,
-  context: { sessionId: string; runId: string },
+  context: { userId: string; sessionId: string; runId: string },
 ): Promise<Record<string, unknown>> {
   const normalizedArgs = normalizeToolArgs(toolName, args);
   switch (toolName) {
@@ -203,7 +213,12 @@ async function executeTool(
       const parsed = ToolArgsSchemas.get_relevant_chunks.parse(normalizedArgs);
       let embedding: number[] | undefined;
       try {
-        embedding = await deps.embedder.embedQuery(parsed.query);
+        embedding = await deps.embedder.embedQuery(parsed.query, {
+          userId: context.userId,
+          sessionId: context.sessionId,
+          runId: context.runId,
+          source: "embedder",
+        });
       } catch {
         embedding = undefined;
       }
@@ -718,6 +733,132 @@ async function loadLiveRuntimeLogs(
   );
 }
 
+function daysAgoIso(days: number) {
+  return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+}
+
+function dayKey(value: string) {
+  return value.slice(0, 10);
+}
+
+async function runAnalyticsQuery(
+  deps: AppDeps,
+  params: {
+    query: string;
+    days: number;
+  },
+) {
+  const days = Math.max(1, Math.min(30, params.days));
+  const since = daysAgoIso(days);
+  const [events, userMessages] = await Promise.all([
+    deps.store.listAnalyticsEvents({ since, limit: 5000 }),
+    deps.store.listUserMessages({ since, limit: 1200 }),
+  ]);
+
+  const eventsByDay = events.reduce<Record<string, Record<string, number>>>((accumulator, event) => {
+    const key = dayKey(event.createdAt);
+    const dayBucket = accumulator[key] ?? {};
+    dayBucket[event.event] = (dayBucket[event.event] ?? 0) + 1;
+    accumulator[key] = dayBucket;
+    return accumulator;
+  }, {});
+
+  const queriesByDay = userMessages.reduce<Record<string, string[]>>((accumulator, message) => {
+    const key = dayKey(message.createdAt);
+    const bucket = accumulator[key] ?? [];
+    bucket.push(message.content);
+    accumulator[key] = bucket;
+    return accumulator;
+  }, {});
+
+  if (!deps.openAIApiKey || !deps.openAIModel) {
+    return {
+      title: "Analytics unavailable",
+      summary: "OpenAI is not configured for analytics queries in this environment.",
+      metrics: [],
+      series: [],
+      hashtags: [],
+      inspectedDays: days,
+      events,
+      userMessages,
+    };
+  }
+
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${deps.openAIApiKey}`,
+    },
+    body: JSON.stringify({
+      model: deps.openAIModel,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "system",
+          content: [
+            "You are the AlphaBook analytics model.",
+            "Answer the admin's analytics question using only the supplied analytics events and user message corpus.",
+            "Return JSON with this exact shape:",
+            "{",
+            '  "title": string,',
+            '  "summary": string,',
+            '  "metrics": [{"label": string, "value": string}],',
+            '  "series": [{"label": string, "points": [{"date": "YYYY-MM-DD", "value": number, "tag"?: string}]}],',
+            '  "hashtags": [{"tag": string, "count": number}],',
+            '  "notes": [string]',
+            "}",
+            "When the user asks for topic or vibe analytics, infer a small set of hashtag-like topic labels from the user messages.",
+            "Prefer daily time series over prose-only answers whenever the question mentions recent activity or day-by-day trends.",
+          ].join("\n"),
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            query: params.query,
+            days,
+            since,
+            analyticsEventsByDay: eventsByDay,
+            analyticsEventsSample: events.slice(0, 500),
+            userMessagesByDay: queriesByDay,
+            userMessagesSample: userMessages.slice(0, 300),
+          }),
+        },
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`Analytics query failed: ${detail}`);
+  }
+
+  const payload = await response.json() as {
+    choices?: Array<{
+      message?: {
+        content?: string;
+      };
+    }>;
+  };
+  const content = payload.choices?.[0]?.message?.content;
+  if (!content) {
+    throw new Error("Analytics response was empty.");
+  }
+
+  const parsed = JSON.parse(content) as Record<string, unknown>;
+  return {
+    title: typeof parsed.title === "string" ? parsed.title : "Analytics result",
+    summary: typeof parsed.summary === "string" ? parsed.summary : "",
+    metrics: Array.isArray(parsed.metrics) ? parsed.metrics : [],
+    series: Array.isArray(parsed.series) ? parsed.series : [],
+    hashtags: Array.isArray(parsed.hashtags) ? parsed.hashtags : [],
+    notes: Array.isArray(parsed.notes) ? parsed.notes : [],
+    inspectedDays: days,
+    eventsSample: events.slice(0, 200),
+    userMessagesSample: userMessages.slice(0, 120),
+  };
+}
+
 async function persistFinalArtifact(deps: AppDeps, sessionId: string, runId: string, answer: string, citations: Array<Record<string, unknown>>) {
   const key = R2_PREFIXES.sessionArtifact(sessionId, `${runId}-final-answer.json`);
   await deps.blobStore.putJson(key, {
@@ -730,6 +871,7 @@ async function persistFinalArtifact(deps: AppDeps, sessionId: string, runId: str
 async function synthesizeAnswer(
   deps: AppDeps,
   params: {
+    userId: string;
     sessionId: string;
     runId: string;
     userMessage: string;
@@ -751,6 +893,12 @@ async function synthesizeAnswer(
       plannerDraft: params.plannerDraft,
       plannerCitations: params.plannerCitations,
       toolHistory: params.toolHistory,
+      billingContext: {
+        userId: params.userId,
+        sessionId: params.sessionId,
+        runId: params.runId,
+        source: "synthesizer",
+      },
     });
   } catch (error) {
     synthesis = {
@@ -840,6 +988,12 @@ async function runOrchestrator(
       turns: turn,
       toolHistory,
       workScope: input.workIds,
+      billingContext: {
+        userId: session.userId,
+        sessionId: session.id,
+        runId: run.id,
+        source: "planner",
+      },
     });
 
     if (decision.type === "final_answer") {
@@ -851,6 +1005,7 @@ async function runOrchestrator(
       await synthesizeAnswer(
         deps,
         {
+          userId: session.userId,
           sessionId: session.id,
           runId: run.id,
           userMessage: input.message,
@@ -925,6 +1080,7 @@ async function runOrchestrator(
     let status: "completed" | "failed" = "completed";
     try {
       result = await executeTool(deps, toolCall.tool_name, toolCall.args, {
+        userId: session.userId,
         sessionId: session.id,
         runId: run.id,
       });
@@ -969,6 +1125,7 @@ async function runOrchestrator(
   await synthesizeAnswer(
     deps,
     {
+      userId: session.userId,
       sessionId: session.id,
       runId: run.id,
       userMessage: input.message,
@@ -1135,6 +1292,25 @@ export function createApp(deps: AppDeps) {
     }
   });
 
+  app.post("/admin/analytics/query", async (c) => {
+    const admin = await requireAdmin(c);
+    if (!admin) {
+      return c.json({ error: "Not authorized." }, 403);
+    }
+    const payload = await c.req.json().catch(() => null) as Record<string, unknown> | null;
+    const query = typeof payload?.query === "string" ? payload.query.trim() : "";
+    const days = typeof payload?.days === "number" ? payload.days : 7;
+    if (!query) {
+      return c.json({ error: "query is required." }, 400);
+    }
+    try {
+      const result = await runAnalyticsQuery(deps, { query, days });
+      return c.json(result);
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : "Analytics query failed." }, 500);
+    }
+  });
+
   app.get("/profiles/:userId", async (c) => {
     const targetUserId = c.req.param("userId");
     const profile = await deps.store.getUserProfile(targetUserId);
@@ -1240,6 +1416,20 @@ export function createApp(deps: AppDeps) {
       ...payload,
       userId: user?.id ?? payload.userId,
     };
+    const billingUserId = requestPayload.userId;
+    if (!billingUserId) {
+      return c.json({ error: "userId is required when authentication is disabled." }, 400);
+    }
+    const billingCheck = await deps.billing.check(billingUserId);
+    if (!billingCheck.allowed) {
+      return c.json({
+        error: "Monthly AI usage limit reached.",
+        code: "billing_limit_exceeded",
+        limitUsd: billingCheck.limitUsd,
+        spendUsd: billingCheck.spendUsd,
+        windowStartedAt: billingCheck.windowStartedAt,
+      }, 402);
+    }
     return streamResponse((send) => runOrchestrator(deps, requestPayload, send));
   });
 

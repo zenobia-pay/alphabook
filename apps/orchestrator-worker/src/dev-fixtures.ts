@@ -2,6 +2,7 @@ import { hashTextToVector, type WorkSummary } from "@alphabook/shared";
 
 import type { AppDeps, RuntimeToolGateway } from "./app";
 import { createApp } from "./app";
+import { createBillingService } from "./billing";
 import { HashEmbedder } from "./embeddings";
 import { FallbackPlanner } from "./planner";
 import { MemoryBlobStore } from "./r2";
@@ -171,6 +172,7 @@ class DemoRuntimeGateway implements RuntimeToolGateway {
 }
 
 export function createDemoDeps(): AppDeps {
+  const store = new InMemoryAppStore(DEMO_WORKS, DEMO_CHUNKS);
   const blobStore = new MemoryBlobStore();
   for (const work of DEMO_WORKS) {
     blobStore.seed(work.cleanTextKey, work.text);
@@ -181,7 +183,8 @@ export function createDemoDeps(): AppDeps {
   }
 
   return {
-    store: new InMemoryAppStore(DEMO_WORKS, DEMO_CHUNKS),
+    store,
+    billing: createBillingService(store),
     planner: new FallbackPlanner(),
     embedder: new HashEmbedder(),
     synthesizer: new FallbackSynthesizer(),

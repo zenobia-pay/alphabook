@@ -176,4 +176,49 @@ CREATE INDEX IF NOT EXISTS idx_user_follows_followed_id ON user_follows(followed
 CREATE INDEX IF NOT EXISTS idx_user_follows_follower_id ON user_follows(follower_id);
 `,
   },
+  {
+    id: "0003_billing",
+    sql: `
+CREATE TABLE IF NOT EXISTS billing_events (
+  id uuid PRIMARY KEY,
+  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  session_id uuid REFERENCES chat_sessions(id) ON DELETE SET NULL,
+  run_id uuid REFERENCES runs(id) ON DELETE SET NULL,
+  source text NOT NULL,
+  provider text NOT NULL,
+  model text NOT NULL,
+  operation text NOT NULL,
+  input_tokens integer NOT NULL DEFAULT 0,
+  output_tokens integer NOT NULL DEFAULT 0,
+  total_tokens integer NOT NULL DEFAULT 0,
+  cached_input_tokens integer NOT NULL DEFAULT 0,
+  cost_usd numeric(12, 6) NOT NULL DEFAULT 0,
+  request_id text,
+  request_json jsonb,
+  response_json jsonb,
+  metadata_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_billing_events_user_created_at ON billing_events(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_billing_events_run_id ON billing_events(run_id);
+`,
+  },
+  {
+    id: "0004_analytics_events",
+    sql: `
+CREATE TABLE IF NOT EXISTS analytics_events (
+  id uuid PRIMARY KEY,
+  event text NOT NULL,
+  user_id text REFERENCES users(id) ON DELETE SET NULL,
+  session_id uuid REFERENCES chat_sessions(id) ON DELETE SET NULL,
+  properties_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_analytics_events_created_at ON analytics_events(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_analytics_events_event_created_at ON analytics_events(event, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_analytics_events_session_id ON analytics_events(session_id);
+`,
+  },
 ] as const;

@@ -5,6 +5,7 @@ import { R2_PREFIXES } from "@alphabook/shared";
 
 import { createApp } from "../src/app";
 import { WorkOSAuth } from "../src/auth";
+import { createBillingService } from "../src/billing";
 import { HashEmbedder, OpenAIEmbedder } from "../src/embeddings";
 import { MemoryBlobStore } from "../src/r2";
 import { FallbackPlanner, ScriptedPlanner } from "../src/planner";
@@ -105,6 +106,7 @@ test("orchestrator streams retrieval tool calls and final answer", async () => {
 
   const app = createApp({
     store,
+    billing: createBillingService(store),
     planner,
     embedder: new HashEmbedder(),
     synthesizer: new EchoSynthesizer(),
@@ -247,6 +249,7 @@ test("orchestrator can delegate to a runtime gateway and finish the run", async 
 
   const app = createApp({
     store,
+    billing: createBillingService(store),
     planner,
     embedder: new HashEmbedder(),
     synthesizer: new EchoSynthesizer(),
@@ -332,6 +335,7 @@ test("auth sign-up route redirects into WorkOS authkit with sign-up hint", async
 
   const app = createApp({
     store,
+    billing: createBillingService(store),
     planner: new FallbackPlanner(),
     embedder: new HashEmbedder(),
     synthesizer: new EchoSynthesizer(),
@@ -379,8 +383,10 @@ test("auth sign-up route redirects into WorkOS authkit with sign-up hint", async
 
 test("analytics endpoint stores posted events", async () => {
   const blobStore = new CapturingBlobStore();
+  const store = new InMemoryAppStore();
   const app = createApp({
-    store: new InMemoryAppStore(),
+    store,
+    billing: createBillingService(store),
     planner: new ScriptedPlanner([
       {
         type: "final_answer",
@@ -447,6 +453,7 @@ test("auth sign-in route forces interactive WorkOS auth", async () => {
 
   const app = createApp({
     store,
+    billing: createBillingService(store),
     planner: new FallbackPlanner(),
     embedder: new HashEmbedder(),
     synthesizer: new EchoSynthesizer(),
@@ -532,6 +539,7 @@ test("auth sign-out route clears local cookies and redirects through WorkOS logo
 
   const app = createApp({
     store,
+    billing: createBillingService(store),
     planner: new FallbackPlanner(),
     embedder: new HashEmbedder(),
     synthesizer: new EchoSynthesizer(),
@@ -699,6 +707,7 @@ test("fallback planner can create a Fly workspace, run a task, read summary.md, 
 
   const app = createApp({
     store,
+    billing: createBillingService(store),
     planner: new FallbackPlanner(),
     embedder: new HashEmbedder(),
     synthesizer: new EchoSynthesizer(),
@@ -737,8 +746,10 @@ test("fallback planner can create a Fly workspace, run a task, read summary.md, 
 });
 
 test("session endpoints expose chat history for the assistant UI", async () => {
+  const store = new InMemoryAppStore();
   const app = createApp({
-    store: new InMemoryAppStore(),
+    store,
+    billing: createBillingService(store),
     planner: new ScriptedPlanner([
       {
         type: "final_answer",
@@ -825,6 +836,7 @@ test("admin can inspect all users, all runs, and another user's session", async 
 
   const app = createApp({
     store,
+    billing: createBillingService(store),
     planner: new ScriptedPlanner([
       {
         type: "final_answer",
@@ -900,6 +912,7 @@ test("workspace args are normalized and run logs are exposed", async () => {
   let capturedTaskContext: Record<string, unknown> | null = null;
   const app = createApp({
     store,
+    billing: createBillingService(store),
     planner: new ScriptedPlanner([
       {
         type: "tool_call",
@@ -1021,6 +1034,102 @@ test("OpenAIEmbedder requests 1536 dimensions for text-embedding-3 models", asyn
   assert.equal(requestBody ? requestBody["dimensions"] : undefined, 1536);
 });
 
+test("billing gate rejects chat requests once monthly spend exceeds limit", async () => {
+  const store = new InMemoryAppStore();
+  await store.ensureUser("billing-user");
+  await store.createBillingEvent({
+    userId: "billing-user",
+    sessionId: null,
+    runId: null,
+    source: "planner",
+    provider: "openai",
+    model: "gpt-5.2",
+    operation: "chat.completions.create",
+    inputTokens: 1,
+    outputTokens: 1,
+    totalTokens: 2,
+    cachedInputTokens: 0,
+    costUsd: 50.01,
+    requestId: null,
+    requestJson: null,
+    responseJson: null,
+    metadata: {},
+  });
+
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    planner: new FallbackPlanner(),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+      async runWorkspaceTask() {
+        return { ok: false, error: "disabled" };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: false, error: "disabled" };
+      },
+      async destroyWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const response = await app.request("/chat", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      userId: "billing-user",
+      message: "Blocked",
+    }),
+  });
+
+  assert.equal(response.status, 402);
+  const body = await response.json() as { code?: string };
+  assert.equal(body.code, "billing_limit_exceeded");
+});
+
+test("billing tracker records OpenAI usage costs", async () => {
+  const store = new InMemoryAppStore();
+  const billing = createBillingService(store);
+
+  await billing.track(
+    {
+      userId: "tracked-user",
+      sessionId: "session-1",
+      runId: "run-1",
+      source: "planner",
+    },
+    {
+      provider: "openai",
+      model: "gpt-5.2",
+      operation: "chat.completions.create",
+      inputTokens: 1000,
+      outputTokens: 500,
+      totalTokens: 1500,
+      cachedInputTokens: 200,
+      metadata: {},
+    },
+  );
+
+  const spend = await store.getBillingSpend("tracked-user", new Date(Date.now() - 60_000).toISOString());
+  assert.equal(spend.eventCount, 1);
+  assert.equal(spend.totalCostUsd, 0.006025);
+});
+
 test("public profile endpoints expose follow state", async () => {
   const store = new InMemoryAppStore();
   await store.upsertUserProfile({
@@ -1036,6 +1145,7 @@ test("public profile endpoints expose follow state", async () => {
 
   const app = createApp({
     store,
+    billing: createBillingService(store),
     planner: new ScriptedPlanner([
       {
         type: "final_answer",

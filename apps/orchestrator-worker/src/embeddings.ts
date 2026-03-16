@@ -1,7 +1,9 @@
 import { hashTextToVector } from "@alphabook/shared";
 
+import { openAIUsageFromResponse, type BillingContext, type BillingService } from "./billing";
+
 export interface Embedder {
-  embedQuery(text: string): Promise<number[]>;
+  embedQuery(text: string, billingContext?: BillingContext): Promise<number[]>;
 }
 
 type FetchLike = typeof fetch;
@@ -17,9 +19,10 @@ export class OpenAIEmbedder implements Embedder {
     private readonly apiKey: string,
     private readonly model: string,
     private readonly fetchImpl: FetchLike = (input, init) => fetch(input, init),
+    private readonly billing?: BillingService,
   ) {}
 
-  async embedQuery(text: string): Promise<number[]> {
+  async embedQuery(text: string, billingContext?: BillingContext): Promise<number[]> {
     const body: Record<string, unknown> = {
       model: this.model,
       input: text,
@@ -45,7 +48,28 @@ export class OpenAIEmbedder implements Embedder {
       data?: Array<{
         embedding?: number[];
       }>;
+      usage?: Record<string, unknown>;
+      id?: string;
     };
+    if (this.billing && billingContext) {
+      const usage = openAIUsageFromResponse(payload as Record<string, unknown>);
+      if (usage) {
+        await this.billing.track(billingContext, {
+          provider: "openai",
+          model: this.model,
+          operation: "embeddings.create",
+          ...usage,
+          requestId: payload.id ?? null,
+          requestJson: body,
+          responseJson: {
+            usage: payload.usage ?? null,
+          },
+          metadata: {
+            inputLength: text.length,
+          },
+        });
+      }
+    }
     const embedding = payload.data?.[0]?.embedding;
     if (!embedding?.length) {
       throw new Error("Embedding response was empty.");

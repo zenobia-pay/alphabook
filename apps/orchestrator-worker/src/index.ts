@@ -2,6 +2,7 @@ import { createNeonDb } from "@alphabook/db";
 
 import { createApp } from "./app";
 import { WorkOSAuth } from "./auth";
+import { createBillingService } from "./billing";
 import { HashEmbedder, OpenAIEmbedder } from "./embeddings";
 import { FallbackPlanner, OpenAIPlanner } from "./planner";
 import { CloudflareR2Store } from "./r2";
@@ -15,6 +16,8 @@ export interface Env {
   OPENAI_MODEL?: string;
   OPENAI_SYNTH_MODEL?: string;
   OPENAI_EMBEDDING_MODEL?: string;
+  BILLING_MONTHLY_LIMIT_USD?: string;
+  BILLING_MODEL_PRICING_JSON?: string;
   RUNTIME_AGENT_MODEL?: string;
   RUNTIME_R2_BUCKET_NAME?: string;
   RUNTIME_SERVICE_URL?: string;
@@ -95,18 +98,29 @@ function buildFetchHandler(env: Env) {
   const db = createNeonDb(env.DATABASE_URL);
   const store = new NeonAppStore(db);
   const blobStore = new CloudflareR2Store(env.CORPUS_BUCKET);
+  const billing = createBillingService(store, {
+    monthlyLimitUsd: env.BILLING_MONTHLY_LIMIT_USD ? Number(env.BILLING_MONTHLY_LIMIT_USD) : undefined,
+    modelPricing: env.BILLING_MODEL_PRICING_JSON
+      ? JSON.parse(env.BILLING_MODEL_PRICING_JSON) as Record<string, {
+        inputPerMillionUsd: number;
+        outputPerMillionUsd: number;
+        cachedInputPerMillionUsd?: number;
+      }>
+      : undefined,
+  });
   const planner = env.OPENAI_API_KEY
-    ? new OpenAIPlanner(env.OPENAI_API_KEY, env.OPENAI_MODEL ?? "gpt-5.2")
+    ? new OpenAIPlanner(env.OPENAI_API_KEY, env.OPENAI_MODEL ?? "gpt-5.2", undefined, billing)
     : new FallbackPlanner();
   const embedder = env.OPENAI_API_KEY
-    ? new OpenAIEmbedder(env.OPENAI_API_KEY, env.OPENAI_EMBEDDING_MODEL ?? "text-embedding-3-small")
+    ? new OpenAIEmbedder(env.OPENAI_API_KEY, env.OPENAI_EMBEDDING_MODEL ?? "text-embedding-3-small", undefined, billing)
     : new HashEmbedder();
   const synthesizer = env.OPENAI_API_KEY
-    ? new OpenAISynthesizer(env.OPENAI_API_KEY, env.OPENAI_SYNTH_MODEL ?? env.OPENAI_MODEL ?? "gpt-5.2")
+    ? new OpenAISynthesizer(env.OPENAI_API_KEY, env.OPENAI_SYNTH_MODEL ?? env.OPENAI_MODEL ?? "gpt-5.2", undefined, billing)
     : new FallbackSynthesizer();
 
   const app = createApp({
     store,
+    billing,
     planner,
     embedder,
     synthesizer,
@@ -128,6 +142,8 @@ function buildFetchHandler(env: Env) {
       jobsName: env.QUEUE_JOBS_NAME ?? "alphabook-jobs",
     },
     adminAllowedEmail: env.ADMIN_ALLOWED_EMAIL,
+    openAIApiKey: env.OPENAI_API_KEY,
+    openAIModel: env.OPENAI_SYNTH_MODEL ?? env.OPENAI_MODEL ?? "gpt-5.2",
   });
 
   return app.fetch;

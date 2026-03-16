@@ -7,6 +7,7 @@ import {
   type Citation,
   type ToolName,
 } from "@alphabook/shared";
+import { openAIUsageFromResponse, type BillingContext, type BillingService } from "./billing";
 
 const SynthesizerResponseSchema = z.object({
   answer: z.string(),
@@ -25,6 +26,7 @@ export interface SynthesisInput {
   plannerDraft?: string;
   plannerCitations: Citation[];
   toolHistory: ToolHistoryEntry[];
+  billingContext?: BillingContext;
 }
 
 export interface SynthesisResult {
@@ -184,38 +186,41 @@ export class OpenAISynthesizer implements Synthesizer {
   constructor(
     private readonly apiKey: string,
     private readonly model: string,
+    private readonly fetchImpl: typeof fetch = (input, init) => fetch(input, init),
+    private readonly billing?: BillingService,
   ) {}
 
   async synthesize(input: SynthesisInput): Promise<SynthesisResult> {
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    const body = {
+      model: this.model,
+      response_format: { type: "json_object" as const },
+      messages: [
+        {
+          role: "system",
+          content: `${SYNTHESIZER_SYSTEM_PROMPT}\nReturn a single JSON object with answer and citations.`,
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            question: input.userMessage,
+            plannerDraft: input.plannerDraft ?? null,
+            toolHistory: input.toolHistory,
+            responseInstructions: "Reply with JSON only.",
+            outputShape: {
+              answer: "string",
+              citations: "array of {workId, chunkId?, label, excerpt, r2Key?}",
+            },
+          }),
+        },
+      ],
+    };
+    const response = await this.fetchImpl("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "content-type": "application/json",
         authorization: `Bearer ${this.apiKey}`,
       },
-      body: JSON.stringify({
-        model: this.model,
-        response_format: { type: "json_object" },
-        messages: [
-          {
-            role: "system",
-            content: `${SYNTHESIZER_SYSTEM_PROMPT}\nReturn a single JSON object with answer and citations.`,
-          },
-          {
-            role: "user",
-            content: JSON.stringify({
-              question: input.userMessage,
-              plannerDraft: input.plannerDraft ?? null,
-              toolHistory: input.toolHistory,
-              responseInstructions: "Reply with JSON only.",
-              outputShape: {
-                answer: "string",
-                citations: "array of {workId, chunkId?, label, excerpt, r2Key?}",
-              },
-            }),
-          },
-        ],
-      }),
+      body: JSON.stringify(body),
     });
     if (!response.ok) {
       const detail = await response.text();
@@ -228,7 +233,29 @@ export class OpenAISynthesizer implements Synthesizer {
           content?: string;
         };
       }>;
+      usage?: Record<string, unknown>;
+      id?: string;
     };
+    if (this.billing && input.billingContext) {
+      const usage = openAIUsageFromResponse(payload as Record<string, unknown>);
+      if (usage) {
+        await this.billing.track(input.billingContext, {
+          provider: "openai",
+          model: this.model,
+          operation: "chat.completions.create",
+          ...usage,
+          requestId: payload.id ?? null,
+          requestJson: body as unknown as Record<string, unknown>,
+          responseJson: {
+            usage: payload.usage ?? null,
+          },
+          metadata: {
+            phase: "synthesizer",
+            toolHistoryEntries: input.toolHistory.length,
+          },
+        });
+      }
+    }
     const content = payload.choices?.[0]?.message?.content;
     if (!content) {
       throw new Error("Synthesis response was empty.");
