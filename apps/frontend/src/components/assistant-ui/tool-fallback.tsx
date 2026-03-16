@@ -261,6 +261,16 @@ function getRationale(args: JsonRecord | null) {
 }
 
 function summarizeTool(toolName: string, args: JsonRecord | null, result: JsonRecord | null, status?: ToolCallMessagePartStatus) {
+  if (status?.type === "incomplete") {
+    const error =
+      typeof status.error === "string"
+        ? status.error
+        : typeof result?.error === "string"
+          ? result.error
+          : null;
+    return error ? `This step failed: ${error}` : "This step failed.";
+  }
+
   const progress = getProgress(args);
   if (progress.length > 0) {
     return progress[progress.length - 1];
@@ -277,16 +287,6 @@ function summarizeTool(toolName: string, args: JsonRecord | null, result: JsonRe
       : safeObject(args?.taskSpec)?.question;
   const quotedQuery =
     typeof query === "string" && query.trim() ? `“${query.trim()}”` : null;
-
-  if (status?.type === "incomplete") {
-    const error =
-      typeof status.error === "string"
-        ? status.error
-        : typeof result?.error === "string"
-          ? result.error
-          : null;
-    return error ? `This step failed: ${error}` : "This step failed.";
-  }
 
   switch (toolName.toLowerCase()) {
     case "library scan":

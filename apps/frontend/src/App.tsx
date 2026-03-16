@@ -351,6 +351,12 @@ function reconcileMessagesWithRunState(messages: UiMessage[], runs: SessionRunRe
     }
 
     let changed = false;
+    const runFailureReason =
+      runStatus === "failed"
+        ? "This research run failed before it could finish."
+        : runStatus === "timed_out"
+          ? "This research run timed out before it could finish."
+          : null;
     const nextToolCalls = message.toolCalls.map((toolCall) => {
       if (toolCall.state !== "running") {
         return toolCall;
@@ -362,6 +368,17 @@ function reconcileMessagesWithRunState(messages: UiMessage[], runs: SessionRunRe
         ...toolCall,
         state: nextState,
         isError: runStatus === "failed" || runStatus === "timed_out" ? true : toolCall.isError,
+        result:
+          nextState === "error"
+            ? {
+                ...(toolCall.result ?? {}),
+                ok: false,
+                error:
+                  typeof toolCall.result?.error === "string" && toolCall.result.error.trim()
+                    ? toolCall.result.error
+                    : runFailureReason ?? "This step failed.",
+              }
+            : toolCall.result,
       };
     });
 
