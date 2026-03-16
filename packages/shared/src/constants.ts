@@ -19,12 +19,12 @@ export const R2_PREFIXES = {
 } as const;
 
 export const TOOL_LABELS = {
-  search_works: "Library Scan",
+  search_works: "Corpus Search",
   get_work_metadata: "Book Context",
-  get_relevant_chunks: "Seed Passages",
+  get_relevant_chunks: "Passage Search",
   get_work_text: "Text Lookup",
-  create_workspace: "Workspace Setup",
-  run_workspace_task: "Corpus Search",
+  create_workspace: "Codex Session",
+  run_workspace_task: "Codex Search",
   read_workspace_file: "Search Notes",
   destroy_workspace: "Cleanup",
 } as const;

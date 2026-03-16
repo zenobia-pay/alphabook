@@ -170,9 +170,67 @@ function omitInternalKeys(record: JsonRecord | null) {
     return null;
   }
   const filtered = Object.fromEntries(
-    Object.entries(record).filter(([key]) => key !== "__rationale"),
+    Object.entries(record).filter(([key]) => key !== "__rationale" && key !== "__progress"),
   );
   return Object.keys(filtered).length ? filtered : null;
+}
+
+function getProgress(args: JsonRecord | null) {
+  const progress = args?.__progress;
+  if (!Array.isArray(progress)) {
+    return [];
+  }
+  return progress.filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+}
+
+function pruneValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => pruneValue(entry))
+      .filter((entry) => entry !== undefined)
+      .slice(0, MAX_PREVIEW_ITEMS);
+  }
+  const record = safeObject(value);
+  if (!record) {
+    return value;
+  }
+
+  const hiddenKeys = new Set([
+    "__rationale",
+    "__progress",
+    "downloads",
+    "fileCatalog",
+    "manifest",
+    "runtimeId",
+    "providerMachineId",
+    "promptPreview",
+    "schemaPath",
+    "outputPath",
+    "logPath",
+    "billingEvents",
+    "baseUrl",
+  ]);
+  const nextEntries = Object.entries(record)
+    .filter(([key]) => !hiddenKeys.has(key))
+    .map(([key, entry]) => {
+      const entryObject = safeObject(entry);
+      if (key === "taskContext" && entryObject) {
+        const taskContext = { ...entryObject };
+        delete taskContext.hydratedWorkIds;
+        delete taskContext.mode;
+        return [key, pruneValue(taskContext)];
+      }
+      if (key === "taskSpec" && entryObject) {
+        const taskSpec = { ...entryObject };
+        delete taskSpec.fileCatalog;
+        delete taskSpec.downloads;
+        return [key, pruneValue(taskSpec)];
+      }
+      return [key, pruneValue(entry)];
+    })
+    .filter(([, entry]) => entry !== undefined);
+
+  return Object.fromEntries(nextEntries);
 }
 
 function getRationale(args: JsonRecord | null) {
@@ -206,8 +264,8 @@ function summarizeTool(toolName: string, args: JsonRecord | null, result: JsonRe
   switch (toolName.toLowerCase()) {
     case "library scan":
       return quotedQuery
-        ? `Looking across the current library for books related to ${quotedQuery}.`
-        : "Looking across the current library for likely books.";
+        ? `Looking across the corpus for books related to ${quotedQuery}.`
+        : "Looking across the corpus for likely books.";
     case "seed passages":
       return quotedQuery
         ? `Pulling a first set of passages for ${quotedQuery}.`
@@ -217,7 +275,7 @@ function summarizeTool(toolName: string, args: JsonRecord | null, result: JsonRe
     case "full text lookup":
       return "Opening the source text directly.";
     case "workspace setup":
-      return "Preparing the workspace for the longer-running search.";
+      return "Starting the Codex session for the longer-running search.";
     case "evidence search":
     case "deep search":
       return "Running the longer workspace search over the selected corpus files.";
@@ -263,6 +321,29 @@ function ToolSection({
           >
             <span className="aui-tool-line-key">{humanizeKey(line.key)}</span>
             <span className="aui-tool-line-value">{line.value}</span>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function ToolProgressSection({
+  items,
+}: {
+  items: string[];
+}) {
+  if (!items.length) {
+    return null;
+  }
+
+  return (
+    <section className="aui-tool-section">
+      <h4 className="aui-tool-section-title">Progress</h4>
+      <div className="aui-tool-progress-log">
+        {items.map((item, index) => (
+          <div key={`${item}-${index}`} className="aui-tool-progress-line">
+            {item}
           </div>
         ))}
       </div>
@@ -427,18 +508,20 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
   status,
 }) => {
   const args = useMemo(() => parseArgs(argsText), [argsText]);
-  const cleanedArgs = useMemo(() => omitInternalKeys(args), [args]);
-  const resultObject = useMemo(() => safeObject(result) ?? result, [result]);
+  const progress = useMemo(() => getProgress(args), [args]);
+  const cleanedArgs = useMemo(() => pruneValue(omitInternalKeys(args)), [args]);
+  const resultObject = useMemo(() => pruneValue(safeObject(result) ?? result), [result]);
   const summary = useMemo(
     () => summarizeTool(toolName, args, safeObject(result), status),
     [toolName, args, result, status],
   );
 
   return (
-    <ToolFallbackRoot>
+    <ToolFallbackRoot defaultOpen={status?.type === "running"}>
       <ToolFallbackTrigger toolName={toolName} summary={summary} status={status} />
       <ToolFallbackContent>
         <ToolFallbackError status={status} />
+        <ToolProgressSection items={progress} />
         <ToolSection title="Request" value={cleanedArgs} />
         <ToolSection title="Response" value={resultObject} />
       </ToolFallbackContent>

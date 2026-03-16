@@ -292,26 +292,26 @@ async function executeTool(
 function workspaceProgressSteps(args: Record<string, unknown>): string[] {
   if ("taskContext" in args && !("taskSpec" in args)) {
     return [
-      "Allocating a fresh workspace.",
-      "Loading corpus files into the workspace.",
-      "Finishing the workspace setup.",
+      "Starting the Codex search session.",
+      "Connecting Codex to the corpus search tools.",
+      "Getting the Codex session ready.",
     ];
   }
   const taskSpec = args.taskSpec && typeof args.taskSpec === "object" ? args.taskSpec as Record<string, unknown> : null;
   const phase = typeof taskSpec?.phase === "string" ? taskSpec.phase : null;
   const workCount = Array.isArray(taskSpec?.workIds) ? taskSpec.workIds.length : 0;
-  const scope = workCount > 0 ? `${workCount} books` : "the current corpus snapshot";
+  const scope = workCount > 0 ? `${workCount} books` : "the corpus";
   if (phase === "collect_evidence") {
     return [
-      `Scanning ${scope} for likely matches.`,
+      `Searching ${scope} for likely matches.`,
       "Pulling candidate passages into the evidence set.",
       "Keeping the strongest quotations and source references.",
     ];
   }
   if (phase === "collect_and_brief") {
     return [
-      `Scanning ${scope} for likely matches.`,
-      "Running rg, sed, and metadata queries across the corpus.",
+      `Searching ${scope} with Codex.`,
+      "Running regex, metadata, and context searches across the corpus.",
       "Assembling the quoted briefing with linked citations.",
     ];
   }
@@ -606,8 +606,8 @@ function describePlannerAction(
   switch (toolName) {
     case "search_works":
       return normalizedMessage
-        ? `I’ll search over the corpus for “${normalizedMessage},” then I’ll pull the strongest passages and summarize them into a briefing for you.`
-        : "I’ll search over the corpus, then I’ll pull the strongest passages and summarize them into a briefing for you.";
+        ? `I’m going to search the corpus for “${normalizedMessage},” pull the strongest passages, then have Codex build a briefing with source references.`
+        : "I’m going to search the corpus, pull the strongest passages, then have Codex build a briefing with source references.";
     case "get_relevant_chunks":
       return normalizedMessage
         ? `I found some likely matches for “${normalizedMessage}.” Now I’m pulling the strongest passages and building the briefing.`
@@ -617,9 +617,9 @@ function describePlannerAction(
     case "get_work_text":
       return "I’m opening the source text directly so I can check the wording.";
     case "create_workspace":
-      return "I have enough to start a deeper search, so I’m setting that up now.";
+      return "I’m starting the Codex session now so it can use the search results as they come in.";
     case "run_workspace_task":
-      return "I’m running the deeper search now and gathering the strongest evidence.";
+      return "Codex is running the deeper search now and gathering the strongest evidence.";
     case "read_workspace_file":
       return "The search finished, and I’m pulling the results back into the chat.";
     case "destroy_workspace":

@@ -34,6 +34,7 @@ type ToolTraceEntry = {
   toolName: string;
   label: string;
   rationale?: string;
+  progress: string[];
   args: Record<string, unknown>;
   result?: Record<string, unknown>;
   isError?: boolean;
@@ -203,6 +204,7 @@ function createGuestProfile(id: string): UserProfile {
   return {
     id,
     email: null,
+    handle: null,
     name: "AlphaBook Reader",
     avatarUrl: null,
     createdAt: new Date().toISOString(),
@@ -230,6 +232,9 @@ function normalizeToolTraceEntry(entry: Record<string, unknown>, index: number):
     toolName,
     label: typeof entry.label === "string" ? entry.label : getToolLabel(toolName),
     rationale: typeof entry.rationale === "string" ? entry.rationale : undefined,
+    progress: Array.isArray(entry.progress)
+      ? entry.progress.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      : [],
     args: entry.args && typeof entry.args === "object" ? (entry.args as Record<string, unknown>) : {},
     result: entry.result && typeof entry.result === "object" ? (entry.result as Record<string, unknown>) : undefined,
     isError: entry.isError === true || state === "error",
@@ -268,6 +273,7 @@ function hydrateStoredMessage(message: RawUiMessage): UiMessage {
                 id: `search_works-${index}`,
                 toolName: "search_works",
                 label: getToolLabel("search_works"),
+                progress: [],
                 args: {},
                 state: "completed",
               },
@@ -773,10 +779,7 @@ function displayName(user: UserProfile | null) {
 }
 
 function profileHandle(user: UserProfile | null) {
-  if (user?.email) {
-    return `@${user.email.split("@")[0]}`;
-  }
-  return "@alphabook";
+  return user?.handle?.trim() ? `@${user.handle.trim()}` : null;
 }
 
 function formatReleaseYear(value: string | null | undefined) {
@@ -827,13 +830,21 @@ function messageToThreadMessage(message: UiMessage, streamingAssistantId: string
 
   if (message.role === "assistant") {
     const toolParts = message.toolCalls.map((entry) => {
+        const progress = entry.progress.filter((value) => value.trim().length > 0);
         const args = toReadonlyJsonObject(
-          entry.rationale
-            ? {
-                ...entry.args,
-                __rationale: entry.rationale,
-              }
-            : entry.args,
+          {
+            ...entry.args,
+            ...(entry.rationale
+              ? {
+                  __rationale: entry.rationale,
+                }
+              : {}),
+            ...(progress.length > 0
+              ? {
+                  __progress: progress,
+                }
+              : {}),
+          },
         );
         return {
           type: "tool-call" as const,
@@ -1835,6 +1846,7 @@ export default function App() {
                   toolName,
                   label,
                   rationale: typeof event.data.rationale === "string" ? event.data.rationale : undefined,
+                  progress: [],
                   args: event.data.args && typeof event.data.args === "object" ? (event.data.args as Record<string, unknown>) : {},
                   state: "running",
                 },
@@ -1856,6 +1868,12 @@ export default function App() {
                       ...entry,
                       label,
                       rationale: typeof event.data.rationale === "string" ? event.data.rationale : entry.rationale,
+                      progress:
+                        typeof event.data.rationale === "string"
+                        && event.data.rationale.trim().length > 0
+                        && !entry.progress.includes(event.data.rationale)
+                          ? [...entry.progress, event.data.rationale]
+                          : entry.progress,
                       result: event.data.result && typeof event.data.result === "object" ? (event.data.result as Record<string, unknown>) : undefined,
                       isError: event.data.status === "failed",
                       state: event.data.status === "failed" ? "error" : "completed",
@@ -1880,6 +1898,7 @@ export default function App() {
                   ? {
                       ...entry,
                       rationale,
+                      progress: entry.progress.includes(rationale) ? entry.progress : [...entry.progress, rationale],
                     }
                   : entry,
               );
@@ -2317,7 +2336,10 @@ export default function App() {
         <section className="work-feed" aria-label="Corpus feed">
           {feedWorks.map((work) => {
             const selected = selectedWorkIds.includes(work.id);
-            const previewMeta = [formatReleaseYear(work.releaseDate)].filter(Boolean).join(" · ");
+            const previewMeta = [work.feedLabel, formatReleaseYear(work.releaseDate), work.publisher].filter(Boolean).join(" · ");
+            const secondaryTags = work.bookshelves?.length
+              ? work.bookshelves.slice(0, 2)
+              : work.subjects.slice(0, 3);
             return (
               <article key={work.id} className={`work-feed-card ${selected ? "is-selected" : ""}`}>
                 <button
@@ -2341,9 +2363,9 @@ export default function App() {
 
                   {work.summary ? <p className="work-feed-summary">{work.summary}</p> : null}
 
-                  {work.subjects.length > 0 ? (
+                  {secondaryTags.length > 0 ? (
                     <div className="work-feed-tags">
-                      {work.subjects.slice(0, 4).map((subject) => (
+                      {secondaryTags.map((subject) => (
                         <span key={subject} className="tag-chip">
                           {subject}
                         </span>
@@ -2413,6 +2435,7 @@ export default function App() {
       const publicTag = profileHandle(profile);
       const publicHue = hueFromSeed(profile.email ?? profile.id);
       const publicJoined = formatMonthYear(profile.createdAt);
+      const publicMeta = [publicTag, publicJoined ? `joined ${publicJoined}` : null].filter(Boolean).join(" • ");
 
       return (
         <div className="profile-view profile-view-public">
@@ -2433,7 +2456,7 @@ export default function App() {
               </Avatar>
             )}
             <h1>{publicName}</h1>
-            <p>{publicJoined ? `${publicTag} • joined ${publicJoined}` : publicTag}</p>
+            {publicMeta ? <p>{publicMeta}</p> : null}
           </section>
 
           <section className="profile-toolbar profile-toolbar-public">
@@ -2472,6 +2495,7 @@ export default function App() {
     }
 
     const joinedLabel = formatMonthYear(currentUser?.createdAt);
+    const currentMeta = [profileTag, joinedLabel ? `joined ${joinedLabel}` : null].filter(Boolean).join(" • ");
 
     return (
       <div className="profile-view">
@@ -2492,7 +2516,7 @@ export default function App() {
             </Avatar>
           )}
           <h1>{displayProfileName}</h1>
-          <p>{joinedLabel ? `${profileTag} • joined ${joinedLabel}` : profileTag}</p>
+          {currentMeta ? <p>{currentMeta}</p> : null}
         </section>
 
         <section className="profile-toolbar">

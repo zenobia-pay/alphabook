@@ -930,6 +930,24 @@ async function persistCodexBriefingArtifacts(outputDir, question, codexOutput) {
   return citations;
 }
 
+function emitStreamLines(bufferRef, chunk, onLine) {
+  if (!onLine) {
+    return;
+  }
+  bufferRef.value += Buffer.from(chunk).toString("utf8");
+  while (true) {
+    const newlineIndex = bufferRef.value.indexOf("\n");
+    if (newlineIndex < 0) {
+      break;
+    }
+    const line = bufferRef.value.slice(0, newlineIndex).trim();
+    bufferRef.value = bufferRef.value.slice(newlineIndex + 1);
+    if (line) {
+      onLine(line);
+    }
+  }
+}
+
 function runProcess(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
@@ -940,12 +958,16 @@ function runProcess(command, args, options = {}) {
 
     const stdoutChunks = [];
     const stderrChunks = [];
+    const stdoutBuffer = { value: "" };
+    const stderrBuffer = { value: "" };
 
     child.stdout.on("data", (chunk) => {
       stdoutChunks.push(Buffer.from(chunk));
+      emitStreamLines(stdoutBuffer, chunk, options.onStdoutLine);
     });
     child.stderr.on("data", (chunk) => {
       stderrChunks.push(Buffer.from(chunk));
+      emitStreamLines(stderrBuffer, chunk, options.onStderrLine);
     });
     child.on("error", reject);
     child.on("close", (code) => {
@@ -1097,6 +1119,22 @@ async function runCodexStep({
         cwd: workspaceRoot,
         env: process.env,
         input: promptText,
+        onStdoutLine: (line) => {
+          void appendProgressEvent(outputDir, {
+            type: "codex.stdout",
+            step,
+            line: compactText(line, 400),
+            message: compactText(line, 400),
+          });
+        },
+        onStderrLine: (line) => {
+          void appendProgressEvent(outputDir, {
+            type: "codex.stderr",
+            step,
+            line: compactText(line, 400),
+            message: compactText(line, 400),
+          });
+        },
       },
     );
 
