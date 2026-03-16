@@ -428,12 +428,10 @@ function ToolFallbackTrigger({
         </span>
         <span className="aui-tool-fallback-summary">{summary}</span>
         {progressPreview && progressPreview.length > 0 ? (
-          <span className="aui-tool-fallback-progress-preview">
-            {progressPreview.slice(-4).map((item, index) => (
-              <span key={`${item}-${index}`} className="aui-tool-fallback-progress-preview-line">
-                {item}
-              </span>
-            ))}
+          <span className="aui-tool-fallback-progress-preview group-data-[state=open]/trigger:hidden">
+            <span className="aui-tool-fallback-progress-preview-line line-clamp-1">
+              {progressPreview[progressPreview.length - 1]}
+            </span>
           </span>
         ) : null}
       </span>
