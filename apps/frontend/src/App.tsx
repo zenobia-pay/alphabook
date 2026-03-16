@@ -9,7 +9,7 @@ import { ChevronsLeft, ChevronsRight, Link2, MessageSquarePlus } from "lucide-re
 
 import { getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type PublicProfileResponse, type UserProfile, type WorkDetail, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
-import { buildSignInUrl, cancelRun, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchCurrentUser, fetchMessages, fetchProfile, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, queryAdminAnalytics, sendAnalyticsEvent, signOut, streamChat, unfollowProfile } from "./api";
+import { buildSignInUrl, cancelRun, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchCurrentUser, fetchMessages, fetchProfile, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, queryAdminAnalytics, sendAnalyticsEvent, signOut, streamChat, unfollowProfile } from "./api";
 import { Thread } from "./components/assistant-ui/thread";
 import { Avatar, AvatarFallback, AvatarImage } from "./components/ui/avatar";
 import { Button } from "./components/ui/button";
@@ -1526,6 +1526,9 @@ function AssistantSurface({
         onSuggestionSelect={(prompt) => {
           void onPrompt(prompt);
         }}
+        onCancel={() => {
+          void onCancel();
+        }}
       />
     </AssistantRuntimeProvider>
   );
@@ -1660,6 +1663,7 @@ export default function App() {
   const [sessionsResolved, setSessionsResolved] = useState(false);
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [isSending, setIsSending] = useState(false);
+  const [recoveredActiveRunId, setRecoveredActiveRunId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [streamingAssistantId, setStreamingAssistantId] = useState<string | null>(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -2217,6 +2221,52 @@ export default function App() {
     })();
   }, [authState.loading, selectedSessionId]);
 
+  useEffect(() => {
+    if (authState.loading) {
+      return;
+    }
+    if (!selectedSessionId) {
+      setRecoveredActiveRunId(null);
+      return;
+    }
+
+    let cancelled = false;
+    let pollTimer: number | null = null;
+
+    const loadRuns = async () => {
+      try {
+        const runs = await fetchRuns(selectedSessionId);
+        if (cancelled) {
+          return;
+        }
+        const activeRun = runs.find((run) => run.status === "running" || run.status === "queued") ?? null;
+        const nextRunId = activeRun?.id ?? null;
+        setRecoveredActiveRunId(nextRunId);
+        if (!isSending) {
+          activeRunIdRef.current = nextRunId;
+        }
+        if (nextRunId) {
+          pollTimer = window.setTimeout(() => {
+            void loadRuns();
+          }, 4000);
+        }
+      } catch {
+        if (!cancelled) {
+          setRecoveredActiveRunId(null);
+        }
+      }
+    };
+
+    void loadRuns();
+
+    return () => {
+      cancelled = true;
+      if (pollTimer !== null) {
+        window.clearTimeout(pollTimer);
+      }
+    };
+  }, [authState.loading, isSending, selectedSessionId]);
+
   async function refreshSessions(preferredSessionId?: string | null) {
     if (!currentUserId) {
       return;
@@ -2454,8 +2504,9 @@ export default function App() {
     activeChatAbortControllerRef.current = null;
     abortController?.abort();
 
-    const runId = activeRunIdRef.current;
+    const runId = activeRunIdRef.current ?? recoveredActiveRunId;
     activeRunIdRef.current = null;
+    setRecoveredActiveRunId(null);
     if (runId) {
       try {
         await cancelRun(runId);
@@ -3067,7 +3118,7 @@ export default function App() {
               <AssistantSurface
                 key={selectedSessionId ?? "new-thread"}
                 messages={messages}
-                isSending={isSending}
+                isSending={isSending || recoveredActiveRunId !== null}
                 streamingAssistantId={streamingAssistantId}
                 onPrompt={sendPrompt}
                 onCancel={cancelActiveRun}
@@ -3170,7 +3221,7 @@ export default function App() {
               <AssistantSurface
                 key={`book-${activeWorkId ?? "unknown"}-${selectedSessionId ?? "new-thread"}`}
                 messages={messages}
-                isSending={isSending}
+                isSending={isSending || recoveredActiveRunId !== null}
                 streamingAssistantId={streamingAssistantId}
                 onPrompt={bookPromptHandler}
                 onCancel={cancelActiveRun}

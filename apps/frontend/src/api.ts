@@ -43,6 +43,15 @@ export interface ChatStreamHandlers {
   onEvent: (event: StreamEvent) => void;
 }
 
+export type SessionRunRecord = {
+  id: string;
+  sessionId: string;
+  status: "queued" | "running" | "completed" | "failed" | "timed_out";
+  plannerTurns: number;
+  startedAt: string;
+  completedAt: string | null;
+};
+
 async function ensureOk(response: Response): Promise<Response> {
   if (!response.ok) {
     throw new Error(await response.text());
@@ -66,6 +75,16 @@ export async function fetchMessages(sessionId: string) {
     }),
   );
   return MessageListResponseSchema.parse(await response.json()).messages.map(hydrateMessage);
+}
+
+export async function fetchRuns(sessionId: string): Promise<SessionRunRecord[]> {
+  const response = await ensureOk(
+    await fetch(`${API_BASE}/sessions/${sessionId}/runs`, {
+      credentials: "include",
+    }),
+  );
+  const payload = await response.json() as { runs?: SessionRunRecord[] };
+  return Array.isArray(payload.runs) ? payload.runs : [];
 }
 
 export async function fetchCurrentUser(): Promise<CurrentUserResponse> {

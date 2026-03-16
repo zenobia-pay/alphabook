@@ -133,10 +133,12 @@ export const Thread: FC<{
   isRunning?: boolean;
   suggestions?: ThreadSuggestion[];
   onSuggestionSelect?: (prompt: string) => void;
+  onCancel?: () => void;
 }> = ({
   isRunning = false,
   suggestions = [],
   onSuggestionSelect,
+  onCancel,
 }) => {
   const isEmpty = useAuiState((state) => state.thread.isEmpty);
 
@@ -166,7 +168,7 @@ export const Thread: FC<{
 
         <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 mx-auto mt-auto flex w-full max-w-(--thread-max-width) flex-col gap-3 overflow-visible pb-3 md:pb-4">
           <ThreadScrollToBottom />
-          <Composer isRunning={isRunning} />
+          <Composer isRunning={isRunning} onCancel={onCancel} />
           {isEmpty && !isRunning && suggestions.length > 0 ? (
             <ThreadSuggestions suggestions={suggestions} onSuggestionSelect={onSuggestionSelect} />
           ) : null}
@@ -252,7 +254,7 @@ const ThreadSuggestionItem: FC<{
   );
 };
 
-const Composer: FC<{ isRunning?: boolean }> = ({ isRunning = false }) => {
+const Composer: FC<{ isRunning?: boolean; onCancel?: () => void }> = ({ isRunning = false, onCancel }) => {
   return (
     <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
       <ComposerPrimitive.AttachmentDropzone asChild>
@@ -269,14 +271,14 @@ const Composer: FC<{ isRunning?: boolean }> = ({ isRunning = false }) => {
             aria-label="Message input"
             disabled={isRunning}
           />
-          <ComposerAction isRunning={isRunning} />
+          <ComposerAction isRunning={isRunning} onCancel={onCancel} />
         </div>
       </ComposerPrimitive.AttachmentDropzone>
     </ComposerPrimitive.Root>
   );
 };
 
-const ComposerAction: FC<{ isRunning?: boolean }> = ({ isRunning = false }) => {
+const ComposerAction: FC<{ isRunning?: boolean; onCancel?: () => void }> = ({ isRunning = false, onCancel }) => {
   return (
     <div
       className={cn(
@@ -309,6 +311,7 @@ const ComposerAction: FC<{ isRunning?: boolean }> = ({ isRunning = false }) => {
             size="icon"
             className="aui-composer-cancel size-8 rounded-full"
             aria-label="Stop generating"
+            onClick={onCancel}
           >
             <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />
           </Button>
