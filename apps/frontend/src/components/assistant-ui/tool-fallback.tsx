@@ -60,6 +60,92 @@ function humanizeKey(key: string) {
     .replace(/^\w/, (char) => char.toUpperCase());
 }
 
+function formatValueInline(value: unknown): string {
+  if (value === null) {
+    return "null";
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      return "[]";
+    }
+    const preview = value.slice(0, MAX_PREVIEW_ITEMS).map((item) => formatValueInline(item)).join(", ");
+    return value.length > MAX_PREVIEW_ITEMS ? `${preview} (+${value.length - MAX_PREVIEW_ITEMS} more)` : preview;
+  }
+  if (value && typeof value === "object") {
+    return "{…}";
+  }
+  return String(value);
+}
+
+function flattenStructuredLines(
+  value: unknown,
+  depth = 0,
+  keyPrefix?: string,
+  lines: Array<{ key: string; value: string; depth: number }> = [],
+) {
+  if (isPrimitive(value)) {
+    if (keyPrefix) {
+      lines.push({ key: keyPrefix, value: formatPrimitive(value), depth });
+    }
+    return lines;
+  }
+
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      if (keyPrefix) {
+        lines.push({ key: keyPrefix, value: "[]", depth });
+      }
+      return lines;
+    }
+
+    if (value.every((item) => isPrimitive(item))) {
+      if (keyPrefix) {
+        lines.push({ key: keyPrefix, value: formatValueInline(value), depth });
+      }
+      return lines;
+    }
+
+    value.slice(0, MAX_PREVIEW_ITEMS).forEach((item, index) => {
+      flattenStructuredLines(item, depth + 1, keyPrefix ? `${keyPrefix}[${index}]` : `[${index}]`, lines);
+    });
+    if (value.length > MAX_PREVIEW_ITEMS && keyPrefix) {
+      lines.push({
+        key: `${keyPrefix}[+]`,
+        value: `${value.length - MAX_PREVIEW_ITEMS} more`,
+        depth: depth + 1,
+      });
+    }
+    return lines;
+  }
+
+  const objectValue = safeObject(value);
+  if (!objectValue) {
+    if (keyPrefix) {
+      lines.push({ key: keyPrefix, value: String(value), depth });
+    }
+    return lines;
+  }
+
+  for (const [key, child] of Object.entries(objectValue)) {
+    if (key === "__rationale") {
+      continue;
+    }
+    const nextKey = keyPrefix ? `${keyPrefix}.${key}` : key;
+    if (isPrimitive(child) || (Array.isArray(child) && child.every((item) => isPrimitive(item)))) {
+      lines.push({ key: nextKey, value: formatValueInline(child), depth });
+      continue;
+    }
+    flattenStructuredLines(child, depth + 1, nextKey, lines);
+  }
+  return lines;
+}
+
 function isPrimitive(value: unknown): value is string | number | boolean | null {
   return (
     value === null ||
@@ -144,74 +230,6 @@ function summarizeTool(toolName: string, args: JsonRecord | null, result: JsonRe
   }
 }
 
-function StructuredValue({
-  label,
-  value,
-  depth = 0,
-}: {
-  label?: string;
-  value: unknown;
-  depth?: number;
-}) {
-  if (isPrimitive(value)) {
-    return (
-      <div className={cn("aui-tool-structured-row", !label && "aui-tool-structured-row-unlabeled", depth > 0 && "aui-tool-structured-row-nested")}>
-        {label ? <div className="aui-tool-structured-key">{humanizeKey(label)}</div> : null}
-        <div className="aui-tool-structured-value">{formatPrimitive(value)}</div>
-      </div>
-    );
-  }
-
-  if (Array.isArray(value)) {
-    if (value.length === 0) {
-      return (
-        <div className={cn("aui-tool-structured-row", !label && "aui-tool-structured-row-unlabeled", depth > 0 && "aui-tool-structured-row-nested")}>
-          {label ? <div className="aui-tool-structured-key">{humanizeKey(label)}</div> : null}
-          <div className="aui-tool-structured-value">[]</div>
-        </div>
-      );
-    }
-
-    const items = value.slice(0, MAX_PREVIEW_ITEMS);
-    return (
-      <div className={cn("aui-tool-structured-block", !label && "aui-tool-structured-block-unlabeled", depth > 0 && "aui-tool-structured-block-nested")}>
-        {label ? <div className="aui-tool-structured-key">{humanizeKey(label)}</div> : null}
-        <div className="aui-tool-structured-array">
-          {items.map((item, index) => (
-            <StructuredValue key={`${label ?? "item"}-${index}`} value={item} depth={depth + 1} />
-          ))}
-          {value.length > MAX_PREVIEW_ITEMS ? (
-            <div className="aui-tool-structured-more">
-              +{value.length - MAX_PREVIEW_ITEMS} more
-            </div>
-          ) : null}
-        </div>
-      </div>
-    );
-  }
-
-  const objectValue = safeObject(value);
-  if (!objectValue) {
-    return null;
-  }
-
-  const entries = Object.entries(objectValue).filter(([key]) => key !== "__rationale");
-  if (entries.length === 0) {
-    return null;
-  }
-
-  return (
-    <div className={cn("aui-tool-structured-block", !label && "aui-tool-structured-block-unlabeled", depth > 0 && "aui-tool-structured-block-nested")}>
-      {label ? <div className="aui-tool-structured-key">{humanizeKey(label)}</div> : null}
-      <div className="aui-tool-structured-group">
-        {entries.map(([key, child]) => (
-          <StructuredValue key={`${label ?? "root"}-${key}`} label={key} value={child} depth={depth + 1} />
-        ))}
-      </div>
-    </div>
-  );
-}
-
 function ToolSection({
   title,
   value,
@@ -228,11 +246,25 @@ function ToolSection({
     return null;
   }
 
+  const lines = flattenStructuredLines(value);
+  if (!lines.length) {
+    return null;
+  }
+
   return (
     <section className="aui-tool-section">
       <h4 className="aui-tool-section-title">{title}</h4>
-      <div className="aui-tool-structured-list">
-        <StructuredValue value={value} />
+      <div className="aui-tool-lines">
+        {lines.map((line) => (
+          <div
+            key={`${title}-${line.key}-${line.depth}`}
+            className="aui-tool-line"
+            style={{ ["--tool-line-depth" as string]: String(line.depth) }}
+          >
+            <span className="aui-tool-line-key">{humanizeKey(line.key)}</span>
+            <span className="aui-tool-line-value">{line.value}</span>
+          </div>
+        ))}
       </div>
     </section>
   );
