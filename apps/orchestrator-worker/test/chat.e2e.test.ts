@@ -368,6 +368,96 @@ test("auth sign-up route redirects into WorkOS authkit with sign-up hint", async
   assert.match(setCookie, new RegExp(AUTH_STATE_COOKIE_NAME));
 });
 
+test("auth sign-out route clears local cookies and redirects through WorkOS logout when session exists", async () => {
+  const store = new InMemoryAppStore();
+  const auth = new WorkOSAuth(
+    {
+      workosApiKey: "test_api_key",
+      workosClientId: "client_123",
+      cookiePassword: "test_cookie_password_32_chars_minimum",
+    },
+    store,
+  );
+
+  const authInternals = auth as unknown as {
+    workos: {
+      userManagement: {
+        getSessionFromCookie(args: { sessionData: string; cookiePassword: string }): Promise<{
+          sessionId?: string;
+          session?: { id?: string };
+        }>;
+        getLogoutUrl(args: { sessionId: string; returnTo?: string }): string;
+      };
+    };
+  };
+
+  authInternals.workos.userManagement.getSessionFromCookie = async ({ sessionData, cookiePassword }) => {
+    assert.equal(sessionData, "sealed-session");
+    assert.equal(cookiePassword, "test_cookie_password_32_chars_minimum");
+    return {
+      session: {
+        id: "session_123",
+      },
+    };
+  };
+  authInternals.workos.userManagement.getLogoutUrl = ({ sessionId, returnTo }) => {
+    assert.equal(sessionId, "session_123");
+    assert.equal(returnTo, "https://alpha-book.org/signed-out");
+    return "https://api.workos.com/user_management/sessions/logout?session_id=session_123";
+  };
+
+  const app = createApp({
+    store,
+    planner: new FallbackPlanner(),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+      async runWorkspaceTask() {
+        return { ok: false, error: "disabled" };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: false, error: "disabled" };
+      },
+      async destroyWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+    auth,
+  });
+
+  const response = await app.request(
+    "/auth/sign-out?returnTo=https%3A%2F%2Falpha-book.org%2Fsigned-out",
+    {
+      headers: {
+        cookie: "alphabook_session=sealed-session",
+        host: "api.alpha-book.org",
+        "x-forwarded-proto": "https",
+      },
+    },
+  );
+
+  assert.equal(response.status, 302);
+  assert.equal(
+    response.headers.get("location"),
+    "https://api.workos.com/user_management/sessions/logout?session_id=session_123",
+  );
+  const setCookies = response.headers.getSetCookie();
+  assert.equal(setCookies.length, 2);
+  assert.ok(setCookies.some((value) => value.startsWith("alphabook_session=")));
+  assert.ok(setCookies.some((value) => value.startsWith("alphabook_auth_state=")));
+});
+
 test("fallback planner can create a Fly workspace, run a task, read summary.md, and answer", async () => {
   const store = new InMemoryAppStore(
     [

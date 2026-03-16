@@ -19,6 +19,20 @@ export interface AuthConfig {
   cookiePassword: string;
 }
 
+interface AuthenticatedSessionCookie {
+  sessionId?: string;
+  session?: {
+    id?: string;
+  };
+  user?: {
+    id?: string;
+    email?: string | null;
+    firstName?: string | null;
+    lastName?: string | null;
+    profilePictureUrl?: string | null;
+  };
+}
+
 function deriveCookieDomain(url: URL): string | undefined {
   if (url.hostname === "alpha-book.org" || url.hostname.endsWith(".alpha-book.org")) {
     return ".alpha-book.org";
@@ -94,6 +108,19 @@ function displayNameFromUser(user: {
     return name;
   }
   return user.email ?? "AlphaBook Reader";
+}
+
+function sessionIdFromCookieSession(session: AuthenticatedSessionCookie | null | undefined): string | null {
+  if (!session || typeof session !== "object") {
+    return null;
+  }
+  if (typeof session.sessionId === "string" && session.sessionId.length > 0) {
+    return session.sessionId;
+  }
+  if (typeof session.session?.id === "string" && session.session.id.length > 0) {
+    return session.session.id;
+  }
+  return null;
 }
 
 export class WorkOSAuth {
@@ -232,6 +259,26 @@ export class WorkOSAuth {
     const requestUrl = new URL(c.req.url);
     const cookieDomain = deriveCookieDomain(requestUrl);
     const returnTo = safeReturnTo(c.req.query("returnTo"), deriveFrontendOrigin(requestUrl));
+    const sessionData = getCookie(c, SESSION_COOKIE_NAME);
+
+    let logoutUrl = returnTo;
+    if (sessionData) {
+      try {
+        const session = await this.workos.userManagement.getSessionFromCookie({
+          sessionData,
+          cookiePassword: this.config.cookiePassword,
+        }) as AuthenticatedSessionCookie | undefined;
+        const sessionId = sessionIdFromCookieSession(session ?? null);
+        if (sessionId) {
+          logoutUrl = this.workos.userManagement.getLogoutUrl({
+            sessionId,
+            returnTo,
+          });
+        }
+      } catch {
+        logoutUrl = returnTo;
+      }
+    }
 
     deleteCookie(c, SESSION_COOKIE_NAME, {
       path: "/",
@@ -242,6 +289,6 @@ export class WorkOSAuth {
       ...(cookieDomain ? { domain: cookieDomain } : {}),
     });
 
-    return c.redirect(returnTo, 302);
+    return c.redirect(logoutUrl, 302);
   }
 }
