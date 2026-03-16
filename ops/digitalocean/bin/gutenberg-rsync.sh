@@ -7,15 +7,17 @@ PG_RSYNC_HOST="${PG_RSYNC_HOST:-aleph.gutenberg.org}"
 RSYNC_TIMEOUT="${RSYNC_TIMEOUT:-600}"
 ALPHABOOK_UPLOAD_AFTER_SYNC="${ALPHABOOK_UPLOAD_AFTER_SYNC:-0}"
 UPLOAD_SCRIPT="${UPLOAD_SCRIPT:-$ALPHABOOK_ROOT/bin/gutenberg-upload.sh}"
+RSYNC_PARTIAL_ROOT="${RSYNC_PARTIAL_ROOT:-$ALPHABOOK_ROOT/.rsync-partial/main}"
 
 mkdir -p "$GUTENBERG_MIRROR_ROOT"
 mkdir -p "$GUTENBERG_MIRROR_ROOT/cache/epub"
+mkdir -p "$RSYNC_PARTIAL_ROOT"
 
 RSYNC_FLAGS=(
   -az
   --delete
   --partial
-  --partial-dir=.rsync-partial
+  --partial-dir="$RSYNC_PARTIAL_ROOT"
   --timeout="$RSYNC_TIMEOUT"
   --contimeout=60
   --human-readable
