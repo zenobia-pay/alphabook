@@ -1,4 +1,4 @@
-# Hetzner Gutenberg Mirror Box
+# DigitalOcean Gutenberg Mirror Box
 
 This directory bootstraps the optional Project Gutenberg rsync mirror box that the ingest service can read from via `GUTENBERG_MIRROR_ROOT`.
 
@@ -16,10 +16,10 @@ Target layout on the VM:
 
 ## Bootstrap
 
-From a fresh Ubuntu/Debian-style Hetzner VM:
+From a fresh Ubuntu/Debian-style DigitalOcean droplet:
 
 ```bash
-sudo ./ops/hetzner/bootstrap-rsync-box.sh
+sudo ./ops/digitalocean/bootstrap-rsync-box.sh
 ```
 
 That script:

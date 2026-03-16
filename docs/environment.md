@@ -62,7 +62,7 @@ Cloudflare bindings:
 - `MIRROR_BATCH_SIZE`
 - `MIRROR_CHECKPOINT_PATH`
 
-## Hetzner Gutenberg Mirror Box
+## DigitalOcean Gutenberg Mirror Box
 
 - `ALPHABOOK_ROOT`
 - `GUTENBERG_MIRROR_ROOT`

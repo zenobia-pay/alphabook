@@ -5,7 +5,7 @@ AlphaBook is now structured as a monorepo for the architecture you specified:
 - `apps/frontend`: Cloudflare Pages frontend
 - `apps/orchestrator-worker`: Cloudflare Worker API on `api.<domain>`
 - `apps/runtime`: Fly Machine runtime service for filesystem-backed analysis
-- `apps/ingest`: Hetzner-oriented ingest service with persistent disk
+- `apps/ingest`: DigitalOcean-oriented ingest service with persistent disk
 - `packages/db`: Neon schema and migration utilities
 - `packages/shared`: shared tool schemas, prompts, limits, and storage conventions
 - `packages/tooling`: local scripts such as migrations
@@ -37,7 +37,7 @@ Phase 2 is implemented:
 Phase 3 remains scaffolded:
 
 - the ingest service can ingest a single Gutenberg URL or a local Gutenberg mirror copy into Neon + R2 for the V1 path
-- the Hetzner rsync mirror box bootstrap and systemd timer are included under `ops/hetzner`
+- the DigitalOcean rsync mirror box bootstrap and systemd timer are included under `ops/digitalocean`
 - daily Project Gutenberg feed diffing still needs to be completed
 - chunk embedding generation/upload still needs to be completed
 
@@ -69,7 +69,7 @@ docs/
   api-contracts.md
   environment.md
 ops/
-  hetzner/
+  digitalocean/
 ```
 
 ## Assistant Experience
@@ -200,5 +200,5 @@ The request/response contracts are documented in [docs/api-contracts.md](/Users/
 - The runtime agent now writes `summary.md`, `search-plan.json`, `search-iterations.json`, and `evidence.json` for each long VM search.
 - The ingest service supports single-URL ingestion plus local Gutenberg mirror ingestion through `GUTENBERG_MIRROR_ROOT`.
 - `run-once` now processes a mirror batch, and `backfill-mirror` can drain the rsync mirror into Neon + R2 with chunk embeddings.
-- The Gutenberg mirror box bootstrap is documented in [ops/hetzner/README.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/ops/hetzner/README.md).
+- The Gutenberg mirror box bootstrap is documented in [ops/digitalocean/README.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/ops/digitalocean/README.md).
 - Daily feed diffing is still the remaining ingest gap.
