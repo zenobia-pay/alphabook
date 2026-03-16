@@ -2547,6 +2547,127 @@ async function runOrchestrator(
   let runtimeTasks = 0;
   let initialPlanSent = false;
   let planMessageId: string | null = null;
+  let pendingWorkspaceExecution: {
+    toolName: ToolName;
+    toolRecordId: string;
+    normalizedArgs: Record<string, unknown>;
+    rationale?: string;
+    progressEmitter: { stop: () => void | Promise<void> };
+    promise: Promise<void>;
+    settled: boolean;
+    finalized: boolean;
+    status: "completed" | "failed";
+    result?: Record<string, unknown>;
+  } | null = null;
+
+  const finalizeToolExecution = async (
+    toolCallId: string,
+    toolName: ToolName,
+    normalizedArgs: Record<string, unknown>,
+    rationale: string | undefined,
+    status: "completed" | "failed",
+    result: Record<string, unknown>,
+  ) => {
+    await deps.store.finishToolCall(toolCallId, status, result);
+    if (status === "completed") {
+      void recordBookAnalyticsEvents(
+        deps,
+        request,
+        "book_candidate_in_run",
+        {
+          userId: session.userId,
+          sessionId: session.id,
+          runId: run.id,
+          source: "orchestrator",
+          toolName,
+          query: routedQueryRef.current,
+          status,
+        },
+        extractCandidateWorkIds(toolName, normalizedArgs, result),
+      );
+    }
+    const streamedResult = clientSafeToolResult(toolName, result);
+    const completedLogLines = await normalizeToolLinesForUser(deps, {
+      toolName,
+      lines: flattenValueForCleanup(streamedResult).map((line) => ({
+        ...line,
+        toolName,
+      })),
+    });
+    recordRawLog("tool.completed.raw", {
+      runId: run.id,
+      toolCallId,
+      toolName,
+      status,
+      result,
+    });
+    liveToolTrace = liveToolTrace.map((entry) =>
+      entry.id === toolCallId
+        ? {
+            ...entry,
+            label: labelForToolCall(toolName, normalizedArgs),
+            rationale:
+              entry.progress.length > 0
+                ? entry.progress[entry.progress.length - 1]
+                : sanitizeUserFacingToolText(rationale) ?? entry.rationale,
+            progress: entry.progress,
+            result: {
+              __logLines: completedLogLines,
+              error: typeof streamedResult.error === "string" ? streamedResult.error : undefined,
+            },
+            isError: status === "failed",
+            state: status === "failed" ? "error" : "completed",
+          }
+        : entry,
+    );
+    await persistPlanToolTrace(deps, planMessageId, run.id, liveToolTrace);
+    await send("tool.completed", {
+      runId: run.id,
+      toolCallId,
+      toolName,
+      label: labelForToolCall(toolName, normalizedArgs),
+      rationale: sanitizeUserFacingToolText(rationale) ?? null,
+      status,
+      result: {
+        __logLines: completedLogLines,
+        error: typeof streamedResult.error === "string" ? streamedResult.error : undefined,
+      },
+    });
+    toolHistory.push({
+      toolName,
+      rationale: sanitizeUserFacingToolText(rationale) ?? undefined,
+      args: normalizedArgs,
+      result,
+    });
+    toolResults.push(result);
+  };
+
+  const harvestPendingWorkspace = async (force = false) => {
+    if (!pendingWorkspaceExecution) {
+      return false;
+    }
+    if (!pendingWorkspaceExecution.settled && !force) {
+      return false;
+    }
+    await pendingWorkspaceExecution.promise;
+    if (pendingWorkspaceExecution.finalized) {
+      return pendingWorkspaceExecution.status === "completed";
+    }
+    pendingWorkspaceExecution.finalized = true;
+    await finalizeToolExecution(
+      pendingWorkspaceExecution.toolRecordId,
+      pendingWorkspaceExecution.toolName,
+      pendingWorkspaceExecution.normalizedArgs,
+      pendingWorkspaceExecution.rationale,
+      pendingWorkspaceExecution.status,
+      pendingWorkspaceExecution.result ?? { ok: false, error: "Workspace startup did not return a result." },
+    );
+    const wasCompleted = pendingWorkspaceExecution.status === "completed";
+    pendingWorkspaceExecution = null;
+    return wasCompleted;
+  };
+
+  const routedQueryRef = { current: input.message };
   try {
     const routeDecision = deps.router
       ? await deps.router.decide({
@@ -2611,7 +2732,9 @@ async function runOrchestrator(
     }
 
     const routedQuery = routeDecision.fullQuery.trim() || input.message;
+    routedQueryRef.current = routedQuery;
     for (let turn = 1; turn <= HARD_LIMITS.MAX_TURNS; turn += 1) {
+      await harvestPendingWorkspace(false);
       if (activeRuns.get(run.id)?.cancelRequested) {
         break;
       }
@@ -2633,6 +2756,12 @@ async function runOrchestrator(
         conversationHistory,
         turns: turn,
         toolHistory,
+        pendingTools: pendingWorkspaceExecution
+          ? [{
+              toolName: pendingWorkspaceExecution.toolName,
+              args: pendingWorkspaceExecution.normalizedArgs,
+            }]
+          : [],
         workScope: input.workIds,
         billingContext: {
           userId: session.userId,
@@ -2694,6 +2823,23 @@ async function runOrchestrator(
       }
 
       const normalizedToolArgs = normalizeToolArgs(toolCall.tool_name, toolCall.args);
+      if (toolCall.tool_name === "create_workspace" && pendingWorkspaceExecution) {
+        continue;
+      }
+      if (toolCall.tool_name === "run_workspace_task" && pendingWorkspaceExecution) {
+        await harvestPendingWorkspace(true);
+        let readyRuntimeId: unknown = null;
+        for (let index = toolHistory.length - 1; index >= 0; index -= 1) {
+          const entry = toolHistory[index];
+          if (entry.toolName === "create_workspace") {
+            readyRuntimeId = entry.result.runtimeId;
+            break;
+          }
+        }
+        if (typeof normalizedToolArgs.runtimeId !== "string" && typeof readyRuntimeId === "string") {
+          normalizedToolArgs.runtimeId = readyRuntimeId;
+        }
+      }
       const activeRun = activeRuns.get(run.id);
       const runtimeId =
         typeof normalizedToolArgs.runtimeId === "string"
@@ -2818,6 +2964,88 @@ async function runOrchestrator(
 
       let result: Record<string, unknown>;
       let status: "completed" | "failed" = "completed";
+      if (toolCall.tool_name === "create_workspace") {
+        runtimeTasks += 1;
+        pendingWorkspaceExecution = {
+          toolName: toolCall.tool_name,
+          toolRecordId: toolRecord.id,
+          normalizedArgs: normalizedToolArgs,
+          rationale: toolCall.rationale,
+          progressEmitter,
+          settled: false,
+          finalized: false,
+          status: "failed",
+          promise: (async () => {
+            let backgroundResult: Record<string, unknown>;
+            let backgroundStatus: "completed" | "failed" = "completed";
+            try {
+              backgroundResult = await executeTool(deps, toolCall.tool_name, normalizedToolArgs, {
+                userId: session.userId,
+                sessionId: session.id,
+                runId: run.id,
+              });
+              addRuntimeIds(runtimeIdsToCleanup, normalizedToolArgs, backgroundResult);
+              const resultRuntimeId = typeof backgroundResult.runtimeId === "string" ? backgroundResult.runtimeId : null;
+              if (resultRuntimeId) {
+                activeRun?.runtimeIds.add(resultRuntimeId);
+              }
+            } catch (error) {
+              addRuntimeIds(runtimeIdsToCleanup, normalizedToolArgs);
+              backgroundStatus = "failed";
+              backgroundResult = {
+                ok: false,
+                error: error instanceof Error ? error.message : "Unknown tool error",
+              };
+              try {
+                await recordUnexpectedError(deps, error, {
+                  request,
+                  route: "/chat",
+                  method: "POST",
+                  source: "tool_execution",
+                  toolName: toolCall.tool_name,
+                  runId: run.id,
+                  sessionId: session.id,
+                  userId: session.userId,
+                  extra: {
+                    toolArgs: normalizedToolArgs,
+                  },
+                });
+              } catch {
+                // Error reporting should not block the user-facing run result.
+              }
+            } finally {
+              await progressEmitter.stop();
+              await flushToolProgress(
+                toolRecord.id,
+                {
+                  runId: run.id,
+                  toolName: toolCall.tool_name,
+                },
+                async (progressText) => {
+                  await send("tool.progress", {
+                    runId: run.id,
+                    toolCallId: toolRecord.id,
+                    toolName: toolCall.tool_name,
+                    text: progressText,
+                  });
+                  liveToolTrace = liveToolTrace.map((entry) =>
+                    entry.id === toolRecord.id
+                      ? appendToolProgress(entry, progressText)
+                      : entry,
+                  );
+                  await persistPlanToolTrace(deps, planMessageId, run.id, liveToolTrace);
+                },
+              );
+            }
+            if (pendingWorkspaceExecution) {
+              pendingWorkspaceExecution.status = backgroundStatus;
+              pendingWorkspaceExecution.result = backgroundResult;
+              pendingWorkspaceExecution.settled = true;
+            }
+          })(),
+        };
+        continue;
+      }
       try {
         result = await executeTool(deps, toolCall.tool_name, normalizedToolArgs, {
           userId: session.userId,
@@ -2828,7 +3056,7 @@ async function runOrchestrator(
         if (toolCall.tool_name === "run_workspace_task") {
           await trackRuntimeBillingEvents(deps, session, run, result.billingEvents);
         }
-        if (toolCall.tool_name === "create_workspace" || toolCall.tool_name === "run_workspace_task") {
+        if (toolCall.tool_name === "run_workspace_task") {
           runtimeTasks += 1;
         }
         const resultRuntimeId = typeof result.runtimeId === "string" ? result.runtimeId : null;
@@ -2911,78 +3139,14 @@ async function runOrchestrator(
         return;
       }
 
-      await deps.store.finishToolCall(toolRecord.id, status, result);
-      if (status === "completed") {
-        void recordBookAnalyticsEvents(
-          deps,
-          request,
-          "book_candidate_in_run",
-          {
-            userId: session.userId,
-            sessionId: session.id,
-            runId: run.id,
-            source: "orchestrator",
-            toolName: toolCall.tool_name,
-            query: routedQuery,
-            status,
-          },
-          extractCandidateWorkIds(toolCall.tool_name, normalizedToolArgs, result),
-        );
-      }
-      const streamedResult = clientSafeToolResult(toolCall.tool_name, result);
-      const completedLogLines = await normalizeToolLinesForUser(deps, {
-        toolName: toolCall.tool_name,
-        lines: flattenValueForCleanup(streamedResult).map((line) => ({
-          ...line,
-          toolName: toolCall.tool_name,
-        })),
-      });
-      recordRawLog("tool.completed.raw", {
-        runId: run.id,
-        toolCallId: toolRecord.id,
-        toolName: toolCall.tool_name,
+      await finalizeToolExecution(
+        toolRecord.id,
+        toolCall.tool_name,
+        normalizedToolArgs,
+        toolCall.rationale,
         status,
         result,
-      });
-      liveToolTrace = liveToolTrace.map((entry) =>
-        entry.id === toolRecord.id
-          ? {
-              ...entry,
-              label: labelForToolCall(toolCall.tool_name, normalizedToolArgs),
-              rationale:
-                entry.progress.length > 0
-                  ? entry.progress[entry.progress.length - 1]
-                  : sanitizeUserFacingToolText(toolCall.rationale) ?? entry.rationale,
-              progress: entry.progress,
-              result: {
-                __logLines: completedLogLines,
-                error: typeof streamedResult.error === "string" ? streamedResult.error : undefined,
-              },
-              isError: status === "failed",
-              state: status === "failed" ? "error" : "completed",
-            }
-          : entry,
       );
-      await persistPlanToolTrace(deps, planMessageId, run.id, liveToolTrace);
-      await send("tool.completed", {
-        runId: run.id,
-        toolCallId: toolRecord.id,
-        toolName: toolCall.tool_name,
-        label: labelForToolCall(toolCall.tool_name, normalizedToolArgs),
-        rationale: sanitizeUserFacingToolText(toolCall.rationale) ?? null,
-        status,
-        result: {
-          __logLines: completedLogLines,
-          error: typeof streamedResult.error === "string" ? streamedResult.error : undefined,
-        },
-      });
-      toolHistory.push({
-        toolName: toolCall.tool_name,
-        rationale: sanitizeUserFacingToolText(toolCall.rationale) ?? undefined,
-        args: normalizedToolArgs,
-        result,
-      });
-      toolResults.push(result);
 
       const completedBriefing = status === "completed"
         ? extractCompletedBriefing(toolCall.tool_name, normalizedToolArgs, result)
@@ -3088,6 +3252,7 @@ async function runOrchestrator(
       });
     }
   } catch (error) {
+    await harvestPendingWorkspace(true);
     try {
       await recordUnexpectedError(deps, error, {
         request,
@@ -3152,6 +3317,7 @@ async function runOrchestrator(
     });
     return;
   } finally {
+    await harvestPendingWorkspace(true);
     await flushAllToolProgress(async (toolCallId, toolName, text) => {
       await send("tool.progress", {
         runId: run.id,

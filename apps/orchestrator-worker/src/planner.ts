@@ -24,6 +24,10 @@ export interface PlannerContext {
     args: Record<string, unknown>;
     result: Record<string, unknown>;
   }>;
+  pendingTools?: Array<{
+    toolName: ToolName;
+    args: Record<string, unknown>;
+  }>;
   workScope?: string[];
   billingContext?: BillingContext;
 }
@@ -156,6 +160,10 @@ function summarizePlannerContext(context: PlannerContext) {
         Object.entries(entry.args).slice(0, 12).map(([key, value]) => [key, summarizePlannerValue(value)]),
       ),
       result: summarizePlannerToolResult(entry.toolName, entry.result),
+    })),
+    pendingTools: (context.pendingTools ?? []).map((entry) => ({
+      toolName: entry.toolName,
+      args: summarizePlannerValue(entry.args),
     })),
   };
 }
@@ -329,7 +337,10 @@ function buildWorkspaceTaskSpec(context: PlannerContext, workIds: string[], chun
 
 export class FallbackPlanner implements Planner {
   async decide(context: PlannerContext): Promise<PlannerDecision> {
-    const toolNames = context.toolHistory.map((item) => item.toolName);
+    const toolNames = [
+      ...context.toolHistory.map((item) => item.toolName),
+      ...(context.pendingTools ?? []).map((item) => item.toolName),
+    ];
     const scopedWorkIds = context.workScope?.length ? context.workScope : [];
     const chunks = seedChunkPayload(context);
     const metadataIds = scopedWorkIds.length > 0 ? scopedWorkIds.slice(0, 12) : metadataWorkIds(context, 12);
@@ -501,7 +512,9 @@ export class OpenAIPlanner implements Planner {
             context: modelContext,
             plannerNotes: context.workScope?.length
               ? "A workScope is present. Stay inside those work IDs unless the user explicitly asks to widen scope."
-              : null,
+              : (context.pendingTools ?? []).some((entry) => entry.toolName === "create_workspace")
+                ? "The workspace startup is already running in the background. Do not start it again; continue with non-runtime retrieval steps until a runtimeId is available."
+                : null,
             outputShape: {
               type: "tool_call | final_answer",
               tool_name: "one of the available tools when using tool_call",
