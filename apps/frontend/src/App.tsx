@@ -2282,6 +2282,43 @@ export default function App() {
   }, [authState.loading, selectedSessionId]);
 
   useEffect(() => {
+    if (authState.loading || isSending || !selectedSessionId || !recoveredActiveRunId) {
+      return;
+    }
+
+    let cancelled = false;
+    let pollTimer: number | null = null;
+
+    const pollMessages = async () => {
+      try {
+        const nextMessages = await fetchMessages(selectedSessionId);
+        if (cancelled) {
+          return;
+        }
+        setMessages(nextMessages.map(hydrateStoredMessage));
+        pollTimer = window.setTimeout(() => {
+          void pollMessages();
+        }, 2000);
+      } catch {
+        if (!cancelled) {
+          pollTimer = window.setTimeout(() => {
+            void pollMessages();
+          }, 4000);
+        }
+      }
+    };
+
+    void pollMessages();
+
+    return () => {
+      cancelled = true;
+      if (pollTimer !== null) {
+        window.clearTimeout(pollTimer);
+      }
+    };
+  }, [authState.loading, isSending, recoveredActiveRunId, selectedSessionId]);
+
+  useEffect(() => {
     if (authState.loading) {
       return;
     }
