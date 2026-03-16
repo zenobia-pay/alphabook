@@ -499,7 +499,7 @@ test("auth sign-in route forces interactive WorkOS auth", async () => {
   assert.match(location, /prompt=login/);
 });
 
-test("auth sign-out route clears local cookies and redirects through WorkOS logout when session exists", async () => {
+test("auth sign-out route clears local cookies and returns the WorkOS logout redirect when session exists", async () => {
   const store = new InMemoryAppStore();
   const auth = new WorkOSAuth(
     {
@@ -571,23 +571,80 @@ test("auth sign-out route clears local cookies and redirects through WorkOS logo
   const response = await app.request(
     "/auth/sign-out?returnTo=https%3A%2F%2Falpha-book.org%2Fsigned-out",
     {
+      method: "POST",
       headers: {
         cookie: "alphabook_session=sealed-session",
         host: "api.alpha-book.org",
         "x-forwarded-proto": "https",
+        origin: "https://alpha-book.org",
       },
     },
   );
 
-  assert.equal(response.status, 302);
-  assert.equal(
-    response.headers.get("location"),
-    "https://api.workos.com/user_management/sessions/logout?session_id=session_123",
-  );
+  assert.equal(response.status, 200);
+  const payload = (await response.json()) as { redirectTo: string };
+  assert.equal(payload.redirectTo, "https://api.workos.com/user_management/sessions/logout?session_id=session_123");
   const setCookies = response.headers.getSetCookie();
   assert.equal(setCookies.length, 2);
   assert.ok(setCookies.some((value) => value.startsWith("alphabook_session=")));
   assert.ok(setCookies.some((value) => value.startsWith("alphabook_auth_state=")));
+});
+
+test("chat route rejects writing to another user's existing session", async () => {
+  const store = new InMemoryAppStore();
+  const session = await store.createSession("owner-user", "Private session");
+
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    planner: new ScriptedPlanner([
+      {
+        type: "final_answer",
+        answer: "ok",
+        citations: [],
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false };
+      },
+      async runWorkspaceTask() {
+        return { ok: false };
+      },
+      async readWorkspaceFile() {
+        return { ok: false };
+      },
+      async listWorkspaceFiles() {
+        return { ok: true, files: [] };
+      },
+      async destroyWorkspace() {
+        return { ok: true };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const response = await app.request("/chat", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      userId: "attacker-user",
+      sessionId: session.id,
+      message: "append to someone else's chat",
+    }),
+  });
+
+  assert.equal(response.status, 403);
+  const payload = (await response.json()) as { error: string };
+  assert.equal(payload.error, "Not authorized for this session.");
 });
 
 test("fallback planner can create a Fly workspace, run a task, read summary.md, and answer", async () => {
@@ -1263,11 +1320,12 @@ test("public profile endpoints expose follow state", async () => {
   const initialProfileResponse = await app.request("/profiles/author?userId=viewer");
   assert.equal(initialProfileResponse.status, 200);
   const initialProfile = (await initialProfileResponse.json()) as {
-    profile: { followersCount: number };
+    profile: { followersCount: number; email: string | null };
     isFollowing: boolean;
   };
   assert.equal(initialProfile.isFollowing, false);
   assert.equal(initialProfile.profile.followersCount, 0);
+  assert.equal(initialProfile.profile.email, null);
 
   const followResponse = await app.request("/profiles/author/follow?userId=viewer", {
     method: "POST",

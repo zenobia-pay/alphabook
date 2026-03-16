@@ -248,8 +248,15 @@ export function buildSignUpUrl(returnTo: string) {
   return `${API_BASE}/auth/sign-up?returnTo=${encodeURIComponent(returnTo)}`;
 }
 
-export function buildSignOutUrl(returnTo: string) {
-  return `${API_BASE}/auth/sign-out?returnTo=${encodeURIComponent(returnTo)}`;
+export async function signOut(returnTo: string) {
+  const response = await ensureOk(
+    await fetch(`${API_BASE}/auth/sign-out?returnTo=${encodeURIComponent(returnTo)}`, {
+      method: "POST",
+      credentials: "include",
+    }),
+  );
+  const payload = await response.json() as { redirectTo?: string };
+  return typeof payload.redirectTo === "string" ? payload.redirectTo : returnTo;
 }
 
 function hydrateMessage(message: MessageRecord) {

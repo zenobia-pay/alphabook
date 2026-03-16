@@ -55,6 +55,7 @@ function resolveRuntimeGateway(env: Env, store: NeonAppStore, blobStore: Cloudfl
     env.FLY_RUNTIME_APP_NAME &&
     env.FLY_RUNTIME_IMAGE &&
     env.FLY_RUNTIME_REGION &&
+    env.FLY_RUNTIME_SHARED_TOKEN &&
     env.R2_ENDPOINT &&
     env.R2_ACCESS_KEY_ID &&
     env.R2_SECRET_ACCESS_KEY
@@ -83,7 +84,7 @@ function resolveRuntimeGateway(env: Env, store: NeonAppStore, blobStore: Cloudfl
       r2SecretAccessKey: env.R2_SECRET_ACCESS_KEY,
     });
   }
-  if (env.RUNTIME_SERVICE_URL) {
+  if (env.RUNTIME_SERVICE_URL && env.RUNTIME_SERVICE_TOKEN) {
     return new HttpRuntimeGateway(env.RUNTIME_SERVICE_URL, env.RUNTIME_SERVICE_TOKEN);
   }
   throw new Error("Runtime gateway is not configured.");

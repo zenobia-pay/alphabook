@@ -41,6 +41,14 @@ interface RunTaskRequest {
   taskSpec: Record<string, unknown>;
 }
 
+function requireAuthToken(authToken?: string): string {
+  const normalized = authToken?.trim();
+  if (!normalized) {
+    throw new Error("RUNTIME_SHARED_TOKEN is required.");
+  }
+  return normalized;
+}
+
 function createR2ClientFromEnv(): S3Client | null {
   const endpoint = process.env.R2_ENDPOINT;
   const accessKeyId = process.env.R2_ACCESS_KEY_ID;
@@ -672,7 +680,7 @@ async function runExternalAgent(
   const shouldUseNode = /\.(?:[cm]?js|[cm]?ts)$/i.test(command);
   const executable = shouldUseNode ? process.execPath : command;
   const args = shouldUseNode ? [command] : [];
-  const childEnv = {
+  const childEnv: NodeJS.ProcessEnv = {
     ...process.env,
     ALPHABOOK_RUNTIME_PROMPT: RUNTIME_AGENT_PROMPT,
     ALPHABOOK_TASK_PATH: taskPath,
@@ -746,16 +754,13 @@ async function runExternalAgent(
 }
 
 function authorized(request: IncomingMessage, authToken?: string): boolean {
-  if (!authToken) {
-    return true;
-  }
   const header = request.headers.authorization;
   return header === `Bearer ${authToken}`;
 }
 
 export function createAlphaBookRuntimeServer(options: RuntimeServerOptions = {}): Server {
   const workspaceRoot = options.workspaceRoot ?? process.env.RUNTIME_WORKSPACE_ROOT ?? "/workspace";
-  const authToken = options.authToken ?? process.env.RUNTIME_SHARED_TOKEN;
+  const authToken = requireAuthToken(options.authToken ?? process.env.RUNTIME_SHARED_TOKEN);
   const r2Client = options.r2Client ?? createR2ClientFromEnv();
   const r2BucketName = options.r2BucketName ?? process.env.R2_BUCKET_NAME ?? null;
   const paths = createPaths(workspaceRoot);

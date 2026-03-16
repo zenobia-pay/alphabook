@@ -40,8 +40,22 @@ export interface AppDeps {
   openAIModel?: string;
 }
 
+const ALLOWED_WEB_ORIGINS = new Set([
+  "https://alpha-book.org",
+  "https://www.alpha-book.org",
+  "http://127.0.0.1:4193",
+  "http://localhost:4193",
+]);
+
 function sseEvent(event: string, data: Record<string, unknown>): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+}
+
+function isAllowedWebOrigin(origin: string | null | undefined): boolean {
+  if (!origin) {
+    return false;
+  }
+  return ALLOWED_WEB_ORIGINS.has(origin);
 }
 
 function analyticsKey(eventName: string) {
@@ -962,6 +976,9 @@ async function runOrchestrator(
   await deps.store.ensureUser(input.userId);
 
   let session: SessionRecord | null = input.sessionId ? await deps.store.getSession(input.sessionId) : null;
+  if (session && session.userId !== input.userId) {
+    throw new Error("Not authorized for this session.");
+  }
   if (!session) {
     session = await deps.store.createSession(input.userId, titleFromMessage(input.message));
     await send("session.created", {
@@ -1179,12 +1196,7 @@ export function createApp(deps: AppDeps) {
         if (!origin) {
           return origin;
         }
-        if (
-          origin === "https://alpha-book.org" ||
-          origin === "https://www.alpha-book.org" ||
-          origin === "http://127.0.0.1:4193" ||
-          origin === "http://localhost:4193"
-        ) {
+        if (isAllowedWebOrigin(origin)) {
           return origin;
         }
         return "";
@@ -1228,6 +1240,31 @@ export function createApp(deps: AppDeps) {
     return user.id === session.userId || isAdminUser(user, deps.adminAllowedEmail);
   }
 
+  function requireTrustedBrowserRequest(c: Context) {
+    if (!(deps.auth?.isConfigured() ?? false)) {
+      return null;
+    }
+    const origin = c.req.header("origin");
+    if (origin && isAllowedWebOrigin(origin)) {
+      return null;
+    }
+    const secFetchSite = c.req.header("sec-fetch-site");
+    if (secFetchSite === "same-origin" || secFetchSite === "same-site") {
+      return null;
+    }
+    return c.json({ error: "Cross-site requests are not allowed." }, 403);
+  }
+
+  function toPublicProfile(profile: Awaited<ReturnType<AppStore["getUserProfile"]>>) {
+    if (!profile) {
+      return null;
+    }
+    return {
+      ...profile,
+      email: null,
+    };
+  }
+
   app.get("/health", async (c) => {
     const database = await deps.store.healthCheck();
     return c.json({
@@ -1258,6 +1295,10 @@ export function createApp(deps: AppDeps) {
   });
 
   app.post("/a", async (c) => {
+    const trustedRequest = requireTrustedBrowserRequest(c);
+    if (trustedRequest) {
+      return trustedRequest;
+    }
     let payload: Record<string, unknown> | null = null;
     try {
       payload = await c.req.json();
@@ -1334,6 +1375,10 @@ export function createApp(deps: AppDeps) {
   });
 
   app.post("/admin/analytics/query", async (c) => {
+    const trustedRequest = requireTrustedBrowserRequest(c);
+    if (trustedRequest) {
+      return trustedRequest;
+    }
     const admin = await requireAdmin(c);
     if (!admin) {
       return c.json({ error: "Not authorized." }, 403);
@@ -1362,13 +1407,17 @@ export function createApp(deps: AppDeps) {
     const isSelf = Boolean(viewer && viewer.id === targetUserId);
     const isFollowing = viewer && !isSelf ? await deps.store.isFollowing(viewer.id, targetUserId) : false;
     return c.json({
-      profile,
+      profile: isSelf ? profile : toPublicProfile(profile),
       isFollowing,
       isSelf,
     });
   });
 
   app.post("/profiles/:userId/follow", async (c) => {
+    const trustedRequest = requireTrustedBrowserRequest(c);
+    if (trustedRequest) {
+      return trustedRequest;
+    }
     const viewer = await resolveUser(c);
     if (!viewer) {
       return c.json({ error: "Authentication required." }, deps.auth?.isConfigured() ? 401 : 400);
@@ -1384,12 +1433,16 @@ export function createApp(deps: AppDeps) {
     const refreshed = await deps.store.getUserProfile(targetUserId);
     return c.json({
       ok: true,
-      profile: refreshed ?? profile,
+      profile: viewer.id === targetUserId ? (refreshed ?? profile) : toPublicProfile(refreshed ?? profile),
       isFollowing: viewer.id !== targetUserId,
     });
   });
 
   app.delete("/profiles/:userId/follow", async (c) => {
+    const trustedRequest = requireTrustedBrowserRequest(c);
+    if (trustedRequest) {
+      return trustedRequest;
+    }
     const viewer = await resolveUser(c);
     if (!viewer) {
       return c.json({ error: "Authentication required." }, deps.auth?.isConfigured() ? 401 : 400);
@@ -1405,7 +1458,7 @@ export function createApp(deps: AppDeps) {
     const refreshed = await deps.store.getUserProfile(targetUserId);
     return c.json({
       ok: true,
-      profile: refreshed ?? profile,
+      profile: viewer.id === targetUserId ? (refreshed ?? profile) : toPublicProfile(refreshed ?? profile),
       isFollowing: false,
     });
   });
@@ -1437,14 +1490,23 @@ export function createApp(deps: AppDeps) {
     return deps.auth.callback(c);
   });
 
-  app.get("/auth/sign-out", async (c) => {
-    if (!deps.auth?.isConfigured()) {
-      return c.redirect("https://alpha-book.org", 302);
+  app.post("/auth/sign-out", async (c) => {
+    const trustedRequest = requireTrustedBrowserRequest(c);
+    if (trustedRequest) {
+      return trustedRequest;
     }
-    return deps.auth.signOut(c);
+    if (!deps.auth?.isConfigured()) {
+      return c.json({ redirectTo: "https://alpha-book.org" });
+    }
+    const redirectTo = await deps.auth.signOut(c);
+    return c.json({ redirectTo });
   });
 
   app.post("/chat", async (c) => {
+    const trustedRequest = requireTrustedBrowserRequest(c);
+    if (trustedRequest) {
+      return trustedRequest;
+    }
     const payload = ChatRequestSchema.parse(await c.req.json());
     const user = await resolveUser(c);
     if ((deps.auth?.isConfigured() ?? false) && !user) {
@@ -1457,6 +1519,12 @@ export function createApp(deps: AppDeps) {
       ...payload,
       userId: user?.id ?? payload.userId,
     };
+    if (requestPayload.sessionId) {
+      const existingSession = await deps.store.getSession(requestPayload.sessionId);
+      if (existingSession && existingSession.userId !== requestPayload.userId) {
+        return c.json({ error: "Not authorized for this session." }, 403);
+      }
+    }
     const billingUserId = requestPayload.userId;
     if (!billingUserId) {
       return c.json({ error: "userId is required when authentication is disabled." }, 400);

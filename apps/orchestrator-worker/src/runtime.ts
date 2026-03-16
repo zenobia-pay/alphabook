@@ -154,15 +154,17 @@ export class HttpRuntimeGateway implements RuntimeToolGateway {
   constructor(
     private readonly baseUrl: string,
     private readonly authToken?: string,
-  ) {}
+  ) {
+    if (!authToken || authToken.trim().length === 0) {
+      throw new Error("RUNTIME_SERVICE_TOKEN is required for runtime gateway access.");
+    }
+  }
 
   private async request(path: string, init: RequestInit = {}) {
     const url = new URL(path, this.baseUrl).toString();
     const headers = new Headers(init.headers);
     headers.set("content-type", "application/json");
-    if (this.authToken) {
-      headers.set("authorization", `Bearer ${this.authToken}`);
-    }
+    headers.set("authorization", `Bearer ${this.authToken}`);
 
     const response = await fetch(url, {
       ...init,

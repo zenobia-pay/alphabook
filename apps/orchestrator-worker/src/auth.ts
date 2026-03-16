@@ -257,7 +257,7 @@ export class WorkOSAuth {
     }
   }
 
-  async signOut(c: Context) {
+  async signOut(c: Context): Promise<string> {
     const requestUrl = new URL(c.req.url);
     const cookieDomain = deriveCookieDomain(requestUrl);
     const returnTo = safeReturnTo(c.req.query("returnTo"), deriveFrontendOrigin(requestUrl));
@@ -291,6 +291,6 @@ export class WorkOSAuth {
       ...(cookieDomain ? { domain: cookieDomain } : {}),
     });
 
-    return c.redirect(logoutUrl, 302);
+    return logoutUrl;
   }
 }

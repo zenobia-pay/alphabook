@@ -9,7 +9,7 @@ import { ChevronsLeft, ChevronsRight } from "lucide-react";
 
 import { getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type PublicProfileResponse, type UserProfile, type WorkDetail, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
-import { buildSignInUrl, buildSignOutUrl, fetchAdminAccess, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchCurrentUser, fetchMessages, fetchProfile, fetchSessions, fetchWorkDetail, fetchWorks, followProfile, queryAdminAnalytics, sendAnalyticsEvent, streamChat, unfollowProfile } from "./api";
+import { buildSignInUrl, fetchAdminAccess, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchCurrentUser, fetchMessages, fetchProfile, fetchSessions, fetchWorkDetail, fetchWorks, followProfile, queryAdminAnalytics, sendAnalyticsEvent, signOut, streamChat, unfollowProfile } from "./api";
 import { Thread } from "./components/assistant-ui/thread";
 import { Avatar, AvatarFallback, AvatarImage } from "./components/ui/avatar";
 import { Button } from "./components/ui/button";
@@ -1989,6 +1989,11 @@ export default function App() {
     }
   }
 
+  async function handleSignOut() {
+    const redirectTo = await signOut(window.location.href);
+    window.location.assign(redirectTo);
+  }
+
   async function loadMoreWorks() {
     if (feedLoading || feedNextOffset === null) {
       return;
@@ -2568,8 +2573,8 @@ export default function App() {
           </div>
           <div className="profile-actions">
             {authState.authConfigured && authState.user ? (
-              <Button asChild variant="ghost" className="profile-chip">
-                <a href={buildSignOutUrl(window.location.href)}>Log out</a>
+              <Button type="button" variant="ghost" className="profile-chip" onClick={() => void handleSignOut()}>
+                Log out
               </Button>
             ) : null}
           </div>
