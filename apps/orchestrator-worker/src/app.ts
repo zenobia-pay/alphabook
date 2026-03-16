@@ -2272,6 +2272,25 @@ async function buildCitationPassageUrl(
   return match ? `${baseUrl}#${match.id}` : baseUrl;
 }
 
+async function buildChunkIndexPassageUrl(
+  deps: AppDeps,
+  sessionId: string,
+  workId: string,
+  chunkIndex: number,
+): Promise<string | null> {
+  const chunk = await deps.store.getChunkByWorkAndIndex(workId, chunkIndex);
+  if (!chunk) {
+    return null;
+  }
+  return buildCitationPassageUrl(deps, sessionId, {
+    workId,
+    chunkId: chunk.id,
+    label: `chunk #${chunkIndex}`,
+    excerpt: chunk.text,
+    r2Key: chunk.r2Key ?? undefined,
+  });
+}
+
 async function rewriteAnswerWithCitationLinks(
   deps: AppDeps,
   sessionId: string,
@@ -2333,6 +2352,21 @@ async function rewriteAnswerWithCitationLinks(
         break;
       }
     }
+  }
+
+  const chunkLineMatches = [...rewritten.matchAll(/(^|\n)([^\n]+?)\s+—\s+workId\s+([0-9a-f-]{36}),\s*chunk\s+#(\d+)(?=\n|$)/giu)];
+  for (const match of chunkLineMatches) {
+    const [fullMatch, linePrefix, title, workId, chunkIndexRaw] = match;
+    const chunkIndex = Number.parseInt(chunkIndexRaw, 10);
+    if (!Number.isFinite(chunkIndex)) {
+      continue;
+    }
+    const link = await buildChunkIndexPassageUrl(deps, sessionId, workId, chunkIndex);
+    if (!link) {
+      continue;
+    }
+    const replacement = `${linePrefix}${title} — [Open passage](${link})`;
+    rewritten = rewritten.replace(fullMatch, replacement);
   }
 
   return rewritten;

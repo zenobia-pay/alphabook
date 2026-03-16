@@ -208,6 +208,7 @@ export interface AppStore {
   getWorkTextFile(workId: string): Promise<WorkTextRecord | null>;
   getWorkFiles(workIds: string[], kinds?: WorkFileKind[]): Promise<WorkFileRecord[]>;
   getChunksByIds(chunkIds: string[]): Promise<ChunkSearchResult[]>;
+  getChunkByWorkAndIndex(workId: string, chunkIndex: number): Promise<ChunkSearchResult | null>;
   listRuntimeInstances(sessionId: string): Promise<RuntimeInstanceRecord[]>;
   listExpiredRuntimeInstances(limit?: number): Promise<RuntimeInstanceRecord[]>;
   getRuntimeInstance(runtimeId: string): Promise<RuntimeInstanceRecord | null>;
@@ -1008,6 +1009,10 @@ export class InMemoryAppStore implements AppStore {
   async getChunksByIds(chunkIds: string[]): Promise<ChunkSearchResult[]> {
     const set = new Set(chunkIds);
     return this.chunks.filter((chunk) => set.has(chunk.id));
+  }
+
+  async getChunkByWorkAndIndex(workId: string, chunkIndex: number): Promise<ChunkSearchResult | null> {
+    return this.chunks.find((chunk) => chunk.workId === workId && chunk.chunkIndex === chunkIndex) ?? null;
   }
 
   async listRuntimeInstances(sessionId: string): Promise<RuntimeInstanceRecord[]> {
@@ -2578,6 +2583,37 @@ export class NeonAppStore implements AppStore {
       score: 0,
       excerpt: row.text.slice(0, 220),
     }));
+  }
+
+  async getChunkByWorkAndIndex(workId: string, chunkIndex: number): Promise<ChunkSearchResult | null> {
+    const result = await this.db.query<{
+      id: string;
+      work_id: string;
+      chunk_index: number;
+      text: string;
+      r2_key: string | null;
+    }>(
+      `
+        SELECT id, work_id, chunk_index, text, r2_key
+        FROM chunks
+        WHERE work_id = $1::uuid AND chunk_index = $2
+        LIMIT 1
+      `,
+      [workId, chunkIndex],
+    );
+    const row = result.rows[0];
+    if (!row) {
+      return null;
+    }
+    return {
+      id: row.id,
+      workId: row.work_id,
+      chunkIndex: row.chunk_index,
+      text: row.text,
+      r2Key: row.r2_key,
+      score: 0,
+      excerpt: row.text.slice(0, 220),
+    };
   }
 
   async listRuntimeInstances(sessionId: string): Promise<RuntimeInstanceRecord[]> {
