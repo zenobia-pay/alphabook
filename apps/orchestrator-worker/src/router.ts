@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { ROUTER_SYSTEM_PROMPT } from "@alphabook/shared";
+import { HARD_LIMITS, ROUTER_SYSTEM_PROMPT } from "@alphabook/shared";
 
 import { openAIUsageFromResponse, type BillingContext, type BillingService } from "./billing";
 import { parseModelJsonObject } from "./json";
@@ -108,14 +108,23 @@ export class OpenAIRouter implements Router {
         },
       ],
     };
-    const response = await this.fetchImpl("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify(body),
-    });
+    let response: Response;
+    try {
+      response = await this.fetchImpl("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(HARD_LIMITS.MAX_TOOL_TIMEOUT_SECONDS * 1000),
+      });
+    } catch (error) {
+      if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
+        throw new Error("Router timed out before choosing how to handle this request.");
+      }
+      throw error;
+    }
     if (!response.ok) {
       const text = await response.text();
       throw new Error(`Router request failed: ${text}`);

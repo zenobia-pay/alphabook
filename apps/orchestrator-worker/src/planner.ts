@@ -32,6 +32,134 @@ export interface Planner {
   decide(context: PlannerContext): Promise<PlannerDecision>;
 }
 
+function truncateForModel(value: string, maxChars = 240) {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxChars) {
+    return normalized;
+  }
+  return `${normalized.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
+}
+
+function summarizePlannerValue(value: unknown, depth = 0): unknown {
+  if (value === null || typeof value === "number" || typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "string") {
+    return truncateForModel(value, 180);
+  }
+  if (Array.isArray(value)) {
+    return value.slice(0, 6).map((entry) => summarizePlannerValue(entry, depth + 1));
+  }
+  if (!value || typeof value !== "object" || depth >= 2) {
+    return typeof value === "object" ? "[object]" : String(value);
+  }
+  return Object.fromEntries(
+    Object.entries(value)
+      .slice(0, 10)
+      .map(([key, entry]) => [key, summarizePlannerValue(entry, depth + 1)]),
+  );
+}
+
+function summarizePlannerToolResult(toolName: ToolName, result: Record<string, unknown>) {
+  switch (toolName) {
+    case "search_works": {
+      const works = Array.isArray(result.works) ? result.works as Array<Record<string, unknown>> : [];
+      return {
+        workCount: works.length,
+        works: works.slice(0, 5).map((work) => ({
+          id: typeof work.id === "string" ? work.id : null,
+          title: typeof work.title === "string" ? truncateForModel(work.title, 120) : null,
+          authors: Array.isArray(work.authors) ? (work.authors as unknown[]).filter((author): author is string => typeof author === "string").slice(0, 3) : [],
+        })),
+      };
+    }
+    case "get_work_metadata": {
+      const works = Array.isArray(result.works) ? result.works as Array<Record<string, unknown>> : [];
+      return {
+        workCount: works.length,
+        works: works.slice(0, 5).map((work) => ({
+          id: typeof work.id === "string" ? work.id : null,
+          title: typeof work.title === "string" ? truncateForModel(work.title, 120) : null,
+          summary: typeof work.summary === "string" ? truncateForModel(work.summary, 140) : null,
+        })),
+      };
+    }
+    case "get_relevant_chunks": {
+      const chunks = Array.isArray(result.chunks) ? result.chunks as Array<Record<string, unknown>> : [];
+      return {
+        chunkCount: chunks.length,
+        chunks: chunks.slice(0, 6).map((chunk) => ({
+          id: typeof chunk.id === "string" ? chunk.id : null,
+          workId: typeof chunk.workId === "string" ? chunk.workId : null,
+          chunkIndex: typeof chunk.chunkIndex === "number" ? chunk.chunkIndex : null,
+          excerpt: typeof chunk.excerpt === "string" ? truncateForModel(chunk.excerpt, 180) : null,
+        })),
+      };
+    }
+    case "create_workspace": {
+      const manifest = result.manifest && typeof result.manifest === "object"
+        ? result.manifest as Record<string, unknown>
+        : null;
+      const works = Array.isArray(manifest?.works) ? manifest.works as Array<Record<string, unknown>> : [];
+      return {
+        ok: result.ok === true,
+        reused: result.reused === true,
+        runtimeId: typeof result.runtimeId === "string" ? result.runtimeId : null,
+        workCount: works.length,
+        works: works.slice(0, 5).map((work) => ({
+          workId: typeof work.workId === "string" ? work.workId : null,
+          title: typeof work.title === "string" ? truncateForModel(work.title, 120) : null,
+        })),
+        error: typeof result.error === "string" ? truncateForModel(result.error, 180) : null,
+      };
+    }
+    case "run_workspace_task": {
+      const citations = Array.isArray(result.citations) ? result.citations : [];
+      const artifacts = Array.isArray(result.artifacts) ? result.artifacts : [];
+      return {
+        ok: result.ok === true || typeof result.briefing === "string",
+        runtimeId: typeof result.runtimeId === "string" ? result.runtimeId : null,
+        citationCount: citations.length,
+        artifactCount: artifacts.length,
+        briefingPreview: typeof result.briefing === "string" ? truncateForModel(result.briefing, 280) : null,
+        error: typeof result.error === "string" ? truncateForModel(result.error, 180) : null,
+      };
+    }
+    case "read_workspace_file":
+      return {
+        path: typeof result.path === "string" ? result.path : null,
+        size: typeof result.size === "number" ? result.size : null,
+        contentPreview: typeof result.content === "string" ? truncateForModel(result.content, 280) : null,
+        error: typeof result.error === "string" ? truncateForModel(result.error, 180) : null,
+      };
+    default:
+      return Object.fromEntries(
+        Object.entries(result)
+          .slice(0, 8)
+          .map(([key, value]) => [key, typeof value === "string" ? truncateForModel(value, 180) : value]),
+      );
+  }
+}
+
+function summarizePlannerContext(context: PlannerContext) {
+  return {
+    userMessage: truncateForModel(context.userMessage, 500),
+    turns: context.turns,
+    workScope: context.workScope?.slice(0, 12) ?? [],
+    conversationHistory: context.conversationHistory.map((entry) => ({
+      role: entry.role,
+      content: truncateForModel(entry.content, 320),
+    })),
+    toolHistory: context.toolHistory.map((entry) => ({
+      toolName: entry.toolName,
+      args: Object.fromEntries(
+        Object.entries(entry.args).slice(0, 12).map(([key, value]) => [key, summarizePlannerValue(value)]),
+      ),
+      result: summarizePlannerToolResult(entry.toolName, entry.result),
+    })),
+  };
+}
+
 function extractCitationsFromChunks(chunks: ChunkSearchResult[]): Citation[] {
   return chunks.slice(0, 4).map((chunk) => ({
     workId: chunk.workId,
@@ -345,6 +473,7 @@ export class OpenAIPlanner implements Planner {
   ) {}
 
   async decide(context: PlannerContext): Promise<PlannerDecision> {
+    const modelContext = summarizePlannerContext(context);
     const body = {
       model: this.model,
       response_format: { type: "json_object" as const },
@@ -369,7 +498,7 @@ export class OpenAIPlanner implements Planner {
               "read_workspace_file(runtime_id, path)",
               "destroy_workspace(runtime_id)",
             ],
-            context,
+            context: modelContext,
             plannerNotes: context.workScope?.length
               ? "A workScope is present. Stay inside those work IDs unless the user explicitly asks to widen scope."
               : null,
@@ -385,14 +514,23 @@ export class OpenAIPlanner implements Planner {
         },
       ],
     };
-    const response = await this.fetchImpl("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify(body),
-    });
+    let response: Response;
+    try {
+      response = await this.fetchImpl("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(HARD_LIMITS.MAX_TOOL_TIMEOUT_SECONDS * 1000),
+      });
+    } catch (error) {
+      if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
+        throw new Error("Planner timed out before choosing the next step.");
+      }
+      throw error;
+    }
     if (!response.ok) {
       const text = await response.text();
       throw new Error(`Planner request failed: ${text}`);

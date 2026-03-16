@@ -827,6 +827,27 @@ function sanitizeUserFacingToolText(text: string | null | undefined): string | n
     .trim();
 }
 
+function userFacingRunFailureMessage(error: unknown) {
+  const rawMessage = error instanceof Error ? error.message.trim() : "";
+  if (/context_length_exceeded|maximum context length|too many tokens|too long for messages/i.test(rawMessage)) {
+    return "This run tried to carry too much prior search state into the next planning step, so I stopped it instead of continuing with a broken context window.";
+  }
+  if (/cancelled by user/i.test(rawMessage)) {
+    return "This run was cancelled.";
+  }
+  if (/timed out|timeout/i.test(rawMessage)) {
+    return "This run timed out before it produced an answer.";
+  }
+  const cleaned = sanitizeUserFacingToolText(rawMessage);
+  if (!cleaned) {
+    return "This run failed before it produced an answer.";
+  }
+  if (/planner|router|synthesis|openai|chat completions/i.test(cleaned)) {
+    return "This run hit an internal planning error before it produced an answer.";
+  }
+  return `This run failed before it produced an answer. ${cleaned}`;
+}
+
 type ToolRunRawLogEntry = {
   seq: number;
   timestamp: string;
@@ -1192,8 +1213,24 @@ async function reconcilePersistentRun(
     return deps.store.getRun(run.id);
   }
 
+  const runAgeMs = Date.now() - Date.parse(run.startedAt);
   const runningToolCall = [...toolCalls].reverse().find((toolCall) => toolCall.status === "running");
   if (!runningToolCall) {
+    if (runAgeMs > HARD_LIMITS.MAX_RUN_WALL_CLOCK_SECONDS * 1000) {
+      const failureMessage = "This run timed out before it produced an answer.";
+      await deps.store.updateRun(run.id, {
+        status: "failed",
+        completedAt: new Date().toISOString(),
+      });
+      await persistRecoveredPlanToolTrace(deps, session.id, run.id, toolCalls);
+      await appendRunErrorMessageOnce(deps, session.id, run.id, failureMessage, {
+        runId: run.id,
+        phase: "error",
+        toolCalls: buildRecoveredToolTrace(toolCalls),
+        researchLog: buildRecoveredToolTrace(toolCalls),
+      });
+      return deps.store.getRun(run.id);
+    }
     return run;
   }
 
@@ -1514,6 +1551,26 @@ async function persistRecoveredPlanToolTrace(
     toolCalls: recoveredTrace,
     researchLog: recoveredTrace,
   });
+}
+
+async function appendRunErrorMessageOnce(
+  deps: AppDeps,
+  sessionId: string,
+  runId: string,
+  content: string,
+  metadata: Record<string, unknown>,
+) {
+  const messages = await deps.store.listMessages(sessionId);
+  const existing = [...messages].reverse().find((message) => (
+    message.role === "assistant"
+    && message.content === content
+    && message.metadata?.runId === runId
+    && message.metadata?.phase === "error"
+  ));
+  if (existing) {
+    return existing;
+  }
+  return deps.store.appendMessage(sessionId, "assistant", content, metadata);
 }
 
 function describePlannerAction(
@@ -2015,11 +2072,43 @@ async function persistFinalArtifact(deps: AppDeps, sessionId: string, runId: str
   return key;
 }
 
+const MODEL_HISTORY_MAX_MESSAGES = 10;
+const MODEL_HISTORY_MAX_MESSAGE_CHARS = 1200;
+const MODEL_HISTORY_MAX_TOTAL_CHARS = 6000;
+
+function truncateModelText(text: string, maxChars: number) {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxChars) {
+    return normalized;
+  }
+  return `${normalized.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
+}
+
 function formatConversationHistory(messages: MessageRecord[]) {
-  return messages.map((message) => ({
+  const recentMessages = messages.slice(-MODEL_HISTORY_MAX_MESSAGES);
+  const trimmed = recentMessages.map((message) => ({
     role: message.role,
-    content: message.content,
+    content: truncateModelText(message.content, MODEL_HISTORY_MAX_MESSAGE_CHARS),
   }));
+  const bounded: typeof trimmed = [];
+  let totalChars = 0;
+  for (let index = trimmed.length - 1; index >= 0; index -= 1) {
+    const candidate = trimmed[index];
+    if (totalChars + candidate.content.length > MODEL_HISTORY_MAX_TOTAL_CHARS) {
+      continue;
+    }
+    bounded.unshift(candidate);
+    totalChars += candidate.content.length;
+  }
+
+  const omittedCount = Math.max(0, messages.length - bounded.length);
+  if (omittedCount > 0) {
+    bounded.unshift({
+      role: "system",
+      content: `${omittedCount} earlier chat message${omittedCount === 1 ? "" : "s"} omitted for brevity.`,
+    });
+  }
+  return bounded;
 }
 
 function decodeCitationText(input: string) {
@@ -2446,72 +2535,6 @@ async function runOrchestrator(
     sessionId: session.id,
   });
 
-  const routeDecision = deps.router
-    ? await deps.router.decide({
-        userMessage: input.message,
-        conversationHistory,
-        billingContext: {
-          userId: session.userId,
-          sessionId: session.id,
-          runId: run.id,
-          source: "router",
-        },
-      })
-    : {
-        type: "tool_chain" as const,
-        fullQuery: input.message,
-      };
-  await send("router.completed", {
-    runId: run.id,
-    sessionId: session.id,
-    type: routeDecision.type,
-    fullQuery: routeDecision.type === "tool_chain" ? routeDecision.fullQuery : null,
-  });
-  recordRawLog("router.completed", {
-    runId: run.id,
-    sessionId: session.id,
-    type: routeDecision.type,
-    fullQuery: routeDecision.type === "tool_chain" ? routeDecision.fullQuery : null,
-  });
-
-  if (routeDecision.type === "direct_response") {
-    const artifactKey = await persistFinalArtifact(deps, session.id, run.id, routeDecision.answer, []);
-    await deps.store.appendMessage(session.id, "assistant", routeDecision.answer, {
-      artifactKey,
-      route: "direct_response",
-    });
-    await deps.store.updateRun(run.id, {
-      status: "completed",
-      completedAt: new Date().toISOString(),
-    });
-    await streamAssistantText(routeDecision.answer, send);
-    await send("assistant.completed", {
-      answer: routeDecision.answer,
-      citations: [],
-      artifactKey,
-    });
-    recordRawLog("assistant.completed", {
-      answer: routeDecision.answer,
-      citations: [],
-      artifactKey,
-    });
-    await send("run.completed", {
-      runId: run.id,
-      sessionId: session.id,
-      status: "completed",
-    });
-    recordRawLog("run.completed", {
-      runId: run.id,
-      sessionId: session.id,
-      status: "completed",
-    });
-    await reapExpiredRuntimeInstances(deps, { runId: run.id });
-    activeRuns.delete(run.id);
-    return;
-  }
-
-  const routedQuery = routeDecision.fullQuery.trim() || input.message;
-
   const toolHistory: Array<{
     toolName: ToolName;
     rationale?: string;
@@ -2525,6 +2548,69 @@ async function runOrchestrator(
   let initialPlanSent = false;
   let planMessageId: string | null = null;
   try {
+    const routeDecision = deps.router
+      ? await deps.router.decide({
+          userMessage: input.message,
+          conversationHistory,
+          billingContext: {
+            userId: session.userId,
+            sessionId: session.id,
+            runId: run.id,
+            source: "router",
+          },
+        })
+      : {
+          type: "tool_chain" as const,
+          fullQuery: input.message,
+        };
+    await send("router.completed", {
+      runId: run.id,
+      sessionId: session.id,
+      type: routeDecision.type,
+      fullQuery: routeDecision.type === "tool_chain" ? routeDecision.fullQuery : null,
+    });
+    recordRawLog("router.completed", {
+      runId: run.id,
+      sessionId: session.id,
+      type: routeDecision.type,
+      fullQuery: routeDecision.type === "tool_chain" ? routeDecision.fullQuery : null,
+    });
+
+    if (routeDecision.type === "direct_response") {
+      const artifactKey = await persistFinalArtifact(deps, session.id, run.id, routeDecision.answer, []);
+      await deps.store.appendMessage(session.id, "assistant", routeDecision.answer, {
+        artifactKey,
+        route: "direct_response",
+      });
+      await deps.store.updateRun(run.id, {
+        status: "completed",
+        completedAt: new Date().toISOString(),
+      });
+      await streamAssistantText(routeDecision.answer, send);
+      await send("assistant.completed", {
+        answer: routeDecision.answer,
+        citations: [],
+        artifactKey,
+      });
+      recordRawLog("assistant.completed", {
+        answer: routeDecision.answer,
+        citations: [],
+        artifactKey,
+      });
+      await send("run.completed", {
+        runId: run.id,
+        sessionId: session.id,
+        status: "completed",
+      });
+      recordRawLog("run.completed", {
+        runId: run.id,
+        sessionId: session.id,
+        status: "completed",
+      });
+      return;
+    }
+
+    const routedQuery = routeDecision.fullQuery.trim() || input.message;
     for (let turn = 1; turn <= HARD_LIMITS.MAX_TURNS; turn += 1) {
       if (activeRuns.get(run.id)?.cancelRequested) {
         break;
@@ -2973,7 +3059,7 @@ async function runOrchestrator(
         completedAt: new Date().toISOString(),
       });
       const timeoutMessage = "The run hit its hard limits before it produced a valid answer.";
-      await deps.store.appendMessage(session.id, "assistant", timeoutMessage, {
+      await appendRunErrorMessageOnce(deps, session.id, run.id, timeoutMessage, {
         runId: run.id,
         phase: "error",
         toolCalls: summarizeToolHistory(toolHistory),
@@ -2983,6 +3069,7 @@ async function runOrchestrator(
         answer: timeoutMessage,
         citations: [],
         artifactKey: null,
+        phase: "error",
       });
       recordRawLog("assistant.completed", {
         answer: timeoutMessage,
@@ -3000,6 +3087,70 @@ async function runOrchestrator(
         status: "timed_out",
       });
     }
+  } catch (error) {
+    try {
+      await recordUnexpectedError(deps, error, {
+        request,
+        route: "/chat",
+        method: "POST",
+        source: "run_orchestrator",
+        runId: run.id,
+        sessionId: session.id,
+        userId: session.userId,
+      });
+    } catch {
+      // Error reporting should not block failure cleanup.
+    }
+
+    const openToolCalls = await deps.store.listToolCalls(run.id);
+    await Promise.all(
+      openToolCalls
+        .filter((toolCall) => toolCall.status === "running" || toolCall.status === "queued")
+        .map((toolCall) => deps.store.finishToolCall(toolCall.id, "failed", {
+          ok: false,
+          error: error instanceof Error ? error.message : "Unknown orchestrator error",
+          runtimeId: runtimeIdFromToolCall(toolCall) ?? undefined,
+        })),
+    );
+    const refreshedToolCalls = await deps.store.listToolCalls(run.id);
+    await persistRecoveredPlanToolTrace(deps, session.id, run.id, refreshedToolCalls);
+    await deps.store.updateRun(run.id, {
+      status: "failed",
+      completedAt: new Date().toISOString(),
+    });
+
+    const failureMessage = userFacingRunFailureMessage(error);
+    const recoveredTrace = buildRecoveredToolTrace(refreshedToolCalls);
+    await appendRunErrorMessageOnce(deps, session.id, run.id, failureMessage, {
+      runId: run.id,
+      phase: "error",
+      toolCalls: recoveredTrace,
+      researchLog: recoveredTrace,
+    });
+    await streamAssistantText(failureMessage, send);
+    await send("assistant.completed", {
+      answer: failureMessage,
+      citations: [],
+      artifactKey: null,
+      phase: "error",
+    });
+    recordRawLog("assistant.completed", {
+      answer: failureMessage,
+      citations: [],
+      artifactKey: null,
+    });
+    await send("run.completed", {
+      runId: run.id,
+      sessionId: session.id,
+      status: "failed",
+    });
+    recordRawLog("run.completed", {
+      runId: run.id,
+      sessionId: session.id,
+      status: "failed",
+      error: error instanceof Error ? error.message : "Unknown orchestrator error",
+    });
+    return;
   } finally {
     await flushAllToolProgress(async (toolCallId, toolName, text) => {
       await send("tool.progress", {

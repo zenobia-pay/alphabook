@@ -391,6 +391,25 @@ function reconcileMessagesWithRunState(messages: UiMessage[], runs: SessionRunRe
   });
 }
 
+function dedupeAdjacentErrorMessages(messages: UiMessage[]) {
+  const deduped: UiMessage[] = [];
+  for (const message of messages) {
+    const previous = deduped[deduped.length - 1];
+    const sameErrorMessage = previous
+      && previous.role === "assistant"
+      && message.role === "assistant"
+      && previous.content === message.content
+      && previous.metadata?.phase === "error"
+      && message.metadata?.phase === "error"
+      && previous.metadata?.runId === message.metadata?.runId;
+    if (sameErrorMessage) {
+      continue;
+    }
+    deduped.push(message);
+  }
+  return deduped;
+}
+
 function formatRelativeTime(value: string | null | undefined) {
   if (!value) {
     return "Just now";
@@ -1100,6 +1119,7 @@ function messageToThreadMessage(message: UiMessage, streamingAssistantId: string
   const metadata = {
     custom: {
       citations: message.citations,
+      phase: typeof message.metadata?.phase === "string" ? message.metadata.phase : null,
     },
   };
 
@@ -2442,7 +2462,7 @@ export default function App() {
   }, [authState.loading, isSending, selectedSessionId]);
 
   const visibleMessages = useMemo(
-    () => reconcileMessagesWithRunState(messages, sessionRuns),
+    () => dedupeAdjacentErrorMessages(reconcileMessagesWithRunState(messages, sessionRuns)),
     [messages, sessionRuns],
   );
 
@@ -2983,6 +3003,7 @@ export default function App() {
             }
 
             if (event.event === "assistant.completed") {
+              const completionPhase = typeof event.data.phase === "string" ? event.data.phase : null;
               if (!finalAssistantMessageId) {
                 finalAssistantMessageId = crypto.randomUUID();
                 setMessages((current) => [
@@ -2992,7 +3013,7 @@ export default function App() {
                     sessionId: workingSessionId ?? "pending",
                     role: "assistant",
                     content: typeof event.data.answer === "string" ? event.data.answer : "",
-                    metadata: {},
+                    metadata: completionPhase ? { phase: completionPhase } : {},
                     createdAt: new Date().toISOString(),
                     citations: Array.isArray(event.data.citations) ? (event.data.citations as Citation[]) : [],
                     toolCalls: [],
@@ -3004,6 +3025,7 @@ export default function App() {
                   message.id === finalAssistantMessageId
                     ? {
                         ...message,
+                        metadata: completionPhase ? { ...message.metadata, phase: completionPhase } : message.metadata,
                         citations: Array.isArray(event.data.citations) ? (event.data.citations as Citation[]) : [],
                         toolCalls: [],
                       }

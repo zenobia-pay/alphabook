@@ -389,10 +389,20 @@ const MessageError: FC = () => {
 };
 
 const AssistantMessage: FC = () => {
+  const phase = useAuiState((state) => {
+    const metadata = state.message.metadata;
+    const custom = metadata && typeof metadata === "object" && "custom" in metadata
+      ? metadata.custom as Record<string, unknown>
+      : null;
+    return typeof custom?.phase === "string" ? custom.phase : null;
+  });
+  const isErrorMessage = phase === "error";
+
   return (
     <MessagePrimitive.Root
       className="aui-assistant-message-root fade-in slide-in-from-bottom-1 relative mx-auto w-full max-w-(--thread-max-width) animate-in py-3 duration-150"
       data-role="assistant"
+      data-error-message={isErrorMessage ? "true" : "false"}
     >
       <div className="aui-assistant-message-content wrap-break-word px-2 text-foreground leading-relaxed">
         <MessagePrimitive.Parts

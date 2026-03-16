@@ -429,6 +429,26 @@ button {
   margin-top: 4px;
 }
 
+.aui-assistant-message-root[data-error-message="true"] .aui-assistant-message-content > .aui-md:first-child {
+  border: 1px solid rgba(180, 66, 54, 0.22);
+  background: rgba(180, 66, 54, 0.08);
+  color: #8d372c;
+  border-radius: 18px;
+  padding: 14px 16px;
+}
+
+.aui-assistant-message-root[data-error-message="true"] .aui-assistant-message-content > .aui-md:first-child .aui-md-p:first-child {
+  margin-top: 0;
+}
+
+.aui-assistant-message-root[data-error-message="true"] .aui-assistant-message-content > .aui-md:first-child .aui-md-p:last-child {
+  margin-bottom: 0;
+}
+
+.aui-assistant-message-root[data-error-message="true"] .aui-assistant-message-content > .aui-md:first-child .aui-md-a {
+  color: inherit;
+}
+
 .aui-tool-fallback-root + .aui-tool-fallback-root {
   margin-top: 10px;
 }

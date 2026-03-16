@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import {
   CitationSchema,
+  HARD_LIMITS,
   SYNTHESIZER_SYSTEM_PROMPT,
   type ChunkSearchResult,
   type Citation,
@@ -41,6 +42,43 @@ export interface SynthesisResult {
 
 export interface Synthesizer {
   synthesize(input: SynthesisInput): Promise<SynthesisResult>;
+}
+
+function truncateForModel(value: string, maxChars = 240) {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxChars) {
+    return normalized;
+  }
+  return `${normalized.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
+}
+
+function summarizeForModel(value: unknown, depth = 0): unknown {
+  if (value === null || typeof value === "number" || typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "string") {
+    return truncateForModel(value, 180);
+  }
+  if (Array.isArray(value)) {
+    return value.slice(0, 6).map((entry) => summarizeForModel(entry, depth + 1));
+  }
+  if (!value || typeof value !== "object" || depth >= 2) {
+    return typeof value === "object" ? "[object]" : String(value);
+  }
+  return Object.fromEntries(
+    Object.entries(value)
+      .slice(0, 10)
+      .map(([key, entry]) => [key, summarizeForModel(entry, depth + 1)]),
+  );
+}
+
+function summarizeToolHistoryForModel(toolHistory: ToolHistoryEntry[]) {
+  return toolHistory.map((entry) => ({
+    toolName: entry.toolName,
+    rationale: typeof entry.rationale === "string" ? truncateForModel(entry.rationale, 180) : undefined,
+    args: summarizeForModel(entry.args),
+    result: summarizeForModel(entry.result),
+  }));
 }
 
 function dedupeCitations(citations: Citation[]): Citation[] {
@@ -204,6 +242,7 @@ export class OpenAISynthesizer implements Synthesizer {
   ) {}
 
   async synthesize(input: SynthesisInput): Promise<SynthesisResult> {
+    const summarizedToolHistory = summarizeToolHistoryForModel(input.toolHistory);
     const body = {
       model: this.model,
       response_format: { type: "json_object" as const },
@@ -218,7 +257,7 @@ export class OpenAISynthesizer implements Synthesizer {
             question: input.userMessage,
             conversationHistory: input.conversationHistory,
             plannerDraft: input.plannerDraft ?? null,
-            toolHistory: input.toolHistory,
+            toolHistory: summarizedToolHistory,
             responseInstructions: "Reply with JSON only.",
             outputShape: {
               answer: "string",
@@ -228,14 +267,23 @@ export class OpenAISynthesizer implements Synthesizer {
         },
       ],
     };
-    const response = await this.fetchImpl("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify(body),
-    });
+    let response: Response;
+    try {
+      response = await this.fetchImpl("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(HARD_LIMITS.MAX_TOOL_TIMEOUT_SECONDS * 1000),
+      });
+    } catch (error) {
+      if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
+        throw new Error("Answer synthesis timed out before the final response was ready.");
+      }
+      throw error;
+    }
     if (!response.ok) {
       const detail = await response.text();
       throw new Error(`Synthesis request failed: ${detail}`);
