@@ -161,6 +161,8 @@ function buildFetchHandler(env: Env) {
     adminAllowedEmail: env.ADMIN_ALLOWED_EMAIL,
     openAIApiKey: env.OPENAI_API_KEY,
     openAIModel: env.OPENAI_SYNTH_MODEL ?? env.OPENAI_MODEL ?? "gpt-5.2",
+    ai: env.AI,
+    toolStreamCleanupModel: env.TOOL_STREAM_CLEANUP_MODEL,
     errorAlertWebhookUrl: env.ERROR_ALERT_WEBHOOK_URL,
   });
 

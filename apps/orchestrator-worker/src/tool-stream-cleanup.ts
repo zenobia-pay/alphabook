@@ -44,7 +44,10 @@ export async function cleanupToolStreamWithWorkersAi(
   const prompt = [
     "You normalize tool-call logs for a chat UI.",
     "Return valid JSON with keys summary and normalizedLines.",
-    "Keep every retained line terse and factual.",
+    "Keep every retained line terse, factual, and easy for a non-technical reader to understand.",
+    "Remove formatting noise, stack traces, internal jargon, IDs, file paths, secrets, tokens, cookies, and sensitive data.",
+    "If several lines are repetitive, vague, or too small to stand alone, merge them into one clearer line.",
+    "Prefer plain English over implementation detail.",
     "Never invent missing events.",
     "",
     `toolName=${input.toolName}`,

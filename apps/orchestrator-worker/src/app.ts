@@ -9,8 +9,10 @@ import type { BlobStore } from "./r2";
 import type { Planner } from "./planner";
 import { parseToolCall } from "./planner";
 import type { Router } from "./router";
+import { cleanupToolStreamWithWorkersAi, type ToolStreamCleanupLine } from "./tool-stream-cleanup";
 import type { Synthesizer, ToolHistoryEntry } from "./synthesizer";
 import type { AnalyticsEventRecord, AppStore, MessageRecord, SessionRecord } from "./store";
+import type { WorkersAiBinding } from "./index";
 
 export interface WorkerQueues {
   ingestName: string;
@@ -41,6 +43,8 @@ export interface AppDeps {
   adminAllowedEmail?: string;
   openAIApiKey?: string;
   openAIModel?: string;
+  ai?: WorkersAiBinding;
+  toolStreamCleanupModel?: string;
   errorAlertWebhookUrl?: string;
 }
 
@@ -808,6 +812,154 @@ function sanitizeUserFacingToolText(text: string | null | undefined): string | n
     .replace(/\bhydrat(?:e|ed|ing)\b/gi, "load")
     .replace(/\bworkspace\b/gi, "research run")
     .trim();
+}
+
+type ToolRunRawLogEntry = {
+  seq: number;
+  timestamp: string;
+  event: string;
+  payload: Record<string, unknown>;
+};
+
+type ToolProgressBuffer = {
+  toolName: ToolName;
+  lines: ToolStreamCleanupLine[];
+  timer: ReturnType<typeof setTimeout> | null;
+  flushPromise: Promise<void> | null;
+};
+
+function looksSensitiveKey(key: string) {
+  return /(secret|token|password|cookie|authorization|api[-_]?key|session[-_]?id)/iu.test(key);
+}
+
+function redactSensitiveText(text: string): string {
+  return text
+    .replace(/\b(sk|rk|pk)_[a-z0-9_-]{12,}\b/giu, "[redacted]")
+    .replace(/\bBearer\s+[A-Za-z0-9._-]+\b/giu, "Bearer [redacted]")
+    .replace(/\b[A-Fa-f0-9]{32,}\b/gu, "[redacted]")
+    .replace(/([A-Za-z0-9+/]{32,}={0,2})/gu, "[redacted]");
+}
+
+function fallbackNormalizeToolLines(lines: ToolStreamCleanupLine[]): string[] {
+  const normalized: string[] = [];
+  for (const line of lines) {
+    let value = redactSensitiveText(line.value)
+      .replace(/[`*_#>-]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!value) {
+      continue;
+    }
+    value = sanitizeUserFacingToolText(value) ?? value;
+    if (looksSensitiveKey(line.key)) {
+      value = "[redacted]";
+    }
+    if (normalized[normalized.length - 1] === value) {
+      continue;
+    }
+    const previous = normalized[normalized.length - 1];
+    const isShortOrVague = value.length < 28 || /^(starting|working|running|loading|checking|reviewing|searching)\b/iu.test(value);
+    if (previous && isShortOrVague && previous.length < 160) {
+      normalized[normalized.length - 1] = `${previous} ${value}`.trim();
+      continue;
+    }
+    normalized.push(value);
+  }
+  return normalized;
+}
+
+function flattenValueForCleanup(
+  value: unknown,
+  keyPrefix = "",
+  lines: ToolStreamCleanupLine[] = [],
+): ToolStreamCleanupLine[] {
+  if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    if (keyPrefix) {
+      lines.push({ toolName: "", key: keyPrefix, value: String(value) });
+    }
+    return lines;
+  }
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      if (keyPrefix) {
+        lines.push({ toolName: "", key: keyPrefix, value: "[]" });
+      }
+      return lines;
+    }
+    value.slice(0, 12).forEach((entry, index) => {
+      flattenValueForCleanup(entry, keyPrefix ? `${keyPrefix}[${index}]` : `[${index}]`, lines);
+    });
+    if (value.length > 12 && keyPrefix) {
+      lines.push({ toolName: "", key: `${keyPrefix}[+]`, value: `${value.length - 12} more` });
+    }
+    return lines;
+  }
+  if (!value || typeof value !== "object") {
+    return lines;
+  }
+  for (const [key, child] of Object.entries(value)) {
+    const nextKey = keyPrefix ? `${keyPrefix}.${key}` : key;
+    if (looksSensitiveKey(nextKey)) {
+      lines.push({ toolName: "", key: nextKey, value: "[redacted]" });
+      continue;
+    }
+    flattenValueForCleanup(child, nextKey, lines);
+  }
+  return lines;
+}
+
+async function normalizeToolLinesForUser(
+  deps: AppDeps,
+  input: {
+    toolName: ToolName;
+    lines: ToolStreamCleanupLine[];
+  },
+) {
+  const fallback = fallbackNormalizeToolLines(input.lines);
+  if (!deps.ai || input.lines.length === 0) {
+    return fallback;
+  }
+  try {
+    const cleaned = await cleanupToolStreamWithWorkersAi(deps.ai, {
+      model: deps.toolStreamCleanupModel,
+      toolName: input.toolName,
+      lines: input.lines,
+    });
+    const normalized = fallbackNormalizeToolLines(
+      cleaned.normalizedLines.map((line) => ({
+        toolName: input.toolName,
+        key: "normalized",
+        value: line,
+      })),
+    );
+    return normalized.length > 0 ? normalized : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+async function persistRunStreamArtifact(
+  deps: AppDeps,
+  sessionId: string,
+  runId: string,
+  rawEntries: ToolRunRawLogEntry[],
+) {
+  const filename = `${runId}-tool-stream.jsonl`;
+  const r2Key = R2_PREFIXES.sessionArtifact(sessionId, filename);
+  const content = rawEntries.map((entry) => JSON.stringify(entry)).join("\n");
+  await deps.blobStore.putText(r2Key, content, "application/x-ndjson; charset=utf-8");
+  await deps.store.saveArtifact({
+    sessionId,
+    runtimeId: null,
+    r2Key,
+    filename,
+    mimeType: "application/x-ndjson",
+    metadata: {
+      kind: "tool_stream_raw",
+      runId,
+      lineCount: rawEntries.length,
+    },
+  });
 }
 
 function startRuntimeTaskProgressEmitter(
@@ -1700,6 +1852,105 @@ async function runOrchestrator(
     throw new Error("A userId is required to start an orchestrator run.");
   }
   await deps.store.ensureUser(input.userId);
+  let rawLogSequence = 0;
+  const rawRunLog: ToolRunRawLogEntry[] = [];
+  const progressBuffers = new Map<string, ToolProgressBuffer>();
+
+  const recordRawLog = (event: string, payload: Record<string, unknown>) => {
+    rawRunLog.push({
+      seq: rawLogSequence,
+      timestamp: new Date().toISOString(),
+      event,
+      payload,
+    });
+    rawLogSequence += 1;
+  };
+
+  const flushToolProgress = async (
+    toolCallId: string,
+    context: { runId: string; toolName: ToolName },
+    onEmit: (text: string) => Promise<void>,
+  ) => {
+    const buffer = progressBuffers.get(toolCallId);
+    if (!buffer) {
+      return;
+    }
+    if (buffer.timer) {
+      clearTimeout(buffer.timer);
+      buffer.timer = null;
+    }
+    if (buffer.flushPromise) {
+      await buffer.flushPromise;
+      return;
+    }
+    const batch = buffer.lines.splice(0, buffer.lines.length);
+    if (batch.length === 0) {
+      return;
+    }
+    buffer.flushPromise = (async () => {
+      const normalizedLines = await normalizeToolLinesForUser(deps, {
+        toolName: context.toolName,
+        lines: batch,
+      });
+      for (const text of normalizedLines) {
+        await onEmit(text);
+      }
+    })().finally(() => {
+      buffer.flushPromise = null;
+      if (buffer.lines.length === 0 && !buffer.timer) {
+        progressBuffers.delete(toolCallId);
+      }
+    });
+    await buffer.flushPromise;
+  };
+
+  const queueToolProgress = (
+    payload: {
+      runId: string;
+      toolCallId: string;
+      toolName: ToolName;
+      text: string;
+      detail?: Record<string, unknown>;
+    },
+    onEmit: (text: string) => Promise<void>,
+  ) => {
+    recordRawLog("tool.progress.raw", payload);
+    const buffer = progressBuffers.get(payload.toolCallId) ?? {
+      toolName: payload.toolName,
+      lines: [],
+      timer: null,
+      flushPromise: null,
+    };
+    buffer.toolName = payload.toolName;
+    buffer.lines.push({
+      toolName: payload.toolName,
+      key: typeof payload.detail?.type === "string" ? payload.detail.type : "progress",
+      value: payload.text,
+    });
+    progressBuffers.set(payload.toolCallId, buffer);
+    if (buffer.lines.length >= 4) {
+      void flushToolProgress(payload.toolCallId, payload, onEmit);
+      return;
+    }
+    if (!buffer.timer) {
+      buffer.timer = setTimeout(() => {
+        buffer.timer = null;
+        void flushToolProgress(payload.toolCallId, payload, onEmit);
+      }, 650);
+    }
+  };
+
+  const flushAllToolProgress = async (
+    onEmit: (toolCallId: string, toolName: ToolName, text: string) => Promise<void>,
+  ) => {
+    await Promise.all(
+      Array.from(progressBuffers.entries()).map(([toolCallId, buffer]) =>
+        flushToolProgress(toolCallId, { runId: "", toolName: buffer.toolName }, (text) =>
+          onEmit(toolCallId, buffer.toolName, text)
+        ),
+      ),
+    );
+  };
 
   let session: SessionRecord | null = input.sessionId ? await deps.store.getSession(input.sessionId) : null;
   if (session && session.userId !== input.userId) {
@@ -1711,9 +1962,17 @@ async function runOrchestrator(
       sessionId: session.id,
       title: session.title,
     });
+    recordRawLog("session.created", {
+      sessionId: session.id,
+      title: session.title,
+    });
   }
 
   await deps.store.appendMessage(session.id, "user", input.message);
+  recordRawLog("message.user", {
+    sessionId: session.id,
+    content: input.message,
+  });
   const conversationHistory = formatConversationHistory(await deps.store.listMessages(session.id));
   const run = await deps.store.createRun(session.id);
   activeRuns.set(run.id, {
@@ -1723,6 +1982,10 @@ async function runOrchestrator(
     cancelRequested: false,
   });
   await send("run.started", {
+    runId: run.id,
+    sessionId: session.id,
+  });
+  recordRawLog("run.started", {
     runId: run.id,
     sessionId: session.id,
   });
@@ -1748,6 +2011,12 @@ async function runOrchestrator(
     type: routeDecision.type,
     fullQuery: routeDecision.type === "tool_chain" ? routeDecision.fullQuery : null,
   });
+  recordRawLog("router.completed", {
+    runId: run.id,
+    sessionId: session.id,
+    type: routeDecision.type,
+    fullQuery: routeDecision.type === "tool_chain" ? routeDecision.fullQuery : null,
+  });
 
   if (routeDecision.type === "direct_response") {
     const artifactKey = await persistFinalArtifact(deps, session.id, run.id, routeDecision.answer, []);
@@ -1765,7 +2034,17 @@ async function runOrchestrator(
       citations: [],
       artifactKey,
     });
+    recordRawLog("assistant.completed", {
+      answer: routeDecision.answer,
+      citations: [],
+      artifactKey,
+    });
     await send("run.completed", {
+      runId: run.id,
+      sessionId: session.id,
+      status: "completed",
+    });
+    recordRawLog("run.completed", {
       runId: run.id,
       sessionId: session.id,
       status: "completed",
@@ -1847,6 +2126,11 @@ async function runOrchestrator(
           sessionId: session.id,
           status: "completed",
         });
+        recordRawLog("run.completed", {
+          runId: run.id,
+          sessionId: session.id,
+          status: "completed",
+        });
         return;
       }
 
@@ -1892,16 +2176,47 @@ async function runOrchestrator(
           messageId: planMessage.id,
           text: planText,
         });
+        recordRawLog("assistant.plan", {
+          runId: run.id,
+          sessionId: session.id,
+          messageId: planMessage.id,
+          text: planText,
+        });
         await persistPlanToolTrace(deps, planMessageId, run.id, liveToolTrace);
         initialPlanSent = true;
       }
+      const startedLogLines = await normalizeToolLinesForUser(deps, {
+        toolName: toolCall.tool_name,
+        lines: [
+          ...(toolCall.rationale
+            ? [{
+                toolName: toolCall.tool_name,
+                key: "rationale",
+                value: toolCall.rationale,
+              }]
+            : []),
+          ...flattenValueForCleanup(normalizedToolArgs).map((line) => ({
+            ...line,
+            toolName: toolCall.tool_name,
+          })),
+        ],
+      });
+      recordRawLog("tool.started.raw", {
+        runId: run.id,
+        toolCallId: toolRecord.id,
+        toolName: toolCall.tool_name,
+        rationale: toolCall.rationale ?? null,
+        args: normalizedToolArgs,
+      });
       await send("tool.started", {
         runId: run.id,
         toolCallId: toolRecord.id,
         toolName: toolCall.tool_name,
         label: labelForToolCall(toolCall.tool_name, normalizedToolArgs),
         rationale: sanitizeUserFacingToolText(toolCall.rationale) ?? null,
-        args: normalizedToolArgs,
+        args: {
+          __logLines: startedLogLines,
+        },
       });
       liveToolTrace = [
         ...liveToolTrace,
@@ -1911,7 +2226,9 @@ async function runOrchestrator(
           label: labelForToolCall(toolCall.tool_name, normalizedToolArgs),
           rationale: sanitizeUserFacingToolText(toolCall.rationale) ?? undefined,
           progress: sanitizeUserFacingToolText(toolCall.rationale) ? [sanitizeUserFacingToolText(toolCall.rationale)!] : [],
-          args: normalizedToolArgs,
+          args: {
+            __logLines: startedLogLines,
+          },
           state: "running",
         },
       ];
@@ -1919,20 +2236,33 @@ async function runOrchestrator(
       const progressEmitter = startToolProgressEmitter(
         deps.runtimeGateway,
         async (eventName, data) => {
-          await send(eventName, data);
-          if (
-            eventName === "tool.progress"
-            && typeof data.toolCallId === "string"
-            && typeof data.text === "string"
-          ) {
-            const progressText = data.text;
-            liveToolTrace = liveToolTrace.map((entry) =>
-              entry.id === data.toolCallId
-                ? appendToolProgress(entry, sanitizeUserFacingToolText(progressText) ?? progressText)
-                : entry,
-            );
-            await persistPlanToolTrace(deps, planMessageId, run.id, liveToolTrace);
+          if (eventName !== "tool.progress" || typeof data.toolCallId !== "string" || typeof data.text !== "string") {
+            await send(eventName, data);
+            return;
           }
+          queueToolProgress(
+            {
+              runId: typeof data.runId === "string" ? data.runId : run.id,
+              toolCallId: data.toolCallId,
+              toolName: toolCall.tool_name,
+              text: data.text,
+              detail: data.detail && typeof data.detail === "object" ? data.detail as Record<string, unknown> : undefined,
+            },
+            async (progressText) => {
+              await send("tool.progress", {
+                runId: run.id,
+                toolCallId: data.toolCallId,
+                toolName: toolCall.tool_name,
+                text: progressText,
+              });
+              liveToolTrace = liveToolTrace.map((entry) =>
+                entry.id === data.toolCallId
+                  ? appendToolProgress(entry, progressText)
+                  : entry,
+              );
+              await persistPlanToolTrace(deps, planMessageId, run.id, liveToolTrace);
+            },
+          );
         },
         {
           sessionId: session.id,
@@ -1998,6 +2328,27 @@ async function runOrchestrator(
         }
       } finally {
         await progressEmitter.stop();
+        await flushToolProgress(
+          toolRecord.id,
+          {
+            runId: run.id,
+            toolName: toolCall.tool_name,
+          },
+          async (progressText) => {
+            await send("tool.progress", {
+              runId: run.id,
+              toolCallId: toolRecord.id,
+              toolName: toolCall.tool_name,
+              text: progressText,
+            });
+            liveToolTrace = liveToolTrace.map((entry) =>
+              entry.id === toolRecord.id
+                ? appendToolProgress(entry, progressText)
+                : entry,
+            );
+            await persistPlanToolTrace(deps, planMessageId, run.id, liveToolTrace);
+          },
+        );
       }
 
       if (activeRuns.get(run.id)?.cancelRequested) {
@@ -2006,6 +2357,11 @@ async function runOrchestrator(
           completedAt: new Date().toISOString(),
         });
         await send("run.completed", {
+          runId: run.id,
+          sessionId: session.id,
+          status: "failed",
+        });
+        recordRawLog("run.completed", {
           runId: run.id,
           sessionId: session.id,
           status: "failed",
@@ -2032,6 +2388,20 @@ async function runOrchestrator(
         );
       }
       const streamedResult = clientSafeToolResult(toolCall.tool_name, result);
+      const completedLogLines = await normalizeToolLinesForUser(deps, {
+        toolName: toolCall.tool_name,
+        lines: flattenValueForCleanup(streamedResult).map((line) => ({
+          ...line,
+          toolName: toolCall.tool_name,
+        })),
+      });
+      recordRawLog("tool.completed.raw", {
+        runId: run.id,
+        toolCallId: toolRecord.id,
+        toolName: toolCall.tool_name,
+        status,
+        result,
+      });
       liveToolTrace = liveToolTrace.map((entry) =>
         entry.id === toolRecord.id
           ? {
@@ -2042,7 +2412,10 @@ async function runOrchestrator(
                   ? entry.progress[entry.progress.length - 1]
                   : sanitizeUserFacingToolText(toolCall.rationale) ?? entry.rationale,
               progress: entry.progress,
-              result: streamedResult,
+              result: {
+                __logLines: completedLogLines,
+                error: typeof streamedResult.error === "string" ? streamedResult.error : undefined,
+              },
               isError: status === "failed",
               state: status === "failed" ? "error" : "completed",
             }
@@ -2056,7 +2429,10 @@ async function runOrchestrator(
         label: labelForToolCall(toolCall.tool_name, normalizedToolArgs),
         rationale: sanitizeUserFacingToolText(toolCall.rationale) ?? null,
         status,
-        result: streamedResult,
+        result: {
+          __logLines: completedLogLines,
+          error: typeof streamedResult.error === "string" ? streamedResult.error : undefined,
+        },
       });
       toolHistory.push({
         toolName: toolCall.tool_name,
@@ -2083,12 +2459,31 @@ async function runOrchestrator(
       citations: [],
       artifactKey: null,
     });
+    recordRawLog("assistant.completed", {
+      answer: timeoutMessage,
+      citations: [],
+      artifactKey: null,
+    });
     await send("run.completed", {
       runId: run.id,
       sessionId: session.id,
       status: "timed_out",
     });
+    recordRawLog("run.completed", {
+      runId: run.id,
+      sessionId: session.id,
+      status: "timed_out",
+    });
   } finally {
+    await flushAllToolProgress(async (toolCallId, toolName, text) => {
+      await send("tool.progress", {
+        runId: run.id,
+        toolCallId,
+        toolName,
+        text,
+      });
+    });
+    await persistRunStreamArtifact(deps, session.id, run.id, rawRunLog);
     await destroyTrackedRuntimes(deps, { sessionId: session.id, runId: run.id }, runtimeIdsToCleanup);
     await reapExpiredRuntimeInstances(deps, { runId: run.id });
     activeRuns.delete(run.id);

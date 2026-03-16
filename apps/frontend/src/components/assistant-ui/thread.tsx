@@ -73,6 +73,9 @@ function assistantMessageToMarkdown(parts: readonly MessagePartRecord[]) {
     if (part.type === "tool-call") {
       const args = part.args && typeof part.args === "object" ? { ...part.args } : {};
       const rationale = typeof args.__rationale === "string" ? args.__rationale : null;
+      const startedLogLines = Array.isArray(args.__logLines)
+        ? args.__logLines.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+        : [];
       if ("__rationale" in args) {
         delete args.__rationale;
       }
@@ -82,6 +85,16 @@ function assistantMessageToMarkdown(parts: readonly MessagePartRecord[]) {
       if ("__progress" in args) {
         delete args.__progress;
       }
+      if ("__logLines" in args) {
+        delete args.__logLines;
+      }
+      const resultRecord = part.result && typeof part.result === "object" ? { ...(part.result as Record<string, unknown>) } : null;
+      const completedLogLines = resultRecord && Array.isArray(resultRecord.__logLines)
+        ? resultRecord.__logLines.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+        : [];
+      if (resultRecord && "__logLines" in resultRecord) {
+        delete resultRecord.__logLines;
+      }
 
       const toolSections = [`### Tool Call: ${part.toolName ?? "Tool"}`];
       if (rationale) {
@@ -89,9 +102,15 @@ function assistantMessageToMarkdown(parts: readonly MessagePartRecord[]) {
       }
       toolSections.push(
         "```text",
-        ...flattenLogLines(args),
+        ...(startedLogLines.length > 0 ? startedLogLines : flattenLogLines(args)),
         ...progress,
-        ...(part.result !== undefined ? flattenLogLines(part.result) : []),
+        ...(completedLogLines.length > 0
+          ? completedLogLines
+          : resultRecord
+            ? flattenLogLines(resultRecord)
+            : part.result !== undefined
+              ? flattenLogLines(part.result)
+              : []),
         "```",
       );
 

@@ -181,7 +181,7 @@ function omitInternalKeys(record: JsonRecord | null) {
     return null;
   }
   const filtered = Object.fromEntries(
-    Object.entries(record).filter(([key]) => key !== "__rationale" && key !== "__progress"),
+    Object.entries(record).filter(([key]) => key !== "__rationale" && key !== "__progress" && key !== "__logLines"),
   );
   return Object.keys(filtered).length ? filtered : null;
 }
@@ -192,6 +192,15 @@ function getProgress(args: JsonRecord | null) {
     return [];
   }
   return progress.filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+}
+
+function getDisplayLogLines(value: unknown) {
+  const record = safeObject(value);
+  const logLines = record?.__logLines;
+  if (!Array.isArray(logLines)) {
+    return [];
+  }
+  return logLines.filter((line): line is string => typeof line === "string" && line.trim().length > 0);
 }
 
 function pruneValue(value: unknown): unknown {
@@ -209,6 +218,7 @@ function pruneValue(value: unknown): unknown {
   const hiddenKeys = new Set([
     "__rationale",
     "__progress",
+    "__logLines",
     "downloads",
     "fileCatalog",
     "manifest",
@@ -499,8 +509,10 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
 }) => {
   const args = useMemo(() => parseArgs(argsText), [argsText]);
   const progress = useMemo(() => getProgress(args), [args]);
+  const startedLogLines = useMemo(() => getDisplayLogLines(args), [args]);
   const cleanedArgs = useMemo(() => pruneValue(omitInternalKeys(args)), [args]);
   const resultObject = useMemo(() => pruneValue(safeObject(result) ?? result), [result]);
+  const completedLogLines = useMemo(() => getDisplayLogLines(result), [result]);
   const errorText = useMemo(() => {
     if (status?.type !== "incomplete") {
       return null;
@@ -515,7 +527,14 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
   }, [status]);
   const logLines = useMemo(() => {
     const lines: ToolLogLine[] = [];
-    if (cleanedArgs !== undefined && cleanedArgs !== null) {
+    if (startedLogLines.length > 0) {
+      startedLogLines.forEach((item) => {
+        lines.push({
+          key: "",
+          value: item,
+        });
+      });
+    } else if (cleanedArgs !== undefined && cleanedArgs !== null) {
       flattenRawLogLines(cleanedArgs, undefined, lines);
     }
     progress.forEach((item) => {
@@ -525,7 +544,14 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
         tone: "muted",
       });
     });
-    if (resultObject !== undefined && resultObject !== null) {
+    if (completedLogLines.length > 0) {
+      completedLogLines.forEach((item) => {
+        lines.push({
+          key: "",
+          value: item,
+        });
+      });
+    } else if (resultObject !== undefined && resultObject !== null) {
       flattenRawLogLines(resultObject, undefined, lines);
     }
     if (errorText) {
@@ -536,7 +562,7 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
       });
     }
     return lines;
-  }, [cleanedArgs, errorText, progress, resultObject]);
+  }, [cleanedArgs, completedLogLines, errorText, progress, resultObject, startedLogLines]);
   const summary = useMemo(
     () => summarizeTool(toolName, args, safeObject(result), status),
     [toolName, args, result, status],
