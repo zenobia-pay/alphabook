@@ -634,36 +634,79 @@ function buildSearchEvidence(question, selectedChunks, runtimeChunks, workById) 
   };
 }
 
+function sampleStrings(values, limit = 8) {
+  return Array.isArray(values)
+    ? values.filter((value) => typeof value === "string").slice(0, limit)
+    : [];
+}
+
+function compactTaskContext(taskContext) {
+  if (!taskContext || typeof taskContext !== "object") {
+    return {};
+  }
+
+  const normalized = taskContext;
+  return {
+    mode: typeof normalized.mode === "string" ? normalized.mode : null,
+    prompt: typeof normalized.prompt === "string" ? normalizeWhitespace(normalized.prompt).slice(0, 220) : null,
+    question: typeof normalized.question === "string" ? normalizeWhitespace(normalized.question).slice(0, 220) : null,
+    runtimeId: typeof normalized.runtimeId === "string" ? normalized.runtimeId : null,
+    hydratedWorkCount: typeof normalized.hydratedWorkCount === "number" ? normalized.hydratedWorkCount : null,
+    candidateWorkIds: sampleStrings(normalized.candidateWorkIds, 8),
+    selectedChunkIds: sampleStrings(normalized.selectedChunkIds, 8),
+    topChunkIds: Array.isArray(normalized.topChunks)
+      ? normalized.topChunks
+        .slice(0, 6)
+        .map((chunk) => (chunk && typeof chunk === "object" && typeof chunk.chunkId === "string" ? chunk.chunkId : null))
+        .filter(Boolean)
+      : [],
+  };
+}
+
+function compactTaskSpec(task, openBookMode) {
+  return {
+    runtimeId: typeof task.runtimeId === "string" ? task.runtimeId : null,
+    taskType: typeof task.taskType === "string" ? task.taskType : null,
+    mode: typeof task.mode === "string" ? task.mode : null,
+    query: typeof task.query === "string" ? normalizeWhitespace(task.query).slice(0, 280) : null,
+    goal: typeof task.goal === "string" ? normalizeWhitespace(task.goal).slice(0, 280) : null,
+    topK: typeof task.topK === "number" ? task.topK : null,
+    dedupe: typeof task.dedupe === "boolean" ? task.dedupe : null,
+    prefer: Array.isArray(task.prefer) ? task.prefer.slice(0, 6).map((item) => normalizeWhitespace(String(item)).slice(0, 120)) : [],
+    openBookMode,
+    taskContext: compactTaskContext(task.taskContext),
+  };
+}
+
 function buildBriefingPrompt(runtimePrompt, manifest, task, evidence, question) {
   const taskContext = manifest.taskContext && typeof manifest.taskContext === "object"
     ? manifest.taskContext
     : {};
-  const hydratedWorkIds = Array.isArray(taskContext.hydratedWorkIds)
-    ? taskContext.hydratedWorkIds.filter((value) => typeof value === "string")
-    : [];
   const openBookMode = taskContext.mode === "open_book_analysis";
   const manifestSummary = {
+    workCount: Array.isArray(manifest.works) ? manifest.works.length : 0,
     works: Array.isArray(manifest.works)
-      ? manifest.works.slice(0, 30).map((work) => ({
+      ? manifest.works.slice(0, 12).map((work) => ({
         workId: work.workId,
         title: work.title,
         authors: work.authors ?? [],
         language: work.language ?? null,
-        cleanTextKey: work.cleanTextKey ?? null,
-        chunksKey: work.chunksKey ?? null,
       }))
       : [],
-    dataSchema: manifest.dataSchema,
-    selectedChunkIds: manifest.selectedChunkIds,
+    fileKinds: Array.isArray(manifest.fileCatalog)
+      ? [...new Set(manifest.fileCatalog.map((file) => file.kind).filter(Boolean))].slice(0, 6)
+      : [],
+    selectedChunkCount: Array.isArray(manifest.selectedChunkIds) ? manifest.selectedChunkIds.length : 0,
     selectedChunks: Array.isArray(manifest.selectedChunks)
-      ? manifest.selectedChunks.slice(0, 12).map((chunk) => ({
+      ? manifest.selectedChunks.slice(0, 8).map((chunk) => ({
         workId: chunk.workId,
-        chunkId: chunk.chunkId,
+        chunkId: chunk.id ?? chunk.chunkId ?? null,
         excerpt: typeof chunk.excerpt === "string" ? normalizeWhitespace(chunk.excerpt).slice(0, 220) : "",
       }))
       : [],
-    taskContext: manifest.taskContext,
+    taskContext: compactTaskContext(manifest.taskContext),
   };
+  const compactTask = compactTaskSpec(task, openBookMode);
   return [
     runtimePrompt,
     "",
@@ -679,12 +722,13 @@ function buildBriefingPrompt(runtimePrompt, manifest, task, evidence, question) 
       : "- Start from the best available seed evidence, but widen across the full corpus whenever the prompt asks for a broad theme, comparison, or survey.",
     openBookMode
       ? "- Use at most 5 shell commands total before you return your answer."
-      : "- Keep the search bounded: use at most 10 shell commands total before you return your answer.",
+      : "- Keep the search bounded: use at most 14 shell commands total before you return your answer.",
     "- Prefer finishing with a good briefing over exhaustively exploring every possible lead.",
     openBookMode
       ? "- Search the local clean text and local chunks first with rg and sed. Use the remote Postgres corpus CLI only as a fallback."
       : "- Use the remote Postgres database through the local corpus CLI at node /workspace/context/search-db.mjs as your main corpus-wide search surface.",
     "- The CLI turns corpus-wide search requests into SQL over the remote chunks table and returns results in plain text or JSON so you can keep working with normal shell tools.",
+    "- Guaranteed tools in this runtime image: node, python/python3, jq, rg, sed, awk, grep, cat, mkdir.",
     "- node /workspace/context/search-db.mjs rg behaves like ripgrep over the remote chunks table and can be piped into sed, awk, jq, and other shell tools.",
     "- It also supports --glob and --kind filters, plus -U/--multiline and --window for wider cross-chunk search windows.",
     "- node /workspace/context/search-db.mjs works searches book metadata in the remote DB to help decide where to search next.",
@@ -697,11 +741,12 @@ function buildBriefingPrompt(runtimePrompt, manifest, task, evidence, question) 
     "  node /workspace/context/search-db.mjs rg -i 'wrath|anger' --glob 'gutenberg/clean/**/clean.txt' --json | jq '.hits[:10]'",
     "  node /workspace/context/search-db.mjs works --query 'break up reconcile lovers'",
     "  node /workspace/context/search-db.mjs neighbors --chunk-id <chunkId> --radius 2",
+    "- Always copy chunk IDs exactly as returned by the CLI, including hyphens.",
     "- Use repeated regex, keyword, metadata, and neighbor queries until you have enough direct quoted evidence to answer the question or until you exhaust the command budget.",
     openBookMode
       ? "- You do not need to hydrate more books for this task unless the question explicitly asks for a comparison."
       : "- After the corpus-wide search identifies strong candidates, decide which books to pull locally and which clean text files are worth hydrating for deeper context.",
-    "- Use shell tools like rg, sed, and jq to inspect local files and Postgres-backed search results.",
+    "- Use shell tools like rg, sed, jq, and python3 to inspect local files and Postgres-backed search results.",
     "- To pull files into the workspace, run node /workspace/context/hydrate-files.mjs with one or more of these forms:",
     "  node /workspace/context/hydrate-files.mjs --work <workId> --kind chunks",
     "  node /workspace/context/hydrate-files.mjs --work <workId> --kind clean",
@@ -721,7 +766,7 @@ function buildBriefingPrompt(runtimePrompt, manifest, task, evidence, question) 
     `Question: ${question}`,
     "",
     "Task spec:",
-    JSON.stringify(task, null, 2),
+    JSON.stringify(compactTask, null, 2),
     "",
     "Workspace manifest summary:",
     JSON.stringify(manifestSummary, null, 2),

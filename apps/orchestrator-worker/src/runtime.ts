@@ -763,6 +763,8 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
       byteSize: file.byteSize ?? null,
     }));
 
+    const { hydratedWorkIds: _ignoredHydratedWorkIds, ...restTaskContext } = taskContext;
+
     const manifest = {
       runtimeId,
       sessionId,
@@ -779,8 +781,8 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
         r2Key: chunk.r2Key ?? null,
       })),
       taskContext: {
-        ...taskContext,
-        hydratedWorkIds: resolvedWorkIds,
+        ...restTaskContext,
+        hydratedWorkCount: resolvedWorkIds.length,
       },
     };
 

@@ -187,6 +187,18 @@ export function parseArgs(argv) {
   return args;
 }
 
+function writeStdout(text) {
+  try {
+    process.stdout.write(text);
+    return true;
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "EPIPE") {
+      return false;
+    }
+    throw error;
+  }
+}
+
 function normalizeKinds(kinds) {
   const aliasMap = new Map([
     ["clean_text", "clean"],
@@ -822,7 +834,9 @@ function printText(result, options) {
 
   if (options.filesWithMatches) {
     for (const work of result.works ?? []) {
-      process.stdout.write(`${work.workId}\t${work.title ?? ""}\n`);
+      if (!writeStdout(`${work.workId}\t${work.title ?? ""}\n`)) {
+        return;
+      }
     }
     return;
   }
@@ -833,20 +847,28 @@ function printText(result, options) {
     for (const row of result.context) {
       if (options.heading && row.workId !== lastWorkId) {
         if (lastWorkId) {
-          process.stdout.write("--\n");
+          if (!writeStdout("--\n")) {
+            return;
+          }
         }
-        process.stdout.write(`${row.workId}\t${row.title ?? ""}\n`);
+        if (!writeStdout(`${row.workId}\t${row.title ?? ""}\n`)) {
+          return;
+        }
       }
       lastWorkId = row.workId;
       const marker = matchIds.has(row.chunkId) ? ":" : "-";
-      process.stdout.write(`${formatHit(row, options, marker)}\n`);
+      if (!writeStdout(`${formatHit(row, options, marker)}\n`)) {
+        return;
+      }
     }
     return;
   }
 
   const rows = Array.isArray(result.hits) ? result.hits : [];
   for (const row of rows) {
-    process.stdout.write(`${formatHit(row, options)}\n`);
+    if (!writeStdout(`${formatHit(row, options)}\n`)) {
+      return;
+    }
   }
 }
 
@@ -871,7 +893,7 @@ export async function main(argv = process.argv.slice(2)) {
   });
 
   if (args.json) {
-    process.stdout.write(JSON.stringify(result, null, 2));
+    writeStdout(JSON.stringify(result, null, 2));
     return result;
   }
 
@@ -882,6 +904,12 @@ export async function main(argv = process.argv.slice(2)) {
 const entryHref = process.argv[1] ? pathToFileURL(process.argv[1]).href : null;
 
 if (entryHref && import.meta.url === entryHref) {
+  process.stdout.on("error", (error) => {
+    if (error && typeof error === "object" && "code" in error && error.code === "EPIPE") {
+      process.exit(0);
+    }
+    throw error;
+  });
   main().catch((error) => {
     console.error(error instanceof Error ? error.stack || error.message : String(error));
     process.exit(1);
