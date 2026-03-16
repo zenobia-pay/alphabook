@@ -8,6 +8,7 @@ import {
   type ToolName,
 } from "@alphabook/shared";
 import { openAIUsageFromResponse, type BillingContext, type BillingService } from "./billing";
+import { parseModelJsonObject } from "./json";
 
 const SynthesizerResponseSchema = z.object({
   answer: z.string(),
@@ -274,7 +275,7 @@ export class OpenAISynthesizer implements Synthesizer {
       throw new Error("Synthesis response was empty.");
     }
 
-    const parsedJson = JSON.parse(content) as { answer?: unknown; citations?: unknown };
+    const parsedJson = parseModelJsonObject<{ answer?: unknown; citations?: unknown }>(content);
     const parsed = SynthesizerResponseSchema.parse({
       answer: typeof parsedJson.answer === "string" ? parsedJson.answer : "",
       citations: sanitizeCitations(parsedJson.citations),

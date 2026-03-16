@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { OpenAIPlanner, type PlannerContext } from "../src/planner";
 
-test("OpenAIPlanner overrides repeated retrieval loops with workspace escalation", async () => {
+test("OpenAIPlanner starts with workspace creation before later retrieval steps", async () => {
   const planner = new OpenAIPlanner(
     "test-key",
     "test-model",
@@ -67,5 +67,5 @@ test("OpenAIPlanner overrides repeated retrieval loops with workspace escalation
 
   assert.equal(decision.type, "tool_call");
   assert.equal(decision.tool_name, "create_workspace");
-  assert.match(decision.rationale ?? "", /escalating to the deeper corpus search/i);
+  assert.match(decision.rationale ?? "", /starting the codex workspace/i);
 });

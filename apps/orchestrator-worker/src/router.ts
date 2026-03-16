@@ -3,6 +3,7 @@ import { z } from "zod";
 import { ROUTER_SYSTEM_PROMPT } from "@alphabook/shared";
 
 import { openAIUsageFromResponse, type BillingContext, type BillingService } from "./billing";
+import { parseModelJsonObject } from "./json";
 
 const RouterDecisionSchema = z.union([
   z.object({
@@ -151,6 +152,6 @@ export class OpenAIRouter implements Router {
     if (!content) {
       throw new Error("Router response was empty.");
     }
-    return RouterDecisionSchema.parse(JSON.parse(content));
+    return RouterDecisionSchema.parse(parseModelJsonObject<unknown>(content));
   }
 }

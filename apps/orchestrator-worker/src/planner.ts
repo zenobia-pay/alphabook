@@ -10,6 +10,7 @@ import {
 
 import type { ChunkSearchResult, WorkSummary } from "@alphabook/shared";
 import { openAIUsageFromResponse, type BillingContext, type BillingService } from "./billing";
+import { parseModelJsonObject } from "./json";
 
 export interface PlannerContext {
   userMessage: string;
@@ -41,6 +42,10 @@ function extractCitationsFromChunks(chunks: ChunkSearchResult[]): Citation[] {
   }));
 }
 
+function workspaceMode(context: PlannerContext): "open_book_analysis" | "exhaustive_corpus_search" {
+  return context.workScope?.length ? "open_book_analysis" : "exhaustive_corpus_search";
+}
+
 function isComparisonQuery(query: string): boolean {
   return /\b(compare|contrast|versus|vs\.?|between|across)\b/i.test(query);
 }
@@ -62,6 +67,16 @@ function metadataWorkIds(context: PlannerContext, limit = 12): string[] {
   const searchResult = context.toolHistory.find((item) => item.toolName === "search_works")?.result;
   const works = Array.isArray(searchResult?.works) ? searchResult.works as WorkSummary[] : [];
   return works.slice(0, limit).map((work) => work.id);
+}
+
+function metadataWorks(context: PlannerContext): WorkSummary[] {
+  const metadataResult = context.toolHistory.find((item) => item.toolName === "get_work_metadata")?.result;
+  return Array.isArray(metadataResult?.works) ? metadataResult.works as WorkSummary[] : [];
+}
+
+function searchWorks(context: PlannerContext): WorkSummary[] {
+  const searchResult = context.toolHistory.find((item) => item.toolName === "search_works")?.result;
+  return Array.isArray(searchResult?.works) ? searchResult.works as WorkSummary[] : [];
 }
 
 function seedChunkPayload(context: PlannerContext): ChunkSearchResult[] {
@@ -128,100 +143,88 @@ function lastToolCall(context: PlannerContext): PlannerContext["toolHistory"][nu
   return context.toolHistory.length > 0 ? context.toolHistory[context.toolHistory.length - 1] : null;
 }
 
-function repeatedRetrievalLoop(context: PlannerContext): boolean {
-  const retrievalTurns = context.toolHistory.filter((entry) =>
-    entry.toolName === "search_works" || entry.toolName === "get_relevant_chunks"
-  );
-  if (retrievalTurns.length < 3) {
-    return false;
-  }
-  const recent = retrievalTurns.slice(-3);
-  return recent.every((entry) =>
-    entry.toolName === "search_works" || entry.toolName === "get_relevant_chunks"
-  );
+function buildTaskContext(context: PlannerContext, workIds: string[], chunks: ChunkSearchResult[]) {
+  return {
+    question: context.userMessage,
+    mode: workspaceMode(context),
+    candidateWorkIds: workIds,
+    topChunks: chunks.slice(0, 12).map((chunk) => ({
+      chunkId: chunk.id,
+      workId: chunk.workId,
+      excerpt: chunk.excerpt,
+    })),
+  };
 }
 
-function deterministicRescueDecision(context: PlannerContext): PlannerDecision | null {
-  const chunks = seedChunkPayload(context);
-  const scopedWorkIds = context.workScope?.length ? context.workScope : [];
-  const metadataIds = scopedWorkIds.length > 0 ? scopedWorkIds.slice(0, 12) : metadataWorkIds(context, 12);
-  const workIds = Array.from(new Set([
-    ...metadataIds,
-    ...chunks.map((chunk) => chunk.workId),
-  ])).slice(0, 12);
-  const runtimeId = context.toolHistory.find((item) => item.toolName === "create_workspace")?.result.runtimeId;
-  const latestRuntime = latestRuntimeResult(context);
-
-  if (!repeatedRetrievalLoop(context)) {
-    return null;
-  }
-
-  if (toolCallCount(context, "create_workspace") === 0) {
-    return {
-      type: "tool_call",
-      tool_name: "create_workspace",
-      rationale: "The quick retrieval loop is thin, so I’m escalating to the deeper corpus search now.",
-      args: {
-        workIds,
-        chunkIds: chunks.slice(0, 24).map((chunk) => chunk.id),
-        taskContext: {
-          question: context.userMessage,
-          mode: scopedWorkIds.length > 0 ? "open_book_analysis" : "exhaustive_corpus_search",
-          candidateWorkIds: workIds,
-          topChunks: chunks.slice(0, 12).map((chunk) => ({
-            chunkId: chunk.id,
-            workId: chunk.workId,
-            excerpt: chunk.excerpt,
-          })),
-        },
-      },
-    };
-  }
-
-  if (typeof runtimeId === "string" && toolCallCount(context, "run_workspace_task") === 0) {
-    return {
-      type: "tool_call",
-      tool_name: "run_workspace_task",
-      rationale: "The quick retrieval loop is not converging, so I’m running the full Codex corpus search now.",
-      args: {
-        runtimeId,
-        taskSpec: {
-          kind: "briefing_search",
-          phase: "collect_and_brief",
-          question: context.userMessage,
-          workIds,
-          chunkIds: chunks.slice(0, 24).map((chunk) => chunk.id),
-          evidenceFile: "output/evidence.json",
-          evidenceNotesFile: "output/evidence-notes.md",
-          briefingFile: "output/briefing.md",
-          briefingJsonFile: "output/briefing.json",
-        },
-      },
-    };
-  }
-
-  if (latestRuntime && typeof runtimeId === "string") {
-    const finalBriefingPath = artifactPath(latestRuntime, [/output\/briefing\.md$/u, /output\/summary\.md$/u]) ?? "output/briefing.md";
-    if (!hasReadWorkspacePath(context, finalBriefingPath)) {
-      return {
-        type: "tool_call",
-        tool_name: "read_workspace_file",
-        rationale: "The Codex search finished, and I’m pulling the briefing back into the chat now.",
-        args: {
-          runtimeId,
-          path: finalBriefingPath,
-        },
-      };
-    }
-  }
-
-  return null;
+function buildWorkspaceTaskSpec(context: PlannerContext, workIds: string[], chunks: ChunkSearchResult[]) {
+  const metadata = metadataWorks(context);
+  const search = searchWorks(context);
+  return {
+    kind: "briefing_search",
+    phase: "collect_and_brief",
+    question: context.userMessage,
+    mode: workspaceMode(context),
+    workIds,
+    chunkIds: chunks.slice(0, 24).map((chunk) => chunk.id),
+    candidateWorkIds: workIds,
+    retrieval: {
+      searchWorks: search.slice(0, 12).map((work) => ({
+        id: work.id,
+        title: work.title,
+        authors: work.authors ?? [],
+        summary: work.summary ?? null,
+        subjects: work.subjects ?? [],
+        gutenbergId: work.gutenbergId ?? null,
+      })),
+      metadataWorks: metadata.slice(0, 12).map((work) => ({
+        id: work.id,
+        title: work.title,
+        authors: work.authors ?? [],
+        summary: work.summary ?? null,
+        subjects: work.subjects ?? [],
+        gutenbergId: work.gutenbergId ?? null,
+      })),
+      seedChunks: chunks.slice(0, 16).map((chunk) => ({
+        id: chunk.id,
+        workId: chunk.workId,
+        chunkIndex: chunk.chunkIndex,
+        excerpt: chunk.excerpt,
+        r2Key: chunk.r2Key ?? null,
+      })),
+    },
+    evidenceFile: "output/evidence.json",
+    evidenceNotesFile: "output/evidence-notes.md",
+    briefingFile: "output/briefing.md",
+    briefingJsonFile: "output/briefing.json",
+  };
 }
 
 export class FallbackPlanner implements Planner {
   async decide(context: PlannerContext): Promise<PlannerDecision> {
     const toolNames = context.toolHistory.map((item) => item.toolName);
     const scopedWorkIds = context.workScope?.length ? context.workScope : [];
+    const chunks = seedChunkPayload(context);
+    const metadataIds = scopedWorkIds.length > 0 ? scopedWorkIds.slice(0, 12) : metadataWorkIds(context, 12);
+    const workIds = Array.from(new Set([
+      ...metadataIds,
+      ...chunks.map((chunk) => chunk.workId),
+    ])).slice(0, 12);
+
+    if (!toolNames.includes("create_workspace")) {
+      return {
+        type: "tool_call",
+        tool_name: "create_workspace",
+        rationale: scopedWorkIds.length > 0
+          ? "Starting the Codex workspace for this book first, then I’ll seed it with passages before running the deeper search."
+          : "Starting the Codex workspace first, then I’ll seed it with corpus retrieval before running the deeper search.",
+        args: {
+          workIds: scopedWorkIds.length > 0 ? scopedWorkIds.slice(0, 12) : [],
+          chunkIds: [],
+          taskContext: buildTaskContext(context, workIds, chunks),
+        },
+      };
+    }
+
     if (!toolNames.includes("search_works")) {
       return {
         type: "tool_call",
@@ -236,7 +239,6 @@ export class FallbackPlanner implements Planner {
       };
     }
 
-    const metadataIds = scopedWorkIds.length > 0 ? scopedWorkIds.slice(0, 12) : metadataWorkIds(context, 12);
     if (!toolNames.includes("get_work_metadata") && metadataIds.length > 0) {
       return {
         type: "tool_call",
@@ -265,34 +267,6 @@ export class FallbackPlanner implements Planner {
       };
     }
 
-    const chunks = seedChunkPayload(context);
-    const workIds = Array.from(new Set([
-      ...metadataIds,
-      ...chunks.map((chunk) => chunk.workId),
-    ])).slice(0, 12);
-
-    if (!toolNames.includes("create_workspace")) {
-      return {
-        type: "tool_call",
-        tool_name: "create_workspace",
-        rationale: "Preparing the workspace for the full corpus search.",
-        args: {
-          workIds,
-          chunkIds: chunks.slice(0, 24).map((chunk) => chunk.id),
-          taskContext: {
-            question: context.userMessage,
-            mode: "exhaustive_corpus_search",
-            candidateWorkIds: workIds,
-            topChunks: chunks.slice(0, 12).map((chunk) => ({
-              chunkId: chunk.id,
-              workId: chunk.workId,
-              excerpt: chunk.excerpt,
-            })),
-          },
-        },
-      };
-    }
-
     const runtimeId = context.toolHistory.find((item) => item.toolName === "create_workspace")?.result.runtimeId;
     if (typeof runtimeId !== "string") {
       return {
@@ -307,20 +281,10 @@ export class FallbackPlanner implements Planner {
       return {
         type: "tool_call",
         tool_name: "run_workspace_task",
-        rationale: "Running the full corpus search and writing the briefing.",
+        rationale: "The workspace is ready and seeded, so I’m running Codex over the corpus now.",
         args: {
           runtimeId,
-          taskSpec: {
-            kind: "briefing_search",
-            phase: "collect_and_brief",
-            question: context.userMessage,
-            workIds,
-            chunkIds: chunks.slice(0, 24).map((chunk) => chunk.id),
-            evidenceFile: "output/evidence.json",
-            evidenceNotesFile: "output/evidence-notes.md",
-            briefingFile: "output/briefing.md",
-            briefingJsonFile: "output/briefing.json",
-          },
+          taskSpec: buildWorkspaceTaskSpec(context, workIds, chunks),
         },
       };
     }
@@ -466,21 +430,26 @@ export class OpenAIPlanner implements Planner {
     if (!content) {
       throw new Error("Planner response was empty.");
     }
-    const parsed = PlannerDecisionSchema.parse(JSON.parse(content));
-    const rescue = deterministicRescueDecision(context);
-    if (rescue) {
-      const parsedTool = parsed.type === "tool_call" ? parsed.tool_name : null;
-      const rescueTool = rescue.type === "tool_call" ? rescue.tool_name : null;
-      if (
-        parsed.type !== "final_answer"
-        && (
-          parsedTool === "search_works"
-          || parsedTool === "get_relevant_chunks"
-          || parsedTool !== rescueTool
-        )
-      ) {
-        return rescue;
-      }
+    const parsed = PlannerDecisionSchema.parse(parseModelJsonObject<unknown>(content));
+    if (!context.toolHistory.some((entry) => entry.toolName === "create_workspace")) {
+      const chunks = seedChunkPayload(context);
+      const metadataIds = context.workScope?.length ? context.workScope.slice(0, 12) : metadataWorkIds(context, 12);
+      const workIds = Array.from(new Set([
+        ...metadataIds,
+        ...chunks.map((chunk) => chunk.workId),
+      ])).slice(0, 12);
+      return {
+        type: "tool_call",
+        tool_name: "create_workspace",
+        rationale: context.workScope?.length
+          ? "I’m starting the Codex workspace for this book first, then I’ll seed it with retrieval before the full search."
+          : "I’m starting the Codex workspace first, then I’ll seed it with retrieval before the full search.",
+        args: {
+          workIds: context.workScope?.length ? context.workScope.slice(0, 12) : [],
+          chunkIds: [],
+          taskContext: buildTaskContext(context, workIds, chunks),
+        },
+      };
     }
     return parsed;
   }
