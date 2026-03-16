@@ -9,7 +9,7 @@ import { ChevronsLeft, ChevronsRight, Link2, MessageSquarePlus } from "lucide-re
 
 import { getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type PublicProfileResponse, type UserProfile, type WorkDetail, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
-import { buildSignInUrl, cancelRun, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchCurrentUser, fetchMessages, fetchProfile, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, queryAdminAnalytics, sendAnalyticsEvent, signOut, streamChat, unfollowProfile } from "./api";
+import { buildSignInUrl, cancelRun, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchCurrentUser, fetchMessages, fetchProfile, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, queryAdminAnalytics, sendAnalyticsEvent, signOut, streamChat, unfollowProfile, type SessionRunRecord } from "./api";
 import { Thread } from "./components/assistant-ui/thread";
 import { Avatar, AvatarFallback, AvatarImage } from "./components/ui/avatar";
 import { Button } from "./components/ui/button";
@@ -330,6 +330,48 @@ function hydrateStoredMessage(message: RawUiMessage): UiMessage {
         )
       : [],
   };
+}
+
+function reconcileMessagesWithRunState(messages: UiMessage[], runs: SessionRunRecord[]) {
+  if (messages.length === 0 || runs.length === 0) {
+    return messages;
+  }
+
+  const runStatusById = new Map(runs.map((run) => [run.id, run.status]));
+
+  return messages.map((message) => {
+    const runId = typeof message.metadata?.runId === "string" ? message.metadata.runId : null;
+    if (!runId) {
+      return message;
+    }
+
+    const runStatus = runStatusById.get(runId);
+    if (!runStatus || (runStatus !== "failed" && runStatus !== "timed_out" && runStatus !== "completed")) {
+      return message;
+    }
+
+    let changed = false;
+    const nextToolCalls = message.toolCalls.map((toolCall) => {
+      if (toolCall.state !== "running") {
+        return toolCall;
+      }
+
+      changed = true;
+      const nextState: ToolTraceEntry["state"] = runStatus === "completed" ? "completed" : "error";
+      return {
+        ...toolCall,
+        state: nextState,
+        isError: runStatus === "failed" || runStatus === "timed_out" ? true : toolCall.isError,
+      };
+    });
+
+    return changed
+      ? {
+          ...message,
+          toolCalls: nextToolCalls,
+        }
+      : message;
+  });
 }
 
 function formatRelativeTime(value: string | null | undefined) {
@@ -1664,6 +1706,7 @@ export default function App() {
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [recoveredActiveRunId, setRecoveredActiveRunId] = useState<string | null>(null);
+  const [sessionRuns, setSessionRuns] = useState<SessionRunRecord[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [streamingAssistantId, setStreamingAssistantId] = useState<string | null>(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -2227,6 +2270,7 @@ export default function App() {
     }
     if (!selectedSessionId) {
       setRecoveredActiveRunId(null);
+      setSessionRuns([]);
       return;
     }
 
@@ -2239,6 +2283,7 @@ export default function App() {
         if (cancelled) {
           return;
         }
+        setSessionRuns(runs);
         const activeRun = runs.find((run) => run.status === "running" || run.status === "queued") ?? null;
         const nextRunId = activeRun?.id ?? null;
         setRecoveredActiveRunId(nextRunId);
@@ -2252,6 +2297,7 @@ export default function App() {
         }
       } catch {
         if (!cancelled) {
+          setSessionRuns([]);
           setRecoveredActiveRunId(null);
         }
       }
@@ -2266,6 +2312,11 @@ export default function App() {
       }
     };
   }, [authState.loading, isSending, selectedSessionId]);
+
+  const visibleMessages = useMemo(
+    () => reconcileMessagesWithRunState(messages, sessionRuns),
+    [messages, sessionRuns],
+  );
 
   async function refreshSessions(preferredSessionId?: string | null) {
     if (!currentUserId) {
@@ -3117,7 +3168,7 @@ export default function App() {
           ) : (
               <AssistantSurface
                 key={selectedSessionId ?? "new-thread"}
-                messages={messages}
+                messages={visibleMessages}
                 isSending={isSending || recoveredActiveRunId !== null}
                 streamingAssistantId={streamingAssistantId}
                 onPrompt={sendPrompt}
@@ -3220,7 +3271,7 @@ export default function App() {
             ) : (
               <AssistantSurface
                 key={`book-${activeWorkId ?? "unknown"}-${selectedSessionId ?? "new-thread"}`}
-                messages={messages}
+                messages={visibleMessages}
                 isSending={isSending || recoveredActiveRunId !== null}
                 streamingAssistantId={streamingAssistantId}
                 onPrompt={bookPromptHandler}
