@@ -118,6 +118,30 @@ export async function fetchAdminRuns(): Promise<Record<string, unknown>[]> {
   return Array.isArray(payload.runs) ? payload.runs : [];
 }
 
+export async function fetchAdminSessions(): Promise<Record<string, unknown>[]> {
+  const response = await ensureOk(
+    await fetch(`${API_BASE}/admin/sessions`, {
+      credentials: "include",
+    }),
+  );
+  const payload = await response.json() as { sessions?: Record<string, unknown>[] };
+  return Array.isArray(payload.sessions) ? payload.sessions : [];
+}
+
+export async function queryAdminAnalytics(query: string, days = 7): Promise<Record<string, unknown>> {
+  const response = await ensureOk(
+    await fetch(`${API_BASE}/admin/analytics/query`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      credentials: "include",
+      body: JSON.stringify({ query, days }),
+    }),
+  );
+  return await response.json();
+}
+
 export function sendAnalyticsEvent(
   event: string,
   properties: Record<string, unknown> = {},

@@ -22,6 +22,9 @@ export interface AdminUserRecord extends UserRecord {
   sessionCount: number;
   runCount: number;
   lastSeenAt: string | null;
+  monthlySpendUsd: number;
+  totalSpendUsd: number;
+  billingEventCount: number;
 }
 
 export interface SessionSummaryRecord extends SessionRecord {
@@ -55,6 +58,17 @@ export interface AdminRunRecord extends RunRecord {
   toolCallCount: number;
   messageCount: number;
   lastMessagePreview: string | null;
+  spendUsd: number;
+}
+
+export interface AdminSessionRecord extends SessionRecord {
+  userEmail: string | null;
+  userName: string | null;
+  runCount: number;
+  messageCount: number;
+  lastMessageAt: string | null;
+  lastMessagePreview: string | null;
+  spendUsd: number;
 }
 
 export interface AnalyticsEventRecord {
@@ -157,6 +171,7 @@ export interface AppStore {
   createSession(userId: string, title?: string): Promise<SessionRecord>;
   getSession(sessionId: string): Promise<SessionRecord | null>;
   listSessions(userId: string): Promise<SessionSummaryRecord[]>;
+  listAdminSessions(): Promise<AdminSessionRecord[]>;
   listMessages(sessionId: string): Promise<MessageRecord[]>;
   appendMessage(sessionId: string, role: MessageRecord["role"], content: string, metadata?: Record<string, unknown>): Promise<MessageRecord>;
   createRun(sessionId: string): Promise<RunRecord>;
@@ -528,12 +543,14 @@ export class InMemoryAppStore implements AppStore {
       map.set(run.sessionId, (map.get(run.sessionId) ?? 0) + 1);
       return map;
     }, new Map<string, number>());
+    const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
 
     return [...this.userProfiles.values()]
       .map((profile) => {
         const sessions = [...this.sessions.values()].filter((session) => session.userId === profile.id);
         const sessionIds = new Set(sessions.map((session) => session.id));
         const messages = [...this.messages.values()].flat().filter((message) => sessionIds.has(message.sessionId));
+        const billingEvents = [...this.billingEvents.values()].filter((event) => event.userId === profile.id);
         const lastSeenAt = messages
           .map((message) => message.createdAt)
           .sort((left, right) => right.localeCompare(left))[0] ?? null;
@@ -545,6 +562,13 @@ export class InMemoryAppStore implements AppStore {
           sessionCount: sessions.length,
           runCount: sessions.reduce((total, session) => total + (runsBySession.get(session.id) ?? 0), 0),
           lastSeenAt,
+          monthlySpendUsd: Math.round(
+            billingEvents
+              .filter((event) => Date.parse(event.createdAt) >= thirtyDaysAgo)
+              .reduce((total, event) => total + event.costUsd, 0) * 1_000_000,
+          ) / 1_000_000,
+          totalSpendUsd: Math.round(billingEvents.reduce((total, event) => total + event.costUsd, 0) * 1_000_000) / 1_000_000,
+          billingEventCount: billingEvents.length,
         };
       })
       .sort((left, right) => {
@@ -597,6 +621,30 @@ export class InMemoryAppStore implements AppStore {
           ...session,
           lastMessageAt: lastMessage?.createdAt ?? null,
           lastMessagePreview: lastMessage?.content.slice(0, 120) ?? null,
+        };
+      })
+      .sort((left, right) => (right.lastMessageAt ?? right.createdAt).localeCompare(left.lastMessageAt ?? left.createdAt));
+  }
+
+  async listAdminSessions(): Promise<AdminSessionRecord[]> {
+    return [...this.sessions.values()]
+      .map((session) => {
+        const user = this.userProfiles.get(session.userId) ?? null;
+        const messages = this.messages.get(session.id) ?? [];
+        const sessionRuns = [...this.runs.values()].filter((run) => run.sessionId === session.id);
+        const lastMessage = messages[messages.length - 1] ?? null;
+        const spendUsd = [...this.billingEvents.values()]
+          .filter((event) => event.sessionId === session.id)
+          .reduce((total, event) => total + event.costUsd, 0);
+        return {
+          ...session,
+          userEmail: user?.email ?? null,
+          userName: user?.name ?? null,
+          runCount: sessionRuns.length,
+          messageCount: messages.length,
+          lastMessageAt: lastMessage?.createdAt ?? null,
+          lastMessagePreview: lastMessage?.content.slice(0, 160) ?? null,
+          spendUsd: Math.round(spendUsd * 1_000_000) / 1_000_000,
         };
       })
       .sort((left, right) => (right.lastMessageAt ?? right.createdAt).localeCompare(left.lastMessageAt ?? left.createdAt));
@@ -665,6 +713,11 @@ export class InMemoryAppStore implements AppStore {
           toolCallCount,
           messageCount: messages.length,
           lastMessagePreview: messages[messages.length - 1]?.content.slice(0, 160) ?? null,
+          spendUsd: Math.round(
+            [...this.billingEvents.values()]
+              .filter((event) => event.runId === run.id)
+              .reduce((total, event) => total + event.costUsd, 0) * 1_000_000,
+          ) / 1_000_000,
         };
       })
       .sort((left, right) => right.startedAt.localeCompare(left.startedAt));
@@ -1152,6 +1205,9 @@ export class NeonAppStore implements AppStore {
       session_count: number;
       run_count: number;
       last_seen_at: string | null;
+      monthly_spend_usd: string | number | null;
+      total_spend_usd: string | number | null;
+      billing_event_count: number;
     }>(
       `
         SELECT
@@ -1162,7 +1218,10 @@ export class NeonAppStore implements AppStore {
           u.created_at,
           COALESCE(session_counts.session_count, 0) AS session_count,
           COALESCE(run_counts.run_count, 0) AS run_count,
-          last_seen.last_seen_at
+          last_seen.last_seen_at,
+          COALESCE(billing_monthly.monthly_spend_usd, 0) AS monthly_spend_usd,
+          COALESCE(billing_total.total_spend_usd, 0) AS total_spend_usd,
+          COALESCE(billing_total.billing_event_count, 0) AS billing_event_count
         FROM users u
         LEFT JOIN (
           SELECT user_id, COUNT(*)::int AS session_count
@@ -1176,12 +1235,28 @@ export class NeonAppStore implements AppStore {
           GROUP BY cs.user_id
         ) AS run_counts ON run_counts.user_id = u.id
         LEFT JOIN (
-          SELECT cs.user_id, MAX(m.created_at) AS last_seen_at
+          SELECT cs.user_id, MAX(m.created_at)::timestamptz AS last_seen_at
           FROM chat_sessions cs
           LEFT JOIN messages m ON m.session_id = cs.id
           GROUP BY cs.user_id
         ) AS last_seen ON last_seen.user_id = u.id
-        ORDER BY COALESCE(last_seen.last_seen_at, u.created_at) DESC, u.created_at DESC
+        LEFT JOIN (
+          SELECT
+            user_id,
+            SUM(cost_usd) AS monthly_spend_usd
+          FROM billing_events
+          WHERE created_at >= now() - interval '30 days'
+          GROUP BY user_id
+        ) AS billing_monthly ON billing_monthly.user_id = u.id
+        LEFT JOIN (
+          SELECT
+            user_id,
+            SUM(cost_usd) AS total_spend_usd,
+            COUNT(*)::int AS billing_event_count
+          FROM billing_events
+          GROUP BY user_id
+        ) AS billing_total ON billing_total.user_id = u.id
+        ORDER BY COALESCE(last_seen.last_seen_at, u.created_at::timestamptz) DESC, u.created_at DESC
       `,
     );
     return result.rows.map((row) => ({
@@ -1195,6 +1270,9 @@ export class NeonAppStore implements AppStore {
       sessionCount: Number(row.session_count ?? 0),
       runCount: Number(row.run_count ?? 0),
       lastSeenAt: row.last_seen_at,
+      monthlySpendUsd: Number(row.monthly_spend_usd ?? 0),
+      totalSpendUsd: Number(row.total_spend_usd ?? 0),
+      billingEventCount: Number(row.billing_event_count ?? 0),
     }));
   }
 
@@ -1313,6 +1391,73 @@ export class NeonAppStore implements AppStore {
       createdAt: row.created_at,
       lastMessageAt: row.last_message_at,
       lastMessagePreview: row.last_message_preview?.slice(0, 120) ?? null,
+    }));
+  }
+
+  async listAdminSessions(): Promise<AdminSessionRecord[]> {
+    const result = await this.db.query<{
+      id: string;
+      user_id: string;
+      title: string | null;
+      created_at: string;
+      user_email: string | null;
+      user_name: string | null;
+      run_count: number;
+      message_count: number;
+      last_message_at: string | null;
+      last_message_preview: string | null;
+      spend_usd: string | number | null;
+    }>(
+      `
+        SELECT
+          cs.id,
+          cs.user_id,
+          cs.title,
+          cs.created_at,
+          u.email AS user_email,
+          u.name AS user_name,
+          COALESCE(run_counts.run_count, 0) AS run_count,
+          COALESCE(message_counts.message_count, 0) AS message_count,
+          message_counts.last_message_at,
+          message_counts.last_message_preview,
+          COALESCE(billing.spend_usd, 0) AS spend_usd
+        FROM chat_sessions cs
+        LEFT JOIN users u ON u.id = cs.user_id
+        LEFT JOIN (
+          SELECT session_id, COUNT(*)::int AS run_count
+          FROM runs
+          GROUP BY session_id
+        ) AS run_counts ON run_counts.session_id = cs.id
+        LEFT JOIN (
+          SELECT
+            session_id,
+            COUNT(*)::int AS message_count,
+            MAX(created_at)::text AS last_message_at,
+            (ARRAY_AGG(content ORDER BY created_at DESC))[1] AS last_message_preview
+          FROM messages
+          GROUP BY session_id
+        ) AS message_counts ON message_counts.session_id = cs.id
+        LEFT JOIN (
+          SELECT session_id, SUM(cost_usd) AS spend_usd
+          FROM billing_events
+          WHERE session_id IS NOT NULL
+          GROUP BY session_id
+        ) AS billing ON billing.session_id = cs.id
+        ORDER BY COALESCE(message_counts.last_message_at, cs.created_at::text) DESC, cs.created_at DESC
+      `,
+    );
+    return result.rows.map((row) => ({
+      id: row.id,
+      userId: row.user_id,
+      title: row.title,
+      createdAt: row.created_at,
+      userEmail: row.user_email,
+      userName: row.user_name,
+      runCount: Number(row.run_count ?? 0),
+      messageCount: Number(row.message_count ?? 0),
+      lastMessageAt: row.last_message_at,
+      lastMessagePreview: row.last_message_preview?.slice(0, 160) ?? null,
+      spendUsd: Number(row.spend_usd ?? 0),
     }));
   }
 
@@ -1461,6 +1606,7 @@ export class NeonAppStore implements AppStore {
       tool_call_count: number;
       message_count: number;
       last_message_preview: string | null;
+      spend_usd: string | number | null;
     }>(
       `
         SELECT
@@ -1476,7 +1622,8 @@ export class NeonAppStore implements AppStore {
           cs.title AS session_title,
           COALESCE(tool_counts.tool_call_count, 0) AS tool_call_count,
           COALESCE(message_counts.message_count, 0) AS message_count,
-          message_counts.last_message_preview
+          message_counts.last_message_preview,
+          COALESCE(billing.spend_usd, 0) AS spend_usd
         FROM runs r
         JOIN chat_sessions cs ON cs.id = r.session_id
         LEFT JOIN users u ON u.id = cs.user_id
@@ -1493,6 +1640,12 @@ export class NeonAppStore implements AppStore {
           FROM messages
           GROUP BY session_id
         ) AS message_counts ON message_counts.session_id = r.session_id
+        LEFT JOIN (
+          SELECT run_id, SUM(cost_usd) AS spend_usd
+          FROM billing_events
+          WHERE run_id IS NOT NULL
+          GROUP BY run_id
+        ) AS billing ON billing.run_id = r.id
         ORDER BY r.started_at DESC
       `,
     );
@@ -1510,6 +1663,7 @@ export class NeonAppStore implements AppStore {
       toolCallCount: Number(row.tool_call_count ?? 0),
       messageCount: Number(row.message_count ?? 0),
       lastMessagePreview: row.last_message_preview?.slice(0, 160) ?? null,
+      spendUsd: Number(row.spend_usd ?? 0),
     }));
   }
 

@@ -1084,6 +1084,39 @@ async function runOrchestrator(
         sessionId: session.id,
         runId: run.id,
       });
+      if (toolCall.tool_name === "run_workspace_task" && Array.isArray(result.billingEvents)) {
+        for (const event of result.billingEvents) {
+          if (!event || typeof event !== "object") {
+            continue;
+          }
+          const usage = event as Record<string, unknown>;
+          if (typeof usage.provider !== "string" || typeof usage.model !== "string" || typeof usage.operation !== "string") {
+            continue;
+          }
+          await deps.billing.track(
+            {
+              userId: session.userId,
+              sessionId: session.id,
+              runId: run.id,
+              source: "runtime-proxy",
+            },
+            {
+              provider: usage.provider,
+              model: usage.model,
+              operation: usage.operation,
+              inputTokens: Number(usage.inputTokens ?? 0),
+              outputTokens: Number(usage.outputTokens ?? 0),
+              totalTokens: Number(usage.totalTokens ?? 0),
+              cachedInputTokens: Number(usage.cachedInputTokens ?? 0),
+              requestId: typeof usage.requestId === "string" ? usage.requestId : null,
+              metadata: usage.metadata && typeof usage.metadata === "object"
+                ? usage.metadata as Record<string, unknown>
+                : {},
+              createdAt: typeof usage.createdAt === "string" ? usage.createdAt : undefined,
+            },
+          );
+        }
+      }
       if (toolCall.tool_name === "create_workspace" || toolCall.tool_name === "run_workspace_task") {
         runtimeTasks += 1;
       }
@@ -1289,6 +1322,19 @@ export function createApp(deps: AppDeps) {
       return c.json({ runs });
     } catch (error) {
       return c.json({ error: error instanceof Error ? error.message : "Failed to load runs." }, 500);
+    }
+  });
+
+  app.get("/admin/sessions", async (c) => {
+    const admin = await requireAdmin(c);
+    if (!admin) {
+      return c.json({ error: "Not authorized." }, 403);
+    }
+    try {
+      const sessions = await deps.store.listAdminSessions();
+      return c.json({ sessions });
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : "Failed to load sessions." }, 500);
     }
   });
 

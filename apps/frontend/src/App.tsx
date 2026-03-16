@@ -9,7 +9,7 @@ import { ChevronsLeft, ChevronsRight } from "lucide-react";
 
 import { getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type PublicProfileResponse, type UserProfile, type WorkDetail, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
-import { buildSignInUrl, buildSignOutUrl, fetchAdminAccess, fetchAdminRunLogs, fetchAdminRuns, fetchAdminUsers, fetchCurrentUser, fetchMessages, fetchProfile, fetchSessions, fetchWorkDetail, fetchWorks, followProfile, sendAnalyticsEvent, streamChat, unfollowProfile } from "./api";
+import { buildSignInUrl, buildSignOutUrl, fetchAdminAccess, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchCurrentUser, fetchMessages, fetchProfile, fetchSessions, fetchWorkDetail, fetchWorks, followProfile, queryAdminAnalytics, sendAnalyticsEvent, streamChat, unfollowProfile } from "./api";
 import { Thread } from "./components/assistant-ui/thread";
 import { Avatar, AvatarFallback, AvatarImage } from "./components/ui/avatar";
 import { Button } from "./components/ui/button";
@@ -59,7 +59,7 @@ type UrlState = {
   workId: string | null | undefined;
   profileUserId: string | null | undefined;
   runId: string | null | undefined;
-  adminSubview: "overview" | "logs";
+  adminSection: "runs" | "users" | "analytics" | "logs";
   debugEnabled: boolean;
 };
 
@@ -84,6 +84,13 @@ type AdminTableState = {
   rows: Record<string, unknown>[];
 };
 
+type AdminAnalyticsState = {
+  loading: boolean;
+  error: string | null;
+  query: string;
+  payload: Record<string, unknown> | null;
+};
+
 const USER_STORAGE_KEY = "alphabook.localUserId";
 function isViewMode(value: string | null): value is ViewMode {
   return value === "explore" || value === "assistant" || value === "library" || value === "profile" || value === "book" || value === "admin";
@@ -97,7 +104,7 @@ function readUrlState(): UrlState {
       workId: undefined,
       profileUserId: undefined,
       runId: undefined,
-      adminSubview: "overview",
+      adminSection: "runs",
       debugEnabled: false,
     };
   }
@@ -112,7 +119,12 @@ function readUrlState(): UrlState {
     workId: pathnameMatch ? decodeURIComponent(pathnameMatch[1]) : params.has("work") ? params.get("work") || null : undefined,
     profileUserId: profilePathMatch ? decodeURIComponent(profilePathMatch[1]) : params.has("profile") ? params.get("profile") || null : undefined,
     runId: params.has("run") ? params.get("run") || null : undefined,
-    adminSubview: params.get("adminSubview") === "logs" || params.has("run") ? "logs" : "overview",
+    adminSection:
+      params.get("adminSection") === "users" || params.get("adminSection") === "analytics" || params.get("adminSection") === "logs"
+        ? params.get("adminSection") as "users" | "analytics" | "logs"
+        : params.has("run")
+          ? "logs"
+          : "runs",
     debugEnabled: params.get("debug") === "true",
   };
 }
@@ -148,10 +160,10 @@ function writeUrlState(next: UrlState) {
   } else {
     url.searchParams.delete("run");
   }
-  if (next.view === "admin" && next.adminSubview === "logs") {
-    url.searchParams.set("adminSubview", "logs");
+  if (next.view === "admin") {
+    url.searchParams.set("adminSection", next.adminSection);
   } else {
-    url.searchParams.delete("adminSubview");
+    url.searchParams.delete("adminSection");
   }
 
   if ((next.view === "assistant" || next.view === "book") && next.sessionId) {
@@ -502,6 +514,18 @@ function adminText(value: unknown) {
     return String(value);
   }
   return "—";
+}
+
+function formatCurrency(value: unknown) {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return "—";
+  }
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: value < 1 ? 4 : 2,
+    maximumFractionDigits: value < 1 ? 4 : 2,
+  }).format(value);
 }
 
 function summarizeRunLogPayload(payload: Record<string, unknown> | null) {
@@ -988,6 +1012,41 @@ function AdminTableCard({
   );
 }
 
+function AnalyticsSeriesCard({
+  series,
+}: {
+  series: Record<string, unknown>;
+}) {
+  const label = adminText(series.label);
+  const points = Array.isArray(series.points) ? series.points as Array<Record<string, unknown>> : [];
+  const maxValue = Math.max(1, ...points.map((point) => (typeof point.value === "number" ? point.value : 0)));
+
+  return (
+    <Card className="rounded-[20px] border-[rgba(72,43,37,0.06)] bg-[rgba(255,255,255,0.72)] shadow-none">
+      <CardContent className="space-y-3 p-5">
+        <h3 className="text-base font-semibold text-[var(--ink)]">{label}</h3>
+        <div className="space-y-2">
+          {points.map((point, index) => {
+            const value = typeof point.value === "number" ? point.value : 0;
+            const width = `${Math.max(6, Math.round((value / maxValue) * 100))}%`;
+            return (
+              <div key={`${adminText(point.date)}-${index}`} className="space-y-1">
+                <div className="flex items-center justify-between gap-3 text-xs text-[var(--ink-soft)]">
+                  <span>{adminText(point.tag) !== "—" ? `${adminText(point.date)} · ${adminText(point.tag)}` : adminText(point.date)}</span>
+                  <span>{value}</span>
+                </div>
+                <div className="h-2 rounded-full bg-[rgba(72,43,37,0.08)]">
+                  <div className="h-2 rounded-full bg-[var(--accent)]" style={{ width }} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 function LockedState({
   title,
   compact = false,
@@ -1087,7 +1146,7 @@ export default function App() {
   const [sessions, setSessions] = useState<ChatSessionSummary[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null | undefined>(initialUrlState.sessionId);
   const [selectedAdminRunId, setSelectedAdminRunId] = useState<string | null | undefined>(initialUrlState.runId);
-  const [adminSubview, setAdminSubview] = useState<"overview" | "logs">(initialUrlState.adminSubview);
+  const [adminSection, setAdminSection] = useState<"runs" | "users" | "analytics" | "logs">(initialUrlState.adminSection);
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [sessionsResolved, setSessionsResolved] = useState(false);
@@ -1136,6 +1195,17 @@ export default function App() {
     loading: false,
     error: null,
     rows: [],
+  });
+  const [adminSessions, setAdminSessions] = useState<AdminTableState>({
+    loading: false,
+    error: null,
+    rows: [],
+  });
+  const [adminAnalytics, setAdminAnalytics] = useState<AdminAnalyticsState>({
+    loading: false,
+    error: null,
+    query: "Give me signups per day over the past seven days.",
+    payload: null,
   });
   const activeRunTokenRef = useRef(0);
   const bookReaderFrameRef = useRef<HTMLIFrameElement | null>(null);
@@ -1247,7 +1317,7 @@ export default function App() {
       setActiveWorkId(next.workId);
       setActiveProfileUserId(next.profileUserId);
       setSelectedAdminRunId(next.runId);
-      setAdminSubview(next.adminSubview);
+      setAdminSection(next.adminSection);
       setAdminRunInput(next.runId ?? "");
       setDebugEnabled(next.debugEnabled);
       setMobileNavOpen(false);
@@ -1264,10 +1334,10 @@ export default function App() {
       workId: activeWorkId,
       profileUserId: activeProfileUserId,
       runId: selectedAdminRunId,
-      adminSubview,
+      adminSection,
       debugEnabled,
     });
-  }, [activeView, selectedSessionId, activeWorkId, activeProfileUserId, selectedAdminRunId, adminSubview, debugEnabled]);
+  }, [activeView, selectedSessionId, activeWorkId, activeProfileUserId, selectedAdminRunId, adminSection, debugEnabled]);
 
   useEffect(() => {
     if (activeView === "profile" && currentUserId && !activeProfileUserId) {
@@ -1492,7 +1562,7 @@ export default function App() {
       }));
       const payload = await fetchAdminRunLogs(normalizedRunId);
       setSelectedAdminRunId(normalizedRunId);
-      setAdminSubview("logs");
+      setAdminSection("logs");
       setAdminRunInput(normalizedRunId);
       setAdminRunLog({
         loading: false,
@@ -1502,7 +1572,7 @@ export default function App() {
       });
     } catch (error) {
       setSelectedAdminRunId(normalizedRunId);
-      setAdminSubview("logs");
+      setAdminSection("logs");
       setAdminRunInput(normalizedRunId);
       setAdminRunLog({
         loading: false,
@@ -1549,6 +1619,59 @@ export default function App() {
     }
   }
 
+  async function loadAdminSessions() {
+    try {
+      setAdminSessions((current) => ({ ...current, loading: true, error: null }));
+      const rows = await fetchAdminSessions();
+      setAdminSessions({
+        loading: false,
+        error: null,
+        rows,
+      });
+    } catch (error) {
+      setAdminSessions({
+        loading: false,
+        error: error instanceof Error ? error.message : "Failed to load sessions.",
+        rows: [],
+      });
+    }
+  }
+
+  async function loadAdminAnalytics(query = adminAnalytics.query) {
+    const normalizedQuery = query.trim();
+    if (!normalizedQuery) {
+      setAdminAnalytics({
+        loading: false,
+        error: "Enter an analytics question.",
+        query,
+        payload: null,
+      });
+      return;
+    }
+    try {
+      setAdminAnalytics({
+        loading: true,
+        error: null,
+        query: normalizedQuery,
+        payload: null,
+      });
+      const payload = await queryAdminAnalytics(normalizedQuery, 7);
+      setAdminAnalytics({
+        loading: false,
+        error: null,
+        query: normalizedQuery,
+        payload,
+      });
+    } catch (error) {
+      setAdminAnalytics({
+        loading: false,
+        error: error instanceof Error ? error.message : "Failed to load analytics.",
+        query: normalizedQuery,
+        payload: null,
+      });
+    }
+  }
+
   useEffect(() => {
     if (!adminAccess.allowed || !selectedAdminRunId || adminRunLog.loading || adminRunLog.payload || adminRunLog.error) {
       return;
@@ -1563,10 +1686,20 @@ export default function App() {
     if (adminUsers.rows.length === 0 && !adminUsers.loading && !adminUsers.error) {
       void loadAdminUsers();
     }
+    if (adminSessions.rows.length === 0 && !adminSessions.loading && !adminSessions.error) {
+      void loadAdminSessions();
+    }
     if (adminRuns.rows.length === 0 && !adminRuns.loading && !adminRuns.error) {
       void loadAdminRuns();
     }
-  }, [adminAccess.allowed, adminRuns.error, adminRuns.loading, adminRuns.rows.length, adminUsers.error, adminUsers.loading, adminUsers.rows.length]);
+  }, [adminAccess.allowed, adminRuns.error, adminRuns.loading, adminRuns.rows.length, adminSessions.error, adminSessions.loading, adminSessions.rows.length, adminUsers.error, adminUsers.loading, adminUsers.rows.length]);
+
+  useEffect(() => {
+    if (!adminAccess.allowed || adminSection !== "analytics" || adminAnalytics.loading || adminAnalytics.payload || adminAnalytics.error) {
+      return;
+    }
+    void loadAdminAnalytics(adminAnalytics.query);
+  }, [adminAccess.allowed, adminAnalytics.error, adminAnalytics.loading, adminAnalytics.payload, adminAnalytics.query, adminSection]);
 
   async function sendPrompt(
     question: string,
@@ -1922,7 +2055,7 @@ export default function App() {
     }
     if (view !== "admin") {
       setSelectedAdminRunId(null);
-      setAdminSubview("overview");
+      setAdminSection("runs");
     }
     if (view === "assistant" && activeView === "assistant") {
       startNewChat();
@@ -2472,11 +2605,70 @@ export default function App() {
     }
 
     const summary = summarizeRunLogPayload(adminRunLog.payload);
-    const showingLogs = adminSubview === "logs";
+    const showingLogs = adminSection === "logs";
+    const analyticsPayload = adminAnalytics.payload ?? {};
+    const analyticsMetrics = Array.isArray(analyticsPayload.metrics) ? analyticsPayload.metrics as Array<Record<string, unknown>> : [];
+    const analyticsSeries = Array.isArray(analyticsPayload.series) ? analyticsPayload.series as Array<Record<string, unknown>> : [];
+    const analyticsHashtags = Array.isArray(analyticsPayload.hashtags) ? analyticsPayload.hashtags as Array<Record<string, unknown>> : [];
+    const analyticsNotes = Array.isArray(analyticsPayload.notes) ? analyticsPayload.notes as Array<unknown> : [];
+    const adminNavItems = [
+      {
+        key: "runs",
+        label: "Runs",
+        description: "Browse every assistant run and open full log detail.",
+      },
+      {
+        key: "users",
+        label: "Users",
+        description: "Inspect signed-up accounts and usage at a glance.",
+      },
+      {
+        key: "analytics",
+        label: "Analytics",
+        description: "Ask free-form questions over product events and research queries.",
+      },
+    ] as const;
+
+    const renderAdminNav = () => (
+      <section className="space-y-4">
+        <header className="space-y-2">
+          <h1 className="font-[Newsreader] text-[clamp(2.2rem,4vw,3.5rem)] font-semibold leading-[0.92] tracking-[-0.05em] text-[var(--ink)]">
+            Admin
+          </h1>
+          <p className="max-w-3xl text-sm leading-6 text-[var(--ink-soft)]">
+            Signed in as {adminAccess.user?.email ?? "unknown user"}. Move between runs, users, analytics, and full run logs from here.
+          </p>
+        </header>
+
+        <div className="grid gap-3 md:grid-cols-3">
+          {adminNavItems.map((item) => {
+            const active = adminSection === item.key;
+            return (
+              <button
+                key={item.key}
+                type="button"
+                onClick={() => setAdminSection(item.key)}
+                className={cn(
+                  "rounded-[22px] border px-5 py-4 text-left transition",
+                  active
+                    ? "border-[rgba(72,43,37,0.24)] bg-[rgba(255,255,255,0.92)] shadow-[0_20px_60px_rgba(72,43,37,0.08)]"
+                    : "border-[rgba(72,43,37,0.08)] bg-[rgba(255,255,255,0.68)] hover:border-[rgba(72,43,37,0.16)] hover:bg-[rgba(255,255,255,0.84)]",
+                )}
+              >
+                <div className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--ink-soft)]">{item.label}</div>
+                <div className="mt-2 text-sm leading-6 text-[var(--ink)]">{item.description}</div>
+              </button>
+            );
+          })}
+        </div>
+      </section>
+    );
 
     if (showingLogs) {
       return (
         <div className="view-shell space-y-6">
+          {renderAdminNav()}
+
           <section className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="space-y-2">
@@ -2490,9 +2682,9 @@ export default function App() {
               <Button
                 type="button"
                 variant="outline"
-                onClick={() => setAdminSubview("overview")}
+                onClick={() => setAdminSection("runs")}
               >
-                Back to admin overview
+                Back to runs
               </Button>
             </div>
 
@@ -2549,157 +2741,329 @@ export default function App() {
 
     return (
       <div className="view-shell space-y-6">
-        <section className="space-y-4">
-          <header className="space-y-2">
-            <h1 className="font-[Newsreader] text-[clamp(2.2rem,4vw,3.5rem)] font-semibold leading-[0.92] tracking-[-0.05em] text-[var(--ink)]">
-              Run Logs
-            </h1>
-            <p className="max-w-3xl text-sm leading-6 text-[var(--ink-soft)]">
-              Load a run ID to inspect the session, tool calls, persisted artifacts, live runtime files, prompts, and Codex logs in one place.
-            </p>
-          </header>
+        {renderAdminNav()}
 
-          <Card className="rounded-[24px] border-[rgba(72,43,37,0.06)] bg-[rgba(255,255,255,0.78)] shadow-none">
-            <CardContent className="space-y-4 p-5">
-              <form
-                className="flex flex-col gap-3 md:flex-row"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void loadAdminRunLogs(adminRunInput);
-                }}
-              >
-                <input
-                  className="min-h-12 flex-1 rounded-[16px] border border-[rgba(72,43,37,0.12)] bg-white px-4 text-sm text-[var(--ink)] outline-none transition focus:border-[rgba(72,43,37,0.28)]"
-                  placeholder="Enter a run ID"
-                  value={adminRunInput}
-                  onChange={(event) => setAdminRunInput(event.currentTarget.value)}
-                />
-                <Button type="submit" disabled={adminRunLog.loading || !adminRunInput.trim()}>
-                  {adminRunLog.loading ? "Loading…" : "Load run"}
-                </Button>
-              </form>
+        {adminSection === "runs" ? (
+          <section className="space-y-4">
+            <Card className="rounded-[24px] border-[rgba(72,43,37,0.06)] bg-[rgba(255,255,255,0.78)] shadow-none">
+              <CardContent className="space-y-4 p-5">
+                <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+                  <div className="space-y-2">
+                    <h2 className="font-[Newsreader] text-[clamp(1.8rem,3vw,2.8rem)] font-semibold tracking-[-0.04em] text-[var(--ink)]">
+                      Assistant Runs
+                    </h2>
+                    <p className="max-w-3xl text-sm leading-6 text-[var(--ink-soft)]">
+                      Every assistant run across the app. Open a session or drill straight into full runtime logs.
+                    </p>
+                  </div>
+                  <form
+                    className="flex flex-col gap-3 md:w-[32rem] md:flex-row"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void loadAdminRunLogs(adminRunInput);
+                    }}
+                  >
+                    <input
+                      className="min-h-12 flex-1 rounded-[16px] border border-[rgba(72,43,37,0.12)] bg-white px-4 text-sm text-[var(--ink)] outline-none transition focus:border-[rgba(72,43,37,0.28)]"
+                      placeholder="Jump to a run ID"
+                      value={adminRunInput}
+                      onChange={(event) => setAdminRunInput(event.currentTarget.value)}
+                    />
+                    <Button type="submit" disabled={adminRunLog.loading || !adminRunInput.trim()}>
+                      {adminRunLog.loading ? "Loading…" : "Open logs"}
+                    </Button>
+                  </form>
+                </div>
+              </CardContent>
+            </Card>
 
-              <div className="flex flex-wrap items-center gap-3 text-sm text-[var(--ink-soft)]">
-                <span>Signed in as {adminAccess.user?.email ?? "unknown user"}.</span>
-              </div>
-            </CardContent>
-          </Card>
-        </section>
-
-        <section className="grid gap-4 xl:grid-cols-[1.2fr_1.8fr]">
-          <AdminTableCard title="Users">
-            {adminUsers.error ? (
-              <p className="text-sm text-[var(--ink-soft)]">{adminUsers.error}</p>
-            ) : adminUsers.loading ? (
-              <p className="text-sm text-[var(--ink-soft)]">Loading users…</p>
-            ) : (
-              <div className="overflow-auto">
-                <table className="min-w-full text-sm text-[var(--ink)]">
-                  <thead className="text-left text-xs uppercase tracking-[0.16em] text-[var(--ink-soft)]">
-                    <tr>
-                      <th className="pb-3 pr-4">User</th>
-                      <th className="pb-3 pr-4">Sessions</th>
-                      <th className="pb-3 pr-4">Runs</th>
-                      <th className="pb-3 pr-4">Last seen</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {adminUsers.rows.map((row, index) => (
-                      <tr key={`${adminText(row.id)}-${index}`} className="border-t border-[rgba(72,43,37,0.08)] align-top">
-                        <td className="py-3 pr-4">
-                          <div className="font-medium">{adminText(row.name) !== "—" ? adminText(row.name) : adminText(row.email)}</div>
-                          <div className="text-xs text-[var(--ink-soft)]">{adminText(row.email)}</div>
-                          <div className="text-xs text-[var(--ink-soft)]">{adminText(row.id)}</div>
-                        </td>
-                        <td className="py-3 pr-4">{adminText(row.sessionCount)}</td>
-                        <td className="py-3 pr-4">{adminText(row.runCount)}</td>
-                        <td className="py-3 pr-4">{formatRelativeTime(typeof row.lastSeenAt === "string" ? row.lastSeenAt : null)}</td>
+            <AdminTableCard title="Runs">
+              {adminRuns.error ? (
+                <p className="text-sm text-[var(--ink-soft)]">{adminRuns.error}</p>
+              ) : adminRuns.loading ? (
+                <p className="text-sm text-[var(--ink-soft)]">Loading runs…</p>
+              ) : (
+                <div className="overflow-auto">
+                  <table className="min-w-full text-sm text-[var(--ink)]">
+                    <thead className="text-left text-xs uppercase tracking-[0.16em] text-[var(--ink-soft)]">
+                      <tr>
+                        <th className="pb-3 pr-4">Run</th>
+                        <th className="pb-3 pr-4">Status</th>
+                        <th className="pb-3 pr-4">Owner</th>
+                        <th className="pb-3 pr-4">Session</th>
+                        <th className="pb-3 pr-4">Started</th>
+                        <th className="pb-3 pr-4">Spend</th>
+                        <th className="pb-3 pr-4">Tools</th>
+                        <th className="pb-3 pr-4">Messages</th>
+                        <th className="pb-3 pr-4">Actions</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </AdminTableCard>
+                    </thead>
+                    <tbody>
+                      {adminRuns.rows.map((row, index) => {
+                        const runId = adminText(row.id);
+                        const sessionId = adminText(row.sessionId);
+                        return (
+                          <tr key={`${runId}-${index}`} className="border-t border-[rgba(72,43,37,0.08)] align-top">
+                            <td className="py-3 pr-4">
+                              <div className="font-medium">{runId}</div>
+                              <div className="max-w-[20rem] text-xs text-[var(--ink-soft)]">{adminText(row.lastMessagePreview)}</div>
+                            </td>
+                            <td className="py-3 pr-4">{adminText(row.status)}</td>
+                            <td className="py-3 pr-4">
+                              <div>{adminText(row.userName) !== "—" ? adminText(row.userName) : adminText(row.userEmail)}</div>
+                              <div className="text-xs text-[var(--ink-soft)]">{adminText(row.userEmail)}</div>
+                            </td>
+                            <td className="py-3 pr-4">
+                              <div>{adminText(row.sessionTitle)}</div>
+                              <div className="text-xs text-[var(--ink-soft)]">{sessionId}</div>
+                            </td>
+                            <td className="py-3 pr-4">{formatRelativeTime(typeof row.startedAt === "string" ? row.startedAt : null)}</td>
+                            <td className="py-3 pr-4">{formatCurrency(typeof row.spendUsd === "number" ? row.spendUsd : NaN)}</td>
+                            <td className="py-3 pr-4">{adminText(row.toolCallCount)}</td>
+                            <td className="py-3 pr-4">{adminText(row.messageCount)}</td>
+                            <td className="py-3 pr-4">
+                              <div className="flex flex-col gap-2">
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => {
+                                    setAdminSection("logs");
+                                    void loadAdminRunLogs(runId);
+                                  }}
+                                >
+                                  Logs
+                                </Button>
+                                <Button asChild type="button" variant="ghost" size="sm">
+                                  <a href={`/?view=assistant&session=${encodeURIComponent(sessionId)}`}>Open session</a>
+                                </Button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </AdminTableCard>
+          </section>
+        ) : null}
 
-          <AdminTableCard title="Analytics">
-            <p className="text-sm leading-6 text-[var(--ink-soft)]">
-              Basic analytics is now ingesting sign-in, sign-up, assistant session creation, follow-up message, and book-open events through `/a`. This panel is still a placeholder until we add aggregated queries and charts.
-            </p>
-          </AdminTableCard>
-        </section>
+        {adminSection === "users" ? (
+          <section className="space-y-4">
+            <Card className="rounded-[24px] border-[rgba(72,43,37,0.06)] bg-[rgba(255,255,255,0.78)] shadow-none">
+              <CardContent className="space-y-3 p-5">
+                <h2 className="font-[Newsreader] text-[clamp(1.8rem,3vw,2.8rem)] font-semibold tracking-[-0.04em] text-[var(--ink)]">
+                  Signed-Up Users
+                </h2>
+                <p className="max-w-3xl text-sm leading-6 text-[var(--ink-soft)]">
+                  Account-level usage snapshot with session and run counts, plus rolling 30-day, lifetime, and per-session billing totals.
+                </p>
+              </CardContent>
+            </Card>
 
-        <section className="space-y-4">
-          <AdminTableCard title="Runs">
-            {adminRuns.error ? (
-              <p className="text-sm text-[var(--ink-soft)]">{adminRuns.error}</p>
-            ) : adminRuns.loading ? (
-              <p className="text-sm text-[var(--ink-soft)]">Loading runs…</p>
-            ) : (
-              <div className="overflow-auto">
-                <table className="min-w-full text-sm text-[var(--ink)]">
-                  <thead className="text-left text-xs uppercase tracking-[0.16em] text-[var(--ink-soft)]">
-                    <tr>
-                      <th className="pb-3 pr-4">Run</th>
-                      <th className="pb-3 pr-4">Status</th>
-                      <th className="pb-3 pr-4">Owner</th>
-                      <th className="pb-3 pr-4">Session</th>
-                      <th className="pb-3 pr-4">Started</th>
-                      <th className="pb-3 pr-4">Tools</th>
-                      <th className="pb-3 pr-4">Messages</th>
-                      <th className="pb-3 pr-4">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {adminRuns.rows.map((row, index) => {
-                      const runId = adminText(row.id);
-                      const sessionId = adminText(row.sessionId);
-                      return (
-                        <tr key={`${runId}-${index}`} className="border-t border-[rgba(72,43,37,0.08)] align-top">
+            <AdminTableCard title="Users">
+              {adminUsers.error ? (
+                <p className="text-sm text-[var(--ink-soft)]">{adminUsers.error}</p>
+              ) : adminUsers.loading ? (
+                <p className="text-sm text-[var(--ink-soft)]">Loading users…</p>
+              ) : (
+                <div className="overflow-auto">
+                  <table className="min-w-full text-sm text-[var(--ink)]">
+                    <thead className="text-left text-xs uppercase tracking-[0.16em] text-[var(--ink-soft)]">
+                      <tr>
+                        <th className="pb-3 pr-4">User</th>
+                        <th className="pb-3 pr-4">Created</th>
+                        <th className="pb-3 pr-4">Sessions</th>
+                        <th className="pb-3 pr-4">Runs</th>
+                        <th className="pb-3 pr-4">30d spend</th>
+                        <th className="pb-3 pr-4">Lifetime spend</th>
+                        <th className="pb-3 pr-4">Last seen</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {adminUsers.rows.map((row, index) => (
+                        <tr key={`${adminText(row.id)}-${index}`} className="border-t border-[rgba(72,43,37,0.08)] align-top">
                           <td className="py-3 pr-4">
-                            <div className="font-medium">{runId}</div>
-                            <div className="max-w-[20rem] text-xs text-[var(--ink-soft)]">{adminText(row.lastMessagePreview)}</div>
+                            <div className="font-medium">{adminText(row.name) !== "—" ? adminText(row.name) : adminText(row.email)}</div>
+                            <div className="text-xs text-[var(--ink-soft)]">{adminText(row.email)}</div>
+                            <div className="text-xs text-[var(--ink-soft)]">{adminText(row.id)}</div>
                           </td>
-                          <td className="py-3 pr-4">{adminText(row.status)}</td>
+                          <td className="py-3 pr-4">{formatRelativeTime(typeof row.createdAt === "string" ? row.createdAt : null)}</td>
+                          <td className="py-3 pr-4">{adminText(row.sessionCount)}</td>
+                          <td className="py-3 pr-4">{adminText(row.runCount)}</td>
+                          <td className="py-3 pr-4">{formatCurrency(typeof row.monthlySpendUsd === "number" ? row.monthlySpendUsd : NaN)}</td>
+                          <td className="py-3 pr-4">{formatCurrency(typeof row.totalSpendUsd === "number" ? row.totalSpendUsd : NaN)}</td>
+                          <td className="py-3 pr-4">{formatRelativeTime(typeof row.lastSeenAt === "string" ? row.lastSeenAt : null)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </AdminTableCard>
+
+            <AdminTableCard title="Sessions">
+              {adminSessions.error ? (
+                <p className="text-sm text-[var(--ink-soft)]">{adminSessions.error}</p>
+              ) : adminSessions.loading ? (
+                <p className="text-sm text-[var(--ink-soft)]">Loading sessions…</p>
+              ) : (
+                <div className="overflow-auto">
+                  <table className="min-w-full text-sm text-[var(--ink)]">
+                    <thead className="text-left text-xs uppercase tracking-[0.16em] text-[var(--ink-soft)]">
+                      <tr>
+                        <th className="pb-3 pr-4">Session</th>
+                        <th className="pb-3 pr-4">Owner</th>
+                        <th className="pb-3 pr-4">Runs</th>
+                        <th className="pb-3 pr-4">Messages</th>
+                        <th className="pb-3 pr-4">Spend</th>
+                        <th className="pb-3 pr-4">Last seen</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {adminSessions.rows.map((row, index) => (
+                        <tr key={`${adminText(row.id)}-${index}`} className="border-t border-[rgba(72,43,37,0.08)] align-top">
+                          <td className="py-3 pr-4">
+                            <div className="font-medium">{adminText(row.title)}</div>
+                            <div className="max-w-[24rem] text-xs text-[var(--ink-soft)]">{adminText(row.lastMessagePreview)}</div>
+                            <div className="text-xs text-[var(--ink-soft)]">{adminText(row.id)}</div>
+                          </td>
                           <td className="py-3 pr-4">
                             <div>{adminText(row.userName) !== "—" ? adminText(row.userName) : adminText(row.userEmail)}</div>
                             <div className="text-xs text-[var(--ink-soft)]">{adminText(row.userEmail)}</div>
                           </td>
-                          <td className="py-3 pr-4">
-                            <div>{adminText(row.sessionTitle)}</div>
-                            <div className="text-xs text-[var(--ink-soft)]">{sessionId}</div>
-                          </td>
-                          <td className="py-3 pr-4">{formatRelativeTime(typeof row.startedAt === "string" ? row.startedAt : null)}</td>
-                          <td className="py-3 pr-4">{adminText(row.toolCallCount)}</td>
+                          <td className="py-3 pr-4">{adminText(row.runCount)}</td>
                           <td className="py-3 pr-4">{adminText(row.messageCount)}</td>
-                          <td className="py-3 pr-4">
-                            <div className="flex flex-col gap-2">
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                onClick={() => {
-                                  setAdminSubview("logs");
-                                  void loadAdminRunLogs(runId);
-                                }}
-                              >
-                                Logs
-                              </Button>
-                              <Button asChild type="button" variant="ghost" size="sm">
-                                <a href={`/?view=assistant&session=${encodeURIComponent(sessionId)}`}>Open session</a>
-                              </Button>
-                            </div>
-                          </td>
+                          <td className="py-3 pr-4">{formatCurrency(typeof row.spendUsd === "number" ? row.spendUsd : NaN)}</td>
+                          <td className="py-3 pr-4">{formatRelativeTime(typeof row.lastMessageAt === "string" ? row.lastMessageAt : null)}</td>
                         </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </AdminTableCard>
-        </section>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </AdminTableCard>
+          </section>
+        ) : null}
 
+        {adminSection === "analytics" ? (
+          <section className="space-y-4">
+            <Card className="rounded-[24px] border-[rgba(72,43,37,0.06)] bg-[rgba(255,255,255,0.78)] shadow-none">
+              <CardContent className="space-y-4 p-5">
+                <div className="space-y-2">
+                  <h2 className="font-[Newsreader] text-[clamp(1.8rem,3vw,2.8rem)] font-semibold tracking-[-0.04em] text-[var(--ink)]">
+                    Vibe Analytics
+                  </h2>
+                  <p className="max-w-3xl text-sm leading-6 text-[var(--ink-soft)]">
+                    Ask for metrics, time series, or topic patterns. The worker pulls recent analytics events and user research messages, then uses the model to answer in a structured format.
+                  </p>
+                </div>
+
+                <form
+                  className="space-y-3"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void loadAdminAnalytics(adminAnalytics.query);
+                  }}
+                >
+                  <textarea
+                    className="min-h-[140px] w-full rounded-[18px] border border-[rgba(72,43,37,0.12)] bg-white px-4 py-4 text-sm leading-6 text-[var(--ink)] outline-none transition focus:border-[rgba(72,43,37,0.28)]"
+                    value={adminAnalytics.query}
+                    onChange={(event) => setAdminAnalytics((current) => ({ ...current, query: event.currentTarget.value }))}
+                    placeholder="Give me signups per day over the past seven days."
+                  />
+                  <div className="flex flex-wrap gap-2">
+                    {[
+                      "Give me signups per day over the past seven days.",
+                      "Give me the number of new research queries over the past seven days.",
+                      "Give me the topics people are searching on over the past seven days.",
+                    ].map((suggestion) => (
+                      <button
+                        key={suggestion}
+                        type="button"
+                        className="rounded-full border border-[rgba(72,43,37,0.12)] bg-white px-3 py-2 text-xs font-medium text-[var(--ink-soft)] transition hover:border-[rgba(72,43,37,0.2)] hover:text-[var(--ink)]"
+                        onClick={() => {
+                          setAdminAnalytics((current) => ({ ...current, query: suggestion }));
+                          void loadAdminAnalytics(suggestion);
+                        }}
+                      >
+                        {suggestion}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <Button type="submit" disabled={adminAnalytics.loading}>
+                      {adminAnalytics.loading ? "Running analytics…" : "Run analytics query"}
+                    </Button>
+                    <span className="text-sm text-[var(--ink-soft)]">
+                      Backed by `/a` events plus recent user messages from assistant sessions.
+                    </span>
+                  </div>
+                </form>
+
+                {adminAnalytics.error ? (
+                  <div className="rounded-[16px] border border-[rgba(187,73,44,0.2)] bg-[rgba(187,73,44,0.08)] px-4 py-3 text-sm leading-6 text-[var(--ink)]">
+                    {adminAnalytics.error}
+                  </div>
+                ) : null}
+              </CardContent>
+            </Card>
+
+            {adminAnalytics.payload ? (
+              <div className="grid gap-4 xl:grid-cols-[1.3fr_1.7fr]">
+                <AdminTableCard title={adminText(analyticsPayload.title) !== "—" ? adminText(analyticsPayload.title) : "Result"}>
+                  <div className="space-y-4">
+                    <p className="text-sm leading-6 text-[var(--ink)]">{adminText(analyticsPayload.summary)}</p>
+                    {analyticsMetrics.length > 0 ? (
+                      <div className="flex flex-wrap gap-3">
+                        {analyticsMetrics.map((metric, index) => (
+                          <div key={`${adminText(metric.label)}-${index}`} className="rounded-[18px] border border-[rgba(72,43,37,0.08)] bg-[rgba(255,255,255,0.78)] px-4 py-3">
+                            <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--ink-soft)]">
+                              {adminText(metric.label)}
+                            </div>
+                            <div className="mt-1 text-lg font-semibold text-[var(--ink)]">{adminText(metric.value)}</div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                    {analyticsHashtags.length > 0 ? (
+                      <div className="flex flex-wrap gap-2">
+                        {analyticsHashtags.map((hashtag, index) => (
+                          <span key={`${adminText(hashtag.tag)}-${index}`} className="rounded-full bg-[rgba(72,43,37,0.08)] px-3 py-1 text-xs font-medium text-[var(--ink)]">
+                            {adminText(hashtag.tag)} {adminText(hashtag.count) !== "—" ? `· ${adminText(hashtag.count)}` : ""}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                    {analyticsNotes.length > 0 ? (
+                      <div className="space-y-2">
+                        {analyticsNotes.map((note, index) => (
+                          <p key={`analytics-note-${index}`} className="text-sm leading-6 text-[var(--ink-soft)]">
+                            {typeof note === "string" ? note : adminText(note)}
+                          </p>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                </AdminTableCard>
+
+                <div className="space-y-4">
+                  {analyticsSeries.length > 0 ? analyticsSeries.map((series, index) => (
+                    <AnalyticsSeriesCard key={`${adminText(series.label)}-${index}`} series={series} />
+                  )) : (
+                    <AdminTableCard title="Series">
+                      <p className="text-sm leading-6 text-[var(--ink-soft)]">
+                        No structured series was returned for this question.
+                      </p>
+                    </AdminTableCard>
+                  )}
+                </div>
+              </div>
+            ) : null}
+          </section>
+        ) : null}
       </div>
     );
   }
