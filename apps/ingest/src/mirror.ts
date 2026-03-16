@@ -418,12 +418,12 @@ export async function resolveMirrorSource(mirrorRoot: string, gutenbergId: strin
 export async function listMirrorIds(mirrorRoot: string): Promise<string[]> {
   const generatedRoot = join(mirrorRoot, "cache", "epub");
   const generatedIds = await listNumericDirectories(generatedRoot);
-  if (generatedIds.length > 0) {
-    return generatedIds.sort((left, right) => Number(left) - Number(right));
-  }
 
   const mainFiles = await listFilesRecursive(mirrorRoot, 8);
   const discovered = new Set<string>();
+  for (const id of generatedIds) {
+    discovered.add(id);
+  }
   for (const path of mainFiles) {
     const match = extractGutenbergIdFromPath(path);
     if (match) {
