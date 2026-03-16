@@ -806,6 +806,209 @@ function summarizeRunLogPayload(payload: Record<string, unknown> | null) {
   ];
 }
 
+type AdminCombinedLogEntry = {
+  sortValue: number;
+  index: number;
+  timestamp: string | null;
+  source: string;
+  lines: string[];
+};
+
+function compactJson(value: unknown) {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function splitLogLines(value: unknown) {
+  if (typeof value !== "string") {
+    return [];
+  }
+  return value
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter((line) => line.length > 0);
+}
+
+function pushCombinedLogEntry(
+  entries: AdminCombinedLogEntry[],
+  source: string,
+  lines: string[],
+  timestamp?: string | null,
+  sortOffset = 0,
+) {
+  const normalizedLines = lines.filter((line) => line.trim().length > 0);
+  if (normalizedLines.length === 0) {
+    return;
+  }
+  const sortValue = timestamp ? Date.parse(timestamp) || 0 : Number.MAX_SAFE_INTEGER - 1;
+  entries.push({
+    sortValue: sortValue + sortOffset,
+    index: entries.length,
+    timestamp: timestamp ?? null,
+    source,
+    lines: normalizedLines,
+  });
+}
+
+function buildAdminRunLogEntries(payload: Record<string, unknown> | null) {
+  if (!payload) {
+    return [];
+  }
+
+  const entries: AdminCombinedLogEntry[] = [];
+  const run = payload.run && typeof payload.run === "object" ? payload.run as Record<string, unknown> : null;
+  const session = payload.session && typeof payload.session === "object" ? payload.session as Record<string, unknown> : null;
+  const owner = payload.owner && typeof payload.owner === "object" ? payload.owner as Record<string, unknown> : null;
+
+  pushCombinedLogEntry(
+    entries,
+    "run",
+    [
+      `run_id=${adminText(run?.id)} status=${adminText(run?.status)} planner_turns=${adminText(run?.plannerTurns)}`,
+      `session_id=${adminText(session?.id)} title=${adminText(session?.title)}`,
+      `owner=${adminText(owner?.email)} user_id=${adminText(owner?.id)}`,
+    ],
+    typeof run?.startedAt === "string" ? run.startedAt : null,
+    -5_000,
+  );
+
+  const messages = Array.isArray(payload.messages) ? payload.messages as Array<Record<string, unknown>> : [];
+  messages.forEach((message) => {
+    const role = adminText(message.role).toLowerCase();
+    pushCombinedLogEntry(
+      entries,
+      `message.${role}`,
+      [
+        ...splitLogLines(message.content),
+        ...(message.metadata && typeof message.metadata === "object"
+          ? [`metadata ${compactJson(message.metadata)}`]
+          : []),
+      ],
+      typeof message.createdAt === "string" ? message.createdAt : null,
+    );
+  });
+
+  const toolCalls = Array.isArray(payload.toolCalls) ? payload.toolCalls as Array<Record<string, unknown>> : [];
+  toolCalls.forEach((toolCall) => {
+    const toolName = adminText(toolCall.toolName);
+    const startedAt = typeof toolCall.startedAt === "string" ? toolCall.startedAt : null;
+    const completedAt = typeof toolCall.completedAt === "string" ? toolCall.completedAt : null;
+    pushCombinedLogEntry(
+      entries,
+      `tool.${toolName}`,
+      [
+        `start status=${adminText(toolCall.status)}`,
+        `args ${compactJson(toolCall.argsJson ?? {})}`,
+      ],
+      startedAt,
+    );
+    pushCombinedLogEntry(
+      entries,
+      `tool.${toolName}`,
+      [
+        `finish status=${adminText(toolCall.status)}`,
+        `result ${compactJson(toolCall.resultJson ?? null)}`,
+      ],
+      completedAt ?? startedAt,
+      1,
+    );
+  });
+
+  const runtimeInstances = Array.isArray(payload.runtimeInstances)
+    ? payload.runtimeInstances as Array<Record<string, unknown>>
+    : [];
+  runtimeInstances.forEach((runtime) => {
+    pushCombinedLogEntry(
+      entries,
+      `runtime.${adminText(runtime.runtimeId)}`,
+      [
+        `status=${adminText(runtime.status)} provider=${adminText(runtime.provider)} machine=${adminText(runtime.providerMachineId)}`,
+        `manifest ${compactJson(runtime.manifestJson ?? {})}`,
+      ],
+      typeof runtime.createdAt === "string" ? runtime.createdAt : null,
+    );
+  });
+
+  const artifacts = Array.isArray(payload.artifacts) ? payload.artifacts as Array<Record<string, unknown>> : [];
+  artifacts.forEach((artifact) => {
+    const artifactSource = `artifact.${adminText(artifact.filename)}`;
+    pushCombinedLogEntry(
+      entries,
+      artifactSource,
+      [
+        `r2_key=${adminText(artifact.r2Key)} runtime_id=${adminText(artifact.runtimeId)} mime=${adminText(artifact.mimeType)}`,
+      ],
+      typeof artifact.createdAt === "string" ? artifact.createdAt : null,
+      -1,
+    );
+    pushCombinedLogEntry(
+      entries,
+      artifactSource,
+      splitLogLines(artifact.content),
+      typeof artifact.createdAt === "string" ? artifact.createdAt : null,
+    );
+  });
+
+  const liveRuntime = Array.isArray(payload.liveRuntime) ? payload.liveRuntime as Array<Record<string, unknown>> : [];
+  liveRuntime.forEach((runtime, runtimeIndex) => {
+    const runtimeId = adminText(runtime.runtimeId);
+    if (typeof runtime.error === "string" && runtime.error.trim().length > 0) {
+      pushCombinedLogEntry(
+        entries,
+        `live.${runtimeId}`,
+        [runtime.error],
+        null,
+        runtimeIndex,
+      );
+    }
+    const files = Array.isArray(runtime.files) ? runtime.files as Array<Record<string, unknown>> : [];
+    files.forEach((file, fileIndex) => {
+      const source = `live.${runtimeId}.${adminText(file.path)}`;
+      pushCombinedLogEntry(
+        entries,
+        source,
+        [
+          ...(typeof file.error === "string" && file.error.trim().length > 0 ? [file.error] : []),
+          ...splitLogLines(file.content),
+        ],
+        null,
+        runtimeIndex * 100 + fileIndex,
+      );
+    });
+  });
+
+  return entries.sort((left, right) =>
+    left.sortValue === right.sortValue
+      ? left.index - right.index
+      : left.sortValue - right.sortValue,
+  );
+}
+
+function renderAdminCombinedLog(payload: Record<string, unknown> | null) {
+  const entries = buildAdminRunLogEntries(payload);
+  if (entries.length === 0) {
+    return "No logs available.";
+  }
+
+  const sourceWidth = Math.min(
+    48,
+    Math.max(12, ...entries.map((entry) => entry.source.length)),
+  );
+
+  return entries
+    .flatMap((entry) =>
+      entry.lines.map((line) => {
+        const timestamp = entry.timestamp ?? "—";
+        return `${timestamp.padEnd(24)} ${entry.source.padEnd(sourceWidth)} ${line}`;
+      }),
+    )
+    .join("\n");
+}
+
 function stripHtmlForFrame(html: string) {
   return html
     .replace(/<script[\s\S]*?<\/script>/gi, "")
@@ -1296,6 +1499,23 @@ function AdminJsonBlock({
         </div>
         <pre className="max-h-[28rem] overflow-auto rounded-[16px] bg-[rgba(32,24,18,0.05)] p-4 text-xs leading-6 text-[var(--ink)]">
           {formatJson(value)}
+        </pre>
+      </CardContent>
+    </Card>
+  );
+}
+
+function AdminLogConsole({
+  payload,
+}: {
+  payload: Record<string, unknown> | null;
+}) {
+  return (
+    <Card className="rounded-[20px] border-[rgba(72,43,37,0.06)] bg-[rgba(255,255,255,0.72)] shadow-none">
+      <CardContent className="space-y-3 p-5">
+        <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-[var(--ink-soft)]">Combined Logs</h2>
+        <pre className="max-h-[68vh] overflow-auto rounded-[16px] bg-[rgba(32,24,18,0.05)] p-4 font-mono text-[11px] leading-5 text-[var(--ink)]">
+          {renderAdminCombinedLog(payload)}
         </pre>
       </CardContent>
     </Card>
@@ -4113,14 +4333,7 @@ export default function App() {
 
           {adminRunLog.payload ? (
             <section className="space-y-4">
-              <AdminJsonBlock title="Run" value={adminRunLog.payload.run ?? {}} />
-              <AdminJsonBlock title="Session" value={adminRunLog.payload.session ?? {}} />
-              <AdminJsonBlock title="Owner" value={adminRunLog.payload.owner ?? {}} />
-              <AdminJsonBlock title="Messages" value={adminRunLog.payload.messages ?? []} />
-              <AdminJsonBlock title="Tool Calls" value={adminRunLog.payload.toolCalls ?? []} />
-              <AdminJsonBlock title="Runtime Instances" value={adminRunLog.payload.runtimeInstances ?? []} />
-              <AdminJsonBlock title="Artifacts" value={adminRunLog.payload.artifacts ?? []} />
-              <AdminJsonBlock title="Live Runtime" value={adminRunLog.payload.liveRuntime ?? []} />
+              <AdminLogConsole payload={adminRunLog.payload} />
             </section>
           ) : null}
         </div>
