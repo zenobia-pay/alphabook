@@ -308,6 +308,13 @@ function workspaceProgressSteps(args: Record<string, unknown>): string[] {
       "Keeping the strongest quotations and source references.",
     ];
   }
+  if (phase === "collect_and_brief") {
+    return [
+      `Scanning ${scope} for likely matches.`,
+      "Running rg, sed, and metadata queries across the corpus.",
+      "Assembling the quoted briefing with linked citations.",
+    ];
+  }
   if (phase === "write_briefing") {
     return [
       "Turning the evidence into a quoted briefing.",
@@ -504,6 +511,9 @@ function labelForToolCall(toolName: ToolName, args: Record<string, unknown>) {
       if (phase === "collect_evidence") {
         return "Evidence Search";
       }
+      if (phase === "collect_and_brief") {
+        return "Corpus Briefing";
+      }
       if (phase === "write_briefing") {
         return "Quoted Briefing";
       }
@@ -587,30 +597,35 @@ function summarizeToolHistory(toolHistory: ToolHistoryEntry[]) {
   }));
 }
 
-function describePlannerAction(toolName: ToolName, rationale?: string) {
-  if (typeof rationale === "string" && rationale.trim()) {
-    return rationale.trim();
-  }
-
+function describePlannerAction(
+  toolName: ToolName,
+  _rationale: string | undefined,
+  userMessage: string,
+) {
+  const normalizedMessage = userMessage.trim();
   switch (toolName) {
     case "search_works":
-      return "Scanning the library for likely books and themes.";
+      return normalizedMessage
+        ? `I’m going to look for the best matches for “${normalizedMessage},” then I’ll pull a few promising passages.`
+        : "I’m going to look for the best matches, then I’ll pull a few promising passages.";
     case "get_relevant_chunks":
-      return "Pulling a few seed passages to guide the deeper search.";
+      return normalizedMessage
+        ? `I found a few likely matches for “${normalizedMessage}.” Next I’m pulling passages so I can narrow this down.`
+        : "I found a few likely matches. Next I’m pulling passages so I can narrow this down.";
     case "get_work_metadata":
-      return "Loading context for the books most likely to matter.";
+      return "I found a few likely books. Let me pull in their context before I go further.";
     case "get_work_text":
-      return "Opening the source text directly.";
+      return "I’m opening the source text directly so I can check the wording.";
     case "create_workspace":
-      return "Preparing the workspace for the full corpus search.";
+      return "I have enough to start a deeper search, so I’m setting that up now.";
     case "run_workspace_task":
-      return "Searching the corpus now.";
+      return "I’m running the deeper search now and gathering the strongest evidence.";
     case "read_workspace_file":
-      return "Bringing the latest search notes back into the thread.";
+      return "The search finished, and I’m pulling the results back into the chat.";
     case "destroy_workspace":
-      return "Cleaning up the workspace.";
+      return "I’m cleaning up the workspace.";
     default:
-      return "Planning the next research step.";
+      return "I’m working through this now and I’ll bring back the strongest results.";
   }
 }
 
@@ -1159,7 +1174,7 @@ async function runOrchestrator(
 
     const toolRecord = await deps.store.startToolCall(run.id, toolCall.tool_name, toolCall.args);
     if (!initialPlanSent) {
-      const planText = describePlannerAction(toolCall.tool_name, toolCall.rationale);
+      const planText = describePlannerAction(toolCall.tool_name, toolCall.rationale, input.message);
       const planMessage = await deps.store.appendMessage(session.id, "assistant", planText, {
         phase: "plan",
         runId: run.id,
