@@ -44,6 +44,11 @@ interface MirrorBackfillCheckpoint {
   updatedAt: string;
 }
 
+interface ExistingWorkStatus {
+  workId: string;
+  complete: boolean;
+}
+
 function stripGutenbergBoilerplate(text: string): string {
   let normalized = text.replace(/\r\n/g, "\n");
   const startMatch = normalized.match(/^[^\n]*\*\*\*\s*START OF[\s\S]*?\*\*\*[^\n]*\n?/im);
@@ -150,6 +155,40 @@ function uniqueStrings(values: Array<string | null | undefined>) {
     normalized.push(next);
   }
   return normalized;
+}
+
+function shouldSkipExistingWork() {
+  return process.env.FORCE_REINGEST !== "1";
+}
+
+async function findExistingWorkStatus(context: IngestContext, gutenbergId: string): Promise<ExistingWorkStatus | null> {
+  const rows = await context.db.query<{
+    work_id: string;
+    file_kind_count: number | string;
+    chunk_count: number | string;
+  }>(
+    `
+      SELECT
+        w.id AS work_id,
+        COUNT(DISTINCT wf.kind) FILTER (WHERE wf.kind IN ('raw', 'metadata', 'clean', 'chunks')) AS file_kind_count,
+        COUNT(c.id) AS chunk_count
+      FROM works w
+      LEFT JOIN work_files wf ON wf.work_id = w.id
+      LEFT JOIN chunks c ON c.work_id = w.id
+      WHERE w.gutenberg_id = $1::bigint
+      GROUP BY w.id
+      LIMIT 1
+    `,
+    [Number(gutenbergId)],
+  );
+  const row = rows.rows[0];
+  if (!row) {
+    return null;
+  }
+  return {
+    workId: row.work_id,
+    complete: Number(row.file_kind_count) >= 4 && Number(row.chunk_count) > 0,
+  };
 }
 
 async function putText(r2: S3Client, bucket: string, key: string, body: string, contentType: string) {
@@ -263,6 +302,19 @@ async function syncSubjects(context: IngestContext, workId: string, subjects: st
 }
 
 async function persistIngestedWork(context: IngestContext, source: IngestSourceInput) {
+  if (shouldSkipExistingWork()) {
+    const existing = await findExistingWorkStatus(context, source.gutenbergId);
+    if (existing?.complete) {
+      return {
+        workId: existing.workId,
+        gutenbergId: source.gutenbergId,
+        title: source.title,
+        skipped: true,
+        reason: "already_ingested",
+      };
+    }
+  }
+
   const cleanText = normalizeText(stripGutenbergBoilerplate(source.rawText));
   const chunks = chunkText(cleanText);
   const chunkEmbeddings = await embedChunks(chunks);
@@ -418,6 +470,7 @@ async function persistIngestedWork(context: IngestContext, source: IngestSourceI
     rawKey,
     cleanKey,
     chunksKey,
+    skipped: false,
   };
 }
 
