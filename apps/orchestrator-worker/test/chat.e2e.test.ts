@@ -786,3 +786,39 @@ test("public profile endpoints expose follow state", async () => {
   assert.equal(unfollowPayload.isFollowing, false);
   assert.equal(unfollowPayload.profile.followersCount, 0);
 });
+
+test("in-memory retrieval expands conversational relationship queries into seed passages", async () => {
+  const store = new InMemoryAppStore(
+    [
+      {
+        id: "work-1",
+        gutenbergId: 1342,
+        title: "Pride and Prejudice",
+        language: "en",
+        releaseDate: "2001-01-01",
+        rightsStatus: "public_domain",
+        summary: "A novel of courtship, separation, and eventual marriage.",
+        authors: ["Jane Austen"],
+        subjects: ["courtship"],
+      },
+    ],
+    [
+      {
+        id: "chunk-1",
+        workId: "work-1",
+        chunkIndex: 21,
+        text: "After a painful separation, the lovers were reconciled and finally married.",
+        r2Key: "gutenberg/clean/1342/chunks.jsonl",
+        score: 0,
+        excerpt: "",
+      },
+    ],
+  );
+
+  const works = await store.searchWorks("hey there find me passages where people who broke up got back together");
+  const chunks = await store.getRelevantChunks("hey there find me passages where people who broke up got back together");
+
+  assert.equal(works.length, 1);
+  assert.equal(chunks.length, 1);
+  assert.match(chunks[0]?.text ?? "", /reconciled/i);
+});

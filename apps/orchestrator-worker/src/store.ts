@@ -256,34 +256,79 @@ const WORK_SEARCH_STOP_WORDS = new Set([
   "a",
   "an",
   "and",
+  "any",
   "are",
   "as",
+  "book",
+  "books",
+  "can",
   "at",
   "be",
   "by",
   "cite",
+  "corpus",
+  "find",
   "for",
   "from",
+  "give",
+  "got",
+  "hello",
+  "help",
+  "hey",
   "how",
   "in",
   "is",
   "it",
+  "library",
+  "like",
+  "likely",
+  "look",
+  "looking",
+  "me",
   "of",
   "on",
   "or",
   "passages",
+  "people",
+  "please",
+  "pull",
+  "seed",
+  "show",
+  "some",
   "strongest",
   "the",
+  "them",
   "then",
+  "there",
+  "these",
+  "this",
+  "those",
+  "times",
   "to",
+  "up",
+  "want",
   "what",
   "where",
   "which",
   "with",
 ]);
 
-function searchTokens(query: string): string[] {
-  return Array.from(
+const QUERY_SYNONYMS: Record<string, string[]> = {
+  anger: ["angry", "rage", "furious", "wrath", "ira", "sdegno"],
+  angry: ["anger", "rage", "furious", "wrath", "ira", "sdegno"],
+  back: ["again", "return", "returned", "reconcile", "reconciled", "reunion", "reunited"],
+  broke: ["breakup", "parted", "separation", "divorce", "divorced"],
+  breakup: ["break", "broke", "broken", "separation", "parted", "divorce", "divorced", "left"],
+  broken: ["breakup", "parted", "separation", "divorce", "divorced"],
+  together: ["reconcile", "reconciled", "reunion", "reunited", "return", "returned", "married", "lover"],
+  grief: ["sadness", "sorrow", "mourning", "lament", "melancholy"],
+  sadness: ["grief", "sorrow", "mourning", "lament", "melancholy"],
+  obsession: ["fixation", "mania", "compulsion"],
+  rage: ["anger", "angry", "furious", "wrath"],
+};
+
+function normalizeSearchQuery(query: string): string {
+  const tokens = Array.from(
     new Set(
       query
         .toLowerCase()
@@ -291,7 +336,33 @@ function searchTokens(query: string): string[] {
         .map((token) => token.trim())
         .filter((token) => token.length >= 3 && !WORK_SEARCH_STOP_WORDS.has(token)),
     ),
+  );
+  return tokens.join(" ");
+}
+
+function searchTokens(query: string): string[] {
+  const normalized = normalizeSearchQuery(query);
+  return Array.from(
+    new Set(
+      normalized
+        .split(/[^a-z0-9]+/i)
+        .map((token) => token.trim())
+        .filter((token) => token.length >= 3 && !WORK_SEARCH_STOP_WORDS.has(token)),
+    ),
   ).slice(0, 8);
+}
+
+function expandedSearchTokens(query: string): string[] {
+  const baseTokens = searchTokens(query);
+  const expanded = new Set(baseTokens);
+  for (const token of baseTokens) {
+    for (const synonym of QUERY_SYNONYMS[token] ?? []) {
+      if (synonym.length >= 3 && !WORK_SEARCH_STOP_WORDS.has(synonym)) {
+        expanded.add(synonym);
+      }
+    }
+  }
+  return [...expanded].slice(0, 16);
 }
 
 export class InMemoryAppStore implements AppStore {
@@ -522,10 +593,14 @@ export class InMemoryAppStore implements AppStore {
   }
 
   async searchWorks(query: string): Promise<WorkSummary[]> {
+    const lexicalQuery = expandedSearchTokens(query).join(" ");
     return [...this.works]
       .map((work) => ({
         ...work,
-        score: lexicalScore(query, `${work.title} ${work.summary ?? ""} ${work.subjects.join(" ")}`),
+        score: lexicalScore(
+          lexicalQuery,
+          `${work.title} ${work.summary ?? ""} ${work.subjects.join(" ")}`,
+        ),
       }))
       .filter((work) => (work.score ?? 0) > 0)
       .sort((left, right) => (right.score ?? 0) - (left.score ?? 0))
@@ -540,12 +615,15 @@ export class InMemoryAppStore implements AppStore {
 
   async getRelevantChunks(query: string, workIds?: string[], limit = 8, embedding?: number[]): Promise<ChunkSearchResult[]> {
     const set = workIds?.length ? new Set(workIds) : null;
+    const lexicalQuery = expandedSearchTokens(query).join(" ");
     return this.chunks
       .filter((chunk) => !set || set.has(chunk.workId))
       .map((chunk) => ({
         ...chunk,
-        score: lexicalScore(query, chunk.text) + (embedding && chunk.embedding ? cosineSimilarity(embedding, chunk.embedding) : 0),
-        excerpt: excerpt(chunk.text, query),
+        score:
+          lexicalScore(lexicalQuery, chunk.text) +
+          (embedding && chunk.embedding ? cosineSimilarity(embedding, chunk.embedding) : 0),
+        excerpt: excerpt(chunk.text, lexicalQuery || query),
       }))
       .filter((chunk) => chunk.score > 0)
       .sort((left, right) => right.score - left.score)
@@ -1247,6 +1325,9 @@ export class NeonAppStore implements AppStore {
 
   async searchWorks(query: string, filters: Record<string, unknown> = {}): Promise<WorkSummary[]> {
     const limit = Number(filters.limit ?? 8);
+    const normalizedQuery = normalizeSearchQuery(query);
+    const tsQuery = normalizedQuery || query.trim();
+    const tokens = expandedSearchTokens(query);
     const mapRows = (
       rows: Array<{
         id: string;
@@ -1342,7 +1423,7 @@ export class NeonAppStore implements AppStore {
           LIMIT $4
         `,
         [
-          query,
+          tsQuery,
           typeof filters.language === "string" ? filters.language : null,
           typeof filters.rightsStatus === "string" ? filters.rightsStatus : null,
           limit,
@@ -1355,7 +1436,6 @@ export class NeonAppStore implements AppStore {
       // Fall back to simpler token matching if the tsquery path rejects a query shape.
     }
 
-    const tokens = searchTokens(query);
     if (tokens.length === 0) {
       return [];
     }
@@ -1431,7 +1511,69 @@ export class NeonAppStore implements AppStore {
         limit,
       ],
     );
-    return mapRows(fallbackResult.rows);
+    if (fallbackResult.rows.length > 0) {
+      return mapRows(fallbackResult.rows);
+    }
+
+    const chunkBackedResult = await this.db.query<{
+      id: string;
+      gutenberg_id: number | string | null;
+      title: string;
+      metadata_json: Record<string, unknown>;
+      language: string | null;
+      release_date: string | null;
+      rights_status: string | null;
+      summary: string | null;
+      authors: string[];
+      subjects: string[];
+      score: number;
+    }>(
+      `
+        WITH chunk_matches AS (
+          SELECT
+            c.work_id,
+            COUNT(*)::float AS score
+          FROM chunks c
+          WHERE EXISTS (
+            SELECT 1
+            FROM UNNEST($3::text[]) AS token
+            WHERE COALESCE(c.text, '') ILIKE '%' || token || '%'
+          )
+          GROUP BY c.work_id
+        )
+        SELECT
+          w.id,
+          w.gutenberg_id,
+          w.title,
+          w.metadata_json,
+          w.language,
+          w.release_date::text,
+          w.rights_status,
+          w.summary,
+          ARRAY_REMOVE(ARRAY_AGG(DISTINCT a.name), NULL) AS authors,
+          ARRAY_REMOVE(ARRAY_AGG(DISTINCT s.label), NULL) AS subjects,
+          chunk_matches.score
+        FROM chunk_matches
+        JOIN works w ON w.id = chunk_matches.work_id
+        LEFT JOIN work_authors wa ON wa.work_id = w.id
+        LEFT JOIN authors a ON a.id = wa.author_id
+        LEFT JOIN work_subjects ws ON ws.work_id = w.id
+        LEFT JOIN subjects s ON s.id = ws.subject_id
+        WHERE
+          ($1::text IS NULL OR w.language = $1::text)
+          AND ($2::text IS NULL OR w.rights_status = $2::text)
+        GROUP BY w.id, w.gutenberg_id, w.title, w.metadata_json, w.language, w.release_date, w.rights_status, w.summary, chunk_matches.score
+        ORDER BY chunk_matches.score DESC, w.title ASC
+        LIMIT $4
+      `,
+      [
+        typeof filters.language === "string" ? filters.language : null,
+        typeof filters.rightsStatus === "string" ? filters.rightsStatus : null,
+        tokens,
+        limit,
+      ],
+    );
+    return mapRows(chunkBackedResult.rows);
   }
 
   async getWorkMetadata(workIds: string[]): Promise<WorkSummary[]> {
@@ -1489,38 +1631,72 @@ export class NeonAppStore implements AppStore {
   async getRelevantChunks(query: string, workIds?: string[], limit = 8, embedding?: number[]): Promise<ChunkSearchResult[]> {
     const usableEmbedding = embedding?.length === EXPECTED_EMBEDDING_DIMENSIONS ? embedding : undefined;
     const vectorLiteral = usableEmbedding ? `[${usableEmbedding.join(",")}]` : null;
+    const normalizedQuery = normalizeSearchQuery(query);
+    const tsQuery = normalizedQuery || query.trim();
+    const tokens = expandedSearchTokens(query);
     const result = await this.db.query<{
       id: string;
       work_id: string;
       chunk_index: number;
       text: string;
       r2_key: string | null;
-      score: number;
-    }>(
+      semantic_score: number;
+      token_score: number;
+      }>(
       `
         WITH query_input AS (
           SELECT
-            websearch_to_tsquery('english', $1::text) AS tsq,
+            CASE
+              WHEN NULLIF($1::text, '') IS NULL THEN NULL
+              ELSE websearch_to_tsquery('english', $1::text)
+            END AS tsq,
             CASE WHEN $4::text IS NULL THEN NULL ELSE $4::vector END AS embedding
+        ),
+        ranked AS (
+          SELECT
+            c.id,
+            c.work_id,
+            c.chunk_index,
+            c.text,
+            c.r2_key,
+            (
+              SELECT COUNT(*)::float
+              FROM UNNEST($5::text[]) AS token
+              WHERE COALESCE(c.text, '') ILIKE '%' || token || '%'
+            ) AS token_score,
+            CASE
+              WHEN query_input.embedding IS NULL OR c.embedding IS NULL THEN
+                COALESCE(CASE WHEN query_input.tsq IS NULL THEN NULL ELSE ts_rank_cd(c.tsv, query_input.tsq) END, 0)
+              ELSE
+                COALESCE(CASE WHEN query_input.tsq IS NULL THEN NULL ELSE ts_rank_cd(c.tsv, query_input.tsq) END, 0)
+                + (1 - (c.embedding <=> query_input.embedding))
+            END AS semantic_score
+          FROM chunks c, query_input
+          WHERE
+            ($2::uuid[] IS NULL OR c.work_id = ANY($2::uuid[]))
+            AND (
+              (query_input.tsq IS NOT NULL AND c.tsv @@ query_input.tsq)
+              OR (query_input.embedding IS NOT NULL AND c.embedding IS NOT NULL)
+              OR EXISTS (
+                SELECT 1
+                FROM UNNEST($5::text[]) AS token
+                WHERE COALESCE(c.text, '') ILIKE '%' || token || '%'
+              )
+            )
         )
         SELECT
-          c.id,
-          c.work_id,
-          c.chunk_index,
-          c.text,
-          c.r2_key,
-          CASE
-            WHEN query_input.embedding IS NULL OR c.embedding IS NULL THEN ts_rank_cd(c.tsv, query_input.tsq)
-            ELSE ts_rank_cd(c.tsv, query_input.tsq) + (1 - (c.embedding <=> query_input.embedding))
-          END AS score
-        FROM chunks c, query_input
-        WHERE
-          ($2::uuid[] IS NULL OR c.work_id = ANY($2::uuid[]))
-          AND c.tsv @@ query_input.tsq
-        ORDER BY score DESC, c.work_id ASC, c.chunk_index ASC
+          ranked.id,
+          ranked.work_id,
+          ranked.chunk_index,
+          ranked.text,
+          ranked.r2_key,
+          ranked.token_score,
+          ranked.semantic_score
+        FROM ranked
+        ORDER BY (ranked.semantic_score + ranked.token_score) DESC, ranked.work_id ASC, ranked.chunk_index ASC
         LIMIT $3
       `,
-      [query, workIds?.length ? workIds : null, limit, vectorLiteral],
+      [tsQuery, workIds?.length ? workIds : null, limit, vectorLiteral, tokens],
     );
     return result.rows.map((row) => ({
       id: row.id,
@@ -1528,7 +1704,7 @@ export class NeonAppStore implements AppStore {
       chunkIndex: row.chunk_index,
       text: row.text,
       r2Key: row.r2_key,
-      score: Number(row.score),
+      score: Number(row.semantic_score ?? 0) + Number(row.token_score ?? 0),
       excerpt: excerpt(row.text, query),
     }));
   }
