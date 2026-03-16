@@ -606,12 +606,12 @@ function describePlannerAction(
   switch (toolName) {
     case "search_works":
       return normalizedMessage
-        ? `I’m going to look for the best matches for “${normalizedMessage},” then I’ll pull a few promising passages.`
-        : "I’m going to look for the best matches, then I’ll pull a few promising passages.";
+        ? `I’ll search over the corpus for ${normalizedMessage}, then I’ll pull the strongest passages and summarize them into a briefing for you.`
+        : "I’ll search over the corpus, then I’ll pull the strongest passages and summarize them into a briefing for you.";
     case "get_relevant_chunks":
       return normalizedMessage
-        ? `I found a few likely matches for “${normalizedMessage}.” Next I’m pulling passages so I can narrow this down.`
-        : "I found a few likely matches. Next I’m pulling passages so I can narrow this down.";
+        ? `I found some likely matches for ${normalizedMessage}. Now I’m pulling the strongest passages and building the briefing.`
+        : "I found some likely matches. Now I’m pulling the strongest passages and building the briefing.";
     case "get_work_metadata":
       return "I found a few likely books. Let me pull in their context before I go further.";
     case "get_work_text":
@@ -1174,7 +1174,7 @@ async function runOrchestrator(
 
     const toolRecord = await deps.store.startToolCall(run.id, toolCall.tool_name, toolCall.args);
     if (!initialPlanSent) {
-      const planText = describePlannerAction(toolCall.tool_name, toolCall.rationale, input.message);
+      const planText = describePlannerAction(toolCall.tool_name, toolCall.rationale, routedQuery);
       const planMessage = await deps.store.appendMessage(session.id, "assistant", planText, {
         phase: "plan",
         runId: run.id,
