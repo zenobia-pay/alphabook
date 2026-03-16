@@ -60,7 +60,7 @@ type UrlState = {
   workId: string | null | undefined;
   profileUserId: string | null | undefined;
   runId: string | null | undefined;
-  adminSection: "runs" | "users" | "analytics" | "logs";
+  adminSection: "runs" | "users" | "analytics" | "incidents" | "logs";
   debugEnabled: boolean;
 };
 
@@ -96,6 +96,9 @@ type AdminAnalyticsState = {
 type AdminIncidentsState = {
   loading: boolean;
   error: string | null;
+  query: string;
+  days: number;
+  selectedFingerprint: string | null;
   payload: Record<string, unknown> | null;
 };
 
@@ -160,8 +163,8 @@ function readUrlState(): UrlState {
     profileUserId: profilePathMatch ? decodeURIComponent(profilePathMatch[1]) : params.has("profile") ? params.get("profile") || null : undefined,
     runId: params.has("run") ? params.get("run") || null : undefined,
     adminSection:
-      params.get("adminSection") === "users" || params.get("adminSection") === "analytics" || params.get("adminSection") === "logs"
-        ? params.get("adminSection") as "users" | "analytics" | "logs"
+      params.get("adminSection") === "users" || params.get("adminSection") === "analytics" || params.get("adminSection") === "incidents" || params.get("adminSection") === "logs"
+        ? params.get("adminSection") as "users" | "analytics" | "incidents" | "logs"
         : params.has("run")
           ? "logs"
           : "runs",
@@ -1186,6 +1189,19 @@ function AdminTableCard({
   );
 }
 
+function IncidentSeverityBadge({ severity }: { severity: string }) {
+  const normalized = severity.toLowerCase();
+  const className =
+    normalized === "critical"
+      ? "border-[rgba(187,73,44,0.22)] bg-[rgba(187,73,44,0.12)] text-[rgb(131,43,24)]"
+      : "border-[rgba(72,43,37,0.12)] bg-[rgba(72,43,37,0.06)] text-[var(--ink)]";
+  return (
+    <span className={cn("inline-flex rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em]", className)}>
+      {severity}
+    </span>
+  );
+}
+
 function AnalyticsSeriesCard({
   series,
 }: {
@@ -1416,7 +1432,7 @@ export default function App() {
   const [sessions, setSessions] = useState<ChatSessionSummary[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null | undefined>(initialUrlState.sessionId);
   const [selectedAdminRunId, setSelectedAdminRunId] = useState<string | null | undefined>(initialUrlState.runId);
-  const [adminSection, setAdminSection] = useState<"runs" | "users" | "analytics" | "logs">(initialUrlState.adminSection);
+  const [adminSection, setAdminSection] = useState<"runs" | "users" | "analytics" | "incidents" | "logs">(initialUrlState.adminSection);
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [sessionsResolved, setSessionsResolved] = useState(false);
@@ -1490,6 +1506,9 @@ export default function App() {
   const [adminIncidents, setAdminIncidents] = useState<AdminIncidentsState>({
     loading: false,
     error: null,
+    query: "",
+    days: 7,
+    selectedFingerprint: null,
     payload: null,
   });
   const activeRunTokenRef = useRef(0);
@@ -2068,19 +2087,46 @@ export default function App() {
     }
   }
 
-  async function loadAdminIncidents(days = 7) {
+  async function loadAdminIncidents(options: {
+    days?: number;
+    query?: string;
+    selectedFingerprint?: string | null;
+  } = {}) {
     try {
-      setAdminIncidents((current) => ({ ...current, loading: true, error: null }));
-      const payload = await fetchAdminIncidents(days);
+      const nextDays = options.days ?? adminIncidents.days;
+      const nextQuery = options.query ?? adminIncidents.query;
+      const nextSelectedFingerprint = options.selectedFingerprint ?? adminIncidents.selectedFingerprint;
+      setAdminIncidents((current) => ({
+        ...current,
+        loading: true,
+        error: null,
+        days: nextDays,
+        query: nextQuery,
+        selectedFingerprint: nextSelectedFingerprint,
+      }));
+      const payload = await fetchAdminIncidents({
+        days: nextDays,
+        query: nextQuery,
+        limit: 120,
+        eventLimit: 600,
+      });
+      const grouped = Array.isArray(payload.incidents) ? payload.incidents as Array<Record<string, unknown>> : [];
+      const firstFingerprint = grouped[0] && typeof grouped[0].fingerprint === "string" ? grouped[0].fingerprint : null;
       setAdminIncidents({
         loading: false,
         error: null,
+        days: nextDays,
+        query: nextQuery,
+        selectedFingerprint: nextSelectedFingerprint ?? firstFingerprint,
         payload,
       });
     } catch (error) {
       setAdminIncidents({
         loading: false,
         error: error instanceof Error ? error.message : "Failed to load incidents.",
+        days: options.days ?? adminIncidents.days,
+        query: options.query ?? adminIncidents.query,
+        selectedFingerprint: options.selectedFingerprint ?? adminIncidents.selectedFingerprint,
         payload: null,
       });
     }
@@ -2097,19 +2143,19 @@ export default function App() {
     if (!adminAccess.allowed) {
       return;
     }
-    if (adminUsers.rows.length === 0 && !adminUsers.loading && !adminUsers.error) {
+    if (adminSection === "users" && adminUsers.rows.length === 0 && !adminUsers.loading && !adminUsers.error) {
       void loadAdminUsers();
     }
-    if (adminSessions.rows.length === 0 && !adminSessions.loading && !adminSessions.error) {
+    if (adminSection === "users" && adminSessions.rows.length === 0 && !adminSessions.loading && !adminSessions.error) {
       void loadAdminSessions();
     }
-    if (adminRuns.rows.length === 0 && !adminRuns.loading && !adminRuns.error) {
+    if (adminSection === "runs" && adminRuns.rows.length === 0 && !adminRuns.loading && !adminRuns.error) {
       void loadAdminRuns();
     }
-    if (!adminIncidents.payload && !adminIncidents.loading && !adminIncidents.error) {
+    if (adminSection === "incidents" && !adminIncidents.payload && !adminIncidents.loading && !adminIncidents.error) {
       void loadAdminIncidents();
     }
-  }, [adminAccess.allowed, adminIncidents.error, adminIncidents.loading, adminIncidents.payload, adminRuns.error, adminRuns.loading, adminRuns.rows.length, adminSessions.error, adminSessions.loading, adminSessions.rows.length, adminUsers.error, adminUsers.loading, adminUsers.rows.length]);
+  }, [adminAccess.allowed, adminIncidents.error, adminIncidents.loading, adminIncidents.payload, adminRuns.error, adminRuns.loading, adminRuns.rows.length, adminSection, adminSessions.error, adminSessions.loading, adminSessions.rows.length, adminUsers.error, adminUsers.loading, adminUsers.rows.length]);
 
   async function sendPrompt(
     question: string,
@@ -3036,18 +3082,31 @@ export default function App() {
 
     const summary = summarizeRunLogPayload(adminRunLog.payload);
     const showingLogs = adminSection === "logs";
+    const showingIncidents = adminSection === "incidents";
     const analyticsPayload = adminAnalytics.payload ?? {};
     const analyticsMetrics = Array.isArray(analyticsPayload.metrics) ? analyticsPayload.metrics as Array<Record<string, unknown>> : [];
     const analyticsSeries = Array.isArray(analyticsPayload.series) ? analyticsPayload.series as Array<Record<string, unknown>> : [];
     const analyticsHashtags = Array.isArray(analyticsPayload.hashtags) ? analyticsPayload.hashtags as Array<Record<string, unknown>> : [];
     const analyticsNotes = Array.isArray(analyticsPayload.notes) ? analyticsPayload.notes as Array<unknown> : [];
     const incidentsPayload = adminIncidents.payload ?? {};
-    const incidentsSummary =
-      incidentsPayload.summary && typeof incidentsPayload.summary === "object"
-        ? incidentsPayload.summary as Record<string, unknown>
-        : {};
     const incidentRows = Array.isArray(incidentsPayload.incidents) ? incidentsPayload.incidents as Array<Record<string, unknown>> : [];
+    const incidentEvents = Array.isArray(incidentsPayload.events) ? incidentsPayload.events as Array<Record<string, unknown>> : [];
+    const selectedIncident =
+      incidentRows.find((row) => typeof row.fingerprint === "string" && row.fingerprint === adminIncidents.selectedFingerprint)
+      ?? incidentRows[0]
+      ?? null;
+    const selectedFingerprint = selectedIncident && typeof selectedIncident.fingerprint === "string"
+      ? selectedIncident.fingerprint
+      : null;
+    const selectedIncidentEvents = selectedFingerprint
+      ? incidentEvents.filter((row) => row.fingerprint === selectedFingerprint)
+      : incidentEvents;
     const adminNavItems = [
+      {
+        key: "incidents",
+        label: "Incidents",
+        description: "Search unexpected errors and inspect full occurrence logs.",
+      },
       {
         key: "runs",
         label: "Runs",
@@ -3076,7 +3135,7 @@ export default function App() {
           </p>
         </header>
 
-        <div className="grid gap-3 md:grid-cols-3">
+        <div className="grid gap-3 md:grid-cols-4">
           {adminNavItems.map((item) => {
             const active = adminSection === item.key;
             return (
@@ -3097,95 +3156,222 @@ export default function App() {
             );
           })}
         </div>
-
-        <Card className="rounded-[24px] border-[rgba(72,43,37,0.06)] bg-[rgba(255,250,246,0.92)] shadow-none">
-          <CardContent className="space-y-4 p-5">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div className="space-y-1">
-                <h2 className="font-[Newsreader] text-[clamp(1.5rem,2.6vw,2.2rem)] font-semibold tracking-[-0.04em] text-[var(--ink)]">
-                  Incident Watch
-                </h2>
-                <p className="text-sm leading-6 text-[var(--ink-soft)]">
-                  Unexpected server and client errors are recorded here automatically. Alerts fan out through the worker webhook when configured.
-                </p>
-              </div>
-              <Button type="button" variant="outline" size="sm" onClick={() => void loadAdminIncidents()}>
-                Refresh incidents
-              </Button>
-            </div>
-
-            <div className="flex flex-wrap gap-3">
-              <div className="rounded-[18px] border border-[rgba(72,43,37,0.08)] bg-white px-4 py-3">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--ink-soft)]">Last hour</div>
-                <div className="mt-1 text-lg font-semibold text-[var(--ink)]">{adminText(incidentsSummary.lastHour)}</div>
-              </div>
-              <div className="rounded-[18px] border border-[rgba(72,43,37,0.08)] bg-white px-4 py-3">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--ink-soft)]">Last 24 hours</div>
-                <div className="mt-1 text-lg font-semibold text-[var(--ink)]">{adminText(incidentsSummary.last24Hours)}</div>
-              </div>
-              <div className="rounded-[18px] border border-[rgba(72,43,37,0.08)] bg-white px-4 py-3">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--ink-soft)]">Open fingerprints</div>
-                <div className="mt-1 text-lg font-semibold text-[var(--ink)]">{adminText(incidentsSummary.openFingerprints)}</div>
-              </div>
-              <div className="rounded-[18px] border border-[rgba(72,43,37,0.08)] bg-white px-4 py-3">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--ink-soft)]">Alerts</div>
-                <div className="mt-1 text-sm font-semibold text-[var(--ink)]">
-                  {incidentsSummary.alertWebhookConfigured === true ? "Webhook configured" : "Admin only"}
-                </div>
-              </div>
-            </div>
-
-            {adminIncidents.error ? (
-              <div className="rounded-[16px] border border-[rgba(187,73,44,0.2)] bg-[rgba(187,73,44,0.08)] px-4 py-3 text-sm leading-6 text-[var(--ink)]">
-                {adminIncidents.error}
-              </div>
-            ) : adminIncidents.loading ? (
-              <p className="text-sm text-[var(--ink-soft)]">Loading incidents…</p>
-            ) : incidentRows.length > 0 ? (
-              <div className="overflow-auto">
-                <table className="min-w-full text-sm text-[var(--ink)]">
-                  <thead className="text-left text-xs uppercase tracking-[0.16em] text-[var(--ink-soft)]">
-                    <tr>
-                      <th className="pb-3 pr-4">Error</th>
-                      <th className="pb-3 pr-4">Service</th>
-                      <th className="pb-3 pr-4">Seen</th>
-                      <th className="pb-3 pr-4">Count</th>
-                      <th className="pb-3 pr-4">Context</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {incidentRows.slice(0, 8).map((row, index) => (
-                      <tr key={`${adminText(row.fingerprint)}-${index}`} className="border-t border-[rgba(72,43,37,0.08)] align-top">
-                        <td className="py-3 pr-4">
-                          <div className="font-medium">{adminText(row.message)}</div>
-                          <div className="text-xs text-[var(--ink-soft)]">
-                            {adminText(row.route)} {adminText(row.method) !== "—" ? `· ${adminText(row.method)}` : ""}
-                          </div>
-                        </td>
-                        <td className="py-3 pr-4">
-                          <div>{adminText(row.service)}</div>
-                          <div className="text-xs text-[var(--ink-soft)]">{adminText(row.source)}</div>
-                        </td>
-                        <td className="py-3 pr-4">{formatRelativeTime(typeof row.lastSeenAt === "string" ? row.lastSeenAt : null)}</td>
-                        <td className="py-3 pr-4">{adminText(row.count)}</td>
-                        <td className="py-3 pr-4">
-                          <div>{adminText(row.toolName)}</div>
-                          <div className="text-xs text-[var(--ink-soft)]">
-                            {adminText(row.runId) !== "—" ? `run ${adminText(row.runId)}` : adminText(row.sessionId) !== "—" ? `session ${adminText(row.sessionId)}` : "No run/session id"}
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <p className="text-sm text-[var(--ink-soft)]">No unexpected errors recorded in the current window.</p>
-            )}
-          </CardContent>
-        </Card>
       </section>
     );
+
+    if (showingIncidents) {
+      return (
+        <div className="view-shell space-y-6">
+          {renderAdminNav()}
+
+          <section className="space-y-4">
+            <Card className="overflow-hidden rounded-[28px] border-[rgba(72,43,37,0.06)] bg-[linear-gradient(180deg,rgba(255,251,248,0.98),rgba(255,255,255,0.92))] shadow-none">
+              <CardContent className="space-y-5 p-5">
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div className="space-y-2">
+                    <h2 className="font-[Newsreader] text-[clamp(1.9rem,3vw,3rem)] font-semibold tracking-[-0.04em] text-[var(--ink)]">
+                      Incident Log Explorer
+                    </h2>
+                    <p className="max-w-3xl text-sm leading-6 text-[var(--ink-soft)]">
+                      Search every unexpected error fingerprint, inspect repeated occurrences, and read raw captured payloads without leaving admin.
+                    </p>
+                  </div>
+                  <Button type="button" variant="outline" onClick={() => void loadAdminIncidents()}>
+                    Refresh logs
+                  </Button>
+                </div>
+
+                <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_12rem_10rem]">
+                  <input
+                    className="min-h-12 rounded-[16px] border border-[rgba(72,43,37,0.12)] bg-white px-4 text-sm text-[var(--ink)] outline-none transition focus:border-[rgba(72,43,37,0.28)]"
+                    placeholder="Search by message, route, run ID, session ID, fingerprint, stack, or service"
+                    value={adminIncidents.query}
+                    onChange={(event) => setAdminIncidents((current) => ({ ...current, query: event.currentTarget.value }))}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        void loadAdminIncidents({ query: adminIncidents.query });
+                      }
+                    }}
+                  />
+                  <select
+                    className="min-h-12 rounded-[16px] border border-[rgba(72,43,37,0.12)] bg-white px-4 text-sm text-[var(--ink)] outline-none transition focus:border-[rgba(72,43,37,0.28)]"
+                    value={String(adminIncidents.days)}
+                    onChange={(event) => {
+                      const days = Number(event.currentTarget.value);
+                      setAdminIncidents((current) => ({ ...current, days }));
+                      void loadAdminIncidents({ days });
+                    }}
+                  >
+                    <option value="1">Last day</option>
+                    <option value="3">Last 3 days</option>
+                    <option value="7">Last 7 days</option>
+                    <option value="14">Last 14 days</option>
+                    <option value="30">Last 30 days</option>
+                  </select>
+                  <Button
+                    type="button"
+                    className="bg-black text-white transition hover:bg-black/90"
+                    onClick={() => void loadAdminIncidents({ query: adminIncidents.query, days: adminIncidents.days })}
+                    disabled={adminIncidents.loading}
+                  >
+                    {adminIncidents.loading ? "Searching…" : "Search"}
+                  </Button>
+                </div>
+
+                {adminIncidents.error ? (
+                  <div className="rounded-[16px] border border-[rgba(187,73,44,0.2)] bg-[rgba(187,73,44,0.08)] px-4 py-3 text-sm leading-6 text-[var(--ink)]">
+                    {adminIncidents.error}
+                  </div>
+                ) : null}
+
+                <div className="grid gap-4 xl:grid-cols-[minmax(20rem,0.95fr)_minmax(0,1.45fr)]">
+                  <div className="rounded-[22px] border border-[rgba(72,43,37,0.08)] bg-[rgba(255,255,255,0.74)]">
+                    <div className="flex items-center justify-between border-b border-[rgba(72,43,37,0.08)] px-4 py-3">
+                      <div>
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--ink-soft)]">Fingerprints</div>
+                        <div className="text-sm text-[var(--ink-soft)]">{incidentRows.length} matching groups</div>
+                      </div>
+                    </div>
+                    <div className="max-h-[72vh] overflow-auto p-2">
+                      {incidentRows.length > 0 ? incidentRows.map((row, index) => {
+                        const fingerprint = typeof row.fingerprint === "string" ? row.fingerprint : `incident-${index}`;
+                        const active = fingerprint === selectedFingerprint;
+                        return (
+                          <button
+                            key={fingerprint}
+                            type="button"
+                            onClick={() => setAdminIncidents((current) => ({ ...current, selectedFingerprint: fingerprint }))}
+                            className={cn(
+                              "mb-2 w-full rounded-[18px] border px-4 py-4 text-left transition",
+                              active
+                                ? "border-[rgba(72,43,37,0.22)] bg-[rgba(255,248,243,0.96)] shadow-[0_16px_42px_rgba(72,43,37,0.08)]"
+                                : "border-[rgba(72,43,37,0.08)] bg-white hover:border-[rgba(72,43,37,0.16)]",
+                            )}
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <IncidentSeverityBadge severity={adminText(row.severity)} />
+                              <div className="text-xs text-[var(--ink-soft)]">{adminText(row.count)} hits</div>
+                            </div>
+                            <div className="mt-3 font-medium text-[var(--ink)]">{adminText(row.message)}</div>
+                            <div className="mt-2 text-xs leading-5 text-[var(--ink-soft)]">
+                              {adminText(row.service)} · {adminText(row.source)} · {adminText(row.route)}
+                            </div>
+                            <div className="mt-2 text-xs leading-5 text-[var(--ink-soft)]">
+                              {adminText(row.runId) !== "—" ? `run ${adminText(row.runId)} · ` : ""}
+                              {adminText(row.sessionId) !== "—" ? `session ${adminText(row.sessionId)} · ` : ""}
+                              last seen {formatRelativeTime(typeof row.lastSeenAt === "string" ? row.lastSeenAt : null)}
+                            </div>
+                          </button>
+                        );
+                      }) : (
+                        <div className="px-3 py-8 text-sm text-[var(--ink-soft)]">
+                          {adminIncidents.loading ? "Loading incidents…" : "No incidents matched this search window."}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    {selectedIncident ? (
+                      <>
+                        <Card className="rounded-[22px] border-[rgba(72,43,37,0.08)] bg-[rgba(255,255,255,0.82)] shadow-none">
+                          <CardContent className="space-y-4 p-5">
+                            <div className="flex flex-wrap items-start justify-between gap-4">
+                              <div className="space-y-2">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <IncidentSeverityBadge severity={adminText(selectedIncident.severity)} />
+                                  <span className="text-xs uppercase tracking-[0.16em] text-[var(--ink-soft)]">{adminText(selectedIncident.service)}</span>
+                                </div>
+                                <h3 className="font-[Newsreader] text-[clamp(1.5rem,2.4vw,2.2rem)] font-semibold leading-[0.98] tracking-[-0.04em] text-[var(--ink)]">
+                                  {adminText(selectedIncident.message)}
+                                </h3>
+                              </div>
+                              <div className="text-right text-xs leading-5 text-[var(--ink-soft)]">
+                                <div>{adminText(selectedIncident.count)} total occurrences</div>
+                                <div>First seen {formatRelativeTime(typeof selectedIncident.firstSeenAt === "string" ? selectedIncident.firstSeenAt : null)}</div>
+                                <div>Last seen {formatRelativeTime(typeof selectedIncident.lastSeenAt === "string" ? selectedIncident.lastSeenAt : null)}</div>
+                              </div>
+                            </div>
+
+                            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                              <div className="rounded-[18px] bg-[rgba(72,43,37,0.05)] px-4 py-3">
+                                <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--ink-soft)]">Route</div>
+                                <div className="mt-1 text-sm text-[var(--ink)]">{adminText(selectedIncident.route)}</div>
+                              </div>
+                              <div className="rounded-[18px] bg-[rgba(72,43,37,0.05)] px-4 py-3">
+                                <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--ink-soft)]">Method / Tool</div>
+                                <div className="mt-1 text-sm text-[var(--ink)]">{adminText(selectedIncident.method)} {adminText(selectedIncident.toolName) !== "—" ? `· ${adminText(selectedIncident.toolName)}` : ""}</div>
+                              </div>
+                              <div className="rounded-[18px] bg-[rgba(72,43,37,0.05)] px-4 py-3">
+                                <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--ink-soft)]">Run / Session</div>
+                                <div className="mt-1 text-sm text-[var(--ink)]">{adminText(selectedIncident.runId)} {adminText(selectedIncident.sessionId) !== "—" ? `· ${adminText(selectedIncident.sessionId)}` : ""}</div>
+                              </div>
+                            </div>
+
+                            <div className="space-y-2">
+                              <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--ink-soft)]">Fingerprint</div>
+                              <code className="block overflow-auto rounded-[16px] bg-[rgba(32,24,18,0.05)] px-4 py-3 text-xs leading-6 text-[var(--ink)]">
+                                {adminText(selectedIncident.fingerprint)}
+                              </code>
+                            </div>
+
+                            {adminText(selectedIncident.runId) !== "—" ? (
+                              <div className="flex flex-wrap gap-3">
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  onClick={() => {
+                                    setAdminSection("logs");
+                                    void loadAdminRunLogs(adminText(selectedIncident.runId));
+                                  }}
+                                >
+                                  Open run logs
+                                </Button>
+                              </div>
+                            ) : null}
+                          </CardContent>
+                        </Card>
+
+                        <AdminTableCard title="Occurrence Log">
+                          {selectedIncidentEvents.length > 0 ? (
+                            <div className="space-y-3">
+                              {selectedIncidentEvents.map((event, index) => (
+                                <div key={`${adminText(event.id)}-${index}`} className="rounded-[18px] border border-[rgba(72,43,37,0.08)] bg-white p-4">
+                                  <div className="flex flex-wrap items-center justify-between gap-3">
+                                    <div className="text-sm font-medium text-[var(--ink)]">
+                                      {formatRelativeTime(typeof event.createdAt === "string" ? event.createdAt : null)}
+                                    </div>
+                                    <div className="text-xs text-[var(--ink-soft)]">
+                                      {adminText(event.source)} {adminText(event.route) !== "—" ? `· ${adminText(event.route)}` : ""}
+                                    </div>
+                                  </div>
+                                  <pre className="mt-3 max-h-[18rem] overflow-auto rounded-[14px] bg-[rgba(32,24,18,0.05)] p-3 text-xs leading-6 text-[var(--ink)]">
+                                    {formatJson(event)}
+                                  </pre>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="text-sm text-[var(--ink-soft)]">No raw events matched this fingerprint.</p>
+                          )}
+                        </AdminTableCard>
+                      </>
+                    ) : (
+                      <AdminTableCard title="Incident Detail">
+                        <p className="text-sm text-[var(--ink-soft)]">
+                          Select a fingerprint from the left to inspect its full occurrence log.
+                        </p>
+                      </AdminTableCard>
+                    )}
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </section>
+        </div>
+      );
+    }
 
     if (showingLogs) {
       return (

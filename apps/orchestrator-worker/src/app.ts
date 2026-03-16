@@ -275,7 +275,26 @@ function normalizeTimestamp(value: unknown) {
 }
 
 async function listAdminIncidents(deps: AppDeps, days = 7) {
-  const since = daysAgoIso(Math.max(1, Math.min(30, days)));
+  const query = "";
+  const limit = 25;
+  const eventLimit = 200;
+  return listAdminIncidentsWithFilters(deps, { days, query, limit, eventLimit });
+}
+
+async function listAdminIncidentsWithFilters(
+  deps: AppDeps,
+  options: {
+    days?: number;
+    query?: string;
+    limit?: number;
+    eventLimit?: number;
+  } = {},
+) {
+  const days = Math.max(1, Math.min(30, options.days ?? 7));
+  const query = (options.query ?? "").trim().toLowerCase();
+  const limit = Math.max(1, Math.min(200, options.limit ?? 50));
+  const eventLimit = Math.max(limit, Math.min(1000, options.eventLimit ?? 400));
+  const since = daysAgoIso(days);
   const events = await deps.store.listAnalyticsEvents({ since, limit: 5000 });
   const incidents = events
     .filter((event) => event.event === "unexpected_error")
@@ -295,9 +314,30 @@ async function listAdminIncidents(deps: AppDeps, days = 7) {
         statusCode: typeof details.statusCode === "number" ? details.statusCode : null,
         runId: typeof details.runId === "string" ? details.runId : null,
         sessionId: typeof details.sessionId === "string" ? details.sessionId : null,
+        userId: typeof details.userId === "string" ? details.userId : null,
         fingerprint: typeof details.fingerprint === "string" ? details.fingerprint : event.id,
         alertDelivered: details.alertDelivered === true,
+        stack: typeof details.stack === "string" ? details.stack : null,
+        extra: details,
       };
+    })
+    .filter((incident) => {
+      if (!query) {
+        return true;
+      }
+      return [
+        incident.message,
+        incident.service,
+        incident.source,
+        incident.route,
+        incident.toolName,
+        incident.method,
+        incident.runId,
+        incident.sessionId,
+        incident.userId,
+        incident.fingerprint,
+        incident.stack,
+      ].some((value) => typeof value === "string" && value.toLowerCase().includes(query));
     });
 
   const grouped = new Map<string, {
@@ -312,6 +352,7 @@ async function listAdminIncidents(deps: AppDeps, days = 7) {
     statusCode: number | null;
     runId: string | null;
     sessionId: string | null;
+    userId: string | null;
     count: number;
     lastSeenAt: string;
     firstSeenAt: string;
@@ -334,6 +375,7 @@ async function listAdminIncidents(deps: AppDeps, days = 7) {
       existing.lastSeenAt = incident.createdAt;
       existing.runId = incident.runId;
       existing.sessionId = incident.sessionId;
+      existing.userId = incident.userId;
       existing.alertDelivered = incident.alertDelivered;
     }
     if (incident.createdAt < existing.firstSeenAt) {
@@ -345,6 +387,8 @@ async function listAdminIncidents(deps: AppDeps, days = 7) {
   const recentDayThreshold = Date.now() - 24 * 60 * 60 * 1000;
 
   return {
+    query,
+    inspectedDays: days,
     summary: {
       total: incidents.length,
       lastHour: incidents.filter((incident) => Date.parse(incident.createdAt) >= recentHourThreshold).length,
@@ -354,8 +398,10 @@ async function listAdminIncidents(deps: AppDeps, days = 7) {
     },
     incidents: [...grouped.values()]
       .sort((left, right) => right.lastSeenAt.localeCompare(left.lastSeenAt))
-      .slice(0, 25),
-    recentEvents: incidents.slice(0, 50),
+      .slice(0, limit),
+    events: incidents
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .slice(0, eventLimit),
   };
 }
 
@@ -637,9 +683,9 @@ async function executeTool(
 function workspaceProgressSteps(args: Record<string, unknown>): string[] {
   if ("taskContext" in args && !("taskSpec" in args)) {
     return [
-      "Starting the Codex search session.",
-      "Connecting Codex to the corpus search tools.",
-      "Getting the Codex session ready.",
+      "Preparing the deeper research workspace.",
+      "Connecting the workspace to the corpus search tools.",
+      "Getting the deeper research run ready.",
     ];
   }
   const taskSpec = args.taskSpec && typeof args.taskSpec === "object" ? args.taskSpec as Record<string, unknown> : null;
@@ -655,9 +701,9 @@ function workspaceProgressSteps(args: Record<string, unknown>): string[] {
   }
   if (phase === "collect_and_brief") {
     return [
-      `Searching ${scope} with Codex.`,
+      `Searching ${scope} for direct evidence.`,
       "Running regex, metadata, and context searches across the corpus.",
-      "Assembling the quoted briefing with linked citations.",
+      "Writing the quoted briefing with linked citations.",
     ];
   }
   if (phase === "write_briefing") {
@@ -756,7 +802,8 @@ function startRuntimeTaskProgressEmitter(
         try {
           const event = JSON.parse(lines[index]) as Record<string, unknown>;
           if (typeof event.message === "string" && event.message.trim().length > 0) {
-            await emit(event.message, event);
+            const prefix = typeof event.step === "string" ? `${event.step}: ` : "";
+            await emit(`${prefix}${event.message}`, event);
           }
         } catch {
           continue;
@@ -770,7 +817,7 @@ function startRuntimeTaskProgressEmitter(
     }
   };
 
-  void emit("Starting the background Codex search.");
+  void emit("Starting the deeper research run.");
   void poll();
   const timer = setInterval(() => {
     void poll();
@@ -2075,8 +2122,16 @@ export function createApp(deps: AppDeps) {
       return c.json({ error: "Not authorized." }, 403);
     }
     const days = Number(c.req.query("days") ?? "7");
+    const query = c.req.query("q") ?? "";
+    const limit = Number(c.req.query("limit") ?? "50");
+    const eventLimit = Number(c.req.query("eventLimit") ?? "400");
     try {
-      return c.json(await listAdminIncidents(deps, Number.isFinite(days) ? days : 7));
+      return c.json(await listAdminIncidentsWithFilters(deps, {
+        days: Number.isFinite(days) ? days : 7,
+        query,
+        limit: Number.isFinite(limit) ? limit : 50,
+        eventLimit: Number.isFinite(eventLimit) ? eventLimit : 400,
+      }));
     } catch (error) {
       return respondWithLoggedError(c, error, "Failed to load incidents.", {
         source: "admin_incidents",

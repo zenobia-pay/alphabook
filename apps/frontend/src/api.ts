@@ -128,9 +128,25 @@ export async function fetchAdminSessions(): Promise<Record<string, unknown>[]> {
   return Array.isArray(payload.sessions) ? payload.sessions : [];
 }
 
-export async function fetchAdminIncidents(days = 7): Promise<Record<string, unknown>> {
+export async function fetchAdminIncidents(options: {
+  days?: number;
+  query?: string;
+  limit?: number;
+  eventLimit?: number;
+} = {}): Promise<Record<string, unknown>> {
+  const params = new URLSearchParams();
+  params.set("days", String(options.days ?? 7));
+  if (options.query?.trim()) {
+    params.set("q", options.query.trim());
+  }
+  if (options.limit !== undefined) {
+    params.set("limit", String(options.limit));
+  }
+  if (options.eventLimit !== undefined) {
+    params.set("eventLimit", String(options.eventLimit));
+  }
   const response = await ensureOk(
-    await fetch(`${API_BASE}/admin/incidents?days=${encodeURIComponent(String(days))}`, {
+    await fetch(`${API_BASE}/admin/incidents?${params.toString()}`, {
       credentials: "include",
     }),
   );
