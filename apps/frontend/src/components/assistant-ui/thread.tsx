@@ -31,6 +31,7 @@ import {
 } from "lucide-react";
 import { type FC, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuiState } from "@assistant-ui/store";
+import type { RunArtifactRecord } from "@/api";
 
 type MessagePartRecord = {
   type?: string;
@@ -132,12 +133,14 @@ type ThreadSuggestion = {
 export const Thread: FC<{
   isRunning?: boolean;
   streamConnected?: boolean;
+  artifacts?: RunArtifactRecord[];
   suggestions?: ThreadSuggestion[];
   onSuggestionSelect?: (prompt: string) => void;
   onCancel?: () => void;
 }> = ({
   isRunning = false,
   streamConnected = false,
+  artifacts = [],
   suggestions = [],
   onSuggestionSelect,
   onCancel,
@@ -198,6 +201,8 @@ export const Thread: FC<{
 
         <ThreadAutoFollow active={isRunning} viewportRef={viewportRef} shouldAutoFollowRef={shouldAutoFollowRef} />
 
+        {artifacts.length > 0 ? <ThreadArtifacts artifacts={artifacts} /> : null}
+
         <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 mx-auto mt-auto flex w-full max-w-(--thread-max-width) flex-col gap-3 overflow-visible pb-3 md:pb-4">
           <ThreadScrollToBottom />
           <Composer isRunning={isRunning} streamConnected={streamConnected} onCancel={onCancel} />
@@ -207,6 +212,45 @@ export const Thread: FC<{
         </ThreadPrimitive.ViewportFooter>
       </ThreadPrimitive.Viewport>
     </ThreadPrimitive.Root>
+  );
+};
+
+const ThreadArtifacts: FC<{
+  artifacts: RunArtifactRecord[];
+}> = ({ artifacts }) => {
+  if (artifacts.length === 0) {
+    return null;
+  }
+
+  return (
+    <section className="assistant-artifacts">
+      <div className="assistant-artifacts-header">
+        <span>Artifacts</span>
+        <span>{artifacts.length}</span>
+      </div>
+      <div className="assistant-artifacts-list">
+        {artifacts.map((artifact) => {
+          const title =
+            typeof artifact.metadata?.title === "string"
+              ? artifact.metadata.title
+              : artifact.filename;
+          const content = typeof artifact.content === "string" ? artifact.content.trim() : "";
+          return (
+            <details key={`${artifact.r2Key ?? artifact.filename}-${artifact.createdAt ?? ""}`} className="assistant-artifact-card">
+              <summary className="assistant-artifact-summary">
+                <span className="assistant-artifact-title">{title}</span>
+                <span className="assistant-artifact-meta">{artifact.filename}</span>
+              </summary>
+              {content ? (
+                <pre className="assistant-artifact-content">{content}</pre>
+              ) : (
+                <div className="assistant-artifact-empty">Stored in R2 for this run.</div>
+              )}
+            </details>
+          );
+        })}
+      </div>
+    </section>
   );
 };
 

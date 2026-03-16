@@ -52,6 +52,17 @@ export type SessionRunRecord = {
   completedAt: string | null;
 };
 
+export type RunArtifactRecord = {
+  id?: string;
+  runtimeId?: string | null;
+  r2Key?: string;
+  filename: string;
+  mimeType: string;
+  metadata?: Record<string, unknown>;
+  createdAt?: string | null;
+  content?: string | null;
+};
+
 async function ensureOk(response: Response): Promise<Response> {
   if (!response.ok) {
     throw new Error(await response.text());
@@ -85,6 +96,16 @@ export async function fetchRuns(sessionId: string): Promise<SessionRunRecord[]> 
   );
   const payload = await response.json() as { runs?: SessionRunRecord[] };
   return Array.isArray(payload.runs) ? payload.runs : [];
+}
+
+export async function fetchRunArtifacts(sessionId: string, runId: string): Promise<RunArtifactRecord[]> {
+  const response = await ensureOk(
+    await fetch(`${API_BASE}/sessions/${sessionId}/runs/${runId}/logs`, {
+      credentials: "include",
+    }),
+  );
+  const payload = await response.json() as { artifacts?: RunArtifactRecord[] };
+  return Array.isArray(payload.artifacts) ? payload.artifacts : [];
 }
 
 export async function fetchCurrentUser(): Promise<CurrentUserResponse> {

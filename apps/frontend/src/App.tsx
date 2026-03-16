@@ -9,7 +9,7 @@ import { ChevronsLeft, ChevronsRight, Link2, MessageSquarePlus } from "lucide-re
 
 import { getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type PublicProfileResponse, type UserProfile, type WorkDetail, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
-import { buildSignInUrl, cancelRun, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchCurrentUser, fetchMessages, fetchProfile, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, queryAdminAnalytics, sendAnalyticsEvent, signOut, streamChat, streamRun, unfollowProfile, type SessionRunRecord } from "./api";
+import { buildSignInUrl, cancelRun, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchCurrentUser, fetchMessages, fetchProfile, fetchRunArtifacts, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, queryAdminAnalytics, sendAnalyticsEvent, signOut, streamChat, streamRun, unfollowProfile, type RunArtifactRecord, type SessionRunRecord } from "./api";
 import { Thread } from "./components/assistant-ui/thread";
 import { Avatar, AvatarFallback, AvatarImage } from "./components/ui/avatar";
 import { Button } from "./components/ui/button";
@@ -1794,6 +1794,7 @@ function AssistantSurface({
   isSending,
   streamConnected,
   streamingAssistantId,
+  artifacts,
   onPrompt,
   onCancel,
   suggestions = ASSISTANT_WELCOME_SUGGESTIONS,
@@ -1802,6 +1803,7 @@ function AssistantSurface({
   isSending: boolean;
   streamConnected: boolean;
   streamingAssistantId: string | null;
+  artifacts: RunArtifactRecord[];
   onPrompt: (prompt: string) => Promise<void>;
   onCancel: () => Promise<void>;
   suggestions?: ThreadSuggestion[];
@@ -1825,6 +1827,7 @@ function AssistantSurface({
       <Thread
         isRunning={isSending}
         streamConnected={streamConnected}
+        artifacts={artifacts}
         suggestions={suggestions}
         onSuggestionSelect={(prompt) => {
           void onPrompt(prompt);
@@ -1969,6 +1972,7 @@ export default function App() {
   const [recoveredActiveRunId, setRecoveredActiveRunId] = useState<string | null>(null);
   const [streamConnected, setStreamConnected] = useState(false);
   const [sessionRuns, setSessionRuns] = useState<SessionRunRecord[]>([]);
+  const [runArtifacts, setRunArtifacts] = useState<RunArtifactRecord[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [streamingAssistantId, setStreamingAssistantId] = useState<string | null>(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -2627,6 +2631,41 @@ export default function App() {
       }
     };
   }, [authState.loading, isSending, recoveredActiveRunId, selectedSessionId]);
+
+  useEffect(() => {
+    if (authState.loading || !selectedSessionId) {
+      setRunArtifacts([]);
+      return;
+    }
+
+    const preferredRun =
+      sessionRuns.find((run) => run.id === recoveredActiveRunId)
+      ?? sessionRuns.find((run) => run.status === "running" || run.status === "queued")
+      ?? [...sessionRuns].sort((left, right) => right.startedAt.localeCompare(left.startedAt))[0]
+      ?? null;
+    if (!preferredRun) {
+      setRunArtifacts([]);
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const nextArtifacts = await fetchRunArtifacts(selectedSessionId, preferredRun.id);
+        if (!cancelled) {
+          setRunArtifacts(nextArtifacts);
+        }
+      } catch {
+        if (!cancelled) {
+          setRunArtifacts([]);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authState.loading, recoveredActiveRunId, selectedSessionId, sessionRuns]);
 
   useEffect(() => {
     if (authState.loading) {
@@ -3555,6 +3594,7 @@ export default function App() {
                 isSending={isSending || recoveredActiveRunId !== null}
                 streamConnected={streamConnected}
                 streamingAssistantId={streamingAssistantId}
+                artifacts={runArtifacts}
                 onPrompt={sendPrompt}
                 onCancel={cancelActiveRun}
               />
@@ -3659,6 +3699,7 @@ export default function App() {
                 isSending={isSending || recoveredActiveRunId !== null}
                 streamConnected={streamConnected}
                 streamingAssistantId={streamingAssistantId}
+                artifacts={runArtifacts}
                 onPrompt={bookPromptHandler}
                 onCancel={cancelActiveRun}
                 suggestions={ASSISTANT_WELCOME_SUGGESTIONS}

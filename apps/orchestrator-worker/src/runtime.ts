@@ -367,6 +367,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
         break;
       }
       if (status.status === "failed") {
+        await this.persistRuntimeArtifactsFromWorkspace(instance);
         const error = new Error(
           typeof status.error === "string"
             ? status.error
@@ -379,6 +380,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     }
 
     if (!result) {
+      await this.persistRuntimeArtifactsFromWorkspace(instance);
       const error = new Error("Deep research timed out before the runtime produced a briefing.") as Error & {
         runtimePayload?: Record<string, unknown>;
       };
@@ -452,6 +454,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     }
 
     if (status.status === "failed") {
+      await this.persistRuntimeArtifactsFromWorkspace(instance);
       await this.store.updateRuntimeInstance(runtimeId, {
         status: "failed",
         lastUsedAt: nowIso(),
@@ -887,6 +890,28 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     }
 
     return uploaded;
+  }
+
+  private async persistRuntimeArtifactsFromWorkspace(instance: RuntimeInstanceRecord) {
+    const machineId = instance.providerMachineId ?? instance.runtimeId;
+    const listed = await this.callRuntime(machineId, "/files", { method: "GET" }).catch(() => null);
+    const files = Array.isArray(listed?.files)
+      ? (listed.files as unknown[]).filter((value): value is string => typeof value === "string")
+      : [];
+    if (files.length === 0) {
+      return [];
+    }
+    return this.persistRuntimeArtifacts(instance, {
+      artifacts: files.map((path) => ({
+        path,
+        filename: path.split("/").at(-1) ?? path,
+        mimeType: path.endsWith(".md")
+          ? "text/markdown"
+          : path.endsWith(".json") || path.endsWith(".jsonl")
+            ? "application/json"
+            : "application/octet-stream",
+      })),
+    });
   }
 
   private async requireRuntime(runtimeId: string): Promise<RuntimeInstanceRecord> {
