@@ -1402,28 +1402,22 @@ function AuthLoadingState({ compact = false }: { compact?: boolean }) {
 function AssistantLoadingState() {
   return (
     <div className="assistant-loading-state" aria-hidden="true">
-      <div className="assistant-loading-center">
-        <div className="assistant-loading-copy">
-          <Skeleton className="assistant-loading-title" />
-          <Skeleton className="assistant-loading-subtitle" />
-        </div>
-      </div>
-
-      <div className="assistant-loading-footer">
-        <div className="assistant-loading-suggestions">
-          {[0, 1].map((item) => (
-            <div key={item} className="assistant-loading-suggestion">
-              <Skeleton className="assistant-loading-suggestion-title" />
-              <Skeleton className="assistant-loading-suggestion-copy" />
+      <div className="assistant-loading-thread">
+        <div className="assistant-loading-messages">
+          {[0, 1, 2].map((item) => (
+            <div key={item} className="assistant-loading-bubble">
+              <Skeleton className="assistant-loading-bubble-title" />
+              <Skeleton className="assistant-loading-bubble-line is-wide" />
+              <Skeleton className="assistant-loading-bubble-line" />
+              {item === 1 ? <Skeleton className="assistant-loading-bubble-line is-short" /> : null}
             </div>
           ))}
         </div>
-
         <div className="assistant-loading-composer">
           <Skeleton className="assistant-loading-composer-line is-long" />
           <Skeleton className="assistant-loading-composer-line" />
           <div className="assistant-loading-composer-footer">
-            <Skeleton className="assistant-loading-status" />
+            <Skeleton className="assistant-loading-dot" />
             <Skeleton className="assistant-loading-send" />
           </div>
         </div>

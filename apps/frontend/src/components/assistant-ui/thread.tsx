@@ -333,7 +333,7 @@ const Composer: FC<{ isRunning?: boolean; streamConnected?: boolean; onCancel?: 
 
 const ComposerAction: FC<{ isRunning?: boolean; streamConnected?: boolean; onCancel?: () => void }> = ({ isRunning = false, streamConnected = false, onCancel }) => {
   return (
-    <div className="aui-composer-action-wrapper relative flex items-center justify-end gap-2">
+    <div className="aui-composer-action-wrapper relative flex items-center gap-2">
       {isRunning ? (
         <span
           className={cn(
@@ -352,7 +352,7 @@ const ComposerAction: FC<{ isRunning?: boolean; streamConnected?: boolean; onCan
             type="button"
             variant="default"
             size="icon"
-            className="aui-composer-send size-8 rounded-full"
+            className="aui-composer-send ml-auto size-8 rounded-full"
             aria-label="Send message"
             disabled={isRunning}
           >
@@ -366,7 +366,7 @@ const ComposerAction: FC<{ isRunning?: boolean; streamConnected?: boolean; onCan
             type="button"
             variant="default"
             size="icon"
-            className="aui-composer-cancel size-8 rounded-full"
+            className="aui-composer-cancel ml-auto size-8 rounded-full"
             aria-label="Stop generating"
             onClick={onCancel}
           >

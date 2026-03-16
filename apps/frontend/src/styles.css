@@ -1900,66 +1900,56 @@ button {
   height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 22px;
-  padding: 18px 4px 4px;
+  padding: 0 4px 4px;
 }
 
-.assistant-loading-center {
-  flex: 1;
-  display: grid;
-  place-items: center;
-}
-
-.assistant-loading-copy {
-  width: min(44rem, calc(100% - 16px));
-  display: grid;
-  gap: 12px;
-}
-
-.assistant-loading-title {
-  width: min(220px, 52vw);
-  height: 30px;
-  border-radius: 14px;
-}
-
-.assistant-loading-subtitle {
-  width: min(320px, 72vw);
-  height: 22px;
-  border-radius: 14px;
-}
-
-.assistant-loading-footer {
+.assistant-loading-thread {
+  min-height: 0;
+  height: 100%;
   width: min(44rem, 100%);
   margin: 0 auto;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.assistant-loading-messages {
+  min-height: 0;
+  flex: 1;
   display: grid;
+  align-content: start;
   gap: 12px;
+  padding: 14px 4px 0;
 }
 
-.assistant-loading-suggestions {
-  display: grid;
-  gap: 10px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.assistant-loading-suggestion {
+.assistant-loading-bubble {
   display: grid;
   gap: 10px;
   padding: 16px 18px;
-  border: 1px solid rgba(38, 38, 38, 0.08);
   border-radius: 24px;
-  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(38, 38, 38, 0.06);
+  background: rgba(255, 255, 255, 0.72);
 }
 
-.assistant-loading-suggestion-title {
-  width: 46%;
+.assistant-loading-bubble-title {
+  width: 30%;
   height: 16px;
   border-radius: 999px;
 }
 
-.assistant-loading-suggestion-copy {
-  width: 82%;
+.assistant-loading-bubble-line {
+  width: 72%;
   height: 14px;
   border-radius: 999px;
+}
+
+.assistant-loading-bubble-line.is-wide {
+  width: 92%;
+}
+
+.assistant-loading-bubble-line.is-short {
+  width: 48%;
 }
 
 .assistant-loading-composer {
@@ -1988,9 +1978,9 @@ button {
   gap: 12px;
 }
 
-.assistant-loading-status {
-  width: 64px;
-  height: 12px;
+.assistant-loading-dot {
+  width: 10px;
+  height: 10px;
   border-radius: 999px;
 }
 
@@ -2260,16 +2250,8 @@ button {
     gap: 12px;
   }
 
-  .assistant-loading-suggestions {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .assistant-loading-title {
-    height: 26px;
-  }
-
-  .assistant-loading-subtitle {
-    height: 18px;
+  .assistant-loading-messages {
+    padding-top: 10px;
   }
 
   .profile-history-empty-card {
