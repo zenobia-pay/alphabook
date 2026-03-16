@@ -87,6 +87,7 @@ type AdminTableState = {
 type AdminAnalyticsState = {
   loading: boolean;
   error: string | null;
+  draft: string;
   query: string;
   payload: Record<string, unknown> | null;
 };
@@ -1217,6 +1218,7 @@ export default function App() {
   const [adminAnalytics, setAdminAnalytics] = useState<AdminAnalyticsState>({
     loading: false,
     error: null,
+    draft: "Give me signups per day over the past seven days.",
     query: "Give me signups per day over the past seven days.",
     payload: null,
   });
@@ -1650,38 +1652,39 @@ export default function App() {
     }
   }
 
-  async function loadAdminAnalytics(query = adminAnalytics.query) {
+  async function loadAdminAnalytics(query = adminAnalytics.draft) {
     const normalizedQuery = query.trim();
     if (!normalizedQuery) {
-      setAdminAnalytics({
+      setAdminAnalytics((current) => ({
+        ...current,
         loading: false,
         error: "Enter an analytics question.",
-        query,
-        payload: null,
-      });
+      }));
       return;
     }
     try {
-      setAdminAnalytics({
+      setAdminAnalytics((current) => ({
+        ...current,
         loading: true,
         error: null,
         query: normalizedQuery,
-        payload: null,
-      });
+        draft: query,
+      }));
       const payload = await queryAdminAnalytics(normalizedQuery, 7);
-      setAdminAnalytics({
+      setAdminAnalytics((current) => ({
+        ...current,
         loading: false,
         error: null,
         query: normalizedQuery,
         payload,
-      });
+      }));
     } catch (error) {
-      setAdminAnalytics({
+      setAdminAnalytics((current) => ({
+        ...current,
         loading: false,
         error: error instanceof Error ? error.message : "Failed to load analytics.",
         query: normalizedQuery,
-        payload: null,
-      });
+      }));
     }
   }
 
@@ -1706,13 +1709,6 @@ export default function App() {
       void loadAdminRuns();
     }
   }, [adminAccess.allowed, adminRuns.error, adminRuns.loading, adminRuns.rows.length, adminSessions.error, adminSessions.loading, adminSessions.rows.length, adminUsers.error, adminUsers.loading, adminUsers.rows.length]);
-
-  useEffect(() => {
-    if (!adminAccess.allowed || adminSection !== "analytics" || adminAnalytics.loading || adminAnalytics.payload || adminAnalytics.error) {
-      return;
-    }
-    void loadAdminAnalytics(adminAnalytics.query);
-  }, [adminAccess.allowed, adminSection]);
 
   async function sendPrompt(
     question: string,
@@ -2978,19 +2974,19 @@ export default function App() {
                   className="space-y-3"
                   onSubmit={(event) => {
                     event.preventDefault();
-                    void loadAdminAnalytics(adminAnalytics.query);
+                    void loadAdminAnalytics(adminAnalytics.draft);
                   }}
                 >
                   <div className="relative">
                     <Textarea
                       className="min-h-[150px] rounded-[18px] border-[rgba(72,43,37,0.12)] bg-white px-4 py-4 pr-18 text-sm leading-6 focus-visible:border-[rgba(72,43,37,0.28)] focus-visible:ring-[rgba(72,43,37,0.14)]"
-                      value={adminAnalytics.query}
-                      onChange={(event) => setAdminAnalytics((current) => ({ ...current, query: event.currentTarget.value }))}
+                      value={adminAnalytics.draft}
+                      onChange={(event) => setAdminAnalytics((current) => ({ ...current, draft: event.currentTarget.value }))}
                       onKeyDown={(event) => {
                         event.stopPropagation();
                         if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
                           event.preventDefault();
-                          void loadAdminAnalytics(adminAnalytics.query);
+                          void loadAdminAnalytics(adminAnalytics.draft);
                         }
                       }}
                       placeholder="Give me signups per day over the past seven days."
@@ -2998,8 +2994,8 @@ export default function App() {
                     <Button
                       type="submit"
                       size="icon"
-                      className="absolute bottom-4 right-4 h-10 w-10 rounded-full"
-                      disabled={adminAnalytics.loading || !adminAnalytics.query.trim()}
+                      className="absolute bottom-4 right-4 h-10 w-10 rounded-full bg-black text-white transition hover:bg-black/90 disabled:bg-black/20 disabled:text-black/45"
+                      disabled={adminAnalytics.loading || !adminAnalytics.draft.trim()}
                       aria-label="Run analytics query"
                     >
                       <ArrowUpIcon />
@@ -3016,7 +3012,7 @@ export default function App() {
                         type="button"
                         className="rounded-full border border-[rgba(72,43,37,0.12)] bg-white px-3 py-2 text-xs font-medium text-[var(--ink-soft)] transition hover:border-[rgba(72,43,37,0.2)] hover:text-[var(--ink)]"
                         onClick={() => {
-                          setAdminAnalytics((current) => ({ ...current, query: suggestion }));
+                          setAdminAnalytics((current) => ({ ...current, draft: suggestion }));
                           void loadAdminAnalytics(suggestion);
                         }}
                       >
@@ -3025,7 +3021,11 @@ export default function App() {
                     ))}
                   </div>
                   <div className="flex flex-wrap items-center gap-3">
-                    <Button type="submit" disabled={adminAnalytics.loading || !adminAnalytics.query.trim()}>
+                    <Button
+                      type="submit"
+                      className="bg-black text-white transition hover:bg-black/90 disabled:bg-black/20 disabled:text-black/45"
+                      disabled={adminAnalytics.loading || !adminAnalytics.draft.trim()}
+                    >
                       {adminAnalytics.loading ? "Running analytics…" : "Run analytics query"}
                     </Button>
                     <span className="text-sm text-[var(--ink-soft)]">
