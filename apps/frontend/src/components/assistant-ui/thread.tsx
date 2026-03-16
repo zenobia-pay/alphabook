@@ -196,12 +196,12 @@ const ThreadSuggestionItem: FC<{
       <Button
         type="button"
         variant="ghost"
-        className="aui-thread-welcome-suggestion h-auto w-full @md:flex-col flex-wrap items-start justify-start gap-1 rounded-3xl border bg-background px-4 py-3 text-left text-sm transition-colors hover:bg-muted"
+        className="aui-thread-welcome-suggestion h-auto w-full min-w-0 @md:flex-col flex-wrap items-start justify-start gap-1 rounded-3xl border bg-background px-4 py-3 text-left text-sm transition-colors hover:bg-muted"
         onClick={() => onSuggestionSelect?.(suggestion.prompt)}
       >
-        <span className="aui-thread-welcome-suggestion-text-1 font-medium">{suggestion.title}</span>
+        <span className="aui-thread-welcome-suggestion-text-1 min-w-0 whitespace-normal break-words font-medium">{suggestion.title}</span>
         {suggestion.description ? (
-          <span className="aui-thread-welcome-suggestion-text-2 text-muted-foreground">{suggestion.description}</span>
+          <span className="aui-thread-welcome-suggestion-text-2 min-w-0 whitespace-normal break-words text-muted-foreground">{suggestion.description}</span>
         ) : null}
       </Button>
     </div>
