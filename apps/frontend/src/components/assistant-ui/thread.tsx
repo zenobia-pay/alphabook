@@ -315,7 +315,7 @@ const Composer: FC<{ isRunning?: boolean; onCancel?: () => void }> = ({ isRunnin
         >
           <ComposerAttachments />
           <ComposerPrimitive.Input
-            placeholder={isRunning ? "Thinking…" : "Send a message..."}
+            placeholder="Send a message..."
             className="aui-composer-input max-h-28 min-h-8 w-full resize-none bg-transparent px-1.5 py-0.5 text-[0.98rem] leading-6 outline-none placeholder:text-muted-foreground/80"
             rows={1}
             autoFocus
@@ -331,13 +331,7 @@ const Composer: FC<{ isRunning?: boolean; onCancel?: () => void }> = ({ isRunnin
 
 const ComposerAction: FC<{ isRunning?: boolean; onCancel?: () => void }> = ({ isRunning = false, onCancel }) => {
   return (
-    <div
-      className={cn(
-        "aui-composer-action-wrapper relative flex items-center",
-        isRunning ? "justify-between" : "justify-end",
-      )}
-    >
-      {isRunning ? <span className="aui-composer-status">Thinking</span> : null}
+    <div className="aui-composer-action-wrapper relative flex items-center justify-end">
       <AuiIf condition={() => !isRunning}>
         <ComposerPrimitive.Send asChild>
           <TooltipIconButton
