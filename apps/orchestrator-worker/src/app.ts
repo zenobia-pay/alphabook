@@ -606,11 +606,11 @@ function describePlannerAction(
   switch (toolName) {
     case "search_works":
       return normalizedMessage
-        ? `I’ll search over the corpus for ${normalizedMessage}, then I’ll pull the strongest passages and summarize them into a briefing for you.`
+        ? `I’ll search over the corpus for “${normalizedMessage},” then I’ll pull the strongest passages and summarize them into a briefing for you.`
         : "I’ll search over the corpus, then I’ll pull the strongest passages and summarize them into a briefing for you.";
     case "get_relevant_chunks":
       return normalizedMessage
-        ? `I found some likely matches for ${normalizedMessage}. Now I’m pulling the strongest passages and building the briefing.`
+        ? `I found some likely matches for “${normalizedMessage}.” Now I’m pulling the strongest passages and building the briefing.`
         : "I found some likely matches. Now I’m pulling the strongest passages and building the briefing.";
     case "get_work_metadata":
       return "I found a few likely books. Let me pull in their context before I go further.";
