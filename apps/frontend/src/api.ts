@@ -226,7 +226,7 @@ export async function unfollowProfile(userId: string): Promise<FollowProfileResp
   return FollowProfileResponseSchema.parse(await response.json());
 }
 
-export async function fetchWorks(options: { offset?: number; limit?: number } = {}): Promise<{ works: WorkSummary[]; nextOffset: number | null }> {
+export async function fetchWorks(options: { offset?: number; limit?: number } = {}): Promise<{ works: WorkSummary[]; nextOffset: number | null; totalCount: number }> {
   const params = new URLSearchParams();
   if (options.offset !== undefined) {
     params.set("offset", String(options.offset));

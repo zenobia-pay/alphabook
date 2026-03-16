@@ -200,6 +200,7 @@ export interface AppStore {
   listToolCalls(runId: string): Promise<ToolCallRecord[]>;
   finishToolCall(toolCallId: string, status: ToolCallRecord["status"], resultJson: Record<string, unknown>): Promise<void>;
   listWorks(offset?: number, limit?: number): Promise<WorkSummary[]>;
+  countWorks(): Promise<number>;
   getWorkById(workId: string): Promise<WorkDetailRecord | null>;
   searchWorks(query: string, filters?: Record<string, unknown>): Promise<WorkSummary[]>;
   getWorkMetadata(workIds: string[]): Promise<WorkSummary[]>;
@@ -891,6 +892,10 @@ export class InMemoryAppStore implements AppStore {
       })
       .slice(offset, offset + limit)
       .map((work) => toWorkSummary(work));
+  }
+
+  async countWorks(): Promise<number> {
+    return this.works.length;
   }
 
   async getWorkById(workId: string): Promise<WorkDetailRecord | null> {
@@ -2052,6 +2057,12 @@ export class NeonAppStore implements AppStore {
         metadata: row.metadata_json ?? {},
       }),
     );
+  }
+
+  async countWorks(): Promise<number> {
+    const result = await this.db.query<{ count: string }>("SELECT COUNT(*)::text AS count FROM works");
+    const value = result.rows[0]?.count ?? "0";
+    return Number.parseInt(value, 10) || 0;
   }
 
   async getWorkById(workId: string): Promise<WorkDetailRecord | null> {

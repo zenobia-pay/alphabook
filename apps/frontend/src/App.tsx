@@ -975,6 +975,13 @@ function formatMonthYear(value: string | null | undefined) {
   }).format(new Date(timestamp));
 }
 
+function formatCompactCount(value: number | null | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    return null;
+  }
+  return value.toLocaleString("en-US");
+}
+
 function buildExplorePrompt(question: string, works: WorkSummary[]) {
   const normalized = question.trim();
   if (works.length === 0) {
@@ -1591,6 +1598,7 @@ export default function App() {
   const [exploreDraft, setExploreDraft] = useState("");
   const [feedWorks, setFeedWorks] = useState<WorkSummary[]>([]);
   const [feedNextOffset, setFeedNextOffset] = useState<number | null>(0);
+  const [feedTotalCount, setFeedTotalCount] = useState<number | null>(null);
   const [feedLoading, setFeedLoading] = useState(false);
   const [selectedWorkIds, setSelectedWorkIds] = useState<string[]>([]);
   const [activeWorkId, setActiveWorkId] = useState<string | null | undefined>(initialUrlState.workId);
@@ -1861,6 +1869,7 @@ export default function App() {
         const next = await fetchWorks({ offset: 0, limit: 12 });
         setFeedWorks(next.works);
         setFeedNextOffset(next.nextOffset);
+        setFeedTotalCount(next.totalCount);
       } catch (error) {
         setLoadError(error instanceof Error ? error.message : "Failed to load the corpus feed.");
       } finally {
@@ -2644,6 +2653,7 @@ export default function App() {
         return [...current, ...next.works.filter((work) => !seen.has(work.id))];
       });
       setFeedNextOffset(next.nextOffset);
+      setFeedTotalCount(next.totalCount);
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : "Failed to load more works.");
     } finally {
@@ -2988,10 +2998,15 @@ export default function App() {
   }
 
   function renderExploreView() {
+    const formattedCorpusCount = formatCompactCount(feedTotalCount);
     return (
       <div className="view-shell explore-view" onScroll={handleExploreScroll}>
         <section className="explore-hero">
-          <h1>Ask or search anything</h1>
+          <h1>
+            {formattedCorpusCount
+              ? `Ask or search anything over ${formattedCorpusCount} books.`
+              : "Ask or search anything over the corpus."}
+          </h1>
 
           <form className="explore-composer-shell" onSubmit={submitExplorePrompt}>
             <Card className="explore-composer-root">

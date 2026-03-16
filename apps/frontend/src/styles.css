@@ -306,21 +306,6 @@ button {
   text-align: center;
 }
 
-.explore-hero::before {
-  content: "Research companion";
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  min-height: 2rem;
-  padding: 0.45rem 0.8rem;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.92);
-  color: var(--text-muted);
-  font-size: 0.86rem;
-  font-weight: 500;
-}
-
 .explore-composer-shell {
   width: min(820px, 100%);
 }

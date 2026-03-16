@@ -2701,10 +2701,14 @@ export function createApp(deps: AppDeps) {
   app.get("/works", async (c) => {
     const offset = Math.max(0, Number.parseInt(c.req.query("offset") ?? "0", 10) || 0);
     const limit = Math.min(24, Math.max(1, Number.parseInt(c.req.query("limit") ?? "12", 10) || 12));
-    const works = await deps.store.listWorks(offset, limit);
+    const [works, totalCount] = await Promise.all([
+      deps.store.listWorks(offset, limit),
+      deps.store.countWorks(),
+    ]);
     return c.json({
       works: works.map((work) => decorateWork(c, work)),
       nextOffset: works.length === limit ? offset + works.length : null,
+      totalCount,
     });
   });
 

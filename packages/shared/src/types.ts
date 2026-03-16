@@ -243,6 +243,7 @@ export type WorkDetail = z.infer<typeof WorkDetailSchema>;
 export const WorkListResponseSchema = z.object({
   works: z.array(WorkSummarySchema),
   nextOffset: z.number().nullable(),
+  totalCount: z.number().int().nonnegative(),
 });
 
 export type WorkListResponse = z.infer<typeof WorkListResponseSchema>;
