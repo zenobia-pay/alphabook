@@ -8,6 +8,7 @@ import type { Embedder } from "./embeddings";
 import type { BlobStore } from "./r2";
 import type { Planner } from "./planner";
 import { parseToolCall } from "./planner";
+import type { Router } from "./router";
 import type { Synthesizer, ToolHistoryEntry } from "./synthesizer";
 import type { AppStore, SessionRecord } from "./store";
 
@@ -27,6 +28,7 @@ export interface RuntimeToolGateway {
 export interface AppDeps {
   store: AppStore;
   billing: BillingService;
+  router?: Router;
   planner: Planner;
   embedder: Embedder;
   synthesizer: Synthesizer;
@@ -994,6 +996,57 @@ async function runOrchestrator(
     sessionId: session.id,
   });
 
+  const routeDecision = deps.router
+    ? await deps.router.decide({
+        userMessage: input.message,
+        billingContext: {
+          userId: session.userId,
+          sessionId: session.id,
+          runId: run.id,
+          source: "router",
+        },
+      })
+    : {
+        type: "tool_chain" as const,
+        fullQuery: input.message,
+      };
+  await send("router.completed", {
+    runId: run.id,
+    sessionId: session.id,
+    type: routeDecision.type,
+    fullQuery: routeDecision.type === "tool_chain" ? routeDecision.fullQuery : null,
+  });
+
+  if (routeDecision.type === "direct_response") {
+    const artifactKey = await persistFinalArtifact(deps, session.id, run.id, routeDecision.answer, []);
+    await deps.store.appendMessage(session.id, "assistant", routeDecision.answer, {
+      artifactKey,
+      route: "direct_response",
+    });
+    await deps.store.updateRun(run.id, {
+      status: "completed",
+      completedAt: new Date().toISOString(),
+    });
+    for (const text of chunkTextForStream(routeDecision.answer)) {
+      await send("assistant.delta", {
+        text,
+      });
+    }
+    await send("assistant.completed", {
+      answer: routeDecision.answer,
+      citations: [],
+      artifactKey,
+    });
+    await send("run.completed", {
+      runId: run.id,
+      sessionId: session.id,
+      status: "completed",
+    });
+    return;
+  }
+
+  const routedQuery = routeDecision.fullQuery.trim() || input.message;
+
   const toolHistory: Array<{
     toolName: ToolName;
     rationale?: string;
@@ -1019,7 +1072,7 @@ async function runOrchestrator(
     });
 
     const decision: PlannerDecision = await deps.planner.decide({
-      userMessage: input.message,
+      userMessage: routedQuery,
       turns: turn,
       toolHistory,
       workScope: input.workIds,

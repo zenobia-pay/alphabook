@@ -6,6 +6,7 @@ import { createBillingService } from "./billing";
 import { OpenAIEmbedder } from "./embeddings";
 import { OpenAIPlanner } from "./planner";
 import { CloudflareR2Store } from "./r2";
+import { OpenAIRouter } from "./router";
 import { FlyMachinesRuntimeGateway, HttpRuntimeGateway } from "./runtime";
 import { NeonAppStore } from "./store";
 import { OpenAISynthesizer } from "./synthesizer";
@@ -107,6 +108,7 @@ function buildFetchHandler(env: Env) {
       }>
       : undefined,
   });
+  const router = new OpenAIRouter(env.OPENAI_API_KEY, env.OPENAI_MODEL ?? "gpt-5.2", undefined, billing);
   const planner = new OpenAIPlanner(env.OPENAI_API_KEY, env.OPENAI_MODEL ?? "gpt-5.2", undefined, billing);
   const embedder = new OpenAIEmbedder(
     env.OPENAI_API_KEY,
@@ -124,6 +126,7 @@ function buildFetchHandler(env: Env) {
   const app = createApp({
     store,
     billing,
+    router,
     planner,
     embedder,
     synthesizer,

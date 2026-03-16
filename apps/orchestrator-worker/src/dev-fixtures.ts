@@ -6,6 +6,7 @@ import { createBillingService } from "./billing";
 import { HashEmbedder } from "./embeddings";
 import { FallbackPlanner } from "./planner";
 import { MemoryBlobStore } from "./r2";
+import { FallbackRouter } from "./router";
 import { InMemoryAppStore } from "./store";
 import { FallbackSynthesizer } from "./synthesizer";
 
@@ -185,6 +186,7 @@ export function createDemoDeps(): AppDeps {
   return {
     store,
     billing: createBillingService(store),
+    router: new FallbackRouter(),
     planner: new FallbackPlanner(),
     embedder: new HashEmbedder(),
     synthesizer: new FallbackSynthesizer(),

@@ -9,6 +9,7 @@ import { createBillingService } from "../src/billing";
 import { HashEmbedder, OpenAIEmbedder } from "../src/embeddings";
 import { MemoryBlobStore } from "../src/r2";
 import { FallbackPlanner, ScriptedPlanner } from "../src/planner";
+import { ScriptedRouter } from "../src/router";
 import { FlyMachinesRuntimeGateway } from "../src/runtime";
 import { InMemoryAppStore } from "../src/store";
 import type { SynthesisInput, SynthesisResult, Synthesizer } from "../src/synthesizer";
@@ -32,6 +33,70 @@ class CapturingBlobStore extends MemoryBlobStore {
 }
 
 const AUTH_STATE_COOKIE_NAME = "alphabook_auth_state=";
+
+test("orchestrator can answer direct chat without starting the tool chain", async () => {
+  const store = new InMemoryAppStore([], []);
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    router: new ScriptedRouter([
+      {
+        type: "direct_response",
+        answer: "You could ask about themes, moods, exact passages, or comparisons between books.",
+      },
+    ]),
+    planner: new ScriptedPlanner([
+      {
+        type: "final_answer",
+        answer: "planner should not run",
+        citations: [],
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+      async runWorkspaceTask() {
+        return { ok: false, error: "disabled" };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: false, error: "disabled" };
+      },
+      async destroyWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const response = await app.request("/chat", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      userId: "11111111-1111-1111-1111-111111111111",
+      message: "What kind of things do you think I should look up?",
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  const body = await response.text();
+  assert.match(body, /event: router\.completed/);
+  assert.match(body, /"type":"direct_response"/);
+  assert.doesNotMatch(body, /event: planner\.turn/);
+  assert.doesNotMatch(body, /event: tool\.started/);
+  assert.match(body, /You could ask about themes, moods, exact passages, or comparisons between books\./);
+});
 
 test("orchestrator streams retrieval tool calls and final answer", async () => {
   const store = new InMemoryAppStore(
@@ -78,7 +143,7 @@ test("orchestrator streams retrieval tool calls and final answer", async () => {
       type: "tool_call",
       tool_name: "search_works",
       args: {
-        query: "books about sadness",
+        query: "books about sadness in fiction",
       },
     },
     {
@@ -107,6 +172,12 @@ test("orchestrator streams retrieval tool calls and final answer", async () => {
   const app = createApp({
     store,
     billing: createBillingService(store),
+    router: new ScriptedRouter([
+      {
+        type: "tool_chain",
+        fullQuery: "books about sadness in fiction",
+      },
+    ]),
     planner,
     embedder: new HashEmbedder(),
     synthesizer: new EchoSynthesizer(),
@@ -148,6 +219,8 @@ test("orchestrator streams retrieval tool calls and final answer", async () => {
   assert.equal(response.status, 200);
   const body = await response.text();
   assert.match(body, /event: session\.created/);
+  assert.match(body, /event: router\.completed/);
+  assert.match(body, /books about sadness in fiction/);
   assert.match(body, /event: assistant\.plan/);
   assert.match(body, /event: tool\.started/);
   assert.match(body, /event: tool\.completed/);
