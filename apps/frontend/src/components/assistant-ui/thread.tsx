@@ -139,14 +139,25 @@ const Composer: FC<{ isRunning?: boolean }> = ({ isRunning = false }) => {
           className="flex w-full flex-col gap-2 rounded-(--composer-radius) border bg-background p-(--composer-padding) transition-shadow focus-within:border-ring/75 focus-within:ring-2 focus-within:ring-ring/20 data-[dragging=true]:border-ring data-[dragging=true]:border-dashed data-[dragging=true]:bg-accent/50"
         >
           <ComposerAttachments />
-          <ComposerPrimitive.Input
-            placeholder="Send a message..."
-            className="aui-composer-input max-h-28 min-h-8 w-full resize-none bg-transparent px-1.5 py-0.5 text-[0.98rem] leading-6 outline-none placeholder:text-muted-foreground/80"
-            rows={1}
-            autoFocus
-            aria-label="Message input"
-            disabled={isRunning}
-          />
+          {isRunning ? (
+            <div className="aui-composer-thinking-row" aria-live="polite" aria-label="Assistant is thinking">
+              <div className="aui-composer-thinking-orb" aria-hidden="true">
+                <span />
+                <span />
+                <span />
+              </div>
+              <span className="aui-composer-thinking-copy">Thinking</span>
+            </div>
+          ) : (
+            <ComposerPrimitive.Input
+              placeholder="Send a message..."
+              className="aui-composer-input max-h-28 min-h-8 w-full resize-none bg-transparent px-1.5 py-0.5 text-[0.98rem] leading-6 outline-none placeholder:text-muted-foreground/80"
+              rows={1}
+              autoFocus
+              aria-label="Message input"
+              disabled={isRunning}
+            />
+          )}
           <ComposerAction isRunning={isRunning} />
         </div>
       </ComposerPrimitive.AttachmentDropzone>
@@ -157,7 +168,7 @@ const Composer: FC<{ isRunning?: boolean }> = ({ isRunning = false }) => {
 const ComposerAction: FC<{ isRunning?: boolean }> = ({ isRunning = false }) => {
   return (
     <div className="aui-composer-action-wrapper relative flex items-center justify-between">
-      {isRunning ? <span className="aui-composer-status text-sm text-muted-foreground">Thinking…</span> : <ComposerAddAttachment />}
+      {isRunning ? <span className="aui-composer-status" /> : <ComposerAddAttachment />}
       <AuiIf condition={() => !isRunning}>
         <ComposerPrimitive.Send asChild>
           <TooltipIconButton
