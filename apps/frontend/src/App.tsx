@@ -739,29 +739,6 @@ function messageToThreadMessage(message: UiMessage, streamingAssistantId: string
   };
 
   if (message.role === "assistant") {
-    const isPlanMessage = message.metadata.phase === "plan";
-    if (isPlanMessage) {
-      const progressSummary = message.toolCalls
-        .map((entry) => {
-          const prefix = entry.state === "error" ? "Error" : entry.state === "completed" ? "Done" : "Working";
-          return `${prefix}: ${summarizeToolSentence(entry)}`;
-        })
-        .join("\n\n");
-      const planText = [message.content, progressSummary].filter(Boolean).join("\n\n");
-
-      return {
-        id: message.id,
-        role: "assistant" as const,
-        createdAt: new Date(message.createdAt),
-        content: planText,
-        metadata,
-        status:
-          isSending && message.id === streamingAssistantId
-            ? ({ type: "running" } as const)
-            : ({ type: "complete", reason: "stop" } as const),
-      };
-    }
-
     const toolParts = message.toolCalls.map((entry) => {
         const args = toReadonlyJsonObject(
           entry.rationale
@@ -793,7 +770,7 @@ function messageToThreadMessage(message: UiMessage, streamingAssistantId: string
           },
         ]
       : [];
-    const content = [...toolParts, ...textParts];
+    const content = [...textParts, ...toolParts];
 
     return {
       id: message.id,
@@ -1474,15 +1451,6 @@ export default function App() {
                 ?? activityLog.find((entry) => entry.toolName === toolName);
               updatePlanMessage((message) => ({
                 ...message,
-                content:
-                  message.content ||
-                  summarizeToolSentence({
-                    toolName,
-                    args: completedEntry?.args ?? {},
-                    result: completedEntry?.result,
-                    state: completedEntry?.state ?? (event.data.status === "failed" ? "error" : "completed"),
-                    rationale: completedEntry?.rationale,
-                  }),
                 toolCalls: activityLog,
               }));
               return;
