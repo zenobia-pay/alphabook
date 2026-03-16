@@ -2320,13 +2320,17 @@ async function rewriteAnswerWithCitationLinks(
       continue;
     }
 
-    const chunkMarker = typeof citation.chunkId === "string"
-      ? citation.chunkId.replace(`${citation.workId}#`, "#")
-      : null;
-    if (chunkMarker) {
+    const chunkMarkers = typeof citation.chunkId === "string"
+      ? [citation.chunkId, citation.chunkId.replace(`${citation.workId}#`, "#")]
+      : [];
+    for (const chunkMarker of chunkMarkers) {
+      if (!chunkMarker) {
+        continue;
+      }
       const chunkPattern = new RegExp(`(${escapeRegExp(chunkMarker)})`, "u");
       if (chunkPattern.test(rewritten)) {
         rewritten = rewritten.replace(chunkPattern, `$1 [Open passage](${link})`);
+        break;
       }
     }
   }

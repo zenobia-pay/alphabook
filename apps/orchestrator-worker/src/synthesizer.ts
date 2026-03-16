@@ -95,6 +95,56 @@ function dedupeCitations(citations: Citation[]): Citation[] {
   return deduped;
 }
 
+function canonicalizeSearchCharacter(character: string) {
+  if (/\s/.test(character)) {
+    return " ";
+  }
+  switch (character) {
+    case "’":
+    case "‘":
+      return "'";
+    case "“":
+    case "”":
+      return "\"";
+    case "—":
+    case "–":
+      return "-";
+    default:
+      return character.toLowerCase();
+  }
+}
+
+function normalizeSearchText(raw: string) {
+  let normalized = "";
+  let previousWasSpace = false;
+  for (const character of raw) {
+    const next = canonicalizeSearchCharacter(character);
+    if (next === " ") {
+      if (previousWasSpace) {
+        continue;
+      }
+      previousWasSpace = true;
+    } else {
+      previousWasSpace = false;
+    }
+    normalized += next;
+  }
+  return normalized.trim();
+}
+
+function excerptCandidates(excerpt: string) {
+  const normalized = normalizeSearchText(excerpt)
+    .replace(/^[`"'“”‘’]+|[`"'“”‘’.,;:!?]+$/g, "")
+    .trim();
+  const segments = normalized
+    .split(/[.;!?]\s+|\s+[—–-]\s+/)
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length >= 24);
+  return [normalized, ...segments]
+    .filter((candidate, index, values) => candidate.length >= 12 && values.indexOf(candidate) === index)
+    .sort((left, right) => right.length - left.length);
+}
+
 function sanitizeCitations(input: unknown): Citation[] {
   if (!Array.isArray(input)) {
     return [];
@@ -130,6 +180,50 @@ function chunkCitation(chunk: ChunkSearchResult): Citation {
     excerpt: chunk.excerpt,
     r2Key: chunk.r2Key ?? undefined,
   };
+}
+
+function reconcileCitationsWithEvidence(
+  citations: Citation[],
+  plannerCitations: Citation[],
+  toolHistory: ToolHistoryEntry[],
+) {
+  const chunks = extractChunks(toolHistory);
+  const pool = dedupeCitations([
+    ...plannerCitations,
+    ...chunks.map(chunkCitation),
+  ]);
+
+  return dedupeCitations(
+    citations.map((citation) => {
+      const candidates = excerptCandidates(citation.excerpt);
+      const matchedPlannerCitation = pool.find((candidate) =>
+        candidates.some((excerpt) => normalizeSearchText(candidate.excerpt).includes(excerpt) || excerpt.includes(normalizeSearchText(candidate.excerpt))),
+      );
+      if (matchedPlannerCitation) {
+        return {
+          ...matchedPlannerCitation,
+          label: citation.label || matchedPlannerCitation.label,
+          excerpt: citation.excerpt || matchedPlannerCitation.excerpt,
+        };
+      }
+
+      const matchedChunk = chunks.find((chunk) => {
+        const chunkText = normalizeSearchText(chunk.text);
+        const chunkExcerpt = normalizeSearchText(chunk.excerpt);
+        return candidates.some((excerpt) => chunkText.includes(excerpt) || chunkExcerpt.includes(excerpt));
+      });
+      if (matchedChunk) {
+        const canonical = chunkCitation(matchedChunk);
+        return {
+          ...canonical,
+          label: citation.label || canonical.label,
+          excerpt: citation.excerpt || canonical.excerpt,
+        };
+      }
+
+      return citation;
+    }),
+  );
 }
 
 function extractChunks(toolHistory: ToolHistoryEntry[]): ChunkSearchResult[] {
@@ -242,6 +336,20 @@ export class OpenAISynthesizer implements Synthesizer {
   ) {}
 
   async synthesize(input: SynthesisInput): Promise<SynthesisResult> {
+    const runtimeSummary = extractRuntimeSummary(input.toolHistory);
+    if (runtimeSummary) {
+      const runtimeCitations = extractRuntimeCitations(input.toolHistory);
+      const chunkCitations = extractChunks(input.toolHistory).map(chunkCitation);
+      return {
+        answer: runtimeSummary,
+        citations: dedupeCitations([
+          ...runtimeCitations,
+          ...input.plannerCitations,
+          ...chunkCitations,
+        ]).slice(0, 16),
+      };
+    }
+
     const summarizedToolHistory = summarizeToolHistoryForModel(input.toolHistory);
     const body = {
       model: this.model,
@@ -330,7 +438,7 @@ export class OpenAISynthesizer implements Synthesizer {
     });
     return {
       answer: parsed.answer,
-      citations: dedupeCitations(parsed.citations),
+      citations: reconcileCitationsWithEvidence(parsed.citations, input.plannerCitations, input.toolHistory),
     };
   }
 }

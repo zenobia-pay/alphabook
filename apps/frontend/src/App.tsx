@@ -1318,7 +1318,12 @@ function buildBookAssistantPrompt(
   return header;
 }
 
-function messageToThreadMessage(message: UiMessage, streamingAssistantId: string | null, isSending: boolean) {
+function messageToThreadMessage(
+  message: UiMessage,
+  streamingAssistantId: string | null,
+  isSending: boolean,
+  runActive: boolean,
+) {
   const metadata = {
     custom: {
       citations: message.citations,
@@ -1327,6 +1332,7 @@ function messageToThreadMessage(message: UiMessage, streamingAssistantId: string
   };
 
   if (message.role === "assistant") {
+    const phase = typeof message.metadata?.phase === "string" ? message.metadata.phase : null;
     const toolParts = message.toolCalls.map((entry) => {
         const progress = entry.progress.filter((value) => value.trim().length > 0);
         const args = toReadonlyJsonObject(
@@ -1389,7 +1395,7 @@ function messageToThreadMessage(message: UiMessage, streamingAssistantId: string
       content,
       metadata,
       status:
-        (isSending && message.id === streamingAssistantId) || hasRunningTool
+        (isSending && message.id === streamingAssistantId) || hasRunningTool || (runActive && phase === "plan")
           ? ({ type: "running" } as const)
           : ({ type: "complete", reason: "stop" } as const),
     };
@@ -1802,7 +1808,7 @@ function AssistantSurface({
   const runtime = useExternalStoreRuntime({
     isRunning: isSending,
     messages: messages.filter((message) => message.role === "user" || message.role === "assistant"),
-    convertMessage: (message: UiMessage) => messageToThreadMessage(message, streamingAssistantId, isSending),
+    convertMessage: (message: UiMessage) => messageToThreadMessage(message, streamingAssistantId, isSending, isSending),
     onNew: async (message: { content?: unknown }) => {
       const prompt = extractPromptText(message);
       if (!prompt) {
