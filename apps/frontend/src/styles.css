@@ -412,13 +412,18 @@ button {
 
 .aui-thread-root {
   --aui-corner-radius: 24px;
+  min-height: 0;
+  height: 100%;
 }
 
 .aui-thread-viewport {
+  min-height: 0;
+  height: 100%;
   overscroll-behavior: none;
 }
 
 .aui-thread-viewport-footer {
+  flex-shrink: 0;
   box-shadow: none;
   background: transparent;
   backdrop-filter: none;
@@ -1472,6 +1477,13 @@ button {
   padding: 0 20px 20px;
   overflow: hidden;
   overscroll-behavior-y: none;
+}
+
+.book-assistant-shell .aui-thread-root,
+.book-assistant-shell .aui-thread-viewport,
+.assistant-thread-shell .aui-thread-root,
+.assistant-thread-shell .aui-thread-viewport {
+  min-height: 0;
 }
 
 .book-assistant-toolbar {
