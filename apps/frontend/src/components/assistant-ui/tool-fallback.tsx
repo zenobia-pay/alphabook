@@ -397,6 +397,8 @@ function ToolFallbackTrigger({
   status,
   summary,
   progressPreview,
+  open = false,
+  hasDetailLines = false,
   className,
   ...props
 }: React.ComponentProps<typeof CollapsibleTrigger> & {
@@ -404,6 +406,8 @@ function ToolFallbackTrigger({
   summary: string;
   progressPreview?: string[];
   status?: ToolCallMessagePartStatus;
+  open?: boolean;
+  hasDetailLines?: boolean;
 }) {
   const statusType = status?.type ?? "complete";
   const isRunning = statusType === "running";
@@ -426,9 +430,9 @@ function ToolFallbackTrigger({
           <b className="aui-tool-fallback-title">{toolName}</b>
           <span className={cn("aui-tool-fallback-badge", isFailed && "aui-tool-fallback-badge-error")}>{badge}</span>
         </span>
-        <span className="aui-tool-fallback-summary">{summary}</span>
-        {progressPreview && progressPreview.length > 0 ? (
-          <span className="aui-tool-fallback-progress-preview group-data-[state=open]/trigger:hidden">
+        {(!open || !hasDetailLines) ? <span className="aui-tool-fallback-summary">{summary}</span> : null}
+        {progressPreview && progressPreview.length > 0 && (!open || !hasDetailLines) ? (
+          <span className="aui-tool-fallback-progress-preview">
             <span className="aui-tool-fallback-progress-preview-line line-clamp-1">
               {progressPreview[progressPreview.length - 1]}
             </span>
@@ -505,6 +509,7 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
   result,
   status,
 }) => {
+  const [open, setOpen] = useState(status?.type === "running");
   const args = useMemo(() => parseArgs(argsText), [argsText]);
   const progress = useMemo(() => getProgress(args), [args]);
   const startedLogLines = useMemo(() => getDisplayLogLines(args), [args]);
@@ -559,7 +564,13 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
         tone: "error",
       });
     }
-    return lines;
+    return lines.filter((line, index) => {
+      if (index === 0) {
+        return true;
+      }
+      const previous = lines[index - 1];
+      return previous.key !== line.key || previous.value !== line.value || previous.tone !== line.tone;
+    });
   }, [cleanedArgs, completedLogLines, errorText, progress, resultObject, startedLogLines]);
   const summary = useMemo(
     () => summarizeTool(toolName, args, safeObject(result), status),
@@ -567,8 +578,15 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
   );
 
   return (
-    <ToolFallbackRoot defaultOpen={status?.type === "running" || progress.length > 0}>
-      <ToolFallbackTrigger toolName={toolName} summary={summary} progressPreview={progress} status={status} />
+    <ToolFallbackRoot open={open} onOpenChange={setOpen} defaultOpen={status?.type === "running" || progress.length > 0}>
+      <ToolFallbackTrigger
+        toolName={toolName}
+        summary={summary}
+        progressPreview={progress}
+        status={status}
+        open={open}
+        hasDetailLines={logLines.length > 0}
+      />
       <ToolFallbackContent>
         <ToolLogSection lines={logLines} />
       </ToolFallbackContent>
