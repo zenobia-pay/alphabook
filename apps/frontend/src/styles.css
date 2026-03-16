@@ -451,6 +451,22 @@ button {
   box-shadow: none;
 }
 
+.aui-composer-stream-dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 999px;
+  flex: 0 0 auto;
+  box-shadow: 0 0 0 1px rgba(36, 29, 23, 0.08);
+}
+
+.aui-composer-stream-dot.is-connected {
+  background: #2f8f4e;
+}
+
+.aui-composer-stream-dot.is-disconnected {
+  background: #b44236;
+}
+
 .aui-composer-send {
   background: linear-gradient(180deg, var(--accent), var(--accent-strong));
   color: #fff;

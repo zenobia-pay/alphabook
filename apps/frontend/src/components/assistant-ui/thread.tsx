@@ -131,11 +131,13 @@ type ThreadSuggestion = {
 
 export const Thread: FC<{
   isRunning?: boolean;
+  streamConnected?: boolean;
   suggestions?: ThreadSuggestion[];
   onSuggestionSelect?: (prompt: string) => void;
   onCancel?: () => void;
 }> = ({
   isRunning = false,
+  streamConnected = false,
   suggestions = [],
   onSuggestionSelect,
   onCancel,
@@ -198,7 +200,7 @@ export const Thread: FC<{
 
         <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 mx-auto mt-auto flex w-full max-w-(--thread-max-width) flex-col gap-3 overflow-visible pb-3 md:pb-4">
           <ThreadScrollToBottom />
-          <Composer isRunning={isRunning} onCancel={onCancel} />
+          <Composer isRunning={isRunning} streamConnected={streamConnected} onCancel={onCancel} />
           {isEmpty && !isRunning && suggestions.length > 0 ? (
             <ThreadSuggestions suggestions={suggestions} onSuggestionSelect={onSuggestionSelect} />
           ) : null}
@@ -305,7 +307,7 @@ const ThreadSuggestionItem: FC<{
   );
 };
 
-const Composer: FC<{ isRunning?: boolean; onCancel?: () => void }> = ({ isRunning = false, onCancel }) => {
+const Composer: FC<{ isRunning?: boolean; streamConnected?: boolean; onCancel?: () => void }> = ({ isRunning = false, streamConnected = false, onCancel }) => {
   return (
     <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
       <ComposerPrimitive.AttachmentDropzone asChild>
@@ -322,16 +324,26 @@ const Composer: FC<{ isRunning?: boolean; onCancel?: () => void }> = ({ isRunnin
             aria-label="Message input"
             disabled={isRunning}
           />
-          <ComposerAction isRunning={isRunning} onCancel={onCancel} />
+          <ComposerAction isRunning={isRunning} streamConnected={streamConnected} onCancel={onCancel} />
         </div>
       </ComposerPrimitive.AttachmentDropzone>
     </ComposerPrimitive.Root>
   );
 };
 
-const ComposerAction: FC<{ isRunning?: boolean; onCancel?: () => void }> = ({ isRunning = false, onCancel }) => {
+const ComposerAction: FC<{ isRunning?: boolean; streamConnected?: boolean; onCancel?: () => void }> = ({ isRunning = false, streamConnected = false, onCancel }) => {
   return (
-    <div className="aui-composer-action-wrapper relative flex items-center justify-end">
+    <div className="aui-composer-action-wrapper relative flex items-center justify-end gap-2">
+      {isRunning ? (
+        <span
+          className={cn(
+            "aui-composer-stream-dot",
+            streamConnected ? "is-connected" : "is-disconnected",
+          )}
+          aria-label={streamConnected ? "Connected to live stream" : "Disconnected from live stream"}
+          title={streamConnected ? "Connected to live stream" : "Disconnected from live stream"}
+        />
+      ) : null}
       <AuiIf condition={() => !isRunning}>
         <ComposerPrimitive.Send asChild>
           <TooltipIconButton

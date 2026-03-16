@@ -1551,6 +1551,7 @@ function SidebarProfileSkeleton({ collapsed = false }: { collapsed?: boolean }) 
 function AssistantSurface({
   messages,
   isSending,
+  streamConnected,
   streamingAssistantId,
   onPrompt,
   onCancel,
@@ -1558,6 +1559,7 @@ function AssistantSurface({
 }: {
   messages: UiMessage[];
   isSending: boolean;
+  streamConnected: boolean;
   streamingAssistantId: string | null;
   onPrompt: (prompt: string) => Promise<void>;
   onCancel: () => Promise<void>;
@@ -1581,6 +1583,7 @@ function AssistantSurface({
     <AssistantRuntimeProvider runtime={runtime}>
       <Thread
         isRunning={isSending}
+        streamConnected={streamConnected}
         suggestions={suggestions}
         onSuggestionSelect={(prompt) => {
           void onPrompt(prompt);
@@ -1723,6 +1726,7 @@ export default function App() {
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [recoveredActiveRunId, setRecoveredActiveRunId] = useState<string | null>(null);
+  const [streamConnected, setStreamConnected] = useState(false);
   const [sessionRuns, setSessionRuns] = useState<SessionRunRecord[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [streamingAssistantId, setStreamingAssistantId] = useState<string | null>(null);
@@ -2293,6 +2297,7 @@ export default function App() {
     const abortController = new AbortController();
     reconnectRunStreamAbortControllerRef.current?.abort();
     reconnectRunStreamAbortControllerRef.current = abortController;
+    setStreamConnected(false);
 
     const pollMessages = async () => {
       try {
@@ -2330,6 +2335,16 @@ export default function App() {
             return;
           }
           if (
+            event.event === "run.started"
+            || event.event === "assistant.plan"
+            || event.event === "tool.started"
+            || event.event === "tool.progress"
+            || event.event === "tool.completed"
+            || event.event === "assistant.completed"
+          ) {
+            setStreamConnected(true);
+          }
+          if (
             event.event === "assistant.plan"
             || event.event === "tool.started"
             || event.event === "tool.progress"
@@ -2349,6 +2364,7 @@ export default function App() {
         return;
       }
       streamFailed = true;
+      setStreamConnected(false);
       void pollMessages();
     });
 
@@ -2364,6 +2380,7 @@ export default function App() {
       if (reconnectRunStreamAbortControllerRef.current === abortController) {
         reconnectRunStreamAbortControllerRef.current = null;
       }
+      setStreamConnected(false);
       if (pollTimer !== null) {
         window.clearTimeout(pollTimer);
       }
@@ -2376,6 +2393,7 @@ export default function App() {
     }
     if (!selectedSessionId) {
       setRecoveredActiveRunId(null);
+      setStreamConnected(false);
       setSessionRuns([]);
       return;
     }
@@ -2393,6 +2411,9 @@ export default function App() {
         const activeRun = runs.find((run) => run.status === "running" || run.status === "queued") ?? null;
         const nextRunId = activeRun?.id ?? null;
         setRecoveredActiveRunId(nextRunId);
+        if (!nextRunId) {
+          setStreamConnected(false);
+        }
         if (!isSending) {
           activeRunIdRef.current = nextRunId;
         }
@@ -2405,6 +2426,7 @@ export default function App() {
         if (!cancelled) {
           setSessionRuns([]);
           setRecoveredActiveRunId(null);
+          setStreamConnected(false);
         }
       }
     };
@@ -2662,6 +2684,7 @@ export default function App() {
     abortController?.abort();
     reconnectRunStreamAbortControllerRef.current?.abort();
     reconnectRunStreamAbortControllerRef.current = null;
+    setStreamConnected(false);
 
     const runId = activeRunIdRef.current ?? recoveredActiveRunId;
     activeRunIdRef.current = null;
@@ -2713,6 +2736,7 @@ export default function App() {
     };
     setActiveView(options.viewOverride ?? "assistant");
     setIsSending(true);
+    setStreamConnected(true);
     setLoadError(null);
     setStreamingAssistantId(null);
     setMessages((current) => [...current, userMessage]);
@@ -2807,6 +2831,7 @@ export default function App() {
 
             if (event.event === "run.started" && typeof event.data.runId === "string") {
               activeRunIdRef.current = event.data.runId;
+              setStreamConnected(true);
               return;
             }
 
@@ -2986,16 +3011,19 @@ export default function App() {
                 ),
               );
               settleRunUi();
+              setStreamConnected(false);
               return;
             }
 
             if (event.event === "run.completed") {
               settleRunUi();
+              setStreamConnected(false);
               return;
             }
 
             if (event.event === "error") {
               setLoadError(typeof event.data.message === "string" ? event.data.message : "The assistant run failed.");
+              setStreamConnected(false);
               settleRunUi();
             }
           },
@@ -3013,6 +3041,7 @@ export default function App() {
       }
       if (activeRunTokenRef.current === runToken) {
         setLoadError(error instanceof Error ? error.message : "Failed to stream the assistant run.");
+        setStreamConnected(false);
       }
     } finally {
       clearStreamIdleTimer();
@@ -3021,6 +3050,7 @@ export default function App() {
       }
       if (activeRunTokenRef.current === runToken) {
         activeRunIdRef.current = null;
+        setStreamConnected(false);
         settleRunUi();
         await refreshSessions(workingSessionId ?? null);
       }
@@ -3280,6 +3310,7 @@ export default function App() {
                 key={selectedSessionId ?? "new-thread"}
                 messages={visibleMessages}
                 isSending={isSending || recoveredActiveRunId !== null}
+                streamConnected={streamConnected}
                 streamingAssistantId={streamingAssistantId}
                 onPrompt={sendPrompt}
                 onCancel={cancelActiveRun}
@@ -3383,6 +3414,7 @@ export default function App() {
                 key={`book-${activeWorkId ?? "unknown"}-${selectedSessionId ?? "new-thread"}`}
                 messages={visibleMessages}
                 isSending={isSending || recoveredActiveRunId !== null}
+                streamConnected={streamConnected}
                 streamingAssistantId={streamingAssistantId}
                 onPrompt={bookPromptHandler}
                 onCancel={cancelActiveRun}
