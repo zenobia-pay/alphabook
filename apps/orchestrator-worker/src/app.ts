@@ -2022,6 +2022,157 @@ function formatConversationHistory(messages: MessageRecord[]) {
   }));
 }
 
+function decodeCitationText(input: string) {
+  return input
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, "\"")
+    .replace(/&#39;|&apos;|&rsquo;|&lsquo;/gi, "'")
+    .replace(/&rdquo;|&ldquo;/gi, "\"")
+    .replace(/&mdash;/gi, "—")
+    .replace(/&ndash;/gi, "–")
+    .replace(/&hellip;/gi, "…")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">");
+}
+
+function canonicalizeSearchCharacter(character: string) {
+  if (/\s/u.test(character)) {
+    return " ";
+  }
+  switch (character) {
+    case "’":
+    case "‘":
+      return "'";
+    case "“":
+    case "”":
+      return "\"";
+    case "—":
+    case "–":
+      return "-";
+    default:
+      return character.toLowerCase();
+  }
+}
+
+function buildNormalizedSearchIndex(raw: string) {
+  let normalized = "";
+  let previousWasSpace = false;
+  for (let index = 0; index < raw.length; index += 1) {
+    const next = canonicalizeSearchCharacter(raw[index]);
+    if (next === " ") {
+      if (previousWasSpace) {
+        continue;
+      }
+      previousWasSpace = true;
+    } else {
+      previousWasSpace = false;
+    }
+    normalized += next;
+  }
+  return normalized.trim();
+}
+
+function stripGutenbergBoilerplate(text: string) {
+  let normalized = text.replace(/\r\n/g, "\n");
+  const startMatch = normalized.match(/^[^\n]*\*\*\*\s*START OF[\s\S]*?\*\*\*[^\n]*\n?/im);
+  if (startMatch && typeof startMatch.index === "number") {
+    normalized = normalized.slice(startMatch.index + startMatch[0].length);
+  }
+  const endMatch = normalized.match(/\n?[^\n]*\*\*\*\s*END OF[\s\S]*?\*\*\*[^\n]*$/im);
+  if (endMatch && typeof endMatch.index === "number") {
+    normalized = normalized.slice(0, endMatch.index);
+  }
+  return normalized
+    .replace(/^\s*(?:start of )?the project gutenberg e(?:book|text).*$\n?/gim, "")
+    .replace(/^\s*project gutenberg(?:'s)? e(?:book|text).*$\n?/gim, "")
+    .trim();
+}
+
+function normalizeReaderText(input: string, preserveLineBreaks = false) {
+  const normalized = decodeCitationText(input)
+    .replace(/\u00a0/g, " ")
+    .replace(/\r\n/g, "\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .trim();
+  if (preserveLineBreaks) {
+    return normalized.replace(/\n{3,}/g, "\n\n").trim();
+  }
+  return normalized.replace(/\s+/g, " ").trim();
+}
+
+function hashText(value: string) {
+  let hash = 0;
+  for (const character of value) {
+    hash = (hash * 33 + character.charCodeAt(0)) >>> 0;
+  }
+  return hash.toString(36);
+}
+
+function createReaderPassageId(index: number, text: string) {
+  return `passage-${index + 1}-${hashText(text).slice(0, 6)}`;
+}
+
+function buildExcerptCandidates(excerpt: string) {
+  const decodedExcerpt = decodeCitationText(excerpt).replace(/\s+/g, " ").trim();
+  const cleanedExcerpt = decodedExcerpt.replace(/^[`"'“”‘’]+|[`"'“”‘’.,;:!?]+$/g, "").trim();
+  const excerptSegments = cleanedExcerpt
+    .split(/[.;!?]\s+|\s+[—–-]\s+/)
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length >= 24);
+  const candidates = [decodedExcerpt, cleanedExcerpt, ...excerptSegments]
+    .filter((candidate, index, values) => candidate.length >= 12 && values.indexOf(candidate) === index)
+    .sort((left, right) => right.length - left.length);
+  return candidates.length > 0 ? candidates : decodedExcerpt ? [decodedExcerpt] : [];
+}
+
+function buildWorkPassages(content: string) {
+  const cleaned = stripGutenbergBoilerplate(content);
+  return cleaned
+    .split(/\n{2,}/)
+    .map((chunk) => normalizeReaderText(chunk, true))
+    .filter((text) => text.length > 0)
+    .map((text, index) => ({
+      id: createReaderPassageId(index, text),
+      searchText: buildNormalizedSearchIndex(text),
+    }));
+}
+
+async function buildCitationPassageUrl(
+  deps: AppDeps,
+  sessionId: string,
+  citation: Citation,
+): Promise<string> {
+  const baseUrl = `https://alpha-book.org/works/${encodeURIComponent(citation.workId)}?session=${encodeURIComponent(sessionId)}`;
+  const workFile = await deps.store.getWorkTextFile(citation.workId);
+  if (!workFile?.r2Key) {
+    return baseUrl;
+  }
+  const content = await deps.blobStore.getText(workFile.r2Key);
+  if (!content) {
+    return baseUrl;
+  }
+  const passages = buildWorkPassages(content);
+  const candidates = buildExcerptCandidates(citation.excerpt).map((candidate) => buildNormalizedSearchIndex(candidate));
+  const match = passages.find((passage) => candidates.some((candidate) => candidate && passage.searchText.includes(candidate)));
+  return match ? `${baseUrl}#${match.id}` : baseUrl;
+}
+
+async function rewriteAnswerWithCitationLinks(
+  deps: AppDeps,
+  sessionId: string,
+  answer: string,
+  citations: Citation[],
+) {
+  const citationLinks = await Promise.all(citations.map((citation) => buildCitationPassageUrl(deps, sessionId, citation)));
+  let citationIndex = 0;
+  return answer.replace(/\[(?:work\s*id|workId)\s*:[^\]]+\]/giu, () => {
+    const nextLink = citationLinks[citationIndex] ?? null;
+    citationIndex += 1;
+    return nextLink ? `[Open passage](${nextLink})` : "";
+  });
+}
+
 async function synthesizeAnswer(
   deps: AppDeps,
   params: {
@@ -2059,6 +2210,12 @@ async function synthesizeAnswer(
       source: "synthesizer",
     },
   });
+  synthesis.answer = await rewriteAnswerWithCitationLinks(
+    deps,
+    params.sessionId,
+    synthesis.answer,
+    synthesis.citations,
+  );
 
   const artifactKey = await persistFinalArtifact(deps, params.sessionId, params.runId, synthesis.answer, synthesis.citations);
   const summarizedToolHistory = summarizeToolHistory(params.toolHistory);
