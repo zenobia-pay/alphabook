@@ -255,6 +255,25 @@ function readIncidentDetails(properties: Record<string, unknown>) {
     : properties;
 }
 
+function normalizeTimestamp(value: unknown) {
+  if (typeof value === "string" && value.trim().length > 0) {
+    return value;
+  }
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  if (value && typeof value === "object" && typeof (value as { toString?: () => string }).toString === "function") {
+    const normalized = (value as { toString: () => string }).toString();
+    if (normalized) {
+      const parsed = new Date(normalized);
+      if (!Number.isNaN(parsed.getTime())) {
+        return parsed.toISOString();
+      }
+    }
+  }
+  return new Date().toISOString();
+}
+
 async function listAdminIncidents(deps: AppDeps, days = 7) {
   const since = daysAgoIso(Math.max(1, Math.min(30, days)));
   const events = await deps.store.listAnalyticsEvents({ since, limit: 5000 });
@@ -262,9 +281,10 @@ async function listAdminIncidents(deps: AppDeps, days = 7) {
     .filter((event) => event.event === "unexpected_error")
     .map((event) => {
       const details = readIncidentDetails(event.properties);
+      const createdAt = normalizeTimestamp(event.createdAt);
       return {
         id: event.id,
-        createdAt: event.createdAt,
+        createdAt,
         service: typeof details.service === "string" ? details.service : "unknown",
         severity: typeof details.severity === "string" ? details.severity : "error",
         source: typeof details.source === "string" ? details.source : "server",
