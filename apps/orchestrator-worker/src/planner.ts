@@ -120,6 +120,104 @@ function artifactPath(result: Record<string, unknown> | null, patterns: RegExp[]
   return null;
 }
 
+function toolCallCount(context: PlannerContext, toolName: ToolName): number {
+  return context.toolHistory.filter((entry) => entry.toolName === toolName).length;
+}
+
+function lastToolCall(context: PlannerContext): PlannerContext["toolHistory"][number] | null {
+  return context.toolHistory.length > 0 ? context.toolHistory[context.toolHistory.length - 1] : null;
+}
+
+function repeatedRetrievalLoop(context: PlannerContext): boolean {
+  const retrievalTurns = context.toolHistory.filter((entry) =>
+    entry.toolName === "search_works" || entry.toolName === "get_relevant_chunks"
+  );
+  if (retrievalTurns.length < 3) {
+    return false;
+  }
+  const recent = retrievalTurns.slice(-3);
+  return recent.every((entry) =>
+    entry.toolName === "search_works" || entry.toolName === "get_relevant_chunks"
+  );
+}
+
+function deterministicRescueDecision(context: PlannerContext): PlannerDecision | null {
+  const chunks = seedChunkPayload(context);
+  const scopedWorkIds = context.workScope?.length ? context.workScope : [];
+  const metadataIds = scopedWorkIds.length > 0 ? scopedWorkIds.slice(0, 12) : metadataWorkIds(context, 12);
+  const workIds = Array.from(new Set([
+    ...metadataIds,
+    ...chunks.map((chunk) => chunk.workId),
+  ])).slice(0, 12);
+  const runtimeId = context.toolHistory.find((item) => item.toolName === "create_workspace")?.result.runtimeId;
+  const latestRuntime = latestRuntimeResult(context);
+
+  if (!repeatedRetrievalLoop(context)) {
+    return null;
+  }
+
+  if (toolCallCount(context, "create_workspace") === 0) {
+    return {
+      type: "tool_call",
+      tool_name: "create_workspace",
+      rationale: "The quick retrieval loop is thin, so I’m escalating to the deeper corpus search now.",
+      args: {
+        workIds,
+        chunkIds: chunks.slice(0, 24).map((chunk) => chunk.id),
+        taskContext: {
+          question: context.userMessage,
+          mode: scopedWorkIds.length > 0 ? "open_book_analysis" : "exhaustive_corpus_search",
+          candidateWorkIds: workIds,
+          topChunks: chunks.slice(0, 12).map((chunk) => ({
+            chunkId: chunk.id,
+            workId: chunk.workId,
+            excerpt: chunk.excerpt,
+          })),
+        },
+      },
+    };
+  }
+
+  if (typeof runtimeId === "string" && toolCallCount(context, "run_workspace_task") === 0) {
+    return {
+      type: "tool_call",
+      tool_name: "run_workspace_task",
+      rationale: "The quick retrieval loop is not converging, so I’m running the full Codex corpus search now.",
+      args: {
+        runtimeId,
+        taskSpec: {
+          kind: "briefing_search",
+          phase: "collect_and_brief",
+          question: context.userMessage,
+          workIds,
+          chunkIds: chunks.slice(0, 24).map((chunk) => chunk.id),
+          evidenceFile: "output/evidence.json",
+          evidenceNotesFile: "output/evidence-notes.md",
+          briefingFile: "output/briefing.md",
+          briefingJsonFile: "output/briefing.json",
+        },
+      },
+    };
+  }
+
+  if (latestRuntime && typeof runtimeId === "string") {
+    const finalBriefingPath = artifactPath(latestRuntime, [/output\/briefing\.md$/u, /output\/summary\.md$/u]) ?? "output/briefing.md";
+    if (!hasReadWorkspacePath(context, finalBriefingPath)) {
+      return {
+        type: "tool_call",
+        tool_name: "read_workspace_file",
+        rationale: "The Codex search finished, and I’m pulling the briefing back into the chat now.",
+        args: {
+          runtimeId,
+          path: finalBriefingPath,
+        },
+      };
+    }
+  }
+
+  return null;
+}
+
 export class FallbackPlanner implements Planner {
   async decide(context: PlannerContext): Promise<PlannerDecision> {
     const toolNames = context.toolHistory.map((item) => item.toolName);
@@ -368,7 +466,23 @@ export class OpenAIPlanner implements Planner {
     if (!content) {
       throw new Error("Planner response was empty.");
     }
-    return PlannerDecisionSchema.parse(JSON.parse(content));
+    const parsed = PlannerDecisionSchema.parse(JSON.parse(content));
+    const rescue = deterministicRescueDecision(context);
+    if (rescue) {
+      const parsedTool = parsed.type === "tool_call" ? parsed.tool_name : null;
+      const rescueTool = rescue.type === "tool_call" ? rescue.tool_name : null;
+      if (
+        parsed.type !== "final_answer"
+        && (
+          parsedTool === "search_works"
+          || parsedTool === "get_relevant_chunks"
+          || parsedTool !== rescueTool
+        )
+      ) {
+        return rescue;
+      }
+    }
+    return parsed;
   }
 }
 
