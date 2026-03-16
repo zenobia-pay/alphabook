@@ -1283,7 +1283,7 @@ function LockedState({
         <h2 className="max-w-3xl font-[Newsreader] text-[clamp(2.2rem,5vw,4.6rem)] font-semibold leading-[0.92] tracking-[-0.06em] text-[var(--ink)]">
           {title}
         </h2>
-        <Button asChild variant="default" size="lg">
+        <Button asChild variant="default" size="lg" className="signin-pill-button">
           <a href={buildSignInUrl(window.location.href)}>Sign in</a>
         </Button>
       </CardContent>
@@ -2865,9 +2865,9 @@ export default function App() {
 
         <div className="assistant-thread-shell" data-testid="thread">
           {authPending ? (
-            <AuthLoadingState compact />
+            <AssistantLoadingState />
           ) : assistantHistoryLoading ? (
-            <AuthLoadingState compact />
+            <AssistantLoadingState />
           ) : authLocked ? (
             <LockedState
               compact
@@ -2965,7 +2965,7 @@ export default function App() {
               onStartNewChat={startNewBookChat}
             />
             {authPending ? (
-              <AuthLoadingState compact />
+              <AssistantLoadingState />
             ) : authLocked ? (
               <LockedState
                 compact
@@ -3100,37 +3100,40 @@ export default function App() {
   function renderProfileView() {
     const isPublicProfile = Boolean(activeProfileUserId && (!currentUserId || activeProfileUserId !== currentUserId));
     if (authPending) {
-      return (
-        <section className="assistant-page">
-          <div className="assistant-thread-shell">
-            <AuthLoadingState compact />
-          </div>
-        </section>
-      );
+      return <ProfileLoadingState publicView={isPublicProfile} />;
     }
 
     if (authLocked && !isPublicProfile) {
       return (
-        <section className="assistant-page">
-          <div className="assistant-thread-shell">
-            <LockedState
-              compact
-              title="Create an account to open your profile."
-            />
-          </div>
-        </section>
+        <div className="profile-view">
+          <section className="profile-hero">
+            <div className="profile-hero-badge profile-badge-neutral">
+              <ProfileIcon />
+            </div>
+            <h1>Your profile</h1>
+            <p>Save searches, return to past threads, and keep your reading trail in one place.</p>
+          </section>
+
+          <section className="profile-history">
+            <div className="profile-history-list">
+              <ProfileEmptyState
+                title="Sign in to unlock your profile"
+                copy="Your saved chats and recent research will appear here once you have an account."
+                action={(
+                  <Button asChild className="signin-pill-button" size="lg">
+                    <a href={buildSignInUrl(window.location.href)}>Sign in</a>
+                  </Button>
+                )}
+              />
+            </div>
+          </section>
+        </div>
       );
     }
 
     if (isPublicProfile) {
       if (publicProfileLoading) {
-        return (
-          <section className="assistant-page">
-            <div className="assistant-thread-shell">
-              <AuthLoadingState compact />
-            </div>
-          </section>
-        );
+        return <ProfileLoadingState publicView />;
       }
 
       if (!publicProfile) {
@@ -3185,7 +3188,7 @@ export default function App() {
             </div>
             <div className="profile-actions">
               {publicProfile.isSelf ? null : authLocked ? (
-                <Button asChild variant="ghost" className="profile-chip">
+                <Button asChild className="signin-pill-button">
                   <a href={buildSignInUrl(window.location.href)}>Sign in to follow</a>
                 </Button>
               ) : (
@@ -3198,9 +3201,10 @@ export default function App() {
 
           <section className="profile-history">
             <div className="profile-history-list">
-              <div className="profile-history-empty">
-                <p className="empty-copy text-sm text-[var(--ink-soft)]">Public reading history is not shared yet.</p>
-              </div>
+              <ProfileEmptyState
+                title="No public reading history yet"
+                copy="This reader has not shared any visible activity here."
+              />
             </div>
           </section>
         </div>
@@ -3255,9 +3259,15 @@ export default function App() {
         <section className="profile-history">
           <div className="profile-history-list">
             {sessions.length === 0 ? (
-              <div className="profile-history-empty">
-                <p className="empty-copy text-sm text-[var(--ink-soft)]">No history yet.</p>
-              </div>
+              <ProfileEmptyState
+                title="No searches yet"
+                copy="Start a conversation with the assistant and your recent research will show up here."
+                action={(
+                  <Button type="button" className="signin-pill-button" onClick={() => handleNavSelection("assistant")}>
+                    Start searching
+                  </Button>
+                )}
+              />
             ) : (
               sessions.map((session) => <SessionListCard key={session.id} session={session} onOpen={() => openSession(session.id)} />)
             )}
@@ -4124,9 +4134,7 @@ export default function App() {
         </nav>
 
         {authPending ? (
-          <div className="sidebar-auth-skeleton" aria-hidden="true">
-            <Skeleton className={cn("h-11 rounded-full", sidebarCollapsed ? "w-11" : "w-full")} />
-          </div>
+          <SidebarProfileSkeleton collapsed={sidebarCollapsed} />
         ) : hasAuthenticatedUser || !authState.authConfigured ? (
           <Button
             type="button"
@@ -4165,7 +4173,7 @@ export default function App() {
             ) : null}
           </Button>
         ) : (
-          <Button asChild variant="default" className={cn("sidebar-signin sidebar-signin-bottom", sidebarCollapsed && "size-11 px-0")}>
+          <Button asChild variant="default" className={cn("sidebar-signin sidebar-signin-bottom signin-pill-button", sidebarCollapsed && "size-11 px-0")}>
             <a href={buildSignInUrl(window.location.href)}>{sidebarCollapsed ? "→" : "Sign in"}</a>
           </Button>
         )}
