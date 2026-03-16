@@ -75,6 +75,29 @@ export async function fetchCurrentUser(): Promise<CurrentUserResponse> {
   return CurrentUserResponseSchema.parse(await response.json());
 }
 
+export async function fetchAdminAccess(): Promise<{
+  allowed: boolean;
+  authenticated: boolean;
+  authConfigured: boolean;
+  user: CurrentUserResponse["user"];
+}> {
+  const response = await ensureOk(
+    await fetch(`${API_BASE}/admin/access`, {
+      credentials: "include",
+    }),
+  );
+  return await response.json();
+}
+
+export async function fetchAdminRunLogs(runId: string): Promise<Record<string, unknown>> {
+  const response = await ensureOk(
+    await fetch(`${API_BASE}/admin/runs/${encodeURIComponent(runId)}/logs`, {
+      credentials: "include",
+    }),
+  );
+  return await response.json();
+}
+
 export async function fetchProfile(userId: string): Promise<PublicProfileResponse> {
   const response = await ensureOk(
     await fetch(`${API_BASE}/profiles/${userId}`, {
@@ -117,7 +140,14 @@ export async function fetchWorks(options: { offset?: number; limit?: number } = 
       credentials: "include",
     }),
   );
-  return WorkListResponseSchema.parse(await response.json());
+  const parsed = WorkListResponseSchema.parse(await response.json());
+  return {
+    ...parsed,
+    works: parsed.works.map((work) => ({
+      ...work,
+      coverImageUrl: work.coverImageUrl ?? (work.hasCoverImage ? `${API_BASE}/works/${work.id}/cover` : null),
+    })),
+  };
 }
 
 export async function fetchWorkDetail(workId: string): Promise<WorkDetailResponse> {
@@ -126,7 +156,14 @@ export async function fetchWorkDetail(workId: string): Promise<WorkDetailRespons
       credentials: "include",
     }),
   );
-  return WorkDetailResponseSchema.parse(await response.json());
+  const parsed = WorkDetailResponseSchema.parse(await response.json());
+  return {
+    ...parsed,
+    work: {
+      ...parsed.work,
+      coverImageUrl: parsed.work.coverImageUrl ?? (parsed.work.hasCoverImage ? `${API_BASE}/works/${parsed.work.id}/cover` : null),
+    },
+  };
 }
 
 export function buildSignInUrl(returnTo: string) {

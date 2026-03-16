@@ -19,6 +19,7 @@ export interface RuntimeToolGateway {
   createWorkspace(args: Record<string, unknown>): Promise<Record<string, unknown>>;
   runWorkspaceTask(args: Record<string, unknown>): Promise<Record<string, unknown>>;
   readWorkspaceFile(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+  listWorkspaceFiles?(args: Record<string, unknown>): Promise<Record<string, unknown>>;
   destroyWorkspace(args: Record<string, unknown>): Promise<Record<string, unknown>>;
 }
 
@@ -32,6 +33,7 @@ export interface AppDeps {
   queues: WorkerQueues;
   auth?: WorkOSAuth;
   now?: () => number;
+  adminAllowedEmail?: string;
 }
 
 function sseEvent(event: string, data: Record<string, unknown>): string {
@@ -136,6 +138,20 @@ function streamResponse(
       connection: "keep-alive",
     },
   });
+}
+
+function decorateWork(c: Context, work: WorkSummary): WorkSummary {
+  const metadata = "metadata" in work && work.metadata && typeof work.metadata === "object"
+    ? (work.metadata as Record<string, unknown>)
+    : null;
+  const coverImageKey = metadata && typeof metadata.coverImageKey === "string" ? metadata.coverImageKey : null;
+  if (work.coverImageUrl || !coverImageKey) {
+    return work;
+  }
+  return {
+    ...work,
+    coverImageUrl: new URL(`/works/${work.id}/cover`, c.req.url).toString(),
+  };
 }
 
 async function executeTool(
@@ -586,6 +602,95 @@ async function loadRunArtifacts(
   );
 }
 
+function isAdminUser(user: Awaited<ReturnType<AppStore["getUserProfile"]>>, allowedEmail?: string) {
+  if (!allowedEmail || !user?.email) {
+    return false;
+  }
+  return user.email.trim().toLowerCase() === allowedEmail.trim().toLowerCase();
+}
+
+function collectRuntimeIds(toolCalls: Awaited<ReturnType<AppStore["listToolCalls"]>>) {
+  const runtimeIds = new Set<string>();
+  for (const toolCall of toolCalls) {
+    const args = toolCall.argsJson;
+    const result = toolCall.resultJson;
+    if (typeof args?.runtimeId === "string" && args.runtimeId.length > 0) {
+      runtimeIds.add(args.runtimeId);
+    }
+    if (typeof result?.runtimeId === "string" && result.runtimeId.length > 0) {
+      runtimeIds.add(result.runtimeId);
+    }
+  }
+  return Array.from(runtimeIds);
+}
+
+function shouldReadLiveRuntimeFile(path: string) {
+  if (path === "context/manifest.json" || path === "context/task.json" || path === "context/selected-chunks.json") {
+    return true;
+  }
+  if (!path.startsWith("output/")) {
+    return false;
+  }
+  return /\.(?:md|txt|json|jsonl|log)$/iu.test(path);
+}
+
+async function loadLiveRuntimeLogs(
+  deps: AppDeps,
+  sessionId: string,
+  runId: string,
+  runtimeIds: string[],
+) {
+  if (!deps.runtimeGateway.listWorkspaceFiles) {
+    return [];
+  }
+  return Promise.all(
+    runtimeIds.map(async (runtimeId) => {
+      try {
+        const listing = await deps.runtimeGateway.listWorkspaceFiles!({
+          runtimeId,
+          sessionId,
+          runId,
+        });
+        const filePaths = Array.isArray(listing.files)
+          ? listing.files.filter((value): value is string => typeof value === "string")
+          : [];
+        const interestingFiles = filePaths.filter(shouldReadLiveRuntimeFile);
+        const files = await Promise.all(
+          interestingFiles.map(async (path) => {
+            try {
+              const file = await deps.runtimeGateway.readWorkspaceFile({
+                runtimeId,
+                path,
+                sessionId,
+                runId,
+              });
+              return {
+                path,
+                size: typeof file.size === "number" ? file.size : undefined,
+                content: typeof file.content === "string" ? file.content : "",
+              };
+            } catch (error) {
+              return {
+                path,
+                error: error instanceof Error ? error.message : "Failed to read workspace file.",
+              };
+            }
+          }),
+        );
+        return {
+          runtimeId,
+          files,
+        };
+      } catch (error) {
+        return {
+          runtimeId,
+          error: error instanceof Error ? error.message : "Failed to read live runtime logs.",
+        };
+      }
+    }),
+  );
+}
+
 async function persistFinalArtifact(deps: AppDeps, sessionId: string, runId: string, answer: string, citations: Array<Record<string, unknown>>) {
   const key = R2_PREFIXES.sessionArtifact(sessionId, `${runId}-final-answer.json`);
   await deps.blobStore.putJson(key, {
@@ -892,6 +997,14 @@ export function createApp(deps: AppDeps) {
     return deps.store.getUserProfile(userId);
   }
 
+  async function requireAdmin(c: Context) {
+    const user = await resolveUser(c);
+    if (!isAdminUser(user, deps.adminAllowedEmail)) {
+      return null;
+    }
+    return user;
+  }
+
   app.get("/health", async (c) => {
     const database = await deps.store.healthCheck();
     return c.json({
@@ -915,6 +1028,16 @@ export function createApp(deps: AppDeps) {
   app.get("/me", async (c) => {
     const user = await resolveUser(c);
     return c.json({
+      authenticated: Boolean(user),
+      authConfigured: deps.auth?.isConfigured() ?? false,
+      user: user ?? null,
+    });
+  });
+
+  app.get("/admin/access", async (c) => {
+    const user = await resolveUser(c);
+    return c.json({
+      allowed: isAdminUser(user, deps.adminAllowedEmail),
       authenticated: Boolean(user),
       authConfigured: deps.auth?.isConfigured() ?? false,
       user: user ?? null,
@@ -1191,12 +1314,55 @@ export function createApp(deps: AppDeps) {
     });
   });
 
+  app.get("/admin/runs/:runId/logs", async (c) => {
+    const admin = await requireAdmin(c);
+    if (!admin) {
+      return c.json({ error: "Not authorized." }, 403);
+    }
+
+    const runId = c.req.param("runId");
+    const run = await deps.store.getRun(runId);
+    if (!run) {
+      return c.json({ error: "Run not found." }, 404);
+    }
+
+    const session = await deps.store.getSession(run.sessionId);
+    if (!session) {
+      return c.json({ error: "Session not found." }, 404);
+    }
+
+    const [messages, toolCalls, runtimeInstances, owner] = await Promise.all([
+      deps.store.listMessages(run.sessionId),
+      deps.store.listToolCalls(runId),
+      deps.store.listRuntimeInstances(run.sessionId),
+      deps.store.getUserProfile(session.userId),
+    ]);
+    const artifacts = await loadRunArtifacts(deps, run.sessionId, runId, toolCalls);
+    const liveRuntime = await loadLiveRuntimeLogs(deps, run.sessionId, runId, collectRuntimeIds(toolCalls));
+
+    return c.json({
+      requestedBy: {
+        id: admin.id,
+        email: admin.email,
+        name: admin.name,
+      },
+      owner,
+      session,
+      run,
+      messages,
+      toolCalls,
+      runtimeInstances,
+      artifacts,
+      liveRuntime,
+    });
+  });
+
   app.get("/works", async (c) => {
     const offset = Math.max(0, Number.parseInt(c.req.query("offset") ?? "0", 10) || 0);
     const limit = Math.min(24, Math.max(1, Number.parseInt(c.req.query("limit") ?? "12", 10) || 12));
     const works = await deps.store.listWorks(offset, limit);
     return c.json({
-      works,
+      works: works.map((work) => decorateWork(c, work)),
       nextOffset: works.length === limit ? offset + works.length : null,
     });
   });
@@ -1222,7 +1388,7 @@ export function createApp(deps: AppDeps) {
           : "text";
 
     return c.json({
-      work,
+      work: decorateWork(c, work),
       source: content
         ? {
             format: sourceFormat,
@@ -1232,6 +1398,29 @@ export function createApp(deps: AppDeps) {
             metadataPath: typeof metadata.metadataPath === "string" ? metadata.metadataPath : null,
           }
         : null,
+    });
+  });
+
+  app.get("/works/:workId/cover", async (c) => {
+    const workId = c.req.param("workId");
+    const work = await deps.store.getWorkById(workId);
+    if (!work) {
+      return c.json({ error: "Work not found." }, 404);
+    }
+    const metadata = work.metadata ?? {};
+    const coverImageKey = typeof metadata.coverImageKey === "string" ? metadata.coverImageKey : null;
+    if (!coverImageKey) {
+      return c.json({ error: "Cover not found." }, 404);
+    }
+    const object = await deps.blobStore.getObject(coverImageKey);
+    if (!object) {
+      return c.json({ error: "Cover not found." }, 404);
+    }
+    return new Response(await object.arrayBuffer(), {
+      headers: {
+        "content-type": object.contentType ?? "image/jpeg",
+        "cache-control": "public, max-age=86400",
+      },
     });
   });
 

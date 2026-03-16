@@ -215,12 +215,18 @@ export const WorkSummarySchema = z.object({
   title: z.string(),
   subtitle: z.string().nullable().optional(),
   coverImageUrl: z.string().nullable().optional(),
+  hasCoverImage: z.boolean().optional(),
   language: z.string().nullable(),
   releaseDate: z.string().nullable(),
   rightsStatus: z.string().nullable(),
   summary: z.string().nullable(),
+  publisher: z.string().nullable().optional(),
   authors: z.array(z.string()).default([]),
   subjects: z.array(z.string()).default([]),
+  bookshelves: z.array(z.string()).optional(),
+  translators: z.array(z.string()).optional(),
+  illustrators: z.array(z.string()).optional(),
+  editors: z.array(z.string()).optional(),
   score: z.number().optional(),
 });
 

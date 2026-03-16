@@ -154,6 +154,29 @@ async function putText(r2: S3Client, bucket: string, key: string, body: string, 
   );
 }
 
+async function putBytes(r2: S3Client, bucket: string, key: string, body: Uint8Array, contentType: string) {
+  await r2.send(
+    new PutObjectCommand({
+      Bucket: bucket,
+      Key: key,
+      Body: body,
+      ContentType: contentType,
+    }),
+  );
+}
+
+function coverContentType(path: string): string {
+  if (/\.png$/i.test(path)) return "image/png";
+  if (/\.webp$/i.test(path)) return "image/webp";
+  return "image/jpeg";
+}
+
+function coverExtension(path: string): string {
+  if (/\.png$/i.test(path)) return "png";
+  if (/\.webp$/i.test(path)) return "webp";
+  return "jpg";
+}
+
 async function deleteKeys(r2: S3Client, bucket: string, keys: string[]) {
   const uniqueKeys = [...new Set(keys.filter(Boolean))];
   if (uniqueKeys.length === 0) {
@@ -241,6 +264,8 @@ async function persistIngestedWork(context: IngestContext, source: IngestSourceI
   const metadataKey = R2_PREFIXES.rawMetadata(source.gutenbergId);
   const cleanKey = R2_PREFIXES.cleanText(source.gutenbergId);
   const chunksKey = R2_PREFIXES.chunks(source.gutenbergId);
+  const coverImagePath = typeof source.metadata?.coverImagePath === "string" ? source.metadata.coverImagePath : null;
+  const coverImageKey = coverImagePath ? R2_PREFIXES.coverImage(source.gutenbergId, coverExtension(coverImagePath)) : null;
   const proposedWorkId = crypto.randomUUID();
   const metadataPayload = {
     gutenbergId: source.gutenbergId,
@@ -248,6 +273,7 @@ async function persistIngestedWork(context: IngestContext, source: IngestSourceI
     authors,
     subjects,
     subtitle: typeof source.metadata?.subtitle === "string" ? source.metadata.subtitle : null,
+    coverImageKey,
     language: source.language ?? null,
     releaseDate: source.releaseDate ?? null,
     rightsStatus: source.rightsStatus ?? "public_domain",
@@ -319,6 +345,13 @@ async function persistIngestedWork(context: IngestContext, source: IngestSourceI
     ),
     putText(context.r2, context.r2Bucket, cleanKey, cleanText, "text/plain; charset=utf-8"),
     putText(context.r2, context.r2Bucket, chunksKey, chunksPayload, "application/x-ndjson"),
+    ...(coverImagePath && coverImageKey
+      ? [
+          readFile(coverImagePath).then((bytes) =>
+            putBytes(context.r2, context.r2Bucket, coverImageKey, bytes, coverContentType(coverImagePath)),
+          ),
+        ]
+      : []),
   ]);
 
   await context.db.query(

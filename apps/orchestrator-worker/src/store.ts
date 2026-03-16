@@ -180,6 +180,19 @@ function readMetadataText(metadata: Record<string, unknown> | undefined, keys: s
   return null;
 }
 
+function readMetadataTextList(metadata: Record<string, unknown> | undefined, keys: string[]): string[] {
+  if (!metadata) {
+    return [];
+  }
+  for (const key of keys) {
+    const value = metadata[key];
+    if (Array.isArray(value)) {
+      return value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0).map((entry) => entry.trim());
+    }
+  }
+  return [];
+}
+
 function splitSubtitleFromTitle(title: string): { title: string; subtitle: string | null } {
   const match = title.match(/^(.+?):\s+(.+)$/);
   if (!match) {
@@ -196,6 +209,12 @@ function toWorkSummary(
 ): WorkSummary {
   const explicitSubtitle = readMetadataText(work.metadata, ["subtitle", "subTitle", "secondaryTitle"]);
   const explicitCoverImageUrl = readMetadataText(work.metadata, ["coverImageUrl", "coverUrl", "imageUrl", "thumbnailUrl"]);
+  const coverImageKey = readMetadataText(work.metadata, ["coverImageKey"]);
+  const publisher = readMetadataText(work.metadata, ["publisher"]);
+  const bookshelves = readMetadataTextList(work.metadata, ["bookshelves"]);
+  const translators = readMetadataTextList(work.metadata, ["translators"]);
+  const illustrators = readMetadataTextList(work.metadata, ["illustrators"]);
+  const editors = readMetadataTextList(work.metadata, ["editors"]);
   const titleParts = explicitSubtitle ? { title: work.title, subtitle: explicitSubtitle } : splitSubtitleFromTitle(work.title);
   return {
     id: work.id,
@@ -203,12 +222,18 @@ function toWorkSummary(
     title: titleParts.title,
     subtitle: titleParts.subtitle,
     coverImageUrl: explicitCoverImageUrl,
+    hasCoverImage: Boolean(explicitCoverImageUrl || coverImageKey),
     language: work.language ?? null,
     releaseDate: work.releaseDate ?? null,
     rightsStatus: work.rightsStatus ?? null,
     summary: work.summary ?? null,
+    publisher,
     authors: work.authors ?? [],
     subjects: work.subjects ?? [],
+    bookshelves,
+    translators,
+    illustrators,
+    editors,
     score: work.score,
   };
 }
