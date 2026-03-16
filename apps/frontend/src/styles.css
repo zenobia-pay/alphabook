@@ -1596,6 +1596,170 @@ button {
   color: var(--text-muted);
 }
 
+.book-reader-pane-loading {
+  display: flex;
+  flex-direction: column;
+}
+
+.book-reader-header-loading {
+  border-bottom: 1px solid rgba(26, 33, 52, 0.08);
+}
+
+.book-loading-copy {
+  display: grid;
+  gap: 12px;
+  max-width: min(44rem, calc(100% - 24px));
+}
+
+.book-loading-meta {
+  width: 170px;
+  height: 14px;
+  border-radius: 999px;
+}
+
+.book-loading-title {
+  width: min(520px, 72vw);
+  height: clamp(42px, 5vw, 58px);
+  border-radius: 20px;
+}
+
+.book-loading-authors {
+  width: min(260px, 46vw);
+  height: 18px;
+  border-radius: 999px;
+}
+
+.book-reader-surface-loading {
+  min-height: 0;
+  display: flex;
+}
+
+.book-reader-passages-loading {
+  flex: 1;
+}
+
+.book-loading-passage {
+  position: relative;
+  display: grid;
+  gap: 10px;
+  padding: 14px 0 14px 28px;
+  border-bottom: 1px solid rgba(26, 33, 52, 0.05);
+}
+
+.book-loading-anchor {
+  position: absolute;
+  left: 0;
+  top: 18px;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+}
+
+.book-loading-lines {
+  display: grid;
+  gap: 8px;
+}
+
+.book-loading-line {
+  width: min(92%, 48rem);
+  height: 16px;
+  border-radius: 999px;
+}
+
+.book-loading-line.is-wide {
+  width: min(98%, 52rem);
+}
+
+.book-loading-line.is-short {
+  width: min(68%, 34rem);
+}
+
+.book-loading-session-picker {
+  height: 42px;
+  flex: 1;
+  border-radius: 14px;
+}
+
+.book-loading-new-chat {
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+}
+
+.book-loading-thread {
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding-top: 16px;
+}
+
+.book-loading-thread-messages {
+  min-height: 0;
+  flex: 1;
+  display: grid;
+  align-content: start;
+  gap: 14px;
+}
+
+.book-loading-bubble {
+  display: grid;
+  gap: 10px;
+  padding: 16px 18px;
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.76);
+  border: 1px solid rgba(26, 33, 52, 0.06);
+}
+
+.book-loading-bubble-title {
+  width: 40%;
+  height: 15px;
+  border-radius: 999px;
+}
+
+.book-loading-bubble-line {
+  width: 78%;
+  height: 13px;
+  border-radius: 999px;
+}
+
+.book-loading-bubble-line.is-wide {
+  width: 92%;
+}
+
+.book-loading-composer {
+  display: grid;
+  gap: 14px;
+  padding: 14px;
+  border-radius: 26px;
+  border: 1px solid rgba(26, 33, 52, 0.08);
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.book-loading-composer-line {
+  height: 16px;
+  width: 54%;
+  border-radius: 999px;
+}
+
+.book-loading-composer-line.is-wide {
+  width: 76%;
+}
+
+.book-loading-composer-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.book-loading-composer-plus,
+.book-loading-composer-send {
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+}
+
 .book-assistant-divider {
   position: relative;
   cursor: col-resize;
