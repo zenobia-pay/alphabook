@@ -875,7 +875,7 @@ function messageToThreadMessage(message: UiMessage, streamingAssistantId: string
           },
         ]
       : [];
-    const content = toolParts.length > 0 ? [...toolParts, ...textParts] : textParts;
+    const content = toolParts.length > 0 ? [...textParts, ...toolParts] : textParts;
 
     return {
       id: message.id,
