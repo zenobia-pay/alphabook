@@ -3323,37 +3323,84 @@ export function createApp(deps: AppDeps) {
       return c.json({ error: "Run not found." }, 404);
     }
 
-    let subscriberId: string | null = null;
-    let release: (() => void) | null = null;
+    let stopped = false;
 
     return streamResponse(
       async (send) => {
-        const activeRun = activeRuns.get(runId);
-        if (!activeRun) {
-          await send("run.completed", {
-            runId,
-            sessionId,
-            status: run.status,
-          });
-          return;
-        }
-
-        subscriberId = crypto.randomUUID();
-        activeRun.subscribers.set(subscriberId, send);
         await send("run.started", {
           runId,
           sessionId,
         });
-        await new Promise<void>((resolve) => {
-          release = resolve;
-        });
+
+        let lastPlanSignature = "";
+        let lastAssistantSignature = "";
+
+        while (!stopped) {
+          const [nextRun, messages] = await Promise.all([
+            deps.store.getRun(runId),
+            deps.store.listMessages(sessionId),
+          ]);
+          if (!nextRun || nextRun.sessionId !== sessionId) {
+            await send("error", {
+              message: "Run not found.",
+            });
+            return;
+          }
+
+          const planMessage = [...messages].reverse().find((message) => (
+            message.role === "assistant"
+            && message.metadata?.phase === "plan"
+            && message.metadata?.runId === runId
+          ));
+          const planSignature = JSON.stringify(planMessage?.metadata?.toolCalls ?? []);
+          if (planSignature !== lastPlanSignature) {
+            lastPlanSignature = planSignature;
+            if (planMessage) {
+              await send("tool.progress", {
+                runId,
+                sessionId,
+                toolName: "run_workspace_task",
+                text: "stream_update",
+              });
+            }
+          }
+
+          const assistantMessage = [...messages].reverse().find((message) => (
+            message.role === "assistant"
+            && message.metadata?.phase !== "plan"
+          ));
+          const assistantSignature = assistantMessage
+            ? JSON.stringify({
+                id: assistantMessage.id,
+                content: assistantMessage.content,
+                metadata: assistantMessage.metadata,
+              })
+            : "";
+          if (assistantSignature && assistantSignature !== lastAssistantSignature) {
+            lastAssistantSignature = assistantSignature;
+            await send("assistant.completed", {
+              runId,
+              sessionId,
+            });
+          }
+
+          if (nextRun.status !== "running" && nextRun.status !== "queued") {
+            await send("run.completed", {
+              runId,
+              sessionId,
+              status: nextRun.status,
+            });
+            return;
+          }
+
+          await new Promise((resolve) => {
+            setTimeout(resolve, 1000);
+          });
+        }
       },
       undefined,
       () => {
-        if (subscriberId) {
-          activeRuns.get(runId)?.subscribers.delete(subscriberId);
-        }
-        release?.();
+        stopped = true;
       },
     );
   });
