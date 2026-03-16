@@ -128,6 +128,15 @@ export async function fetchAdminSessions(): Promise<Record<string, unknown>[]> {
   return Array.isArray(payload.sessions) ? payload.sessions : [];
 }
 
+export async function fetchAdminIncidents(days = 7): Promise<Record<string, unknown>> {
+  const response = await ensureOk(
+    await fetch(`${API_BASE}/admin/incidents?days=${encodeURIComponent(String(days))}`, {
+      credentials: "include",
+    }),
+  );
+  return await response.json();
+}
+
 export async function queryAdminAnalytics(query: string, days = 7): Promise<Record<string, unknown>> {
   const response = await ensureOk(
     await fetch(`${API_BASE}/admin/analytics/query`, {

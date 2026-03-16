@@ -45,6 +45,7 @@ export interface Env {
   WORKOS_CLIENT_ID?: string;
   AUTH_COOKIE_PASSWORD?: string;
   ADMIN_ALLOWED_EMAIL?: string;
+  ERROR_ALERT_WEBHOOK_URL?: string;
   CORPUS_BUCKET: R2Bucket;
   INGEST_QUEUE: Queue;
   JOBS_QUEUE: Queue;
@@ -150,6 +151,7 @@ function buildFetchHandler(env: Env) {
     adminAllowedEmail: env.ADMIN_ALLOWED_EMAIL,
     openAIApiKey: env.OPENAI_API_KEY,
     openAIModel: env.OPENAI_SYNTH_MODEL ?? env.OPENAI_MODEL ?? "gpt-5.2",
+    errorAlertWebhookUrl: env.ERROR_ALERT_WEBHOOK_URL,
   });
 
   return app.fetch;

@@ -30,6 +30,7 @@
 - `WORKOS_API_KEY`
 - `WORKOS_CLIENT_ID`
 - `AUTH_COOKIE_PASSWORD`
+- `ERROR_ALERT_WEBHOOK_URL`
 
 Cloudflare bindings:
 
@@ -47,6 +48,8 @@ Cloudflare bindings:
 - `R2_ENDPOINT`
 - `R2_ACCESS_KEY_ID`
 - `R2_SECRET_ACCESS_KEY`
+
+`ERROR_ALERT_WEBHOOK_URL` sends unexpected orchestrator errors to a webhook in addition to recording them in the admin incident dashboard. Leave it unset if you only want the in-app admin view.
 
 ## Ingest Service
 

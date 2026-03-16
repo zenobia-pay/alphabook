@@ -40,6 +40,7 @@ export interface AppDeps {
   adminAllowedEmail?: string;
   openAIApiKey?: string;
   openAIModel?: string;
+  errorAlertWebhookUrl?: string;
 }
 
 const ALLOWED_WEB_ORIGINS = new Set([
@@ -66,14 +67,14 @@ function analyticsKey(eventName: string) {
   return `analytics/${date}/${Date.now()}-${crypto.randomUUID()}-${safeEvent}.json`;
 }
 
-async function recordAnalyticsEvent(
+async function persistAnalyticsEvent(
   deps: AppDeps,
-  request: Request,
   eventName: string,
   payload: Record<string, unknown> = {},
+  request?: Request,
 ) {
-  const forwardedFor = request.headers.get("cf-connecting-ip") ?? request.headers.get("x-forwarded-for");
-  const userAgent = request.headers.get("user-agent");
+  const forwardedFor = request?.headers.get("cf-connecting-ip") ?? request?.headers.get("x-forwarded-for");
+  const userAgent = request?.headers.get("user-agent");
   const properties: Record<string, unknown> = {
     source: "alphabook-web",
     userAgent,
@@ -91,6 +92,251 @@ async function recordAnalyticsEvent(
     timestamp: new Date().toISOString(),
     ...properties,
   });
+}
+
+async function recordAnalyticsEvent(
+  deps: AppDeps,
+  request: Request,
+  eventName: string,
+  payload: Record<string, unknown> = {},
+) {
+  await persistAnalyticsEvent(deps, eventName, payload, request);
+}
+
+function normalizeUnexpectedError(error: unknown) {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message,
+      stack: error.stack ?? null,
+    };
+  }
+  return {
+    name: "Error",
+    message: typeof error === "string" ? error : JSON.stringify(error),
+    stack: null,
+  };
+}
+
+function incidentFingerprint(input: {
+  service: string;
+  source?: string | null;
+  route?: string | null;
+  toolName?: string | null;
+  statusCode?: number | null;
+  message: string;
+}) {
+  return [
+    input.service,
+    input.source ?? "",
+    input.route ?? "",
+    input.toolName ?? "",
+    input.statusCode ?? "",
+    input.message.slice(0, 240),
+  ].join("::");
+}
+
+type UnexpectedErrorOptions = {
+  request?: Request;
+  service?: string;
+  route?: string;
+  method?: string;
+  source?: string;
+  toolName?: string;
+  statusCode?: number;
+  severity?: "error" | "critical";
+  userId?: string | null;
+  sessionId?: string | null;
+  runId?: string | null;
+  extra?: Record<string, unknown>;
+};
+
+async function shouldSendIncidentAlert(deps: AppDeps, fingerprint: string) {
+  if (!deps.errorAlertWebhookUrl) {
+    return false;
+  }
+  const since = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+  const recent = await deps.store.listAnalyticsEvents({ since, limit: 200 });
+  return !recent.some((event) => {
+    if (event.event !== "unexpected_error") {
+      return false;
+    }
+    const details =
+      event.properties.details && typeof event.properties.details === "object"
+        ? event.properties.details as Record<string, unknown>
+        : event.properties;
+    return details.fingerprint === fingerprint;
+  });
+}
+
+async function sendIncidentAlert(webhookUrl: string, incident: Record<string, unknown>) {
+  const text = [
+    "AlphaBook unexpected error",
+    typeof incident.service === "string" ? `service: ${incident.service}` : null,
+    typeof incident.route === "string" ? `route: ${incident.route}` : null,
+    typeof incident.toolName === "string" ? `tool: ${incident.toolName}` : null,
+    typeof incident.message === "string" ? `message: ${incident.message}` : null,
+    typeof incident.runId === "string" ? `run: ${incident.runId}` : null,
+    typeof incident.sessionId === "string" ? `session: ${incident.sessionId}` : null,
+  ].filter((value): value is string => Boolean(value)).join("\n");
+  const response = await fetch(webhookUrl, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      text,
+      incident,
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(`Alert webhook failed (${response.status}): ${await response.text()}`);
+  }
+}
+
+async function recordUnexpectedError(
+  deps: AppDeps,
+  error: unknown,
+  options: UnexpectedErrorOptions = {},
+) {
+  const normalized = normalizeUnexpectedError(error);
+  const incident = {
+    service: options.service ?? "orchestrator-worker",
+    severity: options.severity ?? "error",
+    source: options.source ?? "server",
+    route: options.route ?? null,
+    method: options.method ?? options.request?.method ?? null,
+    toolName: options.toolName ?? null,
+    statusCode: options.statusCode ?? 500,
+    message: normalized.message,
+    errorName: normalized.name,
+    stack: normalized.stack,
+    runId: options.runId ?? null,
+    sessionId: options.sessionId ?? null,
+    userId: options.userId ?? null,
+    fingerprint: incidentFingerprint({
+      service: options.service ?? "orchestrator-worker",
+      source: options.source ?? "server",
+      route: options.route ?? null,
+      toolName: options.toolName ?? null,
+      statusCode: options.statusCode ?? 500,
+      message: normalized.message,
+    }),
+    alertWebhookConfigured: Boolean(deps.errorAlertWebhookUrl),
+    ...options.extra,
+  };
+
+  let alertDelivered = false;
+  try {
+    if (await shouldSendIncidentAlert(deps, incident.fingerprint)) {
+      if (deps.errorAlertWebhookUrl) {
+        await sendIncidentAlert(deps.errorAlertWebhookUrl, incident);
+        alertDelivered = true;
+      }
+    }
+  } catch {
+    alertDelivered = false;
+  }
+
+  await persistAnalyticsEvent(
+    deps,
+    "unexpected_error",
+    {
+      alertDelivered,
+      ...incident,
+    },
+    options.request,
+  );
+}
+
+function readIncidentDetails(properties: Record<string, unknown>) {
+  return properties.details && typeof properties.details === "object"
+    ? properties.details as Record<string, unknown>
+    : properties;
+}
+
+async function listAdminIncidents(deps: AppDeps, days = 7) {
+  const since = daysAgoIso(Math.max(1, Math.min(30, days)));
+  const events = await deps.store.listAnalyticsEvents({ since, limit: 5000 });
+  const incidents = events
+    .filter((event) => event.event === "unexpected_error")
+    .map((event) => {
+      const details = readIncidentDetails(event.properties);
+      return {
+        id: event.id,
+        createdAt: event.createdAt,
+        service: typeof details.service === "string" ? details.service : "unknown",
+        severity: typeof details.severity === "string" ? details.severity : "error",
+        source: typeof details.source === "string" ? details.source : "server",
+        route: typeof details.route === "string" ? details.route : null,
+        toolName: typeof details.toolName === "string" ? details.toolName : null,
+        method: typeof details.method === "string" ? details.method : null,
+        message: typeof details.message === "string" ? details.message : "Unknown error",
+        statusCode: typeof details.statusCode === "number" ? details.statusCode : null,
+        runId: typeof details.runId === "string" ? details.runId : null,
+        sessionId: typeof details.sessionId === "string" ? details.sessionId : null,
+        fingerprint: typeof details.fingerprint === "string" ? details.fingerprint : event.id,
+        alertDelivered: details.alertDelivered === true,
+      };
+    });
+
+  const grouped = new Map<string, {
+    fingerprint: string;
+    service: string;
+    severity: string;
+    source: string;
+    route: string | null;
+    toolName: string | null;
+    method: string | null;
+    message: string;
+    statusCode: number | null;
+    runId: string | null;
+    sessionId: string | null;
+    count: number;
+    lastSeenAt: string;
+    firstSeenAt: string;
+    alertDelivered: boolean;
+  }>();
+
+  for (const incident of incidents) {
+    const existing = grouped.get(incident.fingerprint);
+    if (!existing) {
+      grouped.set(incident.fingerprint, {
+        ...incident,
+        count: 1,
+        lastSeenAt: incident.createdAt,
+        firstSeenAt: incident.createdAt,
+      });
+      continue;
+    }
+    existing.count += 1;
+    if (incident.createdAt > existing.lastSeenAt) {
+      existing.lastSeenAt = incident.createdAt;
+      existing.runId = incident.runId;
+      existing.sessionId = incident.sessionId;
+      existing.alertDelivered = incident.alertDelivered;
+    }
+    if (incident.createdAt < existing.firstSeenAt) {
+      existing.firstSeenAt = incident.createdAt;
+    }
+  }
+
+  const recentHourThreshold = Date.now() - 60 * 60 * 1000;
+  const recentDayThreshold = Date.now() - 24 * 60 * 60 * 1000;
+
+  return {
+    summary: {
+      total: incidents.length,
+      lastHour: incidents.filter((incident) => Date.parse(incident.createdAt) >= recentHourThreshold).length,
+      last24Hours: incidents.filter((incident) => Date.parse(incident.createdAt) >= recentDayThreshold).length,
+      openFingerprints: [...grouped.values()].length,
+      alertWebhookConfigured: Boolean(deps.errorAlertWebhookUrl),
+    },
+    incidents: [...grouped.values()]
+      .sort((left, right) => right.lastSeenAt.localeCompare(left.lastSeenAt))
+      .slice(0, 25),
+    recentEvents: incidents.slice(0, 50),
+  };
 }
 
 function uniqueWorkIds(values: Array<string | null | undefined>) {
@@ -239,6 +485,7 @@ function normalizeToolArgs(toolName: ToolName, args: Record<string, unknown>): R
 
 function streamResponse(
   executor: (send: (event: string, data: Record<string, unknown>) => Promise<void>) => Promise<void>,
+  onError?: (error: unknown) => Promise<void>,
 ): Response {
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -250,6 +497,9 @@ function streamResponse(
       try {
         await executor(send);
       } catch (error) {
+        if (onError) {
+          await onError(error);
+        }
         await send("error", {
           message: error instanceof Error ? error.message : "Unknown error",
         });
@@ -672,6 +922,35 @@ function summarizeToolHistory(toolHistory: ToolHistoryEntry[]) {
   }));
 }
 
+type LiveToolTraceEntry = {
+  id: string;
+  toolName: ToolName;
+  label: string;
+  rationale?: string;
+  progress: string[];
+  args: Record<string, unknown>;
+  result?: Record<string, unknown>;
+  state: "running" | "completed" | "error";
+  isError?: boolean;
+};
+
+async function persistPlanToolTrace(
+  deps: AppDeps,
+  messageId: string | null,
+  runId: string,
+  toolCalls: LiveToolTraceEntry[],
+) {
+  if (!messageId) {
+    return;
+  }
+  await deps.store.updateMessageMetadata(messageId, {
+    phase: "plan",
+    runId,
+    toolCalls,
+    researchLog: toolCalls,
+  });
+}
+
 function describePlannerAction(
   toolName: ToolName,
   _rationale: string | undefined,
@@ -681,20 +960,20 @@ function describePlannerAction(
   switch (toolName) {
     case "search_works":
       return normalizedMessage
-        ? `I’m going to search the corpus for “${normalizedMessage},” pull the strongest passages, then have Codex build a briefing with source references.`
-        : "I’m going to search the corpus, pull the strongest passages, then have Codex build a briefing with source references.";
+        ? `I’m going to search the corpus for “${normalizedMessage},” pull the strongest passages, and then run a deeper research pass if the quick evidence is thin.`
+        : "I’m going to search the corpus, pull the strongest passages, and then run a deeper research pass if the quick evidence is thin.";
     case "get_relevant_chunks":
       return normalizedMessage
-        ? `I found some likely matches for “${normalizedMessage}.” Now I’m pulling the strongest passages and building the briefing.`
-        : "I found some likely matches. Now I’m pulling the strongest passages and building the briefing.";
+        ? `I found some likely matches for “${normalizedMessage}.” Now I’m pulling the strongest passages before I write the answer.`
+        : "I found some likely matches. Now I’m pulling the strongest passages before I write the answer.";
     case "get_work_metadata":
       return "I found a few likely books. Let me pull in their context before I go further.";
     case "get_work_text":
       return "I’m opening the source text directly so I can check the wording.";
     case "create_workspace":
-      return "I’m starting the Codex session now so it can use the search results as they come in.";
+      return "I’m starting the deeper research pass now so it can search broadly while I keep narrowing the evidence.";
     case "run_workspace_task":
-      return "Codex is running the deeper search now and gathering the strongest evidence.";
+      return "I’m running the deeper search now and gathering the strongest evidence.";
     case "read_workspace_file":
       return "The search finished, and I’m pulling the results back into the chat.";
     case "destroy_workspace":
@@ -805,6 +1084,51 @@ function collectRuntimeIds(toolCalls: Awaited<ReturnType<AppStore["listToolCalls
     }
   }
   return Array.from(runtimeIds);
+}
+
+function addRuntimeIds(runtimeIds: Set<string>, ...payloads: Array<Record<string, unknown> | undefined>) {
+  for (const payload of payloads) {
+    if (typeof payload?.runtimeId === "string" && payload.runtimeId.length > 0) {
+      runtimeIds.add(payload.runtimeId);
+    }
+  }
+}
+
+async function destroyTrackedRuntimes(
+  deps: AppDeps,
+  context: { sessionId: string; runId: string },
+  runtimeIds: Iterable<string>,
+) {
+  for (const runtimeId of runtimeIds) {
+    try {
+      await deps.runtimeGateway.destroyWorkspace({
+        runtimeId,
+        sessionId: context.sessionId,
+        runId: context.runId,
+      });
+    } catch {
+      // Leave the runtime record intact so a later janitor pass can retry it.
+    }
+  }
+}
+
+async function reapExpiredRuntimeInstances(
+  deps: AppDeps,
+  context: { runId: string },
+  limit = 25,
+) {
+  const expiredRuntimes = await deps.store.listExpiredRuntimeInstances(limit);
+  for (const runtime of expiredRuntimes) {
+    try {
+      await deps.runtimeGateway.destroyWorkspace({
+        runtimeId: runtime.runtimeId,
+        sessionId: runtime.sessionId,
+        runId: context.runId,
+      });
+    } catch {
+      // Best-effort janitor; another run can retry this runtime later.
+    }
+  }
 }
 
 function shouldReadLiveRuntimeFile(path: string) {
@@ -1201,8 +1525,10 @@ async function runOrchestrator(
     result: Record<string, unknown>;
   }> = [];
   const toolResults: Record<string, unknown>[] = [];
+  let liveToolTrace: LiveToolTraceEntry[] = [];
   let runtimeTasks = 0;
   let initialPlanSent = false;
+  let planMessageId: string | null = null;
 
   for (let turn = 1; turn <= HARD_LIMITS.MAX_TURNS; turn += 1) {
     if ((deps.now?.() ?? Date.now()) - started > HARD_LIMITS.MAX_RUN_WALL_CLOCK_SECONDS * 1000) {
@@ -1285,12 +1611,14 @@ async function runOrchestrator(
         phase: "plan",
         runId: run.id,
       });
+      planMessageId = planMessage.id;
       await send("assistant.plan", {
         runId: run.id,
         sessionId: session.id,
         messageId: planMessage.id,
         text: planText,
       });
+      await persistPlanToolTrace(deps, planMessageId, run.id, liveToolTrace);
       initialPlanSent = true;
     }
     await send("tool.started", {
@@ -1301,9 +1629,41 @@ async function runOrchestrator(
       rationale: toolCall.rationale ?? null,
       args: toolCall.args,
     });
+    liveToolTrace = [
+      ...liveToolTrace,
+      {
+        id: toolRecord.id,
+        toolName: toolCall.tool_name,
+        label: labelForToolCall(toolCall.tool_name, toolCall.args),
+        rationale: toolCall.rationale ?? undefined,
+        progress: toolCall.rationale ? [toolCall.rationale] : [],
+        args: toolCall.args,
+        state: "running",
+      },
+    ];
+    await persistPlanToolTrace(deps, planMessageId, run.id, liveToolTrace);
     const progressEmitter = startToolProgressEmitter(
       deps.runtimeGateway,
-      send,
+      async (eventName, data) => {
+        await send(eventName, data);
+        if (
+          eventName === "tool.progress"
+          && typeof data.toolCallId === "string"
+          && typeof data.text === "string"
+        ) {
+          const progressText = data.text;
+          liveToolTrace = liveToolTrace.map((entry) =>
+            entry.id === data.toolCallId
+              ? {
+                  ...entry,
+                  rationale: progressText,
+                  progress: entry.progress.includes(progressText) ? entry.progress : [...entry.progress, progressText],
+                }
+              : entry,
+          );
+          await persistPlanToolTrace(deps, planMessageId, run.id, liveToolTrace);
+        }
+      },
       {
         sessionId: session.id,
         runId: run.id,
@@ -1343,6 +1703,23 @@ async function runOrchestrator(
         ok: false,
         error: error instanceof Error ? error.message : "Unknown tool error",
       };
+      try {
+        await recordUnexpectedError(deps, error, {
+          request,
+          route: "/chat",
+          method: "POST",
+          source: "tool_execution",
+          toolName: toolCall.tool_name,
+          runId: run.id,
+          sessionId: session.id,
+          userId: session.userId,
+          extra: {
+            toolArgs: toolCall.args,
+          },
+        });
+      } catch {
+        // Error reporting should not block the user-facing run result.
+      }
     } finally {
       progressEmitter.stop();
     }
@@ -1366,6 +1743,23 @@ async function runOrchestrator(
       );
     }
     const streamedResult = clientSafeToolResult(toolCall.tool_name, result);
+    liveToolTrace = liveToolTrace.map((entry) =>
+      entry.id === toolRecord.id
+        ? {
+            ...entry,
+            label: labelForToolCall(toolCall.tool_name, toolCall.args),
+            rationale: toolCall.rationale ?? entry.rationale,
+            progress:
+              toolCall.rationale && !entry.progress.includes(toolCall.rationale)
+                ? [...entry.progress, toolCall.rationale]
+                : entry.progress,
+            result: streamedResult,
+            isError: status === "failed",
+            state: status === "failed" ? "error" : "completed",
+          }
+        : entry,
+    );
+    await persistPlanToolTrace(deps, planMessageId, run.id, liveToolTrace);
     await send("tool.completed", {
       runId: run.id,
       toolCallId: toolRecord.id,
@@ -1409,6 +1803,18 @@ async function runOrchestrator(
 
 export function createApp(deps: AppDeps) {
   const app = new Hono();
+  app.onError(async (error, c) => {
+    try {
+      await recordUnexpectedError(deps, error, {
+        request: c.req.raw,
+        route: c.req.path,
+        method: c.req.method,
+      });
+    } catch {
+      // Fall through to the response even if incident capture fails.
+    }
+    return c.json({ error: error instanceof Error ? error.message : "Internal server error." }, 500);
+  });
   app.use(
     "*",
     cors({
@@ -1473,6 +1879,39 @@ export function createApp(deps: AppDeps) {
       return null;
     }
     return c.json({ error: "Cross-site requests are not allowed." }, 403);
+  }
+
+  async function respondWithLoggedError(
+    c: Context,
+    error: unknown,
+    fallbackMessage: string,
+    options: {
+      statusCode?: number;
+      source?: string;
+      toolName?: string;
+      runId?: string | null;
+      sessionId?: string | null;
+      userId?: string | null;
+      extra?: Record<string, unknown>;
+    } = {},
+  ) {
+    try {
+      await recordUnexpectedError(deps, error, {
+        request: c.req.raw,
+        route: c.req.path,
+        method: c.req.method,
+        statusCode: 500,
+        source: options.source,
+        toolName: options.toolName,
+        runId: options.runId ?? null,
+        sessionId: options.sessionId ?? null,
+        userId: options.userId ?? null,
+        extra: options.extra,
+      });
+    } catch {
+      // Preserve the original response if incident capture fails.
+    }
+    return c.json({ error: error instanceof Error ? error.message : fallbackMessage }, 500);
   }
 
   function toPublicProfile(profile: Awaited<ReturnType<AppStore["getUserProfile"]>>) {
@@ -1541,7 +1980,9 @@ export function createApp(deps: AppDeps) {
       });
       return c.json({ ok: true });
     } catch (error) {
-      return c.json({ error: error instanceof Error ? error.message : "Failed to store analytics event." }, 500);
+      return respondWithLoggedError(c, error, "Failed to store analytics event.", {
+        source: "analytics_ingest",
+      });
     }
   });
 
@@ -1564,7 +2005,9 @@ export function createApp(deps: AppDeps) {
       const users = await deps.store.listUsers();
       return c.json({ users });
     } catch (error) {
-      return c.json({ error: error instanceof Error ? error.message : "Failed to load users." }, 500);
+      return respondWithLoggedError(c, error, "Failed to load users.", {
+        source: "admin_users",
+      });
     }
   });
 
@@ -1577,7 +2020,9 @@ export function createApp(deps: AppDeps) {
       const runs = await deps.store.listAllRuns();
       return c.json({ runs });
     } catch (error) {
-      return c.json({ error: error instanceof Error ? error.message : "Failed to load runs." }, 500);
+      return respondWithLoggedError(c, error, "Failed to load runs.", {
+        source: "admin_runs",
+      });
     }
   });
 
@@ -1590,7 +2035,24 @@ export function createApp(deps: AppDeps) {
       const sessions = await deps.store.listAdminSessions();
       return c.json({ sessions });
     } catch (error) {
-      return c.json({ error: error instanceof Error ? error.message : "Failed to load sessions." }, 500);
+      return respondWithLoggedError(c, error, "Failed to load sessions.", {
+        source: "admin_sessions",
+      });
+    }
+  });
+
+  app.get("/admin/incidents", async (c) => {
+    const admin = await requireAdmin(c);
+    if (!admin) {
+      return c.json({ error: "Not authorized." }, 403);
+    }
+    const days = Number(c.req.query("days") ?? "7");
+    try {
+      return c.json(await listAdminIncidents(deps, Number.isFinite(days) ? days : 7));
+    } catch (error) {
+      return respondWithLoggedError(c, error, "Failed to load incidents.", {
+        source: "admin_incidents",
+      });
     }
   });
 
@@ -1613,7 +2075,9 @@ export function createApp(deps: AppDeps) {
       const result = await runAnalyticsQuery(deps, { query, days });
       return c.json(result);
     } catch (error) {
-      return c.json({ error: error instanceof Error ? error.message : "Analytics query failed." }, 500);
+      return respondWithLoggedError(c, error, "Analytics query failed.", {
+        source: "admin_analytics_query",
+      });
     }
   });
 
@@ -1759,7 +2223,18 @@ export function createApp(deps: AppDeps) {
         windowStartedAt: billingCheck.windowStartedAt,
       }, 402);
     }
-    return streamResponse((send) => runOrchestrator(deps, c.req.raw, requestPayload, send));
+    return streamResponse(
+      (send) => runOrchestrator(deps, c.req.raw, requestPayload, send),
+      (error) =>
+        recordUnexpectedError(deps, error, {
+          request: c.req.raw,
+          route: c.req.path,
+          method: c.req.method,
+          source: "chat_stream",
+          userId: requestPayload.userId ?? null,
+          sessionId: requestPayload.sessionId ?? null,
+        }),
+    );
   });
 
   app.get("/sessions", async (c) => {

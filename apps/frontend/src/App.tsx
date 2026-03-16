@@ -9,7 +9,7 @@ import { ChevronsLeft, ChevronsRight, Link2, MessageSquarePlus } from "lucide-re
 
 import { getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type PublicProfileResponse, type UserProfile, type WorkDetail, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
-import { buildSignInUrl, fetchAdminAccess, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchCurrentUser, fetchMessages, fetchProfile, fetchSessions, fetchWorkDetail, fetchWorks, followProfile, queryAdminAnalytics, sendAnalyticsEvent, signOut, streamChat, unfollowProfile } from "./api";
+import { buildSignInUrl, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchCurrentUser, fetchMessages, fetchProfile, fetchSessions, fetchWorkDetail, fetchWorks, followProfile, queryAdminAnalytics, sendAnalyticsEvent, signOut, streamChat, unfollowProfile } from "./api";
 import { Thread } from "./components/assistant-ui/thread";
 import { Avatar, AvatarFallback, AvatarImage } from "./components/ui/avatar";
 import { Button } from "./components/ui/button";
@@ -90,6 +90,12 @@ type AdminAnalyticsState = {
   error: string | null;
   draft: string;
   query: string;
+  payload: Record<string, unknown> | null;
+};
+
+type AdminIncidentsState = {
+  loading: boolean;
+  error: string | null;
   payload: Record<string, unknown> | null;
 };
 
@@ -664,6 +670,21 @@ function adminText(value: unknown) {
     return String(value);
   }
   return "—";
+}
+
+function normalizeClientError(error: unknown) {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message,
+      stack: error.stack ?? null,
+    };
+  }
+  return {
+    name: "Error",
+    message: typeof error === "string" ? error : "Unknown client error",
+    stack: null,
+  };
 }
 
 function formatCurrency(value: unknown) {
@@ -1466,6 +1487,11 @@ export default function App() {
     query: "Give me signups per day over the past seven days.",
     payload: null,
   });
+  const [adminIncidents, setAdminIncidents] = useState<AdminIncidentsState>({
+    loading: false,
+    error: null,
+    payload: null,
+  });
   const activeRunTokenRef = useRef(0);
   const bookPageRef = useRef<HTMLElement | null>(null);
   const bookAssistantResizeStartRef = useRef<{ pointerX: number; width: number } | null>(null);
@@ -1552,7 +1578,10 @@ export default function App() {
             user: next.user,
           });
         }
-      } catch {
+      } catch (error) {
+        reportClientIncident(error, {
+          source: "admin_access_load",
+        });
         if (!cancelled) {
           setAdminAccess({
             loading: false,
@@ -1620,6 +1649,9 @@ export default function App() {
         }
       })
       .catch((error) => {
+        reportClientIncident(error, {
+          source: "agentation_import",
+        });
         console.error("Failed to load Agentation.", error);
       });
 
@@ -1627,6 +1659,33 @@ export default function App() {
       cancelled = true;
     };
   }, [debugEnabled]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const handleError = (event: ErrorEvent) => {
+      reportClientIncident(event.error ?? event.message, {
+        source: "window_error",
+        filename: event.filename || null,
+        lineno: event.lineno || null,
+        colno: event.colno || null,
+      });
+    };
+    const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
+      reportClientIncident(event.reason, {
+        source: "unhandledrejection",
+      });
+    };
+
+    window.addEventListener("error", handleError);
+    window.addEventListener("unhandledrejection", handleUnhandledRejection);
+    return () => {
+      window.removeEventListener("error", handleError);
+      window.removeEventListener("unhandledrejection", handleUnhandledRejection);
+    };
+  }, [currentUserId]);
 
   useEffect(() => {
     if (feedLoading || feedNextOffset === null || feedWorks.length > 0) {
@@ -1862,6 +1921,20 @@ export default function App() {
     sendAnalyticsEvent(event, properties, currentUserId);
   }
 
+  function reportClientIncident(error: unknown, context: Record<string, unknown> = {}) {
+    const normalized = normalizeClientError(error);
+    sendAnalyticsEvent("unexpected_error", {
+      service: "frontend",
+      severity: "error",
+      source: "client",
+      message: normalized.message,
+      errorName: normalized.name,
+      stack: normalized.stack,
+      href: typeof window !== "undefined" ? window.location.href : null,
+      ...context,
+    }, currentUserId);
+  }
+
   async function loadAdminRunLogs(runId: string) {
     const normalizedRunId = runId.trim();
     if (!normalizedRunId) {
@@ -1995,6 +2068,24 @@ export default function App() {
     }
   }
 
+  async function loadAdminIncidents(days = 7) {
+    try {
+      setAdminIncidents((current) => ({ ...current, loading: true, error: null }));
+      const payload = await fetchAdminIncidents(days);
+      setAdminIncidents({
+        loading: false,
+        error: null,
+        payload,
+      });
+    } catch (error) {
+      setAdminIncidents({
+        loading: false,
+        error: error instanceof Error ? error.message : "Failed to load incidents.",
+        payload: null,
+      });
+    }
+  }
+
   useEffect(() => {
     if (!adminAccess.allowed || !selectedAdminRunId || adminRunLog.loading || adminRunLog.payload || adminRunLog.error) {
       return;
@@ -2015,7 +2106,10 @@ export default function App() {
     if (adminRuns.rows.length === 0 && !adminRuns.loading && !adminRuns.error) {
       void loadAdminRuns();
     }
-  }, [adminAccess.allowed, adminRuns.error, adminRuns.loading, adminRuns.rows.length, adminSessions.error, adminSessions.loading, adminSessions.rows.length, adminUsers.error, adminUsers.loading, adminUsers.rows.length]);
+    if (!adminIncidents.payload && !adminIncidents.loading && !adminIncidents.error) {
+      void loadAdminIncidents();
+    }
+  }, [adminAccess.allowed, adminIncidents.error, adminIncidents.loading, adminIncidents.payload, adminRuns.error, adminRuns.loading, adminRuns.rows.length, adminSessions.error, adminSessions.loading, adminSessions.rows.length, adminUsers.error, adminUsers.loading, adminUsers.rows.length]);
 
   async function sendPrompt(
     question: string,
@@ -2947,6 +3041,12 @@ export default function App() {
     const analyticsSeries = Array.isArray(analyticsPayload.series) ? analyticsPayload.series as Array<Record<string, unknown>> : [];
     const analyticsHashtags = Array.isArray(analyticsPayload.hashtags) ? analyticsPayload.hashtags as Array<Record<string, unknown>> : [];
     const analyticsNotes = Array.isArray(analyticsPayload.notes) ? analyticsPayload.notes as Array<unknown> : [];
+    const incidentsPayload = adminIncidents.payload ?? {};
+    const incidentsSummary =
+      incidentsPayload.summary && typeof incidentsPayload.summary === "object"
+        ? incidentsPayload.summary as Record<string, unknown>
+        : {};
+    const incidentRows = Array.isArray(incidentsPayload.incidents) ? incidentsPayload.incidents as Array<Record<string, unknown>> : [];
     const adminNavItems = [
       {
         key: "runs",
@@ -2997,6 +3097,93 @@ export default function App() {
             );
           })}
         </div>
+
+        <Card className="rounded-[24px] border-[rgba(72,43,37,0.06)] bg-[rgba(255,250,246,0.92)] shadow-none">
+          <CardContent className="space-y-4 p-5">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="space-y-1">
+                <h2 className="font-[Newsreader] text-[clamp(1.5rem,2.6vw,2.2rem)] font-semibold tracking-[-0.04em] text-[var(--ink)]">
+                  Incident Watch
+                </h2>
+                <p className="text-sm leading-6 text-[var(--ink-soft)]">
+                  Unexpected server and client errors are recorded here automatically. Alerts fan out through the worker webhook when configured.
+                </p>
+              </div>
+              <Button type="button" variant="outline" size="sm" onClick={() => void loadAdminIncidents()}>
+                Refresh incidents
+              </Button>
+            </div>
+
+            <div className="flex flex-wrap gap-3">
+              <div className="rounded-[18px] border border-[rgba(72,43,37,0.08)] bg-white px-4 py-3">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--ink-soft)]">Last hour</div>
+                <div className="mt-1 text-lg font-semibold text-[var(--ink)]">{adminText(incidentsSummary.lastHour)}</div>
+              </div>
+              <div className="rounded-[18px] border border-[rgba(72,43,37,0.08)] bg-white px-4 py-3">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--ink-soft)]">Last 24 hours</div>
+                <div className="mt-1 text-lg font-semibold text-[var(--ink)]">{adminText(incidentsSummary.last24Hours)}</div>
+              </div>
+              <div className="rounded-[18px] border border-[rgba(72,43,37,0.08)] bg-white px-4 py-3">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--ink-soft)]">Open fingerprints</div>
+                <div className="mt-1 text-lg font-semibold text-[var(--ink)]">{adminText(incidentsSummary.openFingerprints)}</div>
+              </div>
+              <div className="rounded-[18px] border border-[rgba(72,43,37,0.08)] bg-white px-4 py-3">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--ink-soft)]">Alerts</div>
+                <div className="mt-1 text-sm font-semibold text-[var(--ink)]">
+                  {incidentsSummary.alertWebhookConfigured === true ? "Webhook configured" : "Admin only"}
+                </div>
+              </div>
+            </div>
+
+            {adminIncidents.error ? (
+              <div className="rounded-[16px] border border-[rgba(187,73,44,0.2)] bg-[rgba(187,73,44,0.08)] px-4 py-3 text-sm leading-6 text-[var(--ink)]">
+                {adminIncidents.error}
+              </div>
+            ) : adminIncidents.loading ? (
+              <p className="text-sm text-[var(--ink-soft)]">Loading incidents…</p>
+            ) : incidentRows.length > 0 ? (
+              <div className="overflow-auto">
+                <table className="min-w-full text-sm text-[var(--ink)]">
+                  <thead className="text-left text-xs uppercase tracking-[0.16em] text-[var(--ink-soft)]">
+                    <tr>
+                      <th className="pb-3 pr-4">Error</th>
+                      <th className="pb-3 pr-4">Service</th>
+                      <th className="pb-3 pr-4">Seen</th>
+                      <th className="pb-3 pr-4">Count</th>
+                      <th className="pb-3 pr-4">Context</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {incidentRows.slice(0, 8).map((row, index) => (
+                      <tr key={`${adminText(row.fingerprint)}-${index}`} className="border-t border-[rgba(72,43,37,0.08)] align-top">
+                        <td className="py-3 pr-4">
+                          <div className="font-medium">{adminText(row.message)}</div>
+                          <div className="text-xs text-[var(--ink-soft)]">
+                            {adminText(row.route)} {adminText(row.method) !== "—" ? `· ${adminText(row.method)}` : ""}
+                          </div>
+                        </td>
+                        <td className="py-3 pr-4">
+                          <div>{adminText(row.service)}</div>
+                          <div className="text-xs text-[var(--ink-soft)]">{adminText(row.source)}</div>
+                        </td>
+                        <td className="py-3 pr-4">{formatRelativeTime(typeof row.lastSeenAt === "string" ? row.lastSeenAt : null)}</td>
+                        <td className="py-3 pr-4">{adminText(row.count)}</td>
+                        <td className="py-3 pr-4">
+                          <div>{adminText(row.toolName)}</div>
+                          <div className="text-xs text-[var(--ink-soft)]">
+                            {adminText(row.runId) !== "—" ? `run ${adminText(row.runId)}` : adminText(row.sessionId) !== "—" ? `session ${adminText(row.sessionId)}` : "No run/session id"}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="text-sm text-[var(--ink-soft)]">No unexpected errors recorded in the current window.</p>
+            )}
+          </CardContent>
+        </Card>
       </section>
     );
 
@@ -3301,13 +3488,18 @@ export default function App() {
                   <div className="space-y-2">
                     <h3 className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--ink-soft)]">Tracked Events</h3>
                     <div className="space-y-1 text-sm leading-6 text-[var(--ink)]">
-                      <p>`book_impression`: a book became visible in the explore feed.</p>
-                      <p>`book_open`: a book page was opened.</p>
-                      <p>`book_selected_for_ask`: a book was added into an ask.</p>
-                      <p>`book_citation_open`: a citation opened a book.</p>
-                      <p>`book_candidate_in_run`: the orchestrator elevated a book into a serious candidate set.</p>
-                      <p>`book_cited`: the final answer cited the book.</p>
-                      <p>`book_used_in_successful_answer`: the book contributed to a completed answer.</p>
+                      <p><code>sign_in</code>: a user started a sign-in flow.</p>
+                      <p><code>sign_up</code>: a user started a sign-up flow.</p>
+                      <p><code>assistant_session_created</code>: a new assistant session was created.</p>
+                      <p><code>assistant_followup_message</code>: a user sent another message in an existing session.</p>
+                      <p><code>book_impression</code>: a book became visible in the explore feed.</p>
+                      <p><code>book_open</code>: a book page was opened.</p>
+                      <p><code>book_selected_for_ask</code>: a book was added into an ask.</p>
+                      <p><code>book_citation_open</code>: a citation opened a book.</p>
+                      <p><code>book_candidate_in_run</code>: the orchestrator elevated a book into a serious candidate set.</p>
+                      <p><code>book_cited</code>: the final answer cited the book.</p>
+                      <p><code>book_used_in_successful_answer</code>: the book contributed to a completed answer.</p>
+                      <p>User research messages from assistant sessions are also available as text corpus input for topic and phrasing questions.</p>
                     </div>
                   </div>
                   <div className="space-y-2">
@@ -3335,14 +3527,8 @@ export default function App() {
                       className="min-h-[150px] rounded-[18px] border-[rgba(72,43,37,0.12)] bg-white px-4 py-4 pr-18 text-sm leading-6 focus-visible:border-[rgba(72,43,37,0.28)] focus-visible:ring-[rgba(72,43,37,0.14)]"
                       value={adminAnalytics.draft}
                       onChange={(event) => setAdminAnalytics((current) => ({ ...current, draft: event.currentTarget.value }))}
-                      onKeyDown={(event) => {
-                        event.stopPropagation();
-                        if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-                          event.preventDefault();
-                          void loadAdminAnalytics(adminAnalytics.draft);
-                        }
-                      }}
                       placeholder="Give me signups per day over the past seven days."
+                      spellCheck={false}
                     />
                     <Button
                       type="submit"
@@ -3382,7 +3568,7 @@ export default function App() {
                       {adminAnalytics.loading ? "Running analytics…" : "Run analytics query"}
                     </Button>
                     <span className="text-sm text-[var(--ink-soft)]">
-                      Press `Cmd`/`Ctrl` + `Enter` to run from the field.
+                      Type a question, then run it with the button.
                     </span>
                     <span className="text-sm text-[var(--ink-soft)]">
                       Backed by `/a` events plus recent user messages from assistant sessions.
