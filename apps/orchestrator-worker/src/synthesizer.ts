@@ -32,6 +32,13 @@ export interface SynthesisInput {
   plannerDraft?: string;
   plannerCitations: Citation[];
   toolHistory: ToolHistoryEntry[];
+  exactCitationLinks?: Array<{
+    workId: string;
+    chunkId?: string;
+    label: string;
+    excerpt: string;
+    url: string;
+  }>;
   billingContext?: BillingContext;
 }
 
@@ -351,13 +358,24 @@ export class OpenAISynthesizer implements Synthesizer {
     }
 
     const summarizedToolHistory = summarizeToolHistoryForModel(input.toolHistory);
+    const exactCitationLinks = Array.isArray(input.exactCitationLinks)
+      ? input.exactCitationLinks.slice(0, 16).map((entry) => ({
+          workId: entry.workId,
+          ...(entry.chunkId ? { chunkId: entry.chunkId } : {}),
+          label: truncateForModel(entry.label, 120),
+          excerpt: truncateForModel(entry.excerpt, 220),
+          url: entry.url,
+        }))
+      : [];
     const body = {
       model: this.model,
       response_format: { type: "json_object" as const },
       messages: [
         {
           role: "system",
-          content: `${SYNTHESIZER_SYSTEM_PROMPT}\nReturn a single JSON object with answer and citations.`,
+          content: `${SYNTHESIZER_SYSTEM_PROMPT}
+Return a single JSON object with answer and citations.
+If exact citation URLs are provided, cite by pasting those exact absolute URLs verbatim in the answer body. Do not invent, shorten, rewrite, or substitute any URL.`,
         },
         {
           role: "user",
@@ -366,6 +384,7 @@ export class OpenAISynthesizer implements Synthesizer {
             conversationHistory: input.conversationHistory,
             plannerDraft: input.plannerDraft ?? null,
             toolHistory: summarizedToolHistory,
+            exactCitationLinks,
             responseInstructions: "Reply with JSON only.",
             outputShape: {
               answer: "string",

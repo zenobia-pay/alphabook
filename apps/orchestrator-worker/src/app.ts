@@ -1163,6 +1163,67 @@ function latestCompletedBriefing(
   return null;
 }
 
+function sanitizeCitationRecords(input: unknown): Citation[] {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+  const citations: Citation[] = [];
+  for (const candidate of input) {
+    if (!candidate || typeof candidate !== "object") {
+      continue;
+    }
+    const record = candidate as Record<string, unknown>;
+    if (typeof record.workId !== "string" || typeof record.label !== "string" || typeof record.excerpt !== "string") {
+      continue;
+    }
+    citations.push({
+      workId: record.workId,
+      label: record.label,
+      excerpt: record.excerpt,
+      ...(typeof record.chunkId === "string" ? { chunkId: record.chunkId } : {}),
+      ...(typeof record.r2Key === "string" ? { r2Key: record.r2Key } : {}),
+    });
+  }
+  return citations;
+}
+
+function collectSynthesisCitations(
+  plannerCitations: Citation[],
+  toolHistory: ToolHistoryEntry[],
+): Citation[] {
+  const deduped = new Map<string, Citation>();
+  const pushCitation = (citation: Citation) => {
+    const key = `${citation.workId}:${citation.chunkId ?? citation.label}`;
+    if (!deduped.has(key)) {
+      deduped.set(key, citation);
+    }
+  };
+
+  for (const citation of plannerCitations) {
+    pushCitation(citation);
+  }
+  for (const entry of toolHistory) {
+    for (const citation of sanitizeCitationRecords(entry.result.citations)) {
+      pushCitation(citation);
+    }
+    if (Array.isArray(entry.result.chunks)) {
+      for (const chunk of entry.result.chunks as ChunkSearchResult[]) {
+        if (!chunk || typeof chunk !== "object" || typeof chunk.workId !== "string" || typeof chunk.excerpt !== "string") {
+          continue;
+        }
+        pushCitation({
+          workId: chunk.workId,
+          chunkId: chunk.id,
+          label: `${chunk.workId}#${chunk.chunkIndex}`,
+          excerpt: chunk.excerpt,
+          r2Key: chunk.r2Key ?? undefined,
+        });
+      }
+    }
+  }
+  return [...deduped.values()];
+}
+
 function runtimeIdFromToolCall(toolCall: Awaited<ReturnType<AppStore["listToolCalls"]>>[number]) {
   const argsRuntimeId = typeof toolCall.argsJson?.runtimeId === "string" ? toolCall.argsJson.runtimeId : null;
   const resultRuntimeId = typeof toolCall.resultJson?.runtimeId === "string" ? toolCall.resultJson.runtimeId : null;
@@ -2291,13 +2352,31 @@ async function buildChunkIndexPassageUrl(
   });
 }
 
+async function buildChunkIdPassageUrl(
+  deps: AppDeps,
+  sessionId: string,
+  chunkId: string,
+): Promise<string | null> {
+  const [chunk] = await deps.store.getChunksByIds([chunkId]);
+  if (!chunk) {
+    return null;
+  }
+  return buildCitationPassageUrl(deps, sessionId, {
+    workId: chunk.workId,
+    chunkId: chunk.id,
+    label: `chunk ${chunk.id}`,
+    excerpt: chunk.text,
+    r2Key: chunk.r2Key ?? undefined,
+  });
+}
+
 async function rewriteAnswerWithCitationLinks(
   deps: AppDeps,
   sessionId: string,
   answer: string,
   citations: Citation[],
 ) {
-  const formatPassageLink = (link: string) => `[${link}](${link})`;
+  const formatPassageLink = (link: string) => `<${link}>`;
   const citationLinks = await Promise.all(citations.map((citation) => buildCitationPassageUrl(deps, sessionId, citation)));
   let rewritten = answer;
   let citationIndex = 0;
@@ -2355,6 +2434,16 @@ async function rewriteAnswerWithCitationLinks(
     }
   }
 
+  const chunkUuidLineMatches = [...rewritten.matchAll(/\(([^()\n]+),\s*chunk\s+([0-9a-f-]{36})\)/giu)];
+  for (const match of chunkUuidLineMatches) {
+    const [fullMatch, title, chunkId] = match;
+    const link = await buildChunkIdPassageUrl(deps, sessionId, chunkId);
+    if (!link) {
+      continue;
+    }
+    rewritten = rewritten.replace(fullMatch, `(${title.trim()}, ${formatPassageLink(link)})`);
+  }
+
   const chunkLineMatches = [...rewritten.matchAll(/(^|\n)([^\n]+?)\s+—\s+workId\s+([0-9a-f-]{36}),\s*chunk\s+#(\d+)(?=\n|$)/giu)];
   for (const match of chunkLineMatches) {
     const [fullMatch, linePrefix, title, workId, chunkIndexRaw] = match;
@@ -2396,6 +2485,18 @@ async function synthesizeAnswer(
     sessionId: params.sessionId,
   });
 
+  const exactCitationLinks = await Promise.all(
+    collectSynthesisCitations(params.plannerCitations, params.toolHistory)
+      .slice(0, 16)
+      .map(async (citation) => ({
+        workId: citation.workId,
+        ...(citation.chunkId ? { chunkId: citation.chunkId } : {}),
+        label: citation.label,
+        excerpt: citation.excerpt,
+        url: await buildCitationPassageUrl(deps, params.sessionId, citation),
+      })),
+  );
+
   let synthesis;
   synthesis = await deps.synthesizer.synthesize({
     userMessage: params.userMessage,
@@ -2403,6 +2504,7 @@ async function synthesizeAnswer(
     plannerDraft: params.plannerDraft,
     plannerCitations: params.plannerCitations,
     toolHistory: params.toolHistory,
+    exactCitationLinks,
     billingContext: {
       userId: params.userId,
       sessionId: params.sessionId,
