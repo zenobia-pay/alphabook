@@ -13,6 +13,8 @@ import { ScriptedRouter } from "../src/router";
 import { FlyMachinesRuntimeGateway } from "../src/runtime";
 import { InMemoryAppStore } from "../src/store";
 import type { SynthesisInput, SynthesisResult, Synthesizer } from "../src/synthesizer";
+import type { PlannerContext } from "../src/planner";
+import type { RouterContext } from "../src/router";
 
 class EchoSynthesizer implements Synthesizer {
   async synthesize(input: SynthesisInput): Promise<SynthesisResult> {
@@ -226,6 +228,110 @@ test("orchestrator streams retrieval tool calls and final answer", async () => {
   assert.match(body, /event: tool\.completed/);
   assert.match(body, /event: assistant\.completed/);
   assert.match(body, /Don Quixote is the strongest match/);
+});
+
+test("follow-up requests pass full chat history into router and planner", async () => {
+  const store = new InMemoryAppStore([
+    {
+      id: "work-1",
+      gutenbergId: 996,
+      title: "Don Quixote",
+      language: "en",
+      releaseDate: "2000-01-01",
+      rightsStatus: "public_domain",
+      summary: "A novel about delusion, grief, and errantry.",
+      authors: ["Miguel de Cervantes"],
+      subjects: ["fiction", "melancholy"],
+      cleanTextKey: "gutenberg/clean/996/clean.txt",
+    },
+  ], []);
+  const session = await store.createSession("11111111-1111-1111-1111-111111111111", "Follow-up thread");
+  await store.appendMessage(session.id, "user", "Show me books about grief.");
+  await store.appendMessage(session.id, "assistant", "Don Quixote and Moby-Dick are strong matches.");
+
+  const router = {
+    async decide(context: RouterContext) {
+      assert.equal(context.userMessage, "What about the second one?");
+      assert.deepEqual(
+        context.conversationHistory.map((message) => [message.role, message.content]),
+        [
+          ["user", "Show me books about grief."],
+          ["assistant", "Don Quixote and Moby-Dick are strong matches."],
+          ["user", "What about the second one?"],
+        ],
+      );
+      return {
+        type: "tool_chain" as const,
+        fullQuery: "Tell me more about Moby-Dick as a grief novel.",
+      };
+    },
+  };
+
+  const planner = {
+    async decide(context: PlannerContext) {
+      assert.equal(context.userMessage, "Tell me more about Moby-Dick as a grief novel.");
+      assert.deepEqual(
+        context.conversationHistory.map((message) => [message.role, message.content]),
+        [
+          ["user", "Show me books about grief."],
+          ["assistant", "Don Quixote and Moby-Dick are strong matches."],
+          ["user", "What about the second one?"],
+        ],
+      );
+      return {
+        type: "final_answer" as const,
+        answer: "The follow-up saw the full thread.",
+        citations: [],
+      };
+    },
+  };
+
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    router,
+    planner,
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+      async runWorkspaceTask() {
+        return { ok: false, error: "disabled" };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: false, error: "disabled" };
+      },
+      async destroyWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const response = await app.request("/chat", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      sessionId: session.id,
+      userId: "11111111-1111-1111-1111-111111111111",
+      message: "What about the second one?",
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  const body = await response.text();
+  assert.match(body, /The follow-up saw the full thread\./);
 });
 
 test("orchestrator can delegate to a runtime gateway and finish the run", async () => {

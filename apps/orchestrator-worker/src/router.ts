@@ -19,6 +19,10 @@ export type RouterDecision = z.infer<typeof RouterDecisionSchema>;
 
 export interface RouterContext {
   userMessage: string;
+  conversationHistory: Array<{
+    role: "user" | "assistant" | "system" | "tool";
+    content: string;
+  }>;
   billingContext?: BillingContext;
 }
 
@@ -93,6 +97,7 @@ export class OpenAIRouter implements Router {
             task: "Route the user's message before any search tools run.",
             responseInstructions: "Reply with JSON only.",
             userMessage: context.userMessage,
+            conversationHistory: context.conversationHistory,
             outputShape: {
               type: "direct_response | tool_chain",
               answer: "string when using direct_response",

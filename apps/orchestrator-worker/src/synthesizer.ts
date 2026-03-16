@@ -23,6 +23,10 @@ export interface ToolHistoryEntry {
 
 export interface SynthesisInput {
   userMessage: string;
+  conversationHistory: Array<{
+    role: "user" | "assistant" | "system" | "tool";
+    content: string;
+  }>;
   plannerDraft?: string;
   plannerCitations: Citation[];
   toolHistory: ToolHistoryEntry[];
@@ -211,6 +215,7 @@ export class OpenAISynthesizer implements Synthesizer {
           role: "user",
           content: JSON.stringify({
             question: input.userMessage,
+            conversationHistory: input.conversationHistory,
             plannerDraft: input.plannerDraft ?? null,
             toolHistory: input.toolHistory,
             responseInstructions: "Reply with JSON only.",

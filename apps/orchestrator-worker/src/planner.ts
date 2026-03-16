@@ -13,6 +13,10 @@ import { openAIUsageFromResponse, type BillingContext, type BillingService } fro
 
 export interface PlannerContext {
   userMessage: string;
+  conversationHistory: Array<{
+    role: "user" | "assistant" | "system" | "tool";
+    content: string;
+  }>;
   turns: number;
   toolHistory: Array<{
     toolName: ToolName;

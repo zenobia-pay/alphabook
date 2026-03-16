@@ -10,7 +10,7 @@ import type { Planner } from "./planner";
 import { parseToolCall } from "./planner";
 import type { Router } from "./router";
 import type { Synthesizer, ToolHistoryEntry } from "./synthesizer";
-import type { AppStore, SessionRecord } from "./store";
+import type { AppStore, MessageRecord, SessionRecord } from "./store";
 
 export interface WorkerQueues {
   ingestName: string;
@@ -913,6 +913,13 @@ async function persistFinalArtifact(deps: AppDeps, sessionId: string, runId: str
   return key;
 }
 
+function formatConversationHistory(messages: MessageRecord[]) {
+  return messages.map((message) => ({
+    role: message.role,
+    content: message.content,
+  }));
+}
+
 async function synthesizeAnswer(
   deps: AppDeps,
   params: {
@@ -920,6 +927,10 @@ async function synthesizeAnswer(
     sessionId: string;
     runId: string;
     userMessage: string;
+    conversationHistory: Array<{
+      role: "user" | "assistant" | "system" | "tool";
+      content: string;
+    }>;
     plannerDraft?: string;
     plannerCitations: Citation[];
     toolHistory: ToolHistoryEntry[];
@@ -934,6 +945,7 @@ async function synthesizeAnswer(
   let synthesis;
   synthesis = await deps.synthesizer.synthesize({
     userMessage: params.userMessage,
+    conversationHistory: params.conversationHistory,
     plannerDraft: params.plannerDraft,
     plannerCitations: params.plannerCitations,
     toolHistory: params.toolHistory,
@@ -990,6 +1002,7 @@ async function runOrchestrator(
   }
 
   await deps.store.appendMessage(session.id, "user", input.message);
+  const conversationHistory = formatConversationHistory(await deps.store.listMessages(session.id));
   const run = await deps.store.createRun(session.id);
   await send("run.started", {
     runId: run.id,
@@ -999,6 +1012,7 @@ async function runOrchestrator(
   const routeDecision = deps.router
     ? await deps.router.decide({
         userMessage: input.message,
+        conversationHistory,
         billingContext: {
           userId: session.userId,
           sessionId: session.id,
@@ -1073,6 +1087,7 @@ async function runOrchestrator(
 
     const decision: PlannerDecision = await deps.planner.decide({
       userMessage: routedQuery,
+      conversationHistory,
       turns: turn,
       toolHistory,
       workScope: input.workIds,
@@ -1097,6 +1112,7 @@ async function runOrchestrator(
           sessionId: session.id,
           runId: run.id,
           userMessage: input.message,
+          conversationHistory,
           plannerDraft: decision.answer,
           plannerCitations: decision.citations,
           toolHistory,
