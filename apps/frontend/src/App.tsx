@@ -781,7 +781,7 @@ function profileHandle(user: UserProfile | null) {
   if (user?.email) {
     return `@${user.email.split("@")[0]}`;
   }
-  return `@reader-${(user?.id ?? "alphabook").slice(0, 8)}`;
+  return "@alphabook";
 }
 
 function formatReleaseYear(value: string | null | undefined) {
@@ -1133,16 +1133,12 @@ function SessionListCard({
   onOpen: () => void;
 }) {
   return (
-    <button type="button" onClick={onOpen} className="w-full text-left">
-      <Card className="rounded-[20px] border-[rgba(72,43,37,0.06)] bg-[rgba(255,255,255,0.72)] shadow-none transition-colors hover:border-[rgba(72,43,37,0.1)] hover:bg-[rgba(255,255,255,0.92)]">
-        <CardContent className="space-y-3 p-5">
-          <div className="flex items-start justify-between gap-4">
-            <strong className="text-base font-semibold text-[var(--ink)]">{session.title ?? "Untitled chat"}</strong>
-            <span className="shrink-0 text-sm text-[var(--ink-soft)]">{formatRelativeTime(session.lastMessageAt)}</span>
-          </div>
-          <p className="line-clamp-2 text-sm leading-6 text-[var(--ink-soft)]">{session.lastMessagePreview ?? "No messages yet."}</p>
-        </CardContent>
-      </Card>
+    <button type="button" onClick={onOpen} className="profile-history-row w-full text-left">
+      <div className="profile-history-row-head">
+        <strong className="profile-history-row-title">{session.title ?? "Untitled chat"}</strong>
+        <span className="profile-history-row-time">{formatRelativeTime(session.lastMessageAt)}</span>
+      </div>
+      <p className="profile-history-row-preview">{session.lastMessagePreview ?? "No messages yet."}</p>
     </button>
   );
 }
@@ -2478,8 +2474,8 @@ export default function App() {
       const publicJoined = formatMonthYear(profile.createdAt);
 
       return (
-        <div className="profile-view space-y-6">
-          <section className="profile-hero space-y-3">
+        <div className="profile-view profile-view-public">
+          <section className="profile-hero profile-hero-public">
             {profile.avatarUrl ? (
               <Avatar className="profile-hero-image size-28 bg-white p-1">
                 <AvatarImage src={profile.avatarUrl} alt={publicName} />
@@ -2499,16 +2495,16 @@ export default function App() {
             <p>{publicJoined ? `${publicTag} • joined ${publicJoined}` : publicTag}</p>
           </section>
 
-          <section className="profile-toolbar flex flex-wrap items-center justify-center gap-4">
-            <div className="profile-stats flex items-center gap-3">
-              <div className="px-4 py-1 text-center">
+          <section className="profile-toolbar profile-toolbar-public">
+            <div className="profile-stats">
+              <article>
                 <strong className="block text-[var(--ink)]">{profile.followersCount}</strong>
                 <span className="text-xs text-[var(--ink-soft)]">Followers</span>
-              </div>
-              <div className="px-4 py-1 text-center">
+              </article>
+              <article>
                 <strong className="block text-[var(--ink)]">{profile.followingCount}</strong>
                 <span className="text-xs text-[var(--ink-soft)]">Following</span>
-              </div>
+              </article>
             </div>
             <div className="profile-actions">
               {publicProfile.isSelf ? null : authLocked ? (
@@ -2524,12 +2520,10 @@ export default function App() {
           </section>
 
           <section className="profile-history">
-            <div className="library-list space-y-3">
-              <Card className="feature-card rounded-[20px] border-[rgba(72,43,37,0.06)] bg-[rgba(255,255,255,0.62)] shadow-none">
-                <CardContent className="p-8">
-                  <p className="empty-copy text-sm text-[var(--ink-soft)]">Public reading history is not shared yet.</p>
-                </CardContent>
-              </Card>
+            <div className="profile-history-list">
+              <div className="profile-history-empty">
+                <p className="empty-copy text-sm text-[var(--ink-soft)]">Public reading history is not shared yet.</p>
+              </div>
             </div>
           </section>
         </div>
@@ -2539,8 +2533,8 @@ export default function App() {
     const joinedLabel = formatMonthYear(currentUser?.createdAt);
 
     return (
-      <div className="profile-view space-y-6">
-        <section className="profile-hero space-y-3">
+      <div className="profile-view">
+        <section className="profile-hero">
           {currentUser?.avatarUrl ? (
             <Avatar className="profile-hero-image size-28 bg-white p-1">
               <AvatarImage src={currentUser.avatarUrl} alt={displayProfileName} />
@@ -2560,16 +2554,16 @@ export default function App() {
           <p>{joinedLabel ? `${profileTag} • joined ${joinedLabel}` : profileTag}</p>
         </section>
 
-        <section className="profile-toolbar flex flex-wrap items-center justify-center gap-4">
-          <div className="profile-stats flex items-center gap-3">
-            <div className="px-4 py-1 text-center">
+        <section className="profile-toolbar">
+          <div className="profile-stats">
+            <article>
               <strong className="block text-[var(--ink)]">{currentUser?.followersCount ?? 0}</strong>
               <span className="text-xs text-[var(--ink-soft)]">Followers</span>
-            </div>
-            <div className="px-4 py-1 text-center">
+            </article>
+            <article>
               <strong className="block text-[var(--ink)]">{currentUser?.followingCount ?? 0}</strong>
               <span className="text-xs text-[var(--ink-soft)]">Following</span>
-            </div>
+            </article>
           </div>
           <div className="profile-actions">
             {authState.authConfigured && authState.user ? (
@@ -2581,13 +2575,11 @@ export default function App() {
         </section>
 
         <section className="profile-history">
-          <div className="library-list space-y-3">
+          <div className="profile-history-list">
             {sessions.length === 0 ? (
-              <Card className="feature-card rounded-[20px] border-[rgba(72,43,37,0.06)] bg-[rgba(255,255,255,0.62)] shadow-none">
-                <CardContent className="p-8">
-                  <p className="empty-copy text-sm text-[var(--ink-soft)]">No history yet.</p>
-                </CardContent>
-              </Card>
+              <div className="profile-history-empty">
+                <p className="empty-copy text-sm text-[var(--ink-soft)]">No history yet.</p>
+              </div>
             ) : (
               sessions.map((session) => <SessionListCard key={session.id} session={session} onOpen={() => openSession(session.id)} />)
             )}
