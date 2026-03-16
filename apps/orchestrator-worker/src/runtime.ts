@@ -35,7 +35,6 @@ export interface FlyRuntimeGatewayConfig {
   runtimeSharedToken?: string;
   runtimeAppUrl?: string;
   codexAuthJson?: string;
-  openAIApiKey?: string;
   runtimeAgentModel?: string;
   r2BucketName: string;
   r2Endpoint: string;
@@ -458,6 +457,15 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
       signal: AbortSignal.timeout(HARD_LIMITS.MAX_RUNTIME_TOOL_TIMEOUT_SECONDS * 1000),
     });
     if (!response.ok) {
+      const contentType = response.headers.get("content-type") ?? "";
+      if (contentType.includes("application/json")) {
+        const payload = await response.json() as Record<string, unknown>;
+        const error = new Error(
+          `Runtime request failed (${response.status}): ${typeof payload.error === "string" ? payload.error : JSON.stringify(payload)}`,
+        ) as Error & { runtimePayload?: Record<string, unknown> };
+        error.runtimePayload = payload;
+        throw error;
+      }
       const text = await response.text();
       throw new Error(`Runtime request failed (${response.status}): ${text}`);
     }
@@ -480,10 +488,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
             RUNTIME_SHARED_TOKEN: this.config.runtimeSharedToken ?? "",
             DATABASE_URL: this.config.databaseUrl ?? "",
             CODEX_AUTH_JSON: this.config.codexAuthJson ?? "",
-            OPENAI_API_KEY: this.config.openAIApiKey ?? "",
-            OPENAI_BASE_URL: this.config.codexOpenAIBaseUrl ?? "http://127.0.0.1:8080/openai-proxy/v1",
             RUNTIME_AGENT_MODEL: this.config.runtimeAgentModel ?? "gpt-5-codex",
-            RUNTIME_OPENAI_PROXY_UPSTREAM_BASE_URL: this.config.codexProxyUpstreamBaseUrl ?? "https://api.openai.com/v1",
             R2_BUCKET_NAME: this.config.r2BucketName,
             R2_ENDPOINT: this.config.r2Endpoint,
             R2_ACCESS_KEY_ID: this.config.r2AccessKeyId,

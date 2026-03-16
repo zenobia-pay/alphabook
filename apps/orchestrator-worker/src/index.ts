@@ -3,12 +3,12 @@ import { createNeonDb } from "@alphabook/db";
 import { createApp } from "./app";
 import { WorkOSAuth } from "./auth";
 import { createBillingService } from "./billing";
-import { HashEmbedder, OpenAIEmbedder } from "./embeddings";
-import { FallbackPlanner, OpenAIPlanner } from "./planner";
+import { OpenAIEmbedder } from "./embeddings";
+import { OpenAIPlanner } from "./planner";
 import { CloudflareR2Store } from "./r2";
-import { FlyMachinesRuntimeGateway, HttpRuntimeGateway, StubRuntimeGateway } from "./runtime";
+import { FlyMachinesRuntimeGateway, HttpRuntimeGateway } from "./runtime";
 import { NeonAppStore } from "./store";
-import { FallbackSynthesizer, OpenAISynthesizer } from "./synthesizer";
+import { OpenAISynthesizer } from "./synthesizer";
 
 export interface Env {
   DATABASE_URL: string;
@@ -49,10 +49,6 @@ export interface Env {
   JOBS_QUEUE: Queue;
 }
 
-function createRuntimeGateway() {
-  return new StubRuntimeGateway();
-}
-
 function resolveRuntimeGateway(env: Env, store: NeonAppStore, blobStore: CloudflareR2Store) {
   if (
     env.FLY_API_TOKEN &&
@@ -69,7 +65,6 @@ function resolveRuntimeGateway(env: Env, store: NeonAppStore, blobStore: Cloudfl
       runtimeAppUrl: env.FLY_RUNTIME_APP_URL,
       databaseUrl: env.DATABASE_URL,
       codexAuthJson: env.CODEX_AUTH_JSON,
-      openAIApiKey: env.OPENAI_API_KEY,
       runtimeAgentModel: env.RUNTIME_AGENT_MODEL,
       image: env.FLY_RUNTIME_IMAGE,
       region: env.FLY_RUNTIME_REGION,
@@ -91,10 +86,13 @@ function resolveRuntimeGateway(env: Env, store: NeonAppStore, blobStore: Cloudfl
   if (env.RUNTIME_SERVICE_URL) {
     return new HttpRuntimeGateway(env.RUNTIME_SERVICE_URL, env.RUNTIME_SERVICE_TOKEN);
   }
-  return createRuntimeGateway();
+  throw new Error("Runtime gateway is not configured.");
 }
 
 function buildFetchHandler(env: Env) {
+  if (!env.OPENAI_API_KEY) {
+    throw new Error("OPENAI_API_KEY is required.");
+  }
   const db = createNeonDb(env.DATABASE_URL);
   const store = new NeonAppStore(db);
   const blobStore = new CloudflareR2Store(env.CORPUS_BUCKET);
@@ -108,15 +106,19 @@ function buildFetchHandler(env: Env) {
       }>
       : undefined,
   });
-  const planner = env.OPENAI_API_KEY
-    ? new OpenAIPlanner(env.OPENAI_API_KEY, env.OPENAI_MODEL ?? "gpt-5.2", undefined, billing)
-    : new FallbackPlanner();
-  const embedder = env.OPENAI_API_KEY
-    ? new OpenAIEmbedder(env.OPENAI_API_KEY, env.OPENAI_EMBEDDING_MODEL ?? "text-embedding-3-small", undefined, billing)
-    : new HashEmbedder();
-  const synthesizer = env.OPENAI_API_KEY
-    ? new OpenAISynthesizer(env.OPENAI_API_KEY, env.OPENAI_SYNTH_MODEL ?? env.OPENAI_MODEL ?? "gpt-5.2", undefined, billing)
-    : new FallbackSynthesizer();
+  const planner = new OpenAIPlanner(env.OPENAI_API_KEY, env.OPENAI_MODEL ?? "gpt-5.2", undefined, billing);
+  const embedder = new OpenAIEmbedder(
+    env.OPENAI_API_KEY,
+    env.OPENAI_EMBEDDING_MODEL ?? "text-embedding-3-small",
+    undefined,
+    billing,
+  );
+  const synthesizer = new OpenAISynthesizer(
+    env.OPENAI_API_KEY,
+    env.OPENAI_SYNTH_MODEL ?? env.OPENAI_MODEL ?? "gpt-5.2",
+    undefined,
+    billing,
+  );
 
   const app = createApp({
     store,

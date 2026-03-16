@@ -1130,6 +1130,87 @@ test("billing tracker records OpenAI usage costs", async () => {
   assert.equal(spend.totalCostUsd, 0.006025);
 });
 
+test("runtime billing events are persisted even when the runtime call fails", async () => {
+  const store = new InMemoryAppStore();
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    planner: new ScriptedPlanner([
+      {
+        type: "tool_call",
+        tool_name: "run_workspace_task",
+        args: {
+          runtimeId: "runtime-1",
+          taskSpec: {
+            phase: "collect_and_brief",
+          },
+        },
+      },
+      {
+        type: "final_answer",
+        answer: "Stopped after the failed runtime.",
+        citations: [],
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: true, runtimeId: "runtime-1" };
+      },
+      async runWorkspaceTask() {
+        const error = new Error("runtime failed") as Error & { runtimePayload?: Record<string, unknown> };
+        error.runtimePayload = {
+          billingEvents: [
+            {
+              provider: "openai",
+              model: "gpt-5.2",
+              operation: "responses.create",
+              inputTokens: 2000,
+              outputTokens: 300,
+              totalTokens: 2300,
+              cachedInputTokens: 500,
+              requestId: "req_runtime_1",
+            },
+          ],
+        };
+        throw error;
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: false, error: "disabled" };
+      },
+      async destroyWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const response = await app.request("/chat", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      userId: "runtime-billing-user",
+      message: "Run the VM task.",
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  await response.text();
+  const spend = await store.getBillingSpend("runtime-billing-user", new Date(Date.now() - 60_000).toISOString());
+  assert.equal(spend.eventCount, 1);
+  assert.equal(spend.totalCostUsd, 0.004937);
+});
+
 test("public profile endpoints expose follow state", async () => {
   const store = new InMemoryAppStore();
   await store.upsertUserProfile({

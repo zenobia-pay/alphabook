@@ -77,6 +77,43 @@ function usageLogPath(paths: ReturnType<typeof createPaths>) {
   return join(paths.output, "openai-usage.jsonl");
 }
 
+async function readUsageLogLines(paths: ReturnType<typeof createPaths>) {
+  const usageLogFile = usageLogPath(paths);
+  return (await fileExists(usageLogFile))
+    ? (await readFile(usageLogFile, "utf8")).split("\n").filter((line) => line.trim().length > 0)
+    : [];
+}
+
+async function readRuntimeBillingEvents(paths: ReturnType<typeof createPaths>) {
+  const usageLines = await readUsageLogLines(paths);
+  return usageLines.flatMap((line) => {
+    try {
+      const record = JSON.parse(line) as Record<string, unknown>;
+      if (
+        typeof record.provider !== "string"
+        || typeof record.model !== "string"
+        || typeof record.operation !== "string"
+      ) {
+        return [];
+      }
+      return [{
+        provider: record.provider,
+        model: record.model,
+        operation: record.operation,
+        inputTokens: Number(record.inputTokens ?? 0),
+        outputTokens: Number(record.outputTokens ?? 0),
+        totalTokens: Number(record.totalTokens ?? 0),
+        cachedInputTokens: Number(record.cachedInputTokens ?? 0),
+        requestId: typeof record.requestId === "string" ? record.requestId : null,
+        createdAt: typeof record.timestamp === "string" ? record.timestamp : nowIso(),
+        metadata: record.metadata && typeof record.metadata === "object" ? record.metadata as Record<string, unknown> : {},
+      }];
+    } catch {
+      return [];
+    }
+  });
+}
+
 function json(response: ServerResponse, statusCode: number, payload: unknown) {
   response.statusCode = statusCode;
   response.setHeader("content-type", "application/json; charset=utf-8");
@@ -635,27 +672,27 @@ async function runExternalAgent(
   const shouldUseNode = /\.(?:[cm]?js|[cm]?ts)$/i.test(command);
   const executable = shouldUseNode ? process.execPath : command;
   const args = shouldUseNode ? [command] : [];
+  const childEnv = {
+    ...process.env,
+    ALPHABOOK_RUNTIME_PROMPT: RUNTIME_AGENT_PROMPT,
+    ALPHABOOK_TASK_PATH: taskPath,
+    ALPHABOOK_OUTPUT_DIR: paths.output,
+  };
+  delete childEnv.OPENAI_API_KEY;
+  delete childEnv.OPENAI_BASE_URL;
+  delete childEnv.RUNTIME_OPENAI_PROXY_UPSTREAM_BASE_URL;
   const { stdout, stderr } = await execFileAsync(executable, args, {
     cwd: workspaceRoot,
-    env: {
-      ...process.env,
-      ALPHABOOK_RUNTIME_PROMPT: RUNTIME_AGENT_PROMPT,
-      ALPHABOOK_TASK_PATH: taskPath,
-      ALPHABOOK_OUTPUT_DIR: paths.output,
-    },
+    env: childEnv,
     timeout: 180_000,
   });
 
   const outputFiles = await listFiles(paths.output, workspaceRoot);
   const briefingJsonPath = join(paths.output, "briefing.json");
   const codexRunsPath = join(paths.output, "codex-runs.json");
-  const usageLogFile = usageLogPath(paths);
   const evidenceNotesPath = join(paths.output, "evidence-notes.md");
   const briefingJson = await readJsonIfPresent<Record<string, unknown> | null>(briefingJsonPath, null);
   const codexRuns = await readJsonIfPresent<unknown[]>(codexRunsPath, []);
-  const usageLines = (await fileExists(usageLogFile))
-    ? (await readFile(usageLogFile, "utf8")).split("\n").filter((line) => line.trim().length > 0)
-    : [];
   const evidenceNotes = (await fileExists(evidenceNotesPath))
     ? await readFile(evidenceNotesPath, "utf8")
     : undefined;
@@ -683,32 +720,7 @@ async function runExternalAgent(
       }];
     })
     : [];
-  const billingEvents = usageLines.flatMap((line) => {
-    try {
-      const record = JSON.parse(line) as Record<string, unknown>;
-      if (
-        typeof record.provider !== "string"
-        || typeof record.model !== "string"
-        || typeof record.operation !== "string"
-      ) {
-        return [];
-      }
-      return [{
-        provider: record.provider,
-        model: record.model,
-        operation: record.operation,
-        inputTokens: Number(record.inputTokens ?? 0),
-        outputTokens: Number(record.outputTokens ?? 0),
-        totalTokens: Number(record.totalTokens ?? 0),
-        cachedInputTokens: Number(record.cachedInputTokens ?? 0),
-        requestId: typeof record.requestId === "string" ? record.requestId : null,
-        createdAt: typeof record.timestamp === "string" ? record.timestamp : nowIso(),
-        metadata: record.metadata && typeof record.metadata === "object" ? record.metadata as Record<string, unknown> : {},
-      }];
-    } catch {
-      return [];
-    }
-  });
+  const billingEvents = await readRuntimeBillingEvents(paths);
   return {
     runtimeId: String(taskSpec.runtimeId ?? "runtime"),
     stdout,
@@ -789,11 +801,19 @@ export function createAlphaBookRuntimeServer(options: RuntimeServerOptions = {})
         const taskPath = join(paths.context, "task.json");
         await writeFile(taskPath, JSON.stringify(payload.taskSpec, null, 2), "utf8");
         await writeFile(join(paths.output, "codex-progress.jsonl"), "", "utf8");
-        const result = await runExternalAgent(paths, workspaceRoot, {
-          runtimeId: payload.runtimeId,
-          ...payload.taskSpec,
-        });
-        return json(response, 200, result);
+        await writeFile(usageLogPath(paths), "", "utf8");
+        try {
+          const result = await runExternalAgent(paths, workspaceRoot, {
+            runtimeId: payload.runtimeId,
+            ...payload.taskSpec,
+          });
+          return json(response, 200, result);
+        } catch (error) {
+          return json(response, 500, {
+            error: error instanceof Error ? error.message : "Unknown runtime error",
+            billingEvents: await readRuntimeBillingEvents(paths),
+          });
+        }
       }
 
       if (request.method === "GET" && request.url?.startsWith("/file?")) {

@@ -577,36 +577,50 @@ function describePlannerAction(toolName: ToolName, rationale?: string) {
   }
 }
 
-function fallbackFinalAnswer(toolResults: Record<string, unknown>[]): { answer: string; citations: Array<Record<string, unknown>> } {
-  let lastChunkPayload: { chunks: ChunkSearchResult[] } | undefined;
-  for (let index = toolResults.length - 1; index >= 0; index -= 1) {
-    const candidate = toolResults[index];
-    if (Array.isArray(candidate.chunks)) {
-      lastChunkPayload = candidate as { chunks: ChunkSearchResult[] };
-      break;
-    }
-  }
-  if (!lastChunkPayload?.chunks.length) {
-    return {
-      answer: "The orchestrator stopped without enough evidence to answer confidently.",
-      citations: [],
-    };
-  }
-  const citations = lastChunkPayload.chunks.slice(0, 4).map((chunk) => ({
-    workId: chunk.workId,
-    chunkId: chunk.id,
-    label: `${chunk.workId}#${chunk.chunkIndex}`,
-    excerpt: chunk.excerpt,
-    r2Key: chunk.r2Key,
-  }));
-  return {
-    answer: "I gathered relevant passages, but the run hit its hard limit before producing a cleaner synthesis.",
-    citations,
-  };
-}
-
 function isTextArtifact(filename: string, mimeType: string) {
   return mimeType.startsWith("text/") || mimeType.includes("json") || /\.(md|txt|json|log)$/iu.test(filename);
+}
+
+async function trackRuntimeBillingEvents(
+  deps: AppDeps,
+  session: { userId: string; id: string },
+  run: { id: string },
+  billingEvents: unknown,
+) {
+  if (!Array.isArray(billingEvents)) {
+    return;
+  }
+  for (const event of billingEvents) {
+    if (!event || typeof event !== "object") {
+      continue;
+    }
+    const usage = event as Record<string, unknown>;
+    if (typeof usage.provider !== "string" || typeof usage.model !== "string" || typeof usage.operation !== "string") {
+      continue;
+    }
+    await deps.billing.track(
+      {
+        userId: session.userId,
+        sessionId: session.id,
+        runId: run.id,
+        source: "runtime-proxy",
+      },
+      {
+        provider: usage.provider,
+        model: usage.model,
+        operation: usage.operation,
+        inputTokens: Number(usage.inputTokens ?? 0),
+        outputTokens: Number(usage.outputTokens ?? 0),
+        totalTokens: Number(usage.totalTokens ?? 0),
+        cachedInputTokens: Number(usage.cachedInputTokens ?? 0),
+        requestId: typeof usage.requestId === "string" ? usage.requestId : null,
+        metadata: usage.metadata && typeof usage.metadata === "object"
+          ? usage.metadata as Record<string, unknown>
+          : {},
+        createdAt: typeof usage.createdAt === "string" ? usage.createdAt : undefined,
+      },
+    );
+  }
 }
 
 async function loadRunArtifacts(
@@ -902,29 +916,18 @@ async function synthesizeAnswer(
   });
 
   let synthesis;
-  try {
-    synthesis = await deps.synthesizer.synthesize({
-      userMessage: params.userMessage,
-      plannerDraft: params.plannerDraft,
-      plannerCitations: params.plannerCitations,
-      toolHistory: params.toolHistory,
-      billingContext: {
-        userId: params.userId,
-        sessionId: params.sessionId,
-        runId: params.runId,
-        source: "synthesizer",
-      },
-    });
-  } catch (error) {
-    synthesis = {
-      answer: params.plannerDraft ?? "The run completed, but the final synthesis step failed.",
-      citations: params.plannerCitations,
-    };
-    await send("synthesis.failed", {
+  synthesis = await deps.synthesizer.synthesize({
+    userMessage: params.userMessage,
+    plannerDraft: params.plannerDraft,
+    plannerCitations: params.plannerCitations,
+    toolHistory: params.toolHistory,
+    billingContext: {
+      userId: params.userId,
+      sessionId: params.sessionId,
       runId: params.runId,
-      message: error instanceof Error ? error.message : "Unknown synthesis error",
-    });
-  }
+      source: "synthesizer",
+    },
+  });
 
   const artifactKey = await persistFinalArtifact(deps, params.sessionId, params.runId, synthesis.answer, synthesis.citations);
   const summarizedToolHistory = summarizeToolHistory(params.toolHistory);
@@ -1099,43 +1102,22 @@ async function runOrchestrator(
         sessionId: session.id,
         runId: run.id,
       });
-      if (toolCall.tool_name === "run_workspace_task" && Array.isArray(result.billingEvents)) {
-        for (const event of result.billingEvents) {
-          if (!event || typeof event !== "object") {
-            continue;
-          }
-          const usage = event as Record<string, unknown>;
-          if (typeof usage.provider !== "string" || typeof usage.model !== "string" || typeof usage.operation !== "string") {
-            continue;
-          }
-          await deps.billing.track(
-            {
-              userId: session.userId,
-              sessionId: session.id,
-              runId: run.id,
-              source: "runtime-proxy",
-            },
-            {
-              provider: usage.provider,
-              model: usage.model,
-              operation: usage.operation,
-              inputTokens: Number(usage.inputTokens ?? 0),
-              outputTokens: Number(usage.outputTokens ?? 0),
-              totalTokens: Number(usage.totalTokens ?? 0),
-              cachedInputTokens: Number(usage.cachedInputTokens ?? 0),
-              requestId: typeof usage.requestId === "string" ? usage.requestId : null,
-              metadata: usage.metadata && typeof usage.metadata === "object"
-                ? usage.metadata as Record<string, unknown>
-                : {},
-              createdAt: typeof usage.createdAt === "string" ? usage.createdAt : undefined,
-            },
-          );
-        }
+      if (toolCall.tool_name === "run_workspace_task") {
+        await trackRuntimeBillingEvents(deps, session, run, result.billingEvents);
       }
       if (toolCall.tool_name === "create_workspace" || toolCall.tool_name === "run_workspace_task") {
         runtimeTasks += 1;
       }
     } catch (error) {
+      if (
+        toolCall.tool_name === "run_workspace_task"
+        && error
+        && typeof error === "object"
+        && "runtimePayload" in error
+      ) {
+        const runtimePayload = (error as { runtimePayload?: Record<string, unknown> }).runtimePayload;
+        await trackRuntimeBillingEvents(deps, session, run, runtimePayload?.billingEvents);
+      }
       status = "failed";
       result = {
         ok: false,
@@ -1165,24 +1147,22 @@ async function runOrchestrator(
     toolResults.push(result);
   }
 
-  const fallback = fallbackFinalAnswer(toolResults);
   await deps.store.updateRun(run.id, {
     status: "timed_out",
     completedAt: new Date().toISOString(),
   });
-  await synthesizeAnswer(
-    deps,
-    {
-      userId: session.userId,
-      sessionId: session.id,
-      runId: run.id,
-      userMessage: input.message,
-      plannerDraft: fallback.answer,
-      plannerCitations: fallback.citations as Citation[],
-      toolHistory,
-    },
-    send,
-  );
+  const timeoutMessage = "The run hit its hard limits before it produced a valid answer.";
+  await deps.store.appendMessage(session.id, "assistant", timeoutMessage, {
+    runId: run.id,
+    phase: "error",
+    toolCalls: summarizeToolHistory(toolHistory),
+  });
+  await send("assistant.delta", { text: timeoutMessage });
+  await send("assistant.completed", {
+    answer: timeoutMessage,
+    citations: [],
+    artifactKey: null,
+  });
   await send("run.completed", {
     runId: run.id,
     sessionId: session.id,
