@@ -2236,6 +2236,10 @@ function buildExcerptCandidates(excerpt: string) {
   return candidates.length > 0 ? candidates : decodedExcerpt ? [decodedExcerpt] : [];
 }
 
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function buildWorkPassages(content: string) {
   const cleaned = stripGutenbergBoilerplate(content);
   return cleaned
@@ -2275,12 +2279,59 @@ async function rewriteAnswerWithCitationLinks(
   citations: Citation[],
 ) {
   const citationLinks = await Promise.all(citations.map((citation) => buildCitationPassageUrl(deps, sessionId, citation)));
+  let rewritten = answer;
   let citationIndex = 0;
-  return answer.replace(/\[(?:work\s*id|workId)\s*:[^\]]+\]/giu, () => {
+  rewritten = rewritten.replace(/\[(?:work\s*id|workId)\s*:[^\]]+\]/giu, () => {
     const nextLink = citationLinks[citationIndex] ?? null;
     citationIndex += 1;
     return nextLink ? `[Open passage](${nextLink})` : "";
   });
+
+  for (const [index, citation] of citations.entries()) {
+    const link = citationLinks[index];
+    if (!link || rewritten.includes(`](${link})`)) {
+      continue;
+    }
+
+    const candidates = buildExcerptCandidates(citation.excerpt);
+    let linked = false;
+    for (const candidate of candidates) {
+      if (!candidate || candidate.length < 12) {
+        continue;
+      }
+      const pattern = new RegExp(`(${escapeRegExp(candidate)})`, "u");
+      if (!pattern.test(rewritten)) {
+        continue;
+      }
+      rewritten = rewritten.replace(pattern, `$1 [Open passage](${link})`);
+      linked = true;
+      break;
+    }
+
+    if (linked) {
+      continue;
+    }
+
+    const labelPattern = typeof citation.label === "string" && citation.label.trim().length > 0
+      ? new RegExp(`(${escapeRegExp(citation.label.trim())})`, "u")
+      : null;
+    if (labelPattern?.test(rewritten)) {
+      rewritten = rewritten.replace(labelPattern, `$1 ([Open passage](${link}))`);
+      continue;
+    }
+
+    const chunkMarker = typeof citation.chunkId === "string"
+      ? citation.chunkId.replace(`${citation.workId}#`, "#")
+      : null;
+    if (chunkMarker) {
+      const chunkPattern = new RegExp(`(${escapeRegExp(chunkMarker)})`, "u");
+      if (chunkPattern.test(rewritten)) {
+        rewritten = rewritten.replace(chunkPattern, `$1 [Open passage](${link})`);
+      }
+    }
+  }
+
+  return rewritten;
 }
 
 async function synthesizeAnswer(
