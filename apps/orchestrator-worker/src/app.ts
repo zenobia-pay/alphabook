@@ -1,6 +1,7 @@
 import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import { ChatRequestSchema, HARD_LIMITS, R2_PREFIXES, ToolArgsSchemas, getToolLabel, type ChatRequest, type ChunkSearchResult, type Citation, type PlannerDecision, type ToolName, type WorkSummary } from "@alphabook/shared";
+import { ZodError } from "zod";
 
 import type { WorkOSAuth } from "./auth";
 import type { BillingService } from "./billing";
@@ -498,6 +499,13 @@ function normalizeToolArgs(toolName: ToolName, args: Record<string, unknown>): R
       if (normalized.workIds === undefined && normalized.work_ids !== undefined) {
         normalized.workIds = normalized.work_ids;
       }
+      if (normalized.filters && typeof normalized.filters === "object") {
+        const filters = { ...(normalized.filters as Record<string, unknown>) };
+        if (typeof filters.limit === "number") {
+          filters.limit = Math.max(1, Math.min(20, Math.trunc(filters.limit)));
+        }
+        normalized.filters = filters;
+      }
       break;
     case "get_work_text":
       if (normalized.workId === undefined && normalized.work_id !== undefined) {
@@ -553,6 +561,19 @@ function normalizeToolArgs(toolName: ToolName, args: Record<string, unknown>): R
       break;
   }
   return normalized;
+}
+
+function formatToolExecutionError(toolName: ToolName, error: unknown) {
+  if (error instanceof ZodError) {
+    if (toolName === "get_relevant_chunks") {
+      return "Passage search requested too many passages at once, so I reduced the request to the allowed limit.";
+    }
+    if (toolName === "search_works") {
+      return "Corpus search requested too many results at once.";
+    }
+    return "This research step received invalid arguments.";
+  }
+  return error instanceof Error ? error.message : "Unknown tool error";
 }
 
 function streamResponse(
@@ -2994,7 +3015,7 @@ async function runOrchestrator(
               backgroundStatus = "failed";
               backgroundResult = {
                 ok: false,
-                error: error instanceof Error ? error.message : "Unknown tool error",
+                error: formatToolExecutionError(toolCall.tool_name, error),
               };
               try {
                 await recordUnexpectedError(deps, error, {
@@ -3077,7 +3098,7 @@ async function runOrchestrator(
         status = "failed";
         result = {
           ok: false,
-          error: error instanceof Error ? error.message : "Unknown tool error",
+          error: formatToolExecutionError(toolCall.tool_name, error),
         };
         try {
           await recordUnexpectedError(deps, error, {
