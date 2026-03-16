@@ -156,8 +156,8 @@ function StructuredValue({
   if (isPrimitive(value)) {
     return (
       <div className={cn("aui-tool-structured-row", depth > 0 && "aui-tool-structured-row-nested")}>
-        {label ? <dt className="aui-tool-structured-key">{humanizeKey(label)}</dt> : null}
-        <dd className="aui-tool-structured-value">{formatPrimitive(value)}</dd>
+        {label ? <div className="aui-tool-structured-key">{humanizeKey(label)}</div> : null}
+        <div className="aui-tool-structured-value">{formatPrimitive(value)}</div>
       </div>
     );
   }
@@ -166,8 +166,8 @@ function StructuredValue({
     if (value.length === 0) {
       return (
         <div className={cn("aui-tool-structured-row", depth > 0 && "aui-tool-structured-row-nested")}>
-          {label ? <dt className="aui-tool-structured-key">{humanizeKey(label)}</dt> : null}
-          <dd className="aui-tool-structured-value">[]</dd>
+          {label ? <div className="aui-tool-structured-key">{humanizeKey(label)}</div> : null}
+          <div className="aui-tool-structured-value">[]</div>
         </div>
       );
     }
@@ -175,8 +175,8 @@ function StructuredValue({
     const items = value.slice(0, MAX_PREVIEW_ITEMS);
     return (
       <div className={cn("aui-tool-structured-block", depth > 0 && "aui-tool-structured-block-nested")}>
-        {label ? <dt className="aui-tool-structured-key">{humanizeKey(label)}</dt> : null}
-        <dd className="aui-tool-structured-array">
+        {label ? <div className="aui-tool-structured-key">{humanizeKey(label)}</div> : null}
+        <div className="aui-tool-structured-array">
           {items.map((item, index) => (
             <StructuredValue key={`${label ?? "item"}-${index}`} value={item} depth={depth + 1} />
           ))}
@@ -185,7 +185,7 @@ function StructuredValue({
               +{value.length - MAX_PREVIEW_ITEMS} more
             </div>
           ) : null}
-        </dd>
+        </div>
       </div>
     );
   }
@@ -202,12 +202,12 @@ function StructuredValue({
 
   return (
     <div className={cn("aui-tool-structured-block", depth > 0 && "aui-tool-structured-block-nested")}>
-      {label ? <dt className="aui-tool-structured-key">{humanizeKey(label)}</dt> : null}
-      <dd className="aui-tool-structured-group">
+      {label ? <div className="aui-tool-structured-key">{humanizeKey(label)}</div> : null}
+      <div className="aui-tool-structured-group">
         {entries.map(([key, child]) => (
           <StructuredValue key={`${label ?? "root"}-${key}`} label={key} value={child} depth={depth + 1} />
         ))}
-      </dd>
+      </div>
     </div>
   );
 }
@@ -231,9 +231,9 @@ function ToolSection({
   return (
     <section className="aui-tool-section">
       <h4 className="aui-tool-section-title">{title}</h4>
-      <dl className="aui-tool-structured-list">
+      <div className="aui-tool-structured-list">
         <StructuredValue value={value} />
-      </dl>
+      </div>
     </section>
   );
 }

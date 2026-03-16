@@ -476,7 +476,7 @@ button {
 }
 
 .aui-tool-fallback-root {
-  border-top: 1px solid rgba(56, 48, 40, 0.12);
+  border-top: 0;
   background: transparent;
   border-radius: 0;
 }
@@ -529,6 +529,13 @@ button {
 
 .aui-tool-fallback-detail-shell {
   padding: 0 0 0.9rem 2.2rem;
+}
+
+.aui-tool-structured-key,
+.aui-tool-structured-value,
+.aui-tool-structured-group,
+.aui-tool-structured-array {
+  min-width: 0;
 }
 
 .aui-tool-section + .aui-tool-section {
