@@ -1723,8 +1723,8 @@ export default function App() {
   const [adminAnalytics, setAdminAnalytics] = useState<AdminAnalyticsState>({
     loading: false,
     error: null,
-    draft: "Give me signups per day over the past seven days.",
-    query: "Give me signups per day over the past seven days.",
+    draft: "",
+    query: "",
     payload: null,
   });
   const [adminIncidents, setAdminIncidents] = useState<AdminIncidentsState>({
@@ -4127,45 +4127,15 @@ export default function App() {
                     void loadAdminAnalytics(adminAnalytics.draft);
                   }}
                 >
-                  <div className="relative">
-                    <textarea
-                      className="min-h-[150px] w-full resize-y rounded-[18px] border border-[rgba(72,43,37,0.12)] bg-white px-4 py-4 pr-18 text-sm leading-6 text-[var(--ink)] shadow-sm outline-none transition-colors placeholder:text-[var(--ink-soft)] focus:border-[rgba(72,43,37,0.28)] focus:ring-2 focus:ring-[rgba(72,43,37,0.14)]"
+                  <div className="flex flex-col gap-3 md:flex-row">
+                    <input
+                      type="text"
+                      className="min-h-12 flex-1 rounded-[16px] border border-[rgba(72,43,37,0.12)] bg-white px-4 text-sm text-[var(--ink)] outline-none transition focus:border-[rgba(72,43,37,0.28)]"
                       value={adminAnalytics.draft}
                       onChange={(event) => setAdminAnalytics((current) => ({ ...current, draft: event.currentTarget.value }))}
-                      style={{ color: "var(--ink)", caretColor: "var(--ink)" }}
-                      placeholder="Give me signups per day over the past seven days."
+                      placeholder="Ask an analytics question"
                       spellCheck={false}
                     />
-                    <Button
-                      type="submit"
-                      size="icon"
-                      className="absolute bottom-4 right-4 h-10 w-10 rounded-full bg-black text-white transition hover:bg-black/90 disabled:bg-black/20 disabled:text-black/45"
-                      disabled={adminAnalytics.loading || !adminAnalytics.draft.trim()}
-                      aria-label="Run analytics query"
-                    >
-                      <ArrowUpIcon />
-                    </Button>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    {[
-                      "Give me signups per day over the past seven days.",
-                      "Give me the number of new research queries over the past seven days.",
-                      "Give me the topics people are searching on over the past seven days.",
-                    ].map((suggestion) => (
-                      <button
-                        key={suggestion}
-                        type="button"
-                        className="rounded-full border border-[rgba(72,43,37,0.12)] bg-white px-3 py-2 text-xs font-medium text-[var(--ink-soft)] transition hover:border-[rgba(72,43,37,0.2)] hover:text-[var(--ink)]"
-                        onClick={() => {
-                          setAdminAnalytics((current) => ({ ...current, draft: suggestion }));
-                          void loadAdminAnalytics(suggestion);
-                        }}
-                      >
-                        {suggestion}
-                      </button>
-                    ))}
-                  </div>
-                  <div className="flex flex-wrap items-center gap-3">
                     <Button
                       type="submit"
                       className="bg-black text-white transition hover:bg-black/90 disabled:bg-black/20 disabled:text-black/45"
@@ -4173,6 +4143,8 @@ export default function App() {
                     >
                       {adminAnalytics.loading ? "Running analytics…" : "Run analytics query"}
                     </Button>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-3">
                     <span className="text-sm text-[var(--ink-soft)]">
                       Type a question, then run it with the button.
                     </span>
