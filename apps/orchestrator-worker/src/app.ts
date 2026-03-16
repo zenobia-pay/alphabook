@@ -10,7 +10,7 @@ import type { Planner } from "./planner";
 import { parseToolCall } from "./planner";
 import type { Router } from "./router";
 import type { Synthesizer, ToolHistoryEntry } from "./synthesizer";
-import type { AppStore, MessageRecord, SessionRecord } from "./store";
+import type { AnalyticsEventRecord, AppStore, MessageRecord, SessionRecord } from "./store";
 
 export interface WorkerQueues {
   ingestName: string;
@@ -1355,6 +1355,98 @@ function dayKey(value: unknown) {
   return new Date().toISOString().slice(0, 10);
 }
 
+interface AnalyticsEntityBucket {
+  id: string;
+  count: number;
+  event: string;
+  workId?: string;
+  chunkId?: string;
+  passageId?: string;
+  label?: string;
+  query?: string;
+}
+
+function stringProperty(properties: Record<string, unknown>, key: string) {
+  const value = properties[key];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function buildAnalyticsEntityBreakdown(events: AnalyticsEventRecord[]) {
+  const buckets = new Map<string, AnalyticsEntityBucket>();
+
+  for (const event of events) {
+    const properties = event.properties ?? {};
+    const day = dayKey(event.createdAt);
+    const workId = stringProperty(properties, "workId") ?? undefined;
+    const chunkId = stringProperty(properties, "chunkId") ?? undefined;
+    const passageId = stringProperty(properties, "passageId") ?? undefined;
+    const label = stringProperty(properties, "label") ?? undefined;
+    const query = stringProperty(properties, "query") ?? undefined;
+    const entityId = chunkId ?? passageId ?? workId ?? label ?? query;
+    if (!entityId) {
+      continue;
+    }
+    const key = [day, event.event, entityId].join(":");
+    const existing = buckets.get(key);
+    if (existing) {
+      existing.count += 1;
+      continue;
+    }
+    buckets.set(key, {
+      id: entityId,
+      count: 1,
+      event: event.event,
+      ...(workId ? { workId } : {}),
+      ...(chunkId ? { chunkId } : {}),
+      ...(passageId ? { passageId } : {}),
+      ...(label ? { label } : {}),
+      ...(query ? { query } : {}),
+    });
+  }
+
+  return [...buckets.entries()].reduce<Record<string, Record<string, AnalyticsEntityBucket[]>>>((accumulator, [key, bucket]) => {
+    const [day, eventName] = key.split(":", 2);
+    const dayBucket = accumulator[day] ?? {};
+    const eventBucket = dayBucket[eventName] ?? [];
+    eventBucket.push(bucket);
+    dayBucket[eventName] = eventBucket
+      .sort((left, right) => right.count - left.count || left.id.localeCompare(right.id))
+      .slice(0, 20);
+    accumulator[day] = dayBucket;
+    return accumulator;
+  }, {});
+}
+
+async function recordPassageCitationEvents(
+  deps: AppDeps,
+  request: Request,
+  context: {
+    userId: string;
+    sessionId: string;
+    runId?: string;
+    source: string;
+    status?: string;
+  },
+  citations: Citation[],
+) {
+  await Promise.all(
+    citations.map((citation, index) =>
+      recordAnalyticsEvent(deps, request, "passage_cited", {
+        userId: context.userId,
+        sessionId: context.sessionId,
+        runId: context.runId ?? null,
+        workId: citation.workId,
+        chunkId: citation.chunkId ?? null,
+        label: citation.label,
+        excerpt: citation.excerpt,
+        source: context.source,
+        status: context.status ?? null,
+        rank: index + 1,
+      }).catch(() => {}),
+    ),
+  );
+}
+
 async function runAnalyticsQuery(
   deps: AppDeps,
   params: {
@@ -1384,6 +1476,7 @@ async function runAnalyticsQuery(
     accumulator[key] = bucket;
     return accumulator;
   }, {});
+  const eventEntitiesByDay = buildAnalyticsEntityBreakdown(events);
 
   if (!deps.openAIApiKey || !deps.openAIModel) {
     return {
@@ -1394,6 +1487,7 @@ async function runAnalyticsQuery(
       hashtags: [],
       inspectedDays: days,
       events,
+      eventEntitiesByDay,
       userMessages,
     };
   }
@@ -1433,6 +1527,7 @@ async function runAnalyticsQuery(
             days,
             since,
             analyticsEventsByDay: eventsByDay,
+            analyticsEventEntitiesByDay: eventEntitiesByDay,
             analyticsEventsSample: events.slice(0, 500),
             userMessagesByDay: queriesByDay,
             userMessagesSample: userMessages.slice(0, 300),
@@ -1540,6 +1635,18 @@ async function synthesizeAnswer(
   });
 
   const citedWorkIds = uniqueWorkIds(synthesis.citations.map((citation) => citation.workId));
+  void recordPassageCitationEvents(
+    deps,
+    params.request,
+    {
+      userId: params.userId,
+      sessionId: params.sessionId,
+      runId: params.runId,
+      source: "synthesizer",
+      status: "completed",
+    },
+    synthesis.citations,
+  );
   void recordBookAnalyticsEvents(
     deps,
     params.request,

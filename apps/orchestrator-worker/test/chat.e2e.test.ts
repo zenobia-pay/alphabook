@@ -228,6 +228,13 @@ test("orchestrator streams retrieval tool calls and final answer", async () => {
   assert.match(body, /event: tool\.completed/);
   assert.match(body, /event: assistant\.completed/);
   assert.match(body, /Don Quixote is the strongest match/);
+
+  const analyticsEvents = await store.listAnalyticsEvents({ limit: 50 });
+  const passageCited = analyticsEvents.find((event) => event.event === "passage_cited");
+  assert.ok(passageCited);
+  assert.equal(passageCited.properties.workId, "work-1");
+  assert.equal(passageCited.properties.chunkId, "chunk-1");
+  assert.equal(passageCited.properties.label, "Don Quixote#12");
 });
 
 test("follow-up requests pass full chat history into router and planner", async () => {

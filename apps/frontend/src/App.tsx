@@ -1302,6 +1302,117 @@ function AuthLoadingState({ compact = false }: { compact?: boolean }) {
   );
 }
 
+function AssistantLoadingState() {
+  return (
+    <div className="assistant-loading-state" aria-hidden="true">
+      <div className="assistant-loading-center">
+        <div className="assistant-loading-copy">
+          <Skeleton className="assistant-loading-title" />
+          <Skeleton className="assistant-loading-subtitle" />
+        </div>
+      </div>
+
+      <div className="assistant-loading-footer">
+        <div className="assistant-loading-suggestions">
+          {[0, 1].map((item) => (
+            <div key={item} className="assistant-loading-suggestion">
+              <Skeleton className="assistant-loading-suggestion-title" />
+              <Skeleton className="assistant-loading-suggestion-copy" />
+            </div>
+          ))}
+        </div>
+
+        <div className="assistant-loading-composer">
+          <Skeleton className="assistant-loading-composer-line is-long" />
+          <Skeleton className="assistant-loading-composer-line" />
+          <div className="assistant-loading-composer-footer">
+            <Skeleton className="assistant-loading-status" />
+            <Skeleton className="assistant-loading-send" />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ProfileLoadingState({ publicView = false }: { publicView?: boolean }) {
+  return (
+    <div className={cn("profile-view", publicView && "profile-view-public")} aria-hidden="true">
+      <section className={cn("profile-hero", publicView && "profile-hero-public")}>
+        <Skeleton className="profile-loading-avatar" />
+        <Skeleton className="profile-loading-name" />
+        <Skeleton className="profile-loading-meta" />
+      </section>
+
+      <section className={cn("profile-toolbar", publicView && "profile-toolbar-public")}>
+        <div className="profile-stats" aria-hidden="true">
+          {[0, 1].map((item) => (
+            <article key={item} className="profile-stat-skeleton">
+              <Skeleton className="profile-loading-stat-value" />
+              <Skeleton className="profile-loading-stat-label" />
+            </article>
+          ))}
+        </div>
+        <div className="profile-actions">
+          <Skeleton className="profile-loading-action" />
+        </div>
+      </section>
+
+      <section className="profile-history">
+        <div className="profile-history-list">
+          {[0, 1, 2].map((item) => (
+            <div key={item} className="profile-history-row profile-history-row-skeleton" aria-hidden="true">
+              <div className="profile-history-row-head">
+                <Skeleton className="profile-loading-row-title" />
+                <Skeleton className="profile-loading-row-time" />
+              </div>
+              <Skeleton className="profile-loading-row-copy is-wide" />
+              <Skeleton className="profile-loading-row-copy" />
+            </div>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ProfileEmptyState({
+  title,
+  copy,
+  action,
+}: {
+  title: string;
+  copy: string;
+  action?: ReactNode;
+}) {
+  return (
+    <div className="profile-history-empty profile-history-empty-card">
+      <div className="profile-history-empty-mark">
+        <MessageSquarePlus />
+      </div>
+      <div className="profile-history-empty-copy">
+        <h2>{title}</h2>
+        <p>{copy}</p>
+      </div>
+      {action ? <div className="profile-history-empty-actions">{action}</div> : null}
+    </div>
+  );
+}
+
+function SidebarProfileSkeleton({ collapsed = false }: { collapsed?: boolean }) {
+  return (
+    <div className={cn("sidebar-auth-skeleton", collapsed && "is-collapsed")} aria-hidden="true">
+      <Skeleton className="sidebar-auth-skeleton-avatar" />
+      {!collapsed ? (
+        <div className="sidebar-auth-skeleton-copy">
+          <Skeleton className="sidebar-auth-skeleton-name" />
+          <Skeleton className="sidebar-auth-skeleton-meta" />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function AssistantSurface({
   messages,
   isSending,
@@ -2563,7 +2674,16 @@ export default function App() {
   }
 
   function toggleSelectedWork(workId: string) {
-    setSelectedWorkIds((current) => (current.includes(workId) ? current.filter((id) => id !== workId) : [...current, workId]));
+    setSelectedWorkIds((current) => {
+      if (current.includes(workId)) {
+        return current.filter((id) => id !== workId);
+      }
+      track("book_selected_for_ask", {
+        workId,
+        source: "explore",
+      });
+      return [...current, workId];
+    });
   }
 
   function submitExplorePrompt(event?: FormEvent<HTMLFormElement>) {
@@ -2635,6 +2755,11 @@ export default function App() {
   }
 
   function openCitation(citation: Citation) {
+    track("book_citation_open", {
+      workId: citation.workId,
+      chunkId: citation.chunkId ?? null,
+      source: "citation",
+    });
     track("book_open", {
       workId: citation.workId,
       source: "citation",
@@ -2677,6 +2802,14 @@ export default function App() {
   }
 
   function activatePassage(passageId: string, highlight: string | null = null, replaceHistory = false) {
+    if (activeWorkId && (passageId !== activePassageId || highlight !== highlightedPassageExcerpt)) {
+      track("passage_open", {
+        workId: activeWorkId,
+        passageId,
+        source: pendingCitation ? "citation" : "reader",
+        highlighted: Boolean(highlight),
+      });
+    }
     setActivePassageId(passageId);
     setHighlightedPassageExcerpt(highlight);
     const url = new URL(window.location.href);
@@ -3788,6 +3921,15 @@ export default function App() {
                       className="min-h-[150px] rounded-[18px] border-[rgba(72,43,37,0.12)] bg-white px-4 py-4 pr-18 text-sm leading-6 focus-visible:border-[rgba(72,43,37,0.28)] focus-visible:ring-[rgba(72,43,37,0.14)]"
                       value={adminAnalytics.draft}
                       onChange={(event) => setAdminAnalytics((current) => ({ ...current, draft: event.currentTarget.value }))}
+                      onKeyDown={(event) => {
+                        event.stopPropagation();
+                        if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                          event.preventDefault();
+                          if (!adminAnalytics.loading && adminAnalytics.draft.trim()) {
+                            void loadAdminAnalytics(adminAnalytics.draft);
+                          }
+                        }
+                      }}
                       placeholder="Give me signups per day over the past seven days."
                       spellCheck={false}
                     />
