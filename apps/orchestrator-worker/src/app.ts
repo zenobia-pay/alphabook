@@ -1251,29 +1251,91 @@ async function recoverRunCompletion(
     return false;
   }
 
-  const conversationHistory = formatConversationHistory(await deps.store.listMessages(session.id));
+  const messages = await deps.store.listMessages(session.id);
+  const conversationHistory = formatConversationHistory(messages);
   await deps.store.updateRun(run.id, {
     status: "completed",
     completedAt: new Date().toISOString(),
   });
   await persistRecoveredPlanToolTrace(deps, session.id, run.id, toolCalls);
-  await synthesizeAnswer(
+  await ensureRunAnswerPersisted(
     deps,
-    {
-      request,
-      userId: session.userId,
-      sessionId: session.id,
-      runId: run.id,
-      userMessage:
-        [...conversationHistory].reverse().find((message) => message.role === "user")?.content ?? "",
-      conversationHistory,
-      plannerDraft: completedBriefing.answer,
-      plannerCitations: completedBriefing.citations,
-      toolHistory,
-    },
-    async () => {},
+    request,
+    session,
+    run.id,
+    messages,
+    conversationHistory,
+    completedBriefing,
+    toolHistory,
   );
   return true;
+}
+
+async function ensureRunAnswerPersisted(
+  deps: AppDeps,
+  request: Request,
+  session: SessionRecord,
+  runId: string,
+  messages: Awaited<ReturnType<AppStore["listMessages"]>>,
+  conversationHistory: Array<{ role: "user" | "assistant" | "system" | "tool"; content: string }>,
+  completedBriefing: { answer: string; citations: Citation[] },
+  toolHistory: ToolHistoryEntry[],
+) {
+  const hasAnswer = messages.some((message) => {
+    if (message.role !== "assistant") {
+      return false;
+    }
+    const metadata = message.metadata as Record<string, unknown> | undefined;
+    return metadata?.runId === runId && metadata?.phase !== "plan" && metadata?.phase !== "error";
+  });
+  if (hasAnswer) {
+    return;
+  }
+
+  const userMessage =
+    [...conversationHistory].reverse().find((message) => message.role === "user")?.content ?? "";
+
+  try {
+    await synthesizeAnswer(
+      deps,
+      {
+        request,
+        userId: session.userId,
+        sessionId: session.id,
+        runId,
+        userMessage,
+        conversationHistory,
+        plannerDraft: completedBriefing.answer,
+        plannerCitations: completedBriefing.citations,
+        toolHistory,
+      },
+      async () => {},
+    );
+    return;
+  } catch (error) {
+    const fallbackAnswer = await rewriteAnswerWithCitationLinks(
+      deps,
+      session.id,
+      completedBriefing.answer,
+      completedBriefing.citations,
+    );
+    const artifactKey = await persistFinalArtifact(
+      deps,
+      session.id,
+      runId,
+      fallbackAnswer,
+      completedBriefing.citations,
+    );
+    await deps.store.appendMessage(session.id, "assistant", fallbackAnswer, {
+      runId,
+      phase: "answer",
+      citations: completedBriefing.citations,
+      artifactKey,
+      researchLog: summarizeToolHistory(toolHistory),
+      synthesisFallback: true,
+      synthesisError: error instanceof Error ? error.message : "Unknown synthesis error",
+    });
+  }
 }
 
 async function reconcilePersistentRun(
@@ -1281,7 +1343,7 @@ async function reconcilePersistentRun(
   request: Request,
   run: Awaited<ReturnType<AppStore["getRun"]>>,
 ) {
-  if (!run || (run.status !== "running" && run.status !== "queued")) {
+  if (!run) {
     return run;
   }
 
@@ -1291,6 +1353,44 @@ async function reconcilePersistentRun(
   }
 
   const toolCalls = await deps.store.listToolCalls(run.id);
+  if (run.status === "completed") {
+    const completedBriefing = latestCompletedBriefing(
+      toolCalls
+        .filter((toolCall) => toolCall.resultJson && toolCall.status === "completed")
+        .map((toolCall) => ({
+          toolName: toolCall.toolName,
+          rationale: undefined,
+          args: toolCall.argsJson,
+          result: toolCall.resultJson as Record<string, unknown>,
+        })),
+    );
+    if (completedBriefing) {
+      const messages = await deps.store.listMessages(session.id);
+      const conversationHistory = formatConversationHistory(messages);
+      await ensureRunAnswerPersisted(
+        deps,
+        request,
+        session,
+        run.id,
+        messages,
+        conversationHistory,
+        completedBriefing,
+        toolCalls
+          .filter((toolCall) => toolCall.resultJson && toolCall.status === "completed")
+          .map((toolCall) => ({
+            toolName: toolCall.toolName,
+            rationale: undefined,
+            args: toolCall.argsJson,
+            result: toolCall.resultJson as Record<string, unknown>,
+          })),
+      );
+    }
+    return deps.store.getRun(run.id);
+  }
+  if (run.status !== "running" && run.status !== "queued") {
+    return run;
+  }
+
   if (await recoverRunCompletion(deps, request, session, run, toolCalls)) {
     return deps.store.getRun(run.id);
   }
@@ -1381,7 +1481,7 @@ async function reconcileSessionRuns(
 ) {
   const runs = await deps.store.listRuns(sessionId);
   for (const run of runs) {
-    if (run.status === "running" || run.status === "queued") {
+    if (run.status === "running" || run.status === "queued" || run.status === "completed") {
       await reconcilePersistentRun(deps, request, run);
     }
   }
@@ -1764,8 +1864,7 @@ async function loadRunArtifacts(
       ? artifact.filename.includes(runId)
       : runtimeIds.has(artifact.runtimeId),
   );
-
-  return Promise.all(
+  const hydrated = await Promise.all(
     filtered.map(async (artifact) => ({
       ...artifact,
       content: isTextArtifact(artifact.filename, artifact.mimeType)
@@ -1773,6 +1872,7 @@ async function loadRunArtifacts(
         : null,
     })),
   );
+  return synthesizeReferenceArtifacts(hydrated);
 }
 
 function isAdminUser(user: Awaited<ReturnType<AppStore["getUserProfile"]>>, allowedEmail?: string) {
@@ -1780,6 +1880,98 @@ function isAdminUser(user: Awaited<ReturnType<AppStore["getUserProfile"]>>, allo
     return false;
   }
   return user.email.trim().toLowerCase() === allowedEmail.trim().toLowerCase();
+}
+
+type RunArtifactLike = {
+  filename: string;
+  mimeType: string;
+  metadata?: Record<string, unknown> | null;
+  content?: string | null;
+  createdAt?: string | null;
+  id?: string;
+  runtimeId?: string | null;
+  r2Key?: string;
+};
+
+function synthesizeReferenceArtifacts(artifacts: RunArtifactLike[]) {
+  const hasReferenceMarkdown = artifacts.some((artifact) => artifact.filename === "every-single-reference.md");
+  if (hasReferenceMarkdown) {
+    return artifacts;
+  }
+
+  const viewedChunks = artifacts.find((artifact) => artifact.filename === "viewed-chunks.json");
+  if (!viewedChunks || typeof viewedChunks.content !== "string") {
+    return artifacts;
+  }
+
+  const synthesized = renderReferenceMarkdownFromViewedChunks(viewedChunks.content);
+  if (!synthesized) {
+    return artifacts;
+  }
+
+  return [{
+    id: viewedChunks.id ? `${viewedChunks.id}:synthetic-reference` : undefined,
+    runtimeId: viewedChunks.runtimeId ?? null,
+    r2Key: viewedChunks.r2Key,
+    filename: "every-single-reference.md",
+    mimeType: "text/markdown",
+    metadata: {
+      ...(viewedChunks.metadata ?? {}),
+      kind: "reference_file",
+      title: "Every Single Reference",
+      synthesized: true,
+      sourceFilename: viewedChunks.filename,
+    },
+    createdAt: viewedChunks.createdAt ?? null,
+    content: synthesized,
+  }, ...artifacts];
+}
+
+function renderReferenceMarkdownFromViewedChunks(raw: string) {
+  try {
+    const parsed = JSON.parse(raw) as {
+      generatedAt?: unknown;
+      chunks?: Array<Record<string, unknown>>;
+    };
+    const chunks = Array.isArray(parsed.chunks) ? parsed.chunks : [];
+    if (chunks.length === 0) {
+      return null;
+    }
+    return [
+      "# Every Single Reference",
+      "",
+      typeof parsed.generatedAt === "string" ? `Generated: ${parsed.generatedAt}` : null,
+      ...chunks.flatMap((chunk) => {
+        const title = typeof chunk.workTitle === "string" && chunk.workTitle.trim()
+          ? chunk.workTitle
+          : typeof chunk.workId === "string"
+            ? chunk.workId
+            : "Unknown work";
+        const workId = typeof chunk.workId === "string" ? chunk.workId : "unknown";
+        const chunkId = typeof chunk.chunkId === "string" ? chunk.chunkId : "unknown";
+        const chunkIndex = typeof chunk.chunkIndex === "number" ? chunk.chunkIndex : chunk.chunkIndex;
+        const authors = Array.isArray(chunk.authors)
+          ? chunk.authors.filter((author): author is string => typeof author === "string" && author.trim().length > 0)
+          : [];
+        const viewedIn = Array.isArray(chunk.viewedIn)
+          ? chunk.viewedIn.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+          : [];
+        const excerpt = typeof chunk.excerpt === "string" ? chunk.excerpt.trim() : "";
+        return [
+          `## ${title}`,
+          "",
+          `- Work ID: ${workId}`,
+          `- Chunk: ${chunkId}${chunkIndex !== undefined && chunkIndex !== null ? `#${String(chunkIndex)}` : ""}`,
+          ...(authors.length > 0 ? [`- Authors: ${authors.join(", ")}`] : []),
+          ...(viewedIn.length > 0 ? [`- Seen in: ${viewedIn.join(", ")}`] : []),
+          ...(excerpt ? ["", `> ${excerpt}`] : []),
+          "",
+        ];
+      }),
+    ].filter((line): line is string => typeof line === "string").join("\n");
+  } catch {
+    return null;
+  }
 }
 
 function collectRuntimeIds(toolCalls: Awaited<ReturnType<AppStore["listToolCalls"]>>) {
@@ -2313,21 +2505,155 @@ function buildWorkPassages(content: string) {
     }));
 }
 
+type ReaderPassageKind = "heading" | "paragraph" | "list-item" | "quote" | "preformatted";
+
+function finalizeWorkPassages(passages: Array<{ kind: ReaderPassageKind; text: string }>) {
+  let started = false;
+  let ended = false;
+  const cleaned: Array<{ kind: ReaderPassageKind; text: string }> = [];
+
+  for (const passage of passages) {
+    if (ended) {
+      break;
+    }
+
+    let text = passage.text;
+    const startMatch = text.match(/\*\*\*\s*START OF[\s\S]*?\*\*\*/i);
+    if (startMatch) {
+      started = true;
+      text = text.slice(startMatch.index! + startMatch[0].length).trim();
+    }
+
+    const endMatch = text.match(/\*\*\*\s*END OF[\s\S]*?\*\*\*/i);
+    if (endMatch) {
+      text = text.slice(0, endMatch.index).trim();
+      ended = true;
+    }
+
+    const shouldKeep = started || !/project gutenberg/i.test(text);
+    const normalized = normalizeReaderText(text, passage.kind === "preformatted");
+    if (!shouldKeep || !normalized) {
+      continue;
+    }
+
+    cleaned.push({
+      kind: passage.kind,
+      text: normalized,
+    });
+  }
+
+  const fallback = stripGutenbergBoilerplate(cleaned.map((passage) => passage.text).join("\n\n"));
+  const output = cleaned.length > 0
+    ? cleaned
+    : fallback
+      ? fallback.split(/\n{2,}/).map((text) => ({
+          kind: "paragraph" as const,
+          text: normalizeReaderText(text, true),
+        })).filter((passage) => passage.text.length > 0)
+      : [];
+
+  return output.map((passage, index) => ({
+    id: createReaderPassageId(index, passage.text),
+    searchText: buildNormalizedSearchIndex(passage.text),
+  }));
+}
+
+function buildTextWorkPassages(content: string) {
+  const cleaned = stripGutenbergBoilerplate(content);
+  return finalizeWorkPassages(
+    cleaned
+      .split(/\n{2,}/)
+      .map((chunk) => normalizeReaderText(chunk, true))
+      .filter(Boolean)
+      .map((text) => ({
+        kind: "paragraph" as const,
+        text,
+      })),
+  );
+}
+
+function buildHtmlWorkPassages(content: string) {
+  const domParserCtor = (globalThis as { DOMParser?: new () => { parseFromString: (input: string, mimeType: string) => any } }).DOMParser;
+  if (!domParserCtor) {
+    return buildTextWorkPassages(content);
+  }
+
+  const doc = new domParserCtor().parseFromString(content, "text/html");
+  for (const node of Array.from(doc.querySelectorAll("script, style, link, meta, base, noscript, iframe") as Iterable<any>)) {
+    node.remove();
+  }
+  for (const anchor of Array.from(doc.querySelectorAll("a") as Iterable<any>)) {
+    anchor.replaceWith(...Array.from(anchor.childNodes));
+  }
+
+  const selector = "h1, h2, h3, h4, h5, h6, p, li, blockquote, pre";
+  const blocks = Array.from(doc.body.querySelectorAll(selector) as Iterable<any>).filter((element) => !element.parentElement?.closest(selector));
+  const passages = blocks
+    .map((element) => {
+      const tagName = element.tagName.toLowerCase();
+      const rawText = tagName === "pre"
+        ? element.textContent ?? ""
+        : element.textContent?.replace(/\s+/g, " ") ?? "";
+      const text = normalizeReaderText(rawText, tagName === "pre");
+      if (!text) {
+        return null;
+      }
+
+      const kind: ReaderPassageKind =
+        /^h[1-6]$/.test(tagName)
+          ? "heading"
+          : tagName === "blockquote"
+            ? "quote"
+            : tagName === "li"
+              ? "list-item"
+              : tagName === "pre"
+                ? "preformatted"
+                : "paragraph";
+
+      return {
+        kind,
+        text: kind === "list-item" ? `• ${text}` : text,
+      };
+    })
+    .filter((passage): passage is { kind: ReaderPassageKind; text: string } => Boolean(passage));
+
+  if (passages.length === 0) {
+    return buildTextWorkPassages(doc.body.textContent ?? "");
+  }
+
+  return finalizeWorkPassages(passages);
+}
+
+function buildSourceWorkPassages(format: "html" | "text", content: string) {
+  return format === "html" ? buildHtmlWorkPassages(content) : buildTextWorkPassages(content);
+}
+
 async function buildCitationPassageUrl(
   deps: AppDeps,
   sessionId: string,
   citation: Citation,
 ): Promise<string> {
   const baseUrl = `https://alpha-book.org/works/${encodeURIComponent(citation.workId)}?session=${encodeURIComponent(sessionId)}`;
-  const workFile = await deps.store.getWorkTextFile(citation.workId);
-  if (!workFile?.r2Key) {
+  const work = await deps.store.getWorkById(citation.workId);
+  const files = await deps.store.getWorkFiles([citation.workId], ["raw", "clean"]);
+  const rawFile = files.find((file) => file.kind === "raw") ?? null;
+  const cleanFile = files.find((file) => file.kind === "clean") ?? null;
+  const preferredFile = rawFile ?? cleanFile;
+  if (!preferredFile?.r2Key) {
     return baseUrl;
   }
-  const content = await deps.blobStore.getText(workFile.r2Key);
+  const content = await deps.blobStore.getText(preferredFile.r2Key);
   if (!content) {
     return baseUrl;
   }
-  const passages = buildWorkPassages(content);
+  const metadata = work?.metadata ?? {};
+  const sourceFormat =
+    typeof metadata.sourceFormat === "string" && (metadata.sourceFormat === "html" || metadata.sourceFormat === "text")
+      ? metadata.sourceFormat
+      : rawFile?.r2Key?.endsWith(".html") || content.trimStart().startsWith("<!DOCTYPE html") || content.trimStart().startsWith("<html")
+        ? "html"
+        : "text";
+  const passages = buildSourceWorkPassages(sourceFormat, content);
   const candidates = buildExcerptCandidates(citation.excerpt).map((candidate) => buildNormalizedSearchIndex(candidate));
   const match = passages.find((passage) => candidates.some((candidate) => candidate && passage.searchText.includes(candidate)));
   return match ? `${baseUrl}#${match.id}` : baseUrl;
@@ -2376,7 +2702,7 @@ async function rewriteAnswerWithCitationLinks(
   answer: string,
   citations: Citation[],
 ) {
-  const formatPassageLink = (link: string) => `<${link}>`;
+  const formatPassageLink = (link: string) => `[Open passage](${link})`;
   const citationLinks = await Promise.all(citations.map((citation) => buildCitationPassageUrl(deps, sessionId, citation)));
   let rewritten = answer;
   let citationIndex = 0;
@@ -4229,11 +4555,14 @@ export function createApp(deps: AppDeps) {
       deps.store.listToolCalls(runId),
       deps.store.listRuntimeInstances(sessionId),
     ]);
+    const artifacts = await loadRunArtifacts(deps, sessionId, runId, toolCalls);
 
     return c.json({
       run: reconciledRun ?? run,
       toolCalls,
+      toolTrace: buildRecoveredToolTrace(toolCalls),
       runtimeInstances,
+      artifacts,
     });
   });
 

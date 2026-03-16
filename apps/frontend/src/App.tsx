@@ -9,7 +9,7 @@ import { ChevronsLeft, ChevronsRight, Link2, MessageSquarePlus } from "lucide-re
 
 import { getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type PublicProfileResponse, type UserProfile, type WorkDetail, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
-import { buildSignInUrl, cancelRun, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchCurrentUser, fetchMessages, fetchProfile, fetchRunArtifacts, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, queryAdminAnalytics, sendAnalyticsEvent, signOut, streamChat, streamRun, unfollowProfile, type RunArtifactRecord, type SessionRunRecord } from "./api";
+import { buildSignInUrl, cancelRun, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchCurrentUser, fetchMessages, fetchProfile, fetchRunState, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, queryAdminAnalytics, sendAnalyticsEvent, signOut, streamChat, streamRun, unfollowProfile, type RunArtifactRecord, type SessionRunRecord } from "./api";
 import { Thread } from "./components/assistant-ui/thread";
 import { Avatar, AvatarFallback, AvatarImage } from "./components/ui/avatar";
 import { Button } from "./components/ui/button";
@@ -409,6 +409,29 @@ function dedupeAdjacentErrorMessages(messages: UiMessage[]) {
     deduped.push(message);
   }
   return deduped;
+}
+
+function mergePersistedToolTrace(messages: UiMessage[], runId: string, trace: Array<Record<string, unknown>>) {
+  const normalizedTrace = trace.map((entry, index) => normalizeToolTraceEntry(entry, index));
+  if (normalizedTrace.length === 0) {
+    return messages;
+  }
+
+  let changed = false;
+  const nextMessages = messages.map((message) => {
+    const messageRunId = typeof message.metadata?.runId === "string" ? message.metadata.runId : null;
+    const phase = typeof message.metadata?.phase === "string" ? message.metadata.phase : null;
+    if (messageRunId !== runId || phase !== "plan") {
+      return message;
+    }
+    changed = true;
+    return {
+      ...message,
+      toolCalls: normalizedTrace,
+    };
+  });
+
+  return changed ? nextMessages : messages;
 }
 
 function formatRelativeTime(value: string | null | undefined) {
@@ -2651,9 +2674,12 @@ export default function App() {
     let cancelled = false;
     void (async () => {
       try {
-        const nextArtifacts = await fetchRunArtifacts(selectedSessionId, preferredRun.id);
+        const nextState = await fetchRunState(selectedSessionId, preferredRun.id);
         if (!cancelled) {
-          setRunArtifacts(nextArtifacts);
+          setRunArtifacts(Array.isArray(nextState.artifacts) ? nextState.artifacts : []);
+          if (Array.isArray(nextState.toolTrace)) {
+            setMessages((current) => mergePersistedToolTrace(current, preferredRun.id, nextState.toolTrace ?? []));
+          }
         }
       } catch {
         if (!cancelled) {
