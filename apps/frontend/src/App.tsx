@@ -52,7 +52,7 @@ type AuthState = {
   error: string | null;
 };
 
-type ViewMode = "explore" | "assistant" | "library" | "profile" | "book" | "admin";
+type ViewMode = "explore" | "assistant" | "profile" | "book" | "admin";
 type UrlState = {
   view: ViewMode;
   sessionId: string | null | undefined;
@@ -94,7 +94,7 @@ type AdminAnalyticsState = {
 
 const USER_STORAGE_KEY = "alphabook.localUserId";
 function isViewMode(value: string | null): value is ViewMode {
-  return value === "explore" || value === "assistant" || value === "library" || value === "profile" || value === "book" || value === "admin";
+  return value === "explore" || value === "assistant" || value === "profile" || value === "book" || value === "admin";
 }
 
 function readUrlState(): UrlState {
@@ -114,8 +114,9 @@ function readUrlState(): UrlState {
   const profilePathMatch = window.location.pathname.match(/^\/u\/([^/]+)$/);
   const params = new URLSearchParams(window.location.search);
   const rawView = params.get("view");
+  const resolvedView = rawView === "library" ? "explore" : rawView;
   return {
-    view: pathnameMatch ? "book" : profilePathMatch ? "profile" : isViewMode(rawView) ? rawView : "assistant",
+    view: pathnameMatch ? "book" : profilePathMatch ? "profile" : isViewMode(resolvedView) ? resolvedView : "assistant",
     sessionId: params.has("session") ? params.get("session") || null : undefined,
     workId: pathnameMatch ? decodeURIComponent(pathnameMatch[1]) : params.has("work") ? params.get("work") || null : undefined,
     profileUserId: profilePathMatch ? decodeURIComponent(profilePathMatch[1]) : params.has("profile") ? params.get("profile") || null : undefined,
@@ -682,18 +683,12 @@ function summarizeToolSentence({
         if (planned) {
           return planned;
         }
-        if (workCount === 0) {
-          return "Preparing the background search across the current corpus.";
-        }
-        return `Preparing the background search for ${pluralize(workCount, "book")}${chunkCount ? ` and ${pluralize(chunkCount, "lead")}` : ""}.`;
+        return "Starting the Codex search session.";
       }
       if (state === "error") {
-        return `Starting the background search failed${errorMessage ? `: ${errorMessage}` : "."}`;
+        return `Starting the Codex session failed${errorMessage ? `: ${errorMessage}` : "."}`;
       }
-      if (hydratedWorkCount > 0) {
-        return `Prepared the background search for ${pluralize(hydratedWorkCount, "book")}${chunkCount ? ` and ${pluralize(chunkCount, "lead")}` : ""}.`;
-      }
-      return `Prepared the background search for ${pluralize(workCount, "book")}${chunkCount ? ` and ${pluralize(chunkCount, "lead")}` : ""}.`;
+      return "Started the Codex search session.";
 
     case "run_workspace_task":
       if (state === "running") {
@@ -701,12 +696,12 @@ function summarizeToolSentence({
           return planned;
         }
         if (runtimePhase === "collect_evidence") {
-          return query ? `Searching the corpus for evidence about ${query}.` : "Searching the corpus for evidence.";
+          return query ? `Codex is searching the corpus for evidence about ${query}.` : "Codex is searching the corpus for evidence.";
         }
         if (runtimePhase === "write_briefing") {
-          return query ? `Writing the quoted briefing for ${query}.` : "Writing the quoted briefing.";
+          return query ? `Codex is writing the quoted briefing for ${query}.` : "Codex is writing the quoted briefing.";
         }
-        return query ? `Running the background search for ${query}.` : "Running the background search.";
+        return query ? `Codex is searching the corpus for ${query}.` : "Codex is searching the corpus.";
       }
       if (state === "error") {
         if (runtimePhase === "collect_evidence") {
@@ -720,8 +715,8 @@ function summarizeToolSentence({
             : `Writing the briefing failed${errorMessage ? `: ${errorMessage}` : "."}`;
         }
         return query
-          ? `The background search for ${query} failed${errorMessage ? `: ${errorMessage}` : "."}`
-          : `The background search failed${errorMessage ? `: ${errorMessage}` : "."}`;
+          ? `The Codex search for ${query} failed${errorMessage ? `: ${errorMessage}` : "."}`
+          : `The Codex search failed${errorMessage ? `: ${errorMessage}` : "."}`;
       }
       if (runtimePhase === "collect_evidence") {
         return query ? `Finished gathering evidence for ${query}.` : "Finished gathering evidence.";
@@ -729,7 +724,7 @@ function summarizeToolSentence({
       if (runtimePhase === "write_briefing") {
         return query ? `Finished the quoted briefing for ${query}.` : "Finished the quoted briefing.";
       }
-      return query ? `Finished the background search for ${query}.` : "Finished the background search.";
+      return query ? `Finished the Codex search for ${query}.` : "Finished the Codex search.";
 
     case "read_workspace_file":
       if (state === "running") {
@@ -965,14 +960,6 @@ function ChatIcon() {
   );
 }
 
-function LibraryIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M5.5 4h4A1.5 1.5 0 0 1 11 5.5v13A1.5 1.5 0 0 1 9.5 20h-4A1.5 1.5 0 0 1 4 18.5v-13A1.5 1.5 0 0 1 5.5 4Zm8 0h4A1.5 1.5 0 0 1 19 5.5v13a1.5 1.5 0 0 1-1.5 1.5h-4A1.5 1.5 0 0 1 12 18.5v-13A1.5 1.5 0 0 1 13.5 4Z" />
-    </svg>
-  );
-}
-
 function ProfileIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -984,7 +971,6 @@ function ProfileIcon() {
 const NAV_ITEMS: Array<{ id: ViewMode; label: string; icon: ComponentType }> = [
   { id: "explore", label: "Explore", icon: CompassIcon },
   { id: "assistant", label: "Assistant", icon: ChatIcon },
-  { id: "library", label: "Library", icon: LibraryIcon },
   { id: "profile", label: "Profile", icon: ProfileIcon },
 ];
 
@@ -2376,51 +2362,6 @@ export default function App() {
     );
   }
 
-  function renderLibraryView() {
-    if (authPending) {
-      return (
-        <section className="assistant-page">
-          <div className="assistant-thread-shell">
-            <AuthLoadingState compact />
-          </div>
-        </section>
-      );
-    }
-
-    if (authLocked) {
-      return (
-        <section className="assistant-page">
-          <div className="assistant-thread-shell">
-            <LockedState
-              compact
-              title="Sign in to open your library."
-            />
-          </div>
-        </section>
-      );
-    }
-
-    return (
-      <div className="view-shell">
-        <header className="view-header">
-          <h1>Library</h1>
-        </header>
-
-        <div className="library-list space-y-3">
-          {sessions.length === 0 ? (
-            <Card className="feature-card rounded-[20px] border-[rgba(72,43,37,0.06)] bg-[rgba(255,255,255,0.62)] shadow-none">
-              <CardContent className="p-8">
-                <p className="empty-copy text-sm text-[var(--ink-soft)]">Saved chats appear here.</p>
-              </CardContent>
-            </Card>
-          ) : (
-            sessions.map((session) => <SessionListCard key={session.id} session={session} onOpen={() => openSession(session.id)} />)
-          )}
-        </div>
-      </div>
-    );
-  }
-
   function renderProfileView() {
     const isPublicProfile = Boolean(activeProfileUserId && (!currentUserId || activeProfileUserId !== currentUserId));
     if (authPending) {
@@ -3105,8 +3046,6 @@ export default function App() {
         return renderExploreView();
       case "book":
         return renderBookView();
-      case "library":
-        return renderLibraryView();
       case "profile":
         return renderProfileView();
       case "admin":
