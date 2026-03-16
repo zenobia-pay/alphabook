@@ -327,6 +327,7 @@ function lastToolCall(context: PlannerContext): PlannerContext["toolHistory"][nu
 function buildTaskContext(context: PlannerContext, workIds: string[], chunks: ChunkSearchResult[]) {
   return {
     question: context.userMessage,
+    researchObjective: context.userMessage,
     mode: workspaceMode(context),
     candidateWorkIds: workIds,
     topChunks: chunks.slice(0, 12).map((chunk) => ({
@@ -344,10 +345,15 @@ function buildWorkspaceTaskSpec(context: PlannerContext, workIds: string[], chun
     kind: "briefing_search",
     phase: "collect_and_brief",
     question: context.userMessage,
+    researchObjective: context.userMessage,
     mode: workspaceMode(context),
     workIds,
     chunkIds: chunks.slice(0, 24).map((chunk) => chunk.id),
     candidateWorkIds: workIds,
+    searchHints: {
+      searchWorksQuery: context.userMessage,
+      passageSearchFocus: "Find the strongest directly quotable passages that best answer the research objective.",
+    },
     retrieval: {
       searchWorks: search.slice(0, 12).map((work) => ({
         id: work.id,

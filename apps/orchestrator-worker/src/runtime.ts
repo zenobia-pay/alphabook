@@ -742,14 +742,12 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     chunkIds: string[],
     taskContext: Record<string, unknown>,
   ) {
-    const exhaustiveMode = taskContext.mode === "exhaustive_corpus_search";
-    const resolvedWorkIds = exhaustiveMode
-      ? (await this.store.listWorks(0, 1000)).map((work) => work.id)
-      : uniqueStrings(workIds);
-    const [workMetadata, workFiles, selectedChunks] = await Promise.all([
+    const resolvedWorkIds = uniqueStrings(workIds);
+    const [workMetadata, workFiles, selectedChunks, corpusWorkCount] = await Promise.all([
       this.store.getWorkMetadata(resolvedWorkIds),
       this.store.getWorkFiles(resolvedWorkIds, ["clean", "chunks"] satisfies WorkFileKind[]),
       chunkIds.length > 0 ? this.store.getChunksByIds(chunkIds) : Promise.resolve([]),
+      this.store.countWorks(),
     ]);
     let totalBytes = 0;
     const fileCatalog = dedupeByKey(workFiles).map((file) => ({
@@ -782,6 +780,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
       })),
       taskContext: {
         ...restTaskContext,
+        corpusWorkCount,
         hydratedWorkCount: resolvedWorkIds.length,
       },
     };
@@ -842,6 +841,9 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
       const path = typeof artifact.path === "string" ? artifact.path : null;
       const filename = typeof artifact.filename === "string" ? artifact.filename : null;
       const mimeType = typeof artifact.mimeType === "string" ? artifact.mimeType : "application/octet-stream";
+      const metadata = artifact.metadata && typeof artifact.metadata === "object"
+        ? artifact.metadata as Record<string, unknown>
+        : {};
       if (!path || !filename) {
         continue;
       }
@@ -873,6 +875,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
         metadata: {
           path,
           source: "runtime-output",
+          ...metadata,
         },
       });
       uploaded.push({

@@ -729,6 +729,55 @@ async function runStubAgent(paths: ReturnType<typeof createPaths>, workspaceRoot
     }, null, 2),
     "utf8",
   );
+  await writeFile(
+    join(paths.output, "viewed-chunks.json"),
+    JSON.stringify({
+      generatedAt: nowIso(),
+      summary: {
+        uniqueChunkCount: manifest.selectedChunks?.length ?? 0,
+        selectedChunkCount: manifest.selectedChunks?.length ?? 0,
+        topRuntimeHitCount: 0,
+        iterationCount: 0,
+      },
+      chunks: manifest.selectedChunks?.map((chunk) => ({
+        chunkId: chunk.id,
+        workId: chunk.workId,
+        workTitle: manifest.works.find((work) => work.workId === chunk.workId)?.title ?? null,
+        authors: manifest.works.find((work) => work.workId === chunk.workId)?.authors ?? [],
+        chunkIndex: chunk.chunkIndex,
+        excerpt: chunk.excerpt ?? chunk.text ?? "",
+        r2Key: chunk.r2Key ?? null,
+        viewedIn: ["workspace_selected_chunks"],
+        matchedIterations: [],
+        maxScore: null,
+      })) ?? [],
+    }, null, 2),
+    "utf8",
+  );
+  await writeFile(
+    join(paths.output, "every-single-reference.md"),
+    [
+      "# Every Single Reference",
+      "",
+      `Generated: ${nowIso()}`,
+      "",
+      ...(manifest.selectedChunks?.map((chunk) => {
+        const work = manifest.works.find((item) => item.workId === chunk.workId);
+        return [
+          `## ${work?.title ?? chunk.workId}`,
+          "",
+          `- Work ID: ${chunk.workId}`,
+          `- Chunk: ${chunk.id}#${chunk.chunkIndex}`,
+          ...(Array.isArray(work?.authors) && work.authors.length > 0 ? [`- Authors: ${work.authors.join(", ")}`] : []),
+          "- Seen in: workspace_selected_chunks",
+          "",
+          `> ${chunk.excerpt ?? chunk.text ?? ""}`,
+          "",
+        ].join("\n");
+      }) ?? []),
+    ].join("\n"),
+    "utf8",
+  );
 
   const artifacts: RuntimeTaskResult["artifacts"] = [
     {
@@ -740,6 +789,24 @@ async function runStubAgent(paths: ReturnType<typeof createPaths>, workspaceRoot
       path: "output/evidence.json",
       filename: "evidence.json",
       mimeType: "application/json",
+    },
+    {
+      path: "output/viewed-chunks.json",
+      filename: "viewed-chunks.json",
+      mimeType: "application/json",
+      metadata: {
+        kind: "reference_index",
+        title: "Every Single Reference (Raw)",
+      },
+    },
+    {
+      path: "output/every-single-reference.md",
+      filename: "every-single-reference.md",
+      mimeType: "text/markdown",
+      metadata: {
+        kind: "reference_file",
+        title: "Every Single Reference",
+      },
     },
   ];
 
@@ -877,6 +944,10 @@ async function runExternalAgent(
     })
     : [];
   const billingEvents = await readRuntimeBillingEvents(paths);
+  const artifactMetadataByFilename = new Map<string, Record<string, unknown>>([
+    ["every-single-reference.md", { kind: "reference_file", title: "Every Single Reference" }],
+    ["viewed-chunks.json", { kind: "reference_index", title: "Every Single Reference (Raw)" }],
+  ]);
   return {
     runtimeId: String(taskSpec.runtimeId ?? "runtime"),
     stdout,
@@ -895,11 +966,15 @@ async function runExternalAgent(
         : [],
     codexRuns: normalizedCodexRuns,
     billingEvents,
-    artifacts: outputFiles.map((file) => ({
-      path: file,
-      filename: file.split("/").at(-1) ?? file,
-      mimeType: file.endsWith(".md") ? "text/markdown" : "application/octet-stream",
-    })),
+    artifacts: outputFiles.map((file) => {
+      const filename = file.split("/").at(-1) ?? file;
+      return {
+        path: file,
+        filename,
+        mimeType: file.endsWith(".md") ? "text/markdown" : "application/octet-stream",
+        metadata: artifactMetadataByFilename.get(filename),
+      };
+    }),
   };
 }
 

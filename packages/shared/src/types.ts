@@ -354,5 +354,10 @@ export interface RuntimeTaskResult {
     createdAt?: string;
     metadata?: Record<string, unknown>;
   }>;
-  artifacts: Array<{ path: string; filename: string; mimeType: string }>;
+  artifacts: Array<{
+    path: string;
+    filename: string;
+    mimeType: string;
+    metadata?: Record<string, unknown>;
+  }>;
 }

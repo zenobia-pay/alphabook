@@ -268,6 +268,227 @@ function expandWithNeighbors(hits, byWork) {
   return expanded;
 }
 
+function normalizeChunkRecord(chunk, workById) {
+  const workId = String(chunk.work_id || chunk.workId || "");
+  const work = workById.get(workId);
+  return {
+    chunkId: String(chunk.id || chunk.chunkId || ""),
+    workId,
+    workTitle: typeof work?.title === "string" ? work.title : null,
+    authors: Array.isArray(work?.authors) ? work.authors : [],
+    chunkIndex:
+      typeof chunk.chunk_index === "number"
+        ? chunk.chunk_index
+        : typeof chunk.chunkIndex === "number"
+          ? chunk.chunkIndex
+          : null,
+    excerpt:
+      typeof chunk.text === "string"
+        ? normalizeWhitespace(chunk.text).slice(0, 420)
+        : typeof chunk.excerpt === "string"
+          ? normalizeWhitespace(chunk.excerpt).slice(0, 420)
+          : "",
+    r2Key: typeof chunk.r2Key === "string" ? chunk.r2Key : null,
+  };
+}
+
+function buildViewedChunksArtifact(selectedChunks, iterations, evidence, topRuntimeHits, workById) {
+  const byChunkId = new Map();
+
+  function ensureChunk(chunk) {
+    const record = normalizeChunkRecord(chunk, workById);
+    if (!record.chunkId) {
+      return null;
+    }
+    const existing = byChunkId.get(record.chunkId);
+    if (existing) {
+      if (!existing.excerpt && record.excerpt) {
+        existing.excerpt = record.excerpt;
+      }
+      if (existing.chunkIndex === null && record.chunkIndex !== null) {
+        existing.chunkIndex = record.chunkIndex;
+      }
+      if (!existing.r2Key && record.r2Key) {
+        existing.r2Key = record.r2Key;
+      }
+      if (!existing.workTitle && record.workTitle) {
+        existing.workTitle = record.workTitle;
+      }
+      if ((!Array.isArray(existing.authors) || existing.authors.length === 0) && record.authors.length > 0) {
+        existing.authors = record.authors;
+      }
+      return existing;
+    }
+    const created = {
+      ...record,
+      viewedIn: [],
+      matchedIterations: [],
+      scores: [],
+    };
+    byChunkId.set(record.chunkId, created);
+    return created;
+  }
+
+  for (const chunk of Array.isArray(selectedChunks) ? selectedChunks : []) {
+    const entry = ensureChunk(chunk);
+    if (!entry) {
+      continue;
+    }
+    entry.viewedIn.push("workspace_selected_chunks");
+  }
+
+  for (const iteration of Array.isArray(iterations) ? iterations : []) {
+    const iterationName = typeof iteration?.name === "string" ? iteration.name : "unknown";
+    for (const hit of Array.isArray(iteration?.hits) ? iteration.hits : []) {
+      const entry = ensureChunk(hit);
+      if (!entry) {
+        continue;
+      }
+      entry.viewedIn.push("search_iteration");
+      entry.matchedIterations.push(iterationName);
+      if (typeof hit.score === "number") {
+        entry.scores.push(hit.score);
+      }
+    }
+  }
+
+  for (const chunk of Array.isArray(topRuntimeHits) ? topRuntimeHits : []) {
+    const entry = ensureChunk(chunk);
+    if (!entry) {
+      continue;
+    }
+    entry.viewedIn.push("top_runtime_hits");
+    if (typeof chunk.score === "number") {
+      entry.scores.push(chunk.score);
+    }
+  }
+
+  for (const chunk of Array.isArray(evidence?.runtimeHits) ? evidence.runtimeHits : []) {
+    const entry = ensureChunk(chunk);
+    if (!entry) {
+      continue;
+    }
+    entry.viewedIn.push("briefing_evidence");
+  }
+
+  const chunks = [...byChunkId.values()]
+    .map((entry) => ({
+      ...entry,
+      viewedIn: Array.from(new Set(entry.viewedIn)),
+      matchedIterations: Array.from(new Set(entry.matchedIterations)),
+      maxScore: entry.scores.length > 0 ? Math.max(...entry.scores) : null,
+      scores: undefined,
+    }))
+    .sort((left, right) => {
+      const scoreDelta = (right.maxScore ?? -1) - (left.maxScore ?? -1);
+      if (scoreDelta !== 0) {
+        return scoreDelta;
+      }
+      if (left.workTitle && right.workTitle && left.workTitle !== right.workTitle) {
+        return left.workTitle.localeCompare(right.workTitle);
+      }
+      return (left.chunkIndex ?? 0) - (right.chunkIndex ?? 0);
+    });
+
+  return {
+    generatedAt: new Date().toISOString(),
+    summary: {
+      uniqueChunkCount: chunks.length,
+      selectedChunkCount: Array.isArray(selectedChunks) ? selectedChunks.length : 0,
+      topRuntimeHitCount: Array.isArray(topRuntimeHits) ? topRuntimeHits.length : 0,
+      iterationCount: Array.isArray(iterations) ? iterations.length : 0,
+    },
+    chunks,
+  };
+}
+
+function buildViewedChunksMarkdown(reference) {
+  const lines = [
+    "# Every Single Reference",
+    "",
+    `Generated: ${reference.generatedAt}`,
+    "",
+    `Unique chunks viewed: ${reference.summary.uniqueChunkCount}`,
+    `Selected workspace chunks: ${reference.summary.selectedChunkCount}`,
+    `Top runtime hits: ${reference.summary.topRuntimeHitCount}`,
+    `Search iterations: ${reference.summary.iterationCount}`,
+    "",
+  ];
+
+  for (const chunk of Array.isArray(reference.chunks) ? reference.chunks : []) {
+    const title = chunk.workTitle || chunk.workId || "Unknown work";
+    const location = chunk.chunkIndex === null ? chunk.chunkId : `${chunk.chunkId}#${chunk.chunkIndex}`;
+    lines.push(`## ${title}`);
+    lines.push("");
+    lines.push(`- Work ID: ${chunk.workId}`);
+    lines.push(`- Chunk: ${location}`);
+    if (Array.isArray(chunk.authors) && chunk.authors.length > 0) {
+      lines.push(`- Authors: ${chunk.authors.join(", ")}`);
+    }
+    if (Array.isArray(chunk.viewedIn) && chunk.viewedIn.length > 0) {
+      lines.push(`- Seen in: ${chunk.viewedIn.join(", ")}`);
+    }
+    if (Array.isArray(chunk.matchedIterations) && chunk.matchedIterations.length > 0) {
+      lines.push(`- Matched iterations: ${chunk.matchedIterations.join(", ")}`);
+    }
+    if (chunk.maxScore !== null && chunk.maxScore !== undefined) {
+      lines.push(`- Max score: ${chunk.maxScore}`);
+    }
+    if (typeof chunk.excerpt === "string" && chunk.excerpt.length > 0) {
+      lines.push("");
+      lines.push(`> ${chunk.excerpt}`);
+    }
+    lines.push("");
+  }
+
+  return lines.join("\n").trim() + "\n";
+}
+
+function normalizeSeedChunk(chunk, workById) {
+  if (!chunk || typeof chunk !== "object") {
+    return null;
+  }
+  const record = normalizeChunkRecord(chunk, workById);
+  if (!record.chunkId || !record.workId) {
+    return null;
+  }
+  return {
+    id: record.chunkId,
+    workId: record.workId,
+    title: record.workTitle || "",
+    chunkIndex: typeof record.chunkIndex === "number" ? record.chunkIndex : 0,
+    excerpt: record.excerpt,
+    r2Key: record.r2Key,
+  };
+}
+
+function gatherSeedChunks(task, selectedChunks, workById) {
+  const seedChunks = [];
+  const seen = new Set();
+
+  function push(chunk) {
+    const normalized = normalizeSeedChunk(chunk, workById);
+    if (!normalized || seen.has(normalized.id)) {
+      return;
+    }
+    seen.add(normalized.id);
+    seedChunks.push(normalized);
+  }
+
+  for (const chunk of Array.isArray(selectedChunks) ? selectedChunks : []) {
+    push(chunk);
+  }
+
+  const retrieval = task?.retrieval;
+  if (retrieval && typeof retrieval === "object") {
+    for (const chunk of Array.isArray(retrieval.seedChunks) ? retrieval.seedChunks : []) {
+      push(chunk);
+    }
+  }
+
+  return seedChunks;
+}
+
 function countOccurrences(text, term) {
   if (!term) {
     return 0;
@@ -631,6 +852,9 @@ function buildSearchEvidence(question, selectedChunks, runtimeChunks, workById) 
       matchedConcepts: Array.isArray(chunk.matched_concepts) ? chunk.matched_concepts : [],
       r2Key: chunk.r2Key ?? chunk.r2_key ?? null,
     })),
+    candidateWorkIds: Array.isArray(runtimeChunks)
+      ? Array.from(new Set(runtimeChunks.slice(0, 12).map((chunk) => String(chunk.work_id || chunk.workId || "")))).filter(Boolean)
+      : [],
   };
 }
 
@@ -651,6 +875,7 @@ function compactTaskContext(taskContext) {
     prompt: typeof normalized.prompt === "string" ? normalizeWhitespace(normalized.prompt).slice(0, 220) : null,
     question: typeof normalized.question === "string" ? normalizeWhitespace(normalized.question).slice(0, 220) : null,
     runtimeId: typeof normalized.runtimeId === "string" ? normalized.runtimeId : null,
+    corpusWorkCount: typeof normalized.corpusWorkCount === "number" ? normalized.corpusWorkCount : null,
     hydratedWorkCount: typeof normalized.hydratedWorkCount === "number" ? normalized.hydratedWorkCount : null,
     candidateWorkIds: sampleStrings(normalized.candidateWorkIds, 8),
     selectedChunkIds: sampleStrings(normalized.selectedChunkIds, 8),
@@ -668,7 +893,15 @@ function compactTaskSpec(task, openBookMode) {
     runtimeId: typeof task.runtimeId === "string" ? task.runtimeId : null,
     taskType: typeof task.taskType === "string" ? task.taskType : null,
     mode: typeof task.mode === "string" ? task.mode : null,
-    query: typeof task.query === "string" ? normalizeWhitespace(task.query).slice(0, 280) : null,
+    researchObjective:
+      typeof task.researchObjective === "string"
+        ? normalizeWhitespace(task.researchObjective).slice(0, 320)
+        : typeof task.question === "string"
+          ? normalizeWhitespace(task.question).slice(0, 320)
+          : typeof task.goal === "string"
+            ? normalizeWhitespace(task.goal).slice(0, 320)
+            : null,
+    retrievalQuery: typeof task.query === "string" ? normalizeWhitespace(task.query).slice(0, 220) : null,
     goal: typeof task.goal === "string" ? normalizeWhitespace(task.goal).slice(0, 280) : null,
     topK: typeof task.topK === "number" ? task.topK : null,
     dedupe: typeof task.dedupe === "boolean" ? task.dedupe : null,
@@ -684,8 +917,12 @@ function buildBriefingPrompt(runtimePrompt, manifest, task, evidence, question) 
     : {};
   const openBookMode = taskContext.mode === "open_book_analysis";
   const manifestSummary = {
-    workCount: Array.isArray(manifest.works) ? manifest.works.length : 0,
-    works: Array.isArray(manifest.works)
+    corpusWorkCount:
+      typeof manifest.taskContext?.corpusWorkCount === "number"
+        ? manifest.taskContext.corpusWorkCount
+        : Array.isArray(manifest.works) ? manifest.works.length : 0,
+    hydratedWorkCount: Array.isArray(manifest.works) ? manifest.works.length : 0,
+    hydratedWorks: Array.isArray(manifest.works)
       ? manifest.works.slice(0, 12).map((work) => ({
         workId: work.workId,
         title: work.title,
@@ -707,6 +944,7 @@ function buildBriefingPrompt(runtimePrompt, manifest, task, evidence, question) 
     taskContext: compactTaskContext(manifest.taskContext),
   };
   const compactTask = compactTaskSpec(task, openBookMode);
+  const researchObjective = compactTask.researchObjective || question;
   return [
     runtimePrompt,
     "",
@@ -726,7 +964,7 @@ function buildBriefingPrompt(runtimePrompt, manifest, task, evidence, question) 
     "- Prefer finishing with a good briefing over exhaustively exploring every possible lead.",
     openBookMode
       ? "- Search the local clean text and local chunks first with rg and sed. Use the remote Postgres corpus CLI only as a fallback."
-      : "- Use the remote Postgres database through the local corpus CLI at node /workspace/context/search-db.mjs as your main corpus-wide search surface.",
+      : "- Use the remote Postgres database through the local corpus CLI at node /workspace/context/search-db.mjs as your main corpus-wide search surface. Do not assume relevant books are hydrated locally.",
     "- The CLI turns corpus-wide search requests into SQL over the remote chunks table and returns results in plain text or JSON so you can keep working with normal shell tools.",
     "- Guaranteed tools in this runtime image: node, python/python3, jq, rg, sed, awk, grep, cat, mkdir.",
     "- node /workspace/context/search-db.mjs rg behaves like ripgrep over the remote chunks table and can be piped into sed, awk, jq, and other shell tools.",
@@ -745,7 +983,7 @@ function buildBriefingPrompt(runtimePrompt, manifest, task, evidence, question) 
     "- Use repeated regex, keyword, metadata, and neighbor queries until you have enough direct quoted evidence to answer the question or until you exhaust the command budget.",
     openBookMode
       ? "- You do not need to hydrate more books for this task unless the question explicitly asks for a comparison."
-      : "- After the corpus-wide search identifies strong candidates, decide which books to pull locally and which clean text files are worth hydrating for deeper context.",
+      : "- Hydrate local book files only after the corpus-wide search identifies a small final set of candidates and you need local verification or extra context.",
     "- Use shell tools like rg, sed, jq, and python3 to inspect local files and Postgres-backed search results.",
     "- To pull files into the workspace, run node /workspace/context/hydrate-files.mjs with one or more of these forms:",
     "  node /workspace/context/hydrate-files.mjs --work <workId> --kind chunks",
@@ -763,7 +1001,7 @@ function buildBriefingPrompt(runtimePrompt, manifest, task, evidence, question) 
     "- You may optionally write helper notes under /workspace/output, but only /workspace/output/briefing.md is required.",
     "- Do not stop after searching. A run is incomplete until /workspace/output/briefing.md exists with real content.",
     "",
-    `Question: ${question}`,
+    `Research objective: ${researchObjective}`,
     "",
     "Task spec:",
     JSON.stringify(compactTask, null, 2),
@@ -1062,7 +1300,7 @@ async function main() {
     readJsonIfPresent(selectedChunksPath, []),
   ]);
 
-  const question = String(task.question || task.prompt || task.task || "Analyze the workspace corpus.");
+  const question = String(task.researchObjective || task.question || task.goal || task.prompt || task.task || "Analyze the workspace corpus.");
   const tokens = queryTokens(question);
   const expansions = semanticExpansions(question);
   const searchTokens = Array.from(new Set([...tokens, ...expansions.tokens]));
@@ -1096,7 +1334,8 @@ async function main() {
   const mergedHits = mergeHits(iterations);
   const filteredHits = prioritizeFamilyHits(filterFamilyHits(mergedHits, chunkIndex, expansions.families), expansions.families);
   const topRuntimeHits = diversifyHits(expandWithNeighbors(filteredHits, chunkIndex), 10, 3);
-  const evidence = buildSearchEvidence(question, selectedChunks.slice(0, 8), topRuntimeHits, workById);
+  const seedChunks = gatherSeedChunks(task, selectedChunks, workById);
+  const evidence = buildSearchEvidence(question, seedChunks.slice(0, 12), topRuntimeHits, workById);
 
   await writeFile(
     join(outputDir, "search-plan.json"),
@@ -1107,7 +1346,10 @@ async function main() {
         semanticTokens: expansions.tokens,
         semanticFamilies: expansions.families.map((family) => family.id),
         phraseBoosts: searchPhrases,
-        candidateWorkIds: Array.from(new Set(topRuntimeHits.map((chunk) => String(chunk.work_id || "")))).filter(Boolean),
+        candidateWorkIds: Array.from(new Set([
+          ...topRuntimeHits.map((chunk) => String(chunk.work_id || "")),
+          ...(Array.isArray(task.candidateWorkIds) ? task.candidateWorkIds.map((value) => String(value || "")) : []),
+        ])).filter(Boolean),
       },
       null,
       2,
@@ -1134,6 +1376,9 @@ async function main() {
     "utf8",
   );
   await writeFile(join(outputDir, "evidence.seed.json"), JSON.stringify(evidence, null, 2), "utf8");
+  const viewedChunksReference = buildViewedChunksArtifact(seedChunks, iterations, evidence, topRuntimeHits, workById);
+  await writeFile(join(outputDir, "viewed-chunks.json"), JSON.stringify(viewedChunksReference, null, 2), "utf8");
+  await writeFile(join(outputDir, "every-single-reference.md"), buildViewedChunksMarkdown(viewedChunksReference), "utf8");
 
   const phase = normalizePhase(task);
   const codexRuns = [];
