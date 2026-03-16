@@ -1089,6 +1089,7 @@ function messageToThreadMessage(message: UiMessage, streamingAssistantId: string
               }),
         };
       });
+    const hasRunningTool = message.toolCalls.some((entry) => entry.state === "running");
     const textParts = message.content
       ? [
           {
@@ -1106,7 +1107,7 @@ function messageToThreadMessage(message: UiMessage, streamingAssistantId: string
       content,
       metadata,
       status:
-        isSending && message.id === streamingAssistantId
+        (isSending && message.id === streamingAssistantId) || hasRunningTool
           ? ({ type: "running" } as const)
           : ({ type: "complete", reason: "stop" } as const),
     };
@@ -2984,81 +2985,79 @@ export default function App() {
         {activeWorkLoading ? (
           <BookLoadingState />
         ) : (
-          <>
-            <div className="book-reader-pane">
-              {activeWork ? (
-                <>
-                  <header className="book-reader-header">
-                    <div>
-                      <p className="book-reader-meta">
-                        {[activeWork.gutenbergId ? `Gutenberg ${activeWork.gutenbergId}` : null, activeWork.language?.toUpperCase()].filter(Boolean).join(" · ")}
-                      </p>
-                      <h1>{activeWork.title}</h1>
-                      {activeWork.authors.length > 0 ? <p className="book-reader-authors">{activeWork.authors.join(" · ")}</p> : null}
-                    </div>
-                  </header>
-
-                  <div className="book-reader-surface">
-                    {readerPassages.length > 0 ? (
-                      <div className="book-reader-passages">
-                        {readerPassages.map((passage) => (
-                          <ReaderPassageBlock
-                            key={passage.id}
-                            passage={passage}
-                            isActive={passage.id === activePassageId}
-                            highlight={passage.id === activePassageId ? highlightedPassageExcerpt : null}
-                            onActivate={(passageId) => activatePassage(passageId, null)}
-                          />
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="book-loading">This book does not have stored source content yet.</div>
-                    )}
+          <div className="book-reader-pane">
+            {activeWork ? (
+              <>
+                <header className="book-reader-header">
+                  <div>
+                    <p className="book-reader-meta">
+                      {[activeWork.gutenbergId ? `Gutenberg ${activeWork.gutenbergId}` : null, activeWork.language?.toUpperCase()].filter(Boolean).join(" · ")}
+                    </p>
+                    <h1>{activeWork.title}</h1>
+                    {activeWork.authors.length > 0 ? <p className="book-reader-authors">{activeWork.authors.join(" · ")}</p> : null}
                   </div>
-                </>
-              ) : (
-                <div className="book-loading">Book not found.</div>
-              )}
-            </div>
+                </header>
 
-            <div
-              className="book-assistant-divider"
-              onPointerDown={startBookAssistantResize}
-              role="separator"
-              aria-orientation="vertical"
-              aria-label="Resize assistant panel"
-            />
-
-            <aside className="book-assistant-pane">
-              {loadError ? <div className="thread-error-banner">{loadError}</div> : null}
-              <div className="book-assistant-shell" data-testid="book-thread">
-                <BookAssistantToolbar
-                  sessions={sessions}
-                  selectedSessionId={selectedSessionId}
-                  onSelectSession={openBookSession}
-                  onStartNewChat={startNewBookChat}
-                />
-                {authPending ? (
-                  <AssistantLoadingState />
-                ) : authLocked ? (
-                  <LockedState
-                    compact
-                    title="Sign in to ask about this book."
-                  />
-                ) : (
-                  <AssistantSurface
-                    key={`book-${activeWorkId ?? "unknown"}-${selectedSessionId ?? "new-thread"}`}
-                    messages={messages}
-                    isSending={isSending}
-                    streamingAssistantId={streamingAssistantId}
-                    onPrompt={bookPromptHandler}
-                    suggestions={ASSISTANT_WELCOME_SUGGESTIONS}
-                  />
-                )}
-              </div>
-            </aside>
-          </>
+                <div className="book-reader-surface">
+                  {readerPassages.length > 0 ? (
+                    <div className="book-reader-passages">
+                      {readerPassages.map((passage) => (
+                        <ReaderPassageBlock
+                          key={passage.id}
+                          passage={passage}
+                          isActive={passage.id === activePassageId}
+                          highlight={passage.id === activePassageId ? highlightedPassageExcerpt : null}
+                          onActivate={(passageId) => activatePassage(passageId, null)}
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="book-loading">This book does not have stored source content yet.</div>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="book-loading">Book not found.</div>
+            )}
+          </div>
         )}
+
+        <div
+          className="book-assistant-divider"
+          onPointerDown={startBookAssistantResize}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize assistant panel"
+        />
+
+        <aside className="book-assistant-pane">
+          {loadError ? <div className="thread-error-banner">{loadError}</div> : null}
+          <div className="book-assistant-shell" data-testid="book-thread">
+            <BookAssistantToolbar
+              sessions={sessions}
+              selectedSessionId={selectedSessionId}
+              onSelectSession={openBookSession}
+              onStartNewChat={startNewBookChat}
+            />
+            {authPending ? (
+              <AssistantLoadingState />
+            ) : authLocked ? (
+              <LockedState
+                compact
+                title="Sign in to ask about this book."
+              />
+            ) : (
+              <AssistantSurface
+                key={`book-${activeWorkId ?? "unknown"}-${selectedSessionId ?? "new-thread"}`}
+                messages={messages}
+                isSending={isSending}
+                streamingAssistantId={streamingAssistantId}
+                onPrompt={bookPromptHandler}
+                suggestions={ASSISTANT_WELCOME_SUGGESTIONS}
+              />
+            )}
+          </div>
+        </aside>
       </section>
     );
   }
