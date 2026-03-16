@@ -1005,6 +1005,17 @@ export function createApp(deps: AppDeps) {
     return user;
   }
 
+  async function canAccessSession(c: Context, session: SessionRecord) {
+    if (!(deps.auth?.isConfigured() ?? false)) {
+      return true;
+    }
+    const user = await resolveUser(c);
+    if (!user) {
+      return false;
+    }
+    return user.id === session.userId || isAdminUser(user, deps.adminAllowedEmail);
+  }
+
   app.get("/health", async (c) => {
     const database = await deps.store.healthCheck();
     return c.json({
@@ -1042,6 +1053,24 @@ export function createApp(deps: AppDeps) {
       authConfigured: deps.auth?.isConfigured() ?? false,
       user: user ?? null,
     });
+  });
+
+  app.get("/admin/users", async (c) => {
+    const admin = await requireAdmin(c);
+    if (!admin) {
+      return c.json({ error: "Not authorized." }, 403);
+    }
+    const users = await deps.store.listUsers();
+    return c.json({ users });
+  });
+
+  app.get("/admin/runs", async (c) => {
+    const admin = await requireAdmin(c);
+    if (!admin) {
+      return c.json({ error: "Not authorized." }, 403);
+    }
+    const runs = await deps.store.listAllRuns();
+    return c.json({ runs });
   });
 
   app.get("/profiles/:userId", async (c) => {
@@ -1161,8 +1190,7 @@ export function createApp(deps: AppDeps) {
     if (!session) {
       return c.json({ error: "Session not found." }, 404);
     }
-    const user = await resolveUser(c);
-    if ((deps.auth?.isConfigured() ?? false) && (!user || user.id !== session.userId)) {
+    if (!(await canAccessSession(c, session))) {
       return c.json({ error: "Not authorized for this session." }, 403);
     }
     const messages = await deps.store.listMessages(sessionId);
@@ -1175,8 +1203,7 @@ export function createApp(deps: AppDeps) {
     if (!session) {
       return c.json({ error: "Session not found." }, 404);
     }
-    const user = await resolveUser(c);
-    if ((deps.auth?.isConfigured() ?? false) && (!user || user.id !== session.userId)) {
+    if (!(await canAccessSession(c, session))) {
       return c.json({ error: "Not authorized for this session." }, 403);
     }
 
@@ -1191,8 +1218,7 @@ export function createApp(deps: AppDeps) {
     if (!session) {
       return c.json({ error: "Session not found." }, 404);
     }
-    const user = await resolveUser(c);
-    if ((deps.auth?.isConfigured() ?? false) && (!user || user.id !== session.userId)) {
+    if (!(await canAccessSession(c, session))) {
       return c.json({ error: "Not authorized for this session." }, 403);
     }
 
@@ -1219,8 +1245,7 @@ export function createApp(deps: AppDeps) {
     if (!session) {
       return c.json({ error: "Session not found." }, 404);
     }
-    const user = await resolveUser(c);
-    if ((deps.auth?.isConfigured() ?? false) && (!user || user.id !== session.userId)) {
+    if (!(await canAccessSession(c, session))) {
       return c.json({ error: "Not authorized for this session." }, 403);
     }
 
@@ -1253,8 +1278,7 @@ export function createApp(deps: AppDeps) {
     if (!session) {
       return c.json({ error: "Session not found." }, 404);
     }
-    const user = await resolveUser(c);
-    if ((deps.auth?.isConfigured() ?? false) && (!user || user.id !== session.userId)) {
+    if (!(await canAccessSession(c, session))) {
       return c.json({ error: "Not authorized for this session." }, 403);
     }
 
@@ -1287,8 +1311,7 @@ export function createApp(deps: AppDeps) {
     if (!session) {
       return c.json({ error: "Session not found." }, 404);
     }
-    const user = await resolveUser(c);
-    if ((deps.auth?.isConfigured() ?? false) && (!user || user.id !== session.userId)) {
+    if (!(await canAccessSession(c, session))) {
       return c.json({ error: "Not authorized for this session." }, 403);
     }
 

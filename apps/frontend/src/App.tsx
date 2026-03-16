@@ -1,4 +1,4 @@
-import { createContext, type ComponentType, type CSSProperties, type FormEvent, type UIEvent, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, type ComponentType, type CSSProperties, type FormEvent, type ReactNode, type UIEvent, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   AssistantRuntimeProvider,
   useExternalStoreRuntime,
@@ -9,7 +9,7 @@ import { ChevronsLeft, ChevronsRight } from "lucide-react";
 
 import { getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type PublicProfileResponse, type UserProfile, type WorkDetail, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
-import { buildSignInUrl, buildSignOutUrl, fetchAdminAccess, fetchAdminRunLogs, fetchCurrentUser, fetchMessages, fetchProfile, fetchSessions, fetchWorkDetail, fetchWorks, followProfile, streamChat, unfollowProfile } from "./api";
+import { buildSignInUrl, buildSignOutUrl, fetchAdminAccess, fetchAdminRunLogs, fetchAdminRuns, fetchAdminUsers, fetchCurrentUser, fetchMessages, fetchProfile, fetchSessions, fetchWorkDetail, fetchWorks, followProfile, streamChat, unfollowProfile } from "./api";
 import { Thread } from "./components/assistant-ui/thread";
 import { Avatar, AvatarFallback, AvatarImage } from "./components/ui/avatar";
 import { Button } from "./components/ui/button";
@@ -75,6 +75,12 @@ type AdminRunLogState = {
   error: string | null;
   runId: string;
   payload: Record<string, unknown> | null;
+};
+
+type AdminTableState = {
+  loading: boolean;
+  error: string | null;
+  rows: Record<string, unknown>[];
 };
 
 const USER_STORAGE_KEY = "alphabook.localUserId";
@@ -478,6 +484,16 @@ function pluralize(count: number, singular: string, plural = `${singular}s`) {
 
 function formatJson(value: unknown) {
   return JSON.stringify(value, null, 2);
+}
+
+function adminText(value: unknown) {
+  if (typeof value === "string" && value.trim()) {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return "—";
 }
 
 function summarizeRunLogPayload(payload: Record<string, unknown> | null) {
@@ -947,6 +963,23 @@ function AdminJsonBlock({
   );
 }
 
+function AdminTableCard({
+  title,
+  children,
+}: {
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <Card className="rounded-[20px] border-[rgba(72,43,37,0.06)] bg-[rgba(255,255,255,0.72)] shadow-none">
+      <CardContent className="space-y-3 p-5">
+        <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-[var(--ink-soft)]">{title}</h2>
+        {children}
+      </CardContent>
+    </Card>
+  );
+}
+
 function LockedState({
   title,
   compact = false,
@@ -1084,6 +1117,16 @@ export default function App() {
     error: null,
     runId: initialUrlState.runId ?? "",
     payload: null,
+  });
+  const [adminUsers, setAdminUsers] = useState<AdminTableState>({
+    loading: false,
+    error: null,
+    rows: [],
+  });
+  const [adminRuns, setAdminRuns] = useState<AdminTableState>({
+    loading: false,
+    error: null,
+    rows: [],
   });
   const activeRunTokenRef = useRef(0);
   const bookReaderFrameRef = useRef<HTMLIFrameElement | null>(null);
@@ -1453,12 +1496,60 @@ export default function App() {
     }
   }
 
+  async function loadAdminUsers() {
+    try {
+      setAdminUsers((current) => ({ ...current, loading: true, error: null }));
+      const rows = await fetchAdminUsers();
+      setAdminUsers({
+        loading: false,
+        error: null,
+        rows,
+      });
+    } catch (error) {
+      setAdminUsers({
+        loading: false,
+        error: error instanceof Error ? error.message : "Failed to load users.",
+        rows: [],
+      });
+    }
+  }
+
+  async function loadAdminRuns() {
+    try {
+      setAdminRuns((current) => ({ ...current, loading: true, error: null }));
+      const rows = await fetchAdminRuns();
+      setAdminRuns({
+        loading: false,
+        error: null,
+        rows,
+      });
+    } catch (error) {
+      setAdminRuns({
+        loading: false,
+        error: error instanceof Error ? error.message : "Failed to load runs.",
+        rows: [],
+      });
+    }
+  }
+
   useEffect(() => {
     if (!adminAccess.allowed || !selectedAdminRunId || adminRunLog.loading || adminRunLog.payload || adminRunLog.error) {
       return;
     }
     void loadAdminRunLogs(selectedAdminRunId);
   }, [adminAccess.allowed, adminRunLog.error, adminRunLog.loading, adminRunLog.payload, selectedAdminRunId]);
+
+  useEffect(() => {
+    if (!adminAccess.allowed) {
+      return;
+    }
+    if (adminUsers.rows.length === 0 && !adminUsers.loading && !adminUsers.error) {
+      void loadAdminUsers();
+    }
+    if (adminRuns.rows.length === 0 && !adminRuns.loading && !adminRuns.error) {
+      void loadAdminRuns();
+    }
+  }, [adminAccess.allowed, adminRuns.error, adminRuns.loading, adminRuns.rows.length, adminUsers.error, adminUsers.loading, adminUsers.rows.length]);
 
   async function sendPrompt(
     question: string,
@@ -2388,6 +2479,117 @@ export default function App() {
               ) : null}
             </CardContent>
           </Card>
+        </section>
+
+        <section className="grid gap-4 xl:grid-cols-[1.2fr_1.8fr]">
+          <AdminTableCard title="Users">
+            {adminUsers.error ? (
+              <p className="text-sm text-[var(--ink-soft)]">{adminUsers.error}</p>
+            ) : adminUsers.loading ? (
+              <p className="text-sm text-[var(--ink-soft)]">Loading users…</p>
+            ) : (
+              <div className="overflow-auto">
+                <table className="min-w-full text-sm text-[var(--ink)]">
+                  <thead className="text-left text-xs uppercase tracking-[0.16em] text-[var(--ink-soft)]">
+                    <tr>
+                      <th className="pb-3 pr-4">User</th>
+                      <th className="pb-3 pr-4">Sessions</th>
+                      <th className="pb-3 pr-4">Runs</th>
+                      <th className="pb-3 pr-4">Last seen</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {adminUsers.rows.map((row, index) => (
+                      <tr key={`${adminText(row.id)}-${index}`} className="border-t border-[rgba(72,43,37,0.08)] align-top">
+                        <td className="py-3 pr-4">
+                          <div className="font-medium">{adminText(row.name) !== "—" ? adminText(row.name) : adminText(row.email)}</div>
+                          <div className="text-xs text-[var(--ink-soft)]">{adminText(row.email)}</div>
+                          <div className="text-xs text-[var(--ink-soft)]">{adminText(row.id)}</div>
+                        </td>
+                        <td className="py-3 pr-4">{adminText(row.sessionCount)}</td>
+                        <td className="py-3 pr-4">{adminText(row.runCount)}</td>
+                        <td className="py-3 pr-4">{formatRelativeTime(typeof row.lastSeenAt === "string" ? row.lastSeenAt : null)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </AdminTableCard>
+
+          <AdminTableCard title="Analytics">
+            <p className="text-sm leading-6 text-[var(--ink-soft)]">
+              Analytics is not wired yet. This panel is reserved for run volume, user funnels, tool failure rates, Codex latency, and corpus search quality once tracking is in place.
+            </p>
+          </AdminTableCard>
+        </section>
+
+        <section className="space-y-4">
+          <AdminTableCard title="Runs">
+            {adminRuns.error ? (
+              <p className="text-sm text-[var(--ink-soft)]">{adminRuns.error}</p>
+            ) : adminRuns.loading ? (
+              <p className="text-sm text-[var(--ink-soft)]">Loading runs…</p>
+            ) : (
+              <div className="overflow-auto">
+                <table className="min-w-full text-sm text-[var(--ink)]">
+                  <thead className="text-left text-xs uppercase tracking-[0.16em] text-[var(--ink-soft)]">
+                    <tr>
+                      <th className="pb-3 pr-4">Run</th>
+                      <th className="pb-3 pr-4">Status</th>
+                      <th className="pb-3 pr-4">Owner</th>
+                      <th className="pb-3 pr-4">Session</th>
+                      <th className="pb-3 pr-4">Started</th>
+                      <th className="pb-3 pr-4">Tools</th>
+                      <th className="pb-3 pr-4">Messages</th>
+                      <th className="pb-3 pr-4">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {adminRuns.rows.map((row, index) => {
+                      const runId = adminText(row.id);
+                      const sessionId = adminText(row.sessionId);
+                      return (
+                        <tr key={`${runId}-${index}`} className="border-t border-[rgba(72,43,37,0.08)] align-top">
+                          <td className="py-3 pr-4">
+                            <div className="font-medium">{runId}</div>
+                            <div className="max-w-[20rem] text-xs text-[var(--ink-soft)]">{adminText(row.lastMessagePreview)}</div>
+                          </td>
+                          <td className="py-3 pr-4">{adminText(row.status)}</td>
+                          <td className="py-3 pr-4">
+                            <div>{adminText(row.userName) !== "—" ? adminText(row.userName) : adminText(row.userEmail)}</div>
+                            <div className="text-xs text-[var(--ink-soft)]">{adminText(row.userEmail)}</div>
+                          </td>
+                          <td className="py-3 pr-4">
+                            <div>{adminText(row.sessionTitle)}</div>
+                            <div className="text-xs text-[var(--ink-soft)]">{sessionId}</div>
+                          </td>
+                          <td className="py-3 pr-4">{formatRelativeTime(typeof row.startedAt === "string" ? row.startedAt : null)}</td>
+                          <td className="py-3 pr-4">{adminText(row.toolCallCount)}</td>
+                          <td className="py-3 pr-4">{adminText(row.messageCount)}</td>
+                          <td className="py-3 pr-4">
+                            <div className="flex flex-col gap-2">
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => void loadAdminRunLogs(runId)}
+                              >
+                                Logs
+                              </Button>
+                              <Button asChild type="button" variant="ghost" size="sm">
+                                <a href={`/?view=assistant&session=${encodeURIComponent(sessionId)}`}>Open session</a>
+                              </Button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </AdminTableCard>
         </section>
 
         {adminRunLog.payload ? (

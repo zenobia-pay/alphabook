@@ -98,6 +98,26 @@ export async function fetchAdminRunLogs(runId: string): Promise<Record<string, u
   return await response.json();
 }
 
+export async function fetchAdminUsers(): Promise<Record<string, unknown>[]> {
+  const response = await ensureOk(
+    await fetch(`${API_BASE}/admin/users`, {
+      credentials: "include",
+    }),
+  );
+  const payload = await response.json() as { users?: Record<string, unknown>[] };
+  return Array.isArray(payload.users) ? payload.users : [];
+}
+
+export async function fetchAdminRuns(): Promise<Record<string, unknown>[]> {
+  const response = await ensureOk(
+    await fetch(`${API_BASE}/admin/runs`, {
+      credentials: "include",
+    }),
+  );
+  const payload = await response.json() as { runs?: Record<string, unknown>[] };
+  return Array.isArray(payload.runs) ? payload.runs : [];
+}
+
 export async function fetchProfile(userId: string): Promise<PublicProfileResponse> {
   const response = await ensureOk(
     await fetch(`${API_BASE}/profiles/${userId}`, {

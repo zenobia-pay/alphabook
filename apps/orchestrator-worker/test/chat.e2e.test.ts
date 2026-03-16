@@ -588,6 +588,85 @@ test("session endpoints expose chat history for the assistant UI", async () => {
   );
 });
 
+test("admin can inspect all users, all runs, and another user's session", async () => {
+  const store = new InMemoryAppStore();
+  await store.upsertUserProfile({
+    id: "admin-user",
+    email: "rprendergast1121@gmail.com",
+    name: "Admin",
+  });
+  await store.upsertUserProfile({
+    id: "reader-user",
+    email: "reader@example.com",
+    name: "Reader",
+  });
+  const session = await store.createSession("reader-user", "Reader session");
+  await store.appendMessage(session.id, "user", "Find angry passages.");
+  const run = await store.createRun(session.id);
+  await store.updateRun(run.id, {
+    status: "completed",
+    plannerTurns: 2,
+    completedAt: new Date().toISOString(),
+  });
+
+  const app = createApp({
+    store,
+    planner: new ScriptedPlanner([
+      {
+        type: "final_answer",
+        answer: "ok",
+        citations: [],
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false };
+      },
+      async runWorkspaceTask() {
+        return { ok: false };
+      },
+      async readWorkspaceFile() {
+        return { ok: false };
+      },
+      async listWorkspaceFiles() {
+        return { ok: true, files: [] };
+      },
+      async destroyWorkspace() {
+        return { ok: true };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+    adminAllowedEmail: "rprendergast1121@gmail.com",
+  });
+
+  const adminUsersResponse = await app.request("/admin/users?userId=admin-user");
+  assert.equal(adminUsersResponse.status, 200);
+  const adminUsers = await adminUsersResponse.json() as {
+    users: Array<{ email: string | null }>;
+  };
+  assert.ok(adminUsers.users.some((user) => user.email === "reader@example.com"));
+
+  const adminRunsResponse = await app.request("/admin/runs?userId=admin-user");
+  assert.equal(adminRunsResponse.status, 200);
+  const adminRuns = await adminRunsResponse.json() as {
+    runs: Array<{ id: string }>;
+  };
+  assert.ok(adminRuns.runs.some((candidate) => candidate.id === run.id));
+
+  const sessionMessagesResponse = await app.request(`/sessions/${session.id}/messages?userId=admin-user`);
+  assert.equal(sessionMessagesResponse.status, 200);
+  const sessionMessages = await sessionMessagesResponse.json() as {
+    messages: Array<{ content: string }>;
+  };
+  assert.equal(sessionMessages.messages[0]?.content, "Find angry passages.");
+});
+
 test("workspace args are normalized and run logs are exposed", async () => {
   const store = new InMemoryAppStore([
     {

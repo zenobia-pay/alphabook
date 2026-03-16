@@ -18,6 +18,12 @@ export interface UserRecord {
   followingCount: number;
 }
 
+export interface AdminUserRecord extends UserRecord {
+  sessionCount: number;
+  runCount: number;
+  lastSeenAt: string | null;
+}
+
 export interface SessionSummaryRecord extends SessionRecord {
   lastMessageAt: string | null;
   lastMessagePreview: string | null;
@@ -39,6 +45,16 @@ export interface RunRecord {
   plannerTurns: number;
   startedAt: string;
   completedAt: string | null;
+}
+
+export interface AdminRunRecord extends RunRecord {
+  userId: string;
+  userEmail: string | null;
+  userName: string | null;
+  sessionTitle: string | null;
+  toolCallCount: number;
+  messageCount: number;
+  lastMessagePreview: string | null;
 }
 
 export interface ToolCallRecord {
@@ -99,6 +115,7 @@ export interface AppStore {
   ensureUser(userId: string): Promise<void>;
   upsertUserProfile(input: { id: string; email?: string | null; name?: string | null; avatarUrl?: string | null }): Promise<UserRecord>;
   getUserProfile(userId: string): Promise<UserRecord | null>;
+  listUsers(): Promise<AdminUserRecord[]>;
   followUser(followerId: string, followedId: string): Promise<void>;
   unfollowUser(followerId: string, followedId: string): Promise<void>;
   isFollowing(followerId: string, followedId: string): Promise<boolean>;
@@ -110,6 +127,7 @@ export interface AppStore {
   createRun(sessionId: string): Promise<RunRecord>;
   getRun(runId: string): Promise<RunRecord | null>;
   listRuns(sessionId: string): Promise<RunRecord[]>;
+  listAllRuns(): Promise<AdminRunRecord[]>;
   updateRun(runId: string, updates: Partial<Pick<RunRecord, "status" | "plannerTurns" | "completedAt">>): Promise<void>;
   startToolCall(runId: string, toolName: ToolName, argsJson: Record<string, unknown>): Promise<ToolCallRecord>;
   listToolCalls(runId: string): Promise<ToolCallRecord[]>;
@@ -449,6 +467,37 @@ export class InMemoryAppStore implements AppStore {
     };
   }
 
+  async listUsers(): Promise<AdminUserRecord[]> {
+    const runsBySession = [...this.runs.values()].reduce((map, run) => {
+      map.set(run.sessionId, (map.get(run.sessionId) ?? 0) + 1);
+      return map;
+    }, new Map<string, number>());
+
+    return [...this.userProfiles.values()]
+      .map((profile) => {
+        const sessions = [...this.sessions.values()].filter((session) => session.userId === profile.id);
+        const sessionIds = new Set(sessions.map((session) => session.id));
+        const messages = [...this.messages.values()].flat().filter((message) => sessionIds.has(message.sessionId));
+        const lastSeenAt = messages
+          .map((message) => message.createdAt)
+          .sort((left, right) => right.localeCompare(left))[0] ?? null;
+
+        return {
+          ...profile,
+          followersCount: this.countFollowers(profile.id),
+          followingCount: this.countFollowing(profile.id),
+          sessionCount: sessions.length,
+          runCount: sessions.reduce((total, session) => total + (runsBySession.get(session.id) ?? 0), 0),
+          lastSeenAt,
+        };
+      })
+      .sort((left, right) => {
+        const rightValue = right.lastSeenAt ?? right.createdAt;
+        const leftValue = left.lastSeenAt ?? left.createdAt;
+        return rightValue.localeCompare(leftValue);
+      });
+  }
+
   async followUser(followerId: string, followedId: string): Promise<void> {
     if (followerId === followedId) {
       return;
@@ -541,6 +590,27 @@ export class InMemoryAppStore implements AppStore {
   async listRuns(sessionId: string): Promise<RunRecord[]> {
     return [...this.runs.values()]
       .filter((run) => run.sessionId === sessionId)
+      .sort((left, right) => right.startedAt.localeCompare(left.startedAt));
+  }
+
+  async listAllRuns(): Promise<AdminRunRecord[]> {
+    return [...this.runs.values()]
+      .map((run) => {
+        const session = this.sessions.get(run.sessionId) ?? null;
+        const user = session ? this.userProfiles.get(session.userId) ?? null : null;
+        const messages = this.messages.get(run.sessionId) ?? [];
+        const toolCallCount = [...this.toolCalls.values()].filter((toolCall) => toolCall.runId === run.id).length;
+        return {
+          ...run,
+          userId: session?.userId ?? "unknown",
+          userEmail: user?.email ?? null,
+          userName: user?.name ?? null,
+          sessionTitle: session?.title ?? null,
+          toolCallCount,
+          messageCount: messages.length,
+          lastMessagePreview: messages[messages.length - 1]?.content.slice(0, 160) ?? null,
+        };
+      })
       .sort((left, right) => right.startedAt.localeCompare(left.startedAt));
   }
 
@@ -909,6 +979,76 @@ export class NeonAppStore implements AppStore {
     };
   }
 
+  async listUsers(): Promise<AdminUserRecord[]> {
+    const result = await this.db.query<{
+      id: string;
+      email: string | null;
+      name: string | null;
+      avatar_url: string | null;
+      created_at: string;
+      followers_count: number;
+      following_count: number;
+      session_count: number;
+      run_count: number;
+      last_seen_at: string | null;
+    }>(
+      `
+        SELECT
+          u.id,
+          u.email,
+          u.name,
+          u.avatar_url,
+          u.created_at,
+          COALESCE(followers.count, 0) AS followers_count,
+          COALESCE(following.count, 0) AS following_count,
+          COALESCE(session_counts.session_count, 0) AS session_count,
+          COALESCE(run_counts.run_count, 0) AS run_count,
+          last_seen.last_seen_at
+        FROM users u
+        LEFT JOIN (
+          SELECT followed_id, COUNT(*)::int AS count
+          FROM user_follows
+          GROUP BY followed_id
+        ) AS followers ON followers.followed_id = u.id
+        LEFT JOIN (
+          SELECT follower_id, COUNT(*)::int AS count
+          FROM user_follows
+          GROUP BY follower_id
+        ) AS following ON following.follower_id = u.id
+        LEFT JOIN (
+          SELECT user_id, COUNT(*)::int AS session_count
+          FROM chat_sessions
+          GROUP BY user_id
+        ) AS session_counts ON session_counts.user_id = u.id
+        LEFT JOIN (
+          SELECT cs.user_id, COUNT(r.id)::int AS run_count
+          FROM chat_sessions cs
+          LEFT JOIN runs r ON r.session_id = cs.id
+          GROUP BY cs.user_id
+        ) AS run_counts ON run_counts.user_id = u.id
+        LEFT JOIN (
+          SELECT cs.user_id, MAX(m.created_at)::text AS last_seen_at
+          FROM chat_sessions cs
+          LEFT JOIN messages m ON m.session_id = cs.id
+          GROUP BY cs.user_id
+        ) AS last_seen ON last_seen.user_id = u.id
+        ORDER BY COALESCE(last_seen.last_seen_at, u.created_at) DESC, u.created_at DESC
+      `,
+    );
+    return result.rows.map((row) => ({
+      id: row.id,
+      email: row.email,
+      name: row.name,
+      avatarUrl: row.avatar_url,
+      createdAt: row.created_at,
+      followersCount: Number(row.followers_count ?? 0),
+      followingCount: Number(row.following_count ?? 0),
+      sessionCount: Number(row.session_count ?? 0),
+      runCount: Number(row.run_count ?? 0),
+      lastSeenAt: row.last_seen_at,
+    }));
+  }
+
   async followUser(followerId: string, followedId: string): Promise<void> {
     if (followerId === followedId) {
       return;
@@ -1153,6 +1293,73 @@ export class NeonAppStore implements AppStore {
       plannerTurns: row.planner_turns,
       startedAt: row.started_at,
       completedAt: row.completed_at,
+    }));
+  }
+
+  async listAllRuns(): Promise<AdminRunRecord[]> {
+    const result = await this.db.query<{
+      id: string;
+      session_id: string;
+      status: RunRecord["status"];
+      planner_turns: number;
+      started_at: string;
+      completed_at: string | null;
+      user_id: string;
+      user_email: string | null;
+      user_name: string | null;
+      session_title: string | null;
+      tool_call_count: number;
+      message_count: number;
+      last_message_preview: string | null;
+    }>(
+      `
+        SELECT
+          r.id,
+          r.session_id,
+          r.status,
+          r.planner_turns,
+          r.started_at,
+          r.completed_at,
+          cs.user_id,
+          u.email AS user_email,
+          u.name AS user_name,
+          cs.title AS session_title,
+          COALESCE(tool_counts.tool_call_count, 0) AS tool_call_count,
+          COALESCE(message_counts.message_count, 0) AS message_count,
+          message_counts.last_message_preview
+        FROM runs r
+        JOIN chat_sessions cs ON cs.id = r.session_id
+        LEFT JOIN users u ON u.id = cs.user_id
+        LEFT JOIN (
+          SELECT run_id, COUNT(*)::int AS tool_call_count
+          FROM tool_calls
+          GROUP BY run_id
+        ) AS tool_counts ON tool_counts.run_id = r.id
+        LEFT JOIN (
+          SELECT
+            session_id,
+            COUNT(*)::int AS message_count,
+            (ARRAY_AGG(content ORDER BY created_at DESC))[1] AS last_message_preview
+          FROM messages
+          GROUP BY session_id
+        ) AS message_counts ON message_counts.session_id = r.session_id
+        ORDER BY r.started_at DESC
+      `,
+    );
+    return result.rows.map((row) => ({
+      id: row.id,
+      sessionId: row.session_id,
+      status: row.status,
+      plannerTurns: Number(row.planner_turns ?? 0),
+      startedAt: row.started_at,
+      completedAt: row.completed_at,
+      userId: row.user_id,
+      userEmail: row.user_email,
+      userName: row.user_name,
+      sessionTitle: row.session_title,
+      toolCallCount: Number(row.tool_call_count ?? 0),
+      messageCount: Number(row.message_count ?? 0),
+      lastMessagePreview: row.last_message_preview?.slice(0, 160) ?? null,
     }));
   }
 
