@@ -1699,7 +1699,7 @@ export default function App() {
       return;
     }
     void loadAdminAnalytics(adminAnalytics.query);
-  }, [adminAccess.allowed, adminAnalytics.error, adminAnalytics.loading, adminAnalytics.payload, adminAnalytics.query, adminSection]);
+  }, [adminAccess.allowed, adminSection]);
 
   async function sendPrompt(
     question: string,
@@ -2968,12 +2968,30 @@ export default function App() {
                     void loadAdminAnalytics(adminAnalytics.query);
                   }}
                 >
-                  <textarea
-                    className="min-h-[140px] w-full rounded-[18px] border border-[rgba(72,43,37,0.12)] bg-white px-4 py-4 text-sm leading-6 text-[var(--ink)] outline-none transition focus:border-[rgba(72,43,37,0.28)]"
-                    value={adminAnalytics.query}
-                    onChange={(event) => setAdminAnalytics((current) => ({ ...current, query: event.currentTarget.value }))}
-                    placeholder="Give me signups per day over the past seven days."
-                  />
+                  <div className="relative">
+                    <Textarea
+                      className="min-h-[150px] rounded-[18px] border-[rgba(72,43,37,0.12)] bg-white px-4 py-4 pr-18 text-sm leading-6 focus-visible:border-[rgba(72,43,37,0.28)] focus-visible:ring-[rgba(72,43,37,0.14)]"
+                      value={adminAnalytics.query}
+                      onChange={(event) => setAdminAnalytics((current) => ({ ...current, query: event.currentTarget.value }))}
+                      onKeyDown={(event) => {
+                        event.stopPropagation();
+                        if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                          event.preventDefault();
+                          void loadAdminAnalytics(adminAnalytics.query);
+                        }
+                      }}
+                      placeholder="Give me signups per day over the past seven days."
+                    />
+                    <Button
+                      type="submit"
+                      size="icon"
+                      className="absolute bottom-4 right-4 h-10 w-10 rounded-full"
+                      disabled={adminAnalytics.loading || !adminAnalytics.query.trim()}
+                      aria-label="Run analytics query"
+                    >
+                      <ArrowUpIcon />
+                    </Button>
+                  </div>
                   <div className="flex flex-wrap gap-2">
                     {[
                       "Give me signups per day over the past seven days.",
@@ -2994,9 +3012,12 @@ export default function App() {
                     ))}
                   </div>
                   <div className="flex flex-wrap items-center gap-3">
-                    <Button type="submit" disabled={adminAnalytics.loading}>
+                    <Button type="submit" disabled={adminAnalytics.loading || !adminAnalytics.query.trim()}>
                       {adminAnalytics.loading ? "Running analytics…" : "Run analytics query"}
                     </Button>
+                    <span className="text-sm text-[var(--ink-soft)]">
+                      Press `Cmd`/`Ctrl` + `Enter` to run from the field.
+                    </span>
                     <span className="text-sm text-[var(--ink-soft)]">
                       Backed by `/a` events plus recent user messages from assistant sessions.
                     </span>
