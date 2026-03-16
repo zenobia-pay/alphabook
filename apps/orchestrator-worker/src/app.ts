@@ -2297,13 +2297,14 @@ async function rewriteAnswerWithCitationLinks(
   answer: string,
   citations: Citation[],
 ) {
+  const formatPassageLink = (link: string) => `[${link}](${link})`;
   const citationLinks = await Promise.all(citations.map((citation) => buildCitationPassageUrl(deps, sessionId, citation)));
   let rewritten = answer;
   let citationIndex = 0;
   rewritten = rewritten.replace(/\[(?:work\s*id|workId)\s*:[^\]]+\]/giu, () => {
     const nextLink = citationLinks[citationIndex] ?? null;
     citationIndex += 1;
-    return nextLink ? `[Open passage](${nextLink})` : "";
+    return nextLink ? formatPassageLink(nextLink) : "";
   });
 
   for (const [index, citation] of citations.entries()) {
@@ -2322,7 +2323,7 @@ async function rewriteAnswerWithCitationLinks(
       if (!pattern.test(rewritten)) {
         continue;
       }
-      rewritten = rewritten.replace(pattern, `$1 [Open passage](${link})`);
+      rewritten = rewritten.replace(pattern, `$1 ${formatPassageLink(link)}`);
       linked = true;
       break;
     }
@@ -2335,7 +2336,7 @@ async function rewriteAnswerWithCitationLinks(
       ? new RegExp(`(${escapeRegExp(citation.label.trim())})`, "u")
       : null;
     if (labelPattern?.test(rewritten)) {
-      rewritten = rewritten.replace(labelPattern, `$1 ([Open passage](${link}))`);
+      rewritten = rewritten.replace(labelPattern, `$1 (${formatPassageLink(link)})`);
       continue;
     }
 
@@ -2348,7 +2349,7 @@ async function rewriteAnswerWithCitationLinks(
       }
       const chunkPattern = new RegExp(`(${escapeRegExp(chunkMarker)})`, "u");
       if (chunkPattern.test(rewritten)) {
-        rewritten = rewritten.replace(chunkPattern, `$1 [Open passage](${link})`);
+        rewritten = rewritten.replace(chunkPattern, `$1 ${formatPassageLink(link)}`);
         break;
       }
     }
@@ -2365,7 +2366,7 @@ async function rewriteAnswerWithCitationLinks(
     if (!link) {
       continue;
     }
-    const replacement = `${linePrefix}${title} — [Open passage](${link})`;
+    const replacement = `${linePrefix}${title} — ${formatPassageLink(link)}`;
     rewritten = rewritten.replace(fullMatch, replacement);
   }
 
