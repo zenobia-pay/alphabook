@@ -234,6 +234,7 @@ async function runProcess(
     cwd: string;
     env: NodeJS.ProcessEnv;
     timeoutMs?: number;
+    signal?: AbortSignal;
   },
 ): Promise<{ stdout: string; stderr: string; exitCode: number | null; timedOut: boolean }> {
   return new Promise((resolve, reject) => {
@@ -273,6 +274,22 @@ async function runProcess(
     child.on("close", (code) => {
       finish({ stdout, stderr, exitCode: code, timedOut });
     });
+
+    if (options.signal) {
+      const abort = () => {
+        child.kill("SIGTERM");
+        setTimeout(() => {
+          if (!settled) {
+            child.kill("SIGKILL");
+          }
+        }, 5_000).unref();
+      };
+      if (options.signal.aborted) {
+        abort();
+      } else {
+        options.signal.addEventListener("abort", abort, { once: true });
+      }
+    }
 
     if (options.timeoutMs && options.timeoutMs > 0) {
       timeout = setTimeout(() => {
@@ -782,6 +799,7 @@ async function runExternalAgent(
   paths: ReturnType<typeof createPaths>,
   workspaceRoot: string,
   taskSpec: Record<string, unknown>,
+  signal?: AbortSignal,
 ): Promise<RuntimeTaskResult> {
   const command = process.env.RUNTIME_AGENT_COMMAND;
   if (!command) {
@@ -808,7 +826,11 @@ async function runExternalAgent(
     cwd: workspaceRoot,
     env: childEnv,
     timeoutMs: 180_000,
+    signal,
   });
+  if (signal?.aborted) {
+    throw new Error("Task cancelled.");
+  }
   if (processResult.exitCode !== 0) {
     const timeoutSuffix = processResult.timedOut ? " (timed out)" : "";
     throw new Error(
@@ -885,8 +907,11 @@ async function startExternalAgentTask(
   paths: ReturnType<typeof createPaths>,
   workspaceRoot: string,
   payload: RunTaskRequest,
+  activeTasks: Map<string, AbortController>,
 ) {
   const startedAt = nowIso();
+  const abortController = new AbortController();
+  activeTasks.set(payload.runtimeId, abortController);
   await writeRuntimeTaskStatus(paths, {
     status: "running",
     runtimeId: payload.runtimeId,
@@ -898,7 +923,7 @@ async function startExternalAgentTask(
       const result = await runExternalAgent(paths, workspaceRoot, {
         runtimeId: payload.runtimeId,
         ...payload.taskSpec,
-      });
+      }, abortController.signal);
       await writeRuntimeTaskStatus(paths, {
         status: "completed",
         runtimeId: payload.runtimeId,
@@ -915,6 +940,8 @@ async function startExternalAgentTask(
         error: error instanceof Error ? error.message : "Unknown runtime error",
         billingEvents: await readRuntimeBillingEvents(paths),
       });
+    } finally {
+      activeTasks.delete(payload.runtimeId);
     }
   })();
 }
@@ -930,7 +957,7 @@ export function createAlphaBookRuntimeServer(options: RuntimeServerOptions = {})
   const r2Client = options.r2Client ?? createR2ClientFromEnv();
   const r2BucketName = options.r2BucketName ?? process.env.R2_BUCKET_NAME ?? null;
   const paths = createPaths(workspaceRoot);
-  const activeTasks = new Map<string, true>();
+  const activeTasks = new Map<string, AbortController>();
 
   return createServer(async (request, response) => {
     try {
@@ -979,8 +1006,7 @@ export function createAlphaBookRuntimeServer(options: RuntimeServerOptions = {})
           return json(response, 202, existing);
         }
         if (!activeTasks.has(payload.runtimeId)) {
-          activeTasks.set(payload.runtimeId, true);
-          await startExternalAgentTask(paths, workspaceRoot, payload);
+          await startExternalAgentTask(paths, workspaceRoot, payload, activeTasks);
           const taskPoller = async () => {
             const current = await readRuntimeTaskStatus(paths);
             if (current.status !== "running") {
@@ -997,6 +1023,18 @@ export function createAlphaBookRuntimeServer(options: RuntimeServerOptions = {})
           ok: true,
           runtimeId: payload.runtimeId,
           status: "running",
+        });
+      }
+
+      if (request.method === "POST" && request.url === "/cancel-task") {
+        const payload = await readJson<{ runtimeId?: string }>(request);
+        const runtimeId = typeof payload.runtimeId === "string" ? payload.runtimeId : "";
+        const activeTask = activeTasks.get(runtimeId);
+        activeTask?.abort();
+        return json(response, 200, {
+          ok: true,
+          runtimeId,
+          cancelled: Boolean(activeTask),
         });
       }
 
@@ -1028,6 +1066,10 @@ export function createAlphaBookRuntimeServer(options: RuntimeServerOptions = {})
       }
 
       if (request.method === "POST" && request.url === "/destroy") {
+        const current = await readRuntimeTaskStatus(paths);
+        if (current.status === "running") {
+          activeTasks.get(current.runtimeId)?.abort();
+        }
         await resetWorkspace(paths);
         return json(response, 200, {
           ok: true,

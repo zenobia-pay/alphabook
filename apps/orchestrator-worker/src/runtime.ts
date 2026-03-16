@@ -128,6 +128,13 @@ export class StubRuntimeGateway implements RuntimeToolGateway {
     };
   }
 
+  async cancelWorkspaceTask() {
+    return {
+      ok: false,
+      error: "Runtime sandboxes are not enabled in this environment.",
+    };
+  }
+
   async readWorkspaceFile() {
     return {
       ok: false,
@@ -189,6 +196,13 @@ export class HttpRuntimeGateway implements RuntimeToolGateway {
 
   async runWorkspaceTask(args: Record<string, unknown>) {
     return this.request("/run-task", {
+      method: "POST",
+      body: JSON.stringify(args),
+    });
+  }
+
+  async cancelWorkspaceTask(args: Record<string, unknown>) {
+    return this.request("/cancel-task", {
       method: "POST",
       body: JSON.stringify(args),
     });
@@ -373,6 +387,26 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
       ...result,
       artifacts: uploadedArtifacts,
     };
+  }
+
+  async cancelWorkspaceTask(args: RuntimeToolArgs) {
+    const runtimeId = typeof args.runtimeId === "string" ? args.runtimeId : "";
+    if (!runtimeId) {
+      throw new Error("Runtime tool requires a runtimeId.");
+    }
+    const instance = await this.requireRuntime(runtimeId);
+    await this.ensureMachineRunning(instance);
+    const machineId = instance.providerMachineId ?? runtimeId;
+    const result = await this.callRuntime(machineId, "/cancel-task", {
+      method: "POST",
+      body: JSON.stringify({ runtimeId }),
+    });
+    await this.store.updateRuntimeInstance(runtimeId, {
+      status: "ready",
+      lastUsedAt: nowIso(),
+      expiresAt: addMinutesIso(HARD_LIMITS.MAX_RUNTIME_IDLE_MINUTES),
+    });
+    return result;
   }
 
   async readWorkspaceFile(args: RuntimeToolArgs) {

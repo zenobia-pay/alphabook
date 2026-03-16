@@ -6,6 +6,7 @@ import {
   SessionListResponseSchema,
   WorkDetailResponseSchema,
   WorkListResponseSchema,
+  WorkSourceResponseSchema,
   type Citation,
   type CurrentUserResponse,
   type FollowProfileResponse,
@@ -13,6 +14,7 @@ import {
   type PublicProfileResponse,
   type StreamEvent,
   type WorkDetailResponse,
+  type WorkSource,
   type WorkSummary,
 } from "@alphabook/shared";
 
@@ -265,6 +267,16 @@ export async function fetchWorkDetail(workId: string): Promise<WorkDetailRespons
   };
 }
 
+export async function fetchWorkSource(workId: string): Promise<WorkSource | null> {
+  const response = await ensureOk(
+    await fetch(`${API_BASE}/works/${workId}/source`, {
+      credentials: "include",
+    }),
+  );
+  const parsed = WorkSourceResponseSchema.parse(await response.json());
+  return parsed.source;
+}
+
 export function buildSignInUrl(returnTo: string) {
   return `${API_BASE}/auth/sign-in?returnTo=${encodeURIComponent(returnTo)}`;
 }
@@ -304,6 +316,9 @@ export async function streamChat(
     workIds?: string[];
   },
   handlers: ChatStreamHandlers,
+  options: {
+    signal?: AbortSignal;
+  } = {},
 ) {
   const response = await ensureOk(
     await fetch(`${API_BASE}/chat`, {
@@ -313,6 +328,7 @@ export async function streamChat(
       },
       credentials: "include",
       body: JSON.stringify(payload),
+      signal: options.signal,
     }),
   );
 
@@ -358,4 +374,14 @@ export async function streamChat(
       });
     }
   }
+}
+
+export async function cancelRun(runId: string) {
+  const response = await ensureOk(
+    await fetch(`${API_BASE}/runs/${encodeURIComponent(runId)}/cancel`, {
+      method: "POST",
+      credentials: "include",
+    }),
+  );
+  return await response.json();
 }

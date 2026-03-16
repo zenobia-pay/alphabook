@@ -9,7 +9,7 @@ import { ChevronsLeft, ChevronsRight, Link2, MessageSquarePlus } from "lucide-re
 
 import { getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type PublicProfileResponse, type UserProfile, type WorkDetail, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
-import { buildSignInUrl, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchCurrentUser, fetchMessages, fetchProfile, fetchSessions, fetchWorkDetail, fetchWorks, followProfile, queryAdminAnalytics, sendAnalyticsEvent, signOut, streamChat, unfollowProfile } from "./api";
+import { buildSignInUrl, cancelRun, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchCurrentUser, fetchMessages, fetchProfile, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, queryAdminAnalytics, sendAnalyticsEvent, signOut, streamChat, unfollowProfile } from "./api";
 import { Thread } from "./components/assistant-ui/thread";
 import { Avatar, AvatarFallback, AvatarImage } from "./components/ui/avatar";
 import { Button } from "./components/ui/button";
@@ -1396,6 +1396,25 @@ function ProfileLoadingState({ publicView = false }: { publicView?: boolean }) {
 
 function BookLoadingState() {
   return (
+    <div className="book-reader-surface book-reader-surface-loading" aria-hidden="true">
+      <div className="book-reader-passages book-reader-passages-loading">
+        {[0, 1, 2, 3, 4].map((item) => (
+          <div key={item} className="book-loading-passage">
+            <Skeleton className="book-loading-anchor" />
+            <div className="book-loading-lines">
+              <Skeleton className="book-loading-line is-wide" />
+              <Skeleton className="book-loading-line" />
+              <Skeleton className="book-loading-line is-short" />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function BookMetaLoadingState() {
+  return (
     <div className="book-reader-pane book-reader-pane-loading" aria-hidden="true">
       <header className="book-reader-header book-reader-header-loading">
         <div className="book-loading-copy">
@@ -1405,18 +1424,28 @@ function BookLoadingState() {
         </div>
       </header>
 
-      <div className="book-reader-surface book-reader-surface-loading">
-        <div className="book-reader-passages book-reader-passages-loading">
-          {[0, 1, 2, 3, 4].map((item) => (
-            <div key={item} className="book-loading-passage">
-              <Skeleton className="book-loading-anchor" />
-              <div className="book-loading-lines">
-                <Skeleton className="book-loading-line is-wide" />
-                <Skeleton className="book-loading-line" />
-                <Skeleton className="book-loading-line is-short" />
-              </div>
-            </div>
-          ))}
+      <BookLoadingState />
+    </div>
+  );
+}
+
+function BookAssistantPaneSkeleton() {
+  return (
+    <div className="book-loading-thread" aria-hidden="true">
+      <div className="book-loading-thread-messages">
+        {[0, 1].map((item) => (
+          <div key={item} className="book-loading-bubble">
+            <Skeleton className="book-loading-bubble-title" />
+            <Skeleton className="book-loading-bubble-line is-wide" />
+            <Skeleton className="book-loading-bubble-line" />
+          </div>
+        ))}
+      </div>
+      <div className="book-loading-composer">
+        <Skeleton className="book-loading-composer-line is-wide" />
+        <div className="book-loading-composer-footer">
+          <Skeleton className="book-loading-composer-plus" />
+          <Skeleton className="book-loading-composer-send" />
         </div>
       </div>
     </div>
@@ -1465,12 +1494,14 @@ function AssistantSurface({
   isSending,
   streamingAssistantId,
   onPrompt,
+  onCancel,
   suggestions = ASSISTANT_WELCOME_SUGGESTIONS,
 }: {
   messages: UiMessage[];
   isSending: boolean;
   streamingAssistantId: string | null;
   onPrompt: (prompt: string) => Promise<void>;
+  onCancel: () => Promise<void>;
   suggestions?: ThreadSuggestion[];
 }) {
   const runtime = useExternalStoreRuntime({
@@ -1484,7 +1515,7 @@ function AssistantSurface({
       }
       await onPrompt(prompt);
     },
-    onCancel: async () => {},
+    onCancel,
   });
 
   return (
@@ -1646,6 +1677,7 @@ export default function App() {
   const [activeWork, setActiveWork] = useState<WorkDetail | null>(null);
   const [activeWorkSource, setActiveWorkSource] = useState<WorkSource | null>(null);
   const [activeWorkLoading, setActiveWorkLoading] = useState(false);
+  const [activeWorkSourceLoading, setActiveWorkSourceLoading] = useState(false);
   const [pendingCitation, setPendingCitation] = useState<Citation | null>(null);
   const [activePassageId, setActivePassageId] = useState<string | null>(null);
   const [highlightedPassageExcerpt, setHighlightedPassageExcerpt] = useState<string | null>(null);
@@ -1704,6 +1736,8 @@ export default function App() {
     payload: null,
   });
   const activeRunTokenRef = useRef(0);
+  const activeChatAbortControllerRef = useRef<AbortController | null>(null);
+  const activeRunIdRef = useRef<string | null>(null);
   const bookPageRef = useRef<HTMLElement | null>(null);
   const bookAssistantResizeStartRef = useRef<{ pointerX: number; width: number } | null>(null);
   const bookAssistantRafRef = useRef<number | null>(null);
@@ -1921,6 +1955,7 @@ export default function App() {
   useEffect(() => {
     if (!activeWorkId) {
       setActiveWorkLoading(false);
+      setActiveWorkSourceLoading(false);
       setActiveWork(null);
       setActiveWorkSource(null);
       setActivePassageId(null);
@@ -1945,7 +1980,6 @@ export default function App() {
           return;
         }
         setActiveWork(detail.work);
-        setActiveWorkSource(detail.source);
         setActivePassageId(null);
         setHighlightedPassageExcerpt(null);
       } catch (error) {
@@ -1956,6 +1990,48 @@ export default function App() {
         window.clearTimeout(timeoutId);
         if (!cancelled) {
           setActiveWorkLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [activeWorkId]);
+
+  useEffect(() => {
+    if (!activeWorkId) {
+      setActiveWorkSourceLoading(false);
+      setActiveWorkSource(null);
+      return;
+    }
+
+    let cancelled = false;
+    const timeoutId = window.setTimeout(() => {
+      if (cancelled) {
+        return;
+      }
+      setActiveWorkSourceLoading(false);
+      setLoadError("Loading this book's text is taking too long. Try refreshing or opening it again.");
+    }, 12000);
+
+    void (async () => {
+      try {
+        setActiveWorkSourceLoading(true);
+        const source = await fetchWorkSource(activeWorkId);
+        if (cancelled) {
+          return;
+        }
+        setActiveWorkSource(source);
+      } catch (error) {
+        if (!cancelled) {
+          setLoadError(error instanceof Error ? error.message : "Failed to load the selected book text.");
+        }
+      } finally {
+        window.clearTimeout(timeoutId);
+        if (!cancelled) {
+          setActiveWorkSourceLoading(false);
         }
       }
     })();
@@ -2373,6 +2449,26 @@ export default function App() {
     }
   }, [adminAccess.allowed, adminIncidents.error, adminIncidents.loading, adminIncidents.payload, adminRuns.error, adminRuns.loading, adminRuns.rows.length, adminSection, adminSessions.error, adminSessions.loading, adminSessions.rows.length, adminUsers.error, adminUsers.loading, adminUsers.rows.length]);
 
+  async function cancelActiveRun() {
+    const abortController = activeChatAbortControllerRef.current;
+    activeChatAbortControllerRef.current = null;
+    abortController?.abort();
+
+    const runId = activeRunIdRef.current;
+    activeRunIdRef.current = null;
+    if (runId) {
+      try {
+        await cancelRun(runId);
+      } catch (error) {
+        console.error("failed to cancel active run", error);
+      }
+    }
+
+    activeRunTokenRef.current += 1;
+    setIsSending(false);
+    setStreamingAssistantId(null);
+  }
+
   async function sendPrompt(
     question: string,
     options: { sessionIdOverride?: string | null; workIdsOverride?: string[]; viewOverride?: ViewMode; transportMessageOverride?: string } = {},
@@ -2410,6 +2506,9 @@ export default function App() {
     setLoadError(null);
     setStreamingAssistantId(null);
     setMessages((current) => [...current, userMessage]);
+    activeChatAbortControllerRef.current?.abort();
+    const abortController = new AbortController();
+    activeChatAbortControllerRef.current = abortController;
 
     const runToken = activeRunTokenRef.current + 1;
     activeRunTokenRef.current = runToken;
@@ -2491,6 +2590,11 @@ export default function App() {
                     : message,
                 ),
               );
+              return;
+            }
+
+            if (event.event === "run.started" && typeof event.data.runId === "string") {
+              activeRunIdRef.current = event.data.runId;
               return;
             }
 
@@ -2684,14 +2788,27 @@ export default function App() {
             }
           },
         },
+        {
+          signal: abortController.signal,
+        },
       );
     } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        if (activeRunTokenRef.current === runToken) {
+          settleRunUi();
+        }
+        return;
+      }
       if (activeRunTokenRef.current === runToken) {
         setLoadError(error instanceof Error ? error.message : "Failed to stream the assistant run.");
       }
     } finally {
       clearStreamIdleTimer();
+      if (activeChatAbortControllerRef.current === abortController) {
+        activeChatAbortControllerRef.current = null;
+      }
       if (activeRunTokenRef.current === runToken) {
+        activeRunIdRef.current = null;
         settleRunUi();
         await refreshSessions(workingSessionId ?? null);
       }
@@ -2953,6 +3070,7 @@ export default function App() {
                 isSending={isSending}
                 streamingAssistantId={streamingAssistantId}
                 onPrompt={sendPrompt}
+                onCancel={cancelActiveRun}
               />
             )}
           </div>
@@ -2983,7 +3101,7 @@ export default function App() {
         style={{ ["--book-assistant-width" as string]: `${bookAssistantWidth}px` }}
       >
         {activeWorkLoading ? (
-          <BookLoadingState />
+          <BookMetaLoadingState />
         ) : (
           <div className="book-reader-pane">
             {activeWork ? (
@@ -2999,22 +3117,24 @@ export default function App() {
                 </header>
 
                 <div className="book-reader-surface">
-                  {readerPassages.length > 0 ? (
-                    <div className="book-reader-passages">
-                      {readerPassages.map((passage) => (
-                        <ReaderPassageBlock
-                          key={passage.id}
+                    {readerPassages.length > 0 ? (
+                      <div className="book-reader-passages">
+                        {readerPassages.map((passage) => (
+                          <ReaderPassageBlock
+                            key={passage.id}
                           passage={passage}
                           isActive={passage.id === activePassageId}
                           highlight={passage.id === activePassageId ? highlightedPassageExcerpt : null}
                           onActivate={(passageId) => activatePassage(passageId, null)}
                         />
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="book-loading">This book does not have stored source content yet.</div>
-                  )}
-                </div>
+                        ))}
+                      </div>
+                    ) : activeWorkSourceLoading ? (
+                      <BookLoadingState />
+                    ) : (
+                      <div className="book-loading">This book does not have stored source content yet.</div>
+                    )}
+                  </div>
               </>
             ) : (
               <div className="book-loading">Book not found.</div>
@@ -3040,7 +3160,7 @@ export default function App() {
               onStartNewChat={startNewBookChat}
             />
             {authPending ? (
-              <AssistantLoadingState />
+              <BookAssistantPaneSkeleton />
             ) : authLocked ? (
               <LockedState
                 compact
@@ -3053,6 +3173,7 @@ export default function App() {
                 isSending={isSending}
                 streamingAssistantId={streamingAssistantId}
                 onPrompt={bookPromptHandler}
+                onCancel={cancelActiveRun}
                 suggestions={ASSISTANT_WELCOME_SUGGESTIONS}
               />
             )}

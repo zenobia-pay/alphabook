@@ -265,6 +265,12 @@ export const WorkDetailResponseSchema = z.object({
 
 export type WorkDetailResponse = z.infer<typeof WorkDetailResponseSchema>;
 
+export const WorkSourceResponseSchema = z.object({
+  source: WorkSourceSchema.nullable(),
+});
+
+export type WorkSourceResponse = z.infer<typeof WorkSourceResponseSchema>;
+
 export const ChunkSearchResultSchema = z.object({
   id: z.string(),
   workId: z.string(),

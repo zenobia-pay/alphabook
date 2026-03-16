@@ -20,6 +20,7 @@ export interface WorkerQueues {
 export interface RuntimeToolGateway {
   createWorkspace(args: Record<string, unknown>): Promise<Record<string, unknown>>;
   runWorkspaceTask(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+  cancelWorkspaceTask?(args: Record<string, unknown>): Promise<Record<string, unknown>>;
   readWorkspaceFile(args: Record<string, unknown>): Promise<Record<string, unknown>>;
   listWorkspaceFiles?(args: Record<string, unknown>): Promise<Record<string, unknown>>;
   destroyWorkspace(args: Record<string, unknown>): Promise<Record<string, unknown>>;
@@ -1687,6 +1688,12 @@ async function runOrchestrator(
   request: Request,
   input: ChatRequest,
   send: (event: string, data: Record<string, unknown>) => Promise<void>,
+  activeRuns: Map<string, {
+    sessionId: string;
+    userId: string;
+    runtimeIds: Set<string>;
+    cancelRequested: boolean;
+  }>,
 ): Promise<void> {
   const started = deps.now?.() ?? Date.now();
   if (!input.userId) {
@@ -1709,6 +1716,12 @@ async function runOrchestrator(
   await deps.store.appendMessage(session.id, "user", input.message);
   const conversationHistory = formatConversationHistory(await deps.store.listMessages(session.id));
   const run = await deps.store.createRun(session.id);
+  activeRuns.set(run.id, {
+    sessionId: session.id,
+    userId: input.userId,
+    runtimeIds: new Set<string>(),
+    cancelRequested: false,
+  });
   await send("run.started", {
     runId: run.id,
     sessionId: session.id,
@@ -1758,6 +1771,7 @@ async function runOrchestrator(
       status: "completed",
     });
     await reapExpiredRuntimeInstances(deps, { runId: run.id });
+    activeRuns.delete(run.id);
     return;
   }
 
@@ -1777,6 +1791,9 @@ async function runOrchestrator(
   let planMessageId: string | null = null;
   try {
     for (let turn = 1; turn <= HARD_LIMITS.MAX_TURNS; turn += 1) {
+      if (activeRuns.get(run.id)?.cancelRequested) {
+        break;
+      }
       if ((deps.now?.() ?? Date.now()) - started > HARD_LIMITS.MAX_RUN_WALL_CLOCK_SECONDS * 1000) {
         break;
       }
@@ -1851,6 +1868,16 @@ async function runOrchestrator(
       }
 
       const normalizedToolArgs = normalizeToolArgs(toolCall.tool_name, toolCall.args);
+      const activeRun = activeRuns.get(run.id);
+      const runtimeId =
+        typeof normalizedToolArgs.runtimeId === "string"
+          ? normalizedToolArgs.runtimeId
+          : toolCall.tool_name === "create_workspace" && typeof normalizedToolArgs.runtime_id === "string"
+            ? normalizedToolArgs.runtime_id
+            : null;
+      if (runtimeId) {
+        activeRun?.runtimeIds.add(runtimeId);
+      }
       const toolRecord = await deps.store.startToolCall(run.id, toolCall.tool_name, normalizedToolArgs);
       if (!initialPlanSent) {
         const planText = initialAssistantPlan(routedQuery);
@@ -1932,6 +1959,10 @@ async function runOrchestrator(
         if (toolCall.tool_name === "create_workspace" || toolCall.tool_name === "run_workspace_task") {
           runtimeTasks += 1;
         }
+        const resultRuntimeId = typeof result.runtimeId === "string" ? result.runtimeId : null;
+        if (resultRuntimeId) {
+          activeRun?.runtimeIds.add(resultRuntimeId);
+        }
       } catch (error) {
         addRuntimeIds(runtimeIdsToCleanup, normalizedToolArgs);
         if (
@@ -1967,6 +1998,19 @@ async function runOrchestrator(
         }
       } finally {
         await progressEmitter.stop();
+      }
+
+      if (activeRuns.get(run.id)?.cancelRequested) {
+        await deps.store.updateRun(run.id, {
+          status: "failed",
+          completedAt: new Date().toISOString(),
+        });
+        await send("run.completed", {
+          runId: run.id,
+          sessionId: session.id,
+          status: "failed",
+        });
+        return;
       }
 
       await deps.store.finishToolCall(toolRecord.id, status, result);
@@ -2047,11 +2091,18 @@ async function runOrchestrator(
   } finally {
     await destroyTrackedRuntimes(deps, { sessionId: session.id, runId: run.id }, runtimeIdsToCleanup);
     await reapExpiredRuntimeInstances(deps, { runId: run.id });
+    activeRuns.delete(run.id);
   }
 }
 
 export function createApp(deps: AppDeps) {
   const app = new Hono();
+  const activeRuns = new Map<string, {
+    sessionId: string;
+    userId: string;
+    runtimeIds: Set<string>;
+    cancelRequested: boolean;
+  }>();
   app.onError(async (error, c) => {
     try {
       await recordUnexpectedError(deps, error, {
@@ -2481,7 +2532,7 @@ export function createApp(deps: AppDeps) {
       }, 402);
     }
     return streamResponse(
-      (send) => runOrchestrator(deps, c.req.raw, requestPayload, send),
+      (send) => runOrchestrator(deps, c.req.raw, requestPayload, send, activeRuns),
       (error) =>
         recordUnexpectedError(deps, error, {
           request: c.req.raw,
@@ -2492,6 +2543,45 @@ export function createApp(deps: AppDeps) {
           sessionId: requestPayload.sessionId ?? null,
         }),
     );
+  });
+
+  app.post("/runs/:runId/cancel", async (c) => {
+    const trustedRequest = requireTrustedBrowserRequest(c);
+    if (trustedRequest) {
+      return trustedRequest;
+    }
+    const runId = c.req.param("runId");
+    const run = await deps.store.getRun(runId);
+    if (!run) {
+      return c.json({ error: "Run not found." }, 404);
+    }
+    const session = await deps.store.getSession(run.sessionId);
+    if (!session) {
+      return c.json({ error: "Session not found." }, 404);
+    }
+    if (!(await canAccessSession(c, session))) {
+      return c.json({ error: "Not authorized for this run." }, 403);
+    }
+
+    const activeRun = activeRuns.get(runId);
+    if (!activeRun) {
+      return c.json({ ok: true, runId, cancelled: false, active: false });
+    }
+
+    activeRun.cancelRequested = true;
+    await Promise.all(
+      Array.from(activeRun.runtimeIds).map((runtimeId) =>
+        deps.runtimeGateway.cancelWorkspaceTask?.({ runtimeId }).catch(() => {}),
+      ),
+    );
+
+    return c.json({
+      ok: true,
+      runId,
+      cancelled: true,
+      active: true,
+      runtimeIds: Array.from(activeRun.runtimeIds),
+    });
   });
 
   app.get("/sessions", async (c) => {
