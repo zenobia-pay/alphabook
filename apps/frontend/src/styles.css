@@ -146,7 +146,6 @@ button {
   display: grid;
   gap: 0;
   padding-top: 6px;
-  border-top: 1px solid var(--line);
   align-content: start;
 }
 

@@ -14,7 +14,6 @@ import { Thread } from "./components/assistant-ui/thread";
 import { Avatar, AvatarFallback, AvatarImage } from "./components/ui/avatar";
 import { Button } from "./components/ui/button";
 import { Card, CardContent } from "./components/ui/card";
-import { Separator } from "./components/ui/separator";
 import { Skeleton } from "./components/ui/skeleton";
 import { Textarea } from "./components/ui/textarea";
 import { cn } from "./lib/utils";
@@ -4821,7 +4820,6 @@ export default function App() {
               </button>
             </div>
           </div>
-          <Separator />
         </div>
 
         <nav className={cn("sidebar-nav", sidebarCollapsed && "items-center")} aria-label="Primary">
