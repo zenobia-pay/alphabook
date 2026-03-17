@@ -9,16 +9,6 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
-    if (url.pathname === "/skill.md" || url.pathname === "/@skill.md") {
-      const upstreamOrigin = env.API_ORIGIN ?? "https://api.alpha-book.org";
-      const upstreamUrl = new URL("/skill.md", upstreamOrigin);
-      return fetch(upstreamUrl.toString(), {
-        method: "GET",
-        headers: request.headers,
-        redirect: "manual",
-      });
-    }
-
     if (url.pathname === "/api" || url.pathname.startsWith("/api/")) {
       const upstreamOrigin = env.API_ORIGIN ?? "https://api.alpha-book.org";
       const upstreamUrl = new URL(upstreamOrigin);
