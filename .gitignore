@@ -13,4 +13,6 @@ apps/**/test-results/
 public/
 !apps/frontend/public/
 !apps/frontend/public/**
+apps/frontend/public/@skill.md
+apps/frontend/public/skill.md
 data/
