@@ -1,0 +1,17 @@
+{
+  "name": "alpha book",
+  "short_name": "alpha book",
+  "description": "Search, read, and ask questions across a growing library of books with cited answers.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f5f0e8",
+  "theme_color": "#f5f0e8",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

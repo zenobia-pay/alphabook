@@ -122,6 +122,10 @@ const USER_STORAGE_KEY = "alphabook.localUserId";
 const BOOK_ASSISTANT_WIDTH_STORAGE_KEY = "alphabook.bookAssistantWidth";
 const BOOK_ASSISTANT_MIN_WIDTH = 320;
 const BOOK_ASSISTANT_MAX_WIDTH = 720;
+const SEO_SITE_NAME = "alpha book";
+const SEO_SITE_ORIGIN = "https://alpha-book.org";
+const DEFAULT_SEO_DESCRIPTION = "Search, read, and ask questions across a growing library of books with cited answers.";
+const DEFAULT_OG_IMAGE_PATH = "/social-card.svg";
 const ASSISTANT_WELCOME_SUGGESTIONS: ThreadSuggestion[] = [
   {
     icon: "search",
@@ -134,6 +138,159 @@ const ASSISTANT_WELCOME_SUGGESTIONS: ThreadSuggestion[] = [
     prompt: "Find me stories with themes of heartbreak and what that means.",
   },
 ];
+
+type SeoDocumentState = {
+  title: string;
+  description: string;
+  canonicalPath: string;
+  robots: string;
+  ogType: "website" | "book" | "profile";
+  jsonLd: Record<string, unknown>;
+};
+
+function upsertMetaTag(attribute: "name" | "property", key: string, content: string) {
+  if (typeof document === "undefined") {
+    return;
+  }
+  let element = document.head.querySelector(`meta[${attribute}="${key}"]`);
+  if (!(element instanceof HTMLMetaElement)) {
+    element = document.createElement("meta");
+    element.setAttribute(attribute, key);
+    document.head.append(element);
+  }
+  element.setAttribute("content", content);
+}
+
+function upsertLinkTag(rel: string, href: string) {
+  if (typeof document === "undefined") {
+    return;
+  }
+  let element = document.head.querySelector(`link[rel="${rel}"]`);
+  if (!(element instanceof HTMLLinkElement)) {
+    element = document.createElement("link");
+    element.setAttribute("rel", rel);
+    document.head.append(element);
+  }
+  element.setAttribute("href", href);
+}
+
+function upsertJsonLdScript(id: string, payload: Record<string, unknown>) {
+  if (typeof document === "undefined") {
+    return;
+  }
+  let element = document.head.querySelector(`#${id}`) as HTMLScriptElement | null;
+  if (!(element instanceof HTMLScriptElement)) {
+    element = document.createElement("script");
+    element.id = id;
+    element.type = "application/ld+json";
+    document.head.append(element);
+  }
+  element.textContent = JSON.stringify(payload);
+}
+
+function buildSeoState(options: {
+  activeView: ViewMode;
+  activeWork: WorkDetail | null;
+  activeWorkId: string | null | undefined;
+  activeProfileUserId: string | null | undefined;
+  publicProfile: PublicProfileResponse | null;
+}) {
+  const { activeView, activeWork, activeWorkId, activeProfileUserId, publicProfile } = options;
+
+  if (activeView === "book" && activeWork && activeWorkId) {
+    const authors = activeWork.authors.filter((author) => author.trim().length > 0);
+    const summary = activeWork.summary?.trim();
+    const descriptionParts = [
+      authors.length > 0 ? `Read ${activeWork.title} by ${authors.join(", ")}.` : `Read ${activeWork.title}.`,
+      summary || "Open the text, jump to passages, and ask grounded questions with citations.",
+    ];
+    return {
+      title: `${activeWork.title} | ${SEO_SITE_NAME}`,
+      description: descriptionParts.join(" "),
+      canonicalPath: `/works/${encodeURIComponent(activeWorkId)}`,
+      robots: "index, follow",
+      ogType: "book" as const,
+      jsonLd: {
+        "@context": "https://schema.org",
+        "@type": "Book",
+        name: activeWork.title,
+        author: authors.map((author) => ({
+          "@type": "Person",
+          name: author,
+        })),
+        inLanguage: activeWork.language ?? undefined,
+        description: summary ?? DEFAULT_SEO_DESCRIPTION,
+        url: `${SEO_SITE_ORIGIN}/works/${encodeURIComponent(activeWorkId)}`,
+      },
+    };
+  }
+
+  if (activeView === "profile" && activeProfileUserId) {
+    const profileName = publicProfile?.profile.name?.trim() || "Reader profile";
+    const handle = publicProfile?.profile.handle?.trim();
+    return {
+      title: `${profileName} | ${SEO_SITE_NAME}`,
+      description: handle
+        ? `See ${profileName}'s reading trail, saved research, and public bookshelf activity on alpha book.`
+        : `See ${profileName}'s reading trail, saved research, and public bookshelf activity.`,
+      canonicalPath: `/u/${encodeURIComponent(activeProfileUserId)}`,
+      robots: "index, follow",
+      ogType: "profile" as const,
+      jsonLd: {
+        "@context": "https://schema.org",
+        "@type": "ProfilePage",
+        name: profileName,
+        url: `${SEO_SITE_ORIGIN}/u/${encodeURIComponent(activeProfileUserId)}`,
+        mainEntity: {
+          "@type": "Person",
+          name: profileName,
+          alternateName: handle || undefined,
+        },
+      },
+    };
+  }
+
+  if (activeView === "admin") {
+    return {
+      title: SEO_SITE_NAME,
+      description: DEFAULT_SEO_DESCRIPTION,
+      canonicalPath: "/",
+      robots: "noindex, nofollow",
+      ogType: "website" as const,
+      jsonLd: {
+        "@context": "https://schema.org",
+        "@type": "WebSite",
+        name: SEO_SITE_NAME,
+        description: DEFAULT_SEO_DESCRIPTION,
+        url: SEO_SITE_ORIGIN,
+      },
+    };
+  }
+
+  const exploreDescription =
+    activeView === "explore"
+      ? "Browse the catalog, open full texts, and launch cited questions across the library."
+      : DEFAULT_SEO_DESCRIPTION;
+  return {
+    title: SEO_SITE_NAME,
+    description: exploreDescription,
+    canonicalPath: "/",
+    robots: "index, follow",
+    ogType: "website" as const,
+    jsonLd: {
+      "@context": "https://schema.org",
+      "@type": "WebSite",
+      name: SEO_SITE_NAME,
+      description: exploreDescription,
+      url: SEO_SITE_ORIGIN,
+      potentialAction: {
+        "@type": "SearchAction",
+        target: `${SEO_SITE_ORIGIN}/?view=explore`,
+        "query-input": "required name=search_term_string",
+      },
+    },
+  };
+}
 
 function isViewMode(value: string | null): value is ViewMode {
   return value === "explore" || value === "assistant" || value === "profile" || value === "book" || value === "admin";
@@ -2341,6 +2498,47 @@ export default function App() {
     }, pendingUrlWriteModeRef.current);
     pendingUrlWriteModeRef.current = "replace";
   }, [activeView, selectedSessionId, activeWorkId, activeProfileUserId, selectedAdminRunId, adminSection, debugEnabled]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const seo = buildSeoState({
+      activeView,
+      activeWork,
+      activeWorkId,
+      activeProfileUserId,
+      publicProfile,
+    });
+    const canonicalUrl = new URL(seo.canonicalPath, SEO_SITE_ORIGIN).toString();
+    const imageUrl = new URL(DEFAULT_OG_IMAGE_PATH, SEO_SITE_ORIGIN).toString();
+
+    document.title = seo.title;
+    upsertMetaTag("name", "description", seo.description);
+    upsertMetaTag("name", "robots", seo.robots);
+    upsertMetaTag("name", "application-name", SEO_SITE_NAME);
+    upsertMetaTag("name", "apple-mobile-web-app-title", SEO_SITE_NAME);
+    upsertMetaTag("property", "og:title", seo.title);
+    upsertMetaTag("property", "og:description", seo.description);
+    upsertMetaTag("property", "og:site_name", SEO_SITE_NAME);
+    upsertMetaTag("property", "og:type", seo.ogType);
+    upsertMetaTag("property", "og:url", canonicalUrl);
+    upsertMetaTag("property", "og:image", imageUrl);
+    upsertMetaTag("property", "og:image:alt", "alpha book preview card");
+    upsertMetaTag("name", "twitter:card", "summary_large_image");
+    upsertMetaTag("name", "twitter:title", seo.title);
+    upsertMetaTag("name", "twitter:description", seo.description);
+    upsertMetaTag("name", "twitter:image", imageUrl);
+    upsertLinkTag("canonical", canonicalUrl);
+    upsertJsonLdScript("seo-structured-data", seo.jsonLd);
+  }, [
+    activeProfileUserId,
+    activeView,
+    activeWork,
+    activeWorkId,
+    publicProfile,
+  ]);
 
   useEffect(() => {
     if (activeView === "profile" && currentUserId && !activeProfileUserId) {

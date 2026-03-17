@@ -5,6 +5,24 @@ export interface Env {
   API_ORIGIN?: string;
 }
 
+type RewriterElement = {
+  setAttribute(name: string, value: string): void;
+};
+
+declare class HTMLRewriter {
+  on(selector: string, handlers: { element?(element: RewriterElement): void }): HTMLRewriter;
+  transform(response: Response): Response;
+}
+
+const SITE_ORIGIN = "https://alpha-book.org";
+
+function resolveCanonicalUrl(requestUrl: URL) {
+  if (requestUrl.pathname.startsWith("/works/") || requestUrl.pathname.startsWith("/u/")) {
+    return new URL(`${requestUrl.pathname}${requestUrl.hash}`, SITE_ORIGIN).toString();
+  }
+  return `${SITE_ORIGIN}/`;
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -26,7 +44,32 @@ export default {
     const response = await env.ASSETS.fetch(request);
     const headers = new Headers(response.headers);
     headers.set("x-alphabook-surface", "frontend-worker");
-    return new Response(response.body, {
+    const canonicalUrl = resolveCanonicalUrl(url);
+    const robots = url.searchParams.get("view") === "admin" ? "noindex, nofollow" : "index, follow";
+    headers.set("x-robots-tag", robots);
+
+    const contentType = headers.get("content-type") ?? "";
+    const body = contentType.includes("text/html")
+      ? new HTMLRewriter()
+        .on("link[rel='canonical']", {
+          element(element) {
+            element.setAttribute("href", canonicalUrl);
+          },
+        })
+        .on("meta[property='og:url']", {
+          element(element) {
+            element.setAttribute("content", canonicalUrl);
+          },
+        })
+        .on("meta[name='robots']", {
+          element(element) {
+            element.setAttribute("content", robots);
+          },
+        })
+        .transform(response).body
+      : response.body;
+
+    return new Response(body, {
       status: response.status,
       statusText: response.statusText,
       headers,

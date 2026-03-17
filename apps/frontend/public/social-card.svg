@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" role="img" aria-labelledby="title desc">
+  <title id="title">alpha book social preview</title>
+  <desc id="desc">Promotional preview card for alpha book.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f7f1e8" />
+      <stop offset="100%" stop-color="#e5d3b3" />
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)" />
+  <circle cx="1040" cy="116" r="170" fill="#d9b989" opacity="0.28" />
+  <circle cx="160" cy="536" r="180" fill="#bb492c" opacity="0.12" />
+  <rect x="72" y="72" width="1056" height="486" rx="36" fill="#fbf8f2" stroke="#1d1a17" stroke-opacity="0.08" />
+  <text x="120" y="234" fill="#1d1a17" font-size="104" font-family="Georgia, 'Times New Roman', serif" font-weight="700">alpha book</text>
+  <text x="120" y="320" fill="#4c433c" font-size="38" font-family="Arial, sans-serif">Search, read, and ask questions across a growing library</text>
+  <text x="120" y="370" fill="#4c433c" font-size="38" font-family="Arial, sans-serif">of books with cited answers.</text>
+  <rect x="120" y="432" width="240" height="58" rx="29" fill="#bb492c" />
+  <text x="168" y="470" fill="#fbf8f2" font-size="30" font-family="Arial, sans-serif" font-weight="700">alpha-book.org</text>
+  <g transform="translate(840 184)">
+    <rect width="190" height="246" rx="18" fill="#f2eadf" stroke="#1d1a17" stroke-opacity="0.12" />
+    <rect x="28" y="32" width="134" height="12" rx="6" fill="#bb492c" opacity="0.9" />
+    <rect x="28" y="68" width="110" height="12" rx="6" fill="#1d1a17" opacity="0.2" />
+    <rect x="28" y="92" width="128" height="12" rx="6" fill="#1d1a17" opacity="0.2" />
+    <rect x="28" y="116" width="94" height="12" rx="6" fill="#1d1a17" opacity="0.2" />
+    <rect x="28" y="164" width="134" height="12" rx="6" fill="#1d1a17" opacity="0.15" />
+    <rect x="28" y="188" width="120" height="12" rx="6" fill="#1d1a17" opacity="0.15" />
+  </g>
+</svg>

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">alpha book favicon</title>
+  <desc id="desc">A stylized lowercase a on a warm paper-colored background.</desc>
+  <rect width="128" height="128" rx="28" fill="#f5f0e8" />
+  <path d="M64 26c-18.777 0-34 15.223-34 34s15.223 34 34 34c8.444 0 16.169-3.082 22.115-8.18V94h12V60c0-18.777-15.223-34-34-34Zm0 12c12.15 0 22 9.85 22 22s-9.85 22-22 22-22-9.85-22-22 9.85-22 22-22Z" fill="#1d1a17" />
+  <circle cx="64" cy="60" r="10" fill="#bb492c" />
+</svg>

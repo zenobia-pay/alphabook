@@ -11,4 +11,6 @@ coverage/
 apps/**/.wrangler/
 apps/**/test-results/
 public/
+!apps/frontend/public/
+!apps/frontend/public/**
 data/
