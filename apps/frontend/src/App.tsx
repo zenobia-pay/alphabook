@@ -102,7 +102,7 @@ type AdminIncidentsState = {
 };
 
 type ThreadSuggestion = {
-  emoji?: string;
+  icon?: "search" | "heart";
   title: string;
   description?: string;
   prompt: string;
@@ -123,14 +123,14 @@ const BOOK_ASSISTANT_MIN_WIDTH = 320;
 const BOOK_ASSISTANT_MAX_WIDTH = 720;
 const ASSISTANT_WELCOME_SUGGESTIONS: ThreadSuggestion[] = [
   {
-    emoji: "🔎",
-    title: "Search quote: 'Find me all the ways that characters deal with grief in 19th century fiction.'",
+    icon: "search",
+    title: "hypothesis test: grief in 19th century fiction",
     prompt: "Find me all the ways that characters deal with grief in 19th century fiction.",
   },
   {
-    emoji: "🧭",
-    title: "Compare how people deal with grief in mysteries versus sci-fi.",
-    prompt: "Compare how people deal with grief in mysteries versus sci-fi.",
+    icon: "heart",
+    title: "theme analysis: heart rate",
+    prompt: "Find me stories with themes of heartbreak and what that means.",
   },
 ];
 

@@ -34,8 +34,10 @@ import {
   CopyIcon,
   DownloadIcon,
   FileTextIcon,
+  HeartIcon,
   MoreHorizontalIcon,
   RefreshCwIcon,
+  SearchIcon,
   SquareIcon,
 } from "lucide-react";
 import { type FC, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -134,11 +136,16 @@ function assistantMessageToMarkdown(parts: readonly MessagePartRecord[]) {
 }
 
 type ThreadSuggestion = {
-  emoji?: string;
+  icon?: "search" | "heart";
   title: string;
   description?: string;
   prompt: string;
 };
+
+const suggestionIconMap = {
+  search: SearchIcon,
+  heart: HeartIcon,
+} satisfies Record<NonNullable<ThreadSuggestion["icon"]>, typeof SearchIcon>;
 
 export const Thread: FC<{
   isRunning?: boolean;
@@ -370,7 +377,7 @@ const ThreadWelcome: FC = () => {
           <h1 className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in fill-mode-both font-semibold text-2xl duration-200">
             Search for evidence and themes over 75,000 books.
           </h1>
-          <p className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in fill-mode-both text-muted-foreground text-xl delay-75 duration-200">
+          <p className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in fill-mode-both text-base text-muted-foreground/70 delay-75 duration-200">
             Or: Want your agent to use this? Copy{" "}
             <button
               type="button"
@@ -382,10 +389,10 @@ const ThreadWelcome: FC = () => {
                 {copied ? "copied prompt" : "this prompt"}
               </span>
               <span aria-hidden="true" className="aui-thread-welcome-copy-button-emoji">
-                {copied ? "✓" : "📋"}
+                {copied ? <CheckIcon className="size-3.5" /> : <CopyIcon className="size-3.5" />}
               </span>
             </button>
-            . Get going.
+            .
           </p>
         </div>
       </div>
@@ -421,6 +428,7 @@ const ThreadSuggestionItem: FC<{
   onSuggestionSelect,
 }) => {
   const aui = useAui();
+  const SuggestionIcon = suggestion.icon ? suggestionIconMap[suggestion.icon] : SearchIcon;
 
   const handleClick = useCallback(() => {
     aui.composer().setText(suggestion.prompt);
@@ -434,15 +442,15 @@ const ThreadSuggestionItem: FC<{
   }, [aui, onSuggestionSelect, suggestion.prompt]);
 
   return (
-    <div className="aui-thread-welcome-suggestion-display fade-in slide-in-from-bottom-2 nth-[n+3]:hidden @md:nth-[n+3]:block animate-in fill-mode-both duration-200">
+    <div className="aui-thread-welcome-suggestion-display fade-in slide-in-from-bottom-2 nth-[n+3]:hidden @md:nth-[n+3]:block w-full animate-in fill-mode-both duration-200 @md:w-[72%]">
       <Button
         type="button"
         variant="ghost"
-        className="aui-thread-welcome-suggestion h-auto w-full min-w-0 items-center justify-start gap-3 overflow-hidden rounded-full border px-4 py-3 text-left text-sm transition-colors @md:w-[60%]"
+        className="aui-thread-welcome-suggestion h-auto w-full min-w-0 items-center justify-start gap-2.5 overflow-hidden rounded-full border px-4 py-2.5 text-left text-sm transition-colors"
         onClick={handleClick}
       >
-        <span className="aui-thread-welcome-suggestion-emoji shrink-0 text-base leading-none" aria-hidden="true">
-          {suggestion.emoji ?? "✦"}
+        <span className="aui-thread-welcome-suggestion-icon shrink-0" aria-hidden="true">
+          <SuggestionIcon className="size-3.5" />
         </span>
         <span className="aui-thread-welcome-suggestion-text-1 min-w-0 truncate font-medium">{suggestion.title}</span>
         {suggestion.description ? (
