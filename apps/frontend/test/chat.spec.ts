@@ -122,4 +122,28 @@ test.describe("mobile shell", () => {
     await page.getByLabel("Close menu").click();
     await expect(page.getByTestId("sidebar")).not.toHaveClass(/is-open/);
   });
+
+  test("explore header and composer stay clear of the mobile shell", async ({ page }) => {
+    await page.goto("/?view=explore");
+
+    const shellBar = page.locator(".mobile-shell-bar");
+    const heroHeading = page.locator(".explore-hero h1");
+    const composer = page.locator(".explore-composer-root");
+
+    await expect(shellBar).toBeVisible();
+    await expect(heroHeading).toBeVisible();
+    await expect(composer).toBeVisible();
+
+    const shellBarBox = await shellBar.boundingBox();
+    const heroHeadingBox = await heroHeading.boundingBox();
+    const composerBox = await composer.boundingBox();
+
+    expect(shellBarBox).not.toBeNull();
+    expect(heroHeadingBox).not.toBeNull();
+    expect(composerBox).not.toBeNull();
+
+    expect(heroHeadingBox!.y).toBeGreaterThanOrEqual(shellBarBox!.y + shellBarBox!.height - 1);
+    expect(composerBox!.y).toBeGreaterThan(heroHeadingBox!.y);
+    expect(composerBox!.y + composerBox!.height).toBeLessThanOrEqual(page.viewportSize()!.height);
+  });
 });
