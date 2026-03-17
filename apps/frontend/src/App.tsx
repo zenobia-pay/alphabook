@@ -9,7 +9,7 @@ import { ChevronsLeft, ChevronsRight, Link2, MessageSquarePlus } from "lucide-re
 
 import { getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type PublicProfileResponse, type UserProfile, type WorkDetail, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
-import { buildSignInUrl, cancelRun, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchCurrentUser, fetchMessages, fetchProfile, fetchRunState, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, getErrorMessage, queryAdminAnalytics, sendAnalyticsEvent, signOut, streamChat, streamRun, unfollowProfile, type RunArtifactRecord, type SessionRunRecord } from "./api";
+import { buildSignInUrl, buildSignOutUrl, cancelRun, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchCurrentUser, fetchMessages, fetchProfile, fetchRunState, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, getErrorMessage, queryAdminAnalytics, sendAnalyticsEvent, streamChat, streamRun, unfollowProfile, type RunArtifactRecord, type SessionRunRecord } from "./api";
 import { Thread } from "./components/assistant-ui/thread";
 import { Avatar, AvatarFallback, AvatarImage } from "./components/ui/avatar";
 import { Button } from "./components/ui/button";
@@ -3361,6 +3361,7 @@ export default function App() {
 
             if (event.event === "assistant.completed") {
               const completionPhase = typeof event.data.phase === "string" ? event.data.phase : null;
+              const completedAnswer = typeof event.data.answer === "string" ? event.data.answer : null;
               if (!finalAssistantMessageId) {
                 finalAssistantMessageId = crypto.randomUUID();
                 setMessages((current) => [
@@ -3369,7 +3370,7 @@ export default function App() {
                     id: finalAssistantMessageId!,
                     sessionId: workingSessionId ?? "pending",
                     role: "assistant",
-                    content: typeof event.data.answer === "string" ? event.data.answer : "",
+                    content: completedAnswer ?? "",
                     metadata: completionPhase ? { phase: completionPhase } : {},
                     createdAt: new Date().toISOString(),
                     citations: Array.isArray(event.data.citations) ? (event.data.citations as Citation[]) : [],
@@ -3382,6 +3383,7 @@ export default function App() {
                   message.id === finalAssistantMessageId
                     ? {
                         ...message,
+                        content: completedAnswer ?? message.content,
                         metadata: completionPhase ? { ...message.metadata, phase: completionPhase } : message.metadata,
                         citations: Array.isArray(event.data.citations) ? (event.data.citations as Citation[]) : [],
                         toolCalls: [],
@@ -3436,9 +3438,8 @@ export default function App() {
     }
   }
 
-  async function handleSignOut() {
-    const redirectTo = await signOut(window.location.href);
-    window.location.assign(redirectTo);
+  function handleSignOut() {
+    window.location.assign(buildSignOutUrl(window.location.href));
   }
 
   async function loadMoreWorks() {
@@ -3974,7 +3975,7 @@ export default function App() {
                     <Button asChild className="signin-pill-button" size="lg">
                       <a href={buildSignInUrl(window.location.href)}>Sign in</a>
                     </Button>
-                    <Button type="button" variant="ghost" className="profile-chip" onClick={() => void handleSignOut()}>
+                    <Button type="button" variant="ghost" className="profile-chip" onClick={handleSignOut}>
                       Sign out
                     </Button>
                   </div>
@@ -4104,7 +4105,7 @@ export default function App() {
           </div>
           <div className="profile-actions">
             {authState.authConfigured && authState.user ? (
-              <Button type="button" variant="ghost" className="profile-chip" onClick={() => void handleSignOut()}>
+              <Button type="button" variant="ghost" className="profile-chip" onClick={handleSignOut}>
                 Log out
               </Button>
             ) : null}

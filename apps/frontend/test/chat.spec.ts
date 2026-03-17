@@ -160,6 +160,104 @@ test("assistant shows a friendly error notice instead of raw JSON", async ({ pag
   await expect(page.getByText(/duplicate key value violates unique constraint/)).toHaveCount(0);
 });
 
+test("assistant.completed replaces a partial streamed answer with the final answer text", async ({ page }) => {
+  const sessionId = "11111111-1111-4111-8111-111111111111";
+  const userMessageId = "22222222-2222-4222-8222-222222222222";
+  const planMessageId = "33333333-3333-4333-8333-333333333333";
+  const answer = "Partial opening. Full ending sentence.";
+
+  await page.route("**/api/me", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        authConfigured: false,
+        authenticated: false,
+        user: null,
+      }),
+    });
+  });
+
+  await page.route("**/api/admin/access", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        allowed: false,
+        authenticated: false,
+        authConfigured: false,
+        user: null,
+      }),
+    });
+  });
+
+  await page.route("**/api/sessions", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        sessions: [
+          {
+            id: sessionId,
+            userId: "local-user",
+            title: "Existing thread",
+            createdAt: "2026-03-16T12:00:00.000Z",
+            lastMessageAt: "2026-03-16T12:00:00.000Z",
+            lastMessagePreview: "Existing thread",
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.route(`**/api/sessions/${sessionId}/messages`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        messages: [],
+      }),
+    });
+  });
+
+  await page.route(`**/api/sessions/${sessionId}/runs`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        runs: [],
+      }),
+    });
+  });
+
+  await page.route("**/api/chat", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "text/event-stream",
+      headers: {
+        "cache-control": "no-cache",
+      },
+      body: [
+        'event: run.started\ndata: {"runId":"run-123"}\n\n',
+        `event: assistant.plan\ndata: {"messageId":"${planMessageId}","text":"Search quote references."}\n\n`,
+        'event: assistant.delta\ndata: {"text":"Partial opening. "}\n\n',
+        `event: assistant.completed\ndata: ${JSON.stringify({ answer, citations: [], phase: "answer" })}\n\n`,
+        'event: run.completed\ndata: {"runId":"run-123","status":"completed"}\n\n',
+      ].join(""),
+    });
+  });
+
+  await page.goto(`/?view=assistant&session=${sessionId}`);
+
+  await page.locator(".aui-composer-input").fill("Finish this answer.");
+  await page.locator(".aui-composer-send").click();
+
+  await expect(page.locator(".aui-assistant-message-root").last()).toContainText(answer);
+  await expect(page.locator(".aui-assistant-message-root").last()).not.toContainText(/^Partial opening\.\s*$/);
+  await expect(page.locator(".aui-user-message-root").last()).toContainText("Finish this answer.");
+  await expect(page.locator(".aui-assistant-message-root").first()).toContainText("Search quote references.");
+});
+
 test("browser back moves through prior views", async ({ page }) => {
   await page.goto("/");
 
