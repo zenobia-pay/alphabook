@@ -1648,7 +1648,39 @@ function AuthLoadingState({ compact = false }: { compact?: boolean }) {
   );
 }
 
-function AssistantLoadingState() {
+function AssistantLoadingState({ mode = "session" }: { mode?: "session" | "welcome" }) {
+  if (mode === "welcome") {
+    return (
+      <div className="assistant-loading-state assistant-loading-state-welcome" aria-hidden="true">
+        <div className="assistant-loading-thread assistant-loading-thread-welcome">
+          <div className="assistant-loading-hero">
+            <Skeleton className="assistant-loading-hero-kicker" />
+            <Skeleton className="assistant-loading-hero-title" />
+            <Skeleton className="assistant-loading-hero-title is-short" />
+            <Skeleton className="assistant-loading-hero-copy" />
+          </div>
+          <div className="assistant-loading-suggestion-grid">
+            {[0, 1].map((item) => (
+              <div key={item} className="assistant-loading-suggestion-card">
+                <Skeleton className="assistant-loading-suggestion-title" />
+                <Skeleton className="assistant-loading-suggestion-line is-wide" />
+                <Skeleton className="assistant-loading-suggestion-line" />
+              </div>
+            ))}
+          </div>
+          <div className="assistant-loading-composer">
+            <Skeleton className="assistant-loading-composer-line is-long" />
+            <Skeleton className="assistant-loading-composer-line" />
+            <div className="assistant-loading-composer-footer">
+              <Skeleton className="assistant-loading-dot" />
+              <Skeleton className="assistant-loading-send" />
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="assistant-loading-state" aria-hidden="true">
       <div className="assistant-loading-thread">
@@ -3587,6 +3619,7 @@ export default function App() {
         || sessionsLoading
         || (selectedSessionId != null && messagesLoading)
       );
+    const assistantSessionLoading = assistantHistoryLoading && selectedSessionId != null;
     const showWelcome =
       !assistantHistoryLoading
       && !authState.loading
@@ -3601,9 +3634,9 @@ export default function App() {
 
         <div className="assistant-thread-shell" data-testid="thread">
           {authPending ? (
-            <AssistantLoadingState />
+            <AssistantLoadingState mode="welcome" />
           ) : assistantHistoryLoading ? (
-            <AssistantLoadingState />
+            <AssistantLoadingState mode={assistantSessionLoading ? "session" : "welcome"} />
           ) : authLocked ? (
             <LockedState
               compact
@@ -4833,6 +4866,7 @@ export default function App() {
                 variant="ghost"
                 className={cn(
                   "sidebar-nav-button w-full justify-start rounded-none px-0 py-3 text-[1.05rem]",
+                  isActive && "is-active",
                   isActive && "font-medium",
                   sidebarCollapsed && "w-11 justify-center px-0",
                 )}

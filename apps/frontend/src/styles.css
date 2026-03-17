@@ -150,6 +150,7 @@ button {
 }
 
 .sidebar-nav-button {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -162,6 +163,11 @@ button {
   text-align: left;
   border-radius: 0;
   box-shadow: none;
+  transition:
+    color 140ms ease,
+    background-color 140ms ease,
+    border-color 140ms ease,
+    transform 140ms ease;
 }
 
 .sidebar-nav-button:hover {
@@ -170,9 +176,18 @@ button {
 }
 
 .sidebar-nav-button.is-active {
-  color: var(--ink);
-  background: rgba(255, 255, 255, 0.9);
-  border-color: var(--line);
+  color: var(--ink-strong);
+  background: linear-gradient(90deg, rgba(23, 23, 23, 0.08), rgba(255, 255, 255, 0.94));
+  border-color: rgba(23, 23, 23, 0.12);
+  box-shadow: inset 3px 0 0 #111;
+}
+
+.sidebar-nav-button.is-active svg {
+  color: #111;
+}
+
+.sidebar-nav-button.is-active span {
+  letter-spacing: -0.01em;
 }
 
 .sidebar-profile {
@@ -2001,6 +2016,76 @@ button {
   flex: 1;
   flex-direction: column;
   gap: 14px;
+}
+
+.assistant-loading-state-welcome {
+  justify-content: center;
+}
+
+.assistant-loading-thread-welcome {
+  justify-content: flex-end;
+  padding-bottom: 12px;
+}
+
+.assistant-loading-hero {
+  display: grid;
+  gap: 12px;
+  justify-items: center;
+  padding: 4vh 0 1.25rem;
+}
+
+.assistant-loading-hero-kicker {
+  width: 8rem;
+  height: 0.95rem;
+  border-radius: 999px;
+}
+
+.assistant-loading-hero-title {
+  width: min(32rem, 82%);
+  height: clamp(2.25rem, 4vw, 3.4rem);
+  border-radius: 999px;
+}
+
+.assistant-loading-hero-title.is-short {
+  width: min(20rem, 56%);
+}
+
+.assistant-loading-hero-copy {
+  width: min(16rem, 48%);
+  height: 1rem;
+  border-radius: 999px;
+}
+
+.assistant-loading-suggestion-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 0 4px;
+}
+
+.assistant-loading-suggestion-card {
+  display: grid;
+  gap: 10px;
+  padding: 18px;
+  border-radius: 24px;
+  border: 1px solid rgba(38, 38, 38, 0.06);
+  background: rgba(255, 255, 255, 0.76);
+}
+
+.assistant-loading-suggestion-title {
+  width: 46%;
+  height: 16px;
+  border-radius: 999px;
+}
+
+.assistant-loading-suggestion-line {
+  width: 70%;
+  height: 14px;
+  border-radius: 999px;
+}
+
+.assistant-loading-suggestion-line.is-wide {
+  width: 88%;
 }
 
 .assistant-loading-messages {
