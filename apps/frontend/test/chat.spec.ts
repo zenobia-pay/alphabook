@@ -417,6 +417,42 @@ test("reloading a session keeps streamed tool progress instead of replacing it w
   await expect(page.getByText("Selected 5 passages for the final comparison.")).toBeVisible();
 });
 
+test("full assistant flow keeps the final briefing and tool details after refresh", async ({ page }) => {
+  await page.goto("/");
+
+  await page.locator(".aui-composer-input").fill("Compare how Don Quixote and Moby-Dick talk about grief.");
+  await page.locator(".aui-composer-send").click();
+
+  const planMessage = page.locator(".aui-assistant-message-root").first();
+  const finalMessage = page.locator(".aui-assistant-message-root").last();
+
+  await expect(planMessage).toContainText(/Research Setup/i);
+  await expect(planMessage).toContainText(/Corpus Search/i);
+  await expect(planMessage).toContainText(/Passage Search/i);
+  await expect(finalMessage).toContainText(/Workspace Summary/i);
+  await expect(finalMessage).toContainText(/Don Quixote/i);
+  await expect(finalMessage).toContainText(/Moby-Dick/i);
+  await expect(finalMessage).not.toHaveText(/^\s*$/);
+
+  await planMessage.getByText("Passage Search").click();
+  await expect(planMessage).toContainText(/Pulling a few seed passages from across the corpus/i);
+
+  await page.reload();
+
+  const reloadedPlanMessage = page.locator(".aui-assistant-message-root").first();
+  const reloadedFinalMessage = page.locator(".aui-assistant-message-root").last();
+
+  await expect(reloadedPlanMessage).toContainText(/Research Setup/i);
+  await expect(reloadedPlanMessage).toContainText(/Corpus Search/i);
+  await expect(reloadedPlanMessage).toContainText(/Passage Search/i);
+  await expect(reloadedFinalMessage).toContainText(/Workspace Summary/i);
+  await expect(reloadedFinalMessage).toContainText(/Don Quixote/i);
+  await expect(reloadedFinalMessage).toContainText(/Moby-Dick/i);
+
+  await reloadedPlanMessage.getByText("Passage Search").click();
+  await expect(reloadedPlanMessage).toContainText(/Pulling a few seed passages from across the corpus/i);
+});
+
 test("browser back moves through prior views", async ({ page }) => {
   await page.goto("/");
 
