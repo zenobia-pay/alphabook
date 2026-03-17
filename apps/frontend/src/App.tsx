@@ -123,14 +123,14 @@ const BOOK_ASSISTANT_MIN_WIDTH = 320;
 const BOOK_ASSISTANT_MAX_WIDTH = 720;
 const ASSISTANT_WELCOME_SUGGESTIONS: ThreadSuggestion[] = [
   {
-    title: "Find a Passage",
-    description: "Pull a tight set of passages on grief and mourning.",
-    prompt: "Find the most revealing passages about grief and mourning.",
+    title: "Comprehensive education, comprehensive evidence search, subcapture.",
+    description: "I'm going to find me all of the ways that characters deal with grief in 19th century fiction.",
+    prompt: "Comprehensive education, comprehensive evidence search, subcapture. I'm going to find me all of the ways that characters deal with grief in 19th century fiction.",
   },
   {
-    title: "Theme Search",
-    description: "Contrast eras and authorial treatment of grief.",
-    prompt: "summarize grief in 19th century romantic versus 20th century authors.",
+    title: "Theme analysis.",
+    description: "Compare how people deal with grief in mysteries versus sci-fi.",
+    prompt: "Compare how people deal with grief in mysteries versus sci-fi.",
   },
 ];
 
@@ -1852,9 +1852,6 @@ function AssistantSurface({
         streamConnected={streamConnected}
         artifacts={artifacts}
         suggestions={suggestions}
-        onSuggestionSelect={(prompt) => {
-          void onPrompt(prompt);
-        }}
         onCancel={() => {
           void onCancel();
         }}

@@ -23,6 +23,7 @@ import {
   ErrorPrimitive,
   MessagePrimitive,
   ThreadPrimitive,
+  useAui,
 } from "@assistant-ui/react";
 import {
   ArrowDownIcon,
@@ -394,13 +395,26 @@ const ThreadSuggestionItem: FC<{
   suggestion,
   onSuggestionSelect,
 }) => {
+  const aui = useAui();
+
+  const handleClick = useCallback(() => {
+    aui.composer().setText(suggestion.prompt);
+    window.requestAnimationFrame(() => {
+      const input = document.querySelector<HTMLTextAreaElement>("[aria-label='Message input']");
+      input?.focus();
+      const cursorPosition = suggestion.prompt.length;
+      input?.setSelectionRange(cursorPosition, cursorPosition);
+    });
+    onSuggestionSelect?.(suggestion.prompt);
+  }, [aui, onSuggestionSelect, suggestion.prompt]);
+
   return (
     <div className="aui-thread-welcome-suggestion-display fade-in slide-in-from-bottom-2 @md:nth-[n+3]:block nth-[n+3]:hidden animate-in fill-mode-both duration-200">
       <Button
         type="button"
         variant="ghost"
         className="aui-thread-welcome-suggestion h-auto w-full min-w-0 @md:flex-col flex-wrap items-start justify-start gap-1 rounded-3xl border bg-background px-4 py-3 text-left text-sm transition-colors hover:bg-muted"
-        onClick={() => onSuggestionSelect?.(suggestion.prompt)}
+        onClick={handleClick}
       >
         <span className="aui-thread-welcome-suggestion-text-1 min-w-0 whitespace-normal break-words font-medium">{suggestion.title}</span>
         {suggestion.description ? (
