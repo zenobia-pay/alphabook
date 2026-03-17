@@ -2168,6 +2168,7 @@ export default function App() {
   const authLocked = authState.authConfigured && !authState.user;
   const hasAuthenticatedUser = Boolean(authState.user);
   const authPending = authState.loading;
+  const canForceSessionReset = hasAuthenticatedUser || authState.authConfigured || Boolean(authState.error);
   const navigationItems = adminAccess.allowed
     ? [...NAV_ITEMS, { id: "admin" as const, label: "Admin", icon: ProfileIcon }]
     : NAV_ITEMS;
@@ -4926,42 +4927,57 @@ export default function App() {
         {authPending ? (
           <SidebarProfileSkeleton collapsed={sidebarCollapsed} />
         ) : hasAuthenticatedUser || !authState.authConfigured ? (
-          <Button
-            type="button"
-            variant="ghost"
-            className={cn(
-              "sidebar-profile h-auto justify-start gap-3 rounded-none p-0",
-              sidebarCollapsed && "size-12 justify-center p-0",
-            )}
-            onClick={() => {
-              openProfile(currentUser?.id ?? null);
-              setMobileNavOpen(false);
-            }}
-            aria-label="Open profile"
-            title={displayProfileName}
-          >
-            <Avatar className="size-11 bg-white p-0.5">
-              {currentUser?.avatarUrl ? <AvatarImage className="sidebar-avatar-image" src={currentUser.avatarUrl} alt={displayProfileName} /> : null}
-              <AvatarFallback
-                className={cn(hasAuthenticatedUser ? "text-white" : "bg-[rgba(72,43,37,0.05)] text-[var(--ink-soft)]")}
-                style={
-                  hasAuthenticatedUser
-                    ? ({
-                        background: `linear-gradient(160deg, hsl(${profileHue} 72% 56%), hsl(${profileHue - 12} 62% 46%))`,
-                      } as CSSProperties)
-                    : undefined
-                }
+          <div className={cn("sidebar-account-zone", sidebarCollapsed && "items-center")}>
+            <Button
+              type="button"
+              variant="ghost"
+              className={cn(
+                "sidebar-profile h-auto justify-start gap-3 rounded-none p-0",
+                sidebarCollapsed && "size-12 justify-center p-0",
+              )}
+              onClick={() => {
+                openProfile(currentUser?.id ?? null);
+                setMobileNavOpen(false);
+              }}
+              aria-label="Open profile"
+              title={displayProfileName}
+            >
+              <Avatar className="size-11 bg-white p-0.5">
+                {currentUser?.avatarUrl ? <AvatarImage className="sidebar-avatar-image" src={currentUser.avatarUrl} alt={displayProfileName} /> : null}
+                <AvatarFallback
+                  className={cn(hasAuthenticatedUser ? "text-white" : "bg-[rgba(72,43,37,0.05)] text-[var(--ink-soft)]")}
+                  style={
+                    hasAuthenticatedUser
+                      ? ({
+                          background: `linear-gradient(160deg, hsl(${profileHue} 72% 56%), hsl(${profileHue - 12} 62% 46%))`,
+                        } as CSSProperties)
+                      : undefined
+                  }
+                >
+                  {hasAuthenticatedUser ? initialsFromSeed(displayProfileName) : <ProfileIcon />}
+                </AvatarFallback>
+              </Avatar>
+              {!sidebarCollapsed ? (
+                <div className="min-w-0 text-left">
+                  <div className="truncate text-[1rem] font-medium text-[var(--ink)]">{displayProfileName}</div>
+                  <div className="truncate text-xs text-[var(--ink-soft)]">{hasAuthenticatedUser ? "Account" : "Guest reader"}</div>
+                </div>
+              ) : null}
+            </Button>
+            {canForceSessionReset ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size={sidebarCollapsed ? "icon" : "sm"}
+                className={cn("sidebar-session-reset", sidebarCollapsed && "size-11")}
+                onClick={() => void handleSignOut()}
+                aria-label="Reset session"
+                title="Reset session"
               >
-                {hasAuthenticatedUser ? initialsFromSeed(displayProfileName) : <ProfileIcon />}
-              </AvatarFallback>
-            </Avatar>
-            {!sidebarCollapsed ? (
-              <div className="min-w-0 text-left">
-                <div className="truncate text-[1rem] font-medium text-[var(--ink)]">{displayProfileName}</div>
-                <div className="truncate text-xs text-[var(--ink-soft)]">{hasAuthenticatedUser ? "Account" : "Guest reader"}</div>
-              </div>
+                {sidebarCollapsed ? "×" : "Reset session"}
+              </Button>
             ) : null}
-          </Button>
+          </div>
         ) : (
           <Button asChild variant="default" className={cn("sidebar-signin sidebar-signin-bottom signin-pill-button", sidebarCollapsed && "size-11 px-0")}>
             <a href={buildSignInUrl(window.location.href)}>{sidebarCollapsed ? "→" : "Sign in"}</a>

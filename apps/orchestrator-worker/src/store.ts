@@ -1389,13 +1389,13 @@ export class NeonAppStore implements AppStore {
           `
             UPDATE users
             SET
-              email = $2,
-              name = $3,
-              avatar_url = $4
-            WHERE email = $2
+              email = $1,
+              name = $2,
+              avatar_url = $3
+            WHERE email = $1
             RETURNING id, email, name, avatar_url, created_at
           `,
-          params,
+          [input.email, input.name ?? null, input.avatarUrl ?? null],
         )
       : null;
     const reusedRow = existingByEmail?.rows[0];
