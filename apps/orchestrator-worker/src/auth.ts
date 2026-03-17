@@ -124,8 +124,7 @@ function sessionIdFromCookieSession(session: AuthenticatedSessionCookie | null |
   return null;
 }
 
-function clearAuthCookies(c: Context, cookieDomain?: string) {
-  const cookieNames = [SESSION_COOKIE_NAME, STATE_COOKIE_NAME];
+function clearCookies(c: Context, cookieNames: string[], cookieDomain?: string) {
   for (const name of cookieNames) {
     c.header("Set-Cookie", serialize(name, "", {
       path: "/",
@@ -139,6 +138,14 @@ function clearAuthCookies(c: Context, cookieDomain?: string) {
       }), { append: true });
     }
   }
+}
+
+function clearAuthCookies(c: Context, cookieDomain?: string) {
+  clearCookies(c, [SESSION_COOKIE_NAME, STATE_COOKIE_NAME], cookieDomain);
+}
+
+function clearPendingAuthState(c: Context, cookieDomain?: string) {
+  clearCookies(c, [STATE_COOKIE_NAME], cookieDomain);
 }
 
 export class WorkOSAuth {
@@ -250,7 +257,7 @@ export class WorkOSAuth {
         maxAge: 60 * 60 * 24 * 30,
         ...(cookieDomain ? { domain: cookieDomain } : {}),
       });
-      clearAuthCookies(c, cookieDomain);
+      clearPendingAuthState(c, cookieDomain);
 
       await this.store.upsertUserProfile({
         id: authResponse.user.id,

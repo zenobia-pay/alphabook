@@ -718,6 +718,120 @@ test("auth sign-in route forces interactive WorkOS auth", async () => {
   assert.match(location, /prompt=login/);
 });
 
+test("auth callback preserves the new session cookie while clearing the pending auth state", async () => {
+  const store = new InMemoryAppStore();
+  const auth = new WorkOSAuth(
+    {
+      workosApiKey: "test_api_key",
+      workosClientId: "client_123",
+      cookiePassword: "test_cookie_password_32_chars_minimum",
+    },
+    store,
+  );
+
+  const authInternals = auth as unknown as {
+    workos: {
+      userManagement: {
+        authenticateWithCode(args: {
+          clientId: string;
+          code: string;
+          codeVerifier: string;
+          session: {
+            sealSession: boolean;
+            cookiePassword: string;
+          };
+        }): Promise<{
+          sealedSession?: string;
+          user: {
+            id: string;
+            email?: string | null;
+            firstName?: string | null;
+            lastName?: string | null;
+            profilePictureUrl?: string | null;
+          };
+        }>;
+      };
+    };
+  };
+
+  authInternals.workos.userManagement.authenticateWithCode = async ({ clientId, code, codeVerifier, session }) => {
+    assert.equal(clientId, "client_123");
+    assert.equal(code, "auth-code");
+    assert.equal(codeVerifier, "code-verifier");
+    assert.equal(session.sealSession, true);
+    assert.equal(session.cookiePassword, "test_cookie_password_32_chars_minimum");
+    return {
+      sealedSession: "sealed-session",
+      user: {
+        id: "user_123",
+        email: "reader@example.com",
+        firstName: "Reader",
+        lastName: "Example",
+      },
+    };
+  };
+
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    planner: new FallbackPlanner(),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+      async runWorkspaceTask() {
+        return { ok: false, error: "disabled" };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: false, error: "disabled" };
+      },
+      async destroyWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+    auth,
+  });
+
+  const pendingState = Buffer.from(JSON.stringify({
+    state: "expected-state",
+    codeVerifier: "code-verifier",
+    returnTo: "https://alpha-book.org",
+  })).toString("base64");
+
+  const response = await app.request(
+    "/auth/callback?code=auth-code&state=expected-state",
+    {
+      headers: {
+        cookie: `alphabook_auth_state=${pendingState}`,
+        host: "api.alpha-book.org",
+        "x-forwarded-proto": "https",
+      },
+    },
+  );
+
+  assert.equal(response.status, 302);
+  assert.equal(response.headers.get("location"), "https://alpha-book.org/");
+
+  const setCookies = response.headers.getSetCookie();
+  assert.ok(setCookies.some((value) => value.startsWith("alphabook_session=sealed-session")));
+  assert.ok(setCookies.some((value) => value.startsWith("alphabook_auth_state=")));
+  assert.ok(!setCookies.some((value) => value.startsWith("alphabook_session=;")));
+
+  const profile = await store.getUserProfile("user_123");
+  assert.ok(profile);
+  assert.equal(profile.email, "reader@example.com");
+});
+
 test("agent API keys can register and use CLI chat even when browser auth is enabled", async () => {
   const store = new InMemoryAppStore([], []);
   const auth = new WorkOSAuth(

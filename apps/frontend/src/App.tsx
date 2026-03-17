@@ -2173,6 +2173,24 @@ export default function App() {
     : NAV_ITEMS;
 
   useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const url = new URL(window.location.href);
+    const authError = url.searchParams.get("auth_error");
+    if (!authError) {
+      return;
+    }
+    setLoadError(
+      authError === "state_mismatch"
+        ? "We couldn't complete sign-in because the session expired. Please try signing in again."
+        : "We couldn't complete sign-in. Please try again.",
+    );
+    url.searchParams.delete("auth_error");
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+  }, []);
+
+  useEffect(() => {
     void (async () => {
       try {
         const next = await fetchCurrentUser();

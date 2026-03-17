@@ -3,25 +3,25 @@ import assert from "node:assert/strict";
 
 import { InMemoryAppStore } from "../src/store";
 
-test("upsertUserProfile reuses the existing user when auth ids differ but email matches", async () => {
+test("upsertUserProfile updates the existing user when the auth id is stable", async () => {
   const store = new InMemoryAppStore();
 
   const first = await store.upsertUserProfile({
-    id: "staging-user-id",
+    id: "stable-user-id",
     email: "reader@example.com",
-    name: "Reader From Staging",
+    name: "Reader Before Update",
   });
   const second = await store.upsertUserProfile({
-    id: "production-user-id",
+    id: "stable-user-id",
     email: "reader@example.com",
-    name: "Reader In Production",
+    name: "Reader After Update",
   });
 
-  assert.equal(first.id, "staging-user-id");
-  assert.equal(second.id, "staging-user-id");
+  assert.equal(first.id, "stable-user-id");
+  assert.equal(second.id, "stable-user-id");
 
-  const profile = await store.getUserProfile("staging-user-id");
+  const profile = await store.getUserProfile("stable-user-id");
   assert.ok(profile);
-  assert.equal(profile.name, "Reader In Production");
+  assert.equal(profile.name, "Reader After Update");
   assert.equal(profile.email, "reader@example.com");
 });

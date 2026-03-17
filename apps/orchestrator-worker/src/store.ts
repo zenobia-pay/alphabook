@@ -1378,40 +1378,6 @@ export class NeonAppStore implements AppStore {
     avatarUrl?: string | null;
   }): Promise<UserRecord> {
     const params = [input.id, input.email ?? null, input.name ?? null, input.avatarUrl ?? null];
-    const existingByEmail = input.email
-      ? await this.db.query<{
-          id: string;
-          email: string | null;
-          name: string | null;
-          avatar_url: string | null;
-          created_at: string;
-        }>(
-          `
-            UPDATE users
-            SET
-              email = $1,
-              name = $2,
-              avatar_url = $3
-            WHERE email = $1
-            RETURNING id, email, name, avatar_url, created_at
-          `,
-          [input.email, input.name ?? null, input.avatarUrl ?? null],
-        )
-      : null;
-    const reusedRow = existingByEmail?.rows[0];
-    if (reusedRow) {
-      return {
-        id: reusedRow.id,
-        email: reusedRow.email,
-        handle: deriveUserHandle({ email: reusedRow.email, name: reusedRow.name, id: reusedRow.id }),
-        name: reusedRow.name,
-        avatarUrl: reusedRow.avatar_url,
-        createdAt: reusedRow.created_at,
-        followersCount: 0,
-        followingCount: 0,
-      };
-    }
-
     const existingById = await this.db.query<{
       id: string;
       email: string | null;
