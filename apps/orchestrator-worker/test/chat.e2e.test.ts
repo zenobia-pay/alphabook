@@ -1324,7 +1324,7 @@ test("workspace args are normalized and run logs are exposed", async () => {
   };
   assert.equal(runDetailsPayload.toolCalls.length, 1);
   assert.equal(runDetailsPayload.toolCalls[0]?.toolName, "create_workspace");
-  assert.deepEqual(runDetailsPayload.toolCalls[0]?.argsJson.taskContext, "find angry passages");
+  assert.deepEqual(runDetailsPayload.toolCalls[0]?.argsJson.taskContext, { prompt: "find angry passages" });
 
   const debugResponse = await app.request(`/sessions/${sessionId}/debug`);
   assert.equal(debugResponse.status, 200);
@@ -1347,6 +1347,191 @@ test("workspace args are normalized and run logs are exposed", async () => {
   };
   assert.equal(runDebugPayload.run.id, runsPayload.runs[0]?.id);
   assert.equal(runDebugPayload.toolCalls[0]?.toolName, "create_workspace");
+});
+
+test("run details endpoint recovers a completed run answer from a persisted briefing", async () => {
+  const store = new InMemoryAppStore();
+  const session = await store.createSession("reader-user", "Recover briefing");
+  await store.appendMessage(session.id, "user", "Find grief passages.");
+  const run = await store.createRun(session.id);
+  const toolCall = await store.startToolCall(run.id, "run_workspace_task", {
+    runtimeId: "runtime-1",
+    taskSpec: {
+      phase: "collect_and_brief",
+    },
+  });
+  await store.finishToolCall(toolCall.id, "completed", {
+    ok: true,
+    runtimeId: "runtime-1",
+    briefing: "Recovered briefing content.",
+    citations: [],
+  });
+  await store.updateRun(run.id, {
+    status: "completed",
+    completedAt: new Date().toISOString(),
+  });
+
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    planner: new ScriptedPlanner([
+      {
+        type: "final_answer",
+        answer: "unused",
+        citations: [],
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+      async runWorkspaceTask() {
+        return { ok: false, error: "disabled" };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: true, files: [] };
+      },
+      async destroyWorkspace() {
+        return { ok: true };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const repairResponse = await app.request(`/sessions/${session.id}/runs/${run.id}?userId=reader-user`);
+  assert.equal(repairResponse.status, 200);
+
+  const messagesResponse = await app.request(`/sessions/${session.id}/messages?userId=reader-user`);
+  assert.equal(messagesResponse.status, 200);
+  const payload = await messagesResponse.json() as {
+    messages: Array<{ role: string; content: string; metadata: Record<string, unknown> }>;
+  };
+  assert.equal(payload.messages.length, 2);
+  assert.equal(payload.messages[1]?.role, "assistant");
+  assert.equal(payload.messages[1]?.content, "Recovered briefing content.");
+  assert.equal(payload.messages[1]?.metadata.runId, run.id);
+});
+
+test("persisted tool traces keep chunk results compact enough for refresh", async () => {
+  const store = new InMemoryAppStore(
+    [
+      {
+        id: "work-1",
+        gutenbergId: 154,
+        title: "The Rise of Silas Lapham",
+        language: "en",
+        releaseDate: "2000-01-01",
+        rightsStatus: "public_domain",
+        summary: "A novel with passages about adversity and mourning.",
+        authors: ["William Dean Howells"],
+        subjects: ["fiction", "grief"],
+        cleanTextKey: "gutenberg/clean/154/clean.txt",
+      },
+    ],
+    [
+      {
+        id: "chunk-1",
+        workId: "work-1",
+        chunkIndex: 472,
+        text: "The house of mourning is decorously darkened to the world, but within itself it is also the house of laughing. Bursts of gaiety, as heartfelt as its grief, relieve the gloom, and the stricken survivors have their jests together.",
+        r2Key: "gutenberg/clean/154/chunks.jsonl",
+        score: 0,
+        excerpt: "",
+      },
+    ],
+  );
+
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    planner: new ScriptedPlanner([
+      {
+        type: "tool_call",
+        tool_name: "get_relevant_chunks",
+        args: {
+          query: "grief and mourning",
+          filters: {
+            language: "en",
+          },
+        },
+      },
+      {
+        type: "final_answer",
+        answer: "Found one passage.",
+        citations: [],
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+      async runWorkspaceTask() {
+        return { ok: false, error: "disabled" };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: true, files: [] };
+      },
+      async destroyWorkspace() {
+        return { ok: true };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const response = await app.request("/chat", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      userId: "trace-user",
+      message: "Find grief and mourning.",
+    }),
+  });
+  await response.text();
+
+  const sessionsResponse = await app.request("/sessions?userId=trace-user");
+  const sessionsPayload = await sessionsResponse.json() as {
+    sessions: Array<{ id: string }>;
+  };
+  const sessionId = sessionsPayload.sessions[0]?.id;
+  assert.ok(sessionId);
+
+  const messagesResponse = await app.request(`/sessions/${sessionId}/messages?userId=trace-user`);
+  const messagesPayload = await messagesResponse.json() as {
+    messages: Array<{ metadata: Record<string, unknown> }>;
+  };
+  const planMessage = messagesPayload.messages.find((message) => message.metadata?.phase === "plan");
+  const toolCalls = Array.isArray(planMessage?.metadata?.toolCalls)
+    ? planMessage?.metadata?.toolCalls as Array<Record<string, unknown>>
+    : [];
+  const chunkResult = toolCalls.find((entry) => entry.toolName === "get_relevant_chunks");
+  const result = chunkResult?.result && typeof chunkResult.result === "object"
+    ? chunkResult.result as Record<string, unknown>
+    : null;
+  const logLines = Array.isArray(result?.__logLines) ? result?.__logLines as Array<Record<string, unknown>> : [];
+
+  assert.ok(logLines.some((line) => line.key === "chunkCount"));
+  assert.ok(logLines.some((line) => line.key === "chunks[0].excerpt"));
+  assert.ok(!logLines.some((line) => line.key === "chunks[0].text"));
 });
 
 test("OpenAIEmbedder requests 1536 dimensions for text-embedding-3 models", async () => {

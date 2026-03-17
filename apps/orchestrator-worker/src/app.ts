@@ -1292,50 +1292,27 @@ async function ensureRunAnswerPersisted(
     return;
   }
 
-  const userMessage =
-    [...conversationHistory].reverse().find((message) => message.role === "user")?.content ?? "";
-
-  try {
-    await synthesizeAnswer(
-      deps,
-      {
-        request,
-        userId: session.userId,
-        sessionId: session.id,
-        runId,
-        userMessage,
-        conversationHistory,
-        plannerDraft: completedBriefing.answer,
-        plannerCitations: completedBriefing.citations,
-        toolHistory,
-      },
-      async () => {},
-    );
-    return;
-  } catch (error) {
-    const fallbackAnswer = await rewriteAnswerWithCitationLinks(
-      deps,
-      session.id,
-      completedBriefing.answer,
-      completedBriefing.citations,
-    );
-    const artifactKey = await persistFinalArtifact(
-      deps,
-      session.id,
-      runId,
-      fallbackAnswer,
-      completedBriefing.citations,
-    );
-    await deps.store.appendMessage(session.id, "assistant", fallbackAnswer, {
-      runId,
-      phase: "answer",
-      citations: completedBriefing.citations,
-      artifactKey,
-      researchLog: summarizeToolHistory(toolHistory),
-      synthesisFallback: true,
-      synthesisError: error instanceof Error ? error.message : "Unknown synthesis error",
-    });
-  }
+  const recoveredAnswer = await rewriteAnswerWithCitationLinks(
+    deps,
+    session.id,
+    completedBriefing.answer,
+    completedBriefing.citations,
+  );
+  const artifactKey = await persistFinalArtifact(
+    deps,
+    session.id,
+    runId,
+    recoveredAnswer,
+    completedBriefing.citations,
+  );
+  await deps.store.appendMessage(session.id, "assistant", recoveredAnswer, {
+    runId,
+    phase: "answer",
+    citations: completedBriefing.citations,
+    artifactKey,
+    researchLog: summarizeToolHistory(toolHistory),
+    recoveredFromBriefing: true,
+  });
 }
 
 async function reconcilePersistentRun(
@@ -1365,6 +1342,7 @@ async function reconcilePersistentRun(
         })),
     );
     if (completedBriefing) {
+      await persistRecoveredPlanToolTrace(deps, session.id, run.id, toolCalls);
       const messages = await deps.store.listMessages(session.id);
       const conversationHistory = formatConversationHistory(messages);
       await ensureRunAnswerPersisted(
@@ -1481,9 +1459,7 @@ async function reconcileSessionRuns(
 ) {
   const runs = await deps.store.listRuns(sessionId);
   for (const run of runs) {
-    if (run.status === "running" || run.status === "queued") {
-      await reconcilePersistentRun(deps, request, run);
-    }
+    await reconcilePersistentRun(deps, request, run);
   }
 }
 
@@ -1562,6 +1538,57 @@ function labelForToolCall(toolName: ToolName, args: Record<string, unknown>) {
 }
 
 function clientSafeToolResult(toolName: ToolName, result: Record<string, unknown>): Record<string, unknown> {
+  if (toolName === "search_works" || toolName === "get_work_metadata") {
+    const works = Array.isArray(result.works) ? result.works : [];
+    return {
+      workCount: works.length,
+      works: works.slice(0, 8).map((candidate) => {
+        if (!candidate || typeof candidate !== "object") {
+          return candidate;
+        }
+        const work = candidate as Record<string, unknown>;
+        return {
+          id: typeof work.id === "string" ? work.id : undefined,
+          score: typeof work.score === "number" ? work.score : undefined,
+          title: typeof work.title === "string" ? work.title : undefined,
+          authors: Array.isArray(work.authors) ? work.authors.slice(0, 3) : undefined,
+          subjects: Array.isArray(work.subjects) ? work.subjects.slice(0, 5) : undefined,
+          language: typeof work.language === "string" ? work.language : undefined,
+          rightsStatus: typeof work.rightsStatus === "string" ? work.rightsStatus : undefined,
+          gutenbergId: typeof work.gutenbergId === "number" ? work.gutenbergId : undefined,
+        };
+      }),
+      error: typeof result.error === "string" ? result.error : undefined,
+    };
+  }
+
+  if (toolName === "get_relevant_chunks") {
+    const chunks = Array.isArray(result.chunks) ? result.chunks : [];
+    return {
+      chunkCount: chunks.length,
+      chunks: chunks.slice(0, 8).map((candidate) => {
+        if (!candidate || typeof candidate !== "object") {
+          return candidate;
+        }
+        const chunk = candidate as Record<string, unknown>;
+        return {
+          id: typeof chunk.id === "string" ? chunk.id : undefined,
+          workId: typeof chunk.workId === "string" ? chunk.workId : undefined,
+          chunkIndex: typeof chunk.chunkIndex === "number" ? chunk.chunkIndex : undefined,
+          score: typeof chunk.score === "number" ? chunk.score : undefined,
+          excerpt:
+            typeof chunk.excerpt === "string"
+              ? chunk.excerpt
+              : typeof chunk.text === "string"
+                ? chunk.text.slice(0, 280)
+                : undefined,
+          r2Key: typeof chunk.r2Key === "string" ? chunk.r2Key : undefined,
+        };
+      }),
+      error: typeof result.error === "string" ? result.error : undefined,
+    };
+  }
+
   if (toolName === "create_workspace") {
     const manifest = result.manifest && typeof result.manifest === "object"
       ? result.manifest as Record<string, unknown>
@@ -2862,6 +2889,8 @@ async function synthesizeAnswer(
   const artifactKey = await persistFinalArtifact(deps, params.sessionId, params.runId, synthesis.answer, synthesis.citations);
   const summarizedToolHistory = summarizeToolHistory(params.toolHistory);
   await deps.store.appendMessage(params.sessionId, "assistant", synthesis.answer, {
+    runId: params.runId,
+    phase: "answer",
     citations: synthesis.citations,
     artifactKey,
     researchLog: summarizedToolHistory,
@@ -4572,8 +4601,6 @@ export function createApp(deps: AppDeps) {
     if (!(await canAccessSession(c, session))) {
       return c.json({ error: "Not authorized for this session." }, 403);
     }
-
-    await reconcileSessionRuns(deps, c.req.raw, sessionId);
     const [messages, runs, runtimeInstances, artifacts] = await Promise.all([
       deps.store.listMessages(sessionId),
       deps.store.listRuns(sessionId),
