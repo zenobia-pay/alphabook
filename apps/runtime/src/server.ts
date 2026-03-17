@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
 import process from "node:process";
 
 import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
-import { RUNTIME_AGENT_PROMPT, type RuntimeTaskResult, type WorkspaceManifest } from "@alphabook/shared";
+import { HARD_LIMITS, RUNTIME_AGENT_PROMPT, type RuntimeTaskResult, type WorkspaceManifest } from "@alphabook/shared";
 
 export interface RuntimeServerOptions {
   port?: number;
@@ -892,7 +892,7 @@ async function runExternalAgent(
   const processResult = await runProcess(executable, args, {
     cwd: workspaceRoot,
     env: childEnv,
-    timeoutMs: 180_000,
+    timeoutMs: HARD_LIMITS.MAX_RUNTIME_TOOL_TIMEOUT_SECONDS * 1000,
     signal,
   });
   if (signal?.aborted) {
