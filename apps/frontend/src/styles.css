@@ -583,7 +583,7 @@ button {
 
 .aui-composer-cancel {
   margin-right: 0.14rem;
-  margin-bottom: 0.14rem;
+  margin-bottom: -0.02rem;
 }
 
 .aui-thread-scroll-to-bottom {
