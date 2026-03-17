@@ -124,12 +124,12 @@ const BOOK_ASSISTANT_MAX_WIDTH = 720;
 const ASSISTANT_WELCOME_SUGGESTIONS: ThreadSuggestion[] = [
   {
     icon: "search",
-    title: "hypothesis test: grief in 19th century fiction",
+    title: "Hypothesis test: grief in 19th century fiction",
     prompt: "Find me all the ways that characters deal with grief in 19th century fiction.",
   },
   {
     icon: "heart",
-    title: "theme analysis: heart rate",
+    title: "Theme analysis: heartbreak",
     prompt: "Find me stories with themes of heartbreak and what that means.",
   },
 ];
