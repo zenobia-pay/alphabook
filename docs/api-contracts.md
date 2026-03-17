@@ -169,7 +169,8 @@ Behavior:
 - runs retrieval first
 - can delegate a longer filesystem-backed search to a Fly runtime
 - synthesizes the final answer in a separate pass before streaming the response
-- when billing blocks a request, returns `402` and, if configured, includes x402-style payment requirements in the JSON body plus a `payment-required` header
+- when billing blocks a request, returns `402` and, if configured, includes x402-style payment requirements in the JSON body plus `PAYMENT-REQUIRED` and `payment-required` headers
+- a paid retry can send `PAYMENT-SIGNATURE` or `X-PAYMENT`; successful settlements return `PAYMENT-RESPONSE`
 
 ### `GET /sessions?userId=...`
 

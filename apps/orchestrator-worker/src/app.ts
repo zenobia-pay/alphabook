@@ -1,6 +1,11 @@
 import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import { ChatRequestSchema, HARD_LIMITS, R2_PREFIXES, ToolArgsSchemas, getToolLabel, type ChatRequest, type ChunkSearchResult, type Citation, type PlannerDecision, type ToolName, type WorkSummary } from "@alphabook/shared";
+import { createFacilitatorConfig } from "@coinbase/x402";
+import { decodePaymentSignatureHeader, encodePaymentRequiredHeader, encodePaymentResponseHeader } from "@x402/core/http";
+import { HTTPFacilitatorClient, x402ResourceServer } from "@x402/core/server";
+import { type Network, type PaymentPayload, type PaymentRequired, type PaymentRequirements, type SettleResponse } from "@x402/core/types";
+import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { ZodError, z } from "zod";
 
 import type { WorkOSAuth } from "./auth";
@@ -55,6 +60,16 @@ export interface AppDeps {
     asset: string;
     maxAmountUsd: string;
     description?: string;
+    cdpApiKeyId?: string;
+    cdpApiKeySecret?: string;
+    facilitatorConfig?: {
+      url?: string;
+      createAuthHeaders?: () => Promise<{
+        verify: Record<string, string>;
+        settle: Record<string, string>;
+        supported: Record<string, string>;
+      }>;
+    };
   };
 }
 
@@ -162,29 +177,198 @@ function encodeBase64Json(value: unknown) {
   return btoa(JSON.stringify(value));
 }
 
-function createX402PaymentRequirements(
+function x402Price(maxAmountUsd: string) {
+  return maxAmountUsd.startsWith("$") ? maxAmountUsd : `$${maxAmountUsd}`;
+}
+
+function paymentSignatureHeaderFromRequest(request: Request) {
+  return request.headers.get("payment-signature") ?? request.headers.get("x-payment");
+}
+
+async function createX402Server(config: NonNullable<AppDeps["x402"]>) {
+  return new x402ResourceServer(
+    new HTTPFacilitatorClient(
+      config.facilitatorConfig
+        ?? createFacilitatorConfig(config.cdpApiKeyId, config.cdpApiKeySecret),
+    ),
+  ).register(config.network as Network, new ExactEvmScheme());
+}
+
+async function createX402PaymentRequired(
   deps: AppDeps,
   request: Request,
-  billingCheck: { limitUsd: number; spendUsd: number; windowStartedAt: string },
+  error?: string,
 ) {
   if (!deps.x402?.enabled) {
     return null;
   }
-  const url = new URL(request.url);
-  return {
+  const server = deps.x402.facilitatorConfig || (deps.x402.cdpApiKeyId && deps.x402.cdpApiKeySecret)
+    ? await createX402Server(deps.x402)
+    : null;
+  const paymentRequired = {
     x402Version: 1,
+    error,
+    resource: {
+      url: request.url,
+      description: deps.x402.description ?? "AlphaBook CLI research access",
+      mimeType: "text/event-stream",
+    },
     accepts: [
       {
         scheme: "exact",
-        network: deps.x402.network,
+        network: deps.x402.network as Network,
         asset: deps.x402.asset,
-        maxAmountRequired: deps.x402.maxAmountUsd,
+        amount: deps.x402.maxAmountUsd,
         payTo: deps.x402.payTo,
-        resource: `${url.origin}${url.pathname}`,
-        description: deps.x402.description ?? "AlphaBook CLI research access",
+        maxTimeoutSeconds: 300,
+        extra: {
+          quotedPrice: x402Price(deps.x402.maxAmountUsd),
+        },
       },
     ],
+  } satisfies PaymentRequired;
+  return { server, paymentRequired };
+}
+
+async function createX402PaymentRequirements(
+  deps: AppDeps,
+  request: Request,
+  billingCheck: { limitUsd: number; spendUsd: number; windowStartedAt: string },
+  error?: string,
+) {
+  const x402 = await createX402PaymentRequired(deps, request, error);
+  if (!x402) {
+    return null;
+  }
+  return {
+    x402Version: x402.paymentRequired.x402Version,
+    resource: x402.paymentRequired.resource,
+    accepts: x402.paymentRequired.accepts.map((accept: PaymentRequirements) => ({
+      ...accept,
+      assetSymbol: deps.x402?.asset ?? null,
+      maxAmountRequired: accept.amount,
+    })),
     billing: billingCheck,
+  };
+}
+
+async function verifyAndSettleX402Payment(
+  deps: AppDeps,
+  request: Request,
+  billingCheck: { limitUsd: number; spendUsd: number; windowStartedAt: string },
+) {
+  const paymentHeader = paymentSignatureHeaderFromRequest(request);
+  if (!paymentHeader) {
+    return { ok: false as const, response: null };
+  }
+  const x402 = await createX402PaymentRequired(deps, request);
+  if (!x402?.server) {
+    return { ok: false as const, response: null };
+  }
+
+  let paymentPayload: PaymentPayload;
+  try {
+    paymentPayload = decodePaymentSignatureHeader(paymentHeader);
+  } catch {
+    const paymentRequirements = await createX402PaymentRequirements(
+      deps,
+      request,
+      billingCheck,
+      "Invalid PAYMENT-SIGNATURE header.",
+    );
+    return {
+      ok: false as const,
+      response: new Response(JSON.stringify({
+        error: "Invalid PAYMENT-SIGNATURE header.",
+        code: "x402_payment_invalid",
+        paymentRequirements,
+      }), {
+        status: 402,
+        headers: {
+          "content-type": "application/json",
+          ...(x402 ? {
+            "PAYMENT-REQUIRED": encodePaymentRequiredHeader(x402.paymentRequired),
+            "x-payment-required": encodeBase64Json(paymentRequirements),
+          } : {}),
+        },
+      }),
+    };
+  }
+
+  const matchingRequirements = x402.server.findMatchingRequirements(
+    x402.paymentRequired.accepts,
+    paymentPayload,
+  );
+  if (!matchingRequirements) {
+    const paymentRequirements = await createX402PaymentRequirements(
+      deps,
+      request,
+      billingCheck,
+      "Payment does not match AlphaBook's current x402 requirements.",
+    );
+    return {
+      ok: false as const,
+      response: new Response(JSON.stringify({
+        error: "Payment does not match AlphaBook's current x402 requirements.",
+        code: "x402_payment_mismatch",
+        paymentRequirements,
+      }), {
+        status: 402,
+        headers: {
+          "content-type": "application/json",
+          "PAYMENT-REQUIRED": encodePaymentRequiredHeader(x402.paymentRequired),
+          "x-payment-required": encodeBase64Json(paymentRequirements),
+        },
+      }),
+    };
+  }
+
+  const verification = await x402.server.verifyPayment(paymentPayload, matchingRequirements);
+  if (!verification.isValid) {
+    const paymentRequirements = await createX402PaymentRequirements(
+      deps,
+      request,
+      billingCheck,
+      verification.invalidReason ?? verification.invalidMessage ?? "Payment verification failed.",
+    );
+    return {
+      ok: false as const,
+      response: new Response(JSON.stringify({
+        error: verification.invalidMessage ?? "Payment verification failed.",
+        code: "x402_payment_invalid",
+        paymentRequirements,
+      }), {
+        status: 402,
+        headers: {
+          "content-type": "application/json",
+          "PAYMENT-REQUIRED": encodePaymentRequiredHeader(x402.paymentRequired),
+          "x-payment-required": encodeBase64Json(paymentRequirements),
+        },
+      }),
+    };
+  }
+
+  const settlement = await x402.server.settlePayment(paymentPayload, matchingRequirements);
+  if (!settlement.success) {
+    return {
+      ok: false as const,
+      response: new Response(JSON.stringify({
+        error: settlement.errorMessage ?? settlement.errorReason ?? "x402 payment settlement failed.",
+        code: "x402_payment_settlement_failed",
+      }), {
+        status: 402,
+        headers: {
+          "content-type": "application/json",
+          "PAYMENT-RESPONSE": encodePaymentResponseHeader(settlement),
+          "x-payment-response": encodeBase64Json(settlement),
+        },
+      }),
+    };
+  }
+
+  return {
+    ok: true as const,
+    settlement,
   };
 }
 
@@ -4132,8 +4316,8 @@ export function createApp(deps: AppDeps) {
         return "";
       },
       allowMethods: ["GET", "POST", "DELETE", "OPTIONS"],
-      allowHeaders: ["content-type", "authorization"],
-      exposeHeaders: ["content-type"],
+      allowHeaders: ["content-type", "authorization", "payment-signature", "x-payment"],
+      exposeHeaders: ["content-type", "payment-required", "x-payment-required", "PAYMENT-REQUIRED", "payment-response", "x-payment-response", "PAYMENT-RESPONSE"],
       credentials: true,
       maxAge: 86400,
     }),
@@ -4341,7 +4525,8 @@ export function createApp(deps: AppDeps) {
       "",
       "## Billing",
       "",
-      "If AlphaBook replies with HTTP 402, inspect the JSON body and `payment-required` header for x402-style payment requirements when they are configured.",
+      "If AlphaBook replies with HTTP 402, inspect the JSON body plus the `PAYMENT-REQUIRED` or `payment-required` headers for x402 requirements.",
+      "When you pay, retry the same request with `PAYMENT-SIGNATURE` and read `PAYMENT-RESPONSE` on success.",
     ].join("\n");
     return c.text(skill, 200, {
       "content-type": "text/markdown; charset=utf-8",
@@ -4738,12 +4923,23 @@ export function createApp(deps: AppDeps) {
       return c.json({ error: "userId is required when authentication is disabled." }, 400);
     }
     const billingCheck = await deps.billing.check(billingUserId);
+    let settledPayment: SettleResponse | null = null;
     if (!billingCheck.allowed) {
-      const paymentRequirements = createX402PaymentRequirements(deps, c.req.raw, billingCheck);
+      const x402Result = await verifyAndSettleX402Payment(deps, c.req.raw, billingCheck);
+      if (x402Result.ok) {
+        settledPayment = x402Result.settlement;
+      } else if (x402Result.response) {
+        return x402Result.response;
+      }
+      const paymentRequirements = await createX402PaymentRequirements(deps, c.req.raw, billingCheck);
+      const x402 = await createX402PaymentRequired(deps, c.req.raw);
       if (paymentRequirements) {
-        c.header("payment-required", encodeBase64Json(paymentRequirements));
+        if (x402) {
+          c.header("payment-required", encodePaymentRequiredHeader(x402.paymentRequired));
+        }
         c.header("x-payment-required", encodeBase64Json(paymentRequirements));
       }
+      if (!settledPayment) {
       return c.json({
         error: "Monthly AI usage limit reached.",
         code: "billing_limit_exceeded",
@@ -4752,8 +4948,9 @@ export function createApp(deps: AppDeps) {
         windowStartedAt: billingCheck.windowStartedAt,
         paymentRequirements,
       }, 402);
+      }
     }
-    return streamResponse(
+    const response = streamResponse(
       (send) => runOrchestrator(deps, c.req.raw, requestPayload, send, activeRuns),
       (error) =>
         recordUnexpectedError(deps, error, {
@@ -4765,6 +4962,11 @@ export function createApp(deps: AppDeps) {
           sessionId: requestPayload.sessionId ?? null,
         }),
     );
+    if (settledPayment) {
+      response.headers.set("payment-response", encodePaymentResponseHeader(settledPayment));
+      response.headers.set("x-payment-response", encodeBase64Json(settledPayment));
+    }
+    return response;
   };
 
   app.post("/chat", handleChatRequest);

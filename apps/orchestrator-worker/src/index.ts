@@ -62,6 +62,8 @@ export interface Env {
   X402_ASSET?: string;
   X402_MAX_AMOUNT_USD?: string;
   X402_DESCRIPTION?: string;
+  CDP_API_KEY_ID?: string;
+  CDP_API_KEY_SECRET?: string;
   CORPUS_BUCKET: R2Bucket;
   INGEST_QUEUE: Queue;
   JOBS_QUEUE: Queue;
@@ -176,6 +178,8 @@ function buildFetchHandler(env: Env) {
       && env.X402_NETWORK
       && env.X402_ASSET
       && env.X402_MAX_AMOUNT_USD
+      && env.CDP_API_KEY_ID
+      && env.CDP_API_KEY_SECRET
         ? {
             enabled: true,
             payTo: env.X402_PAY_TO,
@@ -183,6 +187,8 @@ function buildFetchHandler(env: Env) {
             asset: env.X402_ASSET,
             maxAmountUsd: env.X402_MAX_AMOUNT_USD,
             description: env.X402_DESCRIPTION,
+            cdpApiKeyId: env.CDP_API_KEY_ID,
+            cdpApiKeySecret: env.CDP_API_KEY_SECRET,
           }
         : undefined,
   });

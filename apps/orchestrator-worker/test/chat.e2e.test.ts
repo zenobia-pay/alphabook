@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { R2_PREFIXES } from "@alphabook/shared";
+import { decodePaymentRequiredHeader, encodePaymentSignatureHeader } from "@x402/core/http";
 
 import { createApp } from "../src/app";
 import { WorkOSAuth } from "../src/auth";
@@ -207,7 +208,7 @@ test("orchestrator streams retrieval tool calls and final answer", async () => {
     x402: {
       enabled: true,
       payTo: "0x1234",
-      network: "base",
+      network: "eip155:8453",
       asset: "USDC",
       maxAmountUsd: "5.00",
       description: "AlphaBook research access",
@@ -1819,6 +1820,155 @@ test("billing gate rejects chat requests once monthly spend exceeds limit", asyn
   const body = await response.json() as { code?: string; paymentRequirements?: { accepts?: unknown[] } | null };
   assert.equal(body.code, "billing_limit_exceeded");
   assert.equal(Array.isArray(body.paymentRequirements?.accepts), true);
+});
+
+test("billing blocked chat requests accept a valid x402 payment and return settlement headers", async () => {
+  const store = new InMemoryAppStore();
+  await store.ensureUser("billing-user");
+  await store.createBillingEvent({
+    userId: "billing-user",
+    sessionId: null,
+    runId: null,
+    source: "planner",
+    provider: "openai",
+    model: "gpt-5.2",
+    operation: "responses.create",
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    cachedInputTokens: 0,
+    costUsd: 50.01,
+    requestId: null,
+    requestJson: null,
+    responseJson: null,
+    metadata: {},
+  });
+
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    router: new ScriptedRouter([
+      {
+        type: "direct_response",
+        answer: "Paid access granted.",
+      },
+    ]),
+    planner: new ScriptedPlanner([
+      {
+        type: "final_answer",
+        answer: "planner should not run",
+        citations: [],
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+      async runWorkspaceTask() {
+        return { ok: false, error: "disabled" };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: false, error: "disabled" };
+      },
+      async destroyWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+    x402: {
+      enabled: true,
+      payTo: "0x1234",
+      network: "eip155:8453",
+      asset: "USDC",
+      maxAmountUsd: "5.00",
+      description: "AlphaBook research access",
+      facilitatorConfig: {
+        url: "https://api.cdp.coinbase.com/platform/v2/x402",
+        async createAuthHeaders() {
+          return {
+            verify: { authorization: "Bearer test" },
+            settle: { authorization: "Bearer test" },
+            supported: {},
+          };
+        },
+      },
+    },
+  });
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    if (url.endsWith("/supported")) {
+      return Response.json({
+        kinds: [{ x402Version: 1, scheme: "exact", network: "eip155:8453" }],
+        extensions: [],
+        signers: {},
+      });
+    }
+    if (url.endsWith("/verify")) {
+      return Response.json({ isValid: true, payer: "0xpayer" });
+    }
+    if (url.endsWith("/settle")) {
+      return Response.json({
+        success: true,
+        payer: "0xpayer",
+        transaction: "0xtxn",
+        network: "eip155:8453",
+      });
+    }
+    throw new Error(`Unexpected fetch call: ${url} ${init?.method ?? "GET"}`);
+  };
+
+  try {
+    const preflight = await app.request("/chat", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        userId: "billing-user",
+        message: "Blocked",
+      }),
+    });
+    const paymentRequiredHeader = preflight.headers.get("payment-required");
+    assert.ok(paymentRequiredHeader);
+    const accepted = decodePaymentRequiredHeader(paymentRequiredHeader).accepts[0];
+    assert.ok(accepted);
+
+    const response = await app.request("/chat", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "payment-signature": encodePaymentSignatureHeader({
+          x402Version: 1,
+          accepted,
+          payload: {
+            signature: "0xabc",
+          },
+        }),
+      },
+      body: JSON.stringify({
+        userId: "billing-user",
+        message: "Blocked",
+      }),
+    });
+
+    assert.equal(response.status, 200);
+    assert.ok(response.headers.get("payment-response"));
+    const body = await response.text();
+    assert.match(body, /Paid access granted\./);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("billing tracker records OpenAI usage costs", async () => {
