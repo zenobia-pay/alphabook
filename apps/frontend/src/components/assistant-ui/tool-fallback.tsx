@@ -260,6 +260,100 @@ function getRationale(args: JsonRecord | null) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+function summarizeQuoted(value: string, maxLength = 44) {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return null;
+  }
+  if (normalized.length <= maxLength) {
+    return `'${normalized}'`;
+  }
+  return `'${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…'`;
+}
+
+function summarizeSearchPromptFromLogs(args: JsonRecord | null) {
+  const rawLogLines = args?.__logLines;
+  if (Array.isArray(rawLogLines)) {
+    const candidates = rawLogLines
+      .map((line) => {
+        if (typeof line === "string") {
+          return line;
+        }
+        const record = safeObject(line);
+        return typeof record?.value === "string" ? record.value : null;
+      })
+      .filter((line): line is string => typeof line === "string")
+      .map((line) => line.replace(/\s+/g, " ").trim())
+      .filter((line) => {
+        const machineTokenCount = line
+          .split(" ")
+          .filter((token) => /^id?[a-f0-9-]{8,}$/i.test(token)).length;
+        return (
+          line.length > 24
+          && /[A-Za-z]/.test(line)
+          && (line.match(/[A-Za-z]{3,}/g)?.length ?? 0) >= 5
+          && machineTokenCount === 0
+          && !/\b[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\b/i.test(line)
+          && !/gutenberg\/|output\/|runtimeId|chunk\s+[a-f0-9-]{6,}|work\s+[a-f0-9-]{6,}/i.test(line)
+          && !/^(Scanning the library|Loading context|Pulling a few seed passages|Preparing the deeper research run|The research run is ready)/i.test(line)
+        );
+      });
+    if (candidates.length > 0) {
+      return summarizeQuoted(candidates[0]);
+    }
+  }
+  return null;
+}
+
+function summarizeSearchPrompt(args: JsonRecord | null, options?: { includeLogs?: boolean }) {
+  const taskContext = safeObject(args?.taskContext);
+  if (typeof taskContext?.question === "string") {
+    return summarizeQuoted(taskContext.question);
+  }
+  if (typeof taskContext?.researchObjective === "string") {
+    return summarizeQuoted(taskContext.researchObjective);
+  }
+  if (typeof taskContext?.prompt === "string") {
+    return summarizeQuoted(taskContext.prompt);
+  }
+
+  const taskSpec = safeObject(args?.taskSpec);
+  if (typeof taskSpec?.question === "string") {
+    return summarizeQuoted(taskSpec.question);
+  }
+  if (typeof taskSpec?.query === "string") {
+    return summarizeQuoted(taskSpec.query);
+  }
+
+  const directQuery = typeof args?.query === "string" ? args.query : null;
+  if (directQuery) {
+    return summarizeQuoted(directQuery);
+  }
+  return options?.includeLogs === false ? null : summarizeSearchPromptFromLogs(args);
+}
+
+function summarizeWorkCount(result: JsonRecord | null) {
+  if (typeof result?.workCount === "number") {
+    return `${result.workCount} works`;
+  }
+  const works = Array.isArray(result?.works) ? result.works : [];
+  if (works.length > 0) {
+    return `${works.length} works`;
+  }
+  return null;
+}
+
+function summarizeChunkCount(result: JsonRecord | null) {
+  if (typeof result?.chunkCount === "number") {
+    return `${result.chunkCount} passages`;
+  }
+  const chunks = Array.isArray(result?.chunks) ? result.chunks : [];
+  if (chunks.length > 0) {
+    return `${chunks.length} passages`;
+  }
+  return null;
+}
+
 function summarizeTool(toolName: string, args: JsonRecord | null, result: JsonRecord | null, status?: ToolCallMessagePartStatus) {
   if (status?.type === "incomplete") {
     const error =
@@ -276,42 +370,49 @@ function summarizeTool(toolName: string, args: JsonRecord | null, result: JsonRe
     return progress[progress.length - 1];
   }
 
+  const searchPrompt = summarizeSearchPrompt(args);
+  const workCount = summarizeWorkCount(result);
+  const chunkCount = summarizeChunkCount(result);
   const rationale = getRationale(args);
-  if (rationale) {
-    return rationale;
-  }
-
-  const query =
-    typeof args?.query === "string"
-      ? args.query
-      : safeObject(args?.taskSpec)?.question;
-  const quotedQuery =
-    typeof query === "string" && query.trim() ? `“${query.trim()}”` : null;
+  const structuredSearchPrompt = summarizeSearchPrompt(args, { includeLogs: false });
 
   switch (toolName.toLowerCase()) {
     case "library scan":
-      return quotedQuery
-        ? `Looking across the corpus for books related to ${quotedQuery}.`
-        : "Looking across the corpus for likely books.";
+    case "corpus search":
+      return searchPrompt
+        ? `Search quote: ${searchPrompt}`
+        : workCount
+          ? `Search quote: ${workCount}`
+          : "Search quote";
     case "seed passages":
-      return quotedQuery
-        ? `Pulling a first set of passages for ${quotedQuery}.`
-        : "Pulling a first set of passages.";
+    case "passage search":
+      return searchPrompt
+        ? `Find passages: ${searchPrompt}`
+        : chunkCount
+          ? `Find passages: ${chunkCount}`
+          : "Find passages";
     case "book metadata":
-      return "Loading metadata for the books currently in scope.";
+    case "book context":
+      return workCount ? `Load book context: ${workCount}` : "Load book context";
     case "full text lookup":
-      return "Opening the source text directly.";
+      return "Open source text";
     case "workspace setup":
-      return "Preparing the workspace for the longer-running search.";
+    case "research setup":
+      return searchPrompt ? `Set up research: ${searchPrompt}` : "Set up research";
     case "evidence search":
     case "deep search":
-      return "Running the longer workspace search over the selected corpus files.";
+    case "deep research":
+    case "corpus briefing":
+      return structuredSearchPrompt ? `Deep search: ${structuredSearchPrompt}` : "Deep search";
     case "search notes":
     case "workspace output":
     case "briefing import":
-      return "Reading the latest workspace output back into the thread.";
+      return "Import briefing";
     default:
-      return "Running the next research step.";
+      if (rationale) {
+        return rationale;
+      }
+      return searchPrompt ? `Research step: ${searchPrompt}` : "Research step";
   }
 }
 
@@ -603,9 +704,11 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
         open={open}
         hasDetailLines={logLines.length > 0}
       />
-      <ToolFallbackContent>
-        <ToolLogSection lines={logLines} autoFollow={open} />
-      </ToolFallbackContent>
+      {logLines.length > 0 ? (
+        <ToolFallbackContent>
+          <ToolLogSection lines={logLines} autoFollow={open} />
+        </ToolFallbackContent>
+      ) : null}
     </ToolFallbackRoot>
   );
 };

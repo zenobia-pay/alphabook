@@ -44,12 +44,15 @@ test("assistant run shows retrieval, runtime, and synthesized answer in one thre
   await page.locator(".aui-composer-input").fill("Compare how Don Quixote and Moby-Dick talk about grief.");
   await page.locator(".aui-composer-send").click();
 
-  const assistantThread = page.locator(".aui-assistant-message-root").last();
-  await expect(assistantThread).toContainText(/I started with the indexed corpus/i);
-  await expect(assistantThread).toContainText(/I then ran a deeper workspace search/i);
-  await expect(assistantThread).toContainText(/Corpus search/i);
-  await expect(assistantThread).toContainText(/Searched the corpus for/i);
-  await expect(assistantThread).toContainText(/Deep search/i);
+  const planMessage = page.locator(".aui-assistant-message-root").first();
+  const finalMessage = page.locator(".aui-assistant-message-root").last();
+
+  await expect(planMessage).toContainText(/Search quote/i);
+  await expect(planMessage).toContainText(/Find passages/i);
+  await expect(planMessage).toContainText(/Deep search/i);
+  await expect(finalMessage).toContainText(/Workspace Summary/i);
+  await expect(finalMessage).toContainText(/Don Quixote/i);
+  await expect(finalMessage).toContainText(/Moby-Dick/i);
   await expect(page.getByTestId("empty-state")).toHaveCount(0);
 
   await expect(page.locator(".app-shell")).toHaveScreenshot("assistant-thread.png", {
