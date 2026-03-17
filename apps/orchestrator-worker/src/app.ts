@@ -4274,6 +4274,12 @@ async function runOrchestrator(
   } finally {
     await harvestPendingWorkspace(true);
     await flushAllToolProgress(async (toolCallId, toolName, text) => {
+      liveToolTrace = liveToolTrace.map((entry) =>
+        entry.id === toolCallId
+          ? appendToolProgress(entry, text)
+          : entry,
+      );
+      await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
       await send("tool.progress", {
         runId: run.id,
         toolCallId,
