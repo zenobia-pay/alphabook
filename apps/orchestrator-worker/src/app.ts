@@ -1849,6 +1849,15 @@ async function persistPlanToolTrace(
   });
 }
 
+function cloneLiveToolTraceEntries(toolCalls: LiveToolTraceEntry[]): LiveToolTraceEntry[] {
+  return toolCalls.map((entry) => ({
+    ...entry,
+    progress: [...entry.progress],
+    args: structuredClone(entry.args),
+    result: entry.result ? structuredClone(entry.result) : undefined,
+  }));
+}
+
 function buildRecoveredToolTrace(
   toolCalls: Awaited<ReturnType<AppStore["listToolCalls"]>>,
 ): LiveToolTraceEntry[] {
@@ -3137,6 +3146,9 @@ async function runOrchestrator(
   let rawLogSequence = 0;
   const rawRunLog: ToolRunRawLogEntry[] = [];
   const progressBuffers = new Map<string, ToolProgressBuffer>();
+  let latestPlanTraceVersion = 0;
+  let persistedPlanTraceVersion = 0;
+  let planTracePersistChain = Promise.resolve();
 
   const recordRawLog = (event: string, payload: Record<string, unknown>) => {
     rawRunLog.push({
@@ -3232,6 +3244,26 @@ async function runOrchestrator(
         ),
       ),
     );
+  };
+
+  const persistLatestPlanToolTrace = async (
+    messageId: string | null,
+    toolCalls: LiveToolTraceEntry[],
+  ) => {
+    if (!messageId) {
+      return;
+    }
+    const version = ++latestPlanTraceVersion;
+    const snapshot = cloneLiveToolTraceEntries(toolCalls);
+    const queuedWrite = planTracePersistChain.then(async () => {
+      if (version <= persistedPlanTraceVersion || version !== latestPlanTraceVersion) {
+        return;
+      }
+      await persistPlanToolTrace(deps, messageId, run.id, snapshot);
+      persistedPlanTraceVersion = version;
+    });
+    planTracePersistChain = queuedWrite.catch(() => {});
+    await queuedWrite;
   };
 
   let session: SessionRecord | null = input.sessionId ? await deps.store.getSession(input.sessionId) : null;
@@ -3358,7 +3390,7 @@ async function runOrchestrator(
           }
         : entry,
     );
-    await persistPlanToolTrace(deps, planMessageId, run.id, liveToolTrace);
+    await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
     await send("tool.completed", {
       runId: run.id,
       toolCallId,
@@ -3601,7 +3633,7 @@ async function runOrchestrator(
           runId: run.id,
         });
         planMessageId = planMessage.id;
-        await persistPlanToolTrace(deps, planMessageId, run.id, liveToolTrace);
+        await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
         await send("assistant.plan", {
           runId: run.id,
           sessionId: session.id,
@@ -3653,7 +3685,7 @@ async function runOrchestrator(
           state: "running",
         },
       ];
-      await persistPlanToolTrace(deps, planMessageId, run.id, liveToolTrace);
+      await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
       await send("tool.started", {
         runId: run.id,
         toolCallId: toolRecord.id,
@@ -3685,7 +3717,7 @@ async function runOrchestrator(
                   ? appendToolProgress(entry, progressText)
                   : entry,
               );
-              await persistPlanToolTrace(deps, planMessageId, run.id, liveToolTrace);
+              await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
               await send("tool.progress", {
                 runId: run.id,
                 toolCallId: data.toolCallId,
@@ -3770,7 +3802,7 @@ async function runOrchestrator(
                       ? appendToolProgress(entry, progressText)
                       : entry,
                   );
-                  await persistPlanToolTrace(deps, planMessageId, run.id, liveToolTrace);
+                  await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
                   await send("tool.progress", {
                     runId: run.id,
                     toolCallId: toolRecord.id,
@@ -3853,7 +3885,7 @@ async function runOrchestrator(
                 ? appendToolProgress(entry, progressText)
                 : entry,
             );
-            await persistPlanToolTrace(deps, planMessageId, run.id, liveToolTrace);
+            await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
             await send("tool.progress", {
               runId: run.id,
               toolCallId: toolRecord.id,
