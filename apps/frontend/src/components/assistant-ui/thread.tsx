@@ -154,6 +154,8 @@ export const Thread: FC<{
   suggestions?: ThreadSuggestion[];
   onSuggestionSelect?: (prompt: string) => void;
   onCancel?: () => void;
+  composerDisabled?: boolean;
+  composerDisabledNotice?: React.ReactNode;
 }> = ({
   isRunning = false,
   streamConnected = false,
@@ -161,6 +163,8 @@ export const Thread: FC<{
   suggestions = [],
   onSuggestionSelect,
   onCancel,
+  composerDisabled = false,
+  composerDisabledNotice,
 }) => {
   const isEmpty = useAuiState((state) => state.thread.isEmpty);
   const viewportRef = useRef<HTMLDivElement | null>(null);
@@ -222,9 +226,15 @@ export const Thread: FC<{
 
         <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 mx-auto mt-auto flex w-full max-w-(--thread-max-width) flex-col gap-3 overflow-visible pb-3 md:pb-4">
           <ThreadScrollToBottom />
-          <Composer isRunning={isRunning} streamConnected={streamConnected} onCancel={onCancel} />
+          <Composer
+            isRunning={isRunning}
+            streamConnected={streamConnected}
+            onCancel={onCancel}
+            disabled={composerDisabled}
+            notice={composerDisabledNotice}
+          />
           {isEmpty && !isRunning && suggestions.length > 0 ? (
-            <ThreadSuggestions suggestions={suggestions} onSuggestionSelect={onSuggestionSelect} />
+            <ThreadSuggestions suggestions={suggestions} onSuggestionSelect={onSuggestionSelect} disabled={composerDisabled} />
           ) : null}
         </ThreadPrimitive.ViewportFooter>
       </ThreadPrimitive.Viewport>
@@ -403,9 +413,11 @@ const ThreadWelcome: FC = () => {
 const ThreadSuggestions: FC<{
   suggestions: ThreadSuggestion[];
   onSuggestionSelect?: (prompt: string) => void;
+  disabled?: boolean;
 }> = ({
   suggestions,
   onSuggestionSelect,
+  disabled = false,
 }) => {
   return (
     <div className="aui-thread-welcome-suggestions flex w-full flex-col items-start gap-2 pb-4">
@@ -414,6 +426,7 @@ const ThreadSuggestions: FC<{
           key={suggestion.prompt}
           suggestion={suggestion}
           onSuggestionSelect={onSuggestionSelect}
+          disabled={disabled}
         />
       ))}
     </div>
@@ -423,14 +436,19 @@ const ThreadSuggestions: FC<{
 const ThreadSuggestionItem: FC<{
   suggestion: ThreadSuggestion;
   onSuggestionSelect?: (prompt: string) => void;
+  disabled?: boolean;
 }> = ({
   suggestion,
   onSuggestionSelect,
+  disabled = false,
 }) => {
   const aui = useAui();
   const SuggestionIcon = suggestion.icon ? suggestionIconMap[suggestion.icon] : SearchIcon;
 
   const handleClick = useCallback(() => {
+    if (disabled) {
+      return;
+    }
     aui.composer().setText(suggestion.prompt);
     window.requestAnimationFrame(() => {
       const input = document.querySelector<HTMLTextAreaElement>("[aria-label='Message input']");
@@ -439,7 +457,7 @@ const ThreadSuggestionItem: FC<{
       input?.setSelectionRange(cursorPosition, cursorPosition);
     });
     onSuggestionSelect?.(suggestion.prompt);
-  }, [aui, onSuggestionSelect, suggestion.prompt]);
+  }, [aui, disabled, onSuggestionSelect, suggestion.prompt]);
 
   return (
     <div className="aui-thread-welcome-suggestion-display fade-in slide-in-from-bottom-2 nth-[n+3]:hidden @md:nth-[n+3]:block w-full animate-in fill-mode-both duration-200 @md:w-[72%]">
@@ -448,6 +466,7 @@ const ThreadSuggestionItem: FC<{
         variant="ghost"
         className="aui-thread-welcome-suggestion h-auto w-full min-w-0 items-center justify-start gap-2.5 overflow-hidden rounded-full border px-4 py-2.5 text-left text-sm transition-colors"
         onClick={handleClick}
+        disabled={disabled}
       >
         <span className="aui-thread-welcome-suggestion-icon shrink-0" aria-hidden="true">
           <SuggestionIcon className="size-3.5" />
@@ -461,7 +480,13 @@ const ThreadSuggestionItem: FC<{
   );
 };
 
-const Composer: FC<{ isRunning?: boolean; streamConnected?: boolean; onCancel?: () => void }> = ({ isRunning = false, streamConnected = false, onCancel }) => {
+const Composer: FC<{
+  isRunning?: boolean;
+  streamConnected?: boolean;
+  onCancel?: () => void;
+  disabled?: boolean;
+  notice?: React.ReactNode;
+}> = ({ isRunning = false, streamConnected = false, onCancel, disabled = false, notice }) => {
   return (
     <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
       <ComposerPrimitive.AttachmentDropzone asChild>
@@ -476,16 +501,22 @@ const Composer: FC<{ isRunning?: boolean; streamConnected?: boolean; onCancel?: 
             rows={1}
             autoFocus
             aria-label="Message input"
-            disabled={isRunning}
+            disabled={isRunning || disabled}
           />
-          <ComposerAction isRunning={isRunning} streamConnected={streamConnected} onCancel={onCancel} />
+          <ComposerAction isRunning={isRunning} streamConnected={streamConnected} onCancel={onCancel} disabled={disabled} />
+          {disabled && notice ? <div className="aui-composer-disabled-note px-1.5 pb-1 text-sm text-muted-foreground">{notice}</div> : null}
         </div>
       </ComposerPrimitive.AttachmentDropzone>
     </ComposerPrimitive.Root>
   );
 };
 
-const ComposerAction: FC<{ isRunning?: boolean; streamConnected?: boolean; onCancel?: () => void }> = ({ isRunning = false, streamConnected = false, onCancel }) => {
+const ComposerAction: FC<{ isRunning?: boolean; streamConnected?: boolean; onCancel?: () => void; disabled?: boolean }> = ({
+  isRunning = false,
+  streamConnected = false,
+  onCancel,
+  disabled = false,
+}) => {
   return (
     <div className="aui-composer-action-wrapper relative flex items-center gap-2">
       {isRunning ? (
@@ -508,7 +539,7 @@ const ComposerAction: FC<{ isRunning?: boolean; streamConnected?: boolean; onCan
             size="icon"
             className="aui-composer-send ml-auto size-8 rounded-full !bg-black !text-white hover:!bg-neutral-800"
             aria-label="Send message"
-            disabled={isRunning}
+            disabled={isRunning || disabled}
           >
             <ArrowUpIcon className="aui-composer-send-icon size-4" />
           </TooltipIconButton>

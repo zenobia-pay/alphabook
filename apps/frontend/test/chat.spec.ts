@@ -106,6 +106,42 @@ test("current view and assistant session persist in the URL across refresh", asy
   await expect(page.locator(".aui-assistant-message-root").last()).toContainText(/Workspace Summary/i);
 });
 
+test("logged out assistant keeps the normal shell while disabling the composer", async ({ page }) => {
+  await page.route("**/api/me", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        authConfigured: true,
+        authenticated: false,
+        user: null,
+        auth: null,
+      }),
+    });
+  });
+
+  await page.route("**/api/admin/access", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        allowed: false,
+        authenticated: false,
+        authConfigured: true,
+        user: null,
+      }),
+    });
+  });
+
+  await page.goto("/");
+
+  await expect(page.getByRole("heading", { name: "Search for evidence and themes over 75,000 books." })).toBeVisible();
+  await expect(page.locator(".aui-composer-input")).toBeDisabled();
+  const thread = page.getByTestId("thread");
+  await expect(thread.getByText("Sign in to start a research thread.")).toBeVisible();
+  await expect(thread.getByRole("link", { name: "Sign in" })).toBeVisible();
+});
+
 test("browser back moves through prior views", async ({ page }) => {
   await page.goto("/");
 

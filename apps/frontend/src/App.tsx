@@ -1822,6 +1822,8 @@ function AssistantSurface({
   onPrompt,
   onCancel,
   suggestions = ASSISTANT_WELCOME_SUGGESTIONS,
+  composerDisabled = false,
+  composerDisabledNotice,
 }: {
   messages: UiMessage[];
   isSending: boolean;
@@ -1831,12 +1833,17 @@ function AssistantSurface({
   onPrompt: (prompt: string) => Promise<void>;
   onCancel: () => Promise<void>;
   suggestions?: ThreadSuggestion[];
+  composerDisabled?: boolean;
+  composerDisabledNotice?: ReactNode;
 }) {
   const runtime = useExternalStoreRuntime({
     isRunning: isSending,
     messages: messages.filter((message) => message.role === "user" || message.role === "assistant"),
     convertMessage: (message: UiMessage) => messageToThreadMessage(message, streamingAssistantId, isSending, isSending),
     onNew: async (message: { content?: unknown }) => {
+      if (composerDisabled) {
+        return;
+      }
       const prompt = extractPromptText(message);
       if (!prompt) {
         return;
@@ -1853,6 +1860,8 @@ function AssistantSurface({
         streamConnected={streamConnected}
         artifacts={artifacts}
         suggestions={suggestions}
+        composerDisabled={composerDisabled}
+        composerDisabledNotice={composerDisabledNotice}
         onCancel={() => {
           void onCancel();
         }}
@@ -3603,16 +3612,19 @@ export default function App() {
           || messagesLoading
         ))
       );
-    const showStaticLanding =
-      selectedSessionId == null
-      && !authLocked;
+    const showStaticLanding = selectedSessionId == null;
     const showWelcome =
       !assistantSessionLoading
       && !authState.loading
-      && !authLocked
       && selectedSessionId == null
       && messages.length === 0
       && !isSending;
+    const assistantComposerNotice = authLocked ? (
+      <>
+        Sign in to start a research thread.{" "}
+        <a className="font-medium underline underline-offset-4" href={buildSignInUrl(window.location.href)}>Sign in</a>
+      </>
+    ) : undefined;
 
     return (
       <section className="assistant-page">
@@ -3621,11 +3633,6 @@ export default function App() {
         <div className="assistant-thread-shell" data-testid="thread">
           {assistantSessionLoading ? (
             <AssistantLoadingState />
-          ) : authLocked ? (
-            <LockedState
-              compact
-              title="Sign in to use the assistant."
-            />
           ) : showStaticLanding || showWelcome ? (
               <AssistantSurface
                 key="assistant-landing"
@@ -3636,6 +3643,8 @@ export default function App() {
                 artifacts={[]}
                 onPrompt={sendPrompt}
                 onCancel={cancelActiveRun}
+                composerDisabled={authLocked}
+                composerDisabledNotice={assistantComposerNotice}
               />
             ) : (
               <AssistantSurface
@@ -3647,6 +3656,8 @@ export default function App() {
                 artifacts={runArtifacts}
                 onPrompt={sendPrompt}
                 onCancel={cancelActiveRun}
+                composerDisabled={authLocked}
+                composerDisabledNotice={assistantComposerNotice}
               />
             )}
           </div>
