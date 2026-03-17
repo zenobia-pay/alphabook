@@ -607,14 +607,18 @@ export class InMemoryAppStore implements AppStore {
   }
 
   async upsertUserProfile(input: { id: string; email?: string | null; name?: string | null; avatarUrl?: string | null }): Promise<UserRecord> {
-    const existing = this.userProfiles.get(input.id);
+    const existingByEmail = input.email
+      ? [...this.userProfiles.values()].find((profile) => profile.email === input.email)
+      : null;
+    const canonicalId = existingByEmail?.id ?? input.id;
+    const existing = this.userProfiles.get(canonicalId);
     const record: UserRecord = {
-      id: input.id,
+      id: canonicalId,
       email: input.email ?? existing?.email ?? null,
       handle: deriveUserHandle({
         email: input.email ?? existing?.email ?? null,
         name: input.name ?? existing?.name ?? "AlphaBook User",
-        id: input.id,
+        id: canonicalId,
       }),
       name: input.name ?? existing?.name ?? "AlphaBook User",
       avatarUrl: input.avatarUrl ?? existing?.avatarUrl ?? null,
@@ -622,8 +626,8 @@ export class InMemoryAppStore implements AppStore {
       followersCount: existing?.followersCount ?? 0,
       followingCount: existing?.followingCount ?? 0,
     };
-    this.users.add(input.id);
-    this.userProfiles.set(input.id, record);
+    this.users.add(canonicalId);
+    this.userProfiles.set(canonicalId, record);
     return record;
   }
 
@@ -1373,6 +1377,73 @@ export class NeonAppStore implements AppStore {
     name?: string | null;
     avatarUrl?: string | null;
   }): Promise<UserRecord> {
+    const params = [input.id, input.email ?? null, input.name ?? null, input.avatarUrl ?? null];
+    const existingByEmail = input.email
+      ? await this.db.query<{
+          id: string;
+          email: string | null;
+          name: string | null;
+          avatar_url: string | null;
+          created_at: string;
+        }>(
+          `
+            UPDATE users
+            SET
+              email = $2,
+              name = $3,
+              avatar_url = $4
+            WHERE email = $2
+            RETURNING id, email, name, avatar_url, created_at
+          `,
+          params,
+        )
+      : null;
+    const reusedRow = existingByEmail?.rows[0];
+    if (reusedRow) {
+      return {
+        id: reusedRow.id,
+        email: reusedRow.email,
+        handle: deriveUserHandle({ email: reusedRow.email, name: reusedRow.name, id: reusedRow.id }),
+        name: reusedRow.name,
+        avatarUrl: reusedRow.avatar_url,
+        createdAt: reusedRow.created_at,
+        followersCount: 0,
+        followingCount: 0,
+      };
+    }
+
+    const existingById = await this.db.query<{
+      id: string;
+      email: string | null;
+      name: string | null;
+      avatar_url: string | null;
+      created_at: string;
+    }>(
+      `
+        UPDATE users
+        SET
+          email = $2,
+          name = $3,
+          avatar_url = $4
+        WHERE id = $1
+        RETURNING id, email, name, avatar_url, created_at
+      `,
+      params,
+    );
+    const matchedIdRow = existingById.rows[0];
+    if (matchedIdRow) {
+      return {
+        id: matchedIdRow.id,
+        email: matchedIdRow.email,
+        handle: deriveUserHandle({ email: matchedIdRow.email, name: matchedIdRow.name, id: matchedIdRow.id }),
+        name: matchedIdRow.name,
+        avatarUrl: matchedIdRow.avatar_url,
+        createdAt: matchedIdRow.created_at,
+        followersCount: 0,
+        followingCount: 0,
+      };
+    }
+
     const result = await this.db.query<{
       id: string;
       email: string | null;
@@ -1390,7 +1461,7 @@ export class NeonAppStore implements AppStore {
           avatar_url = EXCLUDED.avatar_url
         RETURNING id, email, name, avatar_url, created_at
       `,
-      [input.id, input.email ?? null, input.name ?? null, input.avatarUrl ?? null],
+      params,
     );
     const row = result.rows[0];
     return {
