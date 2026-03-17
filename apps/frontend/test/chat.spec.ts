@@ -88,10 +88,10 @@ test("sidebar history can reopen an earlier conversation", async ({ page }) => {
 test("current view and assistant session persist in the URL across refresh", async ({ page }) => {
   await page.goto("/");
 
-  await page.getByRole("button", { name: "Library" }).click();
-  await expect(page).toHaveURL(/view=library/);
+  await page.getByRole("button", { name: "Explore" }).click();
+  await expect(page).toHaveURL(/view=explore/);
   await page.reload();
-  await expect(page.getByRole("heading", { name: "Library" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Ask or search anything" })).toBeVisible();
 
   await page.getByRole("button", { name: "Assistant" }).click();
   await page.locator(".aui-composer-input").fill("Find books about sadness.");
@@ -103,7 +103,26 @@ test("current view and assistant session persist in the URL across refresh", asy
 
   await page.reload();
   await expect(page.locator(".aui-user-message-root").last()).toContainText("Find books about sadness.");
-  await expect(page.locator(".aui-assistant-message-root").last()).toContainText(/I started with the indexed corpus/i);
+  await expect(page.locator(".aui-assistant-message-root").last()).toContainText(/Workspace Summary/i);
+});
+
+test("browser back moves through prior views", async ({ page }) => {
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "Explore" }).click();
+  await expect(page.getByRole("heading", { name: "Ask or search anything" })).toBeVisible();
+
+  await page.locator(".work-feed-card").first().click();
+  await expect(page).toHaveURL(/\/works\//);
+  await expect(page.locator(".book-page")).toBeVisible();
+
+  await page.goBack();
+  await expect(page.getByRole("heading", { name: "Ask or search anything" })).toBeVisible();
+  await expect(page).toHaveURL(/view=explore/);
+
+  await page.goBack();
+  await expect(page.locator(".aui-composer-input")).toBeVisible();
+  await expect(page).toHaveURL(/view=assistant/);
 });
 
 test.describe("mobile shell", () => {

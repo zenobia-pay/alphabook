@@ -53,6 +53,7 @@ type AuthState = {
 };
 
 type ViewMode = "explore" | "assistant" | "profile" | "book" | "admin";
+type UrlWriteMode = "replace" | "push";
 type UrlState = {
   view: ViewMode;
   sessionId: string | null | undefined;
@@ -172,7 +173,7 @@ function readUrlState(): UrlState {
   };
 }
 
-function writeUrlState(next: UrlState) {
+function writeUrlState(next: UrlState, mode: UrlWriteMode = "replace") {
   if (typeof window === "undefined") {
     return;
   }
@@ -226,7 +227,7 @@ function writeUrlState(next: UrlState) {
   const nextUrl = `${url.pathname}${url.search}${url.hash}`;
   const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
   if (nextUrl !== currentUrl) {
-    window.history.replaceState({}, "", nextUrl);
+    window.history[mode === "push" ? "pushState" : "replaceState"]({}, "", nextUrl);
   }
 }
 
@@ -2075,6 +2076,7 @@ export default function App() {
   const bookPageRef = useRef<HTMLElement | null>(null);
   const bookAssistantResizeStartRef = useRef<{ pointerX: number; width: number } | null>(null);
   const bookAssistantRafRef = useRef<number | null>(null);
+  const pendingUrlWriteModeRef = useRef<UrlWriteMode>("replace");
 
   const currentUser = useMemo(
     () => {
@@ -2180,6 +2182,7 @@ export default function App() {
 
   useEffect(() => {
     const handlePopState = () => {
+      pendingUrlWriteModeRef.current = "replace";
       const next = readUrlState();
       setActiveView(next.view);
       setSelectedSessionId(next.sessionId);
@@ -2205,7 +2208,8 @@ export default function App() {
       runId: selectedAdminRunId,
       adminSection,
       debugEnabled,
-    });
+    }, pendingUrlWriteModeRef.current);
+    pendingUrlWriteModeRef.current = "replace";
   }, [activeView, selectedSessionId, activeWorkId, activeProfileUserId, selectedAdminRunId, adminSection, debugEnabled]);
 
   useEffect(() => {
@@ -2792,6 +2796,7 @@ export default function App() {
     }
 
     try {
+      pendingUrlWriteModeRef.current = "push";
       setAdminRunLog((current) => ({
         ...current,
         loading: true,
@@ -3389,6 +3394,7 @@ export default function App() {
   }
 
   function startNewChat() {
+    pendingUrlWriteModeRef.current = "push";
     activeRunTokenRef.current += 1;
     setMobileNavOpen(false);
     setSelectedSessionId(null);
@@ -3400,6 +3406,7 @@ export default function App() {
   }
 
   function startNewBookChat() {
+    pendingUrlWriteModeRef.current = "push";
     activeRunTokenRef.current += 1;
     setSelectedSessionId(null);
     setMessages([]);
@@ -3442,6 +3449,7 @@ export default function App() {
   }
 
   function handleNavSelection(view: ViewMode) {
+    pendingUrlWriteModeRef.current = "push";
     setMobileNavOpen(false);
     if (view !== "book") {
       setActiveWorkId(null);
@@ -3466,6 +3474,7 @@ export default function App() {
   }
 
   function openSession(sessionId: string) {
+    pendingUrlWriteModeRef.current = "push";
     setMobileNavOpen(false);
     setSelectedSessionId(sessionId);
     setActiveWorkId(null);
@@ -3480,6 +3489,7 @@ export default function App() {
   }
 
   function openWork(workId: string) {
+    pendingUrlWriteModeRef.current = "push";
     track("book_open", {
       workId,
       source: activeView,
@@ -3492,6 +3502,7 @@ export default function App() {
   }
 
   function openCitation(citation: Citation) {
+    pendingUrlWriteModeRef.current = "push";
     track("book_citation_open", {
       workId: citation.workId,
       chunkId: citation.chunkId ?? null,
@@ -3509,6 +3520,7 @@ export default function App() {
   }
 
   function openProfile(userId?: string | null) {
+    pendingUrlWriteModeRef.current = "push";
     setMobileNavOpen(false);
     setActiveWorkId(null);
     setPendingCitation(null);
@@ -3572,6 +3584,7 @@ export default function App() {
   }
 
   function openBookSession(sessionId: string | null) {
+    pendingUrlWriteModeRef.current = "push";
     setSelectedSessionId(sessionId);
     setLoadError(null);
     setIsSending(false);
@@ -4126,7 +4139,10 @@ export default function App() {
               <button
                 key={item.key}
                 type="button"
-                onClick={() => setAdminSection(item.key)}
+                onClick={() => {
+                  pendingUrlWriteModeRef.current = "push";
+                  setAdminSection(item.key);
+                }}
                 className={cn(
                   "rounded-[22px] border px-5 py-4 text-left transition",
                   active
@@ -4306,6 +4322,7 @@ export default function App() {
                                   type="button"
                                   variant="outline"
                                   onClick={() => {
+                                    pendingUrlWriteModeRef.current = "push";
                                     setAdminSection("logs");
                                     void loadAdminRunLogs(adminText(selectedIncident.runId));
                                   }}
@@ -4375,7 +4392,10 @@ export default function App() {
               <Button
                 type="button"
                 variant="outline"
-                onClick={() => setAdminSection("runs")}
+                onClick={() => {
+                  pendingUrlWriteModeRef.current = "push";
+                  setAdminSection("runs");
+                }}
               >
                 Back to runs
               </Button>
@@ -4514,6 +4534,7 @@ export default function App() {
                                   variant="outline"
                                   size="sm"
                                   onClick={() => {
+                                    pendingUrlWriteModeRef.current = "push";
                                     setAdminSection("logs");
                                     void loadAdminRunLogs(runId);
                                   }}
