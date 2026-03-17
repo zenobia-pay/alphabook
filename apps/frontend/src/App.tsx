@@ -102,6 +102,7 @@ type AdminIncidentsState = {
 };
 
 type ThreadSuggestion = {
+  emoji?: string;
   title: string;
   description?: string;
   prompt: string;
@@ -122,13 +123,13 @@ const BOOK_ASSISTANT_MIN_WIDTH = 320;
 const BOOK_ASSISTANT_MAX_WIDTH = 720;
 const ASSISTANT_WELCOME_SUGGESTIONS: ThreadSuggestion[] = [
   {
-    title: "Comprehensive education, comprehensive evidence search, subcapture.",
-    description: "I'm going to find me all of the ways that characters deal with grief in 19th century fiction.",
-    prompt: "Comprehensive education, comprehensive evidence search, subcapture. I'm going to find me all of the ways that characters deal with grief in 19th century fiction.",
+    emoji: "🔎",
+    title: "Search quote: 'Find me all the ways that characters deal with grief in 19th century fiction.'",
+    prompt: "Find me all the ways that characters deal with grief in 19th century fiction.",
   },
   {
-    title: "Theme analysis.",
-    description: "Compare how people deal with grief in mysteries versus sci-fi.",
+    emoji: "🧭",
+    title: "Compare how people deal with grief in mysteries versus sci-fi.",
     prompt: "Compare how people deal with grief in mysteries versus sci-fi.",
   },
 ];
