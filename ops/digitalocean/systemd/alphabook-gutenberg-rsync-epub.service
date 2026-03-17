@@ -8,6 +8,7 @@ Type=oneshot
 Environment=ALPHABOOK_ROOT=/srv/alphabook
 Environment=GUTENBERG_MIRROR_ROOT=/srv/alphabook/gutenberg
 ExecStart=/srv/alphabook/bin/gutenberg-rsync-epub.sh
+TimeoutStartSec=12h
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
