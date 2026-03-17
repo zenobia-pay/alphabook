@@ -258,6 +258,165 @@ test("assistant.completed replaces a partial streamed answer with the final answ
   await expect(page.locator(".aui-assistant-message-root").first()).toContainText("Search quote references.");
 });
 
+test("reloading a session keeps streamed tool progress instead of replacing it with sparse run state", async ({ page }) => {
+  const sessionId = "11111111-1111-4111-8111-111111111112";
+  const runId = "run-progress-1";
+  const planMessageId = "33333333-3333-4333-8333-333333333334";
+  const toolCallId = "tool-progress-1";
+
+  await page.route("**/api/me", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        authConfigured: false,
+        authenticated: false,
+        user: null,
+      }),
+    });
+  });
+
+  await page.route("**/api/admin/access", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        allowed: false,
+        authenticated: false,
+        authConfigured: false,
+        user: null,
+      }),
+    });
+  });
+
+  await page.route("**/api/sessions", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        sessions: [
+          {
+            id: sessionId,
+            userId: "local-user",
+            title: "Existing thread",
+            createdAt: "2026-03-16T12:00:00.000Z",
+            lastMessageAt: "2026-03-16T12:00:00.000Z",
+            lastMessagePreview: "Existing thread",
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.route(`**/api/sessions/${sessionId}/messages`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        messages: [
+          {
+            id: planMessageId,
+            sessionId,
+            role: "assistant",
+            content: "I searched the corpus and deeper workspace.",
+            metadata: {
+              phase: "plan",
+              runId,
+              toolCalls: [
+                {
+                  id: toolCallId,
+                  toolName: "get_relevant_chunks",
+                  label: "Passage Search",
+                  rationale: "Looking for grief scenes.",
+                  progress: [
+                    "Pulled 12 candidate passages.",
+                    "Ranked the strongest passages for synthesis.",
+                  ],
+                  args: {
+                    __logLines: [
+                      "Search quote: 'grief scenes in 19th century fiction'",
+                    ],
+                  },
+                  result: {
+                    __logLines: [
+                      "Selected 5 passages for the final comparison.",
+                    ],
+                  },
+                  state: "completed",
+                },
+              ],
+            },
+            createdAt: "2026-03-16T12:00:01.000Z",
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.route(`**/api/sessions/${sessionId}/runs`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        runs: [
+          {
+            id: runId,
+            sessionId,
+            status: "completed",
+            plannerTurns: 4,
+            startedAt: "2026-03-16T12:00:00.000Z",
+            completedAt: "2026-03-16T12:00:10.000Z",
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.route(`**/api/sessions/${sessionId}/runs/${runId}`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        run: {
+          id: runId,
+          sessionId,
+          status: "completed",
+          plannerTurns: 4,
+          startedAt: "2026-03-16T12:00:00.000Z",
+          completedAt: "2026-03-16T12:00:10.000Z",
+        },
+        toolTrace: [
+          {
+            id: toolCallId,
+            toolName: "get_relevant_chunks",
+            label: "Passage Search",
+            progress: [],
+            args: {
+              __logLines: [
+                "Search quote: 'grief scenes in 19th century fiction'",
+              ],
+            },
+            result: {
+              __logLines: [
+                "Selected 5 passages for the final comparison.",
+              ],
+            },
+            state: "completed",
+          },
+        ],
+        artifacts: [],
+      }),
+    });
+  });
+
+  await page.goto(`/?view=assistant&session=${sessionId}`);
+
+  await page.getByText("Passage Search").click();
+  await expect(page.getByText("Pulled 12 candidate passages.")).toBeVisible();
+  await expect(page.getByText("Ranked the strongest passages for synthesis.")).toBeVisible();
+  await expect(page.getByText("Selected 5 passages for the final comparison.")).toBeVisible();
+});
+
 test("browser back moves through prior views", async ({ page }) => {
   await page.goto("/");
 

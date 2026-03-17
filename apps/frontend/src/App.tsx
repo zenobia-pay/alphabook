@@ -418,6 +418,18 @@ function mergePersistedToolTrace(messages: UiMessage[], runId: string, trace: Ar
     return messages;
   }
 
+  const payloadRichness = (value: Record<string, unknown> | undefined) => {
+    if (!value) {
+      return -1;
+    }
+    let score = Object.keys(value).length;
+    const logLines = value.__logLines;
+    if (Array.isArray(logLines)) {
+      score += logLines.filter((line) => typeof line === "string" && line.trim().length > 0).length * 10;
+    }
+    return score;
+  };
+
   let changed = false;
   const nextMessages = messages.map((message) => {
     const messageRunId = typeof message.metadata?.runId === "string" ? message.metadata.runId : null;
@@ -425,10 +437,59 @@ function mergePersistedToolTrace(messages: UiMessage[], runId: string, trace: Ar
     if (messageRunId !== runId || phase !== "plan") {
       return message;
     }
-    changed = true;
+    const existingById = new Map(message.toolCalls.map((entry) => [entry.id, entry]));
+    const mergedTrace = normalizedTrace.map((entry) => {
+      const existing = existingById.get(entry.id);
+      if (!existing) {
+        changed = true;
+        return entry;
+      }
+
+      const nextProgress = existing.progress.length >= entry.progress.length
+        ? existing.progress
+        : entry.progress;
+      const nextArgs = payloadRichness(existing.args) > payloadRichness(entry.args)
+        ? existing.args
+        : entry.args;
+      const nextResult = payloadRichness(existing.result) > payloadRichness(entry.result)
+        ? existing.result
+        : entry.result;
+      const nextState =
+        entry.state !== "running" || existing.state === "running"
+          ? entry.state
+          : existing.state;
+      const nextEntry: ToolTraceEntry = {
+        ...entry,
+        label: existing.label || entry.label,
+        rationale: existing.rationale ?? entry.rationale,
+        progress: nextProgress,
+        args: nextArgs,
+        result: nextResult,
+        isError: entry.isError || existing.isError,
+        state: nextState,
+      };
+      if (
+        nextEntry.label !== existing.label
+        || nextEntry.rationale !== existing.rationale
+        || nextEntry.state !== existing.state
+        || nextEntry.isError !== existing.isError
+        || nextEntry.progress !== existing.progress
+        || nextEntry.args !== existing.args
+        || nextEntry.result !== existing.result
+      ) {
+        changed = true;
+      }
+      return nextEntry;
+    });
+
+    const mergedIds = new Set(mergedTrace.map((entry) => entry.id));
+    const extraExistingEntries = message.toolCalls.filter((entry) => !mergedIds.has(entry.id));
+    if (extraExistingEntries.length > 0) {
+      changed = true;
+    }
     return {
       ...message,
-      toolCalls: normalizedTrace,
+      toolCalls: [...mergedTrace, ...extraExistingEntries],
     };
   });
 
