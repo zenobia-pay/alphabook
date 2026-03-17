@@ -48,6 +48,14 @@ export interface AppDeps {
   ai?: WorkersAiBinding;
   toolStreamCleanupModel?: string;
   errorAlertWebhookUrl?: string;
+  x402?: {
+    enabled: boolean;
+    payTo: string;
+    network: string;
+    asset: string;
+    maxAmountUsd: string;
+    description?: string;
+  };
 }
 
 const ALLOWED_WEB_ORIGINS = new Set([
@@ -148,6 +156,36 @@ function publicAgentIdentity(agent: AgentIdentityRecord) {
 function agentClaimUrl(request: Request, claimToken: string) {
   const url = new URL(request.url);
   return `${url.origin}/claim/${claimToken}`;
+}
+
+function encodeBase64Json(value: unknown) {
+  return btoa(JSON.stringify(value));
+}
+
+function createX402PaymentRequirements(
+  deps: AppDeps,
+  request: Request,
+  billingCheck: { limitUsd: number; spendUsd: number; windowStartedAt: string },
+) {
+  if (!deps.x402?.enabled) {
+    return null;
+  }
+  const url = new URL(request.url);
+  return {
+    x402Version: 1,
+    accepts: [
+      {
+        scheme: "exact",
+        network: deps.x402.network,
+        asset: deps.x402.asset,
+        maxAmountRequired: deps.x402.maxAmountUsd,
+        payTo: deps.x402.payTo,
+        resource: `${url.origin}${url.pathname}`,
+        description: deps.x402.description ?? "AlphaBook CLI research access",
+      },
+    ],
+    billing: billingCheck,
+  };
 }
 
 async function registerAgentIdentity(
@@ -4259,12 +4297,19 @@ export function createApp(deps: AppDeps) {
       "",
       `- \`POST ${apiBase}/chat\` streams a research run`,
       `- \`GET ${apiBase}/sessions\` lists your sessions`,
+      `- \`GET ${apiBase}/sessions/:sessionId/runs\` lists runs for a session`,
+      `- \`GET ${apiBase}/sessions/:sessionId/runs/:runId\` returns run status, tool trace, and artifacts`,
+      `- \`GET ${apiBase}/sessions/:sessionId/runs/:runId/logs\` returns the full transcript and artifacts`,
       `- \`GET ${apiBase}/sessions/:sessionId/messages\` returns the transcript`,
       `- \`GET ${apiBase}/agents/me\` returns your agent identity`,
       "",
       "## Auth",
       "",
       "Use `Authorization: Bearer YOUR_API_KEY` on every CLI request.",
+      "",
+      "## Billing",
+      "",
+      "If AlphaBook replies with HTTP 402, inspect the JSON body and `payment-required` header for x402-style payment requirements when they are configured.",
     ].join("\n");
     return c.text(skill, 200, {
       "content-type": "text/markdown; charset=utf-8",
@@ -4662,12 +4707,18 @@ export function createApp(deps: AppDeps) {
     }
     const billingCheck = await deps.billing.check(billingUserId);
     if (!billingCheck.allowed) {
+      const paymentRequirements = createX402PaymentRequirements(deps, c.req.raw, billingCheck);
+      if (paymentRequirements) {
+        c.header("payment-required", encodeBase64Json(paymentRequirements));
+        c.header("x-payment-required", encodeBase64Json(paymentRequirements));
+      }
       return c.json({
         error: "Monthly AI usage limit reached.",
         code: "billing_limit_exceeded",
         limitUsd: billingCheck.limitUsd,
         spendUsd: billingCheck.spendUsd,
         windowStartedAt: billingCheck.windowStartedAt,
+        paymentRequirements,
       }, 402);
     }
     return streamResponse(
@@ -4692,6 +4743,111 @@ export function createApp(deps: AppDeps) {
     if (trustedRequest) {
       return trustedRequest;
     }
+    const sessionId = c.req.param("sessionId");
+    const runId = c.req.param("runId");
+    const session = await deps.store.getSession(sessionId);
+    if (!session) {
+      return c.json({ error: "Session not found." }, 404);
+    }
+    if (!(await canAccessSession(c, session))) {
+      return c.json({ error: "Not authorized for this session." }, 403);
+    }
+    const run = await deps.store.getRun(runId);
+    if (!run || run.sessionId !== sessionId) {
+      return c.json({ error: "Run not found." }, 404);
+    }
+
+    let stopped = false;
+
+    return streamResponse(
+      async (send) => {
+        await send("run.started", {
+          runId,
+          sessionId,
+        });
+
+        let lastPlanSignature = "";
+        let lastAssistantSignature = "";
+
+        while (!stopped) {
+          const [nextRun, messages] = await Promise.all([
+            deps.store.getRun(runId),
+            deps.store.listMessages(sessionId),
+          ]);
+          if (!nextRun || nextRun.sessionId !== sessionId) {
+            await send("error", {
+              message: "Run not found.",
+            });
+            return;
+          }
+
+          const planMessage = [...messages].reverse().find((message) => (
+            message.role === "assistant"
+            && message.metadata?.phase === "plan"
+            && message.metadata?.runId === runId
+          ));
+          const planSignature = JSON.stringify(planMessage?.metadata?.toolCalls ?? []);
+          if (planSignature !== lastPlanSignature) {
+            lastPlanSignature = planSignature;
+            if (planMessage) {
+              await send("tool.progress", {
+                runId,
+                sessionId,
+                toolName: "run_workspace_task",
+                text: "stream_update",
+              });
+            }
+          }
+
+          const assistantMessage = [...messages].reverse().find((message) => (
+            message.role === "assistant"
+            && message.metadata?.phase !== "plan"
+            && message.metadata?.runId === runId
+          ));
+          const assistantSignature = assistantMessage
+            ? JSON.stringify({
+                id: assistantMessage.id,
+                content: assistantMessage.content,
+                metadata: assistantMessage.metadata,
+              })
+            : "";
+          if (assistantSignature && assistantSignature !== lastAssistantSignature) {
+            lastAssistantSignature = assistantSignature;
+            await send("assistant.completed", {
+              runId,
+              sessionId,
+              answer: assistantMessage?.content ?? "",
+              citations: Array.isArray(assistantMessage?.metadata?.citations)
+                ? assistantMessage?.metadata?.citations as Citation[]
+                : [],
+              phase: typeof assistantMessage?.metadata?.phase === "string"
+                ? assistantMessage.metadata.phase
+                : null,
+            });
+          }
+
+          if (nextRun.status !== "running" && nextRun.status !== "queued") {
+            await send("run.completed", {
+              runId,
+              sessionId,
+              status: nextRun.status,
+            });
+            return;
+          }
+
+          await new Promise((resolve) => {
+            setTimeout(resolve, 1000);
+          });
+        }
+      },
+      undefined,
+      () => {
+        stopped = true;
+      },
+    );
+  });
+
+  app.get("/api/v1/sessions/:sessionId/runs/:runId/stream", async (c) => {
     const sessionId = c.req.param("sessionId");
     const runId = c.req.param("runId");
     const session = await deps.store.getSession(sessionId);
@@ -4852,6 +5008,62 @@ export function createApp(deps: AppDeps) {
     });
   });
 
+  app.post("/api/v1/runs/:runId/cancel", async (c) => {
+    const trustedRequest = requireTrustedBrowserRequest(c);
+    if (trustedRequest) {
+      return trustedRequest;
+    }
+    const runId = c.req.param("runId");
+    const run = await deps.store.getRun(runId);
+    if (!run) {
+      return c.json({ error: "Run not found." }, 404);
+    }
+    const session = await deps.store.getSession(run.sessionId);
+    if (!session) {
+      return c.json({ error: "Session not found." }, 404);
+    }
+    if (!(await canAccessSession(c, session))) {
+      return c.json({ error: "Not authorized for this run." }, 403);
+    }
+
+    const activeRun = activeRuns.get(runId);
+    if (activeRun) {
+      activeRun.cancelRequested = true;
+    }
+    const toolCalls = await deps.store.listToolCalls(runId);
+    const runtimeIds = new Set<string>([
+      ...Array.from(activeRun?.runtimeIds ?? []),
+      ...collectRuntimeIds(toolCalls),
+    ]);
+    await Promise.all(
+      Array.from(runtimeIds).map((runtimeId) =>
+        deps.runtimeGateway.cancelWorkspaceTask?.({ runtimeId }).catch(() => {}),
+      ),
+    );
+    await Promise.all(
+      toolCalls
+        .filter((toolCall) => toolCall.status === "running" || toolCall.status === "queued")
+        .map((toolCall) => deps.store.finishToolCall(toolCall.id, "failed", {
+          ok: false,
+          error: "Run cancelled by user.",
+          runtimeId: runtimeIdFromToolCall(toolCall) ?? undefined,
+        })),
+    );
+    await deps.store.updateRun(runId, {
+      status: "failed",
+      completedAt: new Date().toISOString(),
+    });
+    await persistRecoveredPlanToolTrace(deps, session.id, runId, await deps.store.listToolCalls(runId));
+
+    return c.json({
+      ok: true,
+      runId,
+      cancelled: true,
+      active: Boolean(activeRun) || run.status === "running" || run.status === "queued",
+      runtimeIds: Array.from(runtimeIds),
+    });
+  });
+
   const handleListSessions = async (c: Context) => {
     const user = await resolveUser(c);
     if (!user) {
@@ -4893,7 +5105,52 @@ export function createApp(deps: AppDeps) {
     return c.json({ runs });
   });
 
+  app.get("/api/v1/sessions/:sessionId/runs", async (c) => {
+    const sessionId = c.req.param("sessionId");
+    const session = await deps.store.getSession(sessionId);
+    if (!session) {
+      return c.json({ error: "Session not found." }, 404);
+    }
+    if (!(await canAccessSession(c, session))) {
+      return c.json({ error: "Not authorized for this session." }, 403);
+    }
+    const runs = await deps.store.listRuns(sessionId);
+    return c.json({ runs });
+  });
+
   app.get("/sessions/:sessionId/runs/:runId", async (c) => {
+    const sessionId = c.req.param("sessionId");
+    const runId = c.req.param("runId");
+    const session = await deps.store.getSession(sessionId);
+    if (!session) {
+      return c.json({ error: "Session not found." }, 404);
+    }
+    if (!(await canAccessSession(c, session))) {
+      return c.json({ error: "Not authorized for this session." }, 403);
+    }
+
+    const run = await deps.store.getRun(runId);
+    if (!run || run.sessionId !== sessionId) {
+      return c.json({ error: "Run not found." }, 404);
+    }
+    const reconciledRun = await reconcilePersistentRun(deps, c.req.raw, run);
+
+    const [toolCalls, runtimeInstances] = await Promise.all([
+      deps.store.listToolCalls(runId),
+      deps.store.listRuntimeInstances(sessionId),
+    ]);
+    const artifacts = await loadRunArtifacts(deps, sessionId, runId, toolCalls);
+
+    return c.json({
+      run: reconciledRun ?? run,
+      toolCalls,
+      toolTrace: buildRecoveredToolTrace(toolCalls),
+      runtimeInstances,
+      artifacts,
+    });
+  });
+
+  app.get("/api/v1/sessions/:sessionId/runs/:runId", async (c) => {
     const sessionId = c.req.param("sessionId");
     const runId = c.req.param("runId");
     const session = await deps.store.getSession(sessionId);
@@ -4991,6 +5248,40 @@ export function createApp(deps: AppDeps) {
   });
 
   app.get("/sessions/:sessionId/runs/:runId/logs", async (c) => {
+    const sessionId = c.req.param("sessionId");
+    const runId = c.req.param("runId");
+    const session = await deps.store.getSession(sessionId);
+    if (!session) {
+      return c.json({ error: "Session not found." }, 404);
+    }
+    if (!(await canAccessSession(c, session))) {
+      return c.json({ error: "Not authorized for this session." }, 403);
+    }
+
+    const run = await deps.store.getRun(runId);
+    if (!run || run.sessionId !== sessionId) {
+      return c.json({ error: "Run not found." }, 404);
+    }
+    const reconciledRun = await reconcilePersistentRun(deps, c.req.raw, run);
+
+    const [messages, toolCalls, runtimeInstances] = await Promise.all([
+      deps.store.listMessages(sessionId),
+      deps.store.listToolCalls(runId),
+      deps.store.listRuntimeInstances(sessionId),
+    ]);
+    const artifacts = await loadRunArtifacts(deps, sessionId, runId, toolCalls);
+
+    return c.json({
+      session,
+      run: reconciledRun ?? run,
+      messages,
+      toolCalls,
+      runtimeInstances,
+      artifacts,
+    });
+  });
+
+  app.get("/api/v1/sessions/:sessionId/runs/:runId/logs", async (c) => {
     const sessionId = c.req.param("sessionId");
     const runId = c.req.param("runId");
     const session = await deps.store.getSession(sessionId);

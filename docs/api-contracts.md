@@ -169,6 +169,7 @@ Behavior:
 - runs retrieval first
 - can delegate a longer filesystem-backed search to a Fly runtime
 - synthesizes the final answer in a separate pass before streaming the response
+- when billing blocks a request, returns `402` and, if configured, includes x402-style payment requirements in the JSON body plus a `payment-required` header
 
 ### `GET /sessions?userId=...`
 
@@ -220,6 +221,49 @@ Response:
   ]
 }
 ```
+
+### `GET /sessions/:sessionId/runs`
+
+Also available as `GET /api/v1/sessions/:sessionId/runs`.
+
+Behavior:
+
+- lists runs for one session
+- works with browser auth or an agent Bearer token
+
+### `GET /sessions/:sessionId/runs/:runId`
+
+Also available as `GET /api/v1/sessions/:sessionId/runs/:runId`.
+
+Behavior:
+
+- returns run status, tool trace, runtime instances, and persisted artifacts
+- use this for CLI polling after starting a query
+
+### `GET /sessions/:sessionId/runs/:runId/logs`
+
+Also available as `GET /api/v1/sessions/:sessionId/runs/:runId/logs`.
+
+Behavior:
+
+- returns the full message transcript, tool calls, runtime instances, and artifacts for a run
+
+### `GET /sessions/:sessionId/runs/:runId/stream`
+
+Also available as `GET /api/v1/sessions/:sessionId/runs/:runId/stream`.
+
+Behavior:
+
+- streams status updates for an already-started run
+
+### `POST /runs/:runId/cancel`
+
+Also available as `POST /api/v1/runs/:runId/cancel`.
+
+Behavior:
+
+- requests cancellation of an in-flight run
+- available to browser users and API-key agents with access to the owning session
 
 ## Runtime Service
 

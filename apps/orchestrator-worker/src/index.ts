@@ -56,6 +56,12 @@ export interface Env {
   AUTH_COOKIE_PASSWORD?: string;
   ADMIN_ALLOWED_EMAIL?: string;
   ERROR_ALERT_WEBHOOK_URL?: string;
+  X402_ENABLED?: string;
+  X402_PAY_TO?: string;
+  X402_NETWORK?: string;
+  X402_ASSET?: string;
+  X402_MAX_AMOUNT_USD?: string;
+  X402_DESCRIPTION?: string;
   CORPUS_BUCKET: R2Bucket;
   INGEST_QUEUE: Queue;
   JOBS_QUEUE: Queue;
@@ -164,6 +170,21 @@ function buildFetchHandler(env: Env) {
     ai: env.AI,
     toolStreamCleanupModel: env.TOOL_STREAM_CLEANUP_MODEL,
     errorAlertWebhookUrl: env.ERROR_ALERT_WEBHOOK_URL,
+    x402:
+      env.X402_ENABLED === "true"
+      && env.X402_PAY_TO
+      && env.X402_NETWORK
+      && env.X402_ASSET
+      && env.X402_MAX_AMOUNT_USD
+        ? {
+            enabled: true,
+            payTo: env.X402_PAY_TO,
+            network: env.X402_NETWORK,
+            asset: env.X402_ASSET,
+            maxAmountUsd: env.X402_MAX_AMOUNT_USD,
+            description: env.X402_DESCRIPTION,
+          }
+        : undefined,
   });
 
   return app.fetch;

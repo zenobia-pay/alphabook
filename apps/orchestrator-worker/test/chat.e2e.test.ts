@@ -79,7 +79,6 @@ test("orchestrator can answer direct chat without starting the tool chain", asyn
       jobsName: "alphabook-jobs",
     },
   });
-
   const response = await app.request("/chat", {
     method: "POST",
     headers: {
@@ -205,6 +204,14 @@ test("orchestrator streams retrieval tool calls and final answer", async () => {
       ingestName: "alphabook-ingest",
       jobsName: "alphabook-jobs",
     },
+    x402: {
+      enabled: true,
+      payTo: "0x1234",
+      network: "base",
+      asset: "USDC",
+      maxAmountUsd: "5.00",
+      description: "AlphaBook research access",
+    },
   });
 
   const response = await app.request("/chat", {
@@ -321,6 +328,14 @@ test("follow-up requests pass full chat history into router and planner", async 
     queues: {
       ingestName: "alphabook-ingest",
       jobsName: "alphabook-jobs",
+    },
+    x402: {
+      enabled: true,
+      payTo: "0x1234",
+      network: "base",
+      asset: "USDC",
+      maxAmountUsd: "5.00",
+      description: "AlphaBook research access",
     },
   });
 
@@ -488,6 +503,14 @@ test("orchestrator can delegate to a runtime gateway and finish the run", async 
       ingestName: "alphabook-ingest",
       jobsName: "alphabook-jobs",
     },
+    x402: {
+      enabled: true,
+      payTo: "0x1234",
+      network: "base",
+      asset: "USDC",
+      maxAmountUsd: "5.00",
+      description: "AlphaBook research access",
+    },
   });
 
   const response = await app.request("/chat", {
@@ -604,6 +627,14 @@ test("analytics endpoint stores posted events", async () => {
     queues: {
       ingestName: "alphabook-ingest",
       jobsName: "alphabook-jobs",
+    },
+    x402: {
+      enabled: true,
+      payTo: "0x1234",
+      network: "base",
+      asset: "USDC",
+      maxAmountUsd: "5.00",
+      description: "AlphaBook research access",
     },
   });
 
@@ -737,6 +768,14 @@ test("agent API keys can register and use CLI chat even when browser auth is ena
       ingestName: "alphabook-ingest",
       jobsName: "alphabook-jobs",
     },
+    x402: {
+      enabled: true,
+      payTo: "0x1234",
+      network: "base",
+      asset: "USDC",
+      maxAmountUsd: "5.00",
+      description: "AlphaBook research access",
+    },
   });
 
   const registrationResponse = await app.request("/api/v1/agents/register", {
@@ -779,6 +818,40 @@ test("agent API keys can register and use CLI chat even when browser auth is ena
   assert.equal(chatResponse.status, 200);
   const chatBody = await chatResponse.text();
   assert.match(chatBody, /CLI access is ready\./);
+  const sessionMatch = chatBody.match(/"sessionId":"([^"]+)"/);
+  const runMatch = chatBody.match(/"runId":"([^"]+)"/);
+  assert.ok(sessionMatch?.[1]);
+  assert.ok(runMatch?.[1]);
+
+  const sessionsResponse = await app.request("/api/v1/sessions", {
+    headers: {
+      authorization: `Bearer ${registrationPayload.api_key}`,
+    },
+  });
+  assert.equal(sessionsResponse.status, 200);
+
+  const runsResponse = await app.request(`/api/v1/sessions/${sessionMatch?.[1]}/runs`, {
+    headers: {
+      authorization: `Bearer ${registrationPayload.api_key}`,
+    },
+  });
+  assert.equal(runsResponse.status, 200);
+
+  const runStateResponse = await app.request(`/api/v1/sessions/${sessionMatch?.[1]}/runs/${runMatch?.[1]}`, {
+    headers: {
+      authorization: `Bearer ${registrationPayload.api_key}`,
+    },
+  });
+  assert.equal(runStateResponse.status, 200);
+  const runState = await runStateResponse.json() as { run?: { status?: string } };
+  assert.equal(runState.run?.status, "completed");
+
+  const logsResponse = await app.request(`/api/v1/sessions/${sessionMatch?.[1]}/runs/${runMatch?.[1]}/logs`, {
+    headers: {
+      authorization: `Bearer ${registrationPayload.api_key}`,
+    },
+  });
+  assert.equal(logsResponse.status, 200);
 });
 
 test("auth sign-out route clears local cookies and returns the WorkOS logout redirect when session exists", async () => {
@@ -909,6 +982,14 @@ test("chat route rejects writing to another user's existing session", async () =
     queues: {
       ingestName: "alphabook-ingest",
       jobsName: "alphabook-jobs",
+    },
+    x402: {
+      enabled: true,
+      payTo: "0x1234",
+      network: "base",
+      asset: "USDC",
+      maxAmountUsd: "5.00",
+      description: "AlphaBook research access",
     },
   });
 
@@ -1067,6 +1148,14 @@ test("fallback planner can create a Fly workspace, run a task, read the briefing
     queues: {
       ingestName: "alphabook-ingest",
       jobsName: "alphabook-jobs",
+    },
+    x402: {
+      enabled: true,
+      payTo: "0x1234",
+      network: "base",
+      asset: "USDC",
+      maxAmountUsd: "5.00",
+      description: "AlphaBook research access",
     },
   });
 
@@ -1704,6 +1793,14 @@ test("billing gate rejects chat requests once monthly spend exceeds limit", asyn
       ingestName: "alphabook-ingest",
       jobsName: "alphabook-jobs",
     },
+    x402: {
+      enabled: true,
+      payTo: "0x1234",
+      network: "base",
+      asset: "USDC",
+      maxAmountUsd: "5.00",
+      description: "AlphaBook research access",
+    },
   });
 
   const response = await app.request("/chat", {
@@ -1718,8 +1815,10 @@ test("billing gate rejects chat requests once monthly spend exceeds limit", asyn
   });
 
   assert.equal(response.status, 402);
-  const body = await response.json() as { code?: string };
+  assert.ok(response.headers.get("payment-required"));
+  const body = await response.json() as { code?: string; paymentRequirements?: { accepts?: unknown[] } | null };
   assert.equal(body.code, "billing_limit_exceeded");
+  assert.equal(Array.isArray(body.paymentRequirements?.accepts), true);
 });
 
 test("billing tracker records OpenAI usage costs", async () => {
