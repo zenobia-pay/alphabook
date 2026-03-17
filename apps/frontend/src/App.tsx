@@ -9,7 +9,7 @@ import { ChevronsLeft, ChevronsRight, Link2, MessageSquarePlus } from "lucide-re
 
 import { getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type PublicProfileResponse, type UserProfile, type WorkDetail, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
-import { buildSignInUrl, cancelRun, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchCurrentUser, fetchMessages, fetchProfile, fetchRunState, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, queryAdminAnalytics, sendAnalyticsEvent, signOut, streamChat, streamRun, unfollowProfile, type RunArtifactRecord, type SessionRunRecord } from "./api";
+import { buildSignInUrl, cancelRun, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchCurrentUser, fetchMessages, fetchProfile, fetchRunState, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, getErrorMessage, queryAdminAnalytics, sendAnalyticsEvent, signOut, streamChat, streamRun, unfollowProfile, type RunArtifactRecord, type SessionRunRecord } from "./api";
 import { Thread } from "./components/assistant-ui/thread";
 import { Avatar, AvatarFallback, AvatarImage } from "./components/ui/avatar";
 import { Button } from "./components/ui/button";
@@ -1298,6 +1298,48 @@ function formatCompactCount(value: number | null | undefined) {
   return value.toLocaleString("en-US");
 }
 
+function describeError(message: string): { title: string; body: string } {
+  const normalized = message.trim();
+  const lower = normalized.toLowerCase();
+
+  if (lower.includes("account sync problem")) {
+    return {
+      title: "Account Sync Issue",
+      body: normalized,
+    };
+  }
+  if (lower.includes("sign in")) {
+    return {
+      title: "Sign-In Required",
+      body: normalized,
+    };
+  }
+  if (lower.includes("do not have access")) {
+    return {
+      title: "Access Restricted",
+      body: normalized,
+    };
+  }
+
+  return {
+    title: "Something Went Wrong",
+    body: normalized,
+  };
+}
+
+function ErrorNotice({ message, className }: { message: string; className?: string }) {
+  const { title, body } = describeError(message);
+  return (
+    <div className={cn("app-error-notice", className)} role="alert" aria-live="polite">
+      <div className="app-error-notice-mark" aria-hidden="true">!</div>
+      <div className="app-error-notice-copy">
+        <strong>{title}</strong>
+        <p>{body}</p>
+      </div>
+    </div>
+  );
+}
+
 function buildExplorePrompt(question: string, works: WorkSummary[]) {
   const normalized = question.trim();
   if (works.length === 0) {
@@ -2145,7 +2187,7 @@ export default function App() {
           loading: false,
           authConfigured: false,
           user: null,
-          error: error instanceof Error ? error.message : "Failed to resolve the current user.",
+          error: getErrorMessage(error, "We couldn't load your account right now."),
         });
       }
     })();
@@ -2292,7 +2334,7 @@ export default function App() {
         setFeedNextOffset(next.nextOffset);
         setFeedTotalCount(next.totalCount);
       } catch (error) {
-        setLoadError(error instanceof Error ? error.message : "Failed to load the corpus feed.");
+        setLoadError(getErrorMessage(error, "We couldn't load the corpus feed."));
       } finally {
         setFeedLoading(false);
       }
@@ -2331,7 +2373,7 @@ export default function App() {
         setHighlightedPassageExcerpt(null);
       } catch (error) {
         if (!cancelled) {
-          setLoadError(error instanceof Error ? error.message : "Failed to load the selected book.");
+          setLoadError(getErrorMessage(error, "We couldn't load that book."));
         }
       } finally {
         window.clearTimeout(timeoutId);
@@ -2373,7 +2415,7 @@ export default function App() {
         setActiveWorkSource(source);
       } catch (error) {
         if (!cancelled) {
-          setLoadError(error instanceof Error ? error.message : "Failed to load the selected book text.");
+          setLoadError(getErrorMessage(error, "We couldn't load that book's text."));
         }
       } finally {
         window.clearTimeout(timeoutId);
@@ -2406,7 +2448,7 @@ export default function App() {
         }
       } catch (error) {
         if (!cancelled) {
-          setLoadError(error instanceof Error ? error.message : "Failed to load profile.");
+          setLoadError(getErrorMessage(error, "We couldn't load that profile."));
           setPublicProfile(null);
         }
       } finally {
@@ -2533,7 +2575,7 @@ export default function App() {
         const nextSessions = await fetchSessions(authState.authConfigured ? undefined : currentUserId);
         setSessions(nextSessions);
       } catch (error) {
-        setLoadError(error instanceof Error ? error.message : "Failed to load sessions.");
+        setLoadError(getErrorMessage(error, "We couldn't load your sessions."));
       } finally {
         setSessionsLoading(false);
         setSessionsResolved(true);
@@ -2557,7 +2599,7 @@ export default function App() {
         const nextMessages = await fetchMessages(selectedSessionId);
         setMessages(nextMessages.map(hydrateStoredMessage));
       } catch (error) {
-        setLoadError(error instanceof Error ? error.message : "Failed to load messages.");
+        setLoadError(getErrorMessage(error, "We couldn't load this conversation."));
       } finally {
         setMessagesLoading(false);
       }
@@ -2828,7 +2870,7 @@ export default function App() {
       setAdminRunInput(normalizedRunId);
       setAdminRunLog({
         loading: false,
-        error: error instanceof Error ? error.message : "Failed to load run logs.",
+        error: getErrorMessage(error, "We couldn't load those run logs."),
         runId: normalizedRunId,
         payload: null,
       });
@@ -2847,7 +2889,7 @@ export default function App() {
     } catch (error) {
       setAdminUsers({
         loading: false,
-        error: error instanceof Error ? error.message : "Failed to load users.",
+        error: getErrorMessage(error, "We couldn't load users."),
         rows: [],
       });
     }
@@ -2865,7 +2907,7 @@ export default function App() {
     } catch (error) {
       setAdminRuns({
         loading: false,
-        error: error instanceof Error ? error.message : "Failed to load runs.",
+        error: getErrorMessage(error, "We couldn't load runs."),
         rows: [],
       });
     }
@@ -2883,7 +2925,7 @@ export default function App() {
     } catch (error) {
       setAdminSessions({
         loading: false,
-        error: error instanceof Error ? error.message : "Failed to load sessions.",
+        error: getErrorMessage(error, "We couldn't load sessions."),
         rows: [],
       });
     }
@@ -2919,7 +2961,7 @@ export default function App() {
       setAdminAnalytics((current) => ({
         ...current,
         loading: false,
-        error: error instanceof Error ? error.message : "Failed to load analytics.",
+        error: getErrorMessage(error, "We couldn't load analytics."),
         query: normalizedQuery,
       }));
     }
@@ -2961,7 +3003,7 @@ export default function App() {
     } catch (error) {
       setAdminIncidents({
         loading: false,
-        error: error instanceof Error ? error.message : "Failed to load incidents.",
+        error: getErrorMessage(error, "We couldn't load incidents."),
         days: options.days ?? adminIncidents.days,
         query: options.query ?? adminIncidents.query,
         selectedFingerprint: options.selectedFingerprint ?? adminIncidents.selectedFingerprint,
@@ -3341,7 +3383,7 @@ export default function App() {
             }
 
             if (event.event === "error") {
-              setLoadError(typeof event.data.message === "string" ? event.data.message : "The assistant run failed.");
+              setLoadError(getErrorMessage(new Error(typeof event.data.message === "string" ? event.data.message : ""), "The assistant run failed."));
               setStreamConnected(false);
               settleRunUi();
             }
@@ -3359,7 +3401,7 @@ export default function App() {
         return;
       }
       if (activeRunTokenRef.current === runToken) {
-        setLoadError(error instanceof Error ? error.message : "Failed to stream the assistant run.");
+        setLoadError(getErrorMessage(error, "We couldn't finish that assistant run."));
         setStreamConnected(false);
       }
     } finally {
@@ -3396,7 +3438,7 @@ export default function App() {
       setFeedNextOffset(next.nextOffset);
       setFeedTotalCount(next.totalCount);
     } catch (error) {
-      setLoadError(error instanceof Error ? error.message : "Failed to load more works.");
+      setLoadError(getErrorMessage(error, "We couldn't load more books."));
     } finally {
       setFeedLoading(false);
     }
@@ -3555,7 +3597,7 @@ export default function App() {
         }));
       }
     } catch (error) {
-      setLoadError(error instanceof Error ? error.message : "Failed to update follow state.");
+      setLoadError(getErrorMessage(error, "We couldn't update that follow state."));
     }
   }
 
@@ -3628,7 +3670,7 @@ export default function App() {
 
     return (
       <section className="assistant-page">
-        {loadError ? <div className="thread-error-banner">{loadError}</div> : null}
+        {loadError ? <ErrorNotice className="thread-error-banner" message={loadError} /> : null}
 
         <div className="assistant-thread-shell" data-testid="thread">
           {assistantSessionLoading ? (
@@ -3738,7 +3780,7 @@ export default function App() {
         />
 
         <aside className="book-assistant-pane">
-          {loadError ? <div className="thread-error-banner">{loadError}</div> : null}
+          {loadError ? <ErrorNotice className="thread-error-banner" message={loadError} /> : null}
           <div className="book-assistant-shell" data-testid="book-thread">
             <BookAssistantToolbar
               sessions={sessions}
@@ -4230,11 +4272,7 @@ export default function App() {
                   </Button>
                 </div>
 
-                {adminIncidents.error ? (
-                  <div className="rounded-[16px] border border-[rgba(187,73,44,0.2)] bg-[rgba(187,73,44,0.08)] px-4 py-3 text-sm leading-6 text-[var(--ink)]">
-                    {adminIncidents.error}
-                  </div>
-                ) : null}
+                {adminIncidents.error ? <ErrorNotice message={adminIncidents.error} /> : null}
 
                 <div className="grid gap-4 xl:grid-cols-[minmax(20rem,0.95fr)_minmax(0,1.45fr)]">
                   <div className="rounded-[22px] border border-[rgba(72,43,37,0.08)] bg-[rgba(255,255,255,0.74)]">
@@ -4438,11 +4476,7 @@ export default function App() {
                   {summary.length > 0 ? <span>{summary.join(" · ")}</span> : null}
                 </div>
 
-                {adminRunLog.error ? (
-                  <div className="rounded-[16px] border border-[rgba(187,73,44,0.2)] bg-[rgba(187,73,44,0.08)] px-4 py-3 text-sm leading-6 text-[var(--ink)]">
-                    {adminRunLog.error}
-                  </div>
-                ) : null}
+                {adminRunLog.error ? <ErrorNotice message={adminRunLog.error} /> : null}
               </CardContent>
             </Card>
           </section>
@@ -4496,7 +4530,7 @@ export default function App() {
 
             <AdminTableCard title="Runs">
               {adminRuns.error ? (
-                <p className="text-sm text-[var(--ink-soft)]">{adminRuns.error}</p>
+                <ErrorNotice message={adminRuns.error} />
               ) : adminRuns.loading ? (
                 <p className="text-sm text-[var(--ink-soft)]">Loading runs…</p>
               ) : (
@@ -4583,7 +4617,7 @@ export default function App() {
 
             <AdminTableCard title="Users">
               {adminUsers.error ? (
-                <p className="text-sm text-[var(--ink-soft)]">{adminUsers.error}</p>
+                <ErrorNotice message={adminUsers.error} />
               ) : adminUsers.loading ? (
                 <p className="text-sm text-[var(--ink-soft)]">Loading users…</p>
               ) : (
@@ -4624,7 +4658,7 @@ export default function App() {
 
             <AdminTableCard title="Sessions">
               {adminSessions.error ? (
-                <p className="text-sm text-[var(--ink-soft)]">{adminSessions.error}</p>
+                <ErrorNotice message={adminSessions.error} />
               ) : adminSessions.loading ? (
                 <p className="text-sm text-[var(--ink-soft)]">Loading sessions…</p>
               ) : (
@@ -4749,11 +4783,7 @@ export default function App() {
                   </div>
                 </form>
 
-                {adminAnalytics.error ? (
-                  <div className="rounded-[16px] border border-[rgba(187,73,44,0.2)] bg-[rgba(187,73,44,0.08)] px-4 py-3 text-sm leading-6 text-[var(--ink)]">
-                    {adminAnalytics.error}
-                  </div>
-                ) : null}
+                {adminAnalytics.error ? <ErrorNotice message={adminAnalytics.error} /> : null}
               </CardContent>
             </Card>
 

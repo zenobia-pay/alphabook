@@ -39,6 +39,54 @@ function resolveApiBase() {
 
 const API_BASE = resolveApiBase();
 
+function extractApiErrorText(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as { error?: unknown; message?: unknown };
+    if (typeof parsed.error === "string" && parsed.error.trim()) {
+      return parsed.error.trim();
+    }
+    if (typeof parsed.message === "string" && parsed.message.trim()) {
+      return parsed.message.trim();
+    }
+  } catch {
+    // Fall back to the original text when the response is not JSON.
+  }
+
+  return trimmed;
+}
+
+function humanizeApiErrorText(message: string, fallback: string): string {
+  const normalized = message.toLowerCase();
+
+  if (normalized.includes("duplicate key value violates unique constraint") && normalized.includes("users_email_key")) {
+    return "We hit an account sync problem while loading this page. Please refresh and try signing in again.";
+  }
+  if (normalized === "authentication required.") {
+    return "Please sign in to continue.";
+  }
+  if (normalized === "not authorized." || normalized.includes("not authorized")) {
+    return "You do not have access to that view.";
+  }
+
+  return message || fallback;
+}
+
+export function getErrorMessage(error: unknown, fallback = "Something went wrong. Please try again."): string {
+  if (!(error instanceof Error)) {
+    return fallback;
+  }
+  const extracted = extractApiErrorText(error.message);
+  if (!extracted) {
+    return fallback;
+  }
+  return humanizeApiErrorText(extracted, fallback);
+}
+
 export interface ChatStreamHandlers {
   onEvent: (event: StreamEvent) => void;
 }
@@ -71,7 +119,10 @@ export type RunStateRecord = {
 
 async function ensureOk(response: Response): Promise<Response> {
   if (!response.ok) {
-    throw new Error(await response.text());
+    const fallback = response.status >= 500
+      ? "Something went wrong on our side. Please try again."
+      : "We couldn't complete that request. Please try again.";
+    throw new Error(humanizeApiErrorText(extractApiErrorText(await response.text()) ?? "", fallback));
   }
   return response;
 }

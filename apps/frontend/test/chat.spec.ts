@@ -142,6 +142,24 @@ test("logged out assistant keeps the normal shell while disabling the composer",
   await expect(thread.getByRole("link", { name: "Sign in" })).toBeVisible();
 });
 
+test("assistant shows a friendly error notice instead of raw JSON", async ({ page }) => {
+  await page.route("**/api/sessions*", async (route) => {
+    await route.fulfill({
+      status: 500,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: "duplicate key value violates unique constraint \"users_email_key\"",
+      }),
+    });
+  });
+
+  await page.goto("/");
+
+  await expect(page.getByText("Account Sync Issue")).toBeVisible();
+  await expect(page.getByText("We hit an account sync problem while loading this page. Please refresh and try signing in again.")).toBeVisible();
+  await expect(page.getByText(/duplicate key value violates unique constraint/)).toHaveCount(0);
+});
+
 test("browser back moves through prior views", async ({ page }) => {
   await page.goto("/");
 
