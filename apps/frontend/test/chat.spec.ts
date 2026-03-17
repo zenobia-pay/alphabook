@@ -160,22 +160,6 @@ test("assistant shows a friendly error notice instead of raw JSON", async ({ pag
   await expect(page.getByText(/duplicate key value violates unique constraint/)).toHaveCount(0);
 });
 
-test("auth failures still expose a reset session control", async ({ page }) => {
-  await page.route("**/api/me", async (route) => {
-    await route.fulfill({
-      status: 500,
-      contentType: "application/json",
-      body: JSON.stringify({
-        error: "could not determine data type of parameter $1",
-      }),
-    });
-  });
-
-  await page.goto("/");
-
-  await expect(page.getByRole("button", { name: "Reset session" })).toBeVisible();
-});
-
 test("browser back moves through prior views", async ({ page }) => {
   await page.goto("/");
 

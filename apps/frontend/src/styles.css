@@ -207,31 +207,12 @@ button {
   padding: 12px 0 0;
 }
 
-.sidebar-account-zone {
-  margin-top: auto;
-  display: grid;
-  gap: 10px;
-}
-
 .sidebar.is-collapsed .sidebar-profile {
   justify-self: center;
 }
 
 .sidebar-profile:hover {
   opacity: 0.88;
-}
-
-.sidebar-session-reset {
-  justify-self: start;
-  color: var(--text-muted);
-  border: 1px solid rgba(72, 43, 37, 0.08);
-  background: rgba(255, 255, 255, 0.7);
-}
-
-.sidebar-session-reset:hover {
-  color: var(--ink);
-  border-color: rgba(72, 43, 37, 0.14);
-  background: rgba(255, 255, 255, 0.9);
 }
 
 .sidebar-profile-copy {
