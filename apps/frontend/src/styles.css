@@ -573,12 +573,12 @@ button {
 }
 
 .aui-composer-send {
-  background: linear-gradient(180deg, var(--accent), var(--accent-strong));
+  background: linear-gradient(180deg, #1a1a1a, #000);
   color: #fff;
 }
 
 .aui-composer-send:hover:not(:disabled) {
-  background: linear-gradient(180deg, #2159d2, #1b47bf);
+  background: linear-gradient(180deg, #2b2b2b, #111);
 }
 
 .aui-composer-cancel {
