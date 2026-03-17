@@ -179,7 +179,7 @@ button {
   color: var(--ink-strong);
   background: transparent;
   border-color: rgba(32, 24, 20, 0.1);
-  box-shadow: inset 2px 0 0 rgba(17, 17, 17, 0.72);
+  box-shadow: inset -2px 0 0 rgba(17, 17, 17, 0.72);
 }
 
 .sidebar-nav-button.is-active svg {
@@ -2068,55 +2068,45 @@ button {
   border-radius: 999px;
 }
 
-.aui-thread-welcome-copy-cta {
-  display: flex;
-  justify-content: center;
-  margin-top: 1.2rem;
-}
-
 .aui-thread-welcome-copy-button {
   display: inline-flex;
   align-items: center;
-  gap: 0.8rem;
-  padding: 0.9rem 1.15rem;
-  border: 1px solid color-mix(in srgb, var(--accent) 24%, rgba(38, 38, 38, 0.08));
-  border-radius: 999px;
-  background:
-    radial-gradient(circle at top left, color-mix(in srgb, var(--accent) 14%, white) 0%, transparent 52%),
-    rgba(255, 250, 244, 0.92);
-  box-shadow: 0 14px 34px rgba(84, 48, 17, 0.08);
+  gap: 0.35rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
   color: var(--foreground);
   cursor: pointer;
-  transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
+  vertical-align: baseline;
+  transition: opacity 140ms ease, color 140ms ease;
 }
 
 .aui-thread-welcome-copy-button:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 18px 38px rgba(84, 48, 17, 0.12);
-  border-color: color-mix(in srgb, var(--accent) 36%, rgba(38, 38, 38, 0.1));
+  color: var(--ink-strong);
+  opacity: 0.78;
 }
 
 .aui-thread-welcome-copy-button:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--accent) 44%, transparent);
-  outline-offset: 3px;
+  outline-offset: 2px;
+  border-radius: 0.35rem;
 }
 
 .aui-thread-welcome-copy-button-text {
-  font-size: 0.98rem;
+  font-size: inherit;
   font-weight: 600;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
+  text-decoration: underline;
+  text-decoration-thickness: 0.08em;
+  text-underline-offset: 0.14em;
 }
 
 .aui-thread-welcome-copy-button-emoji {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 1.6rem;
-  height: 1.6rem;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.9);
-  box-shadow: inset 0 0 0 1px rgba(38, 38, 38, 0.05);
-  font-size: 0.95rem;
+  font-size: 0.96em;
+  line-height: 1;
 }
 
 .assistant-loading-suggestion-grid {

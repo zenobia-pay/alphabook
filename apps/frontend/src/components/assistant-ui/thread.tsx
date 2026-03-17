@@ -368,12 +368,10 @@ const ThreadWelcome: FC = () => {
       <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-center">
         <div className="aui-thread-welcome-message flex size-full flex-col justify-center px-4">
           <h1 className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in fill-mode-both font-semibold text-2xl duration-200">
-            Hello there!
+            Search for evidence and themes over 75,000 books.
           </h1>
           <p className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in fill-mode-both text-muted-foreground text-xl delay-75 duration-200">
-            Want your agent to use this? Copy this.
-          </p>
-          <div className="aui-thread-welcome-copy-cta fade-in slide-in-from-bottom-1 animate-in fill-mode-both delay-150 duration-200">
+            Or: Want your agent to use this? Copy{" "}
             <button
               type="button"
               className="aui-thread-welcome-copy-button"
@@ -381,13 +379,14 @@ const ThreadWelcome: FC = () => {
               aria-label="Copy agent setup prompt"
             >
               <span className="aui-thread-welcome-copy-button-text">
-                {copied ? "Copied prompt" : "Copy this"}
+                {copied ? "copied prompt" : "this prompt"}
               </span>
               <span aria-hidden="true" className="aui-thread-welcome-copy-button-emoji">
-                {copied ? <CheckIcon className="size-4" /> : "📋"}
+                {copied ? "✓" : "📋"}
               </span>
             </button>
-          </div>
+            . Get going.
+          </p>
         </div>
       </div>
     </div>
