@@ -1,6 +1,7 @@
 import { WorkOS } from "@workos-inc/node";
-import { deleteCookie, getCookie, setCookie } from "hono/cookie";
+import { getCookie, setCookie } from "hono/cookie";
 import type { Context } from "hono";
+import { serialize } from "cookie";
 
 import type { AppStore, UserRecord } from "./store";
 
@@ -123,6 +124,23 @@ function sessionIdFromCookieSession(session: AuthenticatedSessionCookie | null |
   return null;
 }
 
+function clearAuthCookies(c: Context, cookieDomain?: string) {
+  const cookieNames = [SESSION_COOKIE_NAME, STATE_COOKIE_NAME];
+  for (const name of cookieNames) {
+    c.header("Set-Cookie", serialize(name, "", {
+      path: "/",
+      maxAge: 0,
+    }), { append: true });
+    if (cookieDomain) {
+      c.header("Set-Cookie", serialize(name, "", {
+        path: "/",
+        domain: cookieDomain,
+        maxAge: 0,
+      }), { append: true });
+    }
+  }
+}
+
 export class WorkOSAuth {
   private readonly workos: WorkOS;
 
@@ -206,10 +224,7 @@ export class WorkOSAuth {
     const returnTo = safeReturnTo(pendingState?.returnTo, fallbackReturnTo);
 
     if (!code || !state || !pendingState || pendingState.state !== state) {
-      deleteCookie(c, STATE_COOKIE_NAME, {
-        path: "/",
-        ...(cookieDomain ? { domain: cookieDomain } : {}),
-      });
+      clearAuthCookies(c, cookieDomain);
       return c.redirect(`${returnTo}?auth_error=state_mismatch`, 302);
     }
 
@@ -235,10 +250,7 @@ export class WorkOSAuth {
         maxAge: 60 * 60 * 24 * 30,
         ...(cookieDomain ? { domain: cookieDomain } : {}),
       });
-      deleteCookie(c, STATE_COOKIE_NAME, {
-        path: "/",
-        ...(cookieDomain ? { domain: cookieDomain } : {}),
-      });
+      clearAuthCookies(c, cookieDomain);
 
       await this.store.upsertUserProfile({
         id: authResponse.user.id,
@@ -249,10 +261,7 @@ export class WorkOSAuth {
 
       return c.redirect(returnTo, 302);
     } catch {
-      deleteCookie(c, STATE_COOKIE_NAME, {
-        path: "/",
-        ...(cookieDomain ? { domain: cookieDomain } : {}),
-      });
+      clearAuthCookies(c, cookieDomain);
       return c.redirect(`${returnTo}?auth_error=callback_failed`, 302);
     }
   }
@@ -282,14 +291,7 @@ export class WorkOSAuth {
       }
     }
 
-    deleteCookie(c, SESSION_COOKIE_NAME, {
-      path: "/",
-      ...(cookieDomain ? { domain: cookieDomain } : {}),
-    });
-    deleteCookie(c, STATE_COOKIE_NAME, {
-      path: "/",
-      ...(cookieDomain ? { domain: cookieDomain } : {}),
-    });
+    clearAuthCookies(c, cookieDomain);
 
     return logoutUrl;
   }
