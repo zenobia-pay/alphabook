@@ -134,6 +134,7 @@ function assistantMessageToMarkdown(parts: readonly MessagePartRecord[]) {
 }
 
 type ThreadSuggestion = {
+  emoji?: string;
   title: string;
   description?: string;
   prompt: string;
@@ -352,6 +353,16 @@ const ThreadScrollToBottom: FC = () => {
 };
 
 const ThreadWelcome: FC = () => {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopyPrompt = useCallback(() => {
+    const prompt = "Go to https://alpha-book.org/skill.md and follow the instructions there.";
+    void navigator.clipboard.writeText(prompt).then(() => {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    });
+  }, []);
+
   return (
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
       <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-center">
@@ -360,8 +371,23 @@ const ThreadWelcome: FC = () => {
             Hello there!
           </h1>
           <p className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in fill-mode-both text-muted-foreground text-xl delay-75 duration-200">
-            How can I help you today?
+            Want your agent to use this? Copy this.
           </p>
+          <div className="aui-thread-welcome-copy-cta fade-in slide-in-from-bottom-1 animate-in fill-mode-both delay-150 duration-200">
+            <button
+              type="button"
+              className="aui-thread-welcome-copy-button"
+              onClick={handleCopyPrompt}
+              aria-label="Copy agent setup prompt"
+            >
+              <span className="aui-thread-welcome-copy-button-text">
+                {copied ? "Copied prompt" : "Copy this"}
+              </span>
+              <span aria-hidden="true" className="aui-thread-welcome-copy-button-emoji">
+                {copied ? <CheckIcon className="size-4" /> : "📋"}
+              </span>
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -376,7 +402,7 @@ const ThreadSuggestions: FC<{
   onSuggestionSelect,
 }) => {
   return (
-    <div className="aui-thread-welcome-suggestions grid w-full @md:grid-cols-2 gap-2 pb-4">
+    <div className="aui-thread-welcome-suggestions flex w-full flex-col items-start gap-2 pb-4">
       {suggestions.map((suggestion) => (
         <ThreadSuggestionItem
           key={suggestion.prompt}
@@ -409,16 +435,19 @@ const ThreadSuggestionItem: FC<{
   }, [aui, onSuggestionSelect, suggestion.prompt]);
 
   return (
-    <div className="aui-thread-welcome-suggestion-display fade-in slide-in-from-bottom-2 @md:nth-[n+3]:block nth-[n+3]:hidden animate-in fill-mode-both duration-200">
+    <div className="aui-thread-welcome-suggestion-display fade-in slide-in-from-bottom-2 nth-[n+3]:hidden @md:nth-[n+3]:block animate-in fill-mode-both duration-200">
       <Button
         type="button"
         variant="ghost"
-        className="aui-thread-welcome-suggestion h-auto w-full min-w-0 @md:flex-col flex-wrap items-start justify-start gap-1 rounded-3xl border bg-background px-4 py-3 text-left text-sm transition-colors hover:bg-muted"
+        className="aui-thread-welcome-suggestion h-auto w-full min-w-0 items-center justify-start gap-3 overflow-hidden rounded-full border px-4 py-3 text-left text-sm transition-colors @md:w-[60%]"
         onClick={handleClick}
       >
-        <span className="aui-thread-welcome-suggestion-text-1 min-w-0 whitespace-normal break-words font-medium">{suggestion.title}</span>
+        <span className="aui-thread-welcome-suggestion-emoji shrink-0 text-base leading-none" aria-hidden="true">
+          {suggestion.emoji ?? "✦"}
+        </span>
+        <span className="aui-thread-welcome-suggestion-text-1 min-w-0 truncate font-medium">{suggestion.title}</span>
         {suggestion.description ? (
-          <span className="aui-thread-welcome-suggestion-text-2 min-w-0 whitespace-normal break-words text-muted-foreground">{suggestion.description}</span>
+          <span className="aui-thread-welcome-suggestion-text-2 sr-only">{suggestion.description}</span>
         ) : null}
       </Button>
     </div>
