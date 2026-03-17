@@ -3970,9 +3970,14 @@ export default function App() {
                 title="Sign in to unlock your profile"
                 copy="Your saved chats and recent research will appear here once you have an account."
                 action={(
-                  <Button asChild className="signin-pill-button" size="lg">
-                    <a href={buildSignInUrl(window.location.href)}>Sign in</a>
-                  </Button>
+                  <div className="flex flex-wrap items-center justify-center gap-3">
+                    <Button asChild className="signin-pill-button" size="lg">
+                      <a href={buildSignInUrl(window.location.href)}>Sign in</a>
+                    </Button>
+                    <Button type="button" variant="ghost" className="profile-chip" onClick={() => void handleSignOut()}>
+                      Sign out
+                    </Button>
+                  </div>
                 )}
               />
             </div>
