@@ -686,6 +686,101 @@ test("auth sign-in route forces interactive WorkOS auth", async () => {
   assert.match(location, /prompt=login/);
 });
 
+test("agent API keys can register and use CLI chat even when browser auth is enabled", async () => {
+  const store = new InMemoryAppStore([], []);
+  const auth = new WorkOSAuth(
+    {
+      workosApiKey: "test-key",
+      workosClientId: "client_123",
+      cookiePassword: "super-secret-password",
+    },
+    store,
+  );
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    router: new ScriptedRouter([
+      {
+        type: "direct_response",
+        answer: "CLI access is ready.",
+      },
+    ]),
+    planner: new ScriptedPlanner([
+      {
+        type: "final_answer",
+        answer: "planner should not run",
+        citations: [],
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+      async runWorkspaceTask() {
+        return { ok: false, error: "disabled" };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: false, error: "disabled" };
+      },
+      async destroyWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+    },
+    auth,
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const registrationResponse = await app.request("/api/v1/agents/register", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      name: "Codex",
+      description: "AlphaBook CLI researcher",
+    }),
+  });
+  assert.equal(registrationResponse.status, 201);
+  const registrationPayload = await registrationResponse.json() as {
+    api_key: string;
+    claim_url: string;
+    status: string;
+  };
+  assert.match(registrationPayload.api_key, /^abk_/);
+  assert.match(registrationPayload.claim_url, /\/claim\/abclaim_/);
+  assert.equal(registrationPayload.status, "pending_claim");
+
+  const meResponse = await app.request("/api/v1/agents/me", {
+    headers: {
+      authorization: `Bearer ${registrationPayload.api_key}`,
+    },
+  });
+  assert.equal(meResponse.status, 200);
+
+  const chatResponse = await app.request("/api/v1/chat", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${registrationPayload.api_key}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      message: "Can I use AlphaBook entirely from the CLI?",
+    }),
+  });
+  assert.equal(chatResponse.status, 200);
+  const chatBody = await chatResponse.text();
+  assert.match(chatBody, /CLI access is ready\./);
+});
+
 test("auth sign-out route clears local cookies and returns the WorkOS logout redirect when session exists", async () => {
   const store = new InMemoryAppStore();
   const auth = new WorkOSAuth(
@@ -834,7 +929,7 @@ test("chat route rejects writing to another user's existing session", async () =
   assert.equal(payload.error, "Not authorized for this session.");
 });
 
-test("fallback planner can create a Fly workspace, run a task, read summary.md, and answer", async () => {
+test("fallback planner can create a Fly workspace, run a task, read the briefing, and answer", async () => {
   const store = new InMemoryAppStore(
     [
       {
@@ -922,23 +1017,29 @@ test("fallback planner can create a Fly workspace, run a task, read summary.md, 
         return Response.json({ ok: true, runtimeId: "machine-1" });
       }
       if (url === "https://alphabook-runtime.fly.dev/run-task" && method === "POST") {
+        return Response.json({ ok: true });
+      }
+      if (url === "https://alphabook-runtime.fly.dev/task-status" && method === "GET") {
         return Response.json({
-          runtimeId: "machine-1",
-          stdout: "completed",
-          stderr: "",
-          exitCode: 0,
-          artifacts: [
-            {
-              filename: "summary.md",
-              path: "output/summary.md",
-              mimeType: "text/markdown",
-            },
-          ],
+          status: "completed",
+          result: {
+            runtimeId: "machine-1",
+            stdout: "completed",
+            stderr: "",
+            exitCode: 0,
+            artifacts: [
+              {
+                filename: "briefing.md",
+                path: "output/briefing.md",
+                mimeType: "text/markdown",
+              },
+            ],
+          },
         });
       }
-      if (url === "https://alphabook-runtime.fly.dev/file?path=output%2Fsummary.md" && method === "GET") {
+      if (url === "https://alphabook-runtime.fly.dev/file?path=output%2Fbriefing.md" && method === "GET") {
         return Response.json({
-          path: "output/summary.md",
+          path: "output/briefing.md",
           size: 56,
           encoding: "utf8",
           content: "# Summary\n\nComparative answer across the two novels.",
@@ -991,7 +1092,7 @@ test("fallback planner can create a Fly workspace, run a task, read summary.md, 
   assert.ok(calls.includes("POST https://alphabook-runtime.fly.dev/destroy"));
   assert.ok(calls.includes("DELETE https://api.machines.dev/v1/apps/alphabook-runtime/machines/machine-1?force=true"));
 
-  const artifact = await blobStore.getText(R2_PREFIXES.runtimeArtifact("machine-1", "summary.md"));
+  const artifact = await blobStore.getText(R2_PREFIXES.runtimeArtifact("machine-1", "briefing.md"));
   assert.match(artifact ?? "", /Comparative answer across the two novels/);
   assert.ok(calls.some((call) => call.includes("api.machines.dev")));
   assert.ok(calls.some((call) => call.includes("/run-task")));
@@ -1527,11 +1628,12 @@ test("persisted tool traces keep chunk results compact enough for refresh", asyn
   const result = chunkResult?.result && typeof chunkResult.result === "object"
     ? chunkResult.result as Record<string, unknown>
     : null;
-  const logLines = Array.isArray(result?.__logLines) ? result?.__logLines as Array<Record<string, unknown>> : [];
+  const logLines = Array.isArray(result?.__logLines) ? result.__logLines as unknown[] : [];
+  const compactLines = logLines.filter((line): line is string => typeof line === "string");
 
-  assert.ok(logLines.some((line) => line.key === "chunkCount"));
-  assert.ok(logLines.some((line) => line.key === "chunks[0].excerpt"));
-  assert.ok(!logLines.some((line) => line.key === "chunks[0].text"));
+  assert.ok(compactLines.some((line) => line.startsWith("1 chunk 1 work 1 472")));
+  assert.ok(compactLines.some((line) => line.includes("house of laughing")));
+  assert.ok(compactLines.every((line) => !line.includes("The house of mourning is decorously darkened to the world")));
 });
 
 test("OpenAIEmbedder requests 1536 dimensions for text-embedding-3 models", async () => {

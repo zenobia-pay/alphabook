@@ -28,6 +28,22 @@ export interface AdminUserRecord extends UserRecord {
   billingEventCount: number;
 }
 
+export interface AgentIdentityRecord {
+  id: string;
+  userId: string;
+  ownerUserId: string | null;
+  name: string;
+  description: string | null;
+  apiKeyPrefix: string;
+  status: "pending_claim" | "active" | "revoked";
+  verificationCode: string;
+  claimToken: string;
+  lastUsedAt: string | null;
+  createdAt: string;
+  claimedAt: string | null;
+  metadata: Record<string, unknown>;
+}
+
 export interface SessionSummaryRecord extends SessionRecord {
   lastMessageAt: string | null;
   lastMessagePreview: string | null;
@@ -165,6 +181,21 @@ export interface AppStore {
   ensureUser(userId: string): Promise<void>;
   upsertUserProfile(input: { id: string; email?: string | null; name?: string | null; avatarUrl?: string | null }): Promise<UserRecord>;
   getUserProfile(userId: string): Promise<UserRecord | null>;
+  createAgentIdentity(input: {
+    name: string;
+    description?: string | null;
+    ownerUserId?: string | null;
+    apiKeyPrefix: string;
+    apiKeyHash: string;
+    verificationCode: string;
+    claimToken: string;
+    metadata?: Record<string, unknown>;
+  }): Promise<AgentIdentityRecord>;
+  authenticateAgentApiKey(apiKeyHash: string): Promise<AgentIdentityRecord | null>;
+  getAgentIdentityByUserId(userId: string): Promise<AgentIdentityRecord | null>;
+  getAgentIdentityByClaimToken(claimToken: string): Promise<AgentIdentityRecord | null>;
+  claimAgentIdentity(claimToken: string, ownerUserId: string): Promise<AgentIdentityRecord | null>;
+  listAgentIdentitiesByOwner(ownerUserId: string): Promise<AgentIdentityRecord[]>;
   listUsers(): Promise<AdminUserRecord[]>;
   followUser(followerId: string, followedId: string): Promise<void>;
   unfollowUser(followerId: string, followedId: string): Promise<void>;
@@ -257,6 +288,40 @@ function normalizeGutenbergId(value: number | string | null | undefined): number
     return Number.isNaN(parsed) ? null : parsed;
   }
   return null;
+}
+
+type AgentIdentityRow = {
+  id: string;
+  user_id: string;
+  owner_user_id: string | null;
+  name: string;
+  description: string | null;
+  api_key_prefix: string;
+  status: AgentIdentityRecord["status"];
+  verification_code: string;
+  claim_token: string;
+  last_used_at: string | null;
+  created_at: string;
+  claimed_at: string | null;
+  metadata_json: Record<string, unknown>;
+};
+
+function mapAgentIdentityRow(row: AgentIdentityRow): AgentIdentityRecord {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    ownerUserId: row.owner_user_id,
+    name: row.name,
+    description: row.description,
+    apiKeyPrefix: row.api_key_prefix,
+    status: row.status,
+    verificationCode: row.verification_code,
+    claimToken: row.claim_token,
+    lastUsedAt: row.last_used_at,
+    createdAt: row.created_at,
+    claimedAt: row.claimed_at,
+    metadata: row.metadata_json ?? {},
+  };
 }
 
 function slugifyProfileHandle(value: string): string {
@@ -509,6 +574,7 @@ function expandedSearchTokens(query: string): string[] {
 export class InMemoryAppStore implements AppStore {
   private readonly users = new Set<string>();
   private readonly userProfiles = new Map<string, UserRecord>();
+  private readonly agentIdentities = new Map<string, AgentIdentityRecord & { apiKeyHash: string }>();
   private readonly follows = new Set<string>();
   private readonly sessions = new Map<string, SessionRecord>();
   private readonly messages = new Map<string, MessageRecord[]>();
@@ -571,6 +637,85 @@ export class InMemoryAppStore implements AppStore {
       followersCount: this.countFollowers(userId),
       followingCount: this.countFollowing(userId),
     };
+  }
+
+  async createAgentIdentity(input: {
+    name: string;
+    description?: string | null;
+    ownerUserId?: string | null;
+    apiKeyPrefix: string;
+    apiKeyHash: string;
+    verificationCode: string;
+    claimToken: string;
+    metadata?: Record<string, unknown>;
+  }): Promise<AgentIdentityRecord> {
+    const userId = `agent_${crypto.randomUUID()}`;
+    const ownerUserId = input.ownerUserId ?? null;
+    if (ownerUserId) {
+      await this.ensureUser(ownerUserId);
+    }
+    const createdAt = nowIso();
+    const record: AgentIdentityRecord & { apiKeyHash: string } = {
+      id: crypto.randomUUID(),
+      userId,
+      ownerUserId,
+      name: input.name,
+      description: input.description ?? null,
+      apiKeyPrefix: input.apiKeyPrefix,
+      apiKeyHash: input.apiKeyHash,
+      status: ownerUserId ? "active" : "pending_claim",
+      verificationCode: input.verificationCode,
+      claimToken: input.claimToken,
+      lastUsedAt: null,
+      createdAt,
+      claimedAt: ownerUserId ? createdAt : null,
+      metadata: input.metadata ?? {},
+    };
+    this.agentIdentities.set(record.id, record);
+    await this.upsertUserProfile({
+      id: userId,
+      name: input.name,
+    });
+    return this.toAgentIdentityRecord(record);
+  }
+
+  async authenticateAgentApiKey(apiKeyHash: string): Promise<AgentIdentityRecord | null> {
+    const record = [...this.agentIdentities.values()].find((candidate) => candidate.apiKeyHash === apiKeyHash) ?? null;
+    if (!record || record.status === "revoked") {
+      return null;
+    }
+    record.lastUsedAt = nowIso();
+    return this.toAgentIdentityRecord(record);
+  }
+
+  async getAgentIdentityByUserId(userId: string): Promise<AgentIdentityRecord | null> {
+    const record = [...this.agentIdentities.values()].find((candidate) => candidate.userId === userId) ?? null;
+    return record ? this.toAgentIdentityRecord(record) : null;
+  }
+
+  async getAgentIdentityByClaimToken(claimToken: string): Promise<AgentIdentityRecord | null> {
+    const record = [...this.agentIdentities.values()].find((candidate) => candidate.claimToken === claimToken) ?? null;
+    return record ? this.toAgentIdentityRecord(record) : null;
+  }
+
+  async claimAgentIdentity(claimToken: string, ownerUserId: string): Promise<AgentIdentityRecord | null> {
+    await this.ensureUser(ownerUserId);
+    const record = [...this.agentIdentities.values()].find((candidate) => candidate.claimToken === claimToken) ?? null;
+    if (!record || record.status === "revoked") {
+      return null;
+    }
+    const claimedAt = nowIso();
+    record.ownerUserId = ownerUserId;
+    record.status = "active";
+    record.claimedAt = claimedAt;
+    return this.toAgentIdentityRecord(record);
+  }
+
+  async listAgentIdentitiesByOwner(ownerUserId: string): Promise<AgentIdentityRecord[]> {
+    return [...this.agentIdentities.values()]
+      .filter((record) => record.ownerUserId === ownerUserId)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .map((record) => this.toAgentIdentityRecord(record));
   }
 
   async listUsers(): Promise<AdminUserRecord[]> {
@@ -1146,6 +1291,24 @@ export class InMemoryAppStore implements AppStore {
     return "ok";
   }
 
+  private toAgentIdentityRecord(record: AgentIdentityRecord & { apiKeyHash: string }): AgentIdentityRecord {
+    return {
+      id: record.id,
+      userId: record.userId,
+      ownerUserId: record.ownerUserId,
+      name: record.name,
+      description: record.description,
+      apiKeyPrefix: record.apiKeyPrefix,
+      status: record.status,
+      verificationCode: record.verificationCode,
+      claimToken: record.claimToken,
+      lastUsedAt: record.lastUsedAt,
+      createdAt: record.createdAt,
+      claimedAt: record.claimedAt,
+      metadata: record.metadata,
+    };
+  }
+
   private countFollowers(userId: string): number {
     let count = 0;
     for (const key of this.follows) {
@@ -1291,6 +1454,236 @@ export class NeonAppStore implements AppStore {
       followersCount: Number(row.followers_count ?? 0),
       followingCount: Number(row.following_count ?? 0),
     };
+  }
+
+  async createAgentIdentity(input: {
+    name: string;
+    description?: string | null;
+    ownerUserId?: string | null;
+    apiKeyPrefix: string;
+    apiKeyHash: string;
+    verificationCode: string;
+    claimToken: string;
+    metadata?: Record<string, unknown>;
+  }): Promise<AgentIdentityRecord> {
+    const userId = `agent_${crypto.randomUUID()}`;
+    const id = crypto.randomUUID();
+    const createdAt = nowIso();
+    await this.db.query(
+      `
+        INSERT INTO users (id, name)
+        VALUES ($1, $2)
+        ON CONFLICT (id) DO NOTHING
+      `,
+      [userId, input.name],
+    );
+    if (input.ownerUserId) {
+      await this.ensureUser(input.ownerUserId);
+    }
+    const result = await this.db.query<AgentIdentityRow>(
+      `
+        INSERT INTO agent_identities (
+          id,
+          user_id,
+          owner_user_id,
+          name,
+          description,
+          api_key_prefix,
+          api_key_hash,
+          status,
+          verification_code,
+          claim_token,
+          metadata_json,
+          created_at,
+          claimed_at
+        )
+        VALUES (
+          $1::uuid,
+          $2,
+          $3,
+          $4,
+          $5,
+          $6,
+          $7,
+          $8,
+          $9,
+          $10,
+          $11::jsonb,
+          $12::timestamptz,
+          $13::timestamptz
+        )
+        RETURNING
+          id,
+          user_id,
+          owner_user_id,
+          name,
+          description,
+          api_key_prefix,
+          status,
+          verification_code,
+          claim_token,
+          last_used_at,
+          created_at,
+          claimed_at,
+          metadata_json
+      `,
+      [
+        id,
+        userId,
+        input.ownerUserId ?? null,
+        input.name,
+        input.description ?? null,
+        input.apiKeyPrefix,
+        input.apiKeyHash,
+        input.ownerUserId ? "active" : "pending_claim",
+        input.verificationCode,
+        input.claimToken,
+        JSON.stringify(input.metadata ?? {}),
+        createdAt,
+        input.ownerUserId ? createdAt : null,
+      ],
+    );
+    return mapAgentIdentityRow(result.rows[0]);
+  }
+
+  async authenticateAgentApiKey(apiKeyHash: string): Promise<AgentIdentityRecord | null> {
+    const result = await this.db.query<AgentIdentityRow>(
+      `
+        UPDATE agent_identities
+        SET last_used_at = now()
+        WHERE api_key_hash = $1
+          AND status <> 'revoked'
+        RETURNING
+          id,
+          user_id,
+          owner_user_id,
+          name,
+          description,
+          api_key_prefix,
+          status,
+          verification_code,
+          claim_token,
+          last_used_at,
+          created_at,
+          claimed_at,
+          metadata_json
+      `,
+      [apiKeyHash],
+    );
+    const row = result.rows[0];
+    return row ? mapAgentIdentityRow(row) : null;
+  }
+
+  async getAgentIdentityByUserId(userId: string): Promise<AgentIdentityRecord | null> {
+    const result = await this.db.query<AgentIdentityRow>(
+      `
+        SELECT
+          id,
+          user_id,
+          owner_user_id,
+          name,
+          description,
+          api_key_prefix,
+          status,
+          verification_code,
+          claim_token,
+          last_used_at,
+          created_at,
+          claimed_at,
+          metadata_json
+        FROM agent_identities
+        WHERE user_id = $1
+        LIMIT 1
+      `,
+      [userId],
+    );
+    const row = result.rows[0];
+    return row ? mapAgentIdentityRow(row) : null;
+  }
+
+  async getAgentIdentityByClaimToken(claimToken: string): Promise<AgentIdentityRecord | null> {
+    const result = await this.db.query<AgentIdentityRow>(
+      `
+        SELECT
+          id,
+          user_id,
+          owner_user_id,
+          name,
+          description,
+          api_key_prefix,
+          status,
+          verification_code,
+          claim_token,
+          last_used_at,
+          created_at,
+          claimed_at,
+          metadata_json
+        FROM agent_identities
+        WHERE claim_token = $1
+        LIMIT 1
+      `,
+      [claimToken],
+    );
+    const row = result.rows[0];
+    return row ? mapAgentIdentityRow(row) : null;
+  }
+
+  async claimAgentIdentity(claimToken: string, ownerUserId: string): Promise<AgentIdentityRecord | null> {
+    await this.ensureUser(ownerUserId);
+    const result = await this.db.query<AgentIdentityRow>(
+      `
+        UPDATE agent_identities
+        SET
+          owner_user_id = $2,
+          status = 'active',
+          claimed_at = COALESCE(claimed_at, now())
+        WHERE claim_token = $1
+          AND status <> 'revoked'
+        RETURNING
+          id,
+          user_id,
+          owner_user_id,
+          name,
+          description,
+          api_key_prefix,
+          status,
+          verification_code,
+          claim_token,
+          last_used_at,
+          created_at,
+          claimed_at,
+          metadata_json
+      `,
+      [claimToken, ownerUserId],
+    );
+    const row = result.rows[0];
+    return row ? mapAgentIdentityRow(row) : null;
+  }
+
+  async listAgentIdentitiesByOwner(ownerUserId: string): Promise<AgentIdentityRecord[]> {
+    const result = await this.db.query<AgentIdentityRow>(
+      `
+        SELECT
+          id,
+          user_id,
+          owner_user_id,
+          name,
+          description,
+          api_key_prefix,
+          status,
+          verification_code,
+          claim_token,
+          last_used_at,
+          created_at,
+          claimed_at,
+          metadata_json
+        FROM agent_identities
+        WHERE owner_user_id = $1
+        ORDER BY created_at DESC
+      `,
+      [ownerUserId],
+    );
+    return result.rows.map((row) => mapAgentIdentityRow(row));
   }
 
   async listUsers(): Promise<AdminUserRecord[]> {

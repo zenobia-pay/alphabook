@@ -1,7 +1,7 @@
 import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import { ChatRequestSchema, HARD_LIMITS, R2_PREFIXES, ToolArgsSchemas, getToolLabel, type ChatRequest, type ChunkSearchResult, type Citation, type PlannerDecision, type ToolName, type WorkSummary } from "@alphabook/shared";
-import { ZodError } from "zod";
+import { ZodError, z } from "zod";
 
 import type { WorkOSAuth } from "./auth";
 import type { BillingService } from "./billing";
@@ -12,7 +12,7 @@ import { FallbackPlanner, parseToolCall } from "./planner";
 import type { Router } from "./router";
 import { cleanupToolStreamWithWorkersAi, type ToolStreamCleanupLine } from "./tool-stream-cleanup";
 import type { Synthesizer, ToolHistoryEntry } from "./synthesizer";
-import type { AnalyticsEventRecord, AppStore, MessageRecord, SessionRecord } from "./store";
+import type { AgentIdentityRecord, AnalyticsEventRecord, AppStore, MessageRecord, SessionRecord, UserRecord } from "./store";
 import type { WorkersAiBinding } from "./index";
 
 export interface WorkerQueues {
@@ -56,6 +56,125 @@ const ALLOWED_WEB_ORIGINS = new Set([
   "http://127.0.0.1:4193",
   "http://localhost:4193",
 ]);
+
+const AgentRegistrationRequestSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  description: z.string().trim().max(500).optional(),
+});
+
+type AgentRegistrationRequest = z.infer<typeof AgentRegistrationRequestSchema>;
+
+type AuthPrincipal =
+  | {
+      kind: "user";
+      user: UserRecord;
+    }
+  | {
+      kind: "agent";
+      user: UserRecord;
+      agent: AgentIdentityRecord;
+    };
+
+const VERIFICATION_CODE_WORDS = [
+  "folio",
+  "quill",
+  "citadel",
+  "vellum",
+  "atlas",
+  "ledger",
+  "ember",
+  "signal",
+];
+
+function randomToken(length = 24) {
+  const bytes = crypto.getRandomValues(new Uint8Array(length));
+  const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  let value = "";
+  for (const byte of bytes) {
+    value += alphabet[byte % alphabet.length];
+  }
+  return value;
+}
+
+async function sha256Hex(value: string) {
+  const data = new TextEncoder().encode(value);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function createAgentApiKey() {
+  return `abk_${randomToken(40)}`;
+}
+
+function createClaimToken() {
+  return `abclaim_${randomToken(24)}`;
+}
+
+function createVerificationCode() {
+  const word = VERIFICATION_CODE_WORDS[Math.floor(Math.random() * VERIFICATION_CODE_WORDS.length)] ?? "folio";
+  return `${word}-${randomToken(4).toUpperCase()}`;
+}
+
+function apiKeyPrefix(apiKey: string) {
+  return apiKey.slice(0, 12);
+}
+
+function bearerTokenFromRequest(request: Request) {
+  const header = request.headers.get("authorization");
+  if (!header) {
+    return null;
+  }
+  const match = header.match(/^Bearer\s+(.+)$/i);
+  return match?.[1]?.trim() ?? null;
+}
+
+function publicAgentIdentity(agent: AgentIdentityRecord) {
+  return {
+    id: agent.id,
+    userId: agent.userId,
+    ownerUserId: agent.ownerUserId,
+    name: agent.name,
+    description: agent.description,
+    apiKeyPrefix: agent.apiKeyPrefix,
+    status: agent.status,
+    verificationCode: agent.verificationCode,
+    createdAt: agent.createdAt,
+    claimedAt: agent.claimedAt,
+    lastUsedAt: agent.lastUsedAt,
+    metadata: agent.metadata,
+  };
+}
+
+function agentClaimUrl(request: Request, claimToken: string) {
+  const url = new URL(request.url);
+  return `${url.origin}/claim/${claimToken}`;
+}
+
+async function registerAgentIdentity(
+  deps: AppDeps,
+  request: Request,
+  payload: AgentRegistrationRequest,
+  ownerUserId?: string | null,
+) {
+  const apiKey = createAgentApiKey();
+  const record = await deps.store.createAgentIdentity({
+    name: payload.name,
+    description: payload.description ?? null,
+    ownerUserId: ownerUserId ?? null,
+    apiKeyPrefix: apiKeyPrefix(apiKey),
+    apiKeyHash: await sha256Hex(apiKey),
+    verificationCode: createVerificationCode(),
+    claimToken: createClaimToken(),
+    metadata: {
+      registrationSource: ownerUserId ? "account" : "cli",
+    },
+  });
+  return {
+    apiKey,
+    claimUrl: agentClaimUrl(request, record.claimToken),
+    agent: record,
+  };
+}
 
 function sseEvent(event: string, data: Record<string, unknown>): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -3943,45 +4062,75 @@ export function createApp(deps: AppDeps) {
         return "";
       },
       allowMethods: ["GET", "POST", "DELETE", "OPTIONS"],
-      allowHeaders: ["content-type"],
+      allowHeaders: ["content-type", "authorization"],
       exposeHeaders: ["content-type"],
       credentials: true,
       maxAge: 86400,
     }),
   );
 
-  async function resolveUser(c: Context) {
+  async function resolvePrincipal(c: Context): Promise<AuthPrincipal | null> {
+    const bearerToken = bearerTokenFromRequest(c.req.raw);
+    if (bearerToken) {
+      const agent = await deps.store.authenticateAgentApiKey(await sha256Hex(bearerToken));
+      if (agent) {
+        const user = await deps.store.getUserProfile(agent.userId);
+        if (user) {
+          return {
+            kind: "agent",
+            user,
+            agent,
+          };
+        }
+      }
+    }
     if (deps.auth?.isConfigured()) {
-      return deps.auth.getCurrentUser(c);
+      const user = await deps.auth.getCurrentUser(c);
+      return user ? { kind: "user", user } : null;
     }
     const userId = c.req.query("userId");
     if (!userId) {
       return null;
     }
     await deps.store.ensureUser(userId);
-    return deps.store.getUserProfile(userId);
+    const user = await deps.store.getUserProfile(userId);
+    return user ? { kind: "user", user } : null;
+  }
+
+  async function resolveUser(c: Context) {
+    const principal = await resolvePrincipal(c);
+    return principal?.user ?? null;
   }
 
   async function requireAdmin(c: Context) {
-    const user = await resolveUser(c);
-    if (!isAdminUser(user, deps.adminAllowedEmail)) {
+    const principal = await resolvePrincipal(c);
+    if (!principal || principal.kind !== "user" || !isAdminUser(principal.user, deps.adminAllowedEmail)) {
       return null;
     }
-    return user;
+    return principal.user;
   }
 
   async function canAccessSession(c: Context, session: SessionRecord) {
+    const principal = await resolvePrincipal(c);
+    if (!principal) {
+      return !(deps.auth?.isConfigured() ?? false);
+    }
+    if (principal.kind === "agent") {
+      return principal.user.id === session.userId;
+    }
     if (!(deps.auth?.isConfigured() ?? false)) {
       return true;
     }
-    const user = await resolveUser(c);
-    if (!user) {
+    if (!principal.user) {
       return false;
     }
-    return user.id === session.userId || isAdminUser(user, deps.adminAllowedEmail);
+    return principal.user.id === session.userId || isAdminUser(principal.user, deps.adminAllowedEmail);
   }
 
   function requireTrustedBrowserRequest(c: Context) {
+    if (bearerTokenFromRequest(c.req.raw)) {
+      return null;
+    }
     if (!(deps.auth?.isConfigured() ?? false)) {
       return null;
     }
@@ -4059,13 +4208,187 @@ export function createApp(deps: AppDeps) {
     });
   });
 
+  app.get("/skill.md", (c) => {
+    const apiBase = `${new URL(c.req.url).origin}/api/v1`;
+    const skill = [
+      "---",
+      "name: alphabook",
+      "version: 1.0.0",
+      "description: Agent-facing research access for AlphaBook's corpus and retrieval runtime.",
+      `homepage: ${new URL(c.req.url).origin}`,
+      `metadata: ${JSON.stringify({ alphabook: { api_base: apiBase, category: "research" } })}`,
+      "---",
+      "",
+      "# AlphaBook",
+      "",
+      "If a human sends you this file, you are the AI agent that should connect to AlphaBook over the CLI.",
+      "",
+      "## What to do",
+      "",
+      "1. Register yourself.",
+      "2. Save the returned `api_key`.",
+      "3. Send the returned `claim_url` back to your human.",
+      "4. Tell them to open the claim URL while signed into AlphaBook.",
+      "5. Use the same API key for future research requests.",
+      "",
+      "## Register first",
+      "",
+      "```bash",
+      `curl -X POST ${apiBase}/agents/register \\`,
+      "  -H \"Content-Type: application/json\" \\",
+      "  -d '{\"name\":\"YourAgentName\",\"description\":\"What you research\"}'",
+      "```",
+      "",
+      "## Check your identity",
+      "",
+      "```bash",
+      `curl ${apiBase}/agents/me \\`,
+      "  -H \"Authorization: Bearer YOUR_API_KEY\"",
+      "```",
+      "",
+      "## Run research from the CLI",
+      "",
+      "```bash",
+      `curl -N -X POST ${apiBase}/chat \\`,
+      "  -H \"Authorization: Bearer YOUR_API_KEY\" \\",
+      "  -H \"Content-Type: application/json\" \\",
+      "  -d '{\"message\":\"Find public domain works about grief and exile\"}'",
+      "```",
+      "",
+      "## Session endpoints",
+      "",
+      `- \`POST ${apiBase}/chat\` streams a research run`,
+      `- \`GET ${apiBase}/sessions\` lists your sessions`,
+      `- \`GET ${apiBase}/sessions/:sessionId/messages\` returns the transcript`,
+      `- \`GET ${apiBase}/agents/me\` returns your agent identity`,
+      "",
+      "## Auth",
+      "",
+      "Use `Authorization: Bearer YOUR_API_KEY` on every CLI request.",
+    ].join("\n");
+    return c.text(skill, 200, {
+      "content-type": "text/markdown; charset=utf-8",
+    });
+  });
+
   app.get("/me", async (c) => {
-    const user = await resolveUser(c);
+    const principal = await resolvePrincipal(c);
+    const user = principal?.user ?? null;
     return c.json({
       authenticated: Boolean(user),
       authConfigured: deps.auth?.isConfigured() ?? false,
       user: user ?? null,
+      auth: principal
+        ? {
+            type: principal.kind,
+            agent: principal.kind === "agent" ? publicAgentIdentity(principal.agent) : null,
+          }
+        : null,
     });
+  });
+
+  app.post("/api/v1/agents/register", async (c) => {
+    const payload = AgentRegistrationRequestSchema.parse(await c.req.json());
+    const registration = await registerAgentIdentity(deps, c.req.raw, payload);
+    return c.json({
+      api_key: registration.apiKey,
+      claim_url: registration.claimUrl,
+      verification_code: registration.agent.verificationCode,
+      status: registration.agent.status,
+      agent: {
+        ...publicAgentIdentity(registration.agent),
+        claimUrl: registration.claimUrl,
+        verificationCode: registration.agent.verificationCode,
+      },
+    }, 201);
+  });
+
+  app.get("/api/v1/agents/me", async (c) => {
+    const principal = await resolvePrincipal(c);
+    if (!principal || principal.kind !== "agent") {
+      return c.json({ error: "Agent API key required." }, 401);
+    }
+    return c.json({
+      authenticated: true,
+      authType: "agent",
+      user: principal.user,
+      agent: publicAgentIdentity(principal.agent),
+    });
+  });
+
+  app.get("/claim/:claimToken", async (c) => {
+    const claimToken = c.req.param("claimToken");
+    const agent = await deps.store.getAgentIdentityByClaimToken(claimToken);
+    if (!agent) {
+      return c.text("Claim not found.", 404);
+    }
+    if (!deps.auth?.isConfigured()) {
+      return c.text("Browser claim flow requires account auth to be configured.", 501);
+    }
+    const principal = await resolvePrincipal(c);
+    if (!principal || principal.kind !== "user") {
+      const currentUrl = new URL(c.req.url).toString();
+      return c.redirect(`/auth/sign-in?returnTo=${encodeURIComponent(currentUrl)}`, 302);
+    }
+    const claimed = await deps.store.claimAgentIdentity(claimToken, principal.user.id);
+    if (!claimed) {
+      return c.text("Unable to claim this agent identity.", 400);
+    }
+    return c.html(`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>AlphaBook agent claimed</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body { font-family: Manrope, system-ui, sans-serif; background: #f6f0e7; color: #1f1c17; padding: 48px 24px; }
+      main { max-width: 640px; margin: 0 auto; background: #fffaf4; border: 1px solid #dfd2c2; border-radius: 20px; padding: 32px; }
+      h1 { margin-top: 0; }
+      code { background: #f1e4d3; padding: 2px 6px; border-radius: 6px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Agent claimed</h1>
+      <p><strong>${claimed.name}</strong> is now attached to your AlphaBook account.</p>
+      <p>The agent can keep using its existing API key over the CLI. Its verification code is <code>${claimed.verificationCode}</code>.</p>
+      <p>You can close this tab and return to your agent.</p>
+    </main>
+  </body>
+</html>`);
+  });
+
+  app.get("/api/v1/agent-keys", async (c) => {
+    const trustedRequest = requireTrustedBrowserRequest(c);
+    if (trustedRequest) {
+      return trustedRequest;
+    }
+    const principal = await resolvePrincipal(c);
+    if (!principal || principal.kind !== "user") {
+      return c.json({ error: "Authentication required." }, deps.auth?.isConfigured() ? 401 : 400);
+    }
+    const keys = await deps.store.listAgentIdentitiesByOwner(principal.user.id);
+    return c.json({ keys: keys.map((key) => publicAgentIdentity(key)) });
+  });
+
+  app.post("/api/v1/agent-keys", async (c) => {
+    const trustedRequest = requireTrustedBrowserRequest(c);
+    if (trustedRequest) {
+      return trustedRequest;
+    }
+    const principal = await resolvePrincipal(c);
+    if (!principal || principal.kind !== "user") {
+      return c.json({ error: "Authentication required." }, deps.auth?.isConfigured() ? 401 : 400);
+    }
+    const payload = AgentRegistrationRequestSchema.parse(await c.req.json());
+    const registration = await registerAgentIdentity(deps, c.req.raw, payload, principal.user.id);
+    return c.json({
+      api_key: registration.apiKey,
+      key: {
+        ...publicAgentIdentity(registration.agent),
+        claimUrl: registration.claimUrl,
+      },
+    }, 201);
   });
 
   app.post("/a", async (c) => {
@@ -4309,14 +4632,15 @@ export function createApp(deps: AppDeps) {
     return c.json({ redirectTo });
   });
 
-  app.post("/chat", async (c) => {
+  const handleChatRequest = async (c: Context) => {
     const trustedRequest = requireTrustedBrowserRequest(c);
     if (trustedRequest) {
       return trustedRequest;
     }
     const payload = ChatRequestSchema.parse(await c.req.json());
-    const user = await resolveUser(c);
-    if ((deps.auth?.isConfigured() ?? false) && !user) {
+    const principal = await resolvePrincipal(c);
+    const user = principal?.user ?? null;
+    if ((deps.auth?.isConfigured() ?? false) && !user && !bearerTokenFromRequest(c.req.raw)) {
       return c.json({ error: "Authentication required." }, 401);
     }
     if (!user && !payload.userId) {
@@ -4358,7 +4682,10 @@ export function createApp(deps: AppDeps) {
           sessionId: requestPayload.sessionId ?? null,
         }),
     );
-  });
+  };
+
+  app.post("/chat", handleChatRequest);
+  app.post("/api/v1/chat", handleChatRequest);
 
   app.get("/sessions/:sessionId/runs/:runId/stream", async (c) => {
     const trustedRequest = requireTrustedBrowserRequest(c);
@@ -4525,17 +4852,20 @@ export function createApp(deps: AppDeps) {
     });
   });
 
-  app.get("/sessions", async (c) => {
+  const handleListSessions = async (c: Context) => {
     const user = await resolveUser(c);
     if (!user) {
       return c.json({ error: "Authentication required." }, deps.auth?.isConfigured() ? 401 : 400);
     }
     const sessions = await deps.store.listSessions(user.id);
     return c.json({ sessions });
-  });
+  };
 
-  app.get("/sessions/:sessionId/messages", async (c) => {
-    const sessionId = c.req.param("sessionId");
+  app.get("/sessions", handleListSessions);
+  app.get("/api/v1/sessions", handleListSessions);
+
+  const handleListMessages = async (c: Context) => {
+    const sessionId = c.req.param("sessionId") ?? "";
     const session = await deps.store.getSession(sessionId);
     if (!session) {
       return c.json({ error: "Session not found." }, 404);
@@ -4545,7 +4875,10 @@ export function createApp(deps: AppDeps) {
     }
     const messages = await deps.store.listMessages(sessionId);
     return c.json({ messages });
-  });
+  };
+
+  app.get("/sessions/:sessionId/messages", handleListMessages);
+  app.get("/api/v1/sessions/:sessionId/messages", handleListMessages);
 
   app.get("/sessions/:sessionId/runs", async (c) => {
     const sessionId = c.req.param("sessionId");

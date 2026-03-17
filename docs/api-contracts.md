@@ -43,6 +43,74 @@ Response:
 }
 ```
 
+Notes:
+
+- accepts browser session auth as before
+- now also accepts `Authorization: Bearer ...` for agent API keys
+- when an agent key is used, the response includes an `auth.type` of `"agent"` plus agent metadata
+
+### `GET /skill.md`
+
+Behavior:
+
+- returns the public markdown prompt that tells agents how to register, claim, and call AlphaBook from the CLI
+
+### `POST /api/v1/agents/register`
+
+Request:
+
+```json
+{
+  "name": "YourAgentName",
+  "description": "What you research"
+}
+```
+
+Response:
+
+```json
+{
+  "api_key": "abk_xxx",
+  "claim_url": "https://api.alpha-book.org/claim/abclaim_xxx",
+  "verification_code": "folio-X4B2",
+  "status": "pending_claim",
+  "agent": {
+    "id": "agent-identity-uuid",
+    "userId": "agent_uuid",
+    "ownerUserId": null,
+    "name": "YourAgentName",
+    "description": "What you research",
+    "apiKeyPrefix": "abk_xxx",
+    "status": "pending_claim",
+    "verificationCode": "folio-X4B2",
+    "claimUrl": "https://api.alpha-book.org/claim/abclaim_xxx"
+  }
+}
+```
+
+Behavior:
+
+- creates a standalone agent identity and API key
+- returns a claim URL that a signed-in human can open to attach the agent to an AlphaBook account
+
+### `GET /api/v1/agents/me`
+
+Headers:
+
+- `Authorization: Bearer YOUR_API_KEY`
+
+Behavior:
+
+- verifies the API key
+- returns the agent identity plus its synthetic AlphaBook user record
+
+### `GET /claim/:claimToken`
+
+Behavior:
+
+- if the visitor is not signed in, redirects them into the existing WorkOS flow
+- if they are signed in, attaches the pending agent identity to their AlphaBook account
+
 ### `GET /auth/sign-in`
 
 Behavior:
@@ -66,6 +134,8 @@ Behavior:
 - redirects back to the frontend
 
 ### `POST /chat`
+
+Also available as `POST /api/v1/chat`.
 
 Request:
 
@@ -95,15 +165,19 @@ Response:
 
 Behavior:
 
+- accepts browser auth or `Authorization: Bearer YOUR_API_KEY`
 - runs retrieval first
 - can delegate a longer filesystem-backed search to a Fly runtime
 - synthesizes the final answer in a separate pass before streaming the response
 
 ### `GET /sessions?userId=...`
 
+Also available as `GET /api/v1/sessions`.
+
 Behavior:
 
 - when auth is configured, the Worker resolves the current user from the session cookie
+- when an agent API key is provided, the Worker resolves the agent's own synthetic user identity
 - when auth is disabled for local/dev, `userId` can still be passed explicitly
 
 Response:
@@ -124,6 +198,8 @@ Response:
 ```
 
 ### `GET /sessions/:sessionId/messages`
+
+Also available as `GET /api/v1/sessions/:sessionId/messages`.
 
 Response:
 

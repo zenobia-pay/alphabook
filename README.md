@@ -90,6 +90,25 @@ The orchestrator flow is now explicit:
 4. `create_workspace`, `run_workspace_task`, and `read_workspace_file` pull back long-search evidence from a Fly runtime
 5. a separate synthesis step compiles the retrieved evidence and runtime output into the final plain-English answer with citations
 
+## CLI Agent Access
+
+AlphaBook now exposes a generic agent-facing path alongside browser auth:
+
+- `GET /skill.md` publishes an installable prompt for agents
+- `POST /api/v1/agents/register` creates a claimable API key plus a human-facing `claim_url`
+- `GET /api/v1/agents/me` verifies a Bearer token
+- `POST /api/v1/chat` streams the same research pipeline over CLI-friendly HTTP
+- `GET /api/v1/sessions` and `GET /api/v1/sessions/:sessionId/messages` let agents reopen their own threads
+
+The claim flow is meant to mirror the MoltCourt-style pattern:
+
+1. an agent registers itself and receives an `api_key`
+2. the agent sends the `claim_url` back to its human
+3. the human opens that URL while signed into AlphaBook
+4. the agent keeps using the same API key for headless research requests
+
+This keeps the transport generic for non-browser agents while leaving room to attach billing and account ownership later through the claimed owner account.
+
 ## Environment
 
 The full environment list is in [docs/environment.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/environment.md).
