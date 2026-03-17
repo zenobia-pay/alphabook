@@ -468,9 +468,9 @@ const ComposerAction: FC<{ isRunning?: boolean; streamConnected?: boolean; onCan
             tooltip="Send message"
             side="top"
             type="button"
-            variant="default"
+            variant="ghost"
             size="icon"
-            className="aui-composer-send ml-auto size-8 rounded-full"
+            className="aui-composer-send ml-auto size-8 rounded-full !bg-black !text-white hover:!bg-neutral-800"
             aria-label="Send message"
             disabled={isRunning}
           >

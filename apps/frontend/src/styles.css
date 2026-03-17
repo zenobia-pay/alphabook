@@ -145,7 +145,7 @@ button {
 .sidebar-nav {
   display: grid;
   gap: 0;
-  padding-top: 6px;
+  padding-top: 0;
   align-content: start;
 }
 
