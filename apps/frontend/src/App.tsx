@@ -1648,39 +1648,7 @@ function AuthLoadingState({ compact = false }: { compact?: boolean }) {
   );
 }
 
-function AssistantLoadingState({ mode = "session" }: { mode?: "session" | "welcome" }) {
-  if (mode === "welcome") {
-    return (
-      <div className="assistant-loading-state assistant-loading-state-welcome" aria-hidden="true">
-        <div className="assistant-loading-thread assistant-loading-thread-welcome">
-          <div className="assistant-loading-hero">
-            <Skeleton className="assistant-loading-hero-kicker" />
-            <Skeleton className="assistant-loading-hero-title" />
-            <Skeleton className="assistant-loading-hero-title is-short" />
-            <Skeleton className="assistant-loading-hero-copy" />
-          </div>
-          <div className="assistant-loading-suggestion-grid">
-            {[0, 1].map((item) => (
-              <div key={item} className="assistant-loading-suggestion-card">
-                <Skeleton className="assistant-loading-suggestion-title" />
-                <Skeleton className="assistant-loading-suggestion-line is-wide" />
-                <Skeleton className="assistant-loading-suggestion-line" />
-              </div>
-            ))}
-          </div>
-          <div className="assistant-loading-composer">
-            <Skeleton className="assistant-loading-composer-line is-long" />
-            <Skeleton className="assistant-loading-composer-line" />
-            <div className="assistant-loading-composer-footer">
-              <Skeleton className="assistant-loading-dot" />
-              <Skeleton className="assistant-loading-send" />
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
+function AssistantLoadingState() {
   return (
     <div className="assistant-loading-state" aria-hidden="true">
       <div className="assistant-loading-thread">
@@ -3611,17 +3579,21 @@ export default function App() {
   }
 
   function renderAssistantView() {
-    const assistantHistoryLoading =
-      !authPending
-      && !authLocked
+    const assistantSessionLoading =
+      selectedSessionId != null
       && (
-        (hasAuthenticatedUser && !sessionsResolved)
-        || sessionsLoading
-        || (selectedSessionId != null && messagesLoading)
+        authPending
+        || (!authLocked && (
+          (hasAuthenticatedUser && !sessionsResolved)
+          || sessionsLoading
+          || messagesLoading
+        ))
       );
-    const assistantSessionLoading = assistantHistoryLoading && selectedSessionId != null;
+    const showStaticLanding =
+      selectedSessionId == null
+      && !authLocked;
     const showWelcome =
-      !assistantHistoryLoading
+      !assistantSessionLoading
       && !authState.loading
       && !authLocked
       && selectedSessionId == null
@@ -3633,16 +3605,25 @@ export default function App() {
         {loadError ? <div className="thread-error-banner">{loadError}</div> : null}
 
         <div className="assistant-thread-shell" data-testid="thread">
-          {authPending ? (
-            <AssistantLoadingState mode="welcome" />
-          ) : assistantHistoryLoading ? (
-            <AssistantLoadingState mode={assistantSessionLoading ? "session" : "welcome"} />
+          {assistantSessionLoading ? (
+            <AssistantLoadingState />
           ) : authLocked ? (
             <LockedState
               compact
               title="Sign in to use the assistant."
             />
-          ) : (
+          ) : showStaticLanding || showWelcome ? (
+              <AssistantSurface
+                key="assistant-landing"
+                messages={[]}
+                isSending={false}
+                streamConnected={false}
+                streamingAssistantId={null}
+                artifacts={[]}
+                onPrompt={sendPrompt}
+                onCancel={cancelActiveRun}
+              />
+            ) : (
               <AssistantSurface
                 key={selectedSessionId ?? "new-thread"}
                 messages={visibleMessages}
