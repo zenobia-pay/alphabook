@@ -4882,6 +4882,14 @@ export function createApp(deps: AppDeps) {
     return deps.auth.callback(c);
   });
 
+  app.get("/auth/sign-out", async (c) => {
+    if (!deps.auth?.isConfigured()) {
+      return c.redirect("https://alpha-book.org", 302);
+    }
+    const redirectTo = await deps.auth.signOut(c);
+    return c.redirect(redirectTo, 302);
+  });
+
   app.post("/auth/sign-out", async (c) => {
     const trustedRequest = requireTrustedBrowserRequest(c);
     if (trustedRequest) {
