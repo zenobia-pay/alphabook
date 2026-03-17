@@ -4514,7 +4514,6 @@ export function createApp(deps: AppDeps) {
     if (!(await canAccessSession(c, session))) {
       return c.json({ error: "Not authorized for this session." }, 403);
     }
-    await reconcileSessionRuns(deps, c.req.raw, sessionId);
     const messages = await deps.store.listMessages(sessionId);
     return c.json({ messages });
   });
@@ -4528,8 +4527,6 @@ export function createApp(deps: AppDeps) {
     if (!(await canAccessSession(c, session))) {
       return c.json({ error: "Not authorized for this session." }, 403);
     }
-
-    await reconcileSessionRuns(deps, c.req.raw, sessionId);
     const runs = await deps.store.listRuns(sessionId);
     return c.json({ runs });
   });
