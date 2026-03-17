@@ -15,6 +15,16 @@ import { CheckIcon, CopyIcon } from "lucide-react";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { cn } from "@/lib/utils";
 
+function normalizeMarkdownHref(href?: string) {
+  if (!href) {
+    return href;
+  }
+  if (href === "@skill.md") {
+    return "/skill.md";
+  }
+  return href;
+}
+
 const MarkdownTextImpl = () => {
   return (
     <MarkdownTextPrimitive
@@ -130,12 +140,13 @@ const defaultComponents = memoizeMarkdownComponents({
       {...props}
     />
   ),
-  a: ({ className, ...props }) => (
+  a: ({ className, href, ...props }) => (
     <a
       className={cn(
         "aui-md-a text-primary underline underline-offset-2 hover:text-primary/80",
         className,
       )}
+      href={normalizeMarkdownHref(href)}
       {...props}
     />
   ),

@@ -9,7 +9,7 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
-    if (url.pathname === "/skill.md") {
+    if (url.pathname === "/skill.md" || url.pathname === "/@skill.md") {
       const upstreamOrigin = env.API_ORIGIN ?? "https://api.alpha-book.org";
       const upstreamUrl = new URL("/skill.md", upstreamOrigin);
       return fetch(upstreamUrl.toString(), {
