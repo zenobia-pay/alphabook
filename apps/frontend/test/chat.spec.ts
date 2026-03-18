@@ -142,7 +142,7 @@ test("logged out assistant keeps the normal shell while disabling the composer",
   await expect(thread.getByRole("link", { name: "Sign in" })).toBeVisible();
 });
 
-test("new chat keeps the welcome-shaped skeleton while auth is loading", async ({ page }) => {
+test("new chat renders immediately instead of showing a loading skeleton during auth", async ({ page }) => {
   await page.route("**/api/me", async (route) => {
     await new Promise((resolve) => setTimeout(resolve, 1200));
     await route.fulfill({
@@ -171,9 +171,8 @@ test("new chat keeps the welcome-shaped skeleton while auth is loading", async (
 
   await page.goto("/?view=assistant", { waitUntil: "domcontentloaded" });
 
-  await expect(page.locator(".assistant-loading-state-welcome")).toBeVisible();
+  await expect(page.getByTestId("empty-state")).toBeVisible();
   await expect(page.locator(".assistant-workspace-loading")).toHaveCount(0);
-  await expect(page.getByTestId("empty-state")).toBeVisible({ timeout: 5000 });
 });
 
 test("session route keeps the workspace skeleton while conversation data is loading", async ({ page }) => {

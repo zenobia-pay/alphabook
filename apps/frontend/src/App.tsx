@@ -4452,9 +4452,6 @@ export default function App() {
       && !isSending
       && recoveredActiveRunId == null
       && isConversationAccessIssue(loadError);
-    const showWelcomeLoading =
-      selectedSessionId == null
-      && authPending;
     const assistantComposerNotice = authLocked ? (
       <>
         Sign in to start a research thread.{" "}
@@ -4468,10 +4465,6 @@ export default function App() {
 
         {assistantSessionLoading ? (
           <AssistantWorkspaceLoadingState width={bookAssistantWidth} />
-        ) : showWelcomeLoading ? (
-          <div className="assistant-thread-shell" data-testid="thread">
-            <AssistantThreadLoadingState welcome />
-          </div>
         ) : showRestrictedConversation ? (
           <div className="assistant-thread-shell" data-testid="thread">
             <LockedState compact title={authLocked ? "Sign in to view this conversation." : "This conversation is private."} />
