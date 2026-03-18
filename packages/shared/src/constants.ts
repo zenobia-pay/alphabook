@@ -10,7 +10,7 @@ export const R2_PREFIXES = {
 } as const;
 
 export const TOOL_LABELS = {
-  search_works: "Corpus Search",
+  search_works: "Metadata Search",
   get_work_metadata: "Book Context",
   get_relevant_chunks: "Passage Search",
   get_work_text: "Text Lookup",
