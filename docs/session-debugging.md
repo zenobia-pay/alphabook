@@ -31,11 +31,42 @@ curl -sS "https://api.alpha-book.org/sessions/<session-id>/runs" -H "Cookie: $CO
 curl -sS "https://api.alpha-book.org/sessions/<session-id>/runs/<run-id>/logs" -H "Cookie: $COOKIE" | jq .
 ```
 
+5. If you are an admin, prefer the richer admin log view:
+
+```bash
+curl -sS "https://api.alpha-book.org/admin/runs/<run-id>/logs" -H "Cookie: $COOKIE" | jq .
+```
+
+This is the most complete log surface. It includes:
+
+- session
+- run
+- owner
+- messages
+- tool calls
+- runtime instances
+- artifacts
+- `liveRuntime`
+
+`liveRuntime` is the important extra field when a run actually reached the Fly runtime or other VM-backed execution path.
+
+## Detailed Endpoints
+
+- `GET /sessions/:sessionId/debug`
+  Best whole-session debug snapshot for a signed-in owner.
+- `GET /sessions/:sessionId/runs/:runId/debug`
+  Best structured per-run snapshot.
+- `GET /sessions/:sessionId/runs/:runId/logs`
+  Best per-run artifact view for non-admin debugging.
+- `GET /admin/runs/:runId/logs`
+  Best overall log endpoint. Use this first when admin access is available.
+
 ## How To Read The Failure
 
 - If `messages` or `runs` return `403`, the problem is session access or browser auth.
 - If the run has `plannerTurns: 0` and `toolCalls: []`, the failure happened before any retrieval or runtime tool work started.
 - The most useful field is usually the `run.completed.payload.error` entry inside the raw `tool_stream_raw` artifact in the run logs response.
+- If the run reached VM-backed execution, check `liveRuntime` from the admin logs endpoint for runtime-specific failures and file snapshots.
 
 ## Common Failure Buckets
 
@@ -47,6 +78,26 @@ curl -sS "https://api.alpha-book.org/sessions/<session-id>/runs/<run-id>/logs" -
   tool calls exist, but one of them ends in `failed` or `timed_out`.
 - UI-only issue:
   API responses are healthy, but the page still renders incorrectly.
+
+## Do The Detailed Endpoints Show The Exact Error?
+
+Usually yes, but not always in the top-level `run.status` field.
+
+Where to look:
+
+- `toolCalls`
+  Good for tool-level failures after planning has started.
+- `artifacts`
+  Often includes `tool_stream_raw`, briefings, notes, or recovered traces.
+- `tool_stream_raw`
+  Often contains the clearest serialized `run.completed` error payload.
+- `liveRuntime`
+  Best source for VM/runtime-side failures when runtime work actually started.
+
+Limits:
+
+- If the failure happens before planning or tool execution, there may be no `toolCalls` and no `runtimeInstances`.
+- In those cases, the raw stream artifact is often the only place where the underlying upstream error is preserved.
 
 ## Session `c5317ca2-a7ef-40e0-8247-2b06b608f3d2`
 
