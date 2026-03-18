@@ -4746,8 +4746,6 @@ export default function App() {
                 src={buildWorkContentHref(activeWorkId)}
                 title={activeWork?.title ? `${activeWork.title} text` : "Book text"}
                 loading="eager"
-                referrerPolicy="same-origin"
-                sandbox="allow-same-origin"
               />
             </div>
           ) : null}
