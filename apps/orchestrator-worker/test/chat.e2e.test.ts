@@ -620,6 +620,120 @@ test("orchestrator can delegate to a runtime gateway and finish the run", async 
   assert.match(body, /workspace comparison completed/);
 });
 
+test("orchestrator prewarms the deep research workspace before the first planner turn", async () => {
+  const store = new InMemoryAppStore(
+    [
+      {
+        id: "work-1",
+        gutenbergId: 996,
+        title: "Don Quixote",
+        language: "en",
+        releaseDate: "2000-01-01",
+        rightsStatus: "public_domain",
+        summary: "A novel about grief and errantry.",
+        authors: ["Miguel de Cervantes"],
+        subjects: ["fiction"],
+        cleanTextKey: "gutenberg/clean/996/clean.txt",
+      },
+    ],
+    [],
+  );
+
+  let createWorkspaceCalls = 0;
+  let plannerSawPendingWorkspace = false;
+
+  const planner = {
+    async decide(context: PlannerContext) {
+      assert.equal(createWorkspaceCalls, 1);
+      if (context.turns === 1) {
+        assert.ok((context.pendingTools ?? []).some((entry) => entry.toolName === "create_workspace"));
+        plannerSawPendingWorkspace = true;
+        return {
+          type: "tool_call" as const,
+          tool_name: "search_works" as const,
+          args: {
+            query: context.userMessage,
+            filters: {
+              limit: 5,
+            },
+          },
+          rationale: "Searching while the workspace boots.",
+        };
+      }
+      return {
+        type: "final_answer" as const,
+        answer: "The workspace was already spinning up while I searched.",
+        citations: [],
+      };
+    },
+  };
+
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    planner,
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace(args) {
+        createWorkspaceCalls += 1;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        return {
+          ok: true,
+          runtimeId: "runtime-prewarm",
+          manifest: args,
+        };
+      },
+      async runWorkspaceTask() {
+        return {
+          ok: true,
+          runtimeId: "runtime-prewarm",
+        };
+      },
+      async readWorkspaceFile() {
+        return {
+          ok: false,
+          error: "not used",
+        };
+      },
+      async listWorkspaceFiles() {
+        return {
+          ok: true,
+          files: [],
+        };
+      },
+      async destroyWorkspace() {
+        return {
+          ok: true,
+        };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const response = await app.request("/chat", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      userId: "11111111-1111-1111-1111-111111111111",
+      message: "Find grief across the corpus.",
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  const body = await response.text();
+  assert.equal(createWorkspaceCalls, 1);
+  assert.equal(plannerSawPendingWorkspace, true);
+  assert.match(body, /spinning up the deeper research/i);
+  assert.match(body, /Searching while the .* boots\./);
+});
+
 test("auth sign-up route redirects into WorkOS authkit with sign-up hint", async () => {
   const store = new InMemoryAppStore();
   const auth = new WorkOSAuth(
@@ -1784,7 +1898,7 @@ test("session endpoints expose chat history for the assistant UI", async () => {
   };
   assert.deepEqual(
     messagesPayload.messages.map((message) => message.role),
-    ["user", "assistant"],
+    ["user", "assistant", "assistant"],
   );
 });
 
@@ -1943,7 +2057,14 @@ test("workspace args are normalized and run logs are exposed", async () => {
   });
   await chatResponse.text();
 
-  assert.deepEqual(capturedTaskContext, { prompt: "find angry passages" });
+  assert.deepEqual(capturedTaskContext, {
+    question: "Find angry passages in Divine Comedy",
+    researchObjective: "Find angry passages in Divine Comedy",
+    mode: "exhaustive_corpus_search",
+    candidateWorkIds: [],
+    topChunks: [],
+    prewarmed: true,
+  });
 
   const sessionsResponse = await app.request("/sessions?userId=demo-user");
   const sessionsPayload = (await sessionsResponse.json()) as {
@@ -1964,9 +2085,16 @@ test("workspace args are normalized and run logs are exposed", async () => {
   const runDetailsPayload = (await runDetailsResponse.json()) as {
     toolCalls: Array<{ toolName: string; argsJson: Record<string, unknown> }>;
   };
-  assert.equal(runDetailsPayload.toolCalls.length, 1);
+  assert.equal(runDetailsPayload.toolCalls.length, 2);
   assert.equal(runDetailsPayload.toolCalls[0]?.toolName, "create_workspace");
-  assert.deepEqual(runDetailsPayload.toolCalls[0]?.argsJson.taskContext, { prompt: "find angry passages" });
+  assert.deepEqual(runDetailsPayload.toolCalls[0]?.argsJson.taskContext, {
+    question: "Find angry passages in Divine Comedy",
+    researchObjective: "Find angry passages in Divine Comedy",
+    mode: "exhaustive_corpus_search",
+    candidateWorkIds: [],
+    topChunks: [],
+    prewarmed: true,
+  });
 
   const debugResponse = await app.request(`/sessions/${sessionId}/debug`);
   assert.equal(debugResponse.status, 200);

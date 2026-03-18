@@ -3709,6 +3709,205 @@ async function runOrchestrator(
     return wasCompleted;
   };
 
+  const ensureInitialPlanSent = async (routedQuery: string) => {
+    if (initialPlanSent) {
+      return;
+    }
+    const planText = initialAssistantPlan(routedQuery);
+    const planMessage = await deps.store.appendMessage(session.id, "assistant", planText, {
+      phase: "plan",
+      runId: run.id,
+    });
+    planMessageId = planMessage.id;
+    await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
+    await send("assistant.plan", {
+      runId: run.id,
+      sessionId: session.id,
+      messageId: planMessage.id,
+      text: planText,
+    });
+    recordRawLog("assistant.plan", {
+      runId: run.id,
+      sessionId: session.id,
+      messageId: planMessage.id,
+      text: planText,
+    });
+    initialPlanSent = true;
+  };
+
+  const startBackgroundWorkspace = async (
+    normalizedToolArgs: Record<string, unknown>,
+    rationale: string,
+  ) => {
+    runtimeTasks += 1;
+    const toolRecord = await deps.store.startToolCall(run.id, "create_workspace", normalizedToolArgs);
+    await ensureInitialPlanSent(routedQueryRef.current);
+    const startedLogLines = await normalizeToolLinesForUser(deps, {
+      toolName: "create_workspace",
+      lines: [
+        {
+          toolName: "create_workspace",
+          key: "rationale",
+          value: rationale,
+        },
+        ...flattenValueForCleanup(normalizedToolArgs).map((line) => ({
+          ...line,
+          toolName: "create_workspace" as const,
+        })),
+      ],
+    });
+    recordRawLog("tool.started.raw", {
+      runId: run.id,
+      toolCallId: toolRecord.id,
+      toolName: "create_workspace",
+      rationale,
+      args: normalizedToolArgs,
+    });
+    liveToolTrace = [
+      ...liveToolTrace,
+      {
+        id: toolRecord.id,
+        toolName: "create_workspace",
+        label: labelForToolCall("create_workspace", normalizedToolArgs),
+        rationale: sanitizeUserFacingToolText(rationale) ?? undefined,
+        progress: sanitizeUserFacingToolText(rationale) ? [sanitizeUserFacingToolText(rationale)!] : [],
+        args: {
+          __logLines: startedLogLines,
+        },
+        state: "running",
+      },
+    ];
+    await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
+    await send("tool.started", {
+      runId: run.id,
+      toolCallId: toolRecord.id,
+      toolName: "create_workspace",
+      label: labelForToolCall("create_workspace", normalizedToolArgs),
+      rationale: sanitizeUserFacingToolText(rationale) ?? null,
+      args: {
+        __logLines: startedLogLines,
+      },
+    });
+    const progressEmitter = startToolProgressEmitter(
+      deps.runtimeGateway,
+      async (eventName, data) => {
+        if (eventName !== "tool.progress" || typeof data.toolCallId !== "string" || typeof data.text !== "string") {
+          await send(eventName, data);
+          return;
+        }
+        queueToolProgress(
+          {
+            runId: typeof data.runId === "string" ? data.runId : run.id,
+            toolCallId: data.toolCallId,
+            toolName: "create_workspace",
+            text: data.text,
+            detail: data.detail && typeof data.detail === "object" ? data.detail as Record<string, unknown> : undefined,
+          },
+          async (progressText) => {
+            liveToolTrace = liveToolTrace.map((entry) =>
+              entry.id === data.toolCallId
+                ? appendToolProgress(entry, progressText)
+                : entry,
+            );
+            await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
+            await send("tool.progress", {
+              runId: run.id,
+              toolCallId: data.toolCallId,
+              toolName: "create_workspace",
+              text: progressText,
+            });
+          },
+        );
+      },
+      {
+        sessionId: session.id,
+        runId: run.id,
+      },
+      run.id,
+      toolRecord.id,
+      "create_workspace",
+      normalizedToolArgs,
+    );
+    pendingWorkspaceExecution = {
+      toolName: "create_workspace",
+      toolRecordId: toolRecord.id,
+      normalizedArgs: normalizedToolArgs,
+      rationale,
+      progressEmitter,
+      settled: false,
+      finalized: false,
+      status: "failed",
+      promise: (async () => {
+        let backgroundResult: Record<string, unknown>;
+        let backgroundStatus: "completed" | "failed" = "completed";
+        try {
+          backgroundResult = await executeTool(deps, "create_workspace", normalizedToolArgs, {
+            userId: session.userId,
+            sessionId: session.id,
+            runId: run.id,
+          });
+          addRuntimeIds(runtimeIdsToCleanup, normalizedToolArgs, backgroundResult);
+          const resultRuntimeId = typeof backgroundResult.runtimeId === "string" ? backgroundResult.runtimeId : null;
+          if (resultRuntimeId) {
+            activeRuns.get(run.id)?.runtimeIds.add(resultRuntimeId);
+          }
+        } catch (error) {
+          addRuntimeIds(runtimeIdsToCleanup, normalizedToolArgs);
+          backgroundStatus = "failed";
+          backgroundResult = {
+            ok: false,
+            error: formatToolExecutionError("create_workspace", error),
+          };
+          try {
+            await recordUnexpectedError(deps, error, {
+              request,
+              route: "/chat",
+              method: "POST",
+              source: "tool_execution",
+              toolName: "create_workspace",
+              runId: run.id,
+              sessionId: session.id,
+              userId: session.userId,
+              extra: {
+                toolArgs: normalizedToolArgs,
+              },
+            });
+          } catch {
+            // Error reporting should not block the user-facing run result.
+          }
+        } finally {
+          await progressEmitter.stop();
+          await flushToolProgress(
+            toolRecord.id,
+            {
+              runId: run.id,
+              toolName: "create_workspace",
+            },
+            async (progressText) => {
+              liveToolTrace = liveToolTrace.map((entry) =>
+                entry.id === toolRecord.id
+                  ? appendToolProgress(entry, progressText)
+                  : entry,
+              );
+              await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
+              await send("tool.progress", {
+                runId: run.id,
+                toolCallId: toolRecord.id,
+                toolName: "create_workspace",
+                text: progressText,
+              });
+            },
+          );
+        }
+        if (pendingWorkspaceExecution) {
+          pendingWorkspaceExecution.status = backgroundStatus;
+          pendingWorkspaceExecution.result = backgroundResult;
+          pendingWorkspaceExecution.settled = true;
+        }
+      })(),
+    };
+  };
+
   const routedQueryRef = { current: input.message };
   try {
     const routeDecision = deps.router
@@ -3775,6 +3974,27 @@ async function runOrchestrator(
 
     const routedQuery = routeDecision.fullQuery.trim() || input.message;
     routedQueryRef.current = routedQuery;
+    await ensureInitialPlanSent(routedQuery);
+    if (!pendingWorkspaceExecution) {
+      const prewarmToolArgs = normalizeToolArgs("create_workspace", {
+        workIds: Array.isArray(input.workIds) ? input.workIds.slice(0, 12) : [],
+        chunkIds: [],
+        taskContext: {
+          question: routedQuery,
+          researchObjective: routedQuery,
+          mode: Array.isArray(input.workIds) && input.workIds.length > 0 ? "open_book_analysis" : "exhaustive_corpus_search",
+          candidateWorkIds: Array.isArray(input.workIds) ? input.workIds.slice(0, 12) : [],
+          topChunks: [],
+          prewarmed: true,
+        },
+      });
+      await startBackgroundWorkspace(
+        prewarmToolArgs,
+        Array.isArray(input.workIds) && input.workIds.length > 0
+          ? "I’m spinning up the deeper research workspace for this book now so retrieval can feed into it immediately."
+          : "I’m spinning up the deeper research workspace now so retrieval can feed into it immediately.",
+      );
+    }
     for (let turn = 1; turn <= HARD_LIMITS.MAX_TURNS; turn += 1) {
       await harvestPendingWorkspace(false);
       if (activeRuns.get(run.id)?.cancelRequested) {
@@ -3898,28 +4118,7 @@ async function runOrchestrator(
         activeRun?.runtimeIds.add(runtimeId);
       }
       const toolRecord = await deps.store.startToolCall(run.id, toolCall.tool_name, normalizedToolArgs);
-      if (!initialPlanSent) {
-        const planText = initialAssistantPlan(routedQuery);
-        const planMessage = await deps.store.appendMessage(session.id, "assistant", planText, {
-          phase: "plan",
-          runId: run.id,
-        });
-        planMessageId = planMessage.id;
-        await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
-        await send("assistant.plan", {
-          runId: run.id,
-          sessionId: session.id,
-          messageId: planMessage.id,
-          text: planText,
-        });
-        recordRawLog("assistant.plan", {
-          runId: run.id,
-          sessionId: session.id,
-          messageId: planMessage.id,
-          text: planText,
-        });
-        initialPlanSent = true;
-      }
+      await ensureInitialPlanSent(routedQuery);
       const startedLogLines = await normalizeToolLinesForUser(deps, {
         toolName: toolCall.tool_name,
         lines: [

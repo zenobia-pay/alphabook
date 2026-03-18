@@ -184,9 +184,13 @@ test("session route keeps the workspace skeleton while conversation data is load
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        authConfigured: false,
-        authenticated: false,
-        user: null,
+        authConfigured: true,
+        authenticated: true,
+        user: {
+          id: "local-user",
+          email: "local@example.com",
+          name: "Local User",
+        },
       }),
     });
   });
@@ -197,14 +201,18 @@ test("session route keeps the workspace skeleton while conversation data is load
       contentType: "application/json",
       body: JSON.stringify({
         allowed: false,
-        authenticated: false,
-        authConfigured: false,
-        user: null,
+        authenticated: true,
+        authConfigured: true,
+        user: {
+          id: "local-user",
+          email: "local@example.com",
+          name: "Local User",
+        },
       }),
     });
   });
 
-  await page.route("**/api/sessions", async (route) => {
+  await page.route(/\/api\/sessions(?:\?.*)?$/, async (route) => {
     await route.fulfill({
       status: 200,
       contentType: "application/json",

@@ -2450,11 +2450,25 @@ function collectResearchSteps(toolTrace: ToolTraceEntry[]) {
   const lines: string[] = [];
   const seen = new Set<string>();
   for (const entry of toolTrace) {
+    const progressLines = entry.progress
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+    if (progressLines.length > 0) {
+      for (const line of progressLines) {
+        const key = `${entry.toolName}:progress:${line}`;
+        if (seen.has(key)) {
+          continue;
+        }
+        seen.add(key);
+        lines.push(line);
+      }
+      continue;
+    }
     const sentence = summarizeToolSentence(entry).trim();
     if (!sentence) {
       continue;
     }
-    const key = `${entry.toolName}:${sentence}`;
+    const key = `${entry.toolName}:summary:${sentence}`;
     if (seen.has(key)) {
       continue;
     }
@@ -2531,69 +2545,63 @@ function collectSurfacingBooks(toolTrace: ToolTraceEntry[]) {
   return [...books.values()];
 }
 
-function buildResearchDocument(prompt: string, toolTrace: ToolTraceEntry[], artifacts: RunArtifactRecord[]) {
-  const preferredReference = researchArtifacts(artifacts).find((artifact) => artifact.filename === "every-single-reference.md");
+function buildResearchDocument(title: string, toolTrace: ToolTraceEntry[], artifacts: RunArtifactRecord[]) {
   const steps = collectResearchSteps(toolTrace);
   const books = collectSurfacingBooks(toolTrace);
   const chunks = collectSourceChunks(toolTrace, artifacts);
+  const lines = [title.trim() || "Research log"];
+  const entries: string[] = [];
+  const seen = new Set<string>();
 
-  const lines = prompt ? [prompt, ""] : [];
-
-  if (steps.length > 0) {
-    lines.push("SEARCH");
-    lines.push("");
-    steps.forEach((step) => lines.push(`- ${step}`));
-    lines.push("");
-  }
-
-  if (books.length > 0) {
-    lines.push("BOOKS SURFACING");
-    lines.push("");
-    books.forEach((book) => {
-      const authorLine = book.authors.length > 0 ? ` by ${book.authors.join(", ")}` : "";
-      lines.push(`- ${book.title}${authorLine}`);
-      if (book.note) {
-        lines.push(`  ${book.note}`);
-      }
-    });
-    lines.push("");
-  }
-
-  lines.push("PRIMARY SOURCES");
-  lines.push("");
-
-  if (preferredReference) {
-    lines.push(artifactText(preferredReference));
-    return lines.join("\n");
-  }
-
-  if (chunks.length === 0) {
-    lines.push("Waiting for source passages to arrive...");
-    return lines.join("\n");
-  }
-
-  chunks.forEach((chunk, index) => {
-    if (index > 0) {
-      lines.push("");
+  for (const step of steps) {
+    const normalized = step.trim();
+    if (!normalized || seen.has(`step:${normalized}`)) {
+      continue;
     }
-    lines.push(`[${chunk.label}]`);
-    lines.push(chunk.note);
+    seen.add(`step:${normalized}`);
+    entries.push(`- ${normalized}`);
+  }
+
+  for (const book of books) {
+    const byline = book.authors.length > 0 ? ` by ${book.authors.join(", ")}` : "";
+    const line = `Viewed ${book.title}${byline}. ${book.note}`.trim();
+    if (!line || seen.has(`book:${book.key}`)) {
+      continue;
+    }
+    seen.add(`book:${book.key}`);
+    entries.push(`- ${line}`);
+  }
+
+  for (const chunk of chunks) {
+    const excerpt = chunk.text.replace(/\s+/g, " ").trim().slice(0, 220);
+    const line = `Viewed ${chunk.label}. ${chunk.note}${excerpt ? ` Excerpt: ${excerpt}` : ""}`.trim();
+    if (!line || seen.has(`chunk:${chunk.key}`)) {
+      continue;
+    }
+    seen.add(`chunk:${chunk.key}`);
+    entries.push(`- ${line}`);
+  }
+
+  if (entries.length > 0) {
     lines.push("");
-    lines.push(chunk.text);
-  });
+    lines.push(...entries);
+  }
+
   return lines.join("\n");
 }
 
 function ResearchArtifactPane({
+  sessionTitle,
   toolTrace,
   artifacts,
 }: {
+  sessionTitle: string;
   toolTrace: ToolTraceEntry[];
   artifacts: RunArtifactRecord[];
 }) {
   const documentText = useMemo(
-    () => buildResearchDocument("", toolTrace, artifacts),
-    [artifacts, toolTrace],
+    () => buildResearchDocument(sessionTitle, toolTrace, artifacts),
+    [artifacts, sessionTitle, toolTrace],
   );
 
   return (
@@ -4483,6 +4491,7 @@ export default function App() {
             pageRef={bookPageRef}
             leftPane={(
               <ResearchArtifactPane
+                sessionTitle={assistantSessionName(activeSession)}
                 toolTrace={workspaceToolTrace}
                 artifacts={runArtifacts}
               />
