@@ -2187,6 +2187,14 @@ button {
   overscroll-behavior-y: none;
 }
 
+.assistant-session-thread {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
 .book-assistant-shell .aui-thread-root,
 .book-assistant-shell .aui-thread-viewport,
 .assistant-session-thread .aui-thread-root,

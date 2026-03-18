@@ -309,6 +309,94 @@ test("restricted assistant session keeps the session URL and shows a coherent lo
   await expect(thread.getByTestId("empty-state")).toHaveCount(0);
 });
 
+test("assistant session thread stays scrollable with long history", async ({ page }) => {
+  const sessionId = "11111111-1111-4111-8111-111111111114";
+  const longMessages = Array.from({ length: 18 }, (_, index) => ({
+    id: `30000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+    sessionId,
+    role: index % 2 === 0 ? "user" : "assistant",
+    content: `${index % 2 === 0 ? "Question" : "Answer"} ${index + 1}: ${"Long scrolling content. ".repeat(18)}`,
+    metadata: {},
+    createdAt: `2026-03-16T12:${String(index).padStart(2, "0")}:00.000Z`,
+  }));
+
+  await page.route("**/api/me", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        authConfigured: false,
+        authenticated: false,
+        user: null,
+      }),
+    });
+  });
+
+  await page.route("**/api/admin/access", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        allowed: false,
+        authenticated: false,
+        authConfigured: false,
+        user: null,
+      }),
+    });
+  });
+
+  await page.route("**/api/sessions", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        sessions: [
+          {
+            id: sessionId,
+            userId: "local-user",
+            title: "Long thread",
+            createdAt: "2026-03-16T12:00:00.000Z",
+            lastMessageAt: "2026-03-16T12:17:00.000Z",
+            lastMessagePreview: "Long thread",
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.route(`**/api/sessions/${sessionId}/messages`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        messages: longMessages,
+      }),
+    });
+  });
+
+  await page.route(`**/api/sessions/${sessionId}/runs`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        runs: [],
+      }),
+    });
+  });
+
+  await page.goto(`/?view=assistant&session=${sessionId}`);
+
+  const viewport = page.locator(".assistant-session-thread .aui-thread-viewport");
+  await expect(viewport).toBeVisible();
+  const before = await viewport.evaluate((node) => ({ scrollTop: node.scrollTop, scrollHeight: node.scrollHeight, clientHeight: node.clientHeight }));
+  expect(before.scrollHeight).toBeGreaterThan(before.clientHeight);
+  await viewport.evaluate((node) => {
+    node.scrollTop = node.scrollHeight;
+  });
+  const after = await viewport.evaluate((node) => node.scrollTop);
+  expect(after).toBeGreaterThan(before.scrollTop);
+});
+
 test("assistant shows a friendly error notice instead of raw JSON", async ({ page }) => {
   await page.route("**/api/sessions*", async (route) => {
     await route.fulfill({
