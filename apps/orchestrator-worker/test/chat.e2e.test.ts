@@ -2299,10 +2299,14 @@ test("persisted tool traces keep chunk results compact enough for refresh", asyn
     : null;
   const logLines = Array.isArray(result?.__logLines) ? result.__logLines as unknown[] : [];
   const compactLines = logLines.filter((line): line is string => typeof line === "string");
+  const compactChunks = Array.isArray(result?.chunks) ? result.chunks as Array<Record<string, unknown>> : [];
 
   assert.ok(compactLines.some((line) => line.startsWith("1 chunk 1 work 1 472")));
   assert.ok(compactLines.some((line) => line.includes("house of laughing")));
   assert.ok(compactLines.every((line) => !line.includes("The house of mourning is decorously darkened to the world")));
+  assert.equal(compactChunks.length, 1);
+  assert.equal(compactChunks[0]?.workId, "work-1");
+  assert.equal(compactChunks[0]?.chunkIndex, 472);
 });
 
 test("OpenAIEmbedder requests 1536 dimensions for text-embedding-3 models", async () => {

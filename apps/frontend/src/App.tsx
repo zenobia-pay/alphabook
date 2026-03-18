@@ -2369,6 +2369,15 @@ type SourceChunkRecord = {
   note: string;
 };
 
+type ResearchDocumentModel = {
+  title: string;
+  entries: Array<{
+    key: string;
+    text: string;
+    kind: "log" | "book" | "chunk";
+  }>;
+};
+
 function researchArtifacts(artifacts: RunArtifactRecord[]) {
   return artifacts.filter((artifact) => {
     const kind = typeof artifact.metadata?.kind === "string" ? artifact.metadata.kind : "";
@@ -2566,49 +2575,111 @@ function collectSurfacingBooks(toolTrace: ToolTraceEntry[]) {
   return [...books.values()];
 }
 
-function buildResearchDocument(title: string, toolTrace: ToolTraceEntry[], artifacts: RunArtifactRecord[]) {
-  const steps = collectResearchSteps(toolTrace);
-  const books = collectSurfacingBooks(toolTrace);
-  const chunks = collectSourceChunks(toolTrace, artifacts);
-  const lines = [title.trim() || "Research log"];
-  const entries: string[] = [];
+function artifactSourceChunks(artifacts: RunArtifactRecord[]) {
+  return collectSourceChunks([], artifacts);
+}
+
+function appendDocumentEntry(
+  entries: ResearchDocumentModel["entries"],
+  seen: Set<string>,
+  key: string,
+  text: string,
+  kind: "log" | "book" | "chunk",
+) {
+  const normalized = text.trim();
+  if (!normalized || seen.has(key)) {
+    return;
+  }
+  seen.add(key);
+  entries.push({
+    key,
+    text: normalized,
+    kind,
+  });
+}
+
+function buildResearchDocument(title: string, toolTrace: ToolTraceEntry[], artifacts: RunArtifactRecord[]): ResearchDocumentModel {
+  const entries: ResearchDocumentModel["entries"] = [];
   const seen = new Set<string>();
 
-  for (const step of steps) {
-    const normalized = step.trim();
-    if (!normalized || seen.has(`step:${normalized}`)) {
-      continue;
+  for (const entry of toolTrace) {
+    const progressLines = entry.progress
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+    for (const line of progressLines) {
+      appendDocumentEntry(entries, seen, `progress:${entry.id}:${line}`, line, "log");
     }
-    seen.add(`step:${normalized}`);
-    entries.push(`- ${normalized}`);
-  }
 
-  for (const book of books) {
-    const byline = book.authors.length > 0 ? ` by ${book.authors.join(", ")}` : "";
-    const line = `Viewed ${book.title}${byline}. ${book.note}`.trim();
-    if (!line || seen.has(`book:${book.key}`)) {
-      continue;
+    if (entry.toolName === "search_works" || entry.toolName === "get_work_metadata") {
+      const works = Array.isArray(entry.result?.works) ? entry.result.works as Array<Record<string, unknown>> : [];
+      for (const [index, work] of works.entries()) {
+        const workId = typeof work.id === "string" ? work.id : `${entry.id}:work:${index}`;
+        const titleText = typeof work.title === "string" ? work.title.trim() : "";
+        const authors = Array.isArray(work.authors)
+          ? work.authors.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+          : [];
+        const byline = authors.length > 0 ? ` by ${authors.join(", ")}` : "";
+        const note = entry.toolName === "search_works"
+          ? "Surfaced in the corpus search."
+          : "Pulled in for more metadata context.";
+        appendDocumentEntry(entries, seen, `book:${workId}`, `${titleText}${byline} ${note}`.trim(), "book");
+      }
     }
-    seen.add(`book:${book.key}`);
-    entries.push(`- ${line}`);
-  }
 
-  for (const chunk of chunks) {
-    const excerpt = chunk.text.replace(/\s+/g, " ").trim().slice(0, 220);
-    const line = `Viewed ${chunk.label}. ${chunk.note}${excerpt ? ` Excerpt: ${excerpt}` : ""}`.trim();
-    if (!line || seen.has(`chunk:${chunk.key}`)) {
-      continue;
+    if (entry.toolName === "create_workspace") {
+      const manifest = entry.result?.manifest;
+      const works = manifest && typeof manifest === "object" && Array.isArray((manifest as Record<string, unknown>).works)
+        ? (manifest as Record<string, unknown>).works as Array<Record<string, unknown>>
+        : [];
+      for (const [index, work] of works.entries()) {
+        const workId = typeof work.workId === "string" ? work.workId : `${entry.id}:workspace:${index}`;
+        const titleText = typeof work.title === "string" ? work.title.trim() : "";
+        const authors = Array.isArray(work.authors)
+          ? work.authors.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+          : [];
+        const byline = authors.length > 0 ? ` by ${authors.join(", ")}` : "";
+        appendDocumentEntry(entries, seen, `workspace-book:${workId}`, `${titleText}${byline} was added to the deeper research workspace.`.trim(), "book");
+      }
     }
-    seen.add(`chunk:${chunk.key}`);
-    entries.push(`- ${line}`);
+
+    if (entry.toolName === "get_relevant_chunks") {
+      const chunks = Array.isArray(entry.result?.chunks) ? entry.result.chunks as Array<Record<string, unknown>> : [];
+      for (const [index, chunk] of chunks.entries()) {
+        const workId = typeof chunk.workId === "string" ? chunk.workId : "work";
+        const chunkIndex = typeof chunk.chunkIndex === "number" ? chunk.chunkIndex : null;
+        const excerpt = typeof chunk.excerpt === "string"
+          ? chunk.excerpt.trim()
+          : typeof chunk.text === "string"
+            ? chunk.text.trim()
+            : "";
+        const key = typeof chunk.id === "string" ? chunk.id : `${entry.id}:chunk:${index}`;
+        const label = chunkIndex !== null ? `${workId} #${chunkIndex}` : workId;
+        appendDocumentEntry(
+          entries,
+          seen,
+          `chunk:${key}`,
+          `${label} surfaced as a relevant passage. ${excerpt.slice(0, 280)}`.trim(),
+          "chunk",
+        );
+      }
+    }
   }
 
-  if (entries.length > 0) {
-    lines.push("");
-    lines.push(...entries);
+  for (const chunk of artifactSourceChunks(artifacts)) {
+    const excerpt = chunk.text.replace(/\s+/g, " ").trim().slice(0, 280);
+    appendDocumentEntry(
+      entries,
+      seen,
+      `artifact-chunk:${chunk.key}`,
+      `${chunk.label} was carried forward as evidence. ${chunk.note}${excerpt ? ` ${excerpt}` : ""}`.trim(),
+      "chunk",
+    );
   }
 
-  return lines.join("\n");
+  return {
+    title: title.trim() || "Research log",
+    entries,
+  };
 }
 
 function ResearchArtifactPane({
@@ -2620,15 +2691,25 @@ function ResearchArtifactPane({
   toolTrace: ToolTraceEntry[];
   artifacts: RunArtifactRecord[];
 }) {
-  const documentText = useMemo(
+  const document = useMemo(
     () => buildResearchDocument(sessionTitle, toolTrace, artifacts),
     [artifacts, sessionTitle, toolTrace],
   );
 
   return (
     <section className="assistant-document-pane">
+      <header className="assistant-document-header">
+        <p className="assistant-document-eyebrow">Research document</p>
+        <h2>{document.title}</h2>
+      </header>
       <div className="assistant-document-scroll">
-        <pre className="assistant-document-text">{documentText}</pre>
+        <div className="assistant-document-text">
+          {document.entries.map((entry) => (
+            <p key={entry.key} className={cn("assistant-document-entry", `is-${entry.kind}`)}>
+              {entry.text}
+            </p>
+          ))}
+        </div>
       </div>
     </section>
   );

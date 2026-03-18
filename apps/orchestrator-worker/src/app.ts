@@ -1880,11 +1880,13 @@ async function createSessionTitle(deps: AppDeps, message: string): Promise<strin
   try {
     const payload = await deps.ai.run<{ prompt: string }, unknown>(DEFAULT_SESSION_TITLE_MODEL, {
       prompt: [
-        "Write a short title for a new chat session.",
+        "Write a short, specific title for a new literary research session.",
         "Use the user's first message only.",
         "Return plain text only.",
-        "Keep it specific, natural, and under 7 words.",
-        "Do not use quotes, markdown, or punctuation unless necessary.",
+        "Make it feel like a real heading, not a truncation.",
+        "Prefer 3 to 7 words.",
+        "Do not simply repeat the opening words of the message.",
+        "Do not use quotes, markdown, trailing punctuation, or a generic label like Research or New Chat.",
         "",
         `message=${message.trim()}`,
       ].join("\n"),
@@ -2159,6 +2161,7 @@ function buildRecoveredToolTrace(
       },
       result: safeResult
         ? {
+            ...safeResult,
             __logLines: completedLogLines,
             error: typeof safeResult.error === "string" ? safeResult.error : undefined,
           }
@@ -3654,6 +3657,7 @@ async function runOrchestrator(
                 : sanitizeUserFacingToolText(rationale) ?? entry.rationale,
             progress: entry.progress,
             result: {
+              ...streamedResult,
               __logLines: completedLogLines,
               error: typeof streamedResult.error === "string" ? streamedResult.error : undefined,
             },
@@ -3671,6 +3675,7 @@ async function runOrchestrator(
       rationale: sanitizeUserFacingToolText(rationale) ?? null,
       status,
       result: {
+        ...streamedResult,
         __logLines: completedLogLines,
         error: typeof streamedResult.error === "string" ? streamedResult.error : undefined,
       },

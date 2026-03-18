@@ -1854,12 +1854,30 @@ button {
 }
 
 .assistant-document-text {
-  margin: 0;
+  display: grid;
+  gap: 14px;
   font-family: "Newsreader", serif;
-  white-space: pre-wrap;
   color: var(--ink-strong);
   font-size: 1.05rem;
   line-height: 1.7;
+}
+
+.assistant-document-entry {
+  margin: 0;
+}
+
+.assistant-document-entry.is-book {
+  padding-left: 14px;
+  border-left: 2px solid rgba(38, 38, 38, 0.1);
+}
+
+.assistant-document-entry.is-chunk {
+  padding: 14px 16px;
+  border: 1px solid rgba(38, 38, 38, 0.08);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.62);
+  font-size: 0.99rem;
+  line-height: 1.66;
 }
 
 .book-page {
