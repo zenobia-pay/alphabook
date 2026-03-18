@@ -1945,10 +1945,6 @@ function normalizeGeneratedSessionTitle(value: string): string | null {
   return normalized || null;
 }
 
-function isExactFallbackSessionTitle(title: string | null | undefined, message: string): boolean {
-  return (title ?? "").trim() === fallbackSessionTitle(message);
-}
-
 async function createSessionTitle(deps: AppDeps, message: string): Promise<string> {
   const fallback = fallbackSessionTitle(message);
   if (!deps.ai) {
@@ -1985,26 +1981,6 @@ async function createSessionTitle(deps: AppDeps, message: string): Promise<strin
   } catch {
     return fallback;
   }
-}
-
-async function refreshFallbackSessionTitle(
-  deps: AppDeps,
-  session: SessionRecord,
-  messages: MessageRecord[],
-): Promise<SessionRecord> {
-  const firstUserMessage = messages.find((message) => message.role === "user")?.content?.trim();
-  if (!firstUserMessage || !isExactFallbackSessionTitle(session.title, firstUserMessage)) {
-    return session;
-  }
-  const nextTitle = await createSessionTitle(deps, firstUserMessage);
-  if (!nextTitle || nextTitle === session.title) {
-    return session;
-  }
-  await deps.store.updateSessionTitle(session.id, nextTitle);
-  return {
-    ...session,
-    title: nextTitle,
-  };
 }
 
 function chunkTextForStream(text: string): string[] {
@@ -5725,13 +5701,7 @@ export function createApp(deps: AppDeps) {
       return c.json({ error: "Authentication required." }, deps.auth?.isConfigured() ? 401 : 400);
     }
     const sessions = await deps.store.listSessions(user.id);
-    const refreshedSessions = await Promise.all(
-      sessions.map(async (session) => {
-        const messages = await deps.store.listMessages(session.id);
-        return refreshFallbackSessionTitle(deps, session, messages);
-      }),
-    );
-    return c.json({ sessions: refreshedSessions });
+    return c.json({ sessions });
   };
 
   app.get("/sessions", handleListSessions);
