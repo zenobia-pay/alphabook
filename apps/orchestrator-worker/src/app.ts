@@ -846,16 +846,28 @@ function normalizeToolArgs(toolName: ToolName, args: Record<string, unknown>): R
   const normalized = { ...args };
   switch (toolName) {
     case "get_work_metadata":
+      if (normalized.workIds === null) {
+        delete normalized.workIds;
+      }
       if (normalized.workIds === undefined && normalized.work_ids !== undefined) {
         normalized.workIds = normalized.work_ids;
       }
       break;
     case "get_relevant_chunks":
+      if (normalized.workIds === null) {
+        delete normalized.workIds;
+      }
+      if (normalized.work_ids === null) {
+        delete normalized.work_ids;
+      }
       if (normalized.workIds === undefined && normalized.work_ids !== undefined) {
         normalized.workIds = normalized.work_ids;
       }
       if (normalized.filters && typeof normalized.filters === "object") {
         const filters = { ...(normalized.filters as Record<string, unknown>) };
+        if (filters.limit === null) {
+          delete filters.limit;
+        }
         if (typeof filters.limit === "number") {
           filters.limit = Math.max(1, Math.min(20, Math.trunc(filters.limit)));
         }
@@ -918,10 +930,19 @@ function normalizeToolArgs(toolName: ToolName, args: Record<string, unknown>): R
   return normalized;
 }
 
+function zodErrorIncludesPath(error: ZodError, path: string[]) {
+  return error.issues.some((issue) =>
+    issue.path.length === path.length && issue.path.every((part, index) => part === path[index]),
+  );
+}
+
 function formatToolExecutionError(toolName: ToolName, error: unknown) {
   if (error instanceof ZodError) {
     if (toolName === "get_relevant_chunks") {
-      return "Passage search requested too many passages at once, so I reduced the request to the allowed limit.";
+      if (zodErrorIncludesPath(error, ["filters", "limit"])) {
+        return "Passage search requested more than the allowed number of passages at once.";
+      }
+      return "Passage search received invalid arguments.";
     }
     if (toolName === "search_works") {
       return "Corpus search requested too many results at once.";

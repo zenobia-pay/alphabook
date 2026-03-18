@@ -2383,6 +2383,124 @@ test("persisted tool traces keep chunk results compact enough for refresh", asyn
   assert.equal(compactChunks[0]?.chunkIndex, 472);
 });
 
+test("get_relevant_chunks tolerates null workIds from planner output", async () => {
+  const store = new InMemoryAppStore(
+    [
+      {
+        id: "work-1",
+        gutenbergId: 1342,
+        title: "Pride and Prejudice",
+        language: "en",
+        releaseDate: "2001-01-01",
+        rightsStatus: "public_domain",
+        summary: "A novel of courtship, separation, and eventual marriage.",
+        authors: ["Jane Austen"],
+        subjects: ["courtship", "grief"],
+      },
+    ],
+    [
+      {
+        id: "chunk-1",
+        workId: "work-1",
+        chunkIndex: 21,
+        text: "After a painful separation, the lovers were reconciled and finally married.",
+        r2Key: "gutenberg/clean/1342/chunks.jsonl",
+        score: 0,
+        excerpt: "",
+      },
+    ],
+  );
+
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    router: new ScriptedRouter([
+      {
+        type: "tool_chain",
+        fullQuery: "grief in fiction",
+      },
+    ]),
+    planner: new ScriptedPlanner([
+      {
+        type: "tool_call",
+        tool_name: "get_relevant_chunks",
+        args: {
+          query: "painful separation reconciled married",
+          workIds: null,
+          work_ids: null,
+          filters: {
+            language: "en",
+          },
+        },
+      },
+      {
+        type: "final_answer",
+        answer: "Found one relevant passage.",
+        citations: [],
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+      async runWorkspaceTask() {
+        return { ok: false, error: "disabled" };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: true, files: [] };
+      },
+      async destroyWorkspace() {
+        return { ok: true };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const response = await app.request("/chat", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      userId: "null-workids-user",
+      message: "Find grief in fiction.",
+    }),
+  });
+  await response.text();
+
+  const sessionsResponse = await app.request("/sessions?userId=null-workids-user");
+  const sessionsPayload = await sessionsResponse.json() as {
+    sessions: Array<{ id: string }>;
+  };
+  const sessionId = sessionsPayload.sessions[0]?.id;
+  assert.ok(sessionId);
+
+  const messagesResponse = await app.request(`/sessions/${sessionId}/messages?userId=null-workids-user`);
+  const messagesPayload = await messagesResponse.json() as {
+    messages: Array<{ metadata: Record<string, unknown> }>;
+  };
+  const planMessage = messagesPayload.messages.find((message) => message.metadata?.phase === "plan");
+  const toolCalls = Array.isArray(planMessage?.metadata?.toolCalls)
+    ? planMessage?.metadata?.toolCalls as Array<Record<string, unknown>>
+    : [];
+  const chunkResult = toolCalls.find((entry) => entry.toolName === "get_relevant_chunks");
+  assert.equal(chunkResult?.state, "completed");
+  const result = chunkResult?.result && typeof chunkResult.result === "object"
+    ? chunkResult.result as Record<string, unknown>
+    : null;
+  const compactChunks = Array.isArray(result?.chunks) ? result.chunks as Array<Record<string, unknown>> : [];
+  assert.equal(compactChunks.length, 1);
+});
+
 test("OpenAIEmbedder requests 1536 dimensions for text-embedding-3 models", async () => {
   let requestBody: Record<string, unknown> | null = null;
   const embedder = new OpenAIEmbedder("test-key", "text-embedding-3-small", async (_input, init) => {
