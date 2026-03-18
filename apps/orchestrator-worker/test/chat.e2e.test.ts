@@ -2501,6 +2501,112 @@ test("get_relevant_chunks tolerates null workIds from planner output", async () 
   assert.equal(compactChunks.length, 1);
 });
 
+test("search_works ignores unsupported human-readable language filters from planner output", async () => {
+  const store = new InMemoryAppStore([
+    {
+      id: "work-1",
+      gutenbergId: 996,
+      title: "Don Quixote",
+      language: "en",
+      releaseDate: "2000-01-01",
+      rightsStatus: "public_domain",
+      summary: "A novel about grief and errantry.",
+      authors: ["Miguel de Cervantes"],
+      subjects: ["fiction", "melancholy"],
+    },
+  ], []);
+
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    router: new ScriptedRouter([
+      {
+        type: "tool_chain",
+        fullQuery: "books about grief in fiction",
+      },
+    ]),
+    planner: new ScriptedPlanner([
+      {
+        type: "tool_call",
+        tool_name: "search_works",
+        args: {
+          query: "grief mourning bereavement novel",
+          filters: {
+            language: "English",
+            year_gte: 1801,
+            year_lte: 1900,
+          },
+        },
+      },
+      {
+        type: "final_answer",
+        answer: "Found one relevant work.",
+        citations: [],
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+      async runWorkspaceTask() {
+        return { ok: false, error: "disabled" };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: true, files: [] };
+      },
+      async destroyWorkspace() {
+        return { ok: true };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const response = await app.request("/chat", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      userId: "language-filter-user",
+      message: "Find grief in fiction.",
+    }),
+  });
+  await response.text();
+
+  const sessionsResponse = await app.request("/sessions?userId=language-filter-user");
+  const sessionsPayload = await sessionsResponse.json() as {
+    sessions: Array<{ id: string }>;
+  };
+  const sessionId = sessionsPayload.sessions[0]?.id;
+  assert.ok(sessionId);
+
+  const messagesResponse = await app.request(`/sessions/${sessionId}/messages?userId=language-filter-user`);
+  const messagesPayload = await messagesResponse.json() as {
+    messages: Array<{ metadata: Record<string, unknown> }>;
+  };
+  const planMessage = messagesPayload.messages.find((message) => message.metadata?.phase === "plan");
+  const toolCalls = Array.isArray(planMessage?.metadata?.toolCalls)
+    ? planMessage?.metadata?.toolCalls as Array<Record<string, unknown>>
+    : [];
+  const searchResult = toolCalls.find((entry) => entry.toolName === "search_works");
+  assert.equal(searchResult?.state, "completed");
+  const result = searchResult?.result && typeof searchResult.result === "object"
+    ? searchResult.result as Record<string, unknown>
+    : null;
+  const works = Array.isArray(result?.works) ? result.works as Array<Record<string, unknown>> : [];
+  assert.equal(works.length, 1);
+  assert.equal(works[0]?.id, "work-1");
+});
+
 test("OpenAIEmbedder requests 1536 dimensions for text-embedding-3 models", async () => {
   let requestBody: Record<string, unknown> | null = null;
   const embedder = new OpenAIEmbedder("test-key", "text-embedding-3-small", async (_input, init) => {

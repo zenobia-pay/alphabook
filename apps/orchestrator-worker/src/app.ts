@@ -842,9 +842,38 @@ function extractCandidateWorkIds(
   }
 }
 
+function normalizeSearchLanguageFilter(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) {
+    return undefined;
+  }
+  if (/^[a-z]{2,3}$/u.test(normalized)) {
+    return normalized;
+  }
+  return undefined;
+}
+
 function normalizeToolArgs(toolName: ToolName, args: Record<string, unknown>): Record<string, unknown> {
   const normalized = { ...args };
   switch (toolName) {
+    case "search_works":
+      if (normalized.filters && typeof normalized.filters === "object") {
+        const filters = { ...(normalized.filters as Record<string, unknown>) };
+        const language = normalizeSearchLanguageFilter(filters.language);
+        if (language) {
+          filters.language = language;
+        } else {
+          delete filters.language;
+        }
+        if (typeof filters.limit === "number") {
+          filters.limit = Math.max(1, Math.min(20, Math.trunc(filters.limit)));
+        }
+        normalized.filters = filters;
+      }
+      break;
     case "get_work_metadata":
       if (normalized.workIds === null) {
         delete normalized.workIds;
@@ -865,6 +894,12 @@ function normalizeToolArgs(toolName: ToolName, args: Record<string, unknown>): R
       }
       if (normalized.filters && typeof normalized.filters === "object") {
         const filters = { ...(normalized.filters as Record<string, unknown>) };
+        const language = normalizeSearchLanguageFilter(filters.language);
+        if (language) {
+          filters.language = language;
+        } else {
+          delete filters.language;
+        }
         if (filters.limit === null) {
           delete filters.limit;
         }
