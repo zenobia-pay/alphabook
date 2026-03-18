@@ -842,6 +842,48 @@ function extractCandidateWorkIds(
   }
 }
 
+function latestCandidateWorkIdsFromHistory(
+  toolHistory: Array<{
+    toolName: ToolName;
+    args: Record<string, unknown>;
+    result: Record<string, unknown>;
+  }>,
+) {
+  for (let index = toolHistory.length - 1; index >= 0; index -= 1) {
+    const entry = toolHistory[index];
+    if (entry.toolName !== "search_works" && entry.toolName !== "get_work_metadata") {
+      continue;
+    }
+    const workIds = extractCandidateWorkIds(entry.toolName, entry.args, entry.result);
+    if (workIds.length > 0) {
+      return workIds.slice(0, 20);
+    }
+  }
+  return [];
+}
+
+function augmentToolArgsFromHistory(
+  toolName: ToolName,
+  args: Record<string, unknown>,
+  toolHistory: Array<{
+    toolName: ToolName;
+    args: Record<string, unknown>;
+    result: Record<string, unknown>;
+  }>,
+) {
+  if (toolName !== "get_relevant_chunks" || Array.isArray(args.workIds) && args.workIds.length > 0) {
+    return args;
+  }
+  const candidateWorkIds = latestCandidateWorkIdsFromHistory(toolHistory);
+  if (candidateWorkIds.length === 0) {
+    return args;
+  }
+  return {
+    ...args,
+    workIds: candidateWorkIds,
+  };
+}
+
 function normalizeSearchLanguageFilter(value: unknown): string | undefined {
   if (typeof value !== "string") {
     return undefined;
@@ -854,6 +896,30 @@ function normalizeSearchLanguageFilter(value: unknown): string | undefined {
     return normalized;
   }
   return undefined;
+}
+
+function normalizeYearRangeFilter(value: unknown): [number, number] | undefined {
+  if (!Array.isArray(value) || value.length !== 2) {
+    return undefined;
+  }
+  const first = Number(value[0]);
+  const second = Number(value[1]);
+  if (!Number.isInteger(first) || !Number.isInteger(second)) {
+    return undefined;
+  }
+  return [Math.min(first, second), Math.max(first, second)];
+}
+
+function normalizeGenreFilter(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const genres = value
+    .filter((candidate): candidate is string => typeof candidate === "string")
+    .map((candidate) => candidate.trim().toLowerCase())
+    .filter((candidate) => candidate.length > 0)
+    .slice(0, 8);
+  return genres.length > 0 ? genres : undefined;
 }
 
 function normalizeToolArgs(toolName: ToolName, args: Record<string, unknown>): Record<string, unknown> {
@@ -905,6 +971,18 @@ function normalizeToolArgs(toolName: ToolName, args: Record<string, unknown>): R
         }
         if (typeof filters.limit === "number") {
           filters.limit = Math.max(1, Math.min(20, Math.trunc(filters.limit)));
+        }
+        const yearRange = normalizeYearRangeFilter(filters.yearRange);
+        if (yearRange) {
+          filters.yearRange = yearRange;
+        } else {
+          delete filters.yearRange;
+        }
+        const genre = normalizeGenreFilter(filters.genre);
+        if (genre) {
+          filters.genre = genre;
+        } else {
+          delete filters.genre;
         }
         normalized.filters = filters;
       }
@@ -1121,6 +1199,7 @@ async function executeTool(
         parsed.workIds,
         parsed.filters?.limit ?? 8,
         embedding,
+        parsed.filters,
       );
       return { chunks };
     }
@@ -4605,7 +4684,11 @@ async function runOrchestrator(
         continue;
       }
 
-      const normalizedToolArgs = normalizeToolArgs(toolCall.tool_name, toolCall.args);
+      const normalizedToolArgs = augmentToolArgsFromHistory(
+        toolCall.tool_name,
+        normalizeToolArgs(toolCall.tool_name, toolCall.args),
+        toolHistory,
+      );
       if (toolCall.tool_name === "create_workspace" && pendingWorkspaceExecution) {
         continue;
       }
@@ -6414,6 +6497,32 @@ export function createApp(deps: AppDeps) {
     return c.json({
       work: decorateWork(c, work),
       source: null,
+    });
+  });
+
+  app.get("/works/:workId/content", async (c) => {
+    const workId = c.req.param("workId");
+    const work = await deps.store.getWorkById(workId);
+    if (!work) {
+      return c.json({ error: "Work not found." }, 404);
+    }
+
+    const files = await deps.store.getWorkFiles([workId], ["book_html"]);
+    const htmlFile = files.find((file) => file.kind === "book_html") ?? null;
+    if (!htmlFile?.r2Key) {
+      return c.json({ error: "Book content not found." }, 404);
+    }
+
+    const object = await deps.blobStore.getObject(htmlFile.r2Key);
+    if (!object) {
+      return c.json({ error: "Book content not found." }, 404);
+    }
+
+    return new Response(await object.arrayBuffer(), {
+      headers: {
+        "content-type": object.contentType ?? "text/html; charset=utf-8",
+        "cache-control": "public, max-age=14400",
+      },
     });
   });
 

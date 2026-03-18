@@ -1,7 +1,14 @@
 import type { DbClient } from "@alphabook/db";
 import type { ChunkSearchResult, ToolName, WorkDetail, WorkSummary } from "@alphabook/shared";
 
-const PASSAGE_SEARCH_TIMEOUT_MS = 20_000;
+const PASSAGE_SEARCH_TIMEOUT_MS = 45_000;
+
+export interface PassageSearchFilters {
+  language?: string;
+  rightsStatus?: string;
+  yearRange?: [number, number];
+  genre?: string[];
+}
 
 export interface SessionRecord {
   id: string;
@@ -117,7 +124,7 @@ export interface WorkTextRecord {
 
 export interface WorkDetailRecord extends WorkDetail {}
 
-export type WorkFileKind = "raw" | "metadata" | "clean" | "chunks";
+export type WorkFileKind = "raw" | "metadata" | "clean" | "chunks" | "book_html";
 
 export interface WorkFileRecord {
   id: string;
@@ -238,7 +245,13 @@ export interface AppStore {
   getWorkById(workId: string): Promise<WorkDetailRecord | null>;
   searchWorks(query: string, filters?: Record<string, unknown>): Promise<WorkSummary[]>;
   getWorkMetadata(workIds: string[]): Promise<WorkSummary[]>;
-  getRelevantChunks(query: string, workIds?: string[], limit?: number, embedding?: number[]): Promise<ChunkSearchResult[]>;
+  getRelevantChunks(
+    query: string,
+    workIds?: string[],
+    limit?: number,
+    embedding?: number[],
+    filters?: PassageSearchFilters,
+  ): Promise<ChunkSearchResult[]>;
   getWorkTextFile(workId: string): Promise<WorkTextRecord | null>;
   getWorkFiles(workIds: string[], kinds?: WorkFileKind[]): Promise<WorkFileRecord[]>;
   getChunksByIds(chunkIds: string[]): Promise<ChunkSearchResult[]>;
@@ -401,6 +414,18 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
       clearTimeout(timer);
     }
   }
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function textMatchesGenre(haystack: string, genre: string) {
+  const normalizedGenre = genre.trim().toLowerCase();
+  if (!normalizedGenre) {
+    return false;
+  }
+  return new RegExp(`\\b${escapeRegExp(normalizedGenre)}\\b`, "iu").test(haystack);
 }
 
 function toWorkSummary(
@@ -1123,11 +1148,60 @@ export class InMemoryAppStore implements AppStore {
     return this.works.filter((work) => set.has(work.id)).map((work) => toWorkSummary(work));
   }
 
-  async getRelevantChunks(query: string, workIds?: string[], limit = 8, embedding?: number[]): Promise<ChunkSearchResult[]> {
-    const set = workIds?.length ? new Set(workIds) : null;
+  async getRelevantChunks(
+    query: string,
+    workIds?: string[],
+    limit = 8,
+    embedding?: number[],
+    filters: PassageSearchFilters = {},
+  ): Promise<ChunkSearchResult[]> {
+    const hasWorkScope = Boolean(workIds?.length)
+      || Boolean(filters.language)
+      || Boolean(filters.rightsStatus)
+      || Boolean(filters.yearRange)
+      || Boolean(filters.genre?.length);
+    const allowedWorkIds = hasWorkScope
+      ? new Set(
+        this.works
+          .filter((work) => {
+          if (workIds?.length && !workIds.includes(work.id)) {
+            return false;
+          }
+          if (filters.language && work.language !== filters.language) {
+            return false;
+          }
+          if (filters.rightsStatus && work.rightsStatus !== filters.rightsStatus) {
+            return false;
+          }
+          if (filters.yearRange) {
+            const [startYear, endYear] = filters.yearRange;
+            const year = typeof work.releaseDate === "string"
+              ? Number.parseInt(work.releaseDate.slice(0, 4), 10)
+              : Number.NaN;
+            if (!Number.isFinite(year) || year < startYear || year > endYear) {
+              return false;
+            }
+          }
+          if (filters.genre?.length) {
+            const haystack = [
+              work.title,
+              work.summary ?? "",
+              work.language ?? "",
+              ...work.subjects,
+              JSON.stringify(work.metadata ?? {}),
+            ].join(" ").toLowerCase();
+            if (!filters.genre.some((genre) => textMatchesGenre(haystack, genre))) {
+              return false;
+            }
+          }
+          return true;
+          })
+          .map((work) => work.id),
+      )
+      : null;
     const lexicalQuery = expandedSearchTokens(query).join(" ");
     return this.chunks
-      .filter((chunk) => !set || set.has(chunk.workId))
+      .filter((chunk) => !allowedWorkIds || allowedWorkIds.has(chunk.workId))
       .map((chunk) => ({
         ...chunk,
         score:
@@ -2922,13 +2996,24 @@ export class NeonAppStore implements AppStore {
     );
   }
 
-  async getRelevantChunks(query: string, workIds?: string[], limit = 8, embedding?: number[]): Promise<ChunkSearchResult[]> {
+  async getRelevantChunks(
+    query: string,
+    workIds?: string[],
+    limit = 8,
+    embedding?: number[],
+    filters: PassageSearchFilters = {},
+  ): Promise<ChunkSearchResult[]> {
     const usableEmbedding = embedding?.length === EXPECTED_EMBEDDING_DIMENSIONS ? embedding : undefined;
     const vectorLiteral = usableEmbedding ? `[${usableEmbedding.join(",")}]` : null;
     const normalizedQuery = normalizeSearchQuery(query);
     const tsQuery = normalizedQuery || query.trim();
     const tokens = expandedSearchTokens(query);
     const semanticCandidateLimit = Math.max(limit * 12, 96);
+    const startYear = Array.isArray(filters.yearRange) ? Math.min(filters.yearRange[0], filters.yearRange[1]) : null;
+    const endYear = Array.isArray(filters.yearRange) ? Math.max(filters.yearRange[0], filters.yearRange[1]) : null;
+    const genres = Array.isArray(filters.genre)
+      ? filters.genre.map((genre) => genre.trim()).filter((genre) => genre.length > 0).slice(0, 8)
+      : [];
     const result = await withTimeout(this.db.query<{
       id: string;
       work_id: string;
@@ -2947,22 +3032,64 @@ export class NeonAppStore implements AppStore {
             END AS tsq,
             CASE WHEN $4::text IS NULL THEN NULL ELSE $4::vector END AS embedding
         ),
+        eligible_works AS (
+          SELECT w.id
+          FROM works w
+          WHERE
+            ($2::uuid[] IS NULL OR w.id = ANY($2::uuid[]))
+            AND ($7::text IS NULL OR w.language = $7::text)
+            AND ($8::text IS NULL OR w.rights_status = $8::text)
+            AND (
+              $9::int IS NULL
+              OR (
+                NULLIF(SUBSTRING(COALESCE(w.release_date::text, '') FROM '([0-9]{4})'), '') IS NOT NULL
+                AND NULLIF(SUBSTRING(COALESCE(w.release_date::text, '') FROM '([0-9]{4})'), '')::int >= $9::int
+              )
+            )
+            AND (
+              $10::int IS NULL
+              OR (
+                NULLIF(SUBSTRING(COALESCE(w.release_date::text, '') FROM '([0-9]{4})'), '') IS NOT NULL
+                AND NULLIF(SUBSTRING(COALESCE(w.release_date::text, '') FROM '([0-9]{4})'), '')::int <= $10::int
+              )
+            )
+            AND (
+              COALESCE(array_length($11::text[], 1), 0) = 0
+              OR EXISTS (
+                SELECT 1
+                FROM UNNEST($11::text[]) AS genre
+                WHERE
+                  COALESCE(w.title, '') ILIKE '%' || genre || '%'
+                  OR COALESCE(w.summary, '') ILIKE '%' || genre || '%'
+                  OR COALESCE(w.metadata_json::text, '') ILIKE '%' || genre || '%'
+                  OR EXISTS (
+                    SELECT 1
+                    FROM work_subjects ws
+                    JOIN subjects s ON s.id = ws.subject_id
+                    WHERE ws.work_id = w.id
+                      AND COALESCE(s.label, '') ILIKE '%' || genre || '%'
+                  )
+              )
+            )
+        ),
         semantic_candidates AS (
           SELECT c.id
-          FROM chunks c, query_input
+          FROM chunks c
+          JOIN eligible_works ew ON ew.id = c.work_id,
+          query_input
           WHERE
             query_input.embedding IS NOT NULL
             AND c.embedding IS NOT NULL
-            AND ($2::uuid[] IS NULL OR c.work_id = ANY($2::uuid[]))
           ORDER BY c.embedding <=> query_input.embedding
           LIMIT $6
         ),
         lexical_candidates AS (
           SELECT c.id
-          FROM chunks c, query_input
+          FROM chunks c
+          JOIN eligible_works ew ON ew.id = c.work_id,
+          query_input
           WHERE
-            ($2::uuid[] IS NULL OR c.work_id = ANY($2::uuid[]))
-            AND (
+            (
               (query_input.tsq IS NOT NULL AND c.tsv @@ query_input.tsq)
               OR EXISTS (
                 SELECT 1
@@ -3010,7 +3137,19 @@ export class NeonAppStore implements AppStore {
         ORDER BY (ranked.semantic_score + ranked.token_score) DESC, ranked.work_id ASC, ranked.chunk_index ASC
         LIMIT $3
       `,
-      [tsQuery, workIds?.length ? workIds : null, limit, vectorLiteral, tokens, semanticCandidateLimit],
+      [
+        tsQuery,
+        workIds?.length ? workIds : null,
+        limit,
+        vectorLiteral,
+        tokens,
+        semanticCandidateLimit,
+        typeof filters.language === "string" ? filters.language : null,
+        typeof filters.rightsStatus === "string" ? filters.rightsStatus : null,
+        Number.isInteger(startYear) ? startYear : null,
+        Number.isInteger(endYear) ? endYear : null,
+        genres,
+      ],
     ), PASSAGE_SEARCH_TIMEOUT_MS, "Passage search timed out before the database returned chunks.");
     return result.rows.map((row) => ({
       id: row.id,

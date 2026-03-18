@@ -46,6 +46,9 @@ export const GetRelevantChunksArgsSchema = z.object({
     .object({
       limit: z.number().int().positive().max(20).optional(),
       language: z.string().optional(),
+      rightsStatus: z.string().optional(),
+      yearRange: z.tuple([z.number().int(), z.number().int()]).optional(),
+      genre: z.array(z.string().min(1)).max(8).optional(),
     })
     .optional(),
 });

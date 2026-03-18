@@ -3579,6 +3579,88 @@ test("in-memory retrieval expands conversational relationship queries into seed 
   assert.match(chunks[0]?.text ?? "", /reconciled/i);
 });
 
+test("in-memory passage retrieval honors year and genre filters", async () => {
+  const store = new InMemoryAppStore(
+    [
+      {
+        id: "work-fiction",
+        gutenbergId: 1342,
+        title: "Pride and Prejudice",
+        language: "en",
+        releaseDate: "1813-01-28",
+        rightsStatus: "public_domain",
+        summary: "A fiction novel of courtship, loss, and recovery.",
+        authors: ["Jane Austen"],
+        subjects: ["Fiction", "Courtship"],
+      },
+      {
+        id: "work-nonfiction",
+        gutenbergId: 9999,
+        title: "A Treatise on Mourning",
+        language: "en",
+        releaseDate: "1850-01-01",
+        rightsStatus: "public_domain",
+        summary: "A nonfiction essay about grief customs.",
+        authors: ["Essayist"],
+        subjects: ["Essays", "Religion"],
+      },
+      {
+        id: "work-fiction-outside-range",
+        gutenbergId: 7777,
+        title: "Modern Grief Novel",
+        language: "en",
+        releaseDate: "1920-01-01",
+        rightsStatus: "public_domain",
+        summary: "A fiction novel about grief.",
+        authors: ["Later Author"],
+        subjects: ["Fiction"],
+      },
+    ],
+    [
+      {
+        id: "chunk-fiction",
+        workId: "work-fiction",
+        chunkIndex: 1,
+        text: "She wept in mourning and slowly returned to society.",
+        r2Key: "fiction/chunks.jsonl",
+        score: 0,
+        excerpt: "",
+      },
+      {
+        id: "chunk-nonfiction",
+        workId: "work-nonfiction",
+        chunkIndex: 1,
+        text: "This essay describes mourning customs in abstract terms.",
+        r2Key: "essay/chunks.jsonl",
+        score: 0,
+        excerpt: "",
+      },
+      {
+        id: "chunk-outside-range",
+        workId: "work-fiction-outside-range",
+        chunkIndex: 1,
+        text: "A modern fiction account of grief and mourning.",
+        r2Key: "modern/chunks.jsonl",
+        score: 0,
+        excerpt: "",
+      },
+    ],
+  );
+
+  const chunks = await store.getRelevantChunks(
+    "mourning grief fiction",
+    undefined,
+    8,
+    undefined,
+    {
+      yearRange: [1800, 1899],
+      genre: ["fiction"],
+    },
+  );
+
+  assert.deepEqual(chunks.map((chunk) => chunk.workId), ["work-fiction"]);
+});
+
 test("sql retrieval bounds semantic candidates instead of scanning every embedded chunk", async () => {
   const queries: Array<{ sql: string; params?: unknown[] }> = [];
   const store = new NeonAppStore({
@@ -3603,4 +3685,146 @@ test("sql retrieval bounds semantic candidates instead of scanning every embedde
   assert.match(issued.sql, /LIMIT \$6/);
   assert.doesNotMatch(issued.sql, /OR \(query_input\.embedding IS NOT NULL AND c\.embedding IS NOT NULL\)/);
   assert.equal(issued.params?.[5], 96);
+});
+
+test("passage search inherits candidate work ids from the latest metadata search", async () => {
+  const store = new InMemoryAppStore(
+    [
+      {
+        id: "work-1",
+        gutenbergId: 111,
+        title: "Grief Novel",
+        language: "en",
+        releaseDate: "1850-01-01",
+        rightsStatus: "public_domain",
+        summary: "A fiction novel about grief.",
+        authors: ["Author One"],
+        subjects: ["Fiction"],
+      },
+      {
+        id: "work-2",
+        gutenbergId: 222,
+        title: "Mourning Tale",
+        language: "en",
+        releaseDate: "1860-01-01",
+        rightsStatus: "public_domain",
+        summary: "A fiction tale about mourning.",
+        authors: ["Author Two"],
+        subjects: ["Fiction"],
+      },
+    ],
+    [
+      {
+        id: "chunk-1",
+        workId: "work-1",
+        chunkIndex: 1,
+        text: "The heroine endured grief with stoic composure.",
+        r2Key: "work-1/chunks.jsonl",
+        score: 0,
+        excerpt: "",
+      },
+      {
+        id: "chunk-2",
+        workId: "work-2",
+        chunkIndex: 1,
+        text: "The mourner turned to prayer and work.",
+        r2Key: "work-2/chunks.jsonl",
+        score: 0,
+        excerpt: "",
+      },
+    ],
+  );
+
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    router: new ScriptedRouter([
+      {
+        type: "tool_chain",
+        fullQuery: "grief in fiction",
+      },
+    ]),
+    planner: new ScriptedPlanner([
+      {
+        type: "tool_call",
+        tool_name: "search_works",
+        args: {
+          query: "grief in fiction",
+          filters: {
+            yearRange: [1800, 1899],
+            genre: ["fiction"],
+          },
+        },
+      },
+      {
+        type: "tool_call",
+        tool_name: "get_relevant_chunks",
+        args: {
+          query: "grief mourning prayer work",
+          filters: {
+            yearRange: [1800, 1899],
+            genre: ["fiction"],
+          },
+        },
+      },
+      {
+        type: "final_answer",
+        answer: "done",
+        citations: [],
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: true, reused: false, runtimeId: "runtime-1", manifest: { works: [] } };
+      },
+      async runWorkspaceTask() {
+        return { ok: false, error: "disabled" };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: false, error: "disabled" };
+      },
+      async destroyWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+    ai: {
+      async run<ModelInput extends Record<string, unknown>, ModelOutput = unknown>(): Promise<ModelOutput> {
+        return { response: "Grief Taxonomy" } as ModelOutput;
+      },
+    },
+  });
+
+  const response = await app.request("/chat", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      userId: "11111111-1111-1111-1111-111111111111",
+      message: "Find grief passages in fiction",
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  await response.text();
+  const sessions = await store.listSessions("11111111-1111-1111-1111-111111111111");
+  const runs = await store.listRuns(sessions[0]!.id);
+  const toolCalls = await store.listToolCalls(runs[0]!.id);
+  const passageSearch = toolCalls.find((toolCall) => toolCall.toolName === "get_relevant_chunks");
+  assert.ok(passageSearch);
+  assert.deepEqual(passageSearch.argsJson.workIds, ["work-1", "work-2"]);
+  assert.deepEqual(passageSearch.argsJson.filters, {
+    yearRange: [1800, 1899],
+    genre: ["fiction"],
+  });
 });
