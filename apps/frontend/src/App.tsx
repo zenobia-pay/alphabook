@@ -4872,10 +4872,16 @@ export default function App() {
               : work.subjects.slice(0, 3);
             return (
               <article key={work.id} className={`work-feed-card ${selected ? "is-selected" : ""}`}>
-                <button
-                  type="button"
+                <a
                   className="work-feed-open"
-                  onClick={() => openWork(work.id)}
+                  href={buildWorkHref(work.id)}
+                  onClick={() => {
+                    track("book_open", {
+                      workId: work.id,
+                      source: activeView,
+                    });
+                    setMobileNavOpen(false);
+                  }}
                 >
                   <div className="work-feed-heading">
                     {work.coverImageUrl ? (
@@ -4902,7 +4908,7 @@ export default function App() {
                       ))}
                     </div>
                   ) : null}
-                </button>
+                </a>
               </article>
             );
           })}
