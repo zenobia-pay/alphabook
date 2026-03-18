@@ -2597,6 +2597,10 @@ function buildWorkHref(workId: string) {
   return `/works/${encodeURIComponent(workId)}`;
 }
 
+function buildWorkContentHref(workId: string) {
+  return `/work-content/${encodeURIComponent(workId)}`;
+}
+
 function buildResearchDocument(title: string, toolTrace: ToolTraceEntry[], artifacts: RunArtifactRecord[]): ResearchDocumentModel {
   const entries: ResearchDocumentModel["entries"] = [];
   const seen = new Set<string>();
@@ -4501,10 +4505,6 @@ export default function App() {
       source: activeView,
     });
     setMobileNavOpen(false);
-    if (typeof window !== "undefined") {
-      window.location.assign(buildWorkHref(workId));
-      return;
-    }
     setPendingCitation(null);
     setActiveProfileUserId(null);
     setActiveWorkId(workId);
@@ -4715,47 +4715,43 @@ export default function App() {
         className={cn("book-page", isDraggingBookAssistant && "is-resizing")}
         style={{ ["--book-assistant-width" as string]: `${bookAssistantWidth}px` }}
       >
-        {activeWorkLoading ? (
-          <BookMetaLoadingState />
-        ) : (
-          <div className="book-reader-pane">
-            {activeWork ? (
-              <>
-                <header className="book-reader-header">
-                  <div>
-                    <p className="book-reader-meta">
-                      {[activeWork.gutenbergId ? `Gutenberg ${activeWork.gutenbergId}` : null, activeWork.language?.toUpperCase()].filter(Boolean).join(" · ")}
-                    </p>
-                    <h1>{activeWork.title}</h1>
-                    {activeWork.authors.length > 0 ? <p className="book-reader-authors">{activeWork.authors.join(" · ")}</p> : null}
-                  </div>
-                </header>
+        <div className="book-reader-pane">
+          {activeWork ? (
+            <header className="book-reader-header">
+              <div>
+                <p className="book-reader-meta">
+                  {[activeWork.gutenbergId ? `Gutenberg ${activeWork.gutenbergId}` : null, activeWork.language?.toUpperCase()].filter(Boolean).join(" · ")}
+                </p>
+                <h1>{activeWork.title}</h1>
+                {activeWork.authors.length > 0 ? <p className="book-reader-authors">{activeWork.authors.join(" · ")}</p> : null}
+              </div>
+            </header>
+          ) : activeWorkLoading ? (
+            <header className="book-reader-header book-reader-header-skeleton" aria-hidden="true">
+              <div className="book-loading-copy">
+                <div className="book-loading-meta" />
+                <div className="book-loading-title" />
+                <div className="book-loading-authors" />
+              </div>
+            </header>
+          ) : (
+            <div className="book-loading">Book not found.</div>
+          )}
 
-                <div className="book-reader-surface">
-                    {readerPassages.length > 0 ? (
-                      <div className="book-reader-passages">
-                        {readerPassages.map((passage) => (
-                          <ReaderPassageBlock
-                            key={passage.id}
-                          passage={passage}
-                          isActive={passage.id === activePassageId}
-                          highlight={passage.id === activePassageId ? highlightedPassageExcerpt : null}
-                          onActivate={(passageId) => activatePassage(passageId, null)}
-                        />
-                        ))}
-                      </div>
-                    ) : activeWorkSourceLoading ? (
-                      <BookLoadingState />
-                    ) : (
-                      <div className="book-loading">This book does not have stored source content yet.</div>
-                    )}
-                  </div>
-              </>
-            ) : (
-              <div className="book-loading">Book not found.</div>
-            )}
-          </div>
-        )}
+          {activeWorkId ? (
+            <div className="book-reader-surface">
+              <iframe
+                key={activeWorkId}
+                className="book-reader-frame"
+                src={buildWorkContentHref(activeWorkId)}
+                title={activeWork?.title ? `${activeWork.title} text` : "Book text"}
+                loading="eager"
+                referrerPolicy="same-origin"
+                sandbox="allow-same-origin"
+              />
+            </div>
+          ) : null}
+        </div>
 
         <div
           className="book-assistant-divider"
@@ -4872,16 +4868,10 @@ export default function App() {
               : work.subjects.slice(0, 3);
             return (
               <article key={work.id} className={`work-feed-card ${selected ? "is-selected" : ""}`}>
-                <a
+                <button
+                  type="button"
                   className="work-feed-open"
-                  href={buildWorkHref(work.id)}
-                  onClick={() => {
-                    track("book_open", {
-                      workId: work.id,
-                      source: activeView,
-                    });
-                    setMobileNavOpen(false);
-                  }}
+                  onClick={() => openWork(work.id)}
                 >
                   <div className="work-feed-heading">
                     {work.coverImageUrl ? (
@@ -4908,7 +4898,7 @@ export default function App() {
                       ))}
                     </div>
                   ) : null}
-                </a>
+                </button>
               </article>
             );
           })}

@@ -45,7 +45,6 @@ const SITE_ORIGIN = "https://alpha-book.org";
 const STATIC_WORK_CACHE_NAME = "alphabook-static-works";
 const STATIC_WORK_REVALIDATE_SECONDS = 60 * 60;
 const STATIC_WORK_BROWSER_CACHE_SECONDS = 60 * 5;
-const READER_SHELL_APP_PARAM = "app";
 
 function resolveApiOrigin(env: Env) {
   return env.API_ORIGIN ?? "https://api.alpha-book.org";
@@ -143,17 +142,18 @@ function renderSourceMarkup(source: WorkSource | null | undefined) {
     : renderTextSource(source.content);
 }
 
-function buildStaticWorkHtml(requestUrl: URL, work: WorkDetail, source: WorkSource | null | undefined) {
-  const canonicalUrl = resolveCanonicalUrl(requestUrl);
+function buildWorkContentCanonicalUrl(workId: string) {
+  return new URL(`/works/${encodeURIComponent(workId)}`, SITE_ORIGIN).toString();
+}
+
+function buildStaticWorkHtml(work: WorkDetail, source: WorkSource | null | undefined) {
+  const canonicalUrl = buildWorkContentCanonicalUrl(work.id);
   const authors = work.authors.filter((author) => author.trim().length > 0);
   const byline = authors.length > 0 ? authors.join(" · ") : "Unknown author";
   const meta = formatBookMeta(work);
   const description = createExcerpt(work.summary ?? source?.content ?? `Read ${work.title} on alpha book.`);
   const title = `${work.title} | alpha book`;
   const sourceMarkup = renderSourceMarkup(source);
-  const coverMarkup = work.coverImageUrl
-    ? `<div class="cover-shell"><img src="${escapeHtml(work.coverImageUrl)}" alt="" loading="eager" /></div>`
-    : "";
 
   return `<!doctype html>
 <html lang="en">
@@ -162,107 +162,50 @@ function buildStaticWorkHtml(requestUrl: URL, work: WorkDetail, source: WorkSour
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>${escapeHtml(title)}</title>
     <meta name="description" content="${escapeHtml(description)}" />
-    <meta name="robots" content="index,follow" />
+    <meta name="robots" content="noindex,nofollow" />
     <link rel="canonical" href="${escapeHtml(canonicalUrl)}" />
-    <meta property="og:type" content="book" />
-    <meta property="og:title" content="${escapeHtml(title)}" />
-    <meta property="og:description" content="${escapeHtml(description)}" />
-    <meta property="og:url" content="${escapeHtml(canonicalUrl)}" />
     <style>
       :root {
         color-scheme: light;
-        --bg: #f4efe6;
-        --panel: rgba(255, 252, 247, 0.94);
+        --bg: #f8f4ee;
         --ink: #1f1b16;
         --muted: #635848;
         --line: rgba(73, 58, 41, 0.14);
-        --accent: #8f4f2a;
-        --accent-soft: rgba(143, 79, 42, 0.1);
-        --shadow: 0 28px 80px rgba(69, 52, 34, 0.12);
+        --accent-soft: rgba(143, 79, 42, 0.12);
       }
       * { box-sizing: border-box; }
       body {
         margin: 0;
         font-family: Georgia, "Times New Roman", serif;
         color: var(--ink);
-        background:
-          radial-gradient(circle at top, rgba(201, 154, 106, 0.2), transparent 32rem),
-          linear-gradient(180deg, #fbf6ee 0%, var(--bg) 60%, #efe6d8 100%);
+        background: var(--bg);
       }
       a { color: inherit; }
       .page {
-        width: min(1100px, calc(100vw - 32px));
+        width: min(880px, calc(100vw - 40px));
         margin: 0 auto;
-        padding: 32px 0 48px;
-      }
-      .toolbar {
-        display: flex;
-        gap: 12px;
-        align-items: center;
-        justify-content: space-between;
-        margin-bottom: 24px;
-        color: var(--muted);
-        font-size: 0.95rem;
-      }
-      .toolbar-links {
-        display: flex;
-        gap: 12px;
-        flex-wrap: wrap;
-      }
-      .toolbar a {
-        text-decoration: none;
-        padding: 10px 14px;
-        border-radius: 999px;
-        border: 1px solid var(--line);
-        background: rgba(255, 255, 255, 0.65);
+        padding: 28px 0 40px;
       }
       .hero {
         display: grid;
-        grid-template-columns: minmax(0, 220px) minmax(0, 1fr);
-        gap: 28px;
-        padding: 28px;
-        border: 1px solid var(--line);
-        border-radius: 28px;
-        background: var(--panel);
-        box-shadow: var(--shadow);
-        margin-bottom: 24px;
+        gap: 10px;
+        padding-bottom: 22px;
       }
-      .cover-shell {
-        border-radius: 20px;
-        overflow: hidden;
-        background: #e8dfd3;
-        border: 1px solid var(--line);
-        min-height: 280px;
-      }
-      .cover-shell img {
-        display: block;
-        width: 100%;
-        height: 100%;
-        object-fit: cover;
-      }
-      .eyebrow {
-        margin: 0 0 10px;
+      .eyebrow, .byline, .summary {
+        margin: 0;
         color: var(--muted);
-        font-size: 0.95rem;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
+        font-size: 1rem;
+        line-height: 1.7;
       }
       h1 {
         margin: 0;
-        font-size: clamp(2.3rem, 5vw, 4.4rem);
-        line-height: 0.95;
-      }
-      .subtitle, .byline, .summary {
-        margin: 16px 0 0;
-        color: var(--muted);
-        font-size: 1.05rem;
-        line-height: 1.7;
+        font-size: clamp(2rem, 4vw, 3.5rem);
+        line-height: 0.98;
       }
       .chip-row {
         display: flex;
         flex-wrap: wrap;
         gap: 10px;
-        margin-top: 18px;
       }
       .chip-row span {
         display: inline-flex;
@@ -270,27 +213,11 @@ function buildStaticWorkHtml(requestUrl: URL, work: WorkDetail, source: WorkSour
         border-radius: 999px;
         padding: 8px 12px;
         background: var(--accent-soft);
-        color: var(--accent);
+        color: var(--muted);
         font-size: 0.88rem;
       }
-      .reader {
-        border: 1px solid var(--line);
-        border-radius: 28px;
-        background: rgba(255, 252, 247, 0.98);
-        box-shadow: var(--shadow);
-        overflow: hidden;
-      }
-      .reader-header {
-        display: flex;
-        justify-content: space-between;
-        gap: 16px;
-        padding: 18px 24px;
-        border-bottom: 1px solid var(--line);
-        color: var(--muted);
-        background: rgba(255, 255, 255, 0.72);
-      }
       .reader-body {
-        padding: clamp(22px, 4vw, 44px);
+        padding: 0 0 32px;
         font-size: 1.1rem;
         line-height: 1.85;
       }
@@ -311,7 +238,7 @@ function buildStaticWorkHtml(requestUrl: URL, work: WorkDetail, source: WorkSour
       .reader-body pre {
         white-space: pre-wrap;
         font-family: "Courier New", monospace;
-        background: #f6efe5;
+        background: #f2eadf;
         border-radius: 16px;
         padding: 16px;
       }
@@ -319,54 +246,21 @@ function buildStaticWorkHtml(requestUrl: URL, work: WorkDetail, source: WorkSour
         color: var(--muted);
       }
       @media (max-width: 780px) {
-        .page {
-          width: min(100vw - 20px, 100%);
-          padding-top: 20px;
-        }
-        .hero {
-          grid-template-columns: 1fr;
-          padding: 20px;
-          border-radius: 22px;
-        }
-        .reader {
-          border-radius: 22px;
-        }
-        .reader-header {
-          flex-direction: column;
-        }
+        .page { width: min(100vw - 24px, 100%); }
       }
     </style>
   </head>
   <body>
     <main class="page">
-      <div class="toolbar">
-        <div>Static edge-cached reader</div>
-        <div class="toolbar-links">
-          <a href="/?view=explore">Back to explore</a>
-          <a href="/works/${encodeURIComponent(work.id)}?${READER_SHELL_APP_PARAM}=1">Open interactive reader</a>
-        </div>
-      </div>
       <section class="hero">
-        ${coverMarkup}
-        <div>
-          ${meta ? `<p class="eyebrow">${escapeHtml(meta)}</p>` : ""}
-          <h1>${escapeHtml(work.title)}</h1>
-          ${work.subtitle ? `<p class="subtitle">${escapeHtml(work.subtitle)}</p>` : ""}
-          <p class="byline">${escapeHtml(byline)}</p>
-          ${work.summary ? `<p class="summary">${escapeHtml(work.summary)}</p>` : ""}
-          ${renderTagList(work.bookshelves, "chip-row")}
-          ${renderTagList(work.subjects, "chip-row")}
-        </div>
+        ${meta ? `<p class="eyebrow">${escapeHtml(meta)}</p>` : ""}
+        <h1>${escapeHtml(work.title)}</h1>
+        ${work.subtitle ? `<p class="summary">${escapeHtml(work.subtitle)}</p>` : ""}
+        <p class="byline">${escapeHtml(byline)}</p>
+        ${work.summary ? `<p class="summary">${escapeHtml(work.summary)}</p>` : ""}
+        ${renderTagList(work.bookshelves, "chip-row")}
       </section>
-      <article class="reader">
-        <div class="reader-header">
-          <div>Full text</div>
-          <div>Served as HTML at ${escapeHtml(requestUrl.pathname)}</div>
-        </div>
-        <div class="reader-body">
-          ${sourceMarkup}
-        </div>
-      </article>
+      <div class="reader-body">${sourceMarkup}</div>
     </main>
   </body>
 </html>`;
@@ -377,7 +271,7 @@ function buildStaticResponse(body: string, canonicalUrl: string) {
     headers: {
       "content-type": "text/html; charset=utf-8",
       "cache-control": `public, max-age=${STATIC_WORK_BROWSER_CACHE_SECONDS}, s-maxage=${STATIC_WORK_REVALIDATE_SECONDS}`,
-      "x-robots-tag": "index, follow",
+      "x-robots-tag": "noindex, nofollow",
       "x-alphabook-surface": "frontend-worker-static-work",
       vary: "accept-encoding",
       "x-canonical-url": canonicalUrl,
@@ -401,7 +295,7 @@ async function fetchJson<T>(url: string): Promise<T | null> {
 }
 
 async function renderStaticWorkResponse(request: Request, env: Env, url: URL) {
-  const workIdMatch = url.pathname.match(/^\/works\/([^/]+)$/);
+  const workIdMatch = url.pathname.match(/^\/work-content\/([^/]+)$/);
   if (!workIdMatch) {
     return null;
   }
@@ -436,8 +330,8 @@ async function renderStaticWorkResponse(request: Request, env: Env, url: URL) {
     });
   }
 
-  const body = buildStaticWorkHtml(url, detailPayload.work, sourcePayload?.source ?? null);
-  const response = buildStaticResponse(body, resolveCanonicalUrl(url));
+  const body = buildStaticWorkHtml(detailPayload.work, sourcePayload?.source ?? null);
+  const response = buildStaticResponse(body, buildWorkContentCanonicalUrl(detailPayload.work.id));
   await cache.put(cacheKey, response.clone());
   return response;
 }
@@ -460,11 +354,7 @@ export default {
       });
     }
 
-    if (
-      request.method === "GET"
-      && url.pathname.startsWith("/works/")
-      && url.searchParams.get(READER_SHELL_APP_PARAM) !== "1"
-    ) {
+    if (request.method === "GET" && url.pathname.startsWith("/work-content/")) {
       const staticResponse = await renderStaticWorkResponse(request, env, url);
       if (staticResponse) {
         return staticResponse;
