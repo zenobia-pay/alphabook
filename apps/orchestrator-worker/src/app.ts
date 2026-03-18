@@ -110,6 +110,7 @@ const VERIFICATION_CODE_WORDS = [
   "signal",
 ];
 const DEFAULT_SESSION_TITLE_MODEL = "@cf/zai-org/glm-4.7-flash";
+const ORPHANED_RUN_GRACE_MS = 30_000;
 
 function randomToken(length = 24) {
   const bytes = crypto.getRandomValues(new Uint8Array(length));
@@ -1766,6 +1767,22 @@ async function reconcilePersistentRun(
   const runAgeMs = Date.now() - Date.parse(run.startedAt);
   const runningToolCall = [...toolCalls].reverse().find((toolCall) => toolCall.status === "running");
   if (!runningToolCall) {
+    if (toolCalls.length > 0 && runAgeMs > ORPHANED_RUN_GRACE_MS) {
+      const failureMessage = "This run stopped unexpectedly before it produced an answer.";
+      await deps.store.updateRun(run.id, {
+        status: "failed",
+        completedAt: new Date().toISOString(),
+      });
+      await persistRecoveredPlanToolTrace(deps, session.id, run.id, toolCalls);
+      await appendRunErrorMessageOnce(deps, session.id, run.id, failureMessage, {
+        runId: run.id,
+        phase: "error",
+        toolCalls: buildRecoveredToolTrace(toolCalls),
+        researchLog: buildRecoveredToolTrace(toolCalls),
+        recoveredFromStalledRun: true,
+      });
+      return deps.store.getRun(run.id);
+    }
     if (runAgeMs > HARD_LIMITS.MAX_RUN_WALL_CLOCK_SECONDS * 1000) {
       const failureMessage = "This run timed out before it produced an answer.";
       await deps.store.updateRun(run.id, {

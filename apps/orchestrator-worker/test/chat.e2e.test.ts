@@ -2191,6 +2191,80 @@ test("run details endpoint recovers a completed run answer from a persisted brie
   assert.equal(payload.messages[1]?.metadata.runId, run.id);
 });
 
+test("run details endpoint fails orphaned running runs with no active tool call", async () => {
+  const store = new InMemoryAppStore();
+  const session = await store.createSession("reader-user", "Stuck run");
+  await store.appendMessage(session.id, "user", "Find grief passages.");
+  const run = await store.createRun(session.id);
+  const toolCall = await store.startToolCall(run.id, "search_works", {
+    query: "grief",
+  });
+  await store.finishToolCall(toolCall.id, "completed", {
+    works: [],
+  });
+
+  const staleStartedAt = new Date(Date.now() - 45_000).toISOString();
+  await store.updateRun(run.id, {
+    status: "running",
+    completedAt: null,
+  });
+  const runs = (store as unknown as { runs: Map<string, { startedAt: string }> }).runs;
+  const storedRun = runs.get(run.id);
+  assert.ok(storedRun);
+  storedRun.startedAt = staleStartedAt;
+
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    planner: new ScriptedPlanner([
+      {
+        type: "final_answer",
+        answer: "unused",
+        citations: [],
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+      async runWorkspaceTask() {
+        return { ok: false, error: "disabled" };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: true, files: [] };
+      },
+      async destroyWorkspace() {
+        return { ok: true };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const runResponse = await app.request(`/sessions/${session.id}/runs/${run.id}?userId=reader-user`);
+  assert.equal(runResponse.status, 200);
+  const runPayload = await runResponse.json() as {
+    run: { status: string };
+  };
+  assert.equal(runPayload.run.status, "failed");
+
+  const messagesResponse = await app.request(`/sessions/${session.id}/messages?userId=reader-user`);
+  assert.equal(messagesResponse.status, 200);
+  const payload = await messagesResponse.json() as {
+    messages: Array<{ role: string; content: string; metadata: Record<string, unknown> }>;
+  };
+  const errorMessage = payload.messages.find((message) => message.metadata?.phase === "error");
+  assert.equal(errorMessage?.content, "This run stopped unexpectedly before it produced an answer.");
+});
+
 test("persisted tool traces keep chunk results compact enough for refresh", async () => {
   const store = new InMemoryAppStore(
     [
