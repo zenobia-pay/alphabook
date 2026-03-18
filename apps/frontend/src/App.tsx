@@ -2082,7 +2082,7 @@ function sessionDisplayPreview(session: ChatSessionSummary) {
   if (preview) {
     return preview;
   }
-  return session.title?.trim() ? "Open this thread to continue the conversation." : "No messages yet.";
+  return "No messages yet.";
 }
 
 function assistantSessionName(session: ChatSessionSummary | null) {
@@ -2119,9 +2119,8 @@ function SidebarRecents({
       {sessionsLoading && sessions.length === 0 ? (
         <div className="sidebar-recents-list" aria-hidden="true">
           {Array.from({ length: 4 }).map((_, index) => (
-            <div key={index} className="sidebar-recent-card sidebar-recent-card-skeleton">
-              <Skeleton className="sidebar-recent-card-title" />
-              <Skeleton className="sidebar-recent-card-meta" />
+            <div key={index} className="sidebar-recent-row sidebar-recent-row-skeleton">
+              <Skeleton className="sidebar-recent-row-line" />
             </div>
           ))}
         </div>
@@ -2133,22 +2132,17 @@ function SidebarRecents({
               <button
                 key={session.id}
                 type="button"
-                className={cn("sidebar-recent-card", isActive && "is-active")}
+                className={cn("sidebar-recent-row", isActive && "is-active")}
                 onClick={() => onSelectSession(session.id)}
               >
-                <div className="sidebar-recent-card-head">
-                  <strong>{sessionDisplayTitle(session)}</strong>
-                  <span>{formatRelativeTime(session.lastMessageAt ?? session.createdAt)}</span>
-                </div>
-                <p>{sessionDisplayPreview(session)}</p>
+                <span>{sessionDisplayTitle(session)}</span>
               </button>
             );
           })}
         </div>
       ) : (
         <div className="sidebar-recents-empty">
-          <strong>No recent chats yet</strong>
-          <p>Start a new chat and it will show up here.</p>
+          <span>No recent chats yet.</span>
         </div>
       )}
     </section>
@@ -2387,20 +2381,132 @@ function collectSourceChunks(toolTrace: ToolTraceEntry[], artifacts: RunArtifact
   return [...collected.values()];
 }
 
+function collectResearchSteps(toolTrace: ToolTraceEntry[]) {
+  const lines: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of toolTrace) {
+    const sentence = summarizeToolSentence(entry).trim();
+    if (!sentence) {
+      continue;
+    }
+    const key = `${entry.toolName}:${sentence}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    lines.push(sentence);
+  }
+  return lines;
+}
+
+type SurfacingBook = {
+  key: string;
+  title: string;
+  authors: string[];
+  note: string;
+};
+
+function collectSurfacingBooks(toolTrace: ToolTraceEntry[]) {
+  const books = new Map<string, SurfacingBook>();
+
+  const remember = (title: string, authors: string[], note: string) => {
+    const normalizedTitle = title.trim();
+    if (!normalizedTitle) {
+      return;
+    }
+    const key = normalizedTitle.toLowerCase();
+    const existing = books.get(key);
+    if (existing) {
+      if (existing.authors.length === 0 && authors.length > 0) {
+        existing.authors = authors;
+      }
+      if (!existing.note && note) {
+        existing.note = note;
+      }
+      return;
+    }
+    books.set(key, {
+      key,
+      title: normalizedTitle,
+      authors,
+      note: note.trim(),
+    });
+  };
+
+  for (const entry of toolTrace) {
+    if (entry.toolName === "search_works" || entry.toolName === "get_work_metadata") {
+      const works = Array.isArray(entry.result?.works) ? entry.result.works as Array<Record<string, unknown>> : [];
+      for (const work of works) {
+        const title = typeof work.title === "string" ? work.title : "";
+        const authors = Array.isArray(work.authors)
+          ? work.authors.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+          : [];
+        const note = entry.toolName === "search_works"
+          ? "Surfaced in the corpus search as a likely candidate."
+          : "Pulled forward for more book context.";
+        remember(title, authors, note);
+      }
+    }
+
+    if (entry.toolName === "create_workspace") {
+      const manifest = entry.result?.manifest;
+      const works = manifest && typeof manifest === "object" && Array.isArray((manifest as Record<string, unknown>).works)
+        ? (manifest as Record<string, unknown>).works as Array<Record<string, unknown>>
+        : [];
+      for (const work of works) {
+        const title = typeof work.title === "string" ? work.title : "";
+        const authors = Array.isArray(work.authors)
+          ? work.authors.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+          : [];
+        remember(title, authors, "Included in the deeper research workspace.");
+      }
+    }
+  }
+
+  return [...books.values()];
+}
+
 function buildResearchDocument(prompt: string, toolTrace: ToolTraceEntry[], artifacts: RunArtifactRecord[]) {
   const preferredReference = researchArtifacts(artifacts).find((artifact) => artifact.filename === "every-single-reference.md");
-  if (preferredReference) {
-    return artifactText(preferredReference);
-  }
-
+  const steps = collectResearchSteps(toolTrace);
+  const books = collectSurfacingBooks(toolTrace);
   const chunks = collectSourceChunks(toolTrace, artifacts);
-  if (chunks.length === 0) {
-    return prompt
-      ? `${prompt}\n\nWaiting for source passages to arrive...`
-      : "Waiting for source passages to arrive...";
-  }
 
   const lines = prompt ? [prompt, ""] : [];
+
+  if (steps.length > 0) {
+    lines.push("SEARCH");
+    lines.push("");
+    steps.forEach((step) => lines.push(`- ${step}`));
+    lines.push("");
+  }
+
+  if (books.length > 0) {
+    lines.push("BOOKS SURFACING");
+    lines.push("");
+    books.forEach((book) => {
+      const authorLine = book.authors.length > 0 ? ` by ${book.authors.join(", ")}` : "";
+      lines.push(`- ${book.title}${authorLine}`);
+      if (book.note) {
+        lines.push(`  ${book.note}`);
+      }
+    });
+    lines.push("");
+  }
+
+  lines.push("PRIMARY SOURCES");
+  lines.push("");
+
+  if (preferredReference) {
+    lines.push(artifactText(preferredReference));
+    return lines.join("\n");
+  }
+
+  if (chunks.length === 0) {
+    lines.push("Waiting for source passages to arrive...");
+    return lines.join("\n");
+  }
+
   chunks.forEach((chunk, index) => {
     if (index > 0) {
       lines.push("");
@@ -2540,7 +2646,7 @@ function SessionListCard({
         <strong className="profile-history-row-title">{sessionDisplayTitle(session)}</strong>
         <span className="profile-history-row-time">{formatRelativeTime(session.lastMessageAt)}</span>
       </div>
-      <p className="profile-history-row-preview">{sessionDisplayPreview(session)}</p>
+      <p className="profile-history-row-preview">{session.lastMessagePreview ?? "No messages yet."}</p>
     </button>
   );
 }
