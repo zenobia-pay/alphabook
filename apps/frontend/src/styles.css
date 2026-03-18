@@ -202,9 +202,33 @@ button {
   border-color: rgba(72, 43, 37, 0.18);
 }
 
-.sidebar-profile {
+.sidebar-profile-wrap {
   margin-top: auto;
-  padding: 12px 0 0;
+  padding-top: 12px;
+}
+
+.sidebar-profile-wrap.is-collapsed {
+  display: flex;
+  justify-content: center;
+}
+
+.sidebar-powered-by {
+  display: block;
+  margin-bottom: 10px;
+  color: var(--ink-soft);
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+  text-decoration: none;
+}
+
+.sidebar-powered-by:hover {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 0.16em;
+}
+
+.sidebar-profile {
+  padding: 0;
 }
 
 .sidebar.is-collapsed .sidebar-profile {
