@@ -2101,12 +2101,14 @@ function assistantSessionName(session: ChatSessionSummary | null) {
 
 function SidebarRecents({
   collapsed,
+  activeView,
   sessions,
   selectedSessionId,
   sessionsLoading,
   onSelectSession,
 }: {
   collapsed: boolean;
+  activeView: ViewMode;
   sessions: ChatSessionSummary[];
   selectedSessionId: string | null | undefined;
   sessionsLoading: boolean;
@@ -2134,7 +2136,7 @@ function SidebarRecents({
       ) : sessions.length > 0 ? (
         <div className="sidebar-recents-list">
           {sessions.map((session) => {
-            const isActive = selectedSessionId === session.id;
+            const isActive = activeView === "assistant" && selectedSessionId === session.id;
             return (
               <button
                 key={session.id}
@@ -5645,7 +5647,14 @@ export default function App() {
           <nav className={cn("sidebar-nav", sidebarCollapsed && "items-center")} aria-label="Primary">
             {navigationItems.map((item) => {
               const Icon = item.icon;
-              const isActive = activeView === item.id || (activeView === "book" && item.id === "explore");
+              const isAssistantNewChatActive =
+                item.id === "assistant"
+                && activeView === "assistant"
+                && !selectedSessionId;
+              const isActive =
+                isAssistantNewChatActive
+                || (activeView === item.id && item.id !== "assistant")
+                || (activeView === "book" && item.id === "explore");
               return (
                 <Button
                   key={item.id}
@@ -5668,6 +5677,7 @@ export default function App() {
 
           <SidebarRecents
             collapsed={sidebarCollapsed}
+            activeView={activeView}
             sessions={sessions}
             selectedSessionId={selectedSessionId}
             sessionsLoading={sessionsLoading && !sessionsResolved}
