@@ -12,7 +12,7 @@ import { MemoryBlobStore } from "../src/r2";
 import { FallbackPlanner, ScriptedPlanner } from "../src/planner";
 import { ScriptedRouter } from "../src/router";
 import { FlyMachinesRuntimeGateway } from "../src/runtime";
-import { InMemoryAppStore } from "../src/store";
+import { InMemoryAppStore, NeonAppStore } from "../src/store";
 import type { SynthesisInput, SynthesisResult, Synthesizer } from "../src/synthesizer";
 import type { PlannerContext } from "../src/planner";
 import type { RouterContext } from "../src/router";
@@ -2901,4 +2901,30 @@ test("in-memory retrieval expands conversational relationship queries into seed 
   assert.equal(works.length, 1);
   assert.equal(chunks.length, 1);
   assert.match(chunks[0]?.text ?? "", /reconciled/i);
+});
+
+test("sql retrieval bounds semantic candidates instead of scanning every embedded chunk", async () => {
+  const queries: Array<{ sql: string; params?: unknown[] }> = [];
+  const store = new NeonAppStore({
+    async query<T = Record<string, unknown>>(sql: string, params?: unknown[]) {
+      queries.push({ sql, params });
+      return { rows: [] as T[] };
+    },
+    async end() {},
+  });
+
+  await store.getRelevantChunks(
+    "grief and mourning in fiction",
+    ["11111111-1111-1111-1111-111111111111"],
+    8,
+    new Array(1536).fill(0.25),
+  );
+
+  const issued = queries.at(-1);
+  assert.ok(issued, "expected a chunks query to run");
+  assert.match(issued.sql, /semantic_candidates AS \(/);
+  assert.match(issued.sql, /ORDER BY c\.embedding <=> query_input\.embedding/);
+  assert.match(issued.sql, /LIMIT \$6/);
+  assert.doesNotMatch(issued.sql, /OR \(query_input\.embedding IS NOT NULL AND c\.embedding IS NOT NULL\)/);
+  assert.equal(issued.params?.[5], 96);
 });

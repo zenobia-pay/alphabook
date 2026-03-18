@@ -40,6 +40,8 @@ type ToolTraceEntry = {
   state: "running" | "completed" | "error";
 };
 
+type ResearchDocumentEntryKind = "title" | "log" | "book" | "chunk";
+
 type CitationNavigationContextValue = {
   openCitation: (citation: Citation) => void;
   activeWorkId: string | null | undefined;
@@ -2584,7 +2586,7 @@ function appendDocumentEntry(
   seen: Set<string>,
   key: string,
   text: string,
-  kind: "log" | "book" | "chunk",
+  kind: ResearchDocumentEntryKind,
 ) {
   const normalized = text.trim();
   if (!normalized || seen.has(key)) {
@@ -2601,6 +2603,7 @@ function appendDocumentEntry(
 function buildResearchDocument(title: string, toolTrace: ToolTraceEntry[], artifacts: RunArtifactRecord[]): ResearchDocumentModel {
   const entries: ResearchDocumentModel["entries"] = [];
   const seen = new Set<string>();
+  appendDocumentEntry(entries, seen, "title", `# ${title.trim() || "Research log"}`, "title");
 
   for (const entry of toolTrace) {
     const progressLines = entry.progress
@@ -2698,16 +2701,18 @@ function ResearchArtifactPane({
 
   return (
     <section className="assistant-document-pane">
-      <header className="assistant-document-header">
-        <p className="assistant-document-eyebrow">Research document</p>
-        <h2>{document.title}</h2>
-      </header>
       <div className="assistant-document-scroll">
         <div className="assistant-document-text">
           {document.entries.map((entry) => (
-            <p key={entry.key} className={cn("assistant-document-entry", `is-${entry.kind}`)}>
-              {entry.text}
-            </p>
+            entry.kind === "title" ? (
+              <h1 key={entry.key} className="assistant-document-entry is-title">
+                {entry.text.replace(/^#\s+/, "")}
+              </h1>
+            ) : (
+              <p key={entry.key} className={cn("assistant-document-entry", `is-${entry.kind}`)}>
+                {entry.text}
+              </p>
+            )
           ))}
         </div>
       </div>

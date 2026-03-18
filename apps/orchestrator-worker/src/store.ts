@@ -2882,6 +2882,7 @@ export class NeonAppStore implements AppStore {
     const normalizedQuery = normalizeSearchQuery(query);
     const tsQuery = normalizedQuery || query.trim();
     const tokens = expandedSearchTokens(query);
+    const semanticCandidateLimit = Math.max(limit * 12, 96);
     const result = await this.db.query<{
       id: string;
       work_id: string;
@@ -2899,6 +2900,35 @@ export class NeonAppStore implements AppStore {
               ELSE websearch_to_tsquery('english', $1::text)
             END AS tsq,
             CASE WHEN $4::text IS NULL THEN NULL ELSE $4::vector END AS embedding
+        ),
+        semantic_candidates AS (
+          SELECT c.id
+          FROM chunks c, query_input
+          WHERE
+            query_input.embedding IS NOT NULL
+            AND c.embedding IS NOT NULL
+            AND ($2::uuid[] IS NULL OR c.work_id = ANY($2::uuid[]))
+          ORDER BY c.embedding <=> query_input.embedding
+          LIMIT $6
+        ),
+        lexical_candidates AS (
+          SELECT c.id
+          FROM chunks c, query_input
+          WHERE
+            ($2::uuid[] IS NULL OR c.work_id = ANY($2::uuid[]))
+            AND (
+              (query_input.tsq IS NOT NULL AND c.tsv @@ query_input.tsq)
+              OR EXISTS (
+                SELECT 1
+                FROM UNNEST($5::text[]) AS token
+                WHERE COALESCE(c.text, '') ILIKE '%' || token || '%'
+              )
+            )
+        ),
+        candidate_ids AS (
+          SELECT id FROM semantic_candidates
+          UNION
+          SELECT id FROM lexical_candidates
         ),
         ranked AS (
           SELECT
@@ -2919,18 +2949,8 @@ export class NeonAppStore implements AppStore {
                 COALESCE(CASE WHEN query_input.tsq IS NULL THEN NULL ELSE ts_rank_cd(c.tsv, query_input.tsq) END, 0)
                 + (1 - (c.embedding <=> query_input.embedding))
             END AS semantic_score
-          FROM chunks c, query_input
-          WHERE
-            ($2::uuid[] IS NULL OR c.work_id = ANY($2::uuid[]))
-            AND (
-              (query_input.tsq IS NOT NULL AND c.tsv @@ query_input.tsq)
-              OR (query_input.embedding IS NOT NULL AND c.embedding IS NOT NULL)
-              OR EXISTS (
-                SELECT 1
-                FROM UNNEST($5::text[]) AS token
-                WHERE COALESCE(c.text, '') ILIKE '%' || token || '%'
-              )
-            )
+          FROM candidate_ids
+          JOIN chunks c ON c.id = candidate_ids.id, query_input
         )
         SELECT
           ranked.id,
@@ -2944,7 +2964,7 @@ export class NeonAppStore implements AppStore {
         ORDER BY (ranked.semantic_score + ranked.token_score) DESC, ranked.work_id ASC, ranked.chunk_index ASC
         LIMIT $3
       `,
-      [tsQuery, workIds?.length ? workIds : null, limit, vectorLiteral, tokens],
+      [tsQuery, workIds?.length ? workIds : null, limit, vectorLiteral, tokens, semanticCandidateLimit],
     );
     return result.rows.map((row) => ({
       id: row.id,

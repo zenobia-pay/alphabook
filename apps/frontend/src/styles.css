@@ -1821,36 +1821,13 @@ button {
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
-}
-
-.assistant-document-header {
-  padding: 26px 28px 18px;
-  border-bottom: 1px solid rgba(38, 38, 38, 0.08);
-  background: rgba(255, 255, 255, 0.58);
-}
-
-.assistant-document-eyebrow {
-  margin: 0;
-  color: var(--text-muted);
-  font-size: 0.75rem;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-}
-
-.assistant-document-header h2 {
-  margin: 10px 0 8px;
-  font-family: "Newsreader", serif;
-  font-size: clamp(2rem, 3vw, 2.85rem);
-  line-height: 0.96;
-  letter-spacing: -0.05em;
 }
 
 .assistant-document-scroll {
   min-height: 0;
   overflow: auto;
-  padding: 22px 28px 30px;
+  padding: 26px 28px 30px;
 }
 
 .assistant-document-text {
@@ -1864,6 +1841,15 @@ button {
 
 .assistant-document-entry {
   margin: 0;
+}
+
+.assistant-document-entry.is-title {
+  margin: 0;
+  font-family: "Newsreader", serif;
+  font-size: clamp(2rem, 3vw, 2.85rem);
+  line-height: 0.96;
+  letter-spacing: -0.05em;
+  font-weight: 600;
 }
 
 .assistant-document-entry.is-book {
