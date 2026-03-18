@@ -152,6 +152,7 @@ export const Thread: FC<{
   streamConnected?: boolean;
   artifacts?: RunArtifactRecord[];
   showArtifacts?: boolean;
+  showWelcome?: boolean;
   suggestions?: ThreadSuggestion[];
   onSuggestionSelect?: (prompt: string) => void;
   onCancel?: () => void;
@@ -162,6 +163,7 @@ export const Thread: FC<{
   streamConnected = false,
   artifacts = [],
   showArtifacts = true,
+  showWelcome = true,
   suggestions = [],
   onSuggestionSelect,
   onCancel,
@@ -211,7 +213,7 @@ export const Thread: FC<{
         turnAnchor="top"
         className="aui-thread-viewport relative flex flex-1 flex-col overflow-x-auto overflow-y-auto px-4 pt-4"
       >
-        <AuiIf condition={(s) => s.thread.isEmpty}>
+        <AuiIf condition={(s) => s.thread.isEmpty && showWelcome}>
           <ThreadWelcome />
         </AuiIf>
 
@@ -235,7 +237,7 @@ export const Thread: FC<{
             disabled={composerDisabled}
             notice={composerDisabledNotice}
           />
-          {isEmpty && !isRunning && suggestions.length > 0 ? (
+          {showWelcome && isEmpty && !isRunning && suggestions.length > 0 ? (
             <ThreadSuggestions suggestions={suggestions} onSuggestionSelect={onSuggestionSelect} disabled={composerDisabled} />
           ) : null}
         </ThreadPrimitive.ViewportFooter>

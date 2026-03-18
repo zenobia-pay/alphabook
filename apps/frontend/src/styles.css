@@ -111,29 +111,6 @@ button {
   gap: 12px;
 }
 
-.sidebar-new-chat {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  min-height: 46px;
-  width: 100%;
-  border: 1px solid rgba(37, 99, 235, 0.16);
-  background: linear-gradient(180deg, rgba(37, 99, 235, 0.96), rgba(29, 78, 216, 0.94));
-  color: white;
-  box-shadow: 0 14px 28px rgba(37, 99, 235, 0.16);
-}
-
-.sidebar-new-chat:hover {
-  background: linear-gradient(180deg, rgba(37, 99, 235, 1), rgba(29, 78, 216, 0.98));
-}
-
-.sidebar-new-chat.is-collapsed {
-  width: 44px;
-  padding-inline: 0;
-  justify-self: center;
-}
-
 .brand-lockup {
   display: flex;
   align-items: center;
@@ -2311,6 +2288,23 @@ button {
   padding: 0 20px 20px;
   overflow: hidden;
   overscroll-behavior-y: none;
+}
+
+.assistant-thread-shell-empty {
+  gap: 6px;
+}
+
+.assistant-thread-shell-header {
+  width: min(44rem, 100%);
+  margin: 0 auto;
+  padding: 20px 4px 0;
+}
+
+.assistant-thread-shell-title {
+  margin: 0;
+  color: var(--ink);
+  font-size: 1rem;
+  font-weight: 600;
 }
 
 .assistant-loading-state {

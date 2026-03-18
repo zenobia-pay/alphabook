@@ -1753,14 +1753,6 @@ function CompassIcon() {
   );
 }
 
-function ChatIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v8A2.5 2.5 0 0 1 17.5 16H9l-5 4v-4.5A2.5 2.5 0 0 1 4 13.5Z" />
-    </svg>
-  );
-}
-
 function ProfileIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -1770,8 +1762,8 @@ function ProfileIcon() {
 }
 
 const NAV_ITEMS: Array<{ id: ViewMode; label: string; icon: ComponentType }> = [
+  { id: "assistant", label: "New chat", icon: MessageSquarePlus },
   { id: "explore", label: "Explore", icon: CompassIcon },
-  { id: "assistant", label: "Assistant", icon: ChatIcon },
   { id: "profile", label: "Profile", icon: ProfileIcon },
 ];
 
@@ -2093,6 +2085,13 @@ function sessionDisplayPreview(session: ChatSessionSummary) {
   return session.title?.trim() ? "Open this thread to continue the conversation." : "No messages yet.";
 }
 
+function assistantSessionName(session: ChatSessionSummary | null) {
+  if (!session) {
+    return "New chat";
+  }
+  return sessionDisplayTitle(session);
+}
+
 function SidebarRecents({
   collapsed,
   sessions,
@@ -2163,6 +2162,7 @@ function AssistantSurface({
   streamingAssistantId,
   artifacts,
   showArtifacts = true,
+  showWelcome = true,
   onPrompt,
   onCancel,
   suggestions = ASSISTANT_WELCOME_SUGGESTIONS,
@@ -2175,6 +2175,7 @@ function AssistantSurface({
   streamingAssistantId: string | null;
   artifacts: RunArtifactRecord[];
   showArtifacts?: boolean;
+  showWelcome?: boolean;
   onPrompt: (prompt: string) => Promise<void>;
   onCancel: () => Promise<void>;
   suggestions?: ThreadSuggestion[];
@@ -2205,6 +2206,7 @@ function AssistantSurface({
         streamConnected={streamConnected}
         artifacts={artifacts}
         showArtifacts={showArtifacts}
+        showWelcome={showWelcome}
         suggestions={suggestions}
         composerDisabled={composerDisabled}
         composerDisabledNotice={composerDisabledNotice}
@@ -2214,6 +2216,27 @@ function AssistantSurface({
       />
     </AssistantRuntimeProvider>
   );
+}
+
+function currentResearchToolTrace(messages: UiMessage[], runId: string | null) {
+  const planMessages = [...messages].reverse().filter((message) => {
+    if (message.role !== "assistant" || message.toolCalls.length === 0) {
+      return false;
+    }
+    if (message.metadata?.phase !== "plan") {
+      return false;
+    }
+    if (!runId) {
+      return true;
+    }
+    const messageRunId = typeof message.metadata?.runId === "string" ? message.metadata.runId : null;
+    return messageRunId === runId || messageRunId === null;
+  });
+  return planMessages[0]?.toolCalls ?? [];
+}
+
+function artifactText(artifact: RunArtifactRecord) {
+  return typeof artifact.content === "string" ? artifact.content.trim() : "";
 }
 
 function AssistantSessionToolbar({
@@ -2257,37 +2280,6 @@ function AssistantSessionToolbar({
       </Button>
     </div>
   );
-}
-
-function latestResearchPrompt(messages: UiMessage[]) {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message.role === "user" && message.content.trim()) {
-      return message.content.trim();
-    }
-  }
-  return "";
-}
-
-function currentResearchToolTrace(messages: UiMessage[], runId: string | null) {
-  const planMessages = [...messages].reverse().filter((message) => {
-    if (message.role !== "assistant" || message.toolCalls.length === 0) {
-      return false;
-    }
-    if (message.metadata?.phase !== "plan") {
-      return false;
-    }
-    if (!runId) {
-      return true;
-    }
-    const messageRunId = typeof message.metadata?.runId === "string" ? message.metadata.runId : null;
-    return messageRunId === runId || messageRunId === null;
-  });
-  return planMessages[0]?.toolCalls ?? [];
-}
-
-function artifactText(artifact: RunArtifactRecord) {
-  return typeof artifact.content === "string" ? artifact.content.trim() : "";
 }
 
 type SourceChunkRecord = {
@@ -2422,39 +2414,19 @@ function buildResearchDocument(prompt: string, toolTrace: ToolTraceEntry[], arti
 }
 
 function ResearchArtifactPane({
-  prompt,
   toolTrace,
   artifacts,
-  sessionTitle,
-  activeRun,
 }: {
-  prompt: string;
   toolTrace: ToolTraceEntry[];
   artifacts: RunArtifactRecord[];
-  sessionTitle: string;
-  activeRun: SessionRunRecord | null;
 }) {
-  const runLabel =
-    activeRun?.status === "running" || activeRun?.status === "queued"
-      ? "Live research run"
-      : activeRun?.status === "completed"
-        ? "Latest completed run"
-        : activeRun?.status === "failed"
-          ? "Last run failed"
-          : activeRun?.status === "timed_out"
-            ? "Last run timed out"
-            : "Research workspace";
   const documentText = useMemo(
-    () => buildResearchDocument(prompt, toolTrace, artifacts),
-    [artifacts, prompt, toolTrace],
+    () => buildResearchDocument("", toolTrace, artifacts),
+    [artifacts, toolTrace],
   );
 
   return (
     <section className="assistant-document-pane">
-      <header className="assistant-document-header">
-        <p className="assistant-document-eyebrow">{runLabel}</p>
-        <h2>{sessionTitle}</h2>
-      </header>
       <div className="assistant-document-scroll">
         <pre className="assistant-document-text">{documentText}</pre>
       </div>
@@ -2463,38 +2435,23 @@ function ResearchArtifactPane({
 }
 
 function AssistantWorkspace({
-  prompt,
-  toolTrace,
-  activeRun,
-  sessions,
-  selectedSessionId,
-  onSelectSession,
-  onStartNewChat,
   leftPane,
   rightPane,
   onResizeStart,
   isResizing,
   width,
+  pageRef,
 }: {
-  prompt: string;
-  toolTrace: ToolTraceEntry[];
-  activeRun: SessionRunRecord | null;
-  sessions: ChatSessionSummary[];
-  selectedSessionId: string | null | undefined;
-  onSelectSession: (sessionId: string | null) => void;
-  onStartNewChat: () => void;
   leftPane: ReactNode;
   rightPane: ReactNode;
   onResizeStart: (event: ReactPointerEvent<HTMLDivElement>) => void;
   isResizing: boolean;
   width: number;
+  pageRef: React.RefObject<HTMLElement | null>;
 }) {
-  const sessionTitle =
-    sessions.find((session) => session.id === selectedSessionId)?.title
-    ?? (prompt ? "New research run" : "Assistant");
-
   return (
     <section
+      ref={pageRef}
       className={cn("assistant-workspace-page", isResizing && "is-resizing")}
       style={{ ["--book-assistant-width" as string]: `${width}px` }}
     >
@@ -2512,12 +2469,6 @@ function AssistantWorkspace({
 
       <aside className="book-assistant-pane">
         <div className="book-assistant-shell" data-testid="assistant-workspace-thread">
-          <AssistantSessionToolbar
-            sessions={sessions}
-            selectedSessionId={selectedSessionId}
-            onSelectSession={onSelectSession}
-            onStartNewChat={onStartNewChat}
-          />
           <div className="assistant-session-thread">
             {rightPane}
           </div>
@@ -2731,7 +2682,7 @@ export default function App() {
   const profileTag = profileHandle(currentUser);
   const activeViewLabel =
     activeView === "assistant"
-      ? activeSession?.title ?? "Assistant"
+      ? assistantSessionName(activeSession)
       : activeView === "book"
         ? activeWork?.title ?? "Book"
         : activeView === "admin"
@@ -4298,9 +4249,8 @@ export default function App() {
           || messagesLoading
         ))
       );
-    const workspacePrompt = latestResearchPrompt(visibleMessages);
     const workspaceToolTrace = currentResearchToolTrace(visibleMessages, preferredAssistantRun?.id ?? null);
-    const showLanding =
+    const showBlankSession =
       !assistantSessionLoading
       && !authState.loading
       && selectedSessionId == null
@@ -4322,40 +4272,36 @@ export default function App() {
           <div className="assistant-thread-shell" data-testid="thread">
             <AssistantLoadingState />
           </div>
-        ) : showLanding ? (
-          <div className="assistant-thread-shell" data-testid="thread">
-              <AssistantSurface
-                key="assistant-landing"
-                messages={[]}
-                isSending={false}
-                streamConnected={false}
-                streamingAssistantId={null}
-                artifacts={[]}
-                onPrompt={sendPrompt}
-                onCancel={cancelActiveRun}
-                composerDisabled={authLocked}
-                composerDisabledNotice={assistantComposerNotice}
-              />
+        ) : showBlankSession ? (
+          <div className="assistant-thread-shell assistant-thread-shell-empty" data-testid="thread">
+            <div className="assistant-thread-shell-header">
+              <p className="assistant-thread-shell-title">New chat</p>
+            </div>
+            <AssistantSurface
+              key="assistant-landing"
+              messages={[]}
+              isSending={false}
+              streamConnected={false}
+              streamingAssistantId={null}
+              artifacts={[]}
+              showWelcome={false}
+              suggestions={[]}
+              onPrompt={sendPrompt}
+              onCancel={cancelActiveRun}
+              composerDisabled={authLocked}
+              composerDisabledNotice={assistantComposerNotice}
+            />
           </div>
         ) : (
           <AssistantWorkspace
-            prompt={workspacePrompt}
-            toolTrace={workspaceToolTrace}
-            activeRun={preferredAssistantRun}
-            sessions={sessions}
-            selectedSessionId={selectedSessionId}
-            onSelectSession={openSession}
-            onStartNewChat={startNewChat}
             onResizeStart={startBookAssistantResize}
             isResizing={isDraggingBookAssistant}
             width={bookAssistantWidth}
+            pageRef={bookPageRef}
             leftPane={(
               <ResearchArtifactPane
-                prompt={workspacePrompt}
                 toolTrace={workspaceToolTrace}
                 artifacts={runArtifacts}
-                sessionTitle={activeSession?.title ?? "Assistant"}
-                activeRun={preferredAssistantRun}
               />
             )}
             rightPane={(
@@ -5575,19 +5521,6 @@ export default function App() {
             </div>
           </div>
 
-          <Button
-            type="button"
-            variant="default"
-            className={cn("sidebar-new-chat", sidebarCollapsed && "is-collapsed")}
-            onClick={() => {
-              startNewChat();
-            }}
-            aria-label="Start a new chat"
-            title="New chat"
-          >
-            <MessageSquarePlus className="size-4" />
-            {!sidebarCollapsed ? <span>New chat</span> : null}
-          </Button>
         </div>
 
         <div className="sidebar-scroll-region">
