@@ -925,8 +925,25 @@ function streamResponse(
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const encoder = new TextEncoder();
+      let streamClosed = false;
+      let closeNotified = false;
+      const notifyClose = async () => {
+        if (closeNotified) {
+          return;
+        }
+        closeNotified = true;
+        await onClose?.();
+      };
       const send = async (event: string, data: Record<string, unknown>) => {
-        controller.enqueue(encoder.encode(sseEvent(event, data)));
+        if (streamClosed) {
+          return;
+        }
+        try {
+          controller.enqueue(encoder.encode(sseEvent(event, data)));
+        } catch {
+          streamClosed = true;
+          await notifyClose();
+        }
       };
 
       try {
@@ -935,11 +952,15 @@ function streamResponse(
         if (onError) {
           await onError(error);
         }
-        await send("error", {
-          message: error instanceof Error ? error.message : "Unknown error",
-        });
+        if (!streamClosed) {
+          await send("error", {
+            message: error instanceof Error ? error.message : "Unknown error",
+          });
+        }
       } finally {
-        controller.close();
+        if (!streamClosed) {
+          controller.close();
+        }
       }
     },
     async cancel() {

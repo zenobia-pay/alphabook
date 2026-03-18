@@ -357,6 +357,93 @@ test("follow-up requests pass full chat history into router and planner", async 
   assert.match(body, /The follow-up saw the full thread\./);
 });
 
+test("disconnecting the chat stream does not fail the underlying run", async () => {
+  const store = new InMemoryAppStore([], []);
+  const planner = new ScriptedPlanner([
+    {
+      type: "tool_call",
+      tool_name: "search_works",
+      args: {
+        query: "builders introspection",
+      },
+    },
+    {
+      type: "final_answer",
+      answer: "The run finished after the client disconnected.",
+      citations: [],
+    },
+  ]);
+
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    router: new ScriptedRouter([
+      {
+        type: "tool_chain",
+        fullQuery: "builders introspection",
+      },
+    ]),
+    planner,
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+      async runWorkspaceTask() {
+        return { ok: false, error: "disabled" };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: false, error: "disabled" };
+      },
+      async destroyWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const response = await app.request("/chat", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      userId: "disconnect-user",
+      message: "Find me builders being introspective",
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  const reader = response.body?.getReader();
+  assert.ok(reader);
+  await reader.read();
+  await reader.cancel();
+
+  await new Promise((resolve) => setTimeout(resolve, 25));
+
+  const sessions = await store.listSessions("disconnect-user");
+  assert.equal(sessions.length, 1);
+  const runs = await store.listRuns(sessions[0]!.id);
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0]!.status, "completed");
+
+  const messages = await store.listMessages(sessions[0]!.id);
+  const errorMessage = messages.find((message) => (
+    message.role === "assistant"
+    && message.metadata?.phase === "error"
+    && message.metadata?.runId === runs[0]!.id
+  ));
+  assert.equal(errorMessage, undefined);
+});
+
 
 test("orchestrator can delegate to a runtime gateway and finish the run", async () => {
   const store = new InMemoryAppStore(
