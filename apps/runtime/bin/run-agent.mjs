@@ -1050,19 +1050,40 @@ function runProcess(command, args, options = {}) {
     const stderrChunks = [];
     const stdoutBuffer = { value: "" };
     const stderrBuffer = { value: "" };
+    let forcedExitCode = null;
+    let killedForAuthFailure = false;
+
+    const killForFatalAuthFailure = () => {
+      if (killedForAuthFailure) {
+        return;
+      }
+      killedForAuthFailure = true;
+      forcedExitCode = 88;
+      child.kill("SIGTERM");
+      setTimeout(() => {
+        child.kill("SIGKILL");
+      }, 2_000).unref();
+    };
 
     child.stdout.on("data", (chunk) => {
       stdoutChunks.push(Buffer.from(chunk));
       emitStreamLines(stdoutBuffer, chunk, options.onStdoutLine);
     });
     child.stderr.on("data", (chunk) => {
+      const text = Buffer.from(chunk).toString("utf8");
       stderrChunks.push(Buffer.from(chunk));
       emitStreamLines(stderrBuffer, chunk, options.onStderrLine);
+      if (
+        /refresh_token_reused/i.test(text)
+        || /Your refresh token has already been used to generate a new access token/i.test(text)
+      ) {
+        killForFatalAuthFailure();
+      }
     });
     child.on("error", reject);
     child.on("close", (code) => {
       resolve({
-        exitCode: code ?? 1,
+        exitCode: forcedExitCode ?? code ?? 1,
         stdout: Buffer.concat(stdoutChunks).toString("utf8"),
         stderr: Buffer.concat(stderrChunks).toString("utf8"),
       });
@@ -1228,6 +1249,20 @@ async function runCodexStep({
       stdoutPreview: compactText(result.stdout, 400),
       message: `${codexStepLabel(step)} failed on attempt ${attempt}.`,
     });
+
+    if (
+      /refresh_token_reused/i.test(result.stderr)
+      || /Your refresh token has already been used to generate a new access token/i.test(result.stderr)
+    ) {
+      await appendProgressEvent(outputDir, {
+        type: "codex.auth_failed",
+        step,
+        attempt,
+        exitCode: result.exitCode,
+        message: "Codex authentication failed because the refresh token was already reused.",
+      });
+      break;
+    }
 
     if (attempt < maxAttempts) {
       await new Promise((resolve) => setTimeout(resolve, attempt * 2_000));

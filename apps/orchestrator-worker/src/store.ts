@@ -1,6 +1,8 @@
 import type { DbClient } from "@alphabook/db";
 import type { ChunkSearchResult, ToolName, WorkDetail, WorkSummary } from "@alphabook/shared";
 
+const PASSAGE_SEARCH_TIMEOUT_MS = 20_000;
+
 export interface SessionRecord {
   id: string;
   userId: string;
@@ -201,6 +203,7 @@ export interface AppStore {
   unfollowUser(followerId: string, followedId: string): Promise<void>;
   isFollowing(followerId: string, followedId: string): Promise<boolean>;
   createSession(userId: string, title?: string): Promise<SessionRecord>;
+  updateSessionTitle(sessionId: string, title: string | null): Promise<void>;
   getSession(sessionId: string): Promise<SessionRecord | null>;
   listSessions(userId: string): Promise<SessionSummaryRecord[]>;
   listAdminSessions(): Promise<AdminSessionRecord[]>;
@@ -380,6 +383,24 @@ function splitSubtitleFromTitle(title: string): { title: string; subtitle: strin
     title: match[1]?.trim() || title,
     subtitle: match[2]?.trim() || null,
   };
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(message));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
 }
 
 function toWorkSummary(
@@ -789,6 +810,17 @@ export class InMemoryAppStore implements AppStore {
     this.sessions.set(session.id, session);
     this.messages.set(session.id, []);
     return session;
+  }
+
+  async updateSessionTitle(sessionId: string, title: string | null): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      return;
+    }
+    this.sessions.set(sessionId, {
+      ...session,
+      title,
+    });
   }
 
   async getSession(sessionId: string): Promise<SessionRecord | null> {
@@ -1881,6 +1913,17 @@ export class NeonAppStore implements AppStore {
     };
   }
 
+  async updateSessionTitle(sessionId: string, title: string | null): Promise<void> {
+    await this.db.query(
+      `
+        UPDATE chat_sessions
+        SET title = $2
+        WHERE id = $1::uuid
+      `,
+      [sessionId, title],
+    );
+  }
+
   async getSession(sessionId: string): Promise<SessionRecord | null> {
     const result = await this.db.query<{
       id: string;
@@ -2886,7 +2929,7 @@ export class NeonAppStore implements AppStore {
     const tsQuery = normalizedQuery || query.trim();
     const tokens = expandedSearchTokens(query);
     const semanticCandidateLimit = Math.max(limit * 12, 96);
-    const result = await this.db.query<{
+    const result = await withTimeout(this.db.query<{
       id: string;
       work_id: string;
       chunk_index: number;
@@ -2968,7 +3011,7 @@ export class NeonAppStore implements AppStore {
         LIMIT $3
       `,
       [tsQuery, workIds?.length ? workIds : null, limit, vectorLiteral, tokens, semanticCandidateLimit],
-    );
+    ), PASSAGE_SEARCH_TIMEOUT_MS, "Passage search timed out before the database returned chunks.");
     return result.rows.map((row) => ({
       id: row.id,
       workId: row.work_id,

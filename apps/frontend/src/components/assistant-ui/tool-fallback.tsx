@@ -507,6 +507,7 @@ function ToolFallbackRoot({
 function ToolFallbackTrigger({
   toolName,
   status,
+  result,
   summary,
   progressPreview,
   open = false,
@@ -518,14 +519,18 @@ function ToolFallbackTrigger({
   summary: string;
   progressPreview?: string[];
   status?: ToolCallMessagePartStatus;
+  result?: JsonRecord | null;
   open?: boolean;
   hasDetailLines?: boolean;
 }) {
   const statusType = status?.type ?? "complete";
   const isRunning = statusType === "running";
   const isCancelled = status?.type === "incomplete" && status.reason === "cancelled";
-  const isFailed = status?.type === "incomplete" && status.reason !== "cancelled";
-  const Icon = statusIconMap[statusType];
+  const resultIndicatesFailure =
+    result?.ok === false
+    || (typeof result?.error === "string" && result.error.trim().length > 0);
+  const isFailed = (status?.type === "incomplete" && status.reason !== "cancelled") || resultIndicatesFailure;
+  const Icon = isFailed ? XCircleIcon : statusIconMap[statusType];
   const badge = isCancelled ? "Cancelled" : isFailed ? "Failed" : isRunning ? "Running" : "Done";
   const latestProgress = progressPreview && progressPreview.length > 0
     ? progressPreview[progressPreview.length - 1]
@@ -701,6 +706,7 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
         summary={summary}
         progressPreview={progress}
         status={status}
+        result={resultObject}
         open={open}
         hasDetailLines={logLines.length > 0}
       />

@@ -426,6 +426,9 @@ function normalizeToolTraceEntry(entry: Record<string, unknown>, index: number):
     ? entry.progress.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     : [];
   const result = entry.result && typeof entry.result === "object" ? (entry.result as Record<string, unknown>) : undefined;
+  const resultIndicatesError =
+    result?.ok === false
+    || (typeof result?.error === "string" && result.error.trim().length > 0);
   const explicitState = entry.state;
   const status = entry.status;
   const state =
@@ -433,7 +436,7 @@ function normalizeToolTraceEntry(entry: Record<string, unknown>, index: number):
       ? explicitState
       : status === "running"
         ? "running"
-        : status === "failed" || entry.isError === true
+        : status === "failed" || entry.isError === true || resultIndicatesError
           ? "error"
           : result
             ? "completed"
@@ -454,7 +457,7 @@ function normalizeToolTraceEntry(entry: Record<string, unknown>, index: number):
     progress,
     args: entry.args && typeof entry.args === "object" ? (entry.args as Record<string, unknown>) : {},
     result,
-    isError: entry.isError === true || state === "error",
+    isError: entry.isError === true || resultIndicatesError || state === "error",
     state,
   };
 }
@@ -1631,6 +1634,11 @@ function messageToThreadMessage(
     const phase = typeof message.metadata?.phase === "string" ? message.metadata.phase : null;
     const toolParts = message.toolCalls.map((entry) => {
         const progress = entry.progress.filter((value) => value.trim().length > 0);
+        const entryHasError =
+          entry.isError
+          || entry.state === "error"
+          || entry.result?.ok === false
+          || (typeof entry.result?.error === "string" && entry.result.error.trim().length > 0);
         const args = toReadonlyJsonObject(
           {
             ...entry.args,
@@ -1655,7 +1663,7 @@ function messageToThreadMessage(
           status:
             entry.state === "running"
               ? ({ type: "running" } as const)
-              : entry.isError
+              : entryHasError
                 ? ({
                     type: "incomplete",
                     reason: "error",
@@ -1668,8 +1676,8 @@ function messageToThreadMessage(
           ...(entry.state === "running"
             ? {}
             : {
-                result: entry.result ?? { ok: !entry.isError },
-                isError: entry.isError,
+                result: entry.result ?? { ok: !entryHasError },
+                isError: entryHasError,
               }),
         };
       });
@@ -4113,6 +4121,20 @@ export default function App() {
                     : message,
                 ),
               );
+              return;
+            }
+
+            if (event.event === "session.updated" && typeof event.data.sessionId === "string") {
+              const updatedSessionId = event.data.sessionId;
+              const updatedTitle = typeof event.data.title === "string" ? event.data.title : null;
+              setSessions((current) => current.map((session) =>
+                session.id === updatedSessionId
+                  ? {
+                      ...session,
+                      title: updatedTitle,
+                    }
+                  : session,
+              ));
               return;
             }
 

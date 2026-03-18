@@ -353,7 +353,7 @@ test("assistant session thread stays scrollable with long history", async ({ pag
     });
   });
 
-  await page.route("**/api/sessions", async (route) => {
+  await page.route(/\/api\/sessions(?:\?.*)?$/, async (route) => {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -685,6 +685,151 @@ test("reloading a session keeps streamed tool progress instead of replacing it w
   await expect(page.getByText("Pulled 12 candidate passages.")).toBeVisible();
   await expect(page.getByText("Ranked the strongest passages for synthesis.")).toBeVisible();
   await expect(page.getByText("Selected 5 passages for the final comparison.")).toBeVisible();
+});
+
+test("failed tool calls show a failed status instead of looking completed", async ({ page }) => {
+  const sessionId = "11111111-1111-4111-8111-111111111119";
+  const runId = "22222222-2222-4222-8222-222222222229";
+
+  await page.route("**/api/me", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        authConfigured: true,
+        authenticated: true,
+        user: {
+          id: "local-user",
+          email: "local@example.com",
+          name: "Local User",
+        },
+      }),
+    });
+  });
+
+  await page.route("**/api/admin/access", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        allowed: false,
+        authenticated: true,
+        authConfigured: true,
+        user: {
+          id: "local-user",
+          email: "local@example.com",
+          name: "Local User",
+        },
+      }),
+    });
+  });
+
+  await page.route("**/api/sessions", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        sessions: [
+          {
+            id: sessionId,
+            userId: "local-user",
+            title: "Failed retrieval",
+            createdAt: "2026-03-16T12:00:00.000Z",
+            lastMessageAt: "2026-03-16T12:00:00.000Z",
+            lastMessagePreview: "Failed retrieval",
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.route(`**/api/sessions/${sessionId}/messages`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        messages: [
+          {
+            id: "33333333-3333-4333-8333-333333333339",
+            sessionId,
+            role: "assistant",
+            content: "I searched and one step failed.",
+            metadata: {
+              phase: "plan",
+              runId,
+              toolCalls: [
+                {
+                  id: "failed-tool",
+                  toolName: "get_relevant_chunks",
+                  label: "Passage Search",
+                  rationale: "Broadening the search.",
+                  progress: ["Broadening the search."],
+                  result: {
+                    ok: false,
+                    error: "Passage search timed out before the database returned chunks.",
+                  },
+                },
+              ],
+            },
+            createdAt: "2026-03-16T12:00:01.000Z",
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.route(`**/api/sessions/${sessionId}/runs`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        runs: [
+          {
+            id: runId,
+            sessionId,
+            status: "failed",
+            plannerTurns: 3,
+            startedAt: "2026-03-16T12:00:00.000Z",
+            completedAt: "2026-03-16T12:00:05.000Z",
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.route(`**/api/sessions/${sessionId}/runs/${runId}`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        run: {
+          id: runId,
+          sessionId,
+          status: "failed",
+          plannerTurns: 3,
+          startedAt: "2026-03-16T12:00:00.000Z",
+          completedAt: "2026-03-16T12:00:05.000Z",
+        },
+        toolTrace: [
+          {
+            id: "failed-tool",
+            toolName: "get_relevant_chunks",
+            label: "Passage Search",
+            progress: ["Broadening the search."],
+            result: {
+              ok: false,
+              error: "Passage search timed out before the database returned chunks.",
+            },
+          },
+        ],
+        artifacts: [],
+      }),
+    });
+  });
+
+  await page.goto(`/?view=assistant&session=${sessionId}`);
+
+  await expect(page.getByRole("button", { name: /Passage Search Failed/ })).toBeVisible();
 });
 
 test("full assistant flow keeps the final briefing and tool details after refresh", async ({ page }) => {

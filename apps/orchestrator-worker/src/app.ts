@@ -1799,6 +1799,7 @@ async function reconcilePersistentRun(
   deps: AppDeps,
   request: Request,
   run: Awaited<ReturnType<AppStore["getRun"]>>,
+  activeRuns?: Map<string, ActiveRunState>,
 ) {
   if (!run) {
     return run;
@@ -1809,10 +1810,45 @@ async function reconcilePersistentRun(
     return run;
   }
 
+  const cancelLiveExecution = async (toolCalls: Awaited<ReturnType<AppStore["listToolCalls"]>>) => {
+    const activeRun = activeRuns?.get(run.id);
+    if (!activeRun) {
+      return;
+    }
+    activeRun.cancelRequested = true;
+    const runtimeIds = new Set<string>([
+      ...Array.from(activeRun.runtimeIds),
+      ...collectRuntimeIds(toolCalls),
+    ]);
+    await Promise.all(
+      Array.from(runtimeIds).map((runtimeId) =>
+        deps.runtimeGateway.cancelWorkspaceTask?.({ runtimeId }).catch(() => {}),
+      ),
+    );
+  };
+
+  const closeDanglingToolCalls = async (
+    toolCalls: Awaited<ReturnType<AppStore["listToolCalls"]>>,
+    message: string,
+  ) => {
+    const dangling = toolCalls.filter((toolCall) => toolCall.status === "running" || toolCall.status === "queued");
+    if (dangling.length === 0) {
+      return;
+    }
+    await Promise.all(
+      dangling.map((toolCall) => deps.store.finishToolCall(toolCall.id, "failed", {
+        ok: false,
+        error: message,
+        runtimeId: runtimeIdFromToolCall(toolCall) ?? undefined,
+      })),
+    );
+  };
+
   const toolCalls = await deps.store.listToolCalls(run.id);
   if (run.status === "completed") {
+    await closeDanglingToolCalls(toolCalls, "The run completed before this step finished.");
     const completedBriefing = latestCompletedBriefing(
-      toolCalls
+      (await deps.store.listToolCalls(run.id))
         .filter((toolCall) => toolCall.resultJson && toolCall.status === "completed")
         .map((toolCall) => ({
           toolName: toolCall.toolName,
@@ -1843,9 +1879,12 @@ async function reconcilePersistentRun(
           })),
       );
     }
+    await cancelLiveExecution(await deps.store.listToolCalls(run.id));
     return deps.store.getRun(run.id);
   }
   if (run.status !== "running" && run.status !== "queued") {
+    await closeDanglingToolCalls(toolCalls, "The run ended before this step finished.");
+    await cancelLiveExecution(await deps.store.listToolCalls(run.id));
     return run;
   }
 
@@ -1870,6 +1909,7 @@ async function reconcilePersistentRun(
         researchLog: buildRecoveredToolTrace(toolCalls),
         recoveredFromStalledRun: true,
       });
+      await cancelLiveExecution(toolCalls);
       return deps.store.getRun(run.id);
     }
     if (runAgeMs > HARD_LIMITS.MAX_RUN_WALL_CLOCK_SECONDS * 1000) {
@@ -1885,6 +1925,7 @@ async function reconcilePersistentRun(
         toolCalls: buildRecoveredToolTrace(toolCalls),
         researchLog: buildRecoveredToolTrace(toolCalls),
       });
+      await cancelLiveExecution(toolCalls);
       return deps.store.getRun(run.id);
     }
     return run;
@@ -1927,6 +1968,7 @@ async function reconcilePersistentRun(
       status: "failed",
       completedAt: new Date().toISOString(),
     });
+    await cancelLiveExecution(refreshedToolCalls);
     return deps.store.getRun(run.id);
   }
 
@@ -1942,6 +1984,7 @@ async function reconcilePersistentRun(
     const refreshedToolCalls = await deps.store.listToolCalls(run.id);
     await persistRecoveredPlanToolTrace(deps, session.id, run.id, refreshedToolCalls);
     await recoverRunCompletion(deps, request, session, run, refreshedToolCalls);
+    await cancelLiveExecution(refreshedToolCalls);
     return deps.store.getRun(run.id);
   }
 
@@ -1952,10 +1995,11 @@ async function reconcileSessionRuns(
   deps: AppDeps,
   request: Request,
   sessionId: string,
+  activeRuns?: Map<string, ActiveRunState>,
 ) {
   const runs = await deps.store.listRuns(sessionId);
   for (const run of runs) {
-    await reconcilePersistentRun(deps, request, run);
+    await reconcilePersistentRun(deps, request, run, activeRuns);
   }
 }
 
@@ -3662,6 +3706,7 @@ async function runOrchestrator(
   let rawLogPersistTimer: ReturnType<typeof setTimeout> | null = null;
   let rawLogPersistScheduled = false;
   let rawLogPersistedLength = 0;
+  let pendingSessionTitleUpdate: Promise<void> | null = null;
 
   let session: SessionRecord | null = input.sessionId ? await deps.store.getSession(input.sessionId) : null;
   let run: Awaited<ReturnType<AppStore["createRun"]>> | null = null;
@@ -3819,7 +3864,7 @@ async function runOrchestrator(
     throw new Error("Not authorized for this session.");
   }
   if (!session) {
-    session = await deps.store.createSession(input.userId, await createSessionTitle(deps, input.message, recordRawLog));
+    session = await deps.store.createSession(input.userId);
     await send("session.created", {
       sessionId: session.id,
       title: session.title,
@@ -3828,17 +3873,45 @@ async function runOrchestrator(
       sessionId: session.id,
       title: session.title,
     });
+    const createdSessionId = session.id;
+    pendingSessionTitleUpdate = (async () => {
+      const generatedTitle = await createSessionTitle(deps, input.message, recordRawLog);
+      await deps.store.updateSessionTitle(createdSessionId, generatedTitle);
+      if (session?.id === createdSessionId) {
+        session = {
+          ...session,
+          title: generatedTitle,
+        };
+      }
+      await send("session.updated", {
+        sessionId: createdSessionId,
+        title: generatedTitle,
+      });
+      recordRawLog("session.updated", {
+        sessionId: createdSessionId,
+        title: generatedTitle,
+      });
+    })().catch((error) => {
+      recordRawLog("session.title_failed", {
+        sessionId: createdSessionId,
+        error: error instanceof Error ? error.message : "Unknown session title error",
+      });
+    });
   }
+  if (!session) {
+    throw new Error("Session was not created.");
+  }
+  const activeSession = session;
 
-  await deps.store.appendMessage(session.id, "user", input.message);
+  await deps.store.appendMessage(activeSession.id, "user", input.message);
   recordRawLog("message.user", {
-    sessionId: session.id,
+    sessionId: activeSession.id,
     content: input.message,
   });
-  const conversationHistory = formatConversationHistory(await deps.store.listMessages(session.id));
-  run = await deps.store.createRun(session.id);
+  const conversationHistory = formatConversationHistory(await deps.store.listMessages(activeSession.id));
+  run = await deps.store.createRun(activeSession.id);
   activeRuns.set(run.id, {
-    sessionId: session.id,
+    sessionId: activeSession.id,
     userId: input.userId,
     runtimeIds: new Set<string>(),
     cancelRequested: false,
@@ -3848,11 +3921,11 @@ async function runOrchestrator(
   scheduleRawLogPersist(true);
   await send("run.started", {
     runId: run.id,
-    sessionId: session.id,
+    sessionId: activeSession.id,
   });
   recordRawLog("run.started", {
     runId: run.id,
-    sessionId: session.id,
+    sessionId: activeSession.id,
   });
 
   const toolHistory: Array<{
@@ -3896,8 +3969,8 @@ async function runOrchestrator(
         request,
         "book_candidate_in_run",
         {
-          userId: session.userId,
-          sessionId: session.id,
+          userId: activeSession.userId,
+          sessionId: activeSession.id,
           runId: run.id,
           source: "orchestrator",
           toolName,
@@ -3995,7 +4068,7 @@ async function runOrchestrator(
       return;
     }
     const planText = initialAssistantPlan(routedQuery);
-    const planMessage = await deps.store.appendMessage(session.id, "assistant", planText, {
+    const planMessage = await deps.store.appendMessage(activeSession.id, "assistant", planText, {
       phase: "plan",
       runId: run.id,
     });
@@ -4003,13 +4076,13 @@ async function runOrchestrator(
     await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
     await send("assistant.plan", {
       runId: run.id,
-      sessionId: session.id,
+      sessionId: activeSession.id,
       messageId: planMessage.id,
       text: planText,
     });
     recordRawLog("assistant.plan", {
       runId: run.id,
-      sessionId: session.id,
+      sessionId: activeSession.id,
       messageId: planMessage.id,
       text: planText,
     });
@@ -4199,7 +4272,7 @@ async function runOrchestrator(
         );
       },
       {
-        sessionId: session.id,
+        sessionId: activeSession.id,
         runId: run.id,
       },
       run.id,
@@ -4221,14 +4294,14 @@ async function runOrchestrator(
         let backgroundStatus: "completed" | "failed" = "completed";
         try {
           backgroundResult = await executeTool(deps, toolName, normalizedToolArgs, {
-            userId: session.userId,
-            sessionId: session.id,
+            userId: activeSession.userId,
+            sessionId: activeSession.id,
             runId: run.id,
             auditLog: recordRawLog,
           });
           addRuntimeIds(runtimeIdsToCleanup, normalizedToolArgs, backgroundResult);
           if (toolName === "run_workspace_task") {
-            await trackRuntimeBillingEvents(deps, session, run, backgroundResult.billingEvents);
+            await trackRuntimeBillingEvents(deps, activeSession, run, backgroundResult.billingEvents);
           }
           const resultRuntimeId = typeof backgroundResult.runtimeId === "string" ? backgroundResult.runtimeId : null;
           if (resultRuntimeId) {
@@ -4243,7 +4316,7 @@ async function runOrchestrator(
             && "runtimePayload" in error
           ) {
             const runtimePayload = (error as { runtimePayload?: Record<string, unknown> }).runtimePayload;
-            await trackRuntimeBillingEvents(deps, session, run, runtimePayload?.billingEvents);
+            await trackRuntimeBillingEvents(deps, activeSession, run, runtimePayload?.billingEvents);
           }
           backgroundStatus = "failed";
           backgroundResult = {
@@ -4258,8 +4331,8 @@ async function runOrchestrator(
               source: "tool_execution",
               toolName,
               runId: run.id,
-              sessionId: session.id,
-              userId: session.userId,
+              sessionId: activeSession.id,
+              userId: activeSession.userId,
               extra: {
                 toolArgs: normalizedToolArgs,
               },
@@ -4404,6 +4477,9 @@ async function runOrchestrator(
     }
     for (let turn = 1; turn <= HARD_LIMITS.MAX_TURNS; turn += 1) {
       await harvestPendingWorkspace(false);
+      if (activeRuns.get(run.id)?.cancelRequested) {
+        break;
+      }
       if (
         !pendingWorkspaceExecution
         && !toolHistory.some((entry) => entry.toolName === "run_workspace_task")
@@ -4418,9 +4494,6 @@ async function runOrchestrator(
               : "I’m starting the deeper research run now while metadata and passage search keep collecting evidence.",
           );
         }
-      }
-      if (activeRuns.get(run.id)?.cancelRequested) {
-        break;
       }
       if ((deps.now?.() ?? Date.now()) - started > HARD_LIMITS.MAX_RUN_WALL_CLOCK_SECONDS * 1000) {
         break;
@@ -4954,6 +5027,9 @@ async function runOrchestrator(
         text,
       });
     });
+    if (pendingSessionTitleUpdate) {
+      await pendingSessionTitleUpdate;
+    }
     if (rawLogPersistTimer) {
       clearTimeout(rawLogPersistTimer);
       rawLogPersistTimer = null;
@@ -6063,7 +6139,7 @@ export function createApp(deps: AppDeps) {
     if (!run || run.sessionId !== sessionId) {
       return c.json({ error: "Run not found." }, 404);
     }
-    const reconciledRun = await reconcilePersistentRun(deps, c.req.raw, run);
+    const reconciledRun = await reconcilePersistentRun(deps, c.req.raw, run, activeRuns);
 
     const [toolCalls, runtimeInstances] = await Promise.all([
       deps.store.listToolCalls(runId),
@@ -6097,7 +6173,7 @@ export function createApp(deps: AppDeps) {
     if (!run || run.sessionId !== sessionId) {
       return c.json({ error: "Run not found." }, 404);
     }
-    const reconciledRun = await reconcilePersistentRun(deps, c.req.raw, run);
+    const reconciledRun = await reconcilePersistentRun(deps, c.req.raw, run, activeRuns);
 
     const [toolCalls, runtimeInstances] = await Promise.all([
       deps.store.listToolCalls(runId),
@@ -6171,7 +6247,7 @@ export function createApp(deps: AppDeps) {
     if (!run || run.sessionId !== sessionId) {
       return c.json({ error: "Run not found." }, 404);
     }
-    const reconciledRun = await reconcilePersistentRun(deps, c.req.raw, run);
+    const reconciledRun = await reconcilePersistentRun(deps, c.req.raw, run, activeRuns);
 
     const [messages, toolCalls, runtimeInstances, artifacts] = await Promise.all([
       deps.store.listMessages(sessionId),
@@ -6211,7 +6287,7 @@ export function createApp(deps: AppDeps) {
     if (!run || run.sessionId !== sessionId) {
       return c.json({ error: "Run not found." }, 404);
     }
-    const reconciledRun = await reconcilePersistentRun(deps, c.req.raw, run);
+    const reconciledRun = await reconcilePersistentRun(deps, c.req.raw, run, activeRuns);
 
     const [messages, toolCalls, runtimeInstances] = await Promise.all([
       deps.store.listMessages(sessionId),
@@ -6247,7 +6323,7 @@ export function createApp(deps: AppDeps) {
     if (!run || run.sessionId !== sessionId) {
       return c.json({ error: "Run not found." }, 404);
     }
-    const reconciledRun = await reconcilePersistentRun(deps, c.req.raw, run);
+    const reconciledRun = await reconcilePersistentRun(deps, c.req.raw, run, activeRuns);
 
     const [messages, toolCalls, runtimeInstances] = await Promise.all([
       deps.store.listMessages(sessionId),
@@ -6279,7 +6355,7 @@ export function createApp(deps: AppDeps) {
     if (!run) {
       return c.json({ error: "Run not found." }, 404);
     }
-    const reconciledRun = await reconcilePersistentRun(deps, c.req.raw, run);
+    const reconciledRun = await reconcilePersistentRun(deps, c.req.raw, run, activeRuns);
 
     const session = await deps.store.getSession((reconciledRun ?? run).sessionId);
     if (!session) {
