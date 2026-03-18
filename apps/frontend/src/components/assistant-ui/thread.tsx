@@ -151,6 +151,7 @@ export const Thread: FC<{
   isRunning?: boolean;
   streamConnected?: boolean;
   artifacts?: RunArtifactRecord[];
+  showArtifacts?: boolean;
   suggestions?: ThreadSuggestion[];
   onSuggestionSelect?: (prompt: string) => void;
   onCancel?: () => void;
@@ -160,6 +161,7 @@ export const Thread: FC<{
   isRunning = false,
   streamConnected = false,
   artifacts = [],
+  showArtifacts = true,
   suggestions = [],
   onSuggestionSelect,
   onCancel,
@@ -222,7 +224,7 @@ export const Thread: FC<{
 
         <ThreadAutoFollow active={isRunning} viewportRef={viewportRef} shouldAutoFollowRef={shouldAutoFollowRef} />
 
-        {artifacts.length > 0 ? <ThreadArtifacts artifacts={artifacts} /> : null}
+        {showArtifacts && artifacts.length > 0 ? <ThreadArtifacts artifacts={artifacts} /> : null}
 
         <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 mx-auto mt-auto flex w-full max-w-(--thread-max-width) flex-col gap-3 overflow-visible pb-3 md:pb-4">
           <ThreadScrollToBottom />

@@ -2079,6 +2079,7 @@ function AssistantSurface({
   streamConnected,
   streamingAssistantId,
   artifacts,
+  showArtifacts = true,
   onPrompt,
   onCancel,
   suggestions = ASSISTANT_WELCOME_SUGGESTIONS,
@@ -2090,6 +2091,7 @@ function AssistantSurface({
   streamConnected: boolean;
   streamingAssistantId: string | null;
   artifacts: RunArtifactRecord[];
+  showArtifacts?: boolean;
   onPrompt: (prompt: string) => Promise<void>;
   onCancel: () => Promise<void>;
   suggestions?: ThreadSuggestion[];
@@ -2119,6 +2121,7 @@ function AssistantSurface({
         isRunning={isSending}
         streamConnected={streamConnected}
         artifacts={artifacts}
+        showArtifacts={showArtifacts}
         suggestions={suggestions}
         composerDisabled={composerDisabled}
         composerDisabledNotice={composerDisabledNotice}
@@ -2130,7 +2133,7 @@ function AssistantSurface({
   );
 }
 
-function BookAssistantToolbar({
+function AssistantSessionToolbar({
   sessions,
   selectedSessionId,
   onSelectSession,
@@ -2171,6 +2174,351 @@ function BookAssistantToolbar({
       </Button>
     </div>
   );
+}
+
+function latestResearchPrompt(messages: UiMessage[]) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role === "user" && message.content.trim()) {
+      return message.content.trim();
+    }
+  }
+  return "";
+}
+
+function currentResearchToolTrace(messages: UiMessage[], runId: string | null) {
+  const planMessages = [...messages].reverse().filter((message) => {
+    if (message.role !== "assistant" || message.toolCalls.length === 0) {
+      return false;
+    }
+    if (message.metadata?.phase !== "plan") {
+      return false;
+    }
+    if (!runId) {
+      return true;
+    }
+    const messageRunId = typeof message.metadata?.runId === "string" ? message.metadata.runId : null;
+    return messageRunId === runId || messageRunId === null;
+  });
+  return planMessages[0]?.toolCalls ?? [];
+}
+
+function artifactText(artifact: RunArtifactRecord) {
+  return typeof artifact.content === "string" ? artifact.content.trim() : "";
+}
+
+function researchArtifacts(artifacts: RunArtifactRecord[]) {
+  return artifacts.filter((artifact) => {
+    const kind = typeof artifact.metadata?.kind === "string" ? artifact.metadata.kind : "";
+    return (
+      artifact.filename === "briefing.md"
+      || artifact.filename === "every-single-reference.md"
+      || artifact.filename === "evidence-notes.md"
+      || artifact.filename === "viewed-chunks.json"
+      || artifact.filename === "selected-chunks.json"
+      || kind === "reference_file"
+    );
+  });
+}
+
+function renderWorkList(value: unknown) {
+  const works = Array.isArray(value) ? value as Array<Record<string, unknown>> : [];
+  if (works.length === 0) {
+    return null;
+  }
+  return (
+    <ul className="assistant-artifact-list">
+      {works.slice(0, 8).map((work, index) => {
+        const title = typeof work.title === "string" ? work.title : "Untitled work";
+        const authors = Array.isArray(work.authors)
+          ? (work.authors as unknown[]).filter((entry): entry is string => typeof entry === "string").join(", ")
+          : "";
+        const summary = typeof work.summary === "string" ? work.summary.trim() : "";
+        return (
+          <li key={`${title}-${index}`} className="assistant-artifact-list-item">
+            <strong>{title}</strong>
+            {authors ? <span>{authors}</span> : null}
+            {summary ? <p>{summary}</p> : null}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function renderChunkList(value: unknown) {
+  const chunks = Array.isArray(value) ? value as Array<Record<string, unknown>> : [];
+  if (chunks.length === 0) {
+    return null;
+  }
+  return (
+    <div className="assistant-artifact-chunks">
+      {chunks.slice(0, 12).map((chunk, index) => {
+        const label = [
+          typeof chunk.workId === "string" ? chunk.workId : "work",
+          typeof chunk.chunkIndex === "number" ? `#${chunk.chunkIndex}` : null,
+        ].filter(Boolean).join(" ");
+        const excerpt = typeof chunk.excerpt === "string"
+          ? chunk.excerpt.trim()
+          : typeof chunk.text === "string"
+            ? chunk.text.trim()
+            : "";
+        return (
+          <article key={`${label}-${index}`} className="assistant-artifact-chunk">
+            <div className="assistant-artifact-chipline">{label || `Chunk ${index + 1}`}</div>
+            <p>{excerpt || "Chunk loaded."}</p>
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
+function renderArtifactPreview(artifact: RunArtifactRecord) {
+  const text = artifactText(artifact);
+  if (!text) {
+    return <p className="assistant-artifact-note">Stored for this run.</p>;
+  }
+  if (artifact.filename.endsWith(".json")) {
+    try {
+      const parsed = JSON.parse(text) as { chunks?: unknown; works?: unknown };
+      return renderChunkList(parsed.chunks) ?? renderWorkList(parsed.works) ?? <pre>{text}</pre>;
+    } catch {
+      return <pre>{text}</pre>;
+    }
+  }
+  return <pre>{text}</pre>;
+}
+
+function renderToolTraceDetails(entry: ToolTraceEntry) {
+  if (entry.toolName === "search_works" || entry.toolName === "get_work_metadata") {
+    return renderWorkList(entry.result?.works);
+  }
+  if (entry.toolName === "get_relevant_chunks") {
+    return renderChunkList(entry.result?.chunks);
+  }
+  if (entry.toolName === "run_workspace_task") {
+    const citations = Array.isArray(entry.result?.citations) ? entry.result.citations.length : 0;
+    const artifacts = Array.isArray(entry.result?.artifacts) ? entry.result.artifacts as Array<Record<string, unknown>> : [];
+    const artifactLines = artifacts
+      .map((artifact) => typeof artifact.filename === "string" ? artifact.filename : typeof artifact.path === "string" ? artifact.path : null)
+      .filter((value): value is string => Boolean(value));
+    return (
+      <>
+        {citations > 0 ? <p className="assistant-artifact-note">Collected {pluralize(citations, "citation")} for the briefing.</p> : null}
+        {artifactLines.length > 0 ? (
+          <ul className="assistant-artifact-list">
+            {artifactLines.slice(0, 8).map((line) => (
+              <li key={line} className="assistant-artifact-list-item">
+                <strong>{line}</strong>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </>
+    );
+  }
+  if (entry.toolName === "create_workspace") {
+    const manifest = entry.result?.manifest;
+    const works = manifest && typeof manifest === "object" ? (manifest as Record<string, unknown>).works : null;
+    return renderWorkList(works);
+  }
+  return null;
+}
+
+function ResearchArtifactPane({
+  prompt,
+  toolTrace,
+  artifacts,
+  sessionTitle,
+  activeRun,
+}: {
+  prompt: string;
+  toolTrace: ToolTraceEntry[];
+  artifacts: RunArtifactRecord[];
+  sessionTitle: string;
+  activeRun: SessionRunRecord | null;
+}) {
+  const visibleArtifacts = useMemo(() => researchArtifacts(artifacts), [artifacts]);
+  const runLabel =
+    activeRun?.status === "running" || activeRun?.status === "queued"
+      ? "Live research run"
+      : activeRun?.status === "completed"
+        ? "Latest completed run"
+        : activeRun?.status === "failed"
+          ? "Last run failed"
+          : activeRun?.status === "timed_out"
+            ? "Last run timed out"
+            : "Research workspace";
+
+  return (
+    <section className="assistant-artifact-pane">
+      <header className="assistant-artifact-header">
+        <p className="assistant-artifact-eyebrow">{runLabel}</p>
+        <h2>{sessionTitle}</h2>
+        <p className="assistant-artifact-query">
+          {prompt || "This artifact will start filling in as soon as the first research step runs."}
+        </p>
+      </header>
+
+      <div className="assistant-artifact-scroll">
+        <section className="assistant-artifact-section">
+          <div className="assistant-artifact-section-heading">
+            <span>Prompt</span>
+            <span>{toolTrace.length > 0 ? pluralize(toolTrace.length, "tool step") : "Waiting for tools"}</span>
+          </div>
+          <div className="assistant-artifact-callout">
+            <p>{prompt || "Ask a research question to open a live artifact workspace."}</p>
+          </div>
+        </section>
+
+        <section className="assistant-artifact-section">
+          <div className="assistant-artifact-section-heading">
+            <span>Live research trace</span>
+            <span>{toolTrace.length > 0 ? "Appending as tools run" : "No tool output yet"}</span>
+          </div>
+          {toolTrace.length > 0 ? (
+            <div className="assistant-artifact-timeline">
+              {toolTrace.map((entry) => (
+                <article key={entry.id} className={cn("assistant-artifact-step", entry.isError && "is-error")}>
+                  <div className="assistant-artifact-step-header">
+                    <div>
+                      <p className="assistant-artifact-step-title">{entry.label}</p>
+                      <p className="assistant-artifact-step-summary">
+                        {summarizeToolSentence(entry)}
+                      </p>
+                    </div>
+                    <span className={cn("assistant-artifact-step-state", `is-${entry.state}`)}>{entry.state}</span>
+                  </div>
+                  {entry.rationale ? <p className="assistant-artifact-note">{entry.rationale}</p> : null}
+                  {entry.progress.length > 0 ? (
+                    <div className="assistant-artifact-progress">
+                      {entry.progress.map((line) => (
+                        <p key={line}>{line}</p>
+                      ))}
+                    </div>
+                  ) : null}
+                  {renderToolTraceDetails(entry)}
+                </article>
+              ))}
+            </div>
+          ) : (
+            <div className="assistant-artifact-empty">
+              <p>The left pane will fill with searches, book context, chunks, and final notes as the assistant runs.</p>
+            </div>
+          )}
+        </section>
+
+        {visibleArtifacts.length > 0 ? (
+          <section className="assistant-artifact-section">
+            <div className="assistant-artifact-section-heading">
+              <span>Run artifacts</span>
+              <span>{pluralize(visibleArtifacts.length, "file")}</span>
+            </div>
+            <div className="assistant-artifact-artifacts">
+              {visibleArtifacts.map((artifact) => (
+                <article key={`${artifact.filename}-${artifact.createdAt ?? ""}`} className="assistant-artifact-file">
+                  <div className="assistant-artifact-file-header">
+                    <strong>{typeof artifact.metadata?.title === "string" ? artifact.metadata.title : artifact.filename}</strong>
+                    <span>{artifact.filename}</span>
+                  </div>
+                  {renderArtifactPreview(artifact)}
+                </article>
+              ))}
+            </div>
+          </section>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+function AssistantWorkspace({
+  prompt,
+  toolTrace,
+  activeRun,
+  sessions,
+  selectedSessionId,
+  onSelectSession,
+  onStartNewChat,
+  leftPane,
+  rightPane,
+  onResizeStart,
+  isResizing,
+  width,
+}: {
+  prompt: string;
+  toolTrace: ToolTraceEntry[];
+  activeRun: SessionRunRecord | null;
+  sessions: ChatSessionSummary[];
+  selectedSessionId: string | null | undefined;
+  onSelectSession: (sessionId: string | null) => void;
+  onStartNewChat: () => void;
+  leftPane: ReactNode;
+  rightPane: ReactNode;
+  onResizeStart: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  isResizing: boolean;
+  width: number;
+}) {
+  const sessionTitle =
+    sessions.find((session) => session.id === selectedSessionId)?.title
+    ?? (prompt ? "New research run" : "Assistant");
+
+  return (
+    <section
+      className={cn("assistant-workspace-page", isResizing && "is-resizing")}
+      style={{ ["--book-assistant-width" as string]: `${width}px` }}
+    >
+      <div className="assistant-workspace-main">
+        {leftPane}
+      </div>
+
+      <div
+        className="book-assistant-divider"
+        onPointerDown={onResizeStart}
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize assistant panel"
+      />
+
+      <aside className="assistant-session-pane">
+        <div className="book-assistant-shell" data-testid="assistant-workspace-thread">
+          <AssistantSessionToolbar
+            sessions={sessions}
+            selectedSessionId={selectedSessionId}
+            onSelectSession={onSelectSession}
+            onStartNewChat={onStartNewChat}
+          />
+          <div className="assistant-session-context">
+            <p className="assistant-session-context-title">{sessionTitle}</p>
+            <p className="assistant-session-context-meta">
+              {activeRun ? `${runLabelFromStatus(activeRun.status)} · ${pluralize(toolTrace.length, "tool step")}` : "Ready for research"}
+            </p>
+          </div>
+          <div className="assistant-session-thread">
+            {rightPane}
+          </div>
+        </div>
+      </aside>
+    </section>
+  );
+}
+
+function runLabelFromStatus(status: SessionRunRecord["status"]) {
+  switch (status) {
+    case "queued":
+      return "Queued";
+    case "running":
+      return "Running";
+    case "completed":
+      return "Completed";
+    case "failed":
+      return "Failed";
+    case "timed_out":
+      return "Timed out";
+    default:
+      return "Ready";
+  }
 }
 
 function ReaderPassageBlock({
@@ -2389,6 +2737,14 @@ export default function App() {
   const navigationItems = adminAccess.allowed
     ? [...NAV_ITEMS, { id: "admin" as const, label: "Admin", icon: ProfileIcon }]
     : NAV_ITEMS;
+  const preferredAssistantRun = useMemo(
+    () =>
+      sessionRuns.find((run) => run.id === recoveredActiveRunId)
+      ?? sessionRuns.find((run) => run.status === "running" || run.status === "queued")
+      ?? [...sessionRuns].sort((left, right) => right.startedAt.localeCompare(left.startedAt))[0]
+      ?? null,
+    [recoveredActiveRunId, sessionRuns],
+  );
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -3802,7 +4158,11 @@ export default function App() {
     setActiveView(view);
   }
 
-  function openSession(sessionId: string) {
+  function openSession(sessionId: string | null) {
+    if (!sessionId) {
+      startNewChat();
+      return;
+    }
     pendingUrlWriteModeRef.current = "push";
     setMobileNavOpen(false);
     setSelectedSessionId(sessionId);
@@ -3932,13 +4292,15 @@ export default function App() {
           || messagesLoading
         ))
       );
-    const showStaticLanding = selectedSessionId == null;
-    const showWelcome =
+    const workspacePrompt = latestResearchPrompt(visibleMessages);
+    const workspaceToolTrace = currentResearchToolTrace(visibleMessages, preferredAssistantRun?.id ?? null);
+    const showLanding =
       !assistantSessionLoading
       && !authState.loading
       && selectedSessionId == null
       && messages.length === 0
-      && !isSending;
+      && !isSending
+      && recoveredActiveRunId == null;
     const assistantComposerNotice = authLocked ? (
       <>
         Sign in to start a research thread.{" "}
@@ -3950,10 +4312,12 @@ export default function App() {
       <section className="assistant-page">
         {loadError ? <ErrorNotice className="thread-error-banner" message={loadError} /> : null}
 
-        <div className="assistant-thread-shell" data-testid="thread">
-          {assistantSessionLoading ? (
+        {assistantSessionLoading ? (
+          <div className="assistant-thread-shell" data-testid="thread">
             <AssistantLoadingState />
-          ) : showStaticLanding || showWelcome ? (
+          </div>
+        ) : showLanding ? (
+          <div className="assistant-thread-shell" data-testid="thread">
               <AssistantSurface
                 key="assistant-landing"
                 messages={[]}
@@ -3966,7 +4330,29 @@ export default function App() {
                 composerDisabled={authLocked}
                 composerDisabledNotice={assistantComposerNotice}
               />
-            ) : (
+          </div>
+        ) : (
+          <AssistantWorkspace
+            prompt={workspacePrompt}
+            toolTrace={workspaceToolTrace}
+            activeRun={preferredAssistantRun}
+            sessions={sessions}
+            selectedSessionId={selectedSessionId}
+            onSelectSession={openSession}
+            onStartNewChat={startNewChat}
+            onResizeStart={startBookAssistantResize}
+            isResizing={isDraggingBookAssistant}
+            width={bookAssistantWidth}
+            leftPane={(
+              <ResearchArtifactPane
+                prompt={workspacePrompt}
+                toolTrace={workspaceToolTrace}
+                artifacts={runArtifacts}
+                sessionTitle={activeSession?.title ?? "Assistant"}
+                activeRun={preferredAssistantRun}
+              />
+            )}
+            rightPane={(
               <AssistantSurface
                 key={selectedSessionId ?? "new-thread"}
                 messages={visibleMessages}
@@ -3974,14 +4360,16 @@ export default function App() {
                 streamConnected={streamConnected}
                 streamingAssistantId={streamingAssistantId}
                 artifacts={runArtifacts}
+                showArtifacts={false}
                 onPrompt={sendPrompt}
                 onCancel={cancelActiveRun}
                 composerDisabled={authLocked}
                 composerDisabledNotice={assistantComposerNotice}
               />
             )}
-          </div>
-        </section>
+          />
+        )}
+      </section>
     );
   }
 
@@ -4060,7 +4448,7 @@ export default function App() {
         <aside className="book-assistant-pane">
           {loadError ? <ErrorNotice className="thread-error-banner" message={loadError} /> : null}
           <div className="book-assistant-shell" data-testid="book-thread">
-            <BookAssistantToolbar
+            <AssistantSessionToolbar
               sessions={sessions}
               selectedSessionId={selectedSessionId}
               onSelectSession={openBookSession}
