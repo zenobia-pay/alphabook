@@ -4479,6 +4479,10 @@ export default function App() {
       source: activeView,
     });
     setMobileNavOpen(false);
+    if (typeof window !== "undefined") {
+      window.location.assign(buildWorkHref(workId));
+      return;
+    }
     setPendingCitation(null);
     setActiveProfileUserId(null);
     setActiveWorkId(workId);
