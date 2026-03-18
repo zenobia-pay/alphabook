@@ -1696,31 +1696,35 @@ button {
   margin: 0 auto;
   width: min(860px, calc(100% - 48px));
   margin-top: 18px;
+  justify-self: center;
+  align-self: start;
 }
 
 .app-error-notice {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
-  gap: 14px;
+  gap: 12px;
   align-items: start;
   border: 1px solid rgba(187, 73, 44, 0.18);
   background:
     linear-gradient(135deg, rgba(187, 73, 44, 0.08), rgba(255, 250, 247, 0.98)),
     rgba(255, 255, 255, 0.92);
-  border-radius: 20px;
-  padding: 16px 18px;
-  box-shadow: 0 18px 45px rgba(131, 60, 41, 0.08);
+  border-radius: 18px;
+  padding: 13px 16px;
+  box-shadow: 0 12px 28px rgba(131, 60, 41, 0.08);
+  width: 100%;
+  max-width: 100%;
 }
 
 .app-error-notice-mark {
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   border-radius: 999px;
   display: grid;
   place-items: center;
   background: rgba(187, 73, 44, 0.14);
   color: rgb(146, 56, 32);
-  font-size: 0.95rem;
+  font-size: 0.85rem;
   font-weight: 700;
   line-height: 1;
 }
@@ -1733,7 +1737,7 @@ button {
 
 .app-error-notice-copy strong {
   color: rgb(111, 40, 24);
-  font-size: 0.85rem;
+  font-size: 0.8rem;
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
@@ -1741,8 +1745,8 @@ button {
 .app-error-notice-copy p {
   margin: 0;
   color: rgb(128, 48, 29);
-  font-size: 0.97rem;
-  line-height: 1.55;
+  font-size: 0.94rem;
+  line-height: 1.45;
 }
 
 .assistant-page {
