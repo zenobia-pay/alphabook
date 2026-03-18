@@ -200,15 +200,15 @@ button {
 
 .sidebar-recents {
   display: grid;
-  gap: 10px;
-  padding-top: 18px;
+  gap: 8px;
+  padding-top: 16px;
 }
 
 .sidebar-recents-header {
   display: flex;
   align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
+  justify-content: flex-start;
+  gap: 8px;
 }
 
 .sidebar-recents-header p,
@@ -224,113 +224,57 @@ button {
 }
 
 .sidebar-recents-header span {
-  font-size: 0.8rem;
+  font-size: 0.76rem;
   color: var(--ink-soft);
 }
 
 .sidebar-recents-list {
   display: grid;
-  gap: 8px;
+  gap: 2px;
 }
 
-.sidebar-recent-card {
-  display: grid;
-  gap: 7px;
+.sidebar-recent-row {
+  display: block;
   width: 100%;
-  border: 1px solid rgba(38, 38, 38, 0.08);
-  border-radius: 16px;
-  padding: 12px 13px;
-  background: rgba(255, 255, 255, 0.76);
+  border: 0;
+  padding: 6px 0;
+  background: transparent;
   text-align: left;
-  transition:
-    border-color 140ms ease,
-    background-color 140ms ease,
-    transform 140ms ease,
-    box-shadow 140ms ease;
-}
-
-.sidebar-recent-card:hover {
-  border-color: rgba(37, 99, 235, 0.16);
-  background: rgba(255, 255, 255, 0.96);
-  transform: translateY(-1px);
-  box-shadow: 0 12px 24px rgba(20, 27, 45, 0.05);
-}
-
-.sidebar-recent-card.is-active {
-  border-color: rgba(37, 99, 235, 0.22);
-  background: rgba(37, 99, 235, 0.08);
-  box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.08);
-}
-
-.sidebar-recent-card-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.sidebar-recent-card-head strong {
-  min-width: 0;
-  flex: 1;
-  font-size: 0.94rem;
-  line-height: 1.25;
-}
-
-.sidebar-recent-card-head span {
-  flex: 0 0 auto;
-  font-size: 0.74rem;
   color: var(--ink-soft);
+  transition: color 140ms ease;
 }
 
-.sidebar-recent-card p {
-  margin: 0;
-  color: var(--ink-soft);
-  font-size: 0.84rem;
-  line-height: 1.35;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+.sidebar-recent-row:hover {
+  color: var(--ink);
+}
+
+.sidebar-recent-row.is-active {
+  color: var(--ink);
+}
+
+.sidebar-recent-row span {
+  display: block;
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.94rem;
+  line-height: 1.3;
 }
 
 .sidebar-recents-empty {
-  border: 1px dashed rgba(38, 38, 38, 0.12);
-  border-radius: 16px;
-  padding: 16px 14px;
-  background: rgba(255, 255, 255, 0.5);
-}
-
-.sidebar-recents-empty strong,
-.sidebar-recents-empty p {
-  margin: 0;
-}
-
-.sidebar-recents-empty strong {
-  display: block;
-  margin-bottom: 5px;
-  font-size: 0.92rem;
-}
-
-.sidebar-recents-empty p {
+  padding: 6px 0;
   color: var(--ink-soft);
-  font-size: 0.84rem;
-  line-height: 1.35;
+  font-size: 0.9rem;
 }
 
-.sidebar-recent-card-skeleton {
+.sidebar-recent-row-skeleton {
   pointer-events: none;
 }
 
-.sidebar-recent-card-title {
-  width: 72%;
+.sidebar-recent-row-line {
+  width: 100%;
   height: 14px;
   border-radius: 999px;
-}
-
-.sidebar-recent-card-meta {
-  width: 100%;
-  height: 34px;
-  border-radius: 12px;
 }
 
 .aui-thread-welcome-suggestion {
