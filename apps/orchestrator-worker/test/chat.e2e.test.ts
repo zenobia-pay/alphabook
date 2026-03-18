@@ -2450,6 +2450,54 @@ test("billing tracker records OpenAI usage costs", async () => {
   assert.equal(spend.totalCostUsd, 0.006025);
 });
 
+test("error responses preserve CORS headers for allowed web origins", async () => {
+  const store = new InMemoryAppStore([], []);
+  store.getSession = async () => {
+    throw new Error("boom");
+  };
+
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    router: new ScriptedRouter([]),
+    planner: new FallbackPlanner(),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+      async runWorkspaceTask() {
+        return { ok: false, error: "disabled" };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: false, error: "disabled" };
+      },
+      async destroyWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const response = await app.request("/sessions/session-123/messages", {
+    headers: {
+      origin: "https://alpha-book.org",
+    },
+  });
+
+  assert.equal(response.status, 500);
+  assert.equal(response.headers.get("Access-Control-Allow-Origin"), "https://alpha-book.org");
+  assert.equal(response.headers.get("Access-Control-Allow-Credentials"), "true");
+});
+
 test("runtime billing events are persisted even when the runtime call fails", async () => {
   const store = new InMemoryAppStore();
   const app = createApp({

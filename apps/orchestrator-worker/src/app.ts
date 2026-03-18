@@ -411,6 +411,17 @@ function isAllowedWebOrigin(origin: string | null | undefined): boolean {
   return ALLOWED_WEB_ORIGINS.has(origin);
 }
 
+function applyCorsHeaders(c: Context, response: Response): Response {
+  const origin = c.req.header("origin");
+  if (!origin || !isAllowedWebOrigin(origin)) {
+    return response;
+  }
+  response.headers.set("Access-Control-Allow-Origin", origin);
+  response.headers.set("Access-Control-Allow-Credentials", "true");
+  response.headers.append("Vary", "Origin");
+  return response;
+}
+
 function analyticsKey(eventName: string) {
   const date = new Date().toISOString().slice(0, 10);
   const safeEvent = eventName.replace(/[^a-z0-9_-]+/gi, "-").toLowerCase();
@@ -4384,7 +4395,10 @@ export function createApp(deps: AppDeps) {
     } catch {
       // Fall through to the response even if incident capture fails.
     }
-    return c.json({ error: error instanceof Error ? error.message : "Internal server error." }, 500);
+    return applyCorsHeaders(
+      c,
+      c.json({ error: error instanceof Error ? error.message : "Internal server error." }, 500),
+    );
   });
   app.use(
     "*",
@@ -4483,7 +4497,7 @@ export function createApp(deps: AppDeps) {
     if (secFetchSite === "same-origin" || secFetchSite === "same-site") {
       return null;
     }
-    return c.json({ error: "Cross-site requests are not allowed." }, 403);
+    return applyCorsHeaders(c, c.json({ error: "Cross-site requests are not allowed." }, 403));
   }
 
   async function respondWithLoggedError(
@@ -4516,7 +4530,10 @@ export function createApp(deps: AppDeps) {
     } catch {
       // Preserve the original response if incident capture fails.
     }
-    return c.json({ error: error instanceof Error ? error.message : fallbackMessage }, 500);
+    return applyCorsHeaders(
+      c,
+      c.json({ error: error instanceof Error ? error.message : fallbackMessage }, 500),
+    );
   }
 
   function toPublicProfile(profile: Awaited<ReturnType<AppStore["getUserProfile"]>>) {

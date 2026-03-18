@@ -9,7 +9,7 @@ import { ChevronsLeft, ChevronsRight, Link2, MessageSquarePlus } from "lucide-re
 
 import { getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type PublicProfileResponse, type UserProfile, type WorkDetail, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
-import { buildSignInUrl, buildSignOutUrl, cancelRun, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchCurrentUser, fetchMessages, fetchProfile, fetchRunState, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, getErrorMessage, queryAdminAnalytics, sendAnalyticsEvent, streamChat, streamRun, unfollowProfile, type RunArtifactRecord, type SessionRunRecord } from "./api";
+import { ApiError, buildSignInUrl, buildSignOutUrl, cancelRun, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchCurrentUser, fetchMessages, fetchProfile, fetchRunState, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, getErrorMessage, queryAdminAnalytics, sendAnalyticsEvent, streamChat, streamRun, unfollowProfile, type RunArtifactRecord, type SessionRunRecord } from "./api";
 import { Thread } from "./components/assistant-ui/thread";
 import { Avatar, AvatarFallback, AvatarImage } from "./components/ui/avatar";
 import { Button } from "./components/ui/button";
@@ -294,6 +294,13 @@ function buildSeoState(options: {
 
 function isViewMode(value: string | null): value is ViewMode {
   return value === "explore" || value === "assistant" || value === "profile" || value === "book" || value === "admin";
+}
+
+function isRetryableReconnectError(error: unknown): boolean {
+  if (error instanceof ApiError) {
+    return error.status === 0 || error.status >= 500;
+  }
+  return !(error instanceof Error) || error.name !== "AbortError";
 }
 
 function readUrlState(): UrlState {
@@ -3310,6 +3317,7 @@ export default function App() {
     let cancelled = false;
     let pollTimer: number | null = null;
     let streamFailed = false;
+    let consecutivePollFailures = 0;
     const abortController = new AbortController();
     reconnectRunStreamAbortControllerRef.current?.abort();
     reconnectRunStreamAbortControllerRef.current = abortController;
@@ -3321,16 +3329,25 @@ export default function App() {
         if (cancelled) {
           return;
         }
+        consecutivePollFailures = 0;
         setMessages(nextMessages.map(hydrateStoredMessage));
         pollTimer = window.setTimeout(() => {
           void pollMessages();
         }, 2000);
-      } catch {
-        if (!cancelled) {
-          pollTimer = window.setTimeout(() => {
-            void pollMessages();
-          }, 4000);
+      } catch (error) {
+        if (cancelled) {
+          return;
         }
+        consecutivePollFailures += 1;
+        if (!isRetryableReconnectError(error) || consecutivePollFailures >= 5) {
+          setStreamConnected(false);
+          setRecoveredActiveRunId(null);
+          setLoadError(getErrorMessage(error, "We lost the assistant connection. Please refresh or reopen the conversation."));
+          return;
+        }
+        pollTimer = window.setTimeout(() => {
+          void pollMessages();
+        }, 4000);
       }
     };
 
