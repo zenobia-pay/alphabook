@@ -18,7 +18,7 @@ import { FallbackPlanner, parseToolCall } from "./planner";
 import type { Router } from "./router";
 import { cleanupToolStreamWithWorkersAi, type ToolStreamCleanupLine } from "./tool-stream-cleanup";
 import type { Synthesizer, ToolHistoryEntry } from "./synthesizer";
-import type { AgentIdentityRecord, AnalyticsEventRecord, AppStore, MessageRecord, SessionRecord, UserRecord } from "./store";
+import type { AgentIdentityRecord, AnalyticsEventRecord, AppStore, MessageRecord, SessionRecord, UserRecord, WorkDetailRecord } from "./store";
 import type { WorkersAiBinding } from "./index";
 
 export interface WorkerQueues {
@@ -1148,6 +1148,89 @@ function decorateWork(c: Context, work: WorkSummary): WorkSummary {
     ...work,
     coverImageUrl: new URL(`/works/${work.id}/cover`, c.req.url).toString(),
   };
+}
+
+function escapeBookHtml(value: string) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll("\"", "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function sanitizeStoredBookHtml(content: string) {
+  const bodyMatch = content.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+  const extracted = bodyMatch?.[1] ?? content;
+  return extracted
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "")
+    .replace(/<(?:link|meta|base|iframe|object|embed|form|input|button)[^>]*>/gi, "")
+    .replace(/\son[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "")
+    .replace(/\s(?:href|src)\s*=\s*(['"])\s*javascript:[\s\S]*?\1/gi, "");
+}
+
+function buildFallbackBookHtml(work: WorkDetailRecord, content: string, format: "html" | "text") {
+  const metadata = work.metadata && typeof work.metadata === "object" ? work.metadata as Record<string, unknown> : {};
+  const byline = Array.isArray(work.authors) ? work.authors.join(" · ") : "";
+  const sourceMarkup = format === "html"
+    ? sanitizeStoredBookHtml(content)
+    : content
+      .replace(/\r\n/g, "\n")
+      .split(/\n{2,}/)
+      .map((paragraph) => paragraph.trim())
+      .filter(Boolean)
+      .map((paragraph) => `<p>${escapeBookHtml(paragraph).replace(/\n/g, "<br />")}</p>`)
+      .join("\n");
+  const meta = [
+    work.gutenbergId ? `Project Gutenberg #${work.gutenbergId}` : null,
+    work.language ? work.language.toUpperCase() : null,
+    work.releaseDate ? work.releaseDate.slice(0, 4) : null,
+  ].filter(Boolean).join(" · ");
+  const subtitle = typeof metadata.subtitle === "string" ? metadata.subtitle : null;
+  const bookshelves = Array.isArray(metadata.bookshelves)
+    ? metadata.bookshelves.filter((value): value is string => typeof value === "string").slice(0, 12)
+    : [];
+
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${escapeBookHtml(work.title)} | alpha book</title>
+    <meta name="robots" content="noindex,nofollow" />
+    <style>
+      :root { color-scheme: light; --bg:#f8f4ee; --ink:#1f1b16; --muted:#635848; --accent-soft:rgba(143,79,42,0.12); }
+      * { box-sizing:border-box; }
+      body { margin:0; font-family:Georgia, "Times New Roman", serif; color:var(--ink); background:var(--bg); }
+      .page { width:min(880px, calc(100vw - 40px)); margin:0 auto; padding:28px 0 40px; }
+      .hero { display:grid; gap:10px; padding-bottom:22px; }
+      .eyebrow,.byline,.summary { margin:0; color:var(--muted); font-size:1rem; line-height:1.7; }
+      h1 { margin:0; font-size:clamp(2rem, 4vw, 3.5rem); line-height:0.98; }
+      .chip-row { display:flex; flex-wrap:wrap; gap:10px; }
+      .chip-row span { display:inline-flex; align-items:center; border-radius:999px; padding:8px 12px; background:var(--accent-soft); color:var(--muted); font-size:0.88rem; }
+      .reader-body { padding:0 0 32px; font-size:1.1rem; line-height:1.85; }
+      .reader-body h1,.reader-body h2,.reader-body h3,.reader-body h4,.reader-body h5,.reader-body h6 { font-size:1.4em; line-height:1.2; margin:1.8em 0 0.75em; }
+      .reader-body p,.reader-body li,.reader-body blockquote,.reader-body pre { margin:0 0 1.15em; }
+      .reader-body blockquote { margin-left:0; padding-left:18px; border-left:3px solid var(--accent-soft); color:var(--muted); }
+      .reader-body pre { white-space:pre-wrap; font-family:"Courier New", monospace; background:#f2eadf; border-radius:16px; padding:16px; }
+      @media (max-width:780px) { .page { width:min(100vw - 24px, 100%); } }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <section class="hero">
+        ${meta ? `<p class="eyebrow">${escapeBookHtml(meta)}</p>` : ""}
+        <h1>${escapeBookHtml(work.title)}</h1>
+        ${subtitle ? `<p class="summary">${escapeBookHtml(subtitle)}</p>` : ""}
+        ${byline ? `<p class="byline">${escapeBookHtml(byline)}</p>` : ""}
+        ${work.summary ? `<p class="summary">${escapeBookHtml(work.summary)}</p>` : ""}
+        ${bookshelves.length > 0 ? `<div class="chip-row">${bookshelves.map((value) => `<span>${escapeBookHtml(value)}</span>`).join("")}</div>` : ""}
+      </section>
+      <div class="reader-body">${sourceMarkup || "<p>No stored source content yet.</p>"}</div>
+    </main>
+  </body>
+</html>`;
 }
 
 async function executeTool(
@@ -6509,19 +6592,34 @@ export function createApp(deps: AppDeps) {
 
     const files = await deps.store.getWorkFiles([workId], ["book_html"]);
     const htmlFile = files.find((file) => file.kind === "book_html") ?? null;
-    if (!htmlFile?.r2Key) {
-      return c.json({ error: "Book content not found." }, 404);
+    if (htmlFile?.r2Key) {
+      const object = await deps.blobStore.getObject(htmlFile.r2Key);
+      if (object) {
+        return new Response(await object.arrayBuffer(), {
+          headers: {
+            "content-type": object.contentType ?? "text/html; charset=utf-8",
+            "cache-control": "public, max-age=14400",
+          },
+        });
+      }
     }
 
-    const object = await deps.blobStore.getObject(htmlFile.r2Key);
-    if (!object) {
+    const sourceFiles = await deps.store.getWorkFiles([workId], ["raw", "clean"]);
+    const rawFile = sourceFiles.find((file) => file.kind === "raw") ?? null;
+    const cleanFile = sourceFiles.find((file) => file.kind === "clean") ?? null;
+    const preferredFile = rawFile ?? cleanFile;
+    const content = preferredFile?.r2Key ? await deps.blobStore.getText(preferredFile.r2Key) : null;
+    if (!content) {
       return c.json({ error: "Book content not found." }, 404);
     }
-
-    return new Response(await object.arrayBuffer(), {
+    const metadata = work.metadata && typeof work.metadata === "object" ? work.metadata as Record<string, unknown> : {};
+    const sourceFormat = metadata.sourceFormat === "html" ? "html" : "text";
+    const html = buildFallbackBookHtml(work, content, sourceFormat);
+    return new Response(html, {
       headers: {
-        "content-type": object.contentType ?? "text/html; charset=utf-8",
-        "cache-control": "public, max-age=14400",
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": "public, max-age=300",
+        "x-alphabook-content-source": "fallback-generated",
       },
     });
   });

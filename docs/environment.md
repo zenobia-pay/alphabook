@@ -68,6 +68,7 @@ Cloudflare bindings:
 - `OPENAI_EMBEDDING_MODEL`
 - `MIRROR_BATCH_SIZE`
 - `MIRROR_CHECKPOINT_PATH`
+- `BOOK_HTML_BATCH_SIZE`
 
 ## DigitalOcean Gutenberg Mirror Box
 

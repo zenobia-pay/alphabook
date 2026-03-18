@@ -6,6 +6,7 @@ GUTENBERG_MIRROR_ROOT="${GUTENBERG_MIRROR_ROOT:-$ALPHABOOK_ROOT/gutenberg}"
 INGEST_IMAGE="${INGEST_IMAGE:-alphabook-ingest:latest}"
 INGEST_ENV_FILE="${INGEST_ENV_FILE:-$ALPHABOOK_ROOT/.ingest.env}"
 MIRROR_BATCH_SIZE="${MIRROR_BATCH_SIZE:-25}"
+BOOK_HTML_BATCH_SIZE="${BOOK_HTML_BATCH_SIZE:-100}"
 MIRROR_CHECKPOINT_PATH="${MIRROR_CHECKPOINT_PATH:-$ALPHABOOK_ROOT/.alphabook/ingest-checkpoint.json}"
 DOCKER_BIN="${DOCKER_BIN:-docker}"
 
@@ -32,10 +33,22 @@ echo "[$(date -Is)] Uploading mirrored Gutenberg metadata and text via $INGEST_I
   --env-file "$INGEST_ENV_FILE" \
   -e GUTENBERG_MIRROR_ROOT=/mirror \
   -e MIRROR_BATCH_SIZE="$MIRROR_BATCH_SIZE" \
+  -e BOOK_HTML_BATCH_SIZE="$BOOK_HTML_BATCH_SIZE" \
   -e MIRROR_CHECKPOINT_PATH=/state/ingest-checkpoint.json \
   -v "$GUTENBERG_MIRROR_ROOT:/mirror:ro" \
   -v "$(dirname "$MIRROR_CHECKPOINT_PATH"):/state" \
   "$INGEST_IMAGE" \
   npx tsx apps/ingest/src/index.ts run-once
+
+if [[ "$BOOK_HTML_BATCH_SIZE" =~ ^[0-9]+$ ]] && [[ "$BOOK_HTML_BATCH_SIZE" -gt 0 ]]; then
+  echo "[$(date -Is)] Backfilling up to $BOOK_HTML_BATCH_SIZE missing static book HTML artifacts"
+  "$DOCKER_BIN" run --rm \
+    --env-file "$INGEST_ENV_FILE" \
+    -e BOOK_HTML_BATCH_SIZE="$BOOK_HTML_BATCH_SIZE" \
+    -v "$GUTENBERG_MIRROR_ROOT:/mirror:ro" \
+    -v "$(dirname "$MIRROR_CHECKPOINT_PATH"):/state" \
+    "$INGEST_IMAGE" \
+    npx tsx apps/ingest/src/index.ts backfill-book-html - "$BOOK_HTML_BATCH_SIZE"
+fi
 
 echo "[$(date -Is)] Gutenberg upload finished successfully"

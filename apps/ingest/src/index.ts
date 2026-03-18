@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
-import { DeleteObjectsCommand, S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import { DeleteObjectsCommand, GetObjectCommand, S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { createNeonDb } from "@alphabook/db";
 import { listMirrorIds, resolveMirrorSource } from "@alphabook/source-gutenberg/mirror";
 import { gutenbergCorpusKeys } from "@alphabook/source-gutenberg/storage";
@@ -48,6 +48,16 @@ interface MirrorBackfillCheckpoint {
 interface ExistingWorkStatus {
   workId: string;
   complete: boolean;
+}
+
+interface ExistingBookHtmlWork {
+  workId: string;
+  gutenbergId: string;
+  title: string;
+  summary: string | null;
+  language: string | null;
+  releaseDate: string | null;
+  metadata: Record<string, unknown>;
 }
 
 function sleep(ms: number) {
@@ -141,6 +151,212 @@ function uniqueStrings(values: Array<string | null | undefined>) {
   return normalized;
 }
 
+function escapeHtml(value: string) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll("\"", "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function stripTags(value: string) {
+  return value.replace(/<[^>]+>/g, " ");
+}
+
+function normalizeWhitespace(value: string) {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function createExcerpt(value: string, maxLength = 240) {
+  const normalized = normalizeWhitespace(stripTags(value));
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+  return `${normalized.slice(0, maxLength - 1).trimEnd()}…`;
+}
+
+function sanitizeSourceHtml(content: string) {
+  const bodyMatch = content.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+  const extracted = bodyMatch?.[1] ?? content;
+  return extracted
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "")
+    .replace(/<(?:link|meta|base|iframe|object|embed|form|input|button)[^>]*>/gi, "")
+    .replace(/\son[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "")
+    .replace(/\s(?:href|src)\s*=\s*(['"])\s*javascript:[\s\S]*?\1/gi, "");
+}
+
+function renderTextSource(content: string) {
+  const paragraphs = content
+    .replace(/\r\n/g, "\n")
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.trim())
+    .filter((paragraph) => paragraph.length > 0);
+
+  if (paragraphs.length === 0) {
+    return `<p class="empty-state">This work does not have stored source content yet.</p>`;
+  }
+
+  return paragraphs
+    .map((paragraph) => `<p>${escapeHtml(paragraph).replace(/\n/g, "<br />")}</p>`)
+    .join("\n");
+}
+
+function renderSourceMarkup(rawSource: string, sourceFormat: "text" | "html") {
+  return sourceFormat === "html" ? sanitizeSourceHtml(rawSource) : renderTextSource(rawSource);
+}
+
+function renderTagList(values: string[] | null | undefined) {
+  const tags = (values ?? []).filter((value) => value.trim().length > 0).slice(0, 12);
+  if (tags.length === 0) {
+    return "";
+  }
+  return `<div class="chip-row">${tags.map((value) => `<span>${escapeHtml(value)}</span>`).join("")}</div>`;
+}
+
+function buildBookHtmlArtifact(input: {
+  gutenbergId: string;
+  title: string;
+  subtitle?: string | null;
+  authors: string[];
+  bookshelves?: string[];
+  summary?: string | null;
+  language?: string | null;
+  releaseDate?: string | null;
+  rawSource: string;
+  sourceFormat: "text" | "html";
+}) {
+  const meta = [
+    input.gutenbergId ? `Project Gutenberg #${input.gutenbergId}` : null,
+    input.language ? input.language.toUpperCase() : null,
+    input.releaseDate ? input.releaseDate.slice(0, 4) : null,
+  ].filter((value): value is string => Boolean(value)).join(" · ");
+  const byline = input.authors.filter((author) => author.trim().length > 0).join(" · ");
+  const description = createExcerpt(input.summary ?? input.rawSource ?? input.title);
+  const sourceMarkup = renderSourceMarkup(input.rawSource, input.sourceFormat);
+
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${escapeHtml(input.title)} | alpha book</title>
+    <meta name="description" content="${escapeHtml(description)}" />
+    <meta name="robots" content="noindex,nofollow" />
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f8f4ee;
+        --ink: #1f1b16;
+        --muted: #635848;
+        --line: rgba(73, 58, 41, 0.14);
+        --accent-soft: rgba(143, 79, 42, 0.12);
+      }
+      * { box-sizing: border-box; }
+      html { scroll-behavior: smooth; }
+      body {
+        margin: 0;
+        font-family: Georgia, "Times New Roman", serif;
+        color: var(--ink);
+        background: var(--bg);
+      }
+      .page {
+        width: min(880px, calc(100vw - 40px));
+        margin: 0 auto;
+        padding: 28px 0 40px;
+      }
+      .hero {
+        display: grid;
+        gap: 10px;
+        padding-bottom: 22px;
+      }
+      .eyebrow, .byline, .summary {
+        margin: 0;
+        color: var(--muted);
+        font-size: 1rem;
+        line-height: 1.7;
+      }
+      h1 {
+        margin: 0;
+        font-size: clamp(2rem, 4vw, 3.5rem);
+        line-height: 0.98;
+      }
+      .chip-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+      .chip-row span {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        padding: 8px 12px;
+        background: var(--accent-soft);
+        color: var(--muted);
+        font-size: 0.88rem;
+      }
+      .reader-body {
+        padding: 0 0 32px;
+        font-size: 1.1rem;
+        line-height: 1.85;
+      }
+      .reader-body h1, .reader-body h2, .reader-body h3, .reader-body h4, .reader-body h5, .reader-body h6 {
+        font-size: 1.4em;
+        line-height: 1.2;
+        margin: 1.8em 0 0.75em;
+      }
+      .reader-body p, .reader-body li, .reader-body blockquote, .reader-body pre {
+        margin: 0 0 1.15em;
+      }
+      .reader-body blockquote {
+        margin-left: 0;
+        padding-left: 18px;
+        border-left: 3px solid var(--accent-soft);
+        color: var(--muted);
+      }
+      .reader-body pre {
+        white-space: pre-wrap;
+        font-family: "Courier New", monospace;
+        background: #f2eadf;
+        border-radius: 16px;
+        padding: 16px;
+      }
+      .empty-state {
+        color: var(--muted);
+      }
+      @media (max-width: 780px) {
+        .page { width: min(100vw - 24px, 100%); }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <section class="hero">
+        ${meta ? `<p class="eyebrow">${escapeHtml(meta)}</p>` : ""}
+        <h1>${escapeHtml(input.title)}</h1>
+        ${input.subtitle ? `<p class="summary">${escapeHtml(input.subtitle)}</p>` : ""}
+        ${byline ? `<p class="byline">${escapeHtml(byline)}</p>` : ""}
+        ${input.summary ? `<p class="summary">${escapeHtml(input.summary)}</p>` : ""}
+        ${renderTagList(input.bookshelves)}
+      </section>
+      <div class="reader-body">${sourceMarkup}</div>
+    </main>
+  </body>
+</html>`;
+}
+
+async function getText(r2: S3Client, bucket: string, key: string): Promise<string | null> {
+  const response = await r2.send(new GetObjectCommand({
+    Bucket: bucket,
+    Key: key,
+  }));
+  if (!response.Body) {
+    return null;
+  }
+  return await response.Body.transformToString();
+}
+
 function shouldSkipExistingWork() {
   return process.env.FORCE_REINGEST !== "1";
 }
@@ -154,7 +370,7 @@ async function findExistingWorkStatus(context: IngestContext, gutenbergId: strin
     `
       SELECT
         w.id AS work_id,
-        COUNT(DISTINCT wf.kind) FILTER (WHERE wf.kind IN ('raw', 'metadata', 'clean', 'chunks')) AS file_kind_count,
+        COUNT(DISTINCT wf.kind) FILTER (WHERE wf.kind IN ('raw', 'metadata', 'clean', 'chunks', 'book_html')) AS file_kind_count,
         COUNT(c.id) AS chunk_count
       FROM works w
       LEFT JOIN work_files wf ON wf.work_id = w.id
@@ -171,7 +387,7 @@ async function findExistingWorkStatus(context: IngestContext, gutenbergId: strin
   }
   return {
     workId: row.work_id,
-    complete: Number(row.file_kind_count) >= 4 && Number(row.chunk_count) > 0,
+    complete: Number(row.file_kind_count) >= 5 && Number(row.chunk_count) > 0,
   };
 }
 
@@ -309,6 +525,7 @@ async function persistIngestedWork(context: IngestContext, source: IngestSourceI
   const metadataKey = gutenbergCorpusKeys.rawMetadata(source.gutenbergId);
   const cleanKey = gutenbergCorpusKeys.cleanText(source.gutenbergId);
   const chunksKey = gutenbergCorpusKeys.chunks(source.gutenbergId);
+  const bookHtmlKey = gutenbergCorpusKeys.bookHtml(source.gutenbergId);
   const coverImagePath = typeof source.metadata?.coverImagePath === "string" ? source.metadata.coverImagePath : null;
   const coverImageKey = coverImagePath ? gutenbergCorpusKeys.coverImage(source.gutenbergId, coverExtension(coverImagePath)) : null;
   const proposedWorkId = crypto.randomUUID();
@@ -372,6 +589,20 @@ async function persistIngestedWork(context: IngestContext, source: IngestSourceI
       }),
     )
     .join("\n");
+  const bookHtml = buildBookHtmlArtifact({
+    gutenbergId: source.gutenbergId,
+    title: source.title,
+    subtitle: typeof source.metadata?.subtitle === "string" ? source.metadata.subtitle : null,
+    authors,
+    bookshelves: Array.isArray(source.metadata?.bookshelves)
+      ? source.metadata.bookshelves.filter((value): value is string => typeof value === "string")
+      : [],
+    summary: source.summary ?? null,
+    language: source.language ?? null,
+    releaseDate: source.releaseDate ?? null,
+    rawSource: source.rawSource,
+    sourceFormat: source.sourceFormat ?? "text",
+  });
 
   await Promise.all([
     putText(
@@ -390,6 +621,7 @@ async function persistIngestedWork(context: IngestContext, source: IngestSourceI
     ),
     putText(context.r2, context.r2Bucket, cleanKey, cleanText, "text/plain; charset=utf-8"),
     putText(context.r2, context.r2Bucket, chunksKey, chunksPayload, "application/x-ndjson"),
+    putText(context.r2, context.r2Bucket, bookHtmlKey, bookHtml, "text/html; charset=utf-8"),
     ...(coverImagePath && coverImageKey
       ? [
           readFile(coverImagePath).then((bytes) =>
@@ -406,7 +638,8 @@ async function persistIngestedWork(context: IngestContext, source: IngestSourceI
         ($1::uuid, $2::uuid, 'raw', $3, '{}'::jsonb),
         ($4::uuid, $2::uuid, 'metadata', $5, '{}'::jsonb),
         ($6::uuid, $2::uuid, 'clean', $7, '{}'::jsonb),
-        ($8::uuid, $2::uuid, 'chunks', $9, '{}'::jsonb)
+        ($8::uuid, $2::uuid, 'chunks', $9, '{}'::jsonb),
+        ($10::uuid, $2::uuid, 'book_html', $11, '{}'::jsonb)
       ON CONFLICT (r2_key) DO NOTHING
     `,
     [
@@ -419,6 +652,8 @@ async function persistIngestedWork(context: IngestContext, source: IngestSourceI
       cleanKey,
       crypto.randomUUID(),
       chunksKey,
+      crypto.randomUUID(),
+      bookHtmlKey,
     ],
   );
 
@@ -454,6 +689,7 @@ async function persistIngestedWork(context: IngestContext, source: IngestSourceI
     rawKey,
     cleanKey,
     chunksKey,
+    bookHtmlKey,
     skipped: false,
   };
 }
@@ -558,6 +794,7 @@ async function deleteGutenbergWorks(context: IngestContext, gutenbergIds: string
       gutenbergCorpusKeys.rawMetadata(id),
       gutenbergCorpusKeys.cleanText(id),
       gutenbergCorpusKeys.chunks(id),
+      gutenbergCorpusKeys.bookHtml(id),
     ]),
   ]);
 
@@ -570,6 +807,105 @@ async function deleteGutenbergWorks(context: IngestContext, gutenbergIds: string
     deleted: ids.length,
     ids,
     r2KeysDeleted: r2Keys.length,
+  };
+}
+
+async function listWorksMissingBookHtml(context: IngestContext, limit: number, startAfterGutenbergId?: string | null) {
+  const rows = await context.db.query<{
+    work_id: string;
+    gutenberg_id: string | number;
+    title: string;
+    summary: string | null;
+    language: string | null;
+    release_date: string | null;
+    metadata_json: Record<string, unknown> | null;
+  }>(
+    `
+      SELECT
+        w.id AS work_id,
+        w.gutenberg_id::bigint::text AS gutenberg_id,
+        w.title,
+        w.summary,
+        w.language,
+        w.release_date::text AS release_date,
+        w.metadata_json
+      FROM works w
+      LEFT JOIN work_files html_file
+        ON html_file.work_id = w.id
+       AND html_file.kind = 'book_html'
+      WHERE w.gutenberg_id IS NOT NULL
+        AND html_file.id IS NULL
+        AND ($1::bigint IS NULL OR w.gutenberg_id > $1::bigint)
+      ORDER BY w.gutenberg_id ASC
+      LIMIT $2
+    `,
+    [startAfterGutenbergId ? Number(startAfterGutenbergId) : null, limit],
+  );
+
+  return rows.rows.map((row) => ({
+    workId: row.work_id,
+    gutenbergId: String(row.gutenberg_id),
+    title: row.title,
+    summary: row.summary,
+    language: row.language,
+    releaseDate: row.release_date,
+    metadata: row.metadata_json ?? {},
+  } satisfies ExistingBookHtmlWork));
+}
+
+async function persistBookHtmlArtifact(
+  context: IngestContext,
+  work: ExistingBookHtmlWork,
+  rawKey?: string | null,
+): Promise<{ workId: string; gutenbergId: string; bookHtmlKey: string }> {
+  const resolvedRawKey = rawKey ?? gutenbergCorpusKeys.rawText(work.gutenbergId);
+  const rawSource = await getText(context.r2, context.r2Bucket, resolvedRawKey);
+  if (!rawSource) {
+    throw new Error(`Raw source missing for Gutenberg ${work.gutenbergId} (${resolvedRawKey}).`);
+  }
+  const metadata = work.metadata ?? {};
+  const bookHtml = buildBookHtmlArtifact({
+    gutenbergId: work.gutenbergId,
+    title: work.title,
+    subtitle: typeof metadata.subtitle === "string" ? metadata.subtitle : null,
+    authors: Array.isArray(metadata.authors) ? metadata.authors.filter((value): value is string => typeof value === "string") : [],
+    bookshelves: Array.isArray(metadata.bookshelves) ? metadata.bookshelves.filter((value): value is string => typeof value === "string") : [],
+    summary: work.summary ?? null,
+    language: work.language ?? null,
+    releaseDate: work.releaseDate ?? null,
+    rawSource,
+    sourceFormat: metadata.sourceFormat === "html" ? "html" : "text",
+  });
+  const bookHtmlKey = gutenbergCorpusKeys.bookHtml(work.gutenbergId);
+
+  await putText(context.r2, context.r2Bucket, bookHtmlKey, bookHtml, "text/html; charset=utf-8");
+  await context.db.query(
+    `
+      INSERT INTO work_files (id, work_id, kind, r2_key, metadata_json)
+      VALUES ($1::uuid, $2::uuid, 'book_html', $3, '{}'::jsonb)
+      ON CONFLICT (r2_key) DO NOTHING
+    `,
+    [crypto.randomUUID(), work.workId, bookHtmlKey],
+  );
+
+  return {
+    workId: work.workId,
+    gutenbergId: work.gutenbergId,
+    bookHtmlKey,
+  };
+}
+
+async function backfillBookHtml(context: IngestContext, options: { startAfterId?: string | null; limit: number }) {
+  const works = await listWorksMissingBookHtml(context, options.limit, options.startAfterId ?? null);
+  const results: Array<Record<string, unknown>> = [];
+  for (const work of works) {
+    const result = await persistBookHtmlArtifact(context, work);
+    results.push(result);
+  }
+  return {
+    processed: results.length,
+    nextStartAfterId: works.length > 0 ? works[works.length - 1].gutenbergId : options.startAfterId ?? null,
+    results,
   };
 }
 
@@ -803,6 +1139,16 @@ async function main() {
       return;
     }
 
+    if (command === "backfill-book-html") {
+      const [startAfterId, limitValue] = args;
+      const result = await backfillBookHtml(context, {
+        startAfterId: startAfterId && startAfterId !== "-" ? startAfterId : null,
+        limit: Number(limitValue ?? process.env.BOOK_HTML_BATCH_SIZE ?? "100"),
+      });
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
     if (command === "delete-gutenberg") {
       if (args.length === 0) {
         throw new Error("Usage: delete-gutenberg <gutenbergId...>");
@@ -817,6 +1163,7 @@ async function main() {
     console.log("  ingest-gutenberg <gutenbergId> [title]");
     console.log("  backfill-mirror [startAfterId|-] [limit]");
     console.log("  backfill-mirror-parallel [startAfterId|-] [limit] [concurrency]");
+    console.log("  backfill-book-html [startAfterId|-] [limit]");
     console.log("  delete-gutenberg <gutenbergId...>");
     console.log("  run-once");
   } finally {

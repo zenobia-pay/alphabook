@@ -2598,7 +2598,7 @@ function buildWorkHref(workId: string) {
 }
 
 function buildWorkContentHref(workId: string) {
-  return `/work-content/${encodeURIComponent(workId)}`;
+  return `/api/works/${encodeURIComponent(workId)}/content`;
 }
 
 function buildResearchDocument(title: string, toolTrace: ToolTraceEntry[], artifacts: RunArtifactRecord[]): ResearchDocumentModel {

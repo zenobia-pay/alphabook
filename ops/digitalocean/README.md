@@ -78,10 +78,21 @@ Then you can run:
 sudo /srv/alphabook/bin/gutenberg-upload.sh
 ```
 
+To backfill missing static book HTML for existing works without re-running full ingest:
+
+```bash
+docker run --rm \
+  --env-file /srv/alphabook/.ingest.env \
+  -v /srv/alphabook/gutenberg:/mirror:ro \
+  alphabook-ingest:latest \
+  npx tsx apps/ingest/src/index.ts backfill-book-html - 500
+```
+
 To upload automatically after each mirror refresh, set:
 
 ```bash
 ALPHABOOK_UPLOAD_AFTER_SYNC=1
+BOOK_HTML_BATCH_SIZE=100
 ```
 
 in the systemd service environment or shell before running `gutenberg-rsync.sh`.

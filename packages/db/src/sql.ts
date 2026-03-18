@@ -88,7 +88,7 @@ CREATE TABLE IF NOT EXISTS work_subjects (
 CREATE TABLE IF NOT EXISTS work_files (
   id uuid PRIMARY KEY,
   work_id uuid NOT NULL REFERENCES works(id) ON DELETE CASCADE,
-  kind text NOT NULL CHECK (kind IN ('raw', 'metadata', 'clean', 'chunks')),
+  kind text NOT NULL CHECK (kind IN ('raw', 'metadata', 'clean', 'chunks', 'book_html')),
   r2_key text NOT NULL UNIQUE,
   byte_size bigint,
   sha256 text,
