@@ -1938,13 +1938,21 @@ function AssistantThreadLoadingState({ welcome = false }: { welcome?: boolean })
             </div>
           </>
         ) : (
-          <div className="assistant-loading-messages">
-            {[0, 1, 2].map((item) => (
-              <div key={item} className="assistant-loading-bubble">
-                <Skeleton className="assistant-loading-bubble-title" />
-                <Skeleton className="assistant-loading-bubble-line is-wide" />
-                <Skeleton className="assistant-loading-bubble-line" />
-                {item === 1 ? <Skeleton className="assistant-loading-bubble-line is-short" /> : null}
+          <div className="assistant-loading-transcript">
+            {[
+              { side: "user", lines: ["is-user-wide", "is-user-short"] },
+              { side: "assistant", lines: ["is-assistant-wide", "is-assistant-mid", "is-assistant-short"] },
+              { side: "assistant", lines: ["is-assistant-mid", "is-assistant-wide"] },
+            ].map((item, index) => (
+              <div key={index} className={cn("assistant-loading-message-row", item.side === "user" && "is-user")}>
+                <div className={cn("assistant-loading-message", item.side === "user" && "is-user")}>
+                  {item.lines.map((line, lineIndex) => (
+                    <Skeleton
+                      key={`${index}-${lineIndex}`}
+                      className={cn("assistant-loading-message-line", line)}
+                    />
+                  ))}
+                </div>
               </div>
             ))}
           </div>
