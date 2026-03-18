@@ -2294,6 +2294,7 @@ type SourceChunkRecord = {
   key: string;
   label: string;
   text: string;
+  note: string;
 };
 
 function researchArtifacts(artifacts: RunArtifactRecord[]) {
@@ -2310,7 +2311,7 @@ function researchArtifacts(artifacts: RunArtifactRecord[]) {
 
 function collectSourceChunks(toolTrace: ToolTraceEntry[], artifacts: RunArtifactRecord[]) {
   const collected = new Map<string, SourceChunkRecord>();
-  const remember = (label: string, text: string, key: string) => {
+  const remember = (label: string, text: string, key: string, note: string) => {
     const normalized = text.trim();
     if (!normalized || collected.has(key)) {
       return;
@@ -2319,6 +2320,7 @@ function collectSourceChunks(toolTrace: ToolTraceEntry[], artifacts: RunArtifact
       key,
       label,
       text: normalized,
+      note: note.trim(),
     });
   };
 
@@ -2337,7 +2339,7 @@ function collectSourceChunks(toolTrace: ToolTraceEntry[], artifacts: RunArtifact
           : "";
       const key = typeof chunk.id === "string" ? chunk.id : `${workId}:${chunkIndex ?? collected.size}`;
       const label = chunkIndex !== null ? `${workId} #${chunkIndex}` : workId;
-      remember(label, text, key);
+      remember(label, text, key, "Surface match from the corpus search. This chunk is an early lead worth carrying into the research artifact.");
     }
   }
 
@@ -2358,8 +2360,32 @@ function collectSourceChunks(toolTrace: ToolTraceEntry[], artifacts: RunArtifact
             ? chunk.excerpt
             : "";
         const key = typeof chunk.id === "string" ? chunk.id : `${workId}:${chunkIndex ?? collected.size}`;
-        const label = chunkIndex !== null ? `${workId} #${chunkIndex}` : workId;
-        remember(label, text, key);
+        const workTitle = typeof chunk.workTitle === "string" && chunk.workTitle.trim().length > 0
+          ? chunk.workTitle.trim()
+          : workId;
+        const label = chunkIndex !== null ? `${workTitle} #${chunkIndex}` : workTitle;
+        const viewedIn = Array.isArray(chunk.viewedIn)
+          ? chunk.viewedIn.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+          : [];
+        const matchedIterations = Array.isArray(chunk.matchedIterations)
+          ? chunk.matchedIterations.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+          : [];
+        const noteParts = [];
+        if (viewedIn.includes("workspace_selected_chunks")) {
+          noteParts.push("Selected as a seed passage for the deeper research workspace.");
+        }
+        if (viewedIn.includes("briefing_evidence")) {
+          noteParts.push("Used directly in the briefing evidence pass.");
+        }
+        if (viewedIn.includes("search_iteration")) {
+          noteParts.push("Kept because it continued to surface during iterative search.");
+        }
+        if (matchedIterations.length > 0) {
+          noteParts.push(`Matched search iterations: ${matchedIterations.slice(0, 3).join(", ")}.`);
+        }
+        const note = noteParts.join(" ").trim()
+          || "Primary-source passage kept in the research artifact because it remained relevant during retrieval.";
+        remember(label, text, key, note);
       }
     } catch {
       // Ignore malformed JSON and fall back to tool trace chunks.
@@ -2388,6 +2414,8 @@ function buildResearchDocument(prompt: string, toolTrace: ToolTraceEntry[], arti
       lines.push("");
     }
     lines.push(`[${chunk.label}]`);
+    lines.push(chunk.note);
+    lines.push("");
     lines.push(chunk.text);
   });
   return lines.join("\n");
