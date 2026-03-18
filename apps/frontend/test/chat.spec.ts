@@ -386,7 +386,14 @@ test("assistant session thread stays scrollable with long history", async ({ pag
   await page.goto(`/?view=assistant&session=${sessionId}`);
 
   const viewport = page.locator(".assistant-session-thread .aui-thread-viewport");
+  const threadRoot = page.locator(".assistant-session-thread > .aui-thread-root");
+  const threadShell = page.locator('[data-testid="assistant-workspace-thread"]');
   await expect(viewport).toBeVisible();
+  const widths = await Promise.all([
+    threadRoot.evaluate((node) => node.getBoundingClientRect().width),
+    threadShell.evaluate((node) => node.getBoundingClientRect().width),
+  ]);
+  expect(widths[0]).toBeGreaterThan(widths[1] * 0.8);
   const before = await viewport.evaluate((node) => ({ scrollTop: node.scrollTop, scrollHeight: node.scrollHeight, clientHeight: node.clientHeight }));
   expect(before.scrollHeight).toBeGreaterThan(before.clientHeight);
   await viewport.evaluate((node) => {
