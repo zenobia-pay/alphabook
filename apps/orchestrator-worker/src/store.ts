@@ -1377,7 +1377,21 @@ export class NeonAppStore implements AppStore {
     name?: string | null;
     avatarUrl?: string | null;
   }): Promise<UserRecord> {
-    const params = [input.id, input.email ?? null, input.name ?? null, input.avatarUrl ?? null];
+    const existingByEmail = input.email
+      ? await this.db.query<{
+        id: string;
+      }>(
+        `
+          SELECT id
+          FROM users
+          WHERE email = $1
+          LIMIT 1
+        `,
+        [input.email],
+      )
+      : null;
+    const canonicalId = existingByEmail?.rows[0]?.id ?? input.id;
+    const params = [canonicalId, input.email ?? null, input.name ?? null, input.avatarUrl ?? null];
     const existingById = await this.db.query<{
       id: string;
       email: string | null;
@@ -1388,9 +1402,9 @@ export class NeonAppStore implements AppStore {
       `
         UPDATE users
         SET
-          email = $2,
-          name = $3,
-          avatar_url = $4
+          email = COALESCE($2, email),
+          name = COALESCE($3, name),
+          avatar_url = COALESCE($4, avatar_url)
         WHERE id = $1
         RETURNING id, email, name, avatar_url, created_at
       `,

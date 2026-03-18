@@ -4406,7 +4406,11 @@ export function createApp(deps: AppDeps) {
     if (!principal.user) {
       return false;
     }
-    return principal.user.id === session.userId || isAdminUser(principal.user, deps.adminAllowedEmail);
+    if (principal.user.id === session.userId || isAdminUser(principal.user, deps.adminAllowedEmail)) {
+      return true;
+    }
+    const owningAgent = await deps.store.getAgentIdentityByUserId(session.userId);
+    return owningAgent?.ownerUserId === principal.user.id;
   }
 
   function requireTrustedBrowserRequest(c: Context) {

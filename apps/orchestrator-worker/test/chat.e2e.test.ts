@@ -1295,6 +1295,114 @@ test("chat route rejects writing to another user's existing session", async () =
   assert.equal(payload.error, "Not authorized for this session.");
 });
 
+test("claimed agent owners can read sessions created by their agent identity", async () => {
+  const store = new InMemoryAppStore();
+  const owner = await store.upsertUserProfile({
+    id: "owner-user",
+    email: "owner@example.com",
+    name: "Owner User",
+  });
+  const agent = await store.createAgentIdentity({
+    name: "Owner Agent",
+    description: "Claimed assistant",
+    ownerUserId: owner.id,
+    apiKeyPrefix: "abk_owneragent",
+    apiKeyHash: "hash-owneragent",
+    verificationCode: "folio-ABCD",
+    claimToken: "abclaim_owneragent",
+    metadata: {},
+  });
+  const session = await store.createSession(agent.userId, "Agent-owned session");
+  await store.appendMessage(session.id, "assistant", "Saved by the agent.");
+
+  const auth = new WorkOSAuth(
+    {
+      workosApiKey: "test_api_key",
+      workosClientId: "client_123",
+      cookiePassword: "test_cookie_password_32_chars_minimum",
+    },
+    store,
+  );
+
+  const authInternals = auth as unknown as {
+    workos: {
+      userManagement: {
+        getSessionFromCookie(args: { sessionData: string; cookiePassword: string }): Promise<{
+          user?: {
+            id?: string;
+            email?: string | null;
+            firstName?: string | null;
+            lastName?: string | null;
+            profilePictureUrl?: string | null;
+          };
+        }>;
+      };
+    };
+  };
+
+  authInternals.workos.userManagement.getSessionFromCookie = async ({ sessionData, cookiePassword }) => {
+    assert.equal(sessionData, "sealed-session");
+    assert.equal(cookiePassword, "test_cookie_password_32_chars_minimum");
+    return {
+      user: {
+        id: owner.id,
+        email: owner.email,
+        firstName: "Owner",
+        lastName: "User",
+        profilePictureUrl: null,
+      },
+    };
+  };
+
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    planner: new ScriptedPlanner([
+      {
+        type: "final_answer",
+        answer: "ok",
+        citations: [],
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false };
+      },
+      async runWorkspaceTask() {
+        return { ok: false };
+      },
+      async readWorkspaceFile() {
+        return { ok: false };
+      },
+      async listWorkspaceFiles() {
+        return { ok: true, files: [] };
+      },
+      async destroyWorkspace() {
+        return { ok: true };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+    auth,
+  });
+
+  const response = await app.request(`/sessions/${session.id}/messages`, {
+    headers: {
+      cookie: "alphabook_session=sealed-session",
+    },
+  });
+
+  assert.equal(response.status, 200);
+  const payload = (await response.json()) as { messages: Array<{ content: string }> };
+  assert.equal(payload.messages.length, 1);
+  assert.equal(payload.messages[0]?.content, "Saved by the agent.");
+});
+
 test("fallback planner can create a Fly workspace, run a task, read the briefing, and answer", async () => {
   const store = new InMemoryAppStore(
     [
