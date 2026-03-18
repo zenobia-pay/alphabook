@@ -1552,7 +1552,15 @@ function describeError(message: string): { title: string; body: string } {
   };
 }
 
-function ErrorNotice({ message, className }: { message: string; className?: string }) {
+function ErrorNotice({
+  message,
+  className,
+  onDismiss,
+}: {
+  message: string;
+  className?: string;
+  onDismiss?: () => void;
+}) {
   const { title, body } = describeError(message);
   return (
     <div className={cn("app-error-notice", className)} role="alert" aria-live="polite">
@@ -1561,6 +1569,11 @@ function ErrorNotice({ message, className }: { message: string; className?: stri
         <strong>{title}</strong>
         <p>{body}</p>
       </div>
+      {onDismiss ? (
+        <button type="button" className="app-error-notice-dismiss" aria-label="Dismiss error" onClick={onDismiss}>
+          <CloseIcon />
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -4468,8 +4481,6 @@ export default function App() {
 
     return (
       <section className="assistant-page">
-        {loadError ? <ErrorNotice className="thread-error-banner" message={loadError} /> : null}
-
         {assistantSessionLoading ? (
           <AssistantWorkspaceLoadingState width={bookAssistantWidth} />
         ) : showRestrictedConversation ? (
@@ -4598,7 +4609,6 @@ export default function App() {
         />
 
         <aside className="book-assistant-pane">
-          {loadError ? <ErrorNotice className="thread-error-banner" message={loadError} /> : null}
           <div className="book-assistant-shell" data-testid="book-thread">
             <AssistantSessionToolbar
               sessions={sessions}
@@ -5855,6 +5865,7 @@ export default function App() {
             </Avatar>
           </Button>
         </div>
+        {loadError ? <ErrorNotice className="thread-error-banner" message={loadError} onDismiss={() => setLoadError(null)} /> : null}
         {renderMainView()}
       </main>
 

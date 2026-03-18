@@ -380,6 +380,7 @@ button {
   display: grid;
   grid-template-rows: minmax(0, 1fr);
   overflow: hidden;
+  position: relative;
 }
 
 .view-header {
@@ -1693,16 +1694,17 @@ button {
 }
 
 .thread-error-banner {
-  margin: 0 auto;
-  width: min(860px, calc(100% - 48px));
-  margin-top: 18px;
-  justify-self: center;
-  align-self: start;
+  position: absolute;
+  top: 18px;
+  left: 20px;
+  right: 20px;
+  z-index: 30;
+  pointer-events: none;
 }
 
 .app-error-notice {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 12px;
   align-items: start;
   border: 1px solid rgba(187, 73, 44, 0.18);
@@ -1714,6 +1716,11 @@ button {
   box-shadow: 0 12px 28px rgba(131, 60, 41, 0.08);
   width: 100%;
   max-width: 100%;
+}
+
+.thread-error-banner .app-error-notice {
+  width: min(720px, 100%);
+  pointer-events: auto;
 }
 
 .app-error-notice-mark {
@@ -1747,6 +1754,37 @@ button {
   color: rgb(128, 48, 29);
   font-size: 0.94rem;
   line-height: 1.45;
+}
+
+.app-error-notice-dismiss {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  background: rgba(187, 73, 44, 0.08);
+  color: rgb(128, 48, 29);
+  padding: 0;
+  transition:
+    background-color 140ms ease,
+    color 140ms ease,
+    transform 140ms ease;
+}
+
+.app-error-notice-dismiss:hover {
+  background: rgba(187, 73, 44, 0.14);
+  color: rgb(111, 40, 24);
+}
+
+.app-error-notice-dismiss:focus-visible {
+  outline: 2px solid rgba(187, 73, 44, 0.24);
+  outline-offset: 2px;
+}
+
+.app-error-notice-dismiss svg {
+  width: 14px;
+  height: 14px;
 }
 
 .assistant-page {
@@ -2819,7 +2857,9 @@ button {
   }
 
   .thread-error-banner {
-    width: calc(100% - 32px);
+    top: calc(62px + var(--safe-top));
+    left: 12px;
+    right: 12px;
   }
 
   .profile-view {
