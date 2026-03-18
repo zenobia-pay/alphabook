@@ -142,6 +142,63 @@ test("logged out assistant keeps the normal shell while disabling the composer",
   await expect(thread.getByRole("link", { name: "Sign in" })).toBeVisible();
 });
 
+test("restricted assistant session keeps the session URL and shows a coherent locked state", async ({ page }) => {
+  const sessionId = "ba4020e7-f283-4976-853f-27146997bf6f";
+
+  await page.route("**/api/me", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        authConfigured: true,
+        authenticated: false,
+        user: null,
+      }),
+    });
+  });
+
+  await page.route("**/api/admin/access", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        allowed: false,
+        authenticated: false,
+        authConfigured: true,
+        user: null,
+      }),
+    });
+  });
+
+  await page.route(`**/api/sessions/${sessionId}/messages`, async (route) => {
+    await route.fulfill({
+      status: 403,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: "Not authorized for this session.",
+      }),
+    });
+  });
+
+  await page.route(`**/api/sessions/${sessionId}/runs`, async (route) => {
+    await route.fulfill({
+      status: 403,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: "Not authorized for this session.",
+      }),
+    });
+  });
+
+  await page.goto(`/?view=assistant&session=${sessionId}`);
+
+  await expect(page).toHaveURL(new RegExp(`session=${sessionId}`));
+  const thread = page.getByTestId("thread");
+  await expect(thread.getByRole("heading", { name: "Sign in to view this conversation." })).toBeVisible();
+  await expect(thread.getByRole("link", { name: "Sign in" })).toBeVisible();
+  await expect(thread.getByTestId("empty-state")).toHaveCount(0);
+});
+
 test("assistant shows a friendly error notice instead of raw JSON", async ({ page }) => {
   await page.route("**/api/sessions*", async (route) => {
     await route.fulfill({

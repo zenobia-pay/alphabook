@@ -1565,6 +1565,13 @@ function ErrorNotice({ message, className }: { message: string; className?: stri
   );
 }
 
+function isConversationAccessIssue(message: string | null) {
+  if (!message) {
+    return false;
+  }
+  return /not authorized|do not have access|sign in/i.test(message);
+}
+
 function buildExplorePrompt(question: string, works: WorkSummary[]) {
   const normalized = question.trim();
   if (works.length === 0) {
@@ -3269,7 +3276,6 @@ export default function App() {
       setSessionsResolved(true);
       setSessionsLoading(false);
       setSessions([]);
-      setSelectedSessionId(null);
       setMessages([]);
       return;
     }
@@ -4382,6 +4388,13 @@ export default function App() {
       && messages.length === 0
       && !isSending
       && recoveredActiveRunId == null;
+    const showRestrictedConversation =
+      selectedSessionId != null
+      && !assistantSessionLoading
+      && messages.length === 0
+      && !isSending
+      && recoveredActiveRunId == null
+      && isConversationAccessIssue(loadError);
     const assistantComposerNotice = authLocked ? (
       <>
         Sign in to start a research thread.{" "}
@@ -4396,6 +4409,10 @@ export default function App() {
         {assistantSessionLoading ? (
           <div className="assistant-thread-shell" data-testid="thread">
             <AssistantLoadingState />
+          </div>
+        ) : showRestrictedConversation ? (
+          <div className="assistant-thread-shell" data-testid="thread">
+            <LockedState compact title={authLocked ? "Sign in to view this conversation." : "This conversation is private."} />
           </div>
         ) : showBlankSession ? (
           <div className="assistant-thread-shell" data-testid="thread">
