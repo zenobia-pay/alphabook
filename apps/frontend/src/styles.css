@@ -2234,23 +2234,6 @@ button {
   overscroll-behavior-y: none;
 }
 
-.assistant-thread-shell-empty {
-  gap: 6px;
-}
-
-.assistant-thread-shell-header {
-  width: min(44rem, 100%);
-  margin: 0 auto;
-  padding: 20px 4px 0;
-}
-
-.assistant-thread-shell-title {
-  margin: 0;
-  color: var(--ink);
-  font-size: 1rem;
-  font-weight: 600;
-}
-
 .assistant-loading-state {
   min-height: 0;
   height: 100%;

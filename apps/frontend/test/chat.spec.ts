@@ -13,7 +13,7 @@ test("empty chat state renders with the ChatGPT-style layout", async ({ page }) 
   await page.goto("/");
 
   await expect(page.getByTestId("sidebar")).toBeVisible();
-  await expect(page.locator(".assistant-thread-shell-title")).toHaveText("New chat");
+  await expect(page.getByTestId("empty-state")).toBeVisible();
   await expect(page.locator(".app-shell")).toHaveScreenshot("assistant-empty.png", {
     animations: "disabled",
     caret: "hide",
@@ -135,7 +135,7 @@ test("logged out assistant keeps the normal shell while disabling the composer",
 
   await page.goto("/");
 
-  await expect(page.locator(".assistant-thread-shell-title")).toHaveText("New chat");
+  await expect(page.getByRole("heading", { name: "Search for evidence and themes over 75,000 books." })).toBeVisible();
   await expect(page.locator(".aui-composer-input")).toBeDisabled();
   const thread = page.getByTestId("thread");
   await expect(thread.getByText("Sign in to start a research thread.")).toBeVisible();

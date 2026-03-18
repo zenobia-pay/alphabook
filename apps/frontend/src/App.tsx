@@ -4379,10 +4379,7 @@ export default function App() {
             <AssistantLoadingState />
           </div>
         ) : showBlankSession ? (
-          <div className="assistant-thread-shell assistant-thread-shell-empty" data-testid="thread">
-            <div className="assistant-thread-shell-header">
-              <p className="assistant-thread-shell-title">New chat</p>
-            </div>
+          <div className="assistant-thread-shell" data-testid="thread">
             <AssistantSurface
               key="assistant-landing"
               messages={[]}
@@ -4390,8 +4387,6 @@ export default function App() {
               streamConnected={false}
               streamingAssistantId={null}
               artifacts={[]}
-              showWelcome={false}
-              suggestions={[]}
               onPrompt={sendPrompt}
               onCancel={cancelActiveRun}
               composerDisabled={authLocked}
