@@ -131,6 +131,10 @@ function chunkText(text: string, targetSize = 1400): string[] {
   return chunks;
 }
 
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function embedChunks(chunks: string[]): Promise<number[][] | null> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey || chunks.length === 0) {
@@ -142,21 +146,44 @@ async function embedChunks(chunks: string[]): Promise<number[][] | null> {
 
   for (let index = 0; index < chunks.length; index += 32) {
     const batch = chunks.slice(index, index + 32);
-    const response = await fetch("https://api.openai.com/v1/embeddings", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model,
-        input: batch,
-        ...(model.startsWith("text-embedding-3-") ? { dimensions: 1536 } : {}),
-      }),
-    });
-    if (!response.ok) {
-      throw new Error(`Embedding request failed: ${await response.text()}`);
+    let response: Response | null = null;
+    let lastError: string | null = null;
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        response = await fetch("https://api.openai.com/v1/embeddings", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({
+            model,
+            input: batch,
+            ...(model.startsWith("text-embedding-3-") ? { dimensions: 1536 } : {}),
+          }),
+        });
+        if (response.ok) {
+          break;
+        }
+        const body = await response.text();
+        lastError = `Embedding request failed: ${response.status} ${body}`;
+        if (response.status !== 429 && response.status < 500) {
+          throw new Error(lastError);
+        }
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error);
+      }
+
+      if (attempt < 4) {
+        await sleep(1000 * 2 ** attempt);
+      }
     }
+
+    if (!response?.ok) {
+      throw new Error(lastError ?? "Embedding request failed.");
+    }
+
     const payload = (await response.json()) as {
       data?: Array<{
         embedding?: number[];
@@ -687,7 +714,25 @@ async function backfillMirrorParallel(context: IngestContext, options: MirrorBac
     while (inserted < options.limit && cursor < candidateIds.length) {
       const gutenbergId = candidateIds[cursor++];
       try {
-        const result = await ingestFromMirror(context, gutenbergId);
+        let result: Awaited<ReturnType<typeof ingestFromMirror>> | null = null;
+        let lastError: unknown = null;
+
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          try {
+            result = await ingestFromMirror(context, gutenbergId);
+            break;
+          } catch (error) {
+            lastError = error;
+            if (attempt < 2) {
+              await sleep(1000 * 2 ** attempt);
+            }
+          }
+        }
+
+        if (!result) {
+          throw lastError instanceof Error ? lastError : new Error(String(lastError));
+        }
+
         processed += 1;
         lastProcessedId = gutenbergId;
         results.push(result);
