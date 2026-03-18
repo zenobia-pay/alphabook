@@ -1067,7 +1067,10 @@ export class InMemoryAppStore implements AppStore {
     };
   }
 
-  async searchWorks(query: string): Promise<WorkSummary[]> {
+  async searchWorks(query: string, filters: Record<string, unknown> = {}): Promise<WorkSummary[]> {
+    const limit = typeof filters.limit === "number"
+      ? Math.max(1, Math.min(20, Math.trunc(filters.limit)))
+      : 20;
     const lexicalQuery = expandedSearchTokens(query).join(" ");
     return [...this.works]
       .map((work) => ({
@@ -1079,7 +1082,7 @@ export class InMemoryAppStore implements AppStore {
       }))
       .filter((work) => (work.score ?? 0) > 0)
       .sort((left, right) => (right.score ?? 0) - (left.score ?? 0))
-      .slice(0, 8)
+      .slice(0, limit)
       .map((work) => toWorkSummary(work));
   }
 
@@ -2572,7 +2575,7 @@ export class NeonAppStore implements AppStore {
   }
 
   async searchWorks(query: string, filters: Record<string, unknown> = {}): Promise<WorkSummary[]> {
-    const limit = Number(filters.limit ?? 8);
+    const limit = Number(filters.limit ?? 20);
     const normalizedQuery = normalizeSearchQuery(query);
     const tsQuery = normalizedQuery || query.trim();
     const tokens = expandedSearchTokens(query);

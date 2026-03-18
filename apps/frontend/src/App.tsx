@@ -1302,6 +1302,22 @@ function getCount(value: unknown) {
   return Array.isArray(value) ? value.length : 0;
 }
 
+function describeMetadataSearchIntent(args: Record<string, unknown>) {
+  const query = typeof args.query === "string" && args.query.trim().length > 0
+    ? `for ${quoted(args.query)}`
+    : "";
+  return `Checking titles, summaries, subjects, and catalog metadata ${query}`.trim();
+}
+
+function describePassageSearchIntent(args: Record<string, unknown>) {
+  const query = typeof args.query === "string" && args.query.trim().length > 0
+    ? `for ${quoted(args.query)}`
+    : "";
+  const scopedWorkCount = Array.isArray(args.workIds) ? args.workIds.length : 0;
+  const scope = scopedWorkCount > 0 ? ` across ${pluralize(scopedWorkCount, "candidate book")}` : " across the corpus";
+  return `Searching passage text and semantic matches${scope} ${query}`.replace(/\s+/g, " ").trim();
+}
+
 function summarizeToolSentence({
   toolName,
   args,
@@ -1327,40 +1343,34 @@ function summarizeToolSentence({
 
   switch (toolName) {
     case "search_works":
-      if (state === "running") {
-        return query ? `Scanning the library for leads on ${query}.` : "Scanning the library for leads.";
+      {
+        const searchIntent = describeMetadataSearchIntent(args);
+        if (state === "running") {
+          return `${searchIntent}.`;
+        }
+        if (state === "error") {
+          return `${searchIntent} failed${errorMessage ? `: ${errorMessage}` : "."}`;
+        }
+        if (resultWorkCount === 0) {
+          return `${searchIntent} found no strong book matches yet.`;
+        }
+        return `${searchIntent} found ${pluralize(resultWorkCount, "candidate book")}.`;
       }
-      if (state === "error") {
-        return query
-          ? `The first search pass for ${query} failed${errorMessage ? `: ${errorMessage}` : "."}`
-          : `The first search pass failed${errorMessage ? `: ${errorMessage}` : "."}`;
-      }
-      if (resultWorkCount === 0) {
-        return query
-          ? `Scanned the library for ${query} and found no strong leads yet.`
-          : "Scanned the library and found no strong leads yet.";
-      }
-      return query
-        ? `Scanned the library for ${query} and found ${pluralize(resultWorkCount, "candidate book")}.`
-        : `Scanned the library and found ${pluralize(resultWorkCount, "candidate book")}.`;
 
     case "get_relevant_chunks":
-      if (state === "running") {
-        return query ? `Looking for early leads on ${query}.` : "Looking for early leads.";
+      {
+        const searchIntent = describePassageSearchIntent(args);
+        if (state === "running") {
+          return `${searchIntent}.`;
+        }
+        if (state === "error") {
+          return `${searchIntent} failed${errorMessage ? `: ${errorMessage}` : "."}`;
+        }
+        if (resultChunkCount === 0) {
+          return `${searchIntent} found no strong passages yet.`;
+        }
+        return `${searchIntent} found ${pluralize(resultChunkCount, "relevant passage")}.`;
       }
-      if (state === "error") {
-        return query
-          ? `The quick scan for ${query} failed${errorMessage ? `: ${errorMessage}` : "."}`
-          : `The quick scan failed${errorMessage ? `: ${errorMessage}` : "."}`;
-      }
-      if (resultChunkCount === 0) {
-        return query
-          ? `Ran a quick scan for ${query} and found no strong leads yet.`
-          : "Ran a quick scan and found no strong leads yet.";
-      }
-      return query
-        ? `Found ${pluralize(resultChunkCount, "early lead")} for ${query}.`
-        : `Found ${pluralize(resultChunkCount, "early lead")}.`;
 
     case "get_work_metadata":
       if (state === "running") {

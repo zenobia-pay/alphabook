@@ -1926,15 +1926,6 @@ async function reconcileSessionRuns(
   }
 }
 
-function fallbackSessionTitle(message: string): string {
-  return message
-    .trim()
-    .split(/\s+/)
-    .slice(0, 8)
-    .join(" ")
-    .slice(0, 72);
-}
-
 function normalizeGeneratedSessionTitle(value: string): string | null {
   const normalized = value
     .replace(/^["'\s]+|["'\s]+$/g, "")
@@ -1945,42 +1936,72 @@ function normalizeGeneratedSessionTitle(value: string): string | null {
   return normalized || null;
 }
 
+function normalizeWorkersAiText(payload: unknown): string {
+  if (!payload || typeof payload !== "object") {
+    return "";
+  }
+  const record = payload as {
+    response?: unknown;
+    result?: {
+      response?: unknown;
+    };
+  };
+  if (typeof record.response === "string") {
+    return record.response.trim();
+  }
+  if (typeof record.result?.response === "string") {
+    return record.result.response.trim();
+  }
+  return "";
+}
+
+function normalizedComparisonText(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/^#+\s*/g, "")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function titleLooksLikeMessagePrefix(title: string, message: string) {
+  const normalizedTitle = normalizedComparisonText(title);
+  const normalizedMessage = normalizedComparisonText(message);
+  if (!normalizedTitle || !normalizedMessage) {
+    return false;
+  }
+  if (normalizedTitle.length < 18) {
+    return false;
+  }
+  return normalizedMessage.startsWith(normalizedTitle);
+}
+
 async function createSessionTitle(deps: AppDeps, message: string): Promise<string> {
-  const fallback = fallbackSessionTitle(message);
   if (!deps.ai) {
-    return fallback;
+    return "New chat";
   }
 
-  try {
-    const payload = await deps.ai.run<{ messages: Array<{ role: "system" | "user"; content: string }> }, unknown>(DEFAULT_SESSION_TITLE_MODEL, {
-      messages: [
-        {
-          role: "system",
-          content: [
-            "Write a short, specific title for a new literary research session.",
-            "Use the user's first message only.",
-            "Return plain text only.",
-            "Make it feel like a real heading, not a truncation.",
-            "Prefer 3 to 7 words.",
-            "Do not simply repeat the opening words of the message.",
-            "Do not use quotes, markdown, trailing punctuation, or a generic label like Research or New Chat.",
-          ].join("\n"),
-        },
-        {
-          role: "user",
-          content: message.trim(),
-        },
-      ],
-    });
-    const title = typeof payload === "object" && payload && "response" in payload && typeof (payload as { response?: unknown }).response === "string"
-      ? (payload as { response: string }).response
-      : typeof payload === "object" && payload && "result" in payload && typeof (payload as { result?: { response?: unknown } }).result?.response === "string"
-        ? (payload as { result: { response: string } }).result.response
-        : "";
-    return normalizeGeneratedSessionTitle(title) ?? fallback;
-  } catch {
-    return fallback;
+  const payload = await deps.ai.run<{ prompt: string }, unknown>(DEFAULT_SESSION_TITLE_MODEL, {
+    prompt: [
+      "Write a short, specific title for a new literary research session.",
+      "Use the user's first message only.",
+      "Return plain text only.",
+      "Make it feel like a real heading, not a truncation.",
+      "Prefer 3 to 7 words.",
+      "Do not simply repeat the opening words of the message.",
+      "Do not use quotes, markdown, trailing punctuation, or a generic label like Research or New Chat.",
+      "",
+      `USER_MESSAGE: ${message.trim()}`,
+    ].join("\n"),
+  });
+  const title = normalizeGeneratedSessionTitle(normalizeWorkersAiText(payload));
+  if (!title) {
+    throw new Error("Session title generation returned an empty response.");
   }
+  if (titleLooksLikeMessagePrefix(title, message)) {
+    throw new Error("Session title generation returned a truncated copy of the opening message.");
+  }
+  return title;
 }
 
 function chunkTextForStream(text: string): string[] {
@@ -3673,7 +3694,7 @@ async function runOrchestrator(
   let runtimeTasks = 0;
   let initialPlanSent = false;
   let planMessageId: string | null = null;
-  let pendingWorkspaceExecution: {
+  type PendingWorkspaceExecution = {
     toolName: ToolName;
     toolRecordId: string;
     normalizedArgs: Record<string, unknown>;
@@ -3684,7 +3705,8 @@ async function runOrchestrator(
     finalized: boolean;
     status: "completed" | "failed";
     result?: Record<string, unknown>;
-  } | null = null;
+  };
+  let pendingWorkspaceExecution: PendingWorkspaceExecution | null = null;
 
   const finalizeToolExecution = async (
     toolCallId: string,
@@ -3788,7 +3810,7 @@ async function runOrchestrator(
       pendingWorkspaceExecution.normalizedArgs,
       pendingWorkspaceExecution.rationale,
       pendingWorkspaceExecution.status,
-      pendingWorkspaceExecution.result ?? { ok: false, error: "Workspace startup did not return a result." },
+      pendingWorkspaceExecution.result ?? { ok: false, error: "The background research step did not return a result." },
     );
     const wasCompleted = pendingWorkspaceExecution.status === "completed";
     pendingWorkspaceExecution = null;
@@ -3821,31 +3843,129 @@ async function runOrchestrator(
     initialPlanSent = true;
   };
 
-  const startBackgroundWorkspace = async (
+  const toPendingTools = (pending: PendingWorkspaceExecution | null): PlannerContext["pendingTools"] =>
+    pending
+      ? [{
+          toolName: pending.toolName,
+          args: pending.normalizedArgs,
+        }]
+      : [];
+
+  const searchWorksFromHistory = () => {
+    const latest = [...toolHistory].reverse().find((entry) => entry.toolName === "search_works");
+    return Array.isArray(latest?.result.works) ? latest.result.works as Array<Record<string, unknown>> : [];
+  };
+
+  const metadataWorksFromHistory = () => {
+    const latest = [...toolHistory].reverse().find((entry) => entry.toolName === "get_work_metadata");
+    return Array.isArray(latest?.result.works) ? latest.result.works as Array<Record<string, unknown>> : [];
+  };
+
+  const chunksFromHistory = () => {
+    const latest = [...toolHistory].reverse().find((entry) => entry.toolName === "get_relevant_chunks");
+    return Array.isArray(latest?.result.chunks) ? latest.result.chunks as Array<Record<string, unknown>> : [];
+  };
+
+  const latestCompletedRuntimeId = () => {
+    for (let index = toolHistory.length - 1; index >= 0; index -= 1) {
+      const entry = toolHistory[index];
+      if (entry.toolName !== "create_workspace") {
+        continue;
+      }
+      return typeof entry.result.runtimeId === "string" ? entry.result.runtimeId : null;
+    }
+    return null;
+  };
+
+  const buildBackgroundWorkspaceTaskSpec = (runtimeId: string) => {
+    const scopedWorkIds = Array.isArray(input.workIds) ? input.workIds.slice(0, 12) : [];
+    const searchWorks = searchWorksFromHistory();
+    const metadataWorks = metadataWorksFromHistory();
+    const seedChunks = chunksFromHistory();
+    const candidateWorkIds = uniqueWorkIds([
+      ...scopedWorkIds,
+      ...searchWorks.map((work) => (typeof work.id === "string" ? work.id : null)),
+      ...metadataWorks.map((work) => (typeof work.id === "string" ? work.id : null)),
+      ...seedChunks.map((chunk) => (typeof chunk.workId === "string" ? chunk.workId : null)),
+    ]).slice(0, 12);
+    return normalizeToolArgs("run_workspace_task", {
+      runtimeId,
+      taskSpec: {
+        kind: "briefing_search",
+        phase: "collect_and_brief",
+        question: routedQueryRef.current,
+        researchObjective: routedQueryRef.current,
+        mode: scopedWorkIds.length > 0 ? "open_book_analysis" : "exhaustive_corpus_search",
+        workIds: candidateWorkIds,
+        chunkIds: seedChunks
+          .map((chunk) => (typeof chunk.id === "string" ? chunk.id : null))
+          .filter((value): value is string => typeof value === "string")
+          .slice(0, 24),
+        candidateWorkIds,
+        searchHints: {
+          searchWorksQuery: routedQueryRef.current,
+          passageSearchFocus: "Find the strongest directly quotable passages that best answer the research objective.",
+        },
+        retrieval: {
+          searchWorks: searchWorks.slice(0, 12).map((work) => ({
+            id: typeof work.id === "string" ? work.id : null,
+            title: typeof work.title === "string" ? work.title : "",
+            authors: Array.isArray(work.authors) ? work.authors : [],
+            summary: typeof work.summary === "string" ? work.summary : null,
+            subjects: Array.isArray(work.subjects) ? work.subjects : [],
+            gutenbergId: typeof work.gutenbergId === "number" ? work.gutenbergId : null,
+          })),
+          metadataWorks: metadataWorks.slice(0, 12).map((work) => ({
+            id: typeof work.id === "string" ? work.id : null,
+            title: typeof work.title === "string" ? work.title : "",
+            authors: Array.isArray(work.authors) ? work.authors : [],
+            summary: typeof work.summary === "string" ? work.summary : null,
+            subjects: Array.isArray(work.subjects) ? work.subjects : [],
+            gutenbergId: typeof work.gutenbergId === "number" ? work.gutenbergId : null,
+          })),
+          seedChunks: seedChunks.slice(0, 16).map((chunk) => ({
+            id: typeof chunk.id === "string" ? chunk.id : null,
+            workId: typeof chunk.workId === "string" ? chunk.workId : null,
+            chunkIndex: typeof chunk.chunkIndex === "number" ? chunk.chunkIndex : null,
+            excerpt: typeof chunk.excerpt === "string" ? chunk.excerpt : "",
+            r2Key: typeof chunk.r2Key === "string" ? chunk.r2Key : null,
+          })),
+        },
+        evidenceFile: "output/evidence.json",
+        evidenceNotesFile: "output/evidence-notes.md",
+        briefingFile: "output/briefing.md",
+        briefingJsonFile: "output/briefing.json",
+        prewarmed: true,
+      },
+    });
+  };
+
+  const startBackgroundTool = async (
+    toolName: "create_workspace" | "run_workspace_task",
     normalizedToolArgs: Record<string, unknown>,
     rationale: string,
   ) => {
     runtimeTasks += 1;
-    const toolRecord = await deps.store.startToolCall(run.id, "create_workspace", normalizedToolArgs);
+    const toolRecord = await deps.store.startToolCall(run.id, toolName, normalizedToolArgs);
     await ensureInitialPlanSent(routedQueryRef.current);
     const startedLogLines = await normalizeToolLinesForUser(deps, {
-      toolName: "create_workspace",
+      toolName,
       lines: [
         {
-          toolName: "create_workspace",
+          toolName,
           key: "rationale",
           value: rationale,
         },
         ...flattenValueForCleanup(normalizedToolArgs).map((line) => ({
           ...line,
-          toolName: "create_workspace" as const,
+          toolName,
         })),
       ],
     });
     recordRawLog("tool.started.raw", {
       runId: run.id,
       toolCallId: toolRecord.id,
-      toolName: "create_workspace",
+      toolName,
       rationale,
       args: normalizedToolArgs,
     });
@@ -3853,8 +3973,8 @@ async function runOrchestrator(
       ...liveToolTrace,
       {
         id: toolRecord.id,
-        toolName: "create_workspace",
-        label: labelForToolCall("create_workspace", normalizedToolArgs),
+        toolName,
+        label: labelForToolCall(toolName, normalizedToolArgs),
         rationale: sanitizeUserFacingToolText(rationale) ?? undefined,
         progress: sanitizeUserFacingToolText(rationale) ? [sanitizeUserFacingToolText(rationale)!] : [],
         args: {
@@ -3867,8 +3987,8 @@ async function runOrchestrator(
     await send("tool.started", {
       runId: run.id,
       toolCallId: toolRecord.id,
-      toolName: "create_workspace",
-      label: labelForToolCall("create_workspace", normalizedToolArgs),
+      toolName,
+      label: labelForToolCall(toolName, normalizedToolArgs),
       rationale: sanitizeUserFacingToolText(rationale) ?? null,
       args: {
         __logLines: startedLogLines,
@@ -3885,7 +4005,7 @@ async function runOrchestrator(
           {
             runId: typeof data.runId === "string" ? data.runId : run.id,
             toolCallId: data.toolCallId,
-            toolName: "create_workspace",
+            toolName,
             text: data.text,
             detail: data.detail && typeof data.detail === "object" ? data.detail as Record<string, unknown> : undefined,
           },
@@ -3899,7 +4019,7 @@ async function runOrchestrator(
             await send("tool.progress", {
               runId: run.id,
               toolCallId: data.toolCallId,
-              toolName: "create_workspace",
+              toolName,
               text: progressText,
             });
           },
@@ -3911,11 +4031,11 @@ async function runOrchestrator(
       },
       run.id,
       toolRecord.id,
-      "create_workspace",
+      toolName,
       normalizedToolArgs,
     );
     pendingWorkspaceExecution = {
-      toolName: "create_workspace",
+      toolName,
       toolRecordId: toolRecord.id,
       normalizedArgs: normalizedToolArgs,
       rationale,
@@ -3927,22 +4047,34 @@ async function runOrchestrator(
         let backgroundResult: Record<string, unknown>;
         let backgroundStatus: "completed" | "failed" = "completed";
         try {
-          backgroundResult = await executeTool(deps, "create_workspace", normalizedToolArgs, {
+          backgroundResult = await executeTool(deps, toolName, normalizedToolArgs, {
             userId: session.userId,
             sessionId: session.id,
             runId: run.id,
           });
           addRuntimeIds(runtimeIdsToCleanup, normalizedToolArgs, backgroundResult);
+          if (toolName === "run_workspace_task") {
+            await trackRuntimeBillingEvents(deps, session, run, backgroundResult.billingEvents);
+          }
           const resultRuntimeId = typeof backgroundResult.runtimeId === "string" ? backgroundResult.runtimeId : null;
           if (resultRuntimeId) {
             activeRuns.get(run.id)?.runtimeIds.add(resultRuntimeId);
           }
         } catch (error) {
           addRuntimeIds(runtimeIdsToCleanup, normalizedToolArgs);
+          if (
+            toolName === "run_workspace_task"
+            && error
+            && typeof error === "object"
+            && "runtimePayload" in error
+          ) {
+            const runtimePayload = (error as { runtimePayload?: Record<string, unknown> }).runtimePayload;
+            await trackRuntimeBillingEvents(deps, session, run, runtimePayload?.billingEvents);
+          }
           backgroundStatus = "failed";
           backgroundResult = {
             ok: false,
-            error: formatToolExecutionError("create_workspace", error),
+            error: formatToolExecutionError(toolName, error),
           };
           try {
             await recordUnexpectedError(deps, error, {
@@ -3950,7 +4082,7 @@ async function runOrchestrator(
               route: "/chat",
               method: "POST",
               source: "tool_execution",
-              toolName: "create_workspace",
+              toolName,
               runId: run.id,
               sessionId: session.id,
               userId: session.userId,
@@ -3967,7 +4099,7 @@ async function runOrchestrator(
             toolRecord.id,
             {
               runId: run.id,
-              toolName: "create_workspace",
+              toolName,
             },
             async (progressText) => {
               liveToolTrace = liveToolTrace.map((entry) =>
@@ -3976,13 +4108,13 @@ async function runOrchestrator(
                   : entry,
               );
               await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
-              await send("tool.progress", {
-                runId: run.id,
-                toolCallId: toolRecord.id,
-                toolName: "create_workspace",
-                text: progressText,
-              });
-            },
+                  await send("tool.progress", {
+                    runId: run.id,
+                    toolCallId: toolRecord.id,
+                    toolName,
+                    text: progressText,
+                  });
+                },
           );
         }
         if (pendingWorkspaceExecution) {
@@ -4074,7 +4206,8 @@ async function runOrchestrator(
           prewarmed: true,
         },
       });
-      await startBackgroundWorkspace(
+      await startBackgroundTool(
+        "create_workspace",
         prewarmToolArgs,
         Array.isArray(input.workIds) && input.workIds.length > 0
           ? "I’m spinning up the deeper research workspace for this book now so retrieval can feed into it immediately."
@@ -4083,6 +4216,21 @@ async function runOrchestrator(
     }
     for (let turn = 1; turn <= HARD_LIMITS.MAX_TURNS; turn += 1) {
       await harvestPendingWorkspace(false);
+      if (
+        !pendingWorkspaceExecution
+        && !toolHistory.some((entry) => entry.toolName === "run_workspace_task")
+      ) {
+        const runtimeId = latestCompletedRuntimeId();
+        if (runtimeId) {
+          await startBackgroundTool(
+            "run_workspace_task",
+            buildBackgroundWorkspaceTaskSpec(runtimeId),
+            Array.isArray(input.workIds) && input.workIds.length > 0
+              ? "I’m starting the deeper research run now while metadata and passage search keep collecting evidence."
+              : "I’m starting the deeper research run now while metadata and passage search keep collecting evidence.",
+          );
+        }
+      }
       if (activeRuns.get(run.id)?.cancelRequested) {
         break;
       }
@@ -4104,12 +4252,7 @@ async function runOrchestrator(
         conversationHistory,
         turns: turn,
         toolHistory,
-        pendingTools: pendingWorkspaceExecution
-          ? [{
-              toolName: pendingWorkspaceExecution.toolName,
-              args: pendingWorkspaceExecution.normalizedArgs,
-            }]
-          : [],
+        pendingTools: toPendingTools(pendingWorkspaceExecution),
         workScope: input.workIds,
         billingContext: {
           userId: session.userId,
@@ -4179,8 +4322,13 @@ async function runOrchestrator(
       if (toolCall.tool_name === "create_workspace" && pendingWorkspaceExecution) {
         continue;
       }
-      if (toolCall.tool_name === "run_workspace_task" && pendingWorkspaceExecution) {
+      const pendingExecution = pendingWorkspaceExecution as PendingWorkspaceExecution | null;
+      if (toolCall.tool_name === "run_workspace_task" && pendingExecution) {
+        const waitingOnBackgroundRuntimeTask = pendingExecution.toolName === "run_workspace_task";
         await harvestPendingWorkspace(true);
+        if (waitingOnBackgroundRuntimeTask) {
+          continue;
+        }
         let readyRuntimeId: unknown = null;
         for (let index = toolHistory.length - 1; index >= 0; index -= 1) {
           const entry = toolHistory[index];
@@ -4297,85 +4445,14 @@ async function runOrchestrator(
       let result: Record<string, unknown>;
       let status: "completed" | "failed" = "completed";
       if (toolCall.tool_name === "create_workspace") {
-        runtimeTasks += 1;
-        pendingWorkspaceExecution = {
-          toolName: toolCall.tool_name,
-          toolRecordId: toolRecord.id,
-          normalizedArgs: normalizedToolArgs,
-          rationale: toolCall.rationale,
-          progressEmitter,
-          settled: false,
-          finalized: false,
-          status: "failed",
-          promise: (async () => {
-            let backgroundResult: Record<string, unknown>;
-            let backgroundStatus: "completed" | "failed" = "completed";
-            try {
-              backgroundResult = await executeTool(deps, toolCall.tool_name, normalizedToolArgs, {
-                userId: session.userId,
-                sessionId: session.id,
-                runId: run.id,
-              });
-              addRuntimeIds(runtimeIdsToCleanup, normalizedToolArgs, backgroundResult);
-              const resultRuntimeId = typeof backgroundResult.runtimeId === "string" ? backgroundResult.runtimeId : null;
-              if (resultRuntimeId) {
-                activeRun?.runtimeIds.add(resultRuntimeId);
-              }
-            } catch (error) {
-              addRuntimeIds(runtimeIdsToCleanup, normalizedToolArgs);
-              backgroundStatus = "failed";
-              backgroundResult = {
-                ok: false,
-                error: formatToolExecutionError(toolCall.tool_name, error),
-              };
-              try {
-                await recordUnexpectedError(deps, error, {
-                  request,
-                  route: "/chat",
-                  method: "POST",
-                  source: "tool_execution",
-                  toolName: toolCall.tool_name,
-                  runId: run.id,
-                  sessionId: session.id,
-                  userId: session.userId,
-                  extra: {
-                    toolArgs: normalizedToolArgs,
-                  },
-                });
-              } catch {
-                // Error reporting should not block the user-facing run result.
-              }
-            } finally {
-              await progressEmitter.stop();
-              await flushToolProgress(
-                toolRecord.id,
-                {
-                  runId: run.id,
-                  toolName: toolCall.tool_name,
-                },
-                async (progressText) => {
-                  liveToolTrace = liveToolTrace.map((entry) =>
-                    entry.id === toolRecord.id
-                      ? appendToolProgress(entry, progressText)
-                      : entry,
-                  );
-                  await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
-                  await send("tool.progress", {
-                    runId: run.id,
-                    toolCallId: toolRecord.id,
-                    toolName: toolCall.tool_name,
-                    text: progressText,
-                  });
-                },
-              );
-            }
-            if (pendingWorkspaceExecution) {
-              pendingWorkspaceExecution.status = backgroundStatus;
-              pendingWorkspaceExecution.result = backgroundResult;
-              pendingWorkspaceExecution.settled = true;
-            }
-          })(),
-        };
+        await progressEmitter.stop();
+        liveToolTrace = liveToolTrace.filter((entry) => entry.id !== toolRecord.id);
+        await deps.store.finishToolCall(toolRecord.id, "failed", {
+          ok: false,
+          error: "Replaced by background workspace startup.",
+        });
+        await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
+        await startBackgroundTool("create_workspace", normalizedToolArgs, toolCall.rationale ?? "Preparing the deeper research workspace.");
         continue;
       }
       try {
