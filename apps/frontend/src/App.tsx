@@ -2178,7 +2178,7 @@ function SidebarRecents({
   sessionsLoading: boolean;
   onSelectSession: (sessionId: string) => void;
 }) {
-  if (collapsed) {
+  if (collapsed || sessionsLoading) {
     return null;
   }
 
@@ -2186,18 +2186,10 @@ function SidebarRecents({
     <section className="sidebar-recents" aria-labelledby="sidebar-recents-heading">
       <div className="sidebar-recents-header">
         <p id="sidebar-recents-heading">Recents</p>
-        <span>{sessionsLoading ? "Loading..." : pluralize(sessions.length, "chat")}</span>
+        <span>{pluralize(sessions.length, "chat")}</span>
       </div>
 
-      {sessionsLoading && sessions.length === 0 ? (
-        <div className="sidebar-recents-list" aria-hidden="true">
-          {Array.from({ length: 4 }).map((_, index) => (
-            <div key={index} className="sidebar-recent-row sidebar-recent-row-skeleton">
-              <Skeleton className="sidebar-recent-row-line" />
-            </div>
-          ))}
-        </div>
-      ) : sessions.length > 0 ? (
+      {sessions.length > 0 ? (
         <div className="sidebar-recents-list">
           {sessions.map((session) => {
             const isActive = activeView === "assistant" && selectedSessionId === session.id;
