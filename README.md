@@ -135,6 +135,10 @@ This keeps the transport generic for non-browser agents while leaving room to at
 
 The full environment list is in [docs/environment.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/environment.md).
 
+Operational runbooks:
+
+- [docs/session-debugging.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/session-debugging.md) for tracing failed assistant sessions from the live API
+
 Core variables:
 
 - `DATABASE_URL`
