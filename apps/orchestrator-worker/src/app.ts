@@ -109,6 +109,7 @@ const VERIFICATION_CODE_WORDS = [
   "ember",
   "signal",
 ];
+const DEFAULT_SESSION_TITLE_MODEL = "@cf/zai-org/glm-4.7-flash";
 
 function randomToken(length = 24) {
   const bytes = crypto.getRandomValues(new Uint8Array(length));
@@ -1841,12 +1842,51 @@ async function reconcileSessionRuns(
   }
 }
 
-function titleFromMessage(message: string): string {
+function fallbackSessionTitle(message: string): string {
   return message
     .trim()
     .split(/\s+/)
     .slice(0, 8)
-    .join(" ");
+    .join(" ")
+    .slice(0, 72);
+}
+
+function normalizeGeneratedSessionTitle(value: string): string | null {
+  const normalized = value
+    .replace(/^["'\s]+|["'\s]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 72);
+  return normalized || null;
+}
+
+async function createSessionTitle(deps: AppDeps, message: string): Promise<string> {
+  const fallback = fallbackSessionTitle(message);
+  if (!deps.ai) {
+    return fallback;
+  }
+
+  try {
+    const payload = await deps.ai.run<{ prompt: string }, unknown>(DEFAULT_SESSION_TITLE_MODEL, {
+      prompt: [
+        "Write a short title for a new chat session.",
+        "Use the user's first message only.",
+        "Return plain text only.",
+        "Keep it specific, natural, and under 7 words.",
+        "Do not use quotes, markdown, or punctuation unless necessary.",
+        "",
+        `message=${message.trim()}`,
+      ].join("\n"),
+    });
+    const title = typeof payload === "object" && payload && "response" in payload && typeof (payload as { response?: unknown }).response === "string"
+      ? (payload as { response: string }).response
+      : typeof payload === "object" && payload && "result" in payload && typeof (payload as { result?: { response?: unknown } }).result?.response === "string"
+        ? (payload as { result: { response: string } }).result.response
+        : "";
+    return normalizeGeneratedSessionTitle(title) ?? fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 function chunkTextForStream(text: string): string[] {
@@ -3492,7 +3532,7 @@ async function runOrchestrator(
     throw new Error("Not authorized for this session.");
   }
   if (!session) {
-    session = await deps.store.createSession(input.userId, titleFromMessage(input.message));
+    session = await deps.store.createSession(input.userId, await createSessionTitle(deps, input.message));
     await send("session.created", {
       sessionId: session.id,
       title: session.title,

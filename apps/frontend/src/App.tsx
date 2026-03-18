@@ -2073,6 +2073,89 @@ function SidebarProfileSkeleton({ collapsed = false }: { collapsed?: boolean }) 
   );
 }
 
+function sessionDisplayTitle(session: ChatSessionSummary) {
+  const explicitTitle = session.title?.trim();
+  if (explicitTitle) {
+    return explicitTitle;
+  }
+  const previewTitle = session.lastMessagePreview?.trim();
+  if (previewTitle) {
+    return previewTitle.split(/\s+/).slice(0, 8).join(" ");
+  }
+  return "Untitled chat";
+}
+
+function sessionDisplayPreview(session: ChatSessionSummary) {
+  const preview = session.lastMessagePreview?.trim();
+  if (preview) {
+    return preview;
+  }
+  return session.title?.trim() ? "Open this thread to continue the conversation." : "No messages yet.";
+}
+
+function SidebarRecents({
+  collapsed,
+  sessions,
+  selectedSessionId,
+  sessionsLoading,
+  onSelectSession,
+}: {
+  collapsed: boolean;
+  sessions: ChatSessionSummary[];
+  selectedSessionId: string | null | undefined;
+  sessionsLoading: boolean;
+  onSelectSession: (sessionId: string) => void;
+}) {
+  if (collapsed) {
+    return null;
+  }
+
+  return (
+    <section className="sidebar-recents" aria-labelledby="sidebar-recents-heading">
+      <div className="sidebar-recents-header">
+        <p id="sidebar-recents-heading">Recents</p>
+        <span>{sessionsLoading ? "Loading..." : pluralize(sessions.length, "chat")}</span>
+      </div>
+
+      {sessionsLoading && sessions.length === 0 ? (
+        <div className="sidebar-recents-list" aria-hidden="true">
+          {Array.from({ length: 4 }).map((_, index) => (
+            <div key={index} className="sidebar-recent-card sidebar-recent-card-skeleton">
+              <Skeleton className="sidebar-recent-card-title" />
+              <Skeleton className="sidebar-recent-card-meta" />
+            </div>
+          ))}
+        </div>
+      ) : sessions.length > 0 ? (
+        <div className="sidebar-recents-list">
+          {sessions.map((session) => {
+            const isActive = selectedSessionId === session.id;
+            return (
+              <button
+                key={session.id}
+                type="button"
+                className={cn("sidebar-recent-card", isActive && "is-active")}
+                onClick={() => onSelectSession(session.id)}
+              >
+                <div className="sidebar-recent-card-head">
+                  <strong>{sessionDisplayTitle(session)}</strong>
+                  <span>{formatRelativeTime(session.lastMessageAt ?? session.createdAt)}</span>
+                </div>
+                <p>{sessionDisplayPreview(session)}</p>
+              </button>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="sidebar-recents-empty">
+          <strong>No recent chats yet</strong>
+          <p>Start a new chat and it will show up here.</p>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function AssistantSurface({
   messages,
   isSending,
@@ -2156,7 +2239,7 @@ function AssistantSessionToolbar({
           <option value="">New chat</option>
           {sessions.map((session) => (
             <option key={session.id} value={session.id}>
-              {(session.title ?? "Untitled chat").slice(0, 72)}
+              {sessionDisplayTitle(session).slice(0, 72)}
             </option>
           ))}
         </select>
@@ -2207,123 +2290,107 @@ function artifactText(artifact: RunArtifactRecord) {
   return typeof artifact.content === "string" ? artifact.content.trim() : "";
 }
 
+type SourceChunkRecord = {
+  key: string;
+  label: string;
+  text: string;
+};
+
 function researchArtifacts(artifacts: RunArtifactRecord[]) {
   return artifacts.filter((artifact) => {
     const kind = typeof artifact.metadata?.kind === "string" ? artifact.metadata.kind : "";
     return (
-      artifact.filename === "briefing.md"
-      || artifact.filename === "every-single-reference.md"
-      || artifact.filename === "evidence-notes.md"
+      artifact.filename === "every-single-reference.md"
       || artifact.filename === "viewed-chunks.json"
-      || artifact.filename === "selected-chunks.json"
+      || artifact.filename === "evidence-notes.md"
       || kind === "reference_file"
     );
   });
 }
 
-function renderWorkList(value: unknown) {
-  const works = Array.isArray(value) ? value as Array<Record<string, unknown>> : [];
-  if (works.length === 0) {
-    return null;
-  }
-  return (
-    <ul className="assistant-artifact-list">
-      {works.slice(0, 8).map((work, index) => {
-        const title = typeof work.title === "string" ? work.title : "Untitled work";
-        const authors = Array.isArray(work.authors)
-          ? (work.authors as unknown[]).filter((entry): entry is string => typeof entry === "string").join(", ")
+function collectSourceChunks(toolTrace: ToolTraceEntry[], artifacts: RunArtifactRecord[]) {
+  const collected = new Map<string, SourceChunkRecord>();
+  const remember = (label: string, text: string, key: string) => {
+    const normalized = text.trim();
+    if (!normalized || collected.has(key)) {
+      return;
+    }
+    collected.set(key, {
+      key,
+      label,
+      text: normalized,
+    });
+  };
+
+  for (const entry of toolTrace) {
+    if (entry.toolName !== "get_relevant_chunks") {
+      continue;
+    }
+    const chunks = Array.isArray(entry.result?.chunks) ? entry.result.chunks as Array<Record<string, unknown>> : [];
+    for (const chunk of chunks) {
+      const workId = typeof chunk.workId === "string" ? chunk.workId : "work";
+      const chunkIndex = typeof chunk.chunkIndex === "number" ? chunk.chunkIndex : null;
+      const text = typeof chunk.text === "string"
+        ? chunk.text
+        : typeof chunk.excerpt === "string"
+          ? chunk.excerpt
           : "";
-        const summary = typeof work.summary === "string" ? work.summary.trim() : "";
-        return (
-          <li key={`${title}-${index}`} className="assistant-artifact-list-item">
-            <strong>{title}</strong>
-            {authors ? <span>{authors}</span> : null}
-            {summary ? <p>{summary}</p> : null}
-          </li>
-        );
-      })}
-    </ul>
-  );
-}
-
-function renderChunkList(value: unknown) {
-  const chunks = Array.isArray(value) ? value as Array<Record<string, unknown>> : [];
-  if (chunks.length === 0) {
-    return null;
-  }
-  return (
-    <div className="assistant-artifact-chunks">
-      {chunks.slice(0, 12).map((chunk, index) => {
-        const label = [
-          typeof chunk.workId === "string" ? chunk.workId : "work",
-          typeof chunk.chunkIndex === "number" ? `#${chunk.chunkIndex}` : null,
-        ].filter(Boolean).join(" ");
-        const excerpt = typeof chunk.excerpt === "string"
-          ? chunk.excerpt.trim()
-          : typeof chunk.text === "string"
-            ? chunk.text.trim()
-            : "";
-        return (
-          <article key={`${label}-${index}`} className="assistant-artifact-chunk">
-            <div className="assistant-artifact-chipline">{label || `Chunk ${index + 1}`}</div>
-            <p>{excerpt || "Chunk loaded."}</p>
-          </article>
-        );
-      })}
-    </div>
-  );
-}
-
-function renderArtifactPreview(artifact: RunArtifactRecord) {
-  const text = artifactText(artifact);
-  if (!text) {
-    return <p className="assistant-artifact-note">Stored for this run.</p>;
-  }
-  if (artifact.filename.endsWith(".json")) {
-    try {
-      const parsed = JSON.parse(text) as { chunks?: unknown; works?: unknown };
-      return renderChunkList(parsed.chunks) ?? renderWorkList(parsed.works) ?? <pre>{text}</pre>;
-    } catch {
-      return <pre>{text}</pre>;
+      const key = typeof chunk.id === "string" ? chunk.id : `${workId}:${chunkIndex ?? collected.size}`;
+      const label = chunkIndex !== null ? `${workId} #${chunkIndex}` : workId;
+      remember(label, text, key);
     }
   }
-  return <pre>{text}</pre>;
+
+  for (const artifact of artifacts) {
+    const raw = artifactText(artifact);
+    if (!raw || artifact.filename !== "viewed-chunks.json") {
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(raw) as { chunks?: Array<Record<string, unknown>> };
+      const chunks = Array.isArray(parsed.chunks) ? parsed.chunks : [];
+      for (const chunk of chunks) {
+        const workId = typeof chunk.workId === "string" ? chunk.workId : "work";
+        const chunkIndex = typeof chunk.chunkIndex === "number" ? chunk.chunkIndex : null;
+        const text = typeof chunk.text === "string"
+          ? chunk.text
+          : typeof chunk.excerpt === "string"
+            ? chunk.excerpt
+            : "";
+        const key = typeof chunk.id === "string" ? chunk.id : `${workId}:${chunkIndex ?? collected.size}`;
+        const label = chunkIndex !== null ? `${workId} #${chunkIndex}` : workId;
+        remember(label, text, key);
+      }
+    } catch {
+      // Ignore malformed JSON and fall back to tool trace chunks.
+    }
+  }
+
+  return [...collected.values()];
 }
 
-function renderToolTraceDetails(entry: ToolTraceEntry) {
-  if (entry.toolName === "search_works" || entry.toolName === "get_work_metadata") {
-    return renderWorkList(entry.result?.works);
+function buildResearchDocument(prompt: string, toolTrace: ToolTraceEntry[], artifacts: RunArtifactRecord[]) {
+  const preferredReference = researchArtifacts(artifacts).find((artifact) => artifact.filename === "every-single-reference.md");
+  if (preferredReference) {
+    return artifactText(preferredReference);
   }
-  if (entry.toolName === "get_relevant_chunks") {
-    return renderChunkList(entry.result?.chunks);
+
+  const chunks = collectSourceChunks(toolTrace, artifacts);
+  if (chunks.length === 0) {
+    return prompt
+      ? `${prompt}\n\nWaiting for source passages to arrive...`
+      : "Waiting for source passages to arrive...";
   }
-  if (entry.toolName === "run_workspace_task") {
-    const citations = Array.isArray(entry.result?.citations) ? entry.result.citations.length : 0;
-    const artifacts = Array.isArray(entry.result?.artifacts) ? entry.result.artifacts as Array<Record<string, unknown>> : [];
-    const artifactLines = artifacts
-      .map((artifact) => typeof artifact.filename === "string" ? artifact.filename : typeof artifact.path === "string" ? artifact.path : null)
-      .filter((value): value is string => Boolean(value));
-    return (
-      <>
-        {citations > 0 ? <p className="assistant-artifact-note">Collected {pluralize(citations, "citation")} for the briefing.</p> : null}
-        {artifactLines.length > 0 ? (
-          <ul className="assistant-artifact-list">
-            {artifactLines.slice(0, 8).map((line) => (
-              <li key={line} className="assistant-artifact-list-item">
-                <strong>{line}</strong>
-              </li>
-            ))}
-          </ul>
-        ) : null}
-      </>
-    );
-  }
-  if (entry.toolName === "create_workspace") {
-    const manifest = entry.result?.manifest;
-    const works = manifest && typeof manifest === "object" ? (manifest as Record<string, unknown>).works : null;
-    return renderWorkList(works);
-  }
-  return null;
+
+  const lines = prompt ? [prompt, ""] : [];
+  chunks.forEach((chunk, index) => {
+    if (index > 0) {
+      lines.push("");
+    }
+    lines.push(`[${chunk.label}]`);
+    lines.push(chunk.text);
+  });
+  return lines.join("\n");
 }
 
 function ResearchArtifactPane({
@@ -2339,7 +2406,6 @@ function ResearchArtifactPane({
   sessionTitle: string;
   activeRun: SessionRunRecord | null;
 }) {
-  const visibleArtifacts = useMemo(() => researchArtifacts(artifacts), [artifacts]);
   const runLabel =
     activeRun?.status === "running" || activeRun?.status === "queued"
       ? "Live research run"
@@ -2350,84 +2416,19 @@ function ResearchArtifactPane({
           : activeRun?.status === "timed_out"
             ? "Last run timed out"
             : "Research workspace";
+  const documentText = useMemo(
+    () => buildResearchDocument(prompt, toolTrace, artifacts),
+    [artifacts, prompt, toolTrace],
+  );
 
   return (
-    <section className="assistant-artifact-pane">
-      <header className="assistant-artifact-header">
-        <p className="assistant-artifact-eyebrow">{runLabel}</p>
+    <section className="assistant-document-pane">
+      <header className="assistant-document-header">
+        <p className="assistant-document-eyebrow">{runLabel}</p>
         <h2>{sessionTitle}</h2>
-        <p className="assistant-artifact-query">
-          {prompt || "This artifact will start filling in as soon as the first research step runs."}
-        </p>
       </header>
-
-      <div className="assistant-artifact-scroll">
-        <section className="assistant-artifact-section">
-          <div className="assistant-artifact-section-heading">
-            <span>Prompt</span>
-            <span>{toolTrace.length > 0 ? pluralize(toolTrace.length, "tool step") : "Waiting for tools"}</span>
-          </div>
-          <div className="assistant-artifact-callout">
-            <p>{prompt || "Ask a research question to open a live artifact workspace."}</p>
-          </div>
-        </section>
-
-        <section className="assistant-artifact-section">
-          <div className="assistant-artifact-section-heading">
-            <span>Live research trace</span>
-            <span>{toolTrace.length > 0 ? "Appending as tools run" : "No tool output yet"}</span>
-          </div>
-          {toolTrace.length > 0 ? (
-            <div className="assistant-artifact-timeline">
-              {toolTrace.map((entry) => (
-                <article key={entry.id} className={cn("assistant-artifact-step", entry.isError && "is-error")}>
-                  <div className="assistant-artifact-step-header">
-                    <div>
-                      <p className="assistant-artifact-step-title">{entry.label}</p>
-                      <p className="assistant-artifact-step-summary">
-                        {summarizeToolSentence(entry)}
-                      </p>
-                    </div>
-                    <span className={cn("assistant-artifact-step-state", `is-${entry.state}`)}>{entry.state}</span>
-                  </div>
-                  {entry.rationale ? <p className="assistant-artifact-note">{entry.rationale}</p> : null}
-                  {entry.progress.length > 0 ? (
-                    <div className="assistant-artifact-progress">
-                      {entry.progress.map((line) => (
-                        <p key={line}>{line}</p>
-                      ))}
-                    </div>
-                  ) : null}
-                  {renderToolTraceDetails(entry)}
-                </article>
-              ))}
-            </div>
-          ) : (
-            <div className="assistant-artifact-empty">
-              <p>The left pane will fill with searches, book context, chunks, and final notes as the assistant runs.</p>
-            </div>
-          )}
-        </section>
-
-        {visibleArtifacts.length > 0 ? (
-          <section className="assistant-artifact-section">
-            <div className="assistant-artifact-section-heading">
-              <span>Run artifacts</span>
-              <span>{pluralize(visibleArtifacts.length, "file")}</span>
-            </div>
-            <div className="assistant-artifact-artifacts">
-              {visibleArtifacts.map((artifact) => (
-                <article key={`${artifact.filename}-${artifact.createdAt ?? ""}`} className="assistant-artifact-file">
-                  <div className="assistant-artifact-file-header">
-                    <strong>{typeof artifact.metadata?.title === "string" ? artifact.metadata.title : artifact.filename}</strong>
-                    <span>{artifact.filename}</span>
-                  </div>
-                  {renderArtifactPreview(artifact)}
-                </article>
-              ))}
-            </div>
-          </section>
-        ) : null}
+      <div className="assistant-document-scroll">
+        <pre className="assistant-document-text">{documentText}</pre>
       </div>
     </section>
   );
@@ -2481,7 +2482,7 @@ function AssistantWorkspace({
         aria-label="Resize assistant panel"
       />
 
-      <aside className="assistant-session-pane">
+      <aside className="book-assistant-pane">
         <div className="book-assistant-shell" data-testid="assistant-workspace-thread">
           <AssistantSessionToolbar
             sessions={sessions}
@@ -2489,12 +2490,6 @@ function AssistantWorkspace({
             onSelectSession={onSelectSession}
             onStartNewChat={onStartNewChat}
           />
-          <div className="assistant-session-context">
-            <p className="assistant-session-context-title">{sessionTitle}</p>
-            <p className="assistant-session-context-meta">
-              {activeRun ? `${runLabelFromStatus(activeRun.status)} · ${pluralize(toolTrace.length, "tool step")}` : "Ready for research"}
-            </p>
-          </div>
           <div className="assistant-session-thread">
             {rightPane}
           </div>
@@ -2502,23 +2497,6 @@ function AssistantWorkspace({
       </aside>
     </section>
   );
-}
-
-function runLabelFromStatus(status: SessionRunRecord["status"]) {
-  switch (status) {
-    case "queued":
-      return "Queued";
-    case "running":
-      return "Running";
-    case "completed":
-      return "Completed";
-    case "failed":
-      return "Failed";
-    case "timed_out":
-      return "Timed out";
-    default:
-      return "Ready";
-  }
 }
 
 function ReaderPassageBlock({
@@ -2580,10 +2558,10 @@ function SessionListCard({
   return (
     <button type="button" onClick={onOpen} className="profile-history-row w-full text-left">
       <div className="profile-history-row-head">
-        <strong className="profile-history-row-title">{session.title ?? "Untitled chat"}</strong>
+        <strong className="profile-history-row-title">{sessionDisplayTitle(session)}</strong>
         <span className="profile-history-row-time">{formatRelativeTime(session.lastMessageAt)}</span>
       </div>
-      <p className="profile-history-row-preview">{session.lastMessagePreview ?? "No messages yet."}</p>
+      <p className="profile-history-row-preview">{sessionDisplayPreview(session)}</p>
     </button>
   );
 }
@@ -5568,31 +5546,55 @@ export default function App() {
               </button>
             </div>
           </div>
+
+          <Button
+            type="button"
+            variant="default"
+            className={cn("sidebar-new-chat", sidebarCollapsed && "is-collapsed")}
+            onClick={() => {
+              startNewChat();
+            }}
+            aria-label="Start a new chat"
+            title="New chat"
+          >
+            <MessageSquarePlus className="size-4" />
+            {!sidebarCollapsed ? <span>New chat</span> : null}
+          </Button>
         </div>
 
-        <nav className={cn("sidebar-nav", sidebarCollapsed && "items-center")} aria-label="Primary">
-          {navigationItems.map((item) => {
-            const Icon = item.icon;
-            const isActive = activeView === item.id || (activeView === "book" && item.id === "explore");
-            return (
-              <Button
-                key={item.id}
-                type="button"
-                variant="ghost"
-                className={cn(
-                  "sidebar-nav-button w-full justify-start rounded-none px-0 py-3 text-[1.05rem]",
-                  isActive && "is-active",
-                  isActive && "font-medium",
-                  sidebarCollapsed && "w-11 justify-center px-0",
-                )}
-                onClick={() => handleNavSelection(item.id)}
-              >
-                <Icon />
-                {!sidebarCollapsed ? <span>{item.label}</span> : null}
-              </Button>
-            );
-          })}
-        </nav>
+        <div className="sidebar-scroll-region">
+          <nav className={cn("sidebar-nav", sidebarCollapsed && "items-center")} aria-label="Primary">
+            {navigationItems.map((item) => {
+              const Icon = item.icon;
+              const isActive = activeView === item.id || (activeView === "book" && item.id === "explore");
+              return (
+                <Button
+                  key={item.id}
+                  type="button"
+                  variant="ghost"
+                  className={cn(
+                    "sidebar-nav-button w-full justify-start rounded-none px-0 py-3 text-[1.05rem]",
+                    isActive && "is-active",
+                    isActive && "font-medium",
+                    sidebarCollapsed && "w-11 justify-center px-0",
+                  )}
+                  onClick={() => handleNavSelection(item.id)}
+                >
+                  <Icon />
+                  {!sidebarCollapsed ? <span>{item.label}</span> : null}
+                </Button>
+              );
+            })}
+          </nav>
+
+          <SidebarRecents
+            collapsed={sidebarCollapsed}
+            sessions={sessions}
+            selectedSessionId={selectedSessionId}
+            sessionsLoading={sessionsLoading && !sessionsResolved}
+            onSelectSession={openSession}
+          />
+        </div>
 
         {authPending ? (
           <SidebarProfileSkeleton collapsed={sidebarCollapsed} />

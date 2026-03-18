@@ -89,7 +89,7 @@ button {
 
 .sidebar {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 12px;
   height: var(--app-height);
   padding: 18px 14px 14px;
@@ -109,6 +109,29 @@ button {
 .sidebar-header {
   display: grid;
   gap: 12px;
+}
+
+.sidebar-new-chat {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 46px;
+  width: 100%;
+  border: 1px solid rgba(37, 99, 235, 0.16);
+  background: linear-gradient(180deg, rgba(37, 99, 235, 0.96), rgba(29, 78, 216, 0.94));
+  color: white;
+  box-shadow: 0 14px 28px rgba(37, 99, 235, 0.16);
+}
+
+.sidebar-new-chat:hover {
+  background: linear-gradient(180deg, rgba(37, 99, 235, 1), rgba(29, 78, 216, 0.98));
+}
+
+.sidebar-new-chat.is-collapsed {
+  width: 44px;
+  padding-inline: 0;
+  justify-self: center;
 }
 
 .brand-lockup {
@@ -147,6 +170,14 @@ button {
   gap: 0;
   padding-top: 0;
   align-content: start;
+}
+
+.sidebar-scroll-region {
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  overflow-y: auto;
+  padding-right: 2px;
 }
 
 .sidebar-nav-button {
@@ -190,6 +221,141 @@ button {
   letter-spacing: 0;
 }
 
+.sidebar-recents {
+  display: grid;
+  gap: 10px;
+  padding-top: 18px;
+}
+
+.sidebar-recents-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sidebar-recents-header p,
+.sidebar-recents-header span {
+  margin: 0;
+}
+
+.sidebar-recents-header p {
+  font-size: 0.76rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.sidebar-recents-header span {
+  font-size: 0.8rem;
+  color: var(--ink-soft);
+}
+
+.sidebar-recents-list {
+  display: grid;
+  gap: 8px;
+}
+
+.sidebar-recent-card {
+  display: grid;
+  gap: 7px;
+  width: 100%;
+  border: 1px solid rgba(38, 38, 38, 0.08);
+  border-radius: 16px;
+  padding: 12px 13px;
+  background: rgba(255, 255, 255, 0.76);
+  text-align: left;
+  transition:
+    border-color 140ms ease,
+    background-color 140ms ease,
+    transform 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.sidebar-recent-card:hover {
+  border-color: rgba(37, 99, 235, 0.16);
+  background: rgba(255, 255, 255, 0.96);
+  transform: translateY(-1px);
+  box-shadow: 0 12px 24px rgba(20, 27, 45, 0.05);
+}
+
+.sidebar-recent-card.is-active {
+  border-color: rgba(37, 99, 235, 0.22);
+  background: rgba(37, 99, 235, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.08);
+}
+
+.sidebar-recent-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sidebar-recent-card-head strong {
+  min-width: 0;
+  flex: 1;
+  font-size: 0.94rem;
+  line-height: 1.25;
+}
+
+.sidebar-recent-card-head span {
+  flex: 0 0 auto;
+  font-size: 0.74rem;
+  color: var(--ink-soft);
+}
+
+.sidebar-recent-card p {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.84rem;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.sidebar-recents-empty {
+  border: 1px dashed rgba(38, 38, 38, 0.12);
+  border-radius: 16px;
+  padding: 16px 14px;
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.sidebar-recents-empty strong,
+.sidebar-recents-empty p {
+  margin: 0;
+}
+
+.sidebar-recents-empty strong {
+  display: block;
+  margin-bottom: 5px;
+  font-size: 0.92rem;
+}
+
+.sidebar-recents-empty p {
+  color: var(--ink-soft);
+  font-size: 0.84rem;
+  line-height: 1.35;
+}
+
+.sidebar-recent-card-skeleton {
+  pointer-events: none;
+}
+
+.sidebar-recent-card-title {
+  width: 72%;
+  height: 14px;
+  border-radius: 999px;
+}
+
+.sidebar-recent-card-meta {
+  width: 100%;
+  height: 34px;
+  border-radius: 12px;
+}
+
 .aui-thread-welcome-suggestion {
   border-color: rgba(72, 43, 37, 0.12);
   background: rgba(255, 252, 248, 0.54);
@@ -203,8 +369,9 @@ button {
 }
 
 .sidebar-profile-wrap {
-  margin-top: auto;
+  margin-top: 0;
   padding-top: 12px;
+  border-top: 1px solid rgba(38, 38, 38, 0.08);
 }
 
 .sidebar-profile-wrap.is-collapsed {

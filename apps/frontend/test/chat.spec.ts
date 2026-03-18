@@ -67,12 +67,12 @@ test("sidebar history can reopen an earlier conversation", async ({ page }) => {
 
   await page.locator(".aui-composer-input").fill("Find books about sadness.");
   await page.locator(".aui-composer-send").click();
-  await expect(page.locator(".aui-assistant-message-root").last()).toContainText(/I started with the indexed corpus/i);
+  await expect(page.locator(".aui-assistant-message-root").last()).toContainText(/Workspace Summary|indexed corpus/i);
 
   await page.getByRole("button", { name: "Assistant" }).click();
   await page.locator(".aui-composer-input").fill("Compare ambition across Middlemarch and Don Quixote.");
   await page.locator(".aui-composer-send").click();
-  await expect(page.getByText(/I then ran a deeper workspace search/i)).toBeVisible();
+  await expect(page.locator(".aui-assistant-message-root").last()).toContainText(/Workspace Summary|deeper workspace search/i);
 
   await page.getByRole("button", { name: "Library" }).click();
   await page.getByRole("button", { name: /Find books about sadness/i }).click();
