@@ -617,9 +617,17 @@ async function backfillMirrorParallel(context: IngestContext, options: MirrorBac
   const checkpoint = options.checkpointPath ? await readCheckpoint(options.checkpointPath) : null;
   const startAfterId = options.startAfterId ?? checkpoint?.lastProcessedId ?? null;
   const allIds = await listMirrorIds(mirrorRoot);
+  const existingRows = await context.db.query<{ gutenberg_id: string | number }>(
+    `
+      SELECT gutenberg_id::bigint::text AS gutenberg_id
+      FROM works
+      WHERE gutenberg_id IS NOT NULL
+    `,
+  );
+  const existingIds = new Set(existingRows.rows.map((row) => String(row.gutenberg_id)));
   const firstGreaterIndex = startAfterId ? allIds.findIndex((id) => Number(id) > Number(startAfterId)) : -1;
   const startIndex = startAfterId ? (firstGreaterIndex >= 0 ? firstGreaterIndex : allIds.length) : 0;
-  const candidateIds = allIds.slice(startIndex);
+  const candidateIds = allIds.slice(startIndex).filter((id) => !existingIds.has(id));
   const concurrency = Math.max(1, Number(options.concurrency ?? process.env.MIRROR_BACKFILL_CONCURRENCY ?? "4"));
   const results: Array<Record<string, unknown>> = [];
   const errors: Array<Record<string, unknown>> = [];
@@ -703,6 +711,7 @@ async function backfillMirrorParallel(context: IngestContext, options: MirrorBac
     mirrorRoot,
     startAfterId,
     concurrency,
+    candidateCount: candidateIds.length,
     processed,
     inserted,
     skipped,
