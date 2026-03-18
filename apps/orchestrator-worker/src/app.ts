@@ -1052,8 +1052,11 @@ type ActiveRunState = {
   userId: string;
   runtimeIds: Set<string>;
   cancelRequested: boolean;
+  rawLog: ToolRunRawLogEntry[];
   subscribers: Map<string, (event: string, data: Record<string, unknown>) => Promise<void>>;
 };
+
+type AuditLogger = (event: string, payload: Record<string, unknown>) => void;
 
 function decorateWork(c: Context, work: WorkSummary): WorkSummary {
   const metadata = "metadata" in work && work.metadata && typeof work.metadata === "object"
@@ -1073,7 +1076,7 @@ async function executeTool(
   deps: AppDeps,
   toolName: ToolName,
   args: Record<string, unknown>,
-  context: { userId: string; sessionId: string; runId: string },
+  context: { userId: string; sessionId: string; runId: string; auditLog?: AuditLogger },
 ): Promise<Record<string, unknown>> {
   const normalizedArgs = normalizeToolArgs(toolName, args);
   switch (toolName) {
@@ -1091,13 +1094,26 @@ async function executeTool(
       const parsed = ToolArgsSchemas.get_relevant_chunks.parse(normalizedArgs);
       let embedding: number[] | undefined;
       try {
+        context.auditLog?.("internal.embedding.started", {
+          toolName,
+          query: parsed.query,
+          scopedWorkCount: Array.isArray(parsed.workIds) ? parsed.workIds.length : 0,
+        });
         embedding = await deps.embedder.embedQuery(parsed.query, {
           userId: context.userId,
           sessionId: context.sessionId,
           runId: context.runId,
           source: "embedder",
         });
+        context.auditLog?.("internal.embedding.completed", {
+          toolName,
+          dimensions: Array.isArray(embedding) ? embedding.length : 0,
+        });
       } catch {
+        context.auditLog?.("internal.embedding.failed", {
+          toolName,
+          error: "Embedding generation failed; continuing without semantic query embedding.",
+        });
         embedding = undefined;
       }
       const chunks = await deps.store.getRelevantChunks(
@@ -1416,16 +1432,28 @@ async function normalizeToolLinesForUser(
     toolName: ToolName;
     lines: ToolStreamCleanupLine[];
   },
+  auditLog?: AuditLogger,
 ) {
   const fallback = fallbackNormalizeToolLines(input.lines);
   if (!deps.ai || input.lines.length === 0) {
     return fallback;
   }
+  auditLog?.("internal.glm_cleanup.started", {
+    toolName: input.toolName,
+    model: deps.toolStreamCleanupModel ?? DEFAULT_SESSION_TITLE_MODEL,
+    lineCount: input.lines.length,
+  });
   try {
     const cleaned = await cleanupToolStreamWithWorkersAi(deps.ai, {
       model: deps.toolStreamCleanupModel,
       toolName: input.toolName,
       lines: input.lines,
+    });
+    auditLog?.("internal.glm_cleanup.completed", {
+      toolName: input.toolName,
+      model: deps.toolStreamCleanupModel ?? DEFAULT_SESSION_TITLE_MODEL,
+      normalizedLineCount: cleaned.normalizedLines.length,
+      summary: cleaned.summary || null,
     });
     const normalized = fallbackNormalizeToolLines(
       cleaned.normalizedLines.map((line) => ({
@@ -1435,7 +1463,12 @@ async function normalizeToolLinesForUser(
       })),
     );
     return normalized.length > 0 ? normalized : fallback;
-  } catch {
+  } catch (error) {
+    auditLog?.("internal.glm_cleanup.failed", {
+      toolName: input.toolName,
+      model: deps.toolStreamCleanupModel ?? DEFAULT_SESSION_TITLE_MODEL,
+      error: error instanceof Error ? error.message : "Unknown cleanup error",
+    });
     return fallback;
   }
 }
@@ -1991,11 +2024,19 @@ function titleLooksLikeMessagePrefix(title: string, message: string) {
   return normalizedMessage.startsWith(normalizedTitle);
 }
 
-async function createSessionTitle(deps: AppDeps, message: string): Promise<string> {
+async function createSessionTitle(deps: AppDeps, message: string, auditLog?: AuditLogger): Promise<string> {
   if (!deps.ai) {
+    auditLog?.("internal.session_title.skipped", {
+      model: DEFAULT_SESSION_TITLE_MODEL,
+      reason: "workers_ai_unavailable",
+    });
     return "New chat";
   }
 
+  auditLog?.("internal.session_title.started", {
+    model: DEFAULT_SESSION_TITLE_MODEL,
+    messagePreview: message.trim().slice(0, 180),
+  });
   const payload = await deps.ai.run<{ messages: Array<{ role: "system" | "user"; content: string }> }, unknown>(DEFAULT_SESSION_TITLE_MODEL, {
     messages: [
       {
@@ -2018,11 +2059,25 @@ async function createSessionTitle(deps: AppDeps, message: string): Promise<strin
   });
   const title = normalizeGeneratedSessionTitle(normalizeWorkersAiText(payload));
   if (!title) {
+    auditLog?.("internal.session_title.failed", {
+      model: DEFAULT_SESSION_TITLE_MODEL,
+      error: "Session title generation returned an empty response.",
+      payload,
+    });
     throw new Error("Session title generation returned an empty response.");
   }
   if (titleLooksLikeMessagePrefix(title, message)) {
+    auditLog?.("internal.session_title.failed", {
+      model: DEFAULT_SESSION_TITLE_MODEL,
+      error: "Session title generation returned a truncated copy of the opening message.",
+      title,
+    });
     throw new Error("Session title generation returned a truncated copy of the opening message.");
   }
+  auditLog?.("internal.session_title.completed", {
+    model: DEFAULT_SESSION_TITLE_MODEL,
+    title,
+  });
   return title;
 }
 
@@ -2564,6 +2619,44 @@ function renderReferenceMarkdownFromViewedChunks(raw: string) {
   } catch {
     return null;
   }
+}
+
+function parseRawRunLogEntries(artifacts: RunArtifactLike[]) {
+  const rawArtifact = artifacts.find((artifact) =>
+    artifact.metadata?.kind === "tool_stream_raw" && typeof artifact.content === "string",
+  );
+  if (!rawArtifact || typeof rawArtifact.content !== "string") {
+    return [];
+  }
+  return rawArtifact.content
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map((line) => {
+      try {
+        return JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        return null;
+      }
+    })
+    .filter((entry): entry is Record<string, unknown> => Boolean(entry));
+}
+
+function resolveRunRawLog(
+  activeRuns: Map<string, ActiveRunState>,
+  runId: string,
+  artifacts: RunArtifactLike[],
+) {
+  const persisted = parseRawRunLogEntries(artifacts);
+  if (persisted.length > 0) {
+    return persisted;
+  }
+  return (activeRuns.get(runId)?.rawLog ?? []).map((entry) => ({
+    seq: entry.seq,
+    timestamp: entry.timestamp,
+    event: entry.event,
+    payload: entry.payload,
+  }));
 }
 
 function collectRuntimeIds(toolCalls: Awaited<ReturnType<AppStore["listToolCalls"]>>) {
@@ -3409,104 +3502,121 @@ async function synthesizeAnswer(
     plannerDraft?: string;
     plannerCitations: Citation[];
     toolHistory: ToolHistoryEntry[];
+    auditLog?: AuditLogger;
   },
   send: (event: string, data: Record<string, unknown>) => Promise<void>,
 ) {
-  await send("synthesis.started", {
-    runId: params.runId,
-    sessionId: params.sessionId,
+  params.auditLog?.("internal.synthesis.started", {
+    citationCount: params.plannerCitations.length,
+    toolHistoryCount: params.toolHistory.length,
+    hasPlannerDraft: typeof params.plannerDraft === "string" && params.plannerDraft.trim().length > 0,
   });
-
-  const exactCitationLinks = await Promise.all(
-    collectSynthesisCitations(params.plannerCitations, params.toolHistory)
-      .slice(0, 16)
-      .map(async (citation) => ({
-        workId: citation.workId,
-        ...(citation.chunkId ? { chunkId: citation.chunkId } : {}),
-        label: citation.label,
-        excerpt: citation.excerpt,
-        url: await buildCitationPassageUrl(deps, params.sessionId, citation),
-      })),
-  );
-
-  let synthesis;
-  synthesis = await deps.synthesizer.synthesize({
-    userMessage: params.userMessage,
-    conversationHistory: params.conversationHistory,
-    plannerDraft: params.plannerDraft,
-    plannerCitations: params.plannerCitations,
-    toolHistory: params.toolHistory,
-    exactCitationLinks,
-    billingContext: {
-      userId: params.userId,
-      sessionId: params.sessionId,
+  try {
+    await send("synthesis.started", {
       runId: params.runId,
-      source: "synthesizer",
-    },
-  });
-  synthesis.answer = await rewriteAnswerWithCitationLinks(
-    deps,
-    params.sessionId,
-    synthesis.answer,
-    synthesis.citations,
-  );
-
-  const artifactKey = await persistFinalArtifact(deps, params.sessionId, params.runId, synthesis.answer, synthesis.citations);
-  const summarizedToolHistory = summarizeToolHistory(params.toolHistory);
-  await deps.store.appendMessage(params.sessionId, "assistant", synthesis.answer, {
-    runId: params.runId,
-    phase: "answer",
-    citations: synthesis.citations,
-    artifactKey,
-    researchLog: summarizedToolHistory,
-  });
-
-  const citedWorkIds = uniqueWorkIds(synthesis.citations.map((citation) => citation.workId));
-  void recordPassageCitationEvents(
-    deps,
-    params.request,
-    {
-      userId: params.userId,
       sessionId: params.sessionId,
-      runId: params.runId,
-      source: "synthesizer",
-      status: "completed",
-    },
-    synthesis.citations,
-  );
-  void recordBookAnalyticsEvents(
-    deps,
-    params.request,
-    "book_cited",
-    {
-      userId: params.userId,
-      sessionId: params.sessionId,
-      runId: params.runId,
-      source: "synthesizer",
-      status: "completed",
-    },
-    citedWorkIds,
-  );
-  void recordBookAnalyticsEvents(
-    deps,
-    params.request,
-    "book_used_in_successful_answer",
-    {
-      userId: params.userId,
-      sessionId: params.sessionId,
-      runId: params.runId,
-      source: "synthesizer",
-      status: "completed",
-    },
-    citedWorkIds,
-  );
+    });
 
-  await streamAssistantText(synthesis.answer, send);
-  await send("assistant.completed", {
-    answer: synthesis.answer,
-    citations: synthesis.citations,
-    artifactKey,
-  });
+    const exactCitationLinks = await Promise.all(
+      collectSynthesisCitations(params.plannerCitations, params.toolHistory)
+        .slice(0, 16)
+        .map(async (citation) => ({
+          workId: citation.workId,
+          ...(citation.chunkId ? { chunkId: citation.chunkId } : {}),
+          label: citation.label,
+          excerpt: citation.excerpt,
+          url: await buildCitationPassageUrl(deps, params.sessionId, citation),
+        })),
+    );
+
+    let synthesis;
+    synthesis = await deps.synthesizer.synthesize({
+      userMessage: params.userMessage,
+      conversationHistory: params.conversationHistory,
+      plannerDraft: params.plannerDraft,
+      plannerCitations: params.plannerCitations,
+      toolHistory: params.toolHistory,
+      exactCitationLinks,
+      billingContext: {
+        userId: params.userId,
+        sessionId: params.sessionId,
+        runId: params.runId,
+        source: "synthesizer",
+      },
+    });
+    synthesis.answer = await rewriteAnswerWithCitationLinks(
+      deps,
+      params.sessionId,
+      synthesis.answer,
+      synthesis.citations,
+    );
+    params.auditLog?.("internal.synthesis.completed", {
+      citationCount: synthesis.citations.length,
+      answerLength: synthesis.answer.length,
+    });
+
+    const artifactKey = await persistFinalArtifact(deps, params.sessionId, params.runId, synthesis.answer, synthesis.citations);
+    const summarizedToolHistory = summarizeToolHistory(params.toolHistory);
+    await deps.store.appendMessage(params.sessionId, "assistant", synthesis.answer, {
+      runId: params.runId,
+      phase: "answer",
+      citations: synthesis.citations,
+      artifactKey,
+      researchLog: summarizedToolHistory,
+    });
+
+    const citedWorkIds = uniqueWorkIds(synthesis.citations.map((citation) => citation.workId));
+    void recordPassageCitationEvents(
+      deps,
+      params.request,
+      {
+        userId: params.userId,
+        sessionId: params.sessionId,
+        runId: params.runId,
+        source: "synthesizer",
+        status: "completed",
+      },
+      synthesis.citations,
+    );
+    void recordBookAnalyticsEvents(
+      deps,
+      params.request,
+      "book_cited",
+      {
+        userId: params.userId,
+        sessionId: params.sessionId,
+        runId: params.runId,
+        source: "synthesizer",
+        status: "completed",
+      },
+      citedWorkIds,
+    );
+    void recordBookAnalyticsEvents(
+      deps,
+      params.request,
+      "book_used_in_successful_answer",
+      {
+        userId: params.userId,
+        sessionId: params.sessionId,
+        runId: params.runId,
+        source: "synthesizer",
+        status: "completed",
+      },
+      citedWorkIds,
+    );
+
+    await streamAssistantText(synthesis.answer, send);
+    await send("assistant.completed", {
+      answer: synthesis.answer,
+      citations: synthesis.citations,
+      artifactKey,
+    });
+  } catch (error) {
+    params.auditLog?.("internal.synthesis.failed", {
+      error: error instanceof Error ? error.message : "Unknown synthesis error",
+    });
+    throw error;
+  }
 }
 
 async function runOrchestrator(
@@ -3548,6 +3658,45 @@ async function runOrchestrator(
   let latestPlanTraceVersion = 0;
   let persistedPlanTraceVersion = 0;
   let planTracePersistChain = Promise.resolve();
+  let rawLogPersistChain = Promise.resolve();
+  let rawLogPersistTimer: ReturnType<typeof setTimeout> | null = null;
+  let rawLogPersistScheduled = false;
+  let rawLogPersistedLength = 0;
+
+  let session: SessionRecord | null = input.sessionId ? await deps.store.getSession(input.sessionId) : null;
+  let run: Awaited<ReturnType<AppStore["createRun"]>> | null = null;
+
+  const persistRawLogSnapshot = async () => {
+    if (!session || !run || rawRunLog.length === rawLogPersistedLength) {
+      return;
+    }
+    await persistRunStreamArtifact(deps, session.id, run.id, rawRunLog);
+    rawLogPersistedLength = rawRunLog.length;
+  };
+
+  const scheduleRawLogPersist = (force = false) => {
+    if (!session || !run) {
+      return;
+    }
+    if (force) {
+      if (rawLogPersistTimer) {
+        clearTimeout(rawLogPersistTimer);
+        rawLogPersistTimer = null;
+      }
+      rawLogPersistScheduled = false;
+      rawLogPersistChain = rawLogPersistChain.then(persistRawLogSnapshot).catch(() => {});
+      return;
+    }
+    if (rawLogPersistScheduled || rawLogPersistTimer) {
+      return;
+    }
+    rawLogPersistScheduled = true;
+    rawLogPersistTimer = setTimeout(() => {
+      rawLogPersistTimer = null;
+      rawLogPersistScheduled = false;
+      rawLogPersistChain = rawLogPersistChain.then(persistRawLogSnapshot).catch(() => {});
+    }, 300);
+  };
 
   const recordRawLog = (event: string, payload: Record<string, unknown>) => {
     rawRunLog.push({
@@ -3557,6 +3706,7 @@ async function runOrchestrator(
       payload,
     });
     rawLogSequence += 1;
+    scheduleRawLogPersist(false);
   };
 
   const flushToolProgress = async (
@@ -3584,7 +3734,7 @@ async function runOrchestrator(
       const normalizedLines = await normalizeToolLinesForUser(deps, {
         toolName: context.toolName,
         lines: batch,
-      });
+      }, recordRawLog);
       for (const text of normalizedLines) {
         await onEmit(text);
       }
@@ -3658,19 +3808,18 @@ async function runOrchestrator(
       if (version <= persistedPlanTraceVersion || version !== latestPlanTraceVersion) {
         return;
       }
-      await persistPlanToolTrace(deps, messageId, run.id, snapshot);
+      await persistPlanToolTrace(deps, messageId, run!.id, snapshot);
       persistedPlanTraceVersion = version;
     });
     planTracePersistChain = queuedWrite.catch(() => {});
     await queuedWrite;
   };
 
-  let session: SessionRecord | null = input.sessionId ? await deps.store.getSession(input.sessionId) : null;
   if (session && session.userId !== input.userId) {
     throw new Error("Not authorized for this session.");
   }
   if (!session) {
-    session = await deps.store.createSession(input.userId, await createSessionTitle(deps, input.message));
+    session = await deps.store.createSession(input.userId, await createSessionTitle(deps, input.message, recordRawLog));
     await send("session.created", {
       sessionId: session.id,
       title: session.title,
@@ -3687,14 +3836,16 @@ async function runOrchestrator(
     content: input.message,
   });
   const conversationHistory = formatConversationHistory(await deps.store.listMessages(session.id));
-  const run = await deps.store.createRun(session.id);
+  run = await deps.store.createRun(session.id);
   activeRuns.set(run.id, {
     sessionId: session.id,
     userId: input.userId,
     runtimeIds: new Set<string>(),
     cancelRequested: false,
+    rawLog: rawRunLog,
     subscribers: new Map(),
   });
+  scheduleRawLogPersist(true);
   await send("run.started", {
     runId: run.id,
     sessionId: session.id,
@@ -4073,6 +4224,7 @@ async function runOrchestrator(
             userId: session.userId,
             sessionId: session.id,
             runId: run.id,
+            auditLog: recordRawLog,
           });
           addRuntimeIds(runtimeIdsToCleanup, normalizedToolArgs, backgroundResult);
           if (toolName === "run_workspace_task") {
@@ -4150,21 +4302,35 @@ async function runOrchestrator(
 
   const routedQueryRef = { current: input.message };
   try {
-    const routeDecision = deps.router
-      ? await deps.router.decide({
-          userMessage: input.message,
-          conversationHistory,
-          billingContext: {
-            userId: session.userId,
-            sessionId: session.id,
-            runId: run.id,
-            source: "router",
-          },
-        })
-      : {
-          type: "tool_chain" as const,
-          fullQuery: input.message,
-        };
+    recordRawLog("router.started", {
+      sessionId: session.id,
+      message: input.message,
+    });
+    let routeDecision;
+    try {
+      routeDecision = deps.router
+        ? await deps.router.decide({
+            userMessage: input.message,
+            conversationHistory,
+            billingContext: {
+              userId: session.userId,
+              sessionId: session.id,
+              runId: run.id,
+              source: "router",
+            },
+          })
+        : {
+            type: "tool_chain" as const,
+            fullQuery: input.message,
+          };
+    } catch (error) {
+      recordRawLog("router.failed", {
+        runId: run.id,
+        sessionId: session.id,
+        error: error instanceof Error ? error.message : "Unknown router error",
+      });
+      throw error;
+    }
     await send("router.completed", {
       runId: run.id,
       sessionId: session.id,
@@ -4283,7 +4449,32 @@ async function runOrchestrator(
           source: "planner",
         },
       };
-      const decision: PlannerDecision = await deps.planner.decide(plannerContext);
+      recordRawLog("planner.started", {
+        runId: run.id,
+        sessionId: session.id,
+        turn,
+        toolHistoryCount: toolHistory.length,
+        pendingToolCount: plannerContext.pendingTools?.length ?? 0,
+      });
+      let decision: PlannerDecision;
+      try {
+        decision = await deps.planner.decide(plannerContext);
+      } catch (error) {
+        recordRawLog("planner.failed", {
+          runId: run.id,
+          sessionId: session.id,
+          turn,
+          error: error instanceof Error ? error.message : "Unknown planner error",
+        });
+        throw error;
+      }
+      recordRawLog("planner.completed", {
+        runId: run.id,
+        sessionId: session.id,
+        turn,
+        decisionType: decision.type,
+        toolName: decision.type === "tool_call" ? decision.tool_name : null,
+      });
 
       if (decision.type === "final_answer") {
         await deps.store.updateRun(run.id, {
@@ -4303,6 +4494,7 @@ async function runOrchestrator(
             plannerDraft: decision.answer,
             plannerCitations: decision.citations,
             toolHistory,
+            auditLog: recordRawLog,
           },
           send,
         );
@@ -4482,6 +4674,7 @@ async function runOrchestrator(
           userId: session.userId,
           sessionId: session.id,
           runId: run.id,
+          auditLog: recordRawLog,
         });
         addRuntimeIds(runtimeIdsToCleanup, normalizedToolArgs, result);
         if (toolCall.tool_name === "run_workspace_task") {
@@ -4600,6 +4793,7 @@ async function runOrchestrator(
             plannerDraft: completedBriefing.answer,
             plannerCitations: completedBriefing.citations,
             toolHistory,
+            auditLog: recordRawLog,
           },
           send,
         );
@@ -4635,6 +4829,7 @@ async function runOrchestrator(
           plannerDraft: completedBriefing.answer,
           plannerCitations: completedBriefing.citations,
           toolHistory,
+          auditLog: recordRawLog,
         },
         send,
       );
@@ -4759,6 +4954,11 @@ async function runOrchestrator(
         text,
       });
     });
+    if (rawLogPersistTimer) {
+      clearTimeout(rawLogPersistTimer);
+      rawLogPersistTimer = null;
+    }
+    await rawLogPersistChain;
     await persistRunStreamArtifact(deps, session.id, run.id, rawRunLog);
     await destroyTrackedRuntimes(deps, { sessionId: session.id, runId: run.id }, runtimeIdsToCleanup);
     await reapExpiredRuntimeInstances(deps, { runId: run.id });
@@ -5870,6 +6070,7 @@ export function createApp(deps: AppDeps) {
       deps.store.listRuntimeInstances(sessionId),
     ]);
     const artifacts = await loadRunArtifacts(deps, sessionId, runId, toolCalls);
+    const rawLog = resolveRunRawLog(activeRuns, runId, artifacts);
 
     return c.json({
       run: reconciledRun ?? run,
@@ -5877,6 +6078,7 @@ export function createApp(deps: AppDeps) {
       toolTrace: buildRecoveredToolTrace(toolCalls),
       runtimeInstances,
       artifacts,
+      rawLog,
     });
   });
 
@@ -5902,6 +6104,7 @@ export function createApp(deps: AppDeps) {
       deps.store.listRuntimeInstances(sessionId),
     ]);
     const artifacts = await loadRunArtifacts(deps, sessionId, runId, toolCalls);
+    const rawLog = resolveRunRawLog(activeRuns, runId, artifacts);
 
     return c.json({
       run: reconciledRun ?? run,
@@ -5909,6 +6112,7 @@ export function createApp(deps: AppDeps) {
       toolTrace: buildRecoveredToolTrace(toolCalls),
       runtimeInstances,
       artifacts,
+      rawLog,
     });
   });
 
@@ -5932,12 +6136,21 @@ export function createApp(deps: AppDeps) {
         runs.map(async (run) => [run.id, await deps.store.listToolCalls(run.id)]),
       ),
     );
+    const rawLogByRun = Object.fromEntries(
+      await Promise.all(
+        runs.map(async (run) => {
+          const runArtifacts = await loadRunArtifacts(deps, sessionId, run.id, toolCallsByRun[run.id] ?? []);
+          return [run.id, resolveRunRawLog(activeRuns, run.id, runArtifacts)];
+        }),
+      ),
+    );
 
     return c.json({
       session,
       messages,
       runs,
       toolCallsByRun,
+      rawLogByRun,
       runtimeInstances,
       artifacts,
     });
@@ -5966,6 +6179,11 @@ export function createApp(deps: AppDeps) {
       deps.store.listRuntimeInstances(sessionId),
       deps.store.listArtifacts(sessionId),
     ]);
+    const rawLog = resolveRunRawLog(activeRuns, runId,
+      artifacts.filter((artifact) =>
+        artifact.metadata?.kind === "tool_stream_raw" && artifact.filename.includes(runId),
+      ),
+    );
 
     return c.json({
       session,
@@ -5974,6 +6192,7 @@ export function createApp(deps: AppDeps) {
       toolCalls,
       runtimeInstances,
       artifacts,
+      rawLog,
     });
   });
 
@@ -6000,6 +6219,7 @@ export function createApp(deps: AppDeps) {
       deps.store.listRuntimeInstances(sessionId),
     ]);
     const artifacts = await loadRunArtifacts(deps, sessionId, runId, toolCalls);
+    const rawLog = resolveRunRawLog(activeRuns, runId, artifacts);
 
     return c.json({
       session,
@@ -6008,6 +6228,7 @@ export function createApp(deps: AppDeps) {
       toolCalls,
       runtimeInstances,
       artifacts,
+      rawLog,
     });
   });
 
@@ -6034,6 +6255,7 @@ export function createApp(deps: AppDeps) {
       deps.store.listRuntimeInstances(sessionId),
     ]);
     const artifacts = await loadRunArtifacts(deps, sessionId, runId, toolCalls);
+    const rawLog = resolveRunRawLog(activeRuns, runId, artifacts);
 
     return c.json({
       session,
@@ -6042,6 +6264,7 @@ export function createApp(deps: AppDeps) {
       toolCalls,
       runtimeInstances,
       artifacts,
+      rawLog,
     });
   });
 
@@ -6070,6 +6293,7 @@ export function createApp(deps: AppDeps) {
       deps.store.getUserProfile(session.userId),
     ]);
     const artifacts = await loadRunArtifacts(deps, session.id, runId, toolCalls);
+    const rawLog = parseRawRunLogEntries(artifacts);
     const liveRuntime = await loadLiveRuntimeLogs(deps, session.id, runId, collectRuntimeIds(toolCalls));
 
     return c.json({
@@ -6085,6 +6309,7 @@ export function createApp(deps: AppDeps) {
       toolCalls,
       runtimeInstances,
       artifacts,
+      rawLog,
       liveRuntime,
     });
   });

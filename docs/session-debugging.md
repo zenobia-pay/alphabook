@@ -60,6 +60,7 @@ This is the most complete log surface. It includes:
 - owner
 - messages
 - tool calls
+- rawLog
 - runtime instances
 - artifacts
 - `liveRuntime`
@@ -107,6 +108,8 @@ Where to look:
   Often includes `tool_stream_raw`, briefings, notes, or recovered traces.
 - `tool_stream_raw`
   Often contains the clearest serialized `run.completed` error payload.
+- `rawLog`
+  Now exposes the parsed chronological audit stream directly in the JSON response, including internal helper/model steps such as title generation, log cleanup, router, planner, embedding, and synthesis events.
 - `liveRuntime`
   Best source for VM/runtime-side failures when runtime work actually started.
 
