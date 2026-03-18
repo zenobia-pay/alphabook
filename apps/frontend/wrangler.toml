@@ -7,6 +7,10 @@ routes = [
   { pattern = "alpha-book.org", custom_domain = true },
   { pattern = "www.alpha-book.org", custom_domain = true },
 ]
+upload_source_maps = true
+
+[observability]
+enabled = true
 
 [assets]
 directory = "./dist"
