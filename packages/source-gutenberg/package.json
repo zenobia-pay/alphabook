@@ -4,7 +4,11 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./mirror": "./src/mirror.ts",
+    "./schema": "./src/schema.ts",
+    "./storage": "./src/storage.ts",
+    "./text": "./src/text.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit"

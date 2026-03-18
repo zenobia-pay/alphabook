@@ -5,4 +5,4 @@ export {
   mainMirrorDirectory,
   resolveMirrorSource,
   type MirrorSource,
-} from "@alphabook/source-gutenberg";
+} from "@alphabook/source-gutenberg/mirror";

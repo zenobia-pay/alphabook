@@ -5,14 +5,9 @@ import { dirname } from "node:path";
 
 import { DeleteObjectsCommand, S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { createNeonDb } from "@alphabook/db";
-import {
-  chunkCorpusText,
-  gutenbergCorpusKeys,
-  listMirrorIds,
-  normalizeCorpusText,
-  resolveMirrorSource,
-  stripGutenbergBoilerplate,
-} from "@alphabook/source-gutenberg";
+import { listMirrorIds, resolveMirrorSource } from "@alphabook/source-gutenberg/mirror";
+import { gutenbergCorpusKeys } from "@alphabook/source-gutenberg/storage";
+import { chunkCorpusText, normalizeCorpusText, stripGutenbergBoilerplate } from "@alphabook/source-gutenberg/text";
 
 interface IngestContext {
   db: ReturnType<typeof createNeonDb>;

@@ -17,7 +17,8 @@
       "@alphabook/corpus-text": ["packages/corpus-text/src/index.ts"],
       "@alphabook/shared": ["packages/shared/src/index.ts"],
       "@alphabook/db": ["packages/db/src/index.ts"],
-      "@alphabook/source-gutenberg": ["packages/source-gutenberg/src/index.ts"]
+      "@alphabook/source-gutenberg": ["packages/source-gutenberg/src/index.ts"],
+      "@alphabook/source-gutenberg/*": ["packages/source-gutenberg/src/*"]
     }
   }
 }

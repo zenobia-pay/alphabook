@@ -1,5 +1,6 @@
 import { artifactKeys, HARD_LIMITS } from "@alphabook/corpus-core";
-import { GUTENBERG_WORKSPACE_POSTGRES_SCHEMA, gutenbergCorpusKeys } from "@alphabook/source-gutenberg";
+import { GUTENBERG_WORKSPACE_POSTGRES_SCHEMA } from "@alphabook/source-gutenberg/schema";
+import { gutenbergCorpusKeys } from "@alphabook/source-gutenberg/storage";
 
 export { HARD_LIMITS };
 
