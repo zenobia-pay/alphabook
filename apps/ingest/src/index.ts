@@ -36,6 +36,7 @@ interface MirrorBackfillOptions {
   startAfterId?: string | null;
   limit: number;
   checkpointPath?: string | null;
+  concurrency?: number;
 }
 
 interface MirrorBackfillCheckpoint {
@@ -661,6 +662,92 @@ async function backfillMirror(context: IngestContext, options: MirrorBackfillOpt
   };
 }
 
+async function backfillMirrorParallel(context: IngestContext, options: MirrorBackfillOptions) {
+  const mirrorRoot = process.env.GUTENBERG_MIRROR_ROOT;
+  if (!mirrorRoot) {
+    throw new Error("GUTENBERG_MIRROR_ROOT is required for mirror backfill.");
+  }
+
+  const checkpoint = options.checkpointPath ? await readCheckpoint(options.checkpointPath) : null;
+  const startAfterId = options.startAfterId ?? checkpoint?.lastProcessedId ?? null;
+  const allIds = await listMirrorIds(mirrorRoot);
+  const firstGreaterIndex = startAfterId ? allIds.findIndex((id) => Number(id) > Number(startAfterId)) : -1;
+  const startIndex = startAfterId ? (firstGreaterIndex >= 0 ? firstGreaterIndex : allIds.length) : 0;
+  const candidateIds = allIds.slice(startIndex);
+  const concurrency = Math.max(1, Number(options.concurrency ?? process.env.MIRROR_BACKFILL_CONCURRENCY ?? "4"));
+  const results: Array<Record<string, unknown>> = [];
+  const errors: Array<Record<string, unknown>> = [];
+  let cursor = 0;
+  let processed = 0;
+  let inserted = 0;
+  let skipped = 0;
+  let lastProcessedId = startAfterId;
+
+  async function worker() {
+    while (inserted < options.limit && cursor < candidateIds.length) {
+      const gutenbergId = candidateIds[cursor++];
+      try {
+        const result = await ingestFromMirror(context, gutenbergId);
+        processed += 1;
+        lastProcessedId = gutenbergId;
+        results.push(result);
+        if ((result as { skipped?: boolean }).skipped) {
+          skipped += 1;
+        } else {
+          inserted += 1;
+        }
+        if (options.checkpointPath) {
+          await writeCheckpoint(options.checkpointPath, {
+            lastProcessedId,
+            processed,
+            updatedAt: new Date().toISOString(),
+          });
+        }
+        if (processed % 25 === 0 || inserted >= options.limit) {
+          console.error(
+            JSON.stringify({
+              phase: "progress",
+              processed,
+              inserted,
+              skipped,
+              errors: errors.length,
+              lastProcessedId,
+            }),
+          );
+        }
+      } catch (error) {
+        processed += 1;
+        lastProcessedId = gutenbergId;
+        errors.push({
+          gutenbergId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        if (options.checkpointPath) {
+          await writeCheckpoint(options.checkpointPath, {
+            lastProcessedId,
+            processed,
+            updatedAt: new Date().toISOString(),
+          });
+        }
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+
+  return {
+    mirrorRoot,
+    startAfterId,
+    concurrency,
+    processed,
+    inserted,
+    skipped,
+    errors,
+    nextStartAfterId: lastProcessedId,
+    results,
+  };
+}
+
 async function buildContext(): Promise<IngestContext> {
   const databaseUrl = process.env.DATABASE_URL;
   const r2Bucket = process.env.R2_BUCKET_NAME;
@@ -731,6 +818,18 @@ async function main() {
       return;
     }
 
+    if (command === "backfill-mirror-parallel") {
+      const [startAfterId, limitValue, concurrencyValue] = args;
+      const result = await backfillMirrorParallel(context, {
+        startAfterId: startAfterId && startAfterId !== "-" ? startAfterId : null,
+        limit: Number(limitValue ?? process.env.MIRROR_BATCH_SIZE ?? "100"),
+        checkpointPath: process.env.MIRROR_CHECKPOINT_PATH ?? ".alphabook/ingest-checkpoint.json",
+        concurrency: Number(concurrencyValue ?? process.env.MIRROR_BACKFILL_CONCURRENCY ?? "4"),
+      });
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
     if (command === "delete-gutenberg") {
       if (args.length === 0) {
         throw new Error("Usage: delete-gutenberg <gutenbergId...>");
@@ -744,6 +843,7 @@ async function main() {
     console.log("  ingest-url <gutenbergId> <sourceUrl> <title>");
     console.log("  ingest-gutenberg <gutenbergId> [title]");
     console.log("  backfill-mirror [startAfterId|-] [limit]");
+    console.log("  backfill-mirror-parallel [startAfterId|-] [limit] [concurrency]");
     console.log("  delete-gutenberg <gutenbergId...>");
     console.log("  run-once");
   } finally {
