@@ -4432,7 +4432,6 @@ export default function App() {
     const workspaceToolTrace = currentResearchToolTrace(visibleMessages, preferredAssistantRun?.id ?? null);
     const showBlankSession =
       !assistantSessionLoading
-      && !authState.loading
       && selectedSessionId == null
       && messages.length === 0
       && !isSending

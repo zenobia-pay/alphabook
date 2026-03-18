@@ -173,6 +173,7 @@ test("new chat renders immediately instead of showing a loading skeleton during 
 
   await expect(page.getByTestId("empty-state")).toBeVisible();
   await expect(page.locator(".assistant-workspace-loading")).toHaveCount(0);
+  await expect(page.locator(".assistant-workspace-page")).toHaveCount(0);
 });
 
 test("session route keeps the workspace skeleton while conversation data is loading", async ({ page }) => {
