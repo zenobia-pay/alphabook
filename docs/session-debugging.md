@@ -4,34 +4,50 @@ Use this runbook when a URL like `https://alpha-book.org/?view=assistant&session
 
 ## Fast Path
 
-1. Confirm auth works:
+1. Load the signed-in session cookie from [`.dev.vars`](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/.dev.vars).
+
+Prefer extracting just `ALPHABOOK_API_SESSION_COOKIE` instead of `source`-ing the whole file, because `.dev.vars` may contain unquoted values that are not safe to execute as shell.
 
 ```bash
-COOKIE='alphabook_session=...'
+COOKIE=$(python3 - <<'PY'
+from pathlib import Path
+for line in Path('.dev.vars').read_text().splitlines():
+    if line.startswith('ALPHABOOK_API_SESSION_COOKIE='):
+        print(line.split('=', 1)[1].strip().strip('"'))
+        break
+PY
+)
+```
+
+This should produce a full cookie string that starts with `alphabook_session=`.
+
+2. Confirm auth works:
+
+```bash
 curl -sS 'https://api.alpha-book.org/me' -H "Cookie: $COOKIE" | jq .
 ```
 
 If this fails, stop there and fix auth first. A healthy response should show `"authenticated": true`.
 
-2. Fetch the session transcript:
+3. Fetch the session transcript:
 
 ```bash
 curl -sS "https://api.alpha-book.org/sessions/<session-id>/messages" -H "Cookie: $COOKIE" | jq .
 ```
 
-3. Fetch session runs:
+4. Fetch session runs:
 
 ```bash
 curl -sS "https://api.alpha-book.org/sessions/<session-id>/runs" -H "Cookie: $COOKIE" | jq .
 ```
 
-4. Inspect the failed run:
+5. Inspect the failed run:
 
 ```bash
 curl -sS "https://api.alpha-book.org/sessions/<session-id>/runs/<run-id>/logs" -H "Cookie: $COOKIE" | jq .
 ```
 
-5. If you are an admin, prefer the richer admin log view:
+6. If you are an admin, prefer the richer admin log view:
 
 ```bash
 curl -sS "https://api.alpha-book.org/admin/runs/<run-id>/logs" -H "Cookie: $COOKIE" | jq .
