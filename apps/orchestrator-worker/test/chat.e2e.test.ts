@@ -1295,6 +1295,65 @@ test("chat route rejects writing to another user's existing session", async () =
   assert.equal(payload.error, "Not authorized for this session.");
 });
 
+test("quota failures surface a clear user-facing assistant message", async () => {
+  const store = new InMemoryAppStore();
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    router: {
+      async decide() {
+        throw new Error('Router request failed: {"error":{"message":"You exceeded your current quota, please check your plan and billing details.","type":"insufficient_quota","code":"insufficient_quota"}}');
+      },
+    },
+    planner: new ScriptedPlanner([
+      {
+        type: "final_answer",
+        answer: "unreachable",
+        citations: [],
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false };
+      },
+      async runWorkspaceTask() {
+        return { ok: false };
+      },
+      async readWorkspaceFile() {
+        return { ok: false };
+      },
+      async listWorkspaceFiles() {
+        return { ok: true, files: [] };
+      },
+      async destroyWorkspace() {
+        return { ok: true };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const response = await app.request("/chat", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      userId: "11111111-1111-1111-1111-111111111111",
+      message: "Find me books about grief",
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  const body = await response.text();
+  assert.match(body, /The assistant is temporarily unavailable because our AI provider quota was exceeded\./);
+});
+
 test("claimed agent owners can read sessions created by their agent identity", async () => {
   const store = new InMemoryAppStore();
   const owner = await store.upsertUserProfile({

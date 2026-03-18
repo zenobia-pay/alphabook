@@ -1213,11 +1213,26 @@ function sanitizeUserFacingToolText(text: string | null | undefined): string | n
 
 function userFacingRunFailureMessage(error: unknown) {
   const rawMessage = error instanceof Error ? error.message.trim() : "";
+  if (/insufficient_quota|exceeded your current quota|billing details/i.test(rawMessage)) {
+    return "The assistant is temporarily unavailable because our AI provider quota was exceeded. Please try again later.";
+  }
+  if (/authentication required/i.test(rawMessage)) {
+    return "You need to sign in before this run can continue.";
+  }
+  if (/not authorized|access denied|forbidden/i.test(rawMessage)) {
+    return "You do not have access to that run.";
+  }
+  if (/payment required|\b402\b|x402/i.test(rawMessage)) {
+    return "This request needs payment before the assistant can continue.";
+  }
   if (/context_length_exceeded|maximum context length|too many tokens|too long for messages/i.test(rawMessage)) {
     return "This run tried to carry too much prior search state into the next planning step, so I stopped it instead of continuing with a broken context window.";
   }
   if (/cancelled by user/i.test(rawMessage)) {
     return "This run was cancelled.";
+  }
+  if (/runtime|fly/i.test(rawMessage) && /timed out|timeout/i.test(rawMessage)) {
+    return "The assistant took too long to hear back from its research runtime. Please try again.";
   }
   if (/timed out|timeout/i.test(rawMessage)) {
     return "This run timed out before it produced an answer.";
