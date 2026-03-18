@@ -1937,22 +1937,37 @@ function normalizeGeneratedSessionTitle(value: string): string | null {
 }
 
 function normalizeWorkersAiText(payload: unknown): string {
-  if (!payload || typeof payload !== "object") {
-    return "";
-  }
-  const record = payload as {
-    response?: unknown;
-    result?: {
-      response?: unknown;
-    };
+  const extract = (value: unknown, depth = 0): string => {
+    if (depth > 4 || value == null) {
+      return "";
+    }
+    if (typeof value === "string") {
+      return value.trim();
+    }
+    if (Array.isArray(value)) {
+      return value
+        .map((entry) => extract(entry, depth + 1))
+        .filter((entry) => entry.length > 0)
+        .join(" ")
+        .trim();
+    }
+    if (typeof value !== "object") {
+      return "";
+    }
+    const record = value as Record<string, unknown>;
+    return extract(
+      record.response
+      ?? record.output_text
+      ?? record.text
+      ?? record.result
+      ?? record.message
+      ?? record.content
+      ?? (Array.isArray(record.choices) ? record.choices[0] : null),
+      depth + 1,
+    );
   };
-  if (typeof record.response === "string") {
-    return record.response.trim();
-  }
-  if (typeof record.result?.response === "string") {
-    return record.result.response.trim();
-  }
-  return "";
+
+  return extract(payload);
 }
 
 function normalizedComparisonText(value: string) {
@@ -1981,18 +1996,25 @@ async function createSessionTitle(deps: AppDeps, message: string): Promise<strin
     return "New chat";
   }
 
-  const payload = await deps.ai.run<{ prompt: string }, unknown>(DEFAULT_SESSION_TITLE_MODEL, {
-    prompt: [
-      "Write a short, specific title for a new literary research session.",
-      "Use the user's first message only.",
-      "Return plain text only.",
-      "Make it feel like a real heading, not a truncation.",
-      "Prefer 3 to 7 words.",
-      "Do not simply repeat the opening words of the message.",
-      "Do not use quotes, markdown, trailing punctuation, or a generic label like Research or New Chat.",
-      "",
-      `USER_MESSAGE: ${message.trim()}`,
-    ].join("\n"),
+  const payload = await deps.ai.run<{ messages: Array<{ role: "system" | "user"; content: string }> }, unknown>(DEFAULT_SESSION_TITLE_MODEL, {
+    messages: [
+      {
+        role: "system",
+        content: [
+          "Write a short, specific title for a new literary research session.",
+          "Use the user's first message only.",
+          "Return plain text only.",
+          "Make it feel like a real heading, not a truncation.",
+          "Prefer 3 to 7 words.",
+          "Do not simply repeat the opening words of the message.",
+          "Do not use quotes, markdown, trailing punctuation, or a generic label like Research or New Chat.",
+        ].join("\n"),
+      },
+      {
+        role: "user",
+        content: message.trim(),
+      },
+    ],
   });
   const title = normalizeGeneratedSessionTitle(normalizeWorkersAiText(payload));
   if (!title) {

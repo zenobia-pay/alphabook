@@ -1697,7 +1697,7 @@ button {
   position: absolute;
   top: 18px;
   left: 20px;
-  right: 20px;
+  width: min(560px, calc(100% - 40px));
   z-index: 30;
   pointer-events: none;
 }
@@ -1719,7 +1719,7 @@ button {
 }
 
 .thread-error-banner .app-error-notice {
-  width: min(720px, 100%);
+  width: 100%;
   pointer-events: auto;
 }
 
@@ -2874,7 +2874,7 @@ button {
   .thread-error-banner {
     top: calc(62px + var(--safe-top));
     left: 12px;
-    right: 12px;
+    width: min(560px, calc(100% - 24px));
   }
 
   .profile-view {

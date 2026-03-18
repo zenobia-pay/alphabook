@@ -18,19 +18,45 @@ type WorkersAiTextGenerationResponse = {
   result?: {
     response?: string;
   };
+  choices?: Array<{
+    message?: {
+      content?: unknown;
+    };
+  }>;
 };
 
 function normalizeModelText(payload: unknown): string {
-  if (!payload || typeof payload !== "object") {
-    return "";
-  }
-  const record = payload as WorkersAiTextGenerationResponse;
-  const text = typeof record.response === "string"
-    ? record.response
-    : typeof record.result?.response === "string"
-      ? record.result.response
-      : "";
-  return text.trim();
+  const extract = (value: unknown, depth = 0): string => {
+    if (depth > 4 || value == null) {
+      return "";
+    }
+    if (typeof value === "string") {
+      return value.trim();
+    }
+    if (Array.isArray(value)) {
+      return value
+        .map((entry) => extract(entry, depth + 1))
+        .filter((entry) => entry.length > 0)
+        .join(" ")
+        .trim();
+    }
+    if (typeof value !== "object") {
+      return "";
+    }
+    const record = value as Record<string, unknown>;
+    return extract(
+      record.response
+      ?? record.output_text
+      ?? record.text
+      ?? record.result
+      ?? record.message
+      ?? record.content
+      ?? (Array.isArray(record.choices) ? record.choices[0] : null),
+      depth + 1,
+    );
+  };
+
+  return extract(payload);
 }
 
 export async function cleanupToolStreamWithWorkersAi(
