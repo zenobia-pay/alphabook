@@ -1938,10 +1938,15 @@ function fallbackSessionTitle(message: string): string {
 function normalizeGeneratedSessionTitle(value: string): string | null {
   const normalized = value
     .replace(/^["'\s]+|["'\s]+$/g, "")
+    .replace(/^#+\s*/g, "")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 72);
   return normalized || null;
+}
+
+function isExactFallbackSessionTitle(title: string | null | undefined, message: string): boolean {
+  return (title ?? "").trim() === fallbackSessionTitle(message);
 }
 
 async function createSessionTitle(deps: AppDeps, message: string): Promise<string> {
@@ -1951,18 +1956,25 @@ async function createSessionTitle(deps: AppDeps, message: string): Promise<strin
   }
 
   try {
-    const payload = await deps.ai.run<{ prompt: string }, unknown>(DEFAULT_SESSION_TITLE_MODEL, {
-      prompt: [
-        "Write a short, specific title for a new literary research session.",
-        "Use the user's first message only.",
-        "Return plain text only.",
-        "Make it feel like a real heading, not a truncation.",
-        "Prefer 3 to 7 words.",
-        "Do not simply repeat the opening words of the message.",
-        "Do not use quotes, markdown, trailing punctuation, or a generic label like Research or New Chat.",
-        "",
-        `message=${message.trim()}`,
-      ].join("\n"),
+    const payload = await deps.ai.run<{ messages: Array<{ role: "system" | "user"; content: string }> }, unknown>(DEFAULT_SESSION_TITLE_MODEL, {
+      messages: [
+        {
+          role: "system",
+          content: [
+            "Write a short, specific title for a new literary research session.",
+            "Use the user's first message only.",
+            "Return plain text only.",
+            "Make it feel like a real heading, not a truncation.",
+            "Prefer 3 to 7 words.",
+            "Do not simply repeat the opening words of the message.",
+            "Do not use quotes, markdown, trailing punctuation, or a generic label like Research or New Chat.",
+          ].join("\n"),
+        },
+        {
+          role: "user",
+          content: message.trim(),
+        },
+      ],
     });
     const title = typeof payload === "object" && payload && "response" in payload && typeof (payload as { response?: unknown }).response === "string"
       ? (payload as { response: string }).response
@@ -1973,6 +1985,26 @@ async function createSessionTitle(deps: AppDeps, message: string): Promise<strin
   } catch {
     return fallback;
   }
+}
+
+async function refreshFallbackSessionTitle(
+  deps: AppDeps,
+  session: SessionRecord,
+  messages: MessageRecord[],
+): Promise<SessionRecord> {
+  const firstUserMessage = messages.find((message) => message.role === "user")?.content?.trim();
+  if (!firstUserMessage || !isExactFallbackSessionTitle(session.title, firstUserMessage)) {
+    return session;
+  }
+  const nextTitle = await createSessionTitle(deps, firstUserMessage);
+  if (!nextTitle || nextTitle === session.title) {
+    return session;
+  }
+  await deps.store.updateSessionTitle(session.id, nextTitle);
+  return {
+    ...session,
+    title: nextTitle,
+  };
 }
 
 function chunkTextForStream(text: string): string[] {
@@ -5693,7 +5725,13 @@ export function createApp(deps: AppDeps) {
       return c.json({ error: "Authentication required." }, deps.auth?.isConfigured() ? 401 : 400);
     }
     const sessions = await deps.store.listSessions(user.id);
-    return c.json({ sessions });
+    const refreshedSessions = await Promise.all(
+      sessions.map(async (session) => {
+        const messages = await deps.store.listMessages(session.id);
+        return refreshFallbackSessionTitle(deps, session, messages);
+      }),
+    );
+    return c.json({ sessions: refreshedSessions });
   };
 
   app.get("/sessions", handleListSessions);

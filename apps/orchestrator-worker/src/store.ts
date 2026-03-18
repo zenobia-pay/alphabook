@@ -201,6 +201,7 @@ export interface AppStore {
   unfollowUser(followerId: string, followedId: string): Promise<void>;
   isFollowing(followerId: string, followedId: string): Promise<boolean>;
   createSession(userId: string, title?: string): Promise<SessionRecord>;
+  updateSessionTitle(sessionId: string, title: string | null): Promise<void>;
   getSession(sessionId: string): Promise<SessionRecord | null>;
   listSessions(userId: string): Promise<SessionSummaryRecord[]>;
   listAdminSessions(): Promise<AdminSessionRecord[]>;
@@ -789,6 +790,17 @@ export class InMemoryAppStore implements AppStore {
     this.sessions.set(session.id, session);
     this.messages.set(session.id, []);
     return session;
+  }
+
+  async updateSessionTitle(sessionId: string, title: string | null): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      return;
+    }
+    this.sessions.set(sessionId, {
+      ...session,
+      title,
+    });
   }
 
   async getSession(sessionId: string): Promise<SessionRecord | null> {
@@ -1876,6 +1888,17 @@ export class NeonAppStore implements AppStore {
       title: title ?? null,
       createdAt,
     };
+  }
+
+  async updateSessionTitle(sessionId: string, title: string | null): Promise<void> {
+    await this.db.query(
+      `
+        UPDATE chat_sessions
+        SET title = $2
+        WHERE id = $1::uuid
+      `,
+      [sessionId, title],
+    );
   }
 
   async getSession(sessionId: string): Promise<SessionRecord | null> {

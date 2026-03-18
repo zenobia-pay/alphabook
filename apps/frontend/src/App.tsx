@@ -1309,7 +1309,6 @@ function summarizeToolSentence({
   state,
   rationale,
 }: Pick<ToolTraceEntry, "toolName" | "args" | "result" | "state" | "rationale">) {
-  const planned = typeof rationale === "string" && rationale.trim() ? rationale.trim() : null;
   const query = quoted(args.query)
     ?? (args.taskSpec && typeof args.taskSpec === "object" ? quoted((args.taskSpec as Record<string, unknown>).query) : null)
     ?? (args.taskSpec && typeof args.taskSpec === "object" ? quoted((args.taskSpec as Record<string, unknown>).goal) : null);
@@ -1329,9 +1328,6 @@ function summarizeToolSentence({
   switch (toolName) {
     case "search_works":
       if (state === "running") {
-        if (planned) {
-          return planned;
-        }
         return query ? `Scanning the library for leads on ${query}.` : "Scanning the library for leads.";
       }
       if (state === "error") {
@@ -1350,9 +1346,6 @@ function summarizeToolSentence({
 
     case "get_relevant_chunks":
       if (state === "running") {
-        if (planned) {
-          return planned;
-        }
         return query ? `Looking for early leads on ${query}.` : "Looking for early leads.";
       }
       if (state === "error") {
@@ -1371,9 +1364,6 @@ function summarizeToolSentence({
 
     case "get_work_metadata":
       if (state === "running") {
-        if (planned) {
-          return planned;
-        }
         return `Loading details for ${pluralize(workCount, "book")}.`;
       }
       if (state === "error") {
@@ -1383,9 +1373,6 @@ function summarizeToolSentence({
 
     case "get_work_text":
       if (state === "running") {
-        if (planned) {
-          return planned;
-        }
         return "Opening the full text for a book.";
       }
       if (state === "error") {
@@ -1395,9 +1382,6 @@ function summarizeToolSentence({
 
     case "create_workspace":
       if (state === "running") {
-        if (planned) {
-          return planned;
-        }
         return "Preparing the deeper research workspace.";
       }
       if (state === "error") {
@@ -1407,9 +1391,6 @@ function summarizeToolSentence({
 
     case "run_workspace_task":
       if (state === "running") {
-        if (planned) {
-          return planned;
-        }
         if (runtimePhase === "collect_evidence") {
           return query ? `Searching the corpus for evidence about ${query}.` : "Searching the corpus for evidence.";
         }
@@ -1443,9 +1424,6 @@ function summarizeToolSentence({
 
     case "read_workspace_file":
       if (state === "running") {
-        if (planned) {
-          return planned;
-        }
         return path?.includes("evidence")
           ? "Bringing back the current search notes."
           : "Bringing back the finished briefing.";
@@ -1459,9 +1437,6 @@ function summarizeToolSentence({
 
     case "destroy_workspace":
       if (state === "running") {
-        if (planned) {
-          return planned;
-        }
         return "Cleaning up the background search.";
       }
       if (state === "error") {
@@ -1471,9 +1446,6 @@ function summarizeToolSentence({
 
     default:
       if (state === "running") {
-        if (planned) {
-          return planned;
-        }
         return "Running the next research step.";
       }
       if (state === "error") {
