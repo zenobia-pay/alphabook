@@ -154,6 +154,7 @@ button {
   display: grid;
   align-content: start;
   overflow-y: auto;
+  overflow-x: hidden;
   padding-right: 2px;
 }
 
@@ -231,10 +232,13 @@ button {
 .sidebar-recents-list {
   display: grid;
   gap: 2px;
+  min-width: 0;
 }
 
 .sidebar-recent-row {
   display: block;
+  min-width: 0;
+  max-width: 100%;
   width: 100%;
   border: 0;
   padding: 6px 0;
