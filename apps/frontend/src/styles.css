@@ -1852,6 +1852,17 @@ button {
   font-weight: 600;
 }
 
+.assistant-document-link {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.16em;
+}
+
+.assistant-document-link:hover {
+  color: var(--text-link, var(--ink-strong));
+}
+
 .assistant-document-entry.is-book {
   padding-left: 14px;
   border-left: 2px solid rgba(38, 38, 38, 0.1);

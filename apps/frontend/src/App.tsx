@@ -2375,8 +2375,14 @@ type ResearchDocumentModel = {
   title: string;
   entries: Array<{
     key: string;
+    kind: ResearchDocumentEntryKind;
     text: string;
-    kind: "log" | "book" | "chunk";
+    linkLabel?: string;
+    linkHref?: string;
+    workId?: string;
+    citation?: Citation;
+    prefix?: string;
+    suffix?: string;
   }>;
 };
 
@@ -2584,34 +2590,38 @@ function artifactSourceChunks(artifacts: RunArtifactRecord[]) {
 function appendDocumentEntry(
   entries: ResearchDocumentModel["entries"],
   seen: Set<string>,
-  key: string,
-  text: string,
-  kind: ResearchDocumentEntryKind,
+  entry: ResearchDocumentModel["entries"][number],
 ) {
-  const normalized = text.trim();
-  if (!normalized || seen.has(key)) {
+  const normalized = entry.text.trim();
+  if (!normalized || seen.has(entry.key)) {
     return;
   }
-  seen.add(key);
+  seen.add(entry.key);
   entries.push({
-    key,
+    ...entry,
     text: normalized,
-    kind,
   });
+}
+
+function buildWorkHref(workId: string) {
+  return `/works/${encodeURIComponent(workId)}`;
 }
 
 function buildResearchDocument(title: string, toolTrace: ToolTraceEntry[], artifacts: RunArtifactRecord[]): ResearchDocumentModel {
   const entries: ResearchDocumentModel["entries"] = [];
   const seen = new Set<string>();
-  appendDocumentEntry(entries, seen, "title", `# ${title.trim() || "Research log"}`, "title");
+  appendDocumentEntry(entries, seen, {
+    key: "title",
+    text: `# ${title.trim() || "Research log"}`,
+    kind: "title",
+  });
 
   for (const entry of toolTrace) {
-    const progressLines = entry.progress
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0);
-    for (const line of progressLines) {
-      appendDocumentEntry(entries, seen, `progress:${entry.id}:${line}`, line, "log");
-    }
+    appendDocumentEntry(entries, seen, {
+      key: `summary:${entry.id}`,
+      text: summarizeToolSentence(entry),
+      kind: "log",
+    });
 
     if (entry.toolName === "search_works" || entry.toolName === "get_work_metadata") {
       const works = Array.isArray(entry.result?.works) ? entry.result.works as Array<Record<string, unknown>> : [];
@@ -2621,11 +2631,19 @@ function buildResearchDocument(title: string, toolTrace: ToolTraceEntry[], artif
         const authors = Array.isArray(work.authors)
           ? work.authors.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
           : [];
-        const byline = authors.length > 0 ? ` by ${authors.join(", ")}` : "";
         const note = entry.toolName === "search_works"
           ? "Surfaced in the corpus search."
           : "Pulled in for more metadata context.";
-        appendDocumentEntry(entries, seen, `book:${workId}`, `${titleText}${byline} ${note}`.trim(), "book");
+        appendDocumentEntry(entries, seen, {
+          key: `book:${workId}`,
+          kind: "book",
+          text: `${titleText} ${authors.length > 0 ? `by ${authors.join(", ")}` : ""} ${note}`.trim(),
+          linkLabel: titleText || workId,
+          linkHref: buildWorkHref(workId),
+          workId,
+          prefix: "",
+          suffix: `${authors.length > 0 ? ` by ${authors.join(", ")}` : ""} ${note}`.trim(),
+        });
       }
     }
 
@@ -2640,8 +2658,16 @@ function buildResearchDocument(title: string, toolTrace: ToolTraceEntry[], artif
         const authors = Array.isArray(work.authors)
           ? work.authors.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
           : [];
-        const byline = authors.length > 0 ? ` by ${authors.join(", ")}` : "";
-        appendDocumentEntry(entries, seen, `workspace-book:${workId}`, `${titleText}${byline} was added to the deeper research workspace.`.trim(), "book");
+        appendDocumentEntry(entries, seen, {
+          key: `workspace-book:${workId}`,
+          kind: "book",
+          text: `${titleText} ${authors.length > 0 ? `by ${authors.join(", ")}` : ""} was added to the deeper research workspace.`.trim(),
+          linkLabel: titleText || workId,
+          linkHref: buildWorkHref(workId),
+          workId,
+          prefix: "",
+          suffix: `${authors.length > 0 ? ` by ${authors.join(", ")}` : ""} was added to the deeper research workspace.`.trim(),
+        });
       }
     }
 
@@ -2656,27 +2682,35 @@ function buildResearchDocument(title: string, toolTrace: ToolTraceEntry[], artif
             ? chunk.text.trim()
             : "";
         const key = typeof chunk.id === "string" ? chunk.id : `${entry.id}:chunk:${index}`;
-        const label = chunkIndex !== null ? `${workId} #${chunkIndex}` : workId;
-        appendDocumentEntry(
-          entries,
-          seen,
-          `chunk:${key}`,
-          `${label} surfaced as a relevant passage. ${excerpt.slice(0, 280)}`.trim(),
-          "chunk",
-        );
+        const workTitle = typeof chunk.workTitle === "string" && chunk.workTitle.trim() ? chunk.workTitle.trim() : workId;
+        const label = chunkIndex !== null ? `${workTitle} #${chunkIndex}` : workTitle;
+        appendDocumentEntry(entries, seen, {
+          key: `chunk:${key}`,
+          kind: "chunk",
+          text: `${label} surfaced as a relevant passage. ${excerpt.slice(0, 280)}`.trim(),
+          linkLabel: label,
+          linkHref: buildWorkHref(workId),
+          citation: {
+            workId,
+            chunkId: typeof chunk.id === "string" ? chunk.id : undefined,
+            label,
+            excerpt: excerpt || label,
+            r2Key: typeof chunk.r2Key === "string" ? chunk.r2Key : undefined,
+          },
+          prefix: "",
+          suffix: ` surfaced as a relevant passage. ${excerpt.slice(0, 280)}`.trim(),
+        });
       }
     }
   }
 
   for (const chunk of artifactSourceChunks(artifacts)) {
     const excerpt = chunk.text.replace(/\s+/g, " ").trim().slice(0, 280);
-    appendDocumentEntry(
-      entries,
-      seen,
-      `artifact-chunk:${chunk.key}`,
-      `${chunk.label} was carried forward as evidence. ${chunk.note}${excerpt ? ` ${excerpt}` : ""}`.trim(),
-      "chunk",
-    );
+    appendDocumentEntry(entries, seen, {
+      key: `artifact-chunk:${chunk.key}`,
+      kind: "chunk",
+      text: `${chunk.label} was carried forward as evidence. ${chunk.note}${excerpt ? ` ${excerpt}` : ""}`.trim(),
+    });
   }
 
   return {
@@ -2689,10 +2723,14 @@ function ResearchArtifactPane({
   sessionTitle,
   toolTrace,
   artifacts,
+  onOpenWork,
+  onOpenCitation,
 }: {
   sessionTitle: string;
   toolTrace: ToolTraceEntry[];
   artifacts: RunArtifactRecord[];
+  onOpenWork: (workId: string) => void;
+  onOpenCitation: (citation: Citation) => void;
 }) {
   const document = useMemo(
     () => buildResearchDocument(sessionTitle, toolTrace, artifacts),
@@ -2710,7 +2748,30 @@ function ResearchArtifactPane({
               </h1>
             ) : (
               <p key={entry.key} className={cn("assistant-document-entry", `is-${entry.kind}`)}>
-                {entry.text}
+                {entry.linkLabel && (entry.workId || entry.citation) ? (
+                  <>
+                    {entry.prefix ? `${entry.prefix} ` : null}
+                    <a
+                      className="assistant-document-link"
+                      href={entry.linkHref}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        if (entry.citation) {
+                          onOpenCitation(entry.citation);
+                          return;
+                        }
+                        if (entry.workId) {
+                          onOpenWork(entry.workId);
+                        }
+                      }}
+                    >
+                      {entry.linkLabel}
+                    </a>
+                    {entry.suffix ? ` ${entry.suffix}` : null}
+                  </>
+                ) : (
+                  entry.text
+                )}
               </p>
             )
           ))}
@@ -4599,6 +4660,8 @@ export default function App() {
                 sessionTitle={assistantSessionName(activeSession)}
                 toolTrace={workspaceToolTrace}
                 artifacts={runArtifacts}
+                onOpenWork={openWork}
+                onOpenCitation={openCitation}
               />
             )}
             rightPane={(
