@@ -3,15 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview",
-    "deploy": "npm run build && wrangler deploy",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test:e2e": "playwright test"
-  },
   "dependencies": {
+    "@alphabook/shared": "0.1.0",
     "@assistant-ui/react": "^0.12.17",
     "@assistant-ui/react-markdown": "^0.12.5",
     "@radix-ui/react-avatar": "^1.1.11",
@@ -26,5 +19,13 @@
     "tailwind-merge": "^3.5.0",
     "tailwindcss": "^4.2.1",
     "zustand": "^5.0.11"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "deploy": "npm run build && wrangler deploy",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test:e2e": "playwright test"
   }
 }

@@ -1,4 +1,4 @@
-import { hashTextToVector } from "@alphabook/shared";
+import { hashTextToVector } from "@alphabook/corpus-text";
 
 import { openAIUsageFromResponse, type BillingContext, type BillingService } from "./billing";
 

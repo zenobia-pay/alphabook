@@ -2,6 +2,9 @@
   "files": [],
   "references": [
     { "path": "./apps/frontend" },
+    { "path": "./packages/corpus-core" },
+    { "path": "./packages/corpus-text" },
+    { "path": "./packages/source-gutenberg" },
     { "path": "./packages/shared" },
     { "path": "./packages/db" },
     { "path": "./apps/orchestrator-worker" },

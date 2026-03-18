@@ -2,12 +2,12 @@ import { z } from "zod";
 
 import {
   CitationSchema,
-  HARD_LIMITS,
   SYNTHESIZER_SYSTEM_PROMPT,
   type ChunkSearchResult,
   type Citation,
   type ToolName,
 } from "@alphabook/shared";
+import { HARD_LIMITS } from "@alphabook/corpus-core";
 import { openAIUsageFromResponse, type BillingContext, type BillingService } from "./billing";
 import { parseModelJsonObject } from "./json";
 

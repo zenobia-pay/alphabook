@@ -18,6 +18,9 @@
     "src/**/*.tsx",
     "vite.config.ts",
     "playwright.config.ts",
-    "../../packages/shared/src/**/*.ts"
+    "../../packages/corpus-core/src/**/*.ts",
+    "../../packages/corpus-text/src/**/*.ts",
+    "../../packages/shared/src/**/*.ts",
+    "../../packages/source-gutenberg/src/**/*.ts"
   ]
 }

@@ -1,4 +1,5 @@
-import { hashTextToVector, type WorkSummary } from "@alphabook/shared";
+import { hashTextToVector } from "@alphabook/corpus-text";
+import type { WorkSummary } from "@alphabook/shared";
 
 import type { AppDeps, RuntimeToolGateway } from "./app";
 import { createApp } from "./app";

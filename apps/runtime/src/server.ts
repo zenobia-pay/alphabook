@@ -5,7 +5,8 @@ import { spawn } from "node:child_process";
 import process from "node:process";
 
 import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
-import { HARD_LIMITS, RUNTIME_AGENT_PROMPT, type RuntimeTaskResult, type WorkspaceManifest } from "@alphabook/shared";
+import { HARD_LIMITS } from "@alphabook/corpus-core";
+import { RUNTIME_AGENT_PROMPT, type RuntimeTaskResult, type WorkspaceManifest } from "@alphabook/shared";
 
 export interface RuntimeServerOptions {
   port?: number;

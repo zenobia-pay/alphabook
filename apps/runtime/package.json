@@ -3,12 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "dependencies": {
+    "@alphabook/corpus-core": "0.1.0",
+    "@alphabook/shared": "0.1.0",
+    "@openai/codex": "^0.114.0"
+  },
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "test": "node --import tsx --test test/**/*.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
-  },
-  "dependencies": {
-    "@openai/codex": "^0.114.0"
   }
 }

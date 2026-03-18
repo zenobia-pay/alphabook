@@ -1,6 +1,7 @@
 import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
-import { ChatRequestSchema, HARD_LIMITS, R2_PREFIXES, ToolArgsSchemas, getToolLabel, type ChatRequest, type ChunkSearchResult, type Citation, type PlannerDecision, type ToolName, type WorkSummary } from "@alphabook/shared";
+import { artifactKeys, HARD_LIMITS } from "@alphabook/corpus-core";
+import { ChatRequestSchema, ToolArgsSchemas, getToolLabel, type ChatRequest, type ChunkSearchResult, type Citation, type PlannerDecision, type ToolName, type WorkSummary } from "@alphabook/shared";
 import { createFacilitatorConfig } from "@coinbase/x402";
 import { decodePaymentSignatureHeader, encodePaymentRequiredHeader, encodePaymentResponseHeader } from "@x402/core/http";
 import { HTTPFacilitatorClient, x402ResourceServer } from "@x402/core/server";
@@ -1362,7 +1363,7 @@ async function persistRunStreamArtifact(
   rawEntries: ToolRunRawLogEntry[],
 ) {
   const filename = `${runId}-tool-stream.jsonl`;
-  const r2Key = R2_PREFIXES.sessionArtifact(sessionId, filename);
+  const r2Key = artifactKeys.sessionArtifact(sessionId, filename);
   const content = rawEntries.map((entry) => JSON.stringify(entry)).join("\n");
   await deps.blobStore.putText(r2Key, content, "application/x-ndjson; charset=utf-8");
   await deps.store.saveArtifact({
@@ -2736,7 +2737,7 @@ async function runAnalyticsQuery(
 }
 
 async function persistFinalArtifact(deps: AppDeps, sessionId: string, runId: string, answer: string, citations: Array<Record<string, unknown>>) {
-  const key = R2_PREFIXES.sessionArtifact(sessionId, `${runId}-final-answer.json`);
+  const key = artifactKeys.sessionArtifact(sessionId, `${runId}-final-answer.json`);
   await deps.blobStore.putJson(key, {
     answer,
     citations,

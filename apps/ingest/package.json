@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "dependencies": {
+    "@alphabook/db": "0.1.0",
+    "@alphabook/source-gutenberg": "0.1.0"
+  },
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "test": "node --import tsx --test test/**/*.test.ts",

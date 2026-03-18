@@ -1,6 +1,7 @@
 import { z } from "zod";
 
-import { HARD_LIMITS, ROUTER_SYSTEM_PROMPT } from "@alphabook/shared";
+import { HARD_LIMITS } from "@alphabook/corpus-core";
+import { ROUTER_SYSTEM_PROMPT } from "@alphabook/shared";
 
 import { openAIUsageFromResponse, type BillingContext, type BillingService } from "./billing";
 import { parseModelJsonObject } from "./json";

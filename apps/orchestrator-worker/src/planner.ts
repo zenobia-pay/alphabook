@@ -1,5 +1,5 @@
+import { HARD_LIMITS } from "@alphabook/corpus-core";
 import {
-  HARD_LIMITS,
   PLANNER_SYSTEM_PROMPT,
   PlannerDecisionSchema,
   type Citation,

@@ -1,14 +1,29 @@
 # AlphaBook
 
-AlphaBook is now structured as a monorepo for the architecture you specified:
+AlphaBook is an open-source reference application for grounded research over large text corpora.
+
+The repo is structured as a core-plus-app monorepo:
 
 - `apps/frontend`: Cloudflare Pages frontend
 - `apps/orchestrator-worker`: Cloudflare Worker API on `api.<domain>`
 - `apps/runtime`: Fly Machine runtime service for filesystem-backed analysis
 - `apps/ingest`: DigitalOcean-oriented ingest service with persistent disk
+- `packages/corpus-core`: generic runtime limits and artifact key helpers
+- `packages/corpus-text`: generic text embedding helpers
+- `packages/source-gutenberg`: Project Gutenberg adapter for ingest and storage conventions
 - `packages/db`: Neon schema and migration utilities
-- `packages/shared`: shared tool schemas, prompts, limits, and storage conventions
+- `packages/shared`: AlphaBook-facing contracts, prompts, and compatibility exports
 - `packages/tooling`: local scripts such as migrations
+
+AlphaBook itself is still book-centric today. The reusable parts are being extracted in-repo so the monorepo can support more corpus adapters over time without splitting into multiple repositories too early.
+
+## Positioning
+
+- `packages/corpus-core` and `packages/corpus-text` are generic substrate.
+- `packages/source-gutenberg` is the first source adapter.
+- AlphaBook is the flagship reference app built on top of that substrate.
+
+The architecture overview lives in [docs/architecture.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/architecture.md).
 
 ## Current Status
 
@@ -58,6 +73,12 @@ apps/
     src/
     Dockerfile
 packages/
+  corpus-core/
+    src/
+  corpus-text/
+    src/
+  source-gutenberg/
+    src/
   db/
     migrations/
     src/
@@ -66,6 +87,7 @@ packages/
   tooling/
     scripts/
 docs/
+  architecture.md
   api-contracts.md
   environment.md
 ops/
@@ -205,6 +227,12 @@ npm run typecheck
 npm run test
 npm run test:ui
 ```
+
+## Open Source
+
+- License: [LICENSE](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/LICENSE)
+- Contributing guide: [CONTRIBUTING.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/CONTRIBUTING.md)
+- Security policy: [SECURITY.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/SECURITY.md)
 
 ## API Contracts
 

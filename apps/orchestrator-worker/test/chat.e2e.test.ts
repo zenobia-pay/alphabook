@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { R2_PREFIXES } from "@alphabook/shared";
+import { artifactKeys } from "@alphabook/corpus-core";
 import { decodePaymentRequiredHeader, encodePaymentSignatureHeader } from "@x402/core/http";
 
 import { createApp } from "../src/app";
@@ -1466,7 +1466,7 @@ test("fallback planner can create a Fly workspace, run a task, read the briefing
   assert.ok(calls.includes("POST https://alphabook-runtime.fly.dev/destroy"));
   assert.ok(calls.includes("DELETE https://api.machines.dev/v1/apps/alphabook-runtime/machines/machine-1?force=true"));
 
-  const artifact = await blobStore.getText(R2_PREFIXES.runtimeArtifact("machine-1", "briefing.md"));
+  const artifact = await blobStore.getText(artifactKeys.runtimeArtifact("machine-1", "briefing.md"));
   assert.match(artifact ?? "", /Comparative answer across the two novels/);
   assert.ok(calls.some((call) => call.includes("api.machines.dev")));
   assert.ok(calls.some((call) => call.includes("/run-task")));

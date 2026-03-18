@@ -1,4 +1,6 @@
-import { HARD_LIMITS, R2_PREFIXES, ToolArgsSchemas, WORKSPACE_POSTGRES_SCHEMA, type WorkSummary } from "@alphabook/shared";
+import { artifactKeys, HARD_LIMITS } from "@alphabook/corpus-core";
+import { GUTENBERG_WORKSPACE_POSTGRES_SCHEMA } from "@alphabook/source-gutenberg";
+import { ToolArgsSchemas, type WorkSummary } from "@alphabook/shared";
 
 import type { RuntimeToolGateway } from "./app";
 import type { BlobStore } from "./r2";
@@ -770,7 +772,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
       runtimeId,
       sessionId,
       works: groupWorkFiles(resolvedWorkIds, workFiles, workMetadata),
-      dataSchema: WORKSPACE_POSTGRES_SCHEMA,
+      dataSchema: GUTENBERG_WORKSPACE_POSTGRES_SCHEMA,
       fileCatalog,
       selectedChunkIds: chunkIds,
       selectedChunks: selectedChunks.map((chunk) => ({
@@ -788,7 +790,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
       },
     };
 
-    const manifestKey = R2_PREFIXES.runtimeArtifact(runtimeId, "manifest.json");
+    const manifestKey = artifactKeys.runtimeArtifact(runtimeId, "manifest.json");
     const manifestText = JSON.stringify(manifest, null, 2);
     totalBytes += manifestText.length;
     await this.blobStore.putJson(manifestKey, manifest);
@@ -804,7 +806,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     });
 
     if (selectedChunks.length > 0) {
-      const selectedChunksKey = R2_PREFIXES.runtimeArtifact(runtimeId, "selected-chunks.json");
+      const selectedChunksKey = artifactKeys.runtimeArtifact(runtimeId, "selected-chunks.json");
       const selectedChunksText = JSON.stringify(selectedChunks, null, 2);
       totalBytes += selectedChunksText.length;
       await this.blobStore.putJson(selectedChunksKey, selectedChunks);
@@ -867,7 +869,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
         { method: "GET" },
       );
       const content = typeof fileResponse.content === "string" ? fileResponse.content : "";
-      const r2Key = R2_PREFIXES.runtimeArtifact(instance.runtimeId, filename);
+      const r2Key = artifactKeys.runtimeArtifact(instance.runtimeId, filename);
       await this.blobStore.putText(r2Key, content, mimeType);
       await this.store.saveArtifact({
         sessionId: instance.sessionId,

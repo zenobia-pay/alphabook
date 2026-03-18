@@ -21,6 +21,11 @@
     "test:ui": "npm run test:e2e -w @alphabook/frontend"
   },
   "dependencies": {
+    "@alphabook/corpus-core": "0.1.0",
+    "@alphabook/corpus-text": "0.1.0",
+    "@alphabook/db": "0.1.0",
+    "@alphabook/shared": "0.1.0",
+    "@alphabook/source-gutenberg": "0.1.0",
     "@assistant-ui/react": "^0.12.17",
     "@assistant-ui/react-ui": "^0.2.1",
     "@aws-sdk/client-s3": "^3.888.0",
