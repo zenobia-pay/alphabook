@@ -142,6 +142,116 @@ test("logged out assistant keeps the normal shell while disabling the composer",
   await expect(thread.getByRole("link", { name: "Sign in" })).toBeVisible();
 });
 
+test("new chat keeps the welcome-shaped skeleton while auth is loading", async ({ page }) => {
+  await page.route("**/api/me", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        authConfigured: false,
+        authenticated: false,
+        user: null,
+      }),
+    });
+  });
+
+  await page.route("**/api/admin/access", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        allowed: false,
+        authenticated: false,
+        authConfigured: false,
+        user: null,
+      }),
+    });
+  });
+
+  await page.goto("/?view=assistant", { waitUntil: "domcontentloaded" });
+
+  await expect(page.locator(".assistant-loading-state-welcome")).toBeVisible();
+  await expect(page.locator(".assistant-workspace-loading")).toHaveCount(0);
+  await expect(page.getByTestId("empty-state")).toBeVisible({ timeout: 5000 });
+});
+
+test("session route keeps the workspace skeleton while conversation data is loading", async ({ page }) => {
+  const sessionId = "11111111-1111-4111-8111-111111111113";
+
+  await page.route("**/api/me", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        authConfigured: false,
+        authenticated: false,
+        user: null,
+      }),
+    });
+  });
+
+  await page.route("**/api/admin/access", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        allowed: false,
+        authenticated: false,
+        authConfigured: false,
+        user: null,
+      }),
+    });
+  });
+
+  await page.route("**/api/sessions", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        sessions: [
+          {
+            id: sessionId,
+            userId: "local-user",
+            title: "Delayed thread",
+            createdAt: "2026-03-16T12:00:00.000Z",
+            lastMessageAt: "2026-03-16T12:00:00.000Z",
+            lastMessagePreview: "Delayed thread",
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.route(`**/api/sessions/${sessionId}/messages`, async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        messages: [],
+      }),
+    });
+  });
+
+  await page.route(`**/api/sessions/${sessionId}/runs`, async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        runs: [],
+      }),
+    });
+  });
+
+  await page.goto(`/?view=assistant&session=${sessionId}`, { waitUntil: "domcontentloaded" });
+
+  await expect(page.locator(".assistant-workspace-loading")).toBeVisible();
+  await expect(page.locator(".assistant-loading-state-welcome")).toHaveCount(0);
+  await expect(page.getByTestId("assistant-workspace-thread")).toBeVisible({ timeout: 5000 });
+});
+
 test("restricted assistant session keeps the session URL and shows a coherent locked state", async ({ page }) => {
   const sessionId = "ba4020e7-f283-4976-853f-27146997bf6f";
 

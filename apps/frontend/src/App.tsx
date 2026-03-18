@@ -1916,20 +1916,39 @@ function AuthLoadingState({ compact = false }: { compact?: boolean }) {
   );
 }
 
-function AssistantLoadingState() {
+function AssistantThreadLoadingState({ welcome = false }: { welcome?: boolean }) {
   return (
-    <div className="assistant-loading-state" aria-hidden="true">
-      <div className="assistant-loading-thread">
-        <div className="assistant-loading-messages">
-          {[0, 1, 2].map((item) => (
-            <div key={item} className="assistant-loading-bubble">
-              <Skeleton className="assistant-loading-bubble-title" />
-              <Skeleton className="assistant-loading-bubble-line is-wide" />
-              <Skeleton className="assistant-loading-bubble-line" />
-              {item === 1 ? <Skeleton className="assistant-loading-bubble-line is-short" /> : null}
+    <div className={cn("assistant-loading-state", welcome && "assistant-loading-state-welcome")} aria-hidden="true">
+      <div className={cn("assistant-loading-thread", welcome && "assistant-loading-thread-welcome")}>
+        {welcome ? (
+          <>
+            <div className="assistant-loading-hero">
+              <Skeleton className="assistant-loading-hero-title" />
+              <Skeleton className="assistant-loading-hero-title is-short" />
+              <Skeleton className="assistant-loading-hero-copy" />
             </div>
-          ))}
-        </div>
+            <div className="assistant-loading-suggestion-grid">
+              {[0, 1].map((item) => (
+                <div key={item} className="assistant-loading-suggestion-card">
+                  <Skeleton className="assistant-loading-suggestion-title" />
+                  <Skeleton className="assistant-loading-suggestion-line is-wide" />
+                  <Skeleton className="assistant-loading-suggestion-line" />
+                </div>
+              ))}
+            </div>
+          </>
+        ) : (
+          <div className="assistant-loading-messages">
+            {[0, 1, 2].map((item) => (
+              <div key={item} className="assistant-loading-bubble">
+                <Skeleton className="assistant-loading-bubble-title" />
+                <Skeleton className="assistant-loading-bubble-line is-wide" />
+                <Skeleton className="assistant-loading-bubble-line" />
+                {item === 1 ? <Skeleton className="assistant-loading-bubble-line is-short" /> : null}
+              </div>
+            ))}
+          </div>
+        )}
         <div className="assistant-loading-composer">
           <Skeleton className="assistant-loading-composer-line is-long" />
           <Skeleton className="assistant-loading-composer-line" />
@@ -1940,6 +1959,44 @@ function AssistantLoadingState() {
         </div>
       </div>
     </div>
+  );
+}
+
+function AssistantWorkspaceLoadingState({ width }: { width: number }) {
+  return (
+    <section
+      className="assistant-workspace-page assistant-workspace-loading"
+      style={{ ["--book-assistant-width" as string]: `${width}px` }}
+      aria-hidden="true"
+    >
+      <div className="assistant-workspace-main">
+        <section className="assistant-document-pane assistant-loading-document">
+          <div className="assistant-loading-document-scroll">
+            {Array.from({ length: 12 }).map((_, index) => (
+              <Skeleton
+                key={index}
+                className={cn(
+                  "assistant-loading-document-line",
+                  index === 0 && "is-title",
+                  index === 1 && "is-wide",
+                  index > 1 && index % 3 === 0 && "is-short",
+                )}
+              />
+            ))}
+          </div>
+        </section>
+      </div>
+
+      <div className="book-assistant-divider" role="presentation" />
+
+      <aside className="book-assistant-pane">
+        <div className="book-assistant-shell">
+          <div className="assistant-session-thread">
+            <AssistantThreadLoadingState />
+          </div>
+        </div>
+      </aside>
+    </section>
   );
 }
 
@@ -4395,6 +4452,9 @@ export default function App() {
       && !isSending
       && recoveredActiveRunId == null
       && isConversationAccessIssue(loadError);
+    const showWelcomeLoading =
+      selectedSessionId == null
+      && authPending;
     const assistantComposerNotice = authLocked ? (
       <>
         Sign in to start a research thread.{" "}
@@ -4407,8 +4467,10 @@ export default function App() {
         {loadError ? <ErrorNotice className="thread-error-banner" message={loadError} /> : null}
 
         {assistantSessionLoading ? (
+          <AssistantWorkspaceLoadingState width={bookAssistantWidth} />
+        ) : showWelcomeLoading ? (
           <div className="assistant-thread-shell" data-testid="thread">
-            <AssistantLoadingState />
+            <AssistantThreadLoadingState welcome />
           </div>
         ) : showRestrictedConversation ? (
           <div className="assistant-thread-shell" data-testid="thread">

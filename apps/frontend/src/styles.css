@@ -2474,6 +2474,40 @@ button {
   border-radius: 50%;
 }
 
+.assistant-workspace-loading {
+  user-select: none;
+}
+
+.assistant-loading-document {
+  background: linear-gradient(180deg, rgba(255, 254, 251, 0.88), rgba(246, 243, 238, 0.94));
+}
+
+.assistant-loading-document-scroll {
+  display: grid;
+  gap: 14px;
+  padding: 26px 28px 30px;
+}
+
+.assistant-loading-document-line {
+  width: min(34rem, 96%);
+  height: 14px;
+  border-radius: 999px;
+}
+
+.assistant-loading-document-line.is-title {
+  width: min(20rem, 72%);
+  height: 34px;
+  border-radius: 18px;
+}
+
+.assistant-loading-document-line.is-wide {
+  width: min(42rem, 100%);
+}
+
+.assistant-loading-document-line.is-short {
+  width: min(24rem, 62%);
+}
+
 .signin-card .hero-button {
   text-decoration: none;
 }
