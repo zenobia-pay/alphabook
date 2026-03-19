@@ -3402,38 +3402,6 @@ function sectionMetaFromItems(section: ResearchDocumentSection) {
   return section.meta;
 }
 
-function sectionPriority(section: ResearchDocumentSection) {
-  const title = section.title.toLowerCase();
-  const chunkCount = section.items.filter((item) => item.kind === "chunk").length;
-  const bookCount = section.items.filter((item) => item.kind === "book").length;
-  if (title.includes("metadata")) {
-    return 0;
-  }
-  if (title.includes("passage")) {
-    return 1;
-  }
-  if (chunkCount > 0) {
-    return 2;
-  }
-  if (bookCount > 0) {
-    return 3;
-  }
-  if (title.includes("corpus briefing")) {
-    return 4;
-  }
-  return 5;
-}
-
-function sortDocumentSections(sections: ResearchDocumentSection[]) {
-  return [...sections].sort((left, right) => {
-    const priorityDiff = sectionPriority(left) - sectionPriority(right);
-    if (priorityDiff !== 0) {
-      return priorityDiff;
-    }
-    return left.title.localeCompare(right.title);
-  });
-}
-
 function artifactSourceChunks(artifacts: RunArtifactRecord[]) {
   return collectSourceChunks([], artifacts);
 }
@@ -3730,7 +3698,7 @@ function mergeResearchDocumentModels(
       !isGenericResearchDocumentTitle(primary.title)
         ? primary.title
         : (supplement.title || primary.title),
-    sections: sortDocumentSections(sections),
+    sections,
     ending: primary.ending || supplement.ending,
   };
 }
@@ -3996,9 +3964,7 @@ function buildResearchDocument(
 
   return {
     title: title.trim() || "Research log",
-    sections: sortDocumentSections(
-      [...sections.values()].filter((section) => hasUsefulSectionItems(section)),
-    ),
+    sections: [...sections.values()].filter((section) => hasUsefulSectionItems(section)),
     ending: normalizedEnding,
   };
 }
