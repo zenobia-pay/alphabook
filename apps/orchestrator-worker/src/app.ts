@@ -1490,10 +1490,10 @@ function frontierWorkMetadataById(taskSpec: Record<string, unknown>) {
 
 function shardWorkerLimitForIntensity(intensity: unknown) {
   if (intensity === "maximum") {
-    return 3;
+    return 6;
   }
   if (intensity === "high") {
-    return 2;
+    return 3;
   }
   return 1;
 }
@@ -1519,38 +1519,55 @@ function hashBucketForWorkId(workId: string) {
 }
 
 function selectShardWorkIds(taskSpec: Record<string, unknown>, shard: Record<string, unknown>, fallbackIndex: number, fallbackTotal: number) {
-  const frontierWorkIds = Array.isArray(taskSpec.frontierWorkIds)
-    ? uniqueWorkIds(taskSpec.frontierWorkIds.filter((value): value is string => typeof value === "string"))
-    : Array.isArray(taskSpec.candidateWorkIds)
-      ? uniqueWorkIds(taskSpec.candidateWorkIds.filter((value): value is string => typeof value === "string"))
-      : Array.isArray(taskSpec.workIds)
-        ? uniqueWorkIds(taskSpec.workIds.filter((value): value is string => typeof value === "string"))
-        : [];
+  const retrieval = taskSpec.retrieval && typeof taskSpec.retrieval === "object"
+    ? taskSpec.retrieval as Record<string, unknown>
+    : null;
+  const retrievalFrontierIds = Array.isArray(retrieval?.frontierWorks)
+    ? uniqueWorkIds(
+        (retrieval.frontierWorks as Array<Record<string, unknown>>).map((work) =>
+          typeof work?.id === "string" ? work.id : null),
+      )
+    : [];
+  const frontierWorkIds = uniqueWorkIds([
+    ...(Array.isArray(taskSpec.frontierWorkIds)
+      ? taskSpec.frontierWorkIds.filter((value): value is string => typeof value === "string")
+      : []),
+    ...(Array.isArray(taskSpec.candidateWorkIds)
+      ? taskSpec.candidateWorkIds.filter((value): value is string => typeof value === "string")
+      : []),
+    ...(Array.isArray(taskSpec.workIds)
+      ? taskSpec.workIds.filter((value): value is string => typeof value === "string")
+      : []),
+    ...retrievalFrontierIds,
+  ]);
   const metadataById = frontierWorkMetadataById(taskSpec);
+  const fallbackShardWorkIds = frontierWorkIds.filter((_, index) => index % Math.max(1, fallbackTotal) === fallbackIndex);
   const axis = typeof shard.axis === "string" ? shard.axis : null;
   if (axis === "work_id_hash") {
     const start = typeof shard.hashBucketStart === "number" ? shard.hashBucketStart : 0;
     const end = typeof shard.hashBucketEnd === "number" ? shard.hashBucketEnd : 1000;
-    return frontierWorkIds.filter((workId) => {
+    const matched = frontierWorkIds.filter((workId) => {
       const bucket = hashBucketForWorkId(workId);
       return bucket >= start && bucket < end;
     });
+    return matched.length > 0 ? matched : fallbackShardWorkIds;
   }
   if (axis === "author_initial") {
     const start = typeof shard.authorInitialStart === "string" ? shard.authorInitialStart.toUpperCase() : "A";
     const end = typeof shard.authorInitialEnd === "string" ? shard.authorInitialEnd.toUpperCase() : "Z";
-    return frontierWorkIds.filter((workId) => {
+    const matched = frontierWorkIds.filter((workId) => {
       const work = metadataById.get(workId);
       const authors = Array.isArray(work?.authors) ? work.authors : [];
       const firstAuthor = authors.find((author): author is string => typeof author === "string" && author.trim().length > 0) ?? "";
       const initial = firstAuthor.trim().charAt(0).toUpperCase();
       return initial >= start && initial <= end;
     });
+    return matched.length > 0 ? matched : fallbackShardWorkIds;
   }
   if (axis === "publication_year") {
     const start = typeof shard.yearStart === "number" ? shard.yearStart : -Infinity;
     const end = typeof shard.yearEnd === "number" ? shard.yearEnd : Infinity;
-    return frontierWorkIds.filter((workId) => {
+    const matched = frontierWorkIds.filter((workId) => {
       const work = metadataById.get(workId);
       const year = typeof work?.firstPublishedYear === "number"
         ? work.firstPublishedYear
@@ -1559,8 +1576,9 @@ function selectShardWorkIds(taskSpec: Record<string, unknown>, shard: Record<str
           : null;
       return year !== null && year >= start && year <= end;
     });
+    return matched.length > 0 ? matched : fallbackShardWorkIds;
   }
-  return frontierWorkIds.filter((_, index) => index % Math.max(1, fallbackTotal) === fallbackIndex);
+  return fallbackShardWorkIds;
 }
 
 function buildShardTaskSpec(baseTaskSpec: Record<string, unknown>, shard: Record<string, unknown>, shardWorkIds: string[]) {
@@ -1568,9 +1586,9 @@ function buildShardTaskSpec(baseTaskSpec: Record<string, unknown>, shard: Record
   shardTaskSpec.shardWorker = true;
   shardTaskSpec.parallelism = 1;
   shardTaskSpec.currentShard = shard;
-  shardTaskSpec.workIds = shardWorkIds.slice(0, 20);
-  shardTaskSpec.candidateWorkIds = shardWorkIds.slice(0, 20);
-  shardTaskSpec.frontierWorkIds = shardWorkIds.slice(0, 32);
+  shardTaskSpec.workIds = shardWorkIds.slice(0, 32);
+  shardTaskSpec.candidateWorkIds = shardWorkIds.slice(0, 32);
+  shardTaskSpec.frontierWorkIds = shardWorkIds.slice(0, 48);
   const searchHints = shardTaskSpec.searchHints && typeof shardTaskSpec.searchHints === "object"
     ? { ...(shardTaskSpec.searchHints as Record<string, unknown>) }
     : {};

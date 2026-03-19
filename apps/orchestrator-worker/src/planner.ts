@@ -360,9 +360,7 @@ function needsWorkspaceSearch(query: string, workIds: string[], chunkCount: numb
 }
 
 function metadataWorkIds(context: PlannerContext, limit = 12): string[] {
-  const searchResult = context.toolHistory.find((item) => item.toolName === "search_works")?.result;
-  const works = Array.isArray(searchResult?.works) ? searchResult.works as WorkSummary[] : [];
-  return works.slice(0, limit).map((work) => work.id);
+  return searchFrontierWorks(context).slice(0, limit).map((work) => work.id);
 }
 
 function metadataWorks(context: PlannerContext): WorkSummary[] {
