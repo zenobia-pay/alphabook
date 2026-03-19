@@ -38,6 +38,15 @@ class RuntimeAwareSynthesizer implements Synthesizer {
   }
 }
 
+class NarrowCitationSynthesizer implements Synthesizer {
+  async synthesize(input: SynthesisInput): Promise<SynthesisResult> {
+    return {
+      answer: input.plannerDraft ?? "Narrow answer",
+      citations: input.plannerCitations.slice(0, 1),
+    };
+  }
+}
+
 class CapturingBlobStore extends MemoryBlobStore {
   readonly writes: Array<{ key: string; value: string }> = [];
 
@@ -5871,4 +5880,156 @@ test("run metrics record candidate books from broad search_works passes", async 
   };
   assert.ok(typeof runDetailsPayload.metrics?.totalCandidateBooks === "number");
   assert.ok((runDetailsPayload.metrics?.totalCandidateBooks as number) >= 12);
+});
+
+test("synthesis preserves citation breadth across multiple verified works on broad runs", async () => {
+  const store = new InMemoryAppStore(
+    [
+      {
+        id: "work-1",
+        gutenbergId: 1,
+        title: "First Grief Novel",
+        language: "en",
+        releaseDate: "1880-01-01",
+        rightsStatus: "public_domain",
+        summary: "A novel about grief.",
+        authors: ["Author One"],
+        subjects: ["fiction", "grief"],
+        cleanTextKey: "gutenberg/clean/1/clean.txt",
+      },
+      {
+        id: "work-2",
+        gutenbergId: 2,
+        title: "Second Grief Novel",
+        language: "en",
+        releaseDate: "1881-01-01",
+        rightsStatus: "public_domain",
+        summary: "Another novel about grief.",
+        authors: ["Author Two"],
+        subjects: ["fiction", "grief"],
+        cleanTextKey: "gutenberg/clean/2/clean.txt",
+      },
+      {
+        id: "work-3",
+        gutenbergId: 3,
+        title: "Third Grief Novel",
+        language: "en",
+        releaseDate: "1882-01-01",
+        rightsStatus: "public_domain",
+        summary: "A third novel about grief.",
+        authors: ["Author Three"],
+        subjects: ["fiction", "grief"],
+        cleanTextKey: "gutenberg/clean/3/clean.txt",
+      },
+    ],
+    [
+      {
+        id: "chunk-1",
+        workId: "work-1",
+        chunkIndex: 1,
+        text: "A first passage about grief and mourning.",
+        r2Key: "gutenberg/clean/1/chunks.jsonl",
+        score: 0,
+        excerpt: "A first passage about grief and mourning.",
+      },
+      {
+        id: "chunk-2",
+        workId: "work-2",
+        chunkIndex: 2,
+        text: "A second passage about grief and mourning.",
+        r2Key: "gutenberg/clean/2/chunks.jsonl",
+        score: 0,
+        excerpt: "A second passage about grief and mourning.",
+      },
+      {
+        id: "chunk-3",
+        workId: "work-3",
+        chunkIndex: 3,
+        text: "A third passage about grief and mourning.",
+        r2Key: "gutenberg/clean/3/chunks.jsonl",
+        score: 0,
+        excerpt: "A third passage about grief and mourning.",
+      },
+    ],
+  );
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    router: new ScriptedRouter([
+      {
+        type: "tool_chain",
+        fullQuery: "Survey grief mourning fiction across the corpus.",
+      },
+    ]),
+    planner: new ScriptedPlanner([
+      {
+        type: "tool_call",
+        tool_name: "get_relevant_chunks",
+        args: {
+          query: "Survey grief mourning fiction across the corpus.",
+          workIds: ["work-1", "work-2", "work-3"],
+          filters: {
+            limit: 3,
+          },
+        },
+      },
+      {
+        type: "final_answer",
+        answer: "Here is the synthesis.",
+        citations: [
+          {
+            workId: "work-1",
+            chunkId: "chunk-1",
+            label: "work-1#1",
+            excerpt: "A first passage about grief and mourning.",
+          },
+        ],
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer: new NarrowCitationSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+      async runWorkspaceTask() {
+        return { ok: false, error: "disabled" };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: false, files: [] };
+      },
+      async destroyWorkspace() {
+        return { ok: false };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const response = await app.request("/chat", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      userId: "citation-breadth-user",
+      message: "Survey grief mourning fiction across the corpus.",
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  await response.text();
+
+  const sessions = await store.listSessions("citation-breadth-user");
+  const messages = await store.listMessages(sessions[0]!.id);
+  const finalAssistant = [...messages].reverse().find((message) => message.role === "assistant" && message.metadata?.phase === "answer");
+  assert.ok(finalAssistant);
+  const citations = Array.isArray(finalAssistant?.metadata?.citations) ? finalAssistant?.metadata?.citations as Array<Record<string, unknown>> : [];
+  assert.ok(new Set(citations.map((citation) => citation.workId)).size >= 3);
 });

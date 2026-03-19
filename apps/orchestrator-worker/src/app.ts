@@ -1070,6 +1070,48 @@ function buildWorkspaceSeedPassageQuery(taskSpec: Record<string, unknown>) {
   return simplifyScopedChunkQuery(fallback).trim() || fallback.trim();
 }
 
+function buildPassageQueryVariants(query: string, scopedWorkCount = 0, maxVariants = 3) {
+  const trimmed = query.trim();
+  if (!trimmed) {
+    return [];
+  }
+  const simplified = simplifyScopedChunkQuery(trimmed).trim();
+  const base = simplified || trimmed;
+  const broadQuery = isBroadCorpusResearchQuery(trimmed, scopedWorkCount);
+  const tokens = Array.from(new Set(base.split(/\s+/u).map((token) => token.trim()).filter((token) => token.length >= 4)));
+  const variants = new Set<string>([base]);
+  if (broadQuery && tokens.length > 6) {
+    variants.add(tokens.slice(0, 6).join(" "));
+    if (tokens.length > 10) {
+      variants.add(tokens.slice(6, 12).join(" "));
+    } else {
+      variants.add(tokens.slice(-6).join(" "));
+    }
+  }
+  if (variants.size < maxVariants) {
+    variants.add(trimmed);
+  }
+  return [...variants]
+    .map((value) => value.replace(/\s+/gu, " ").trim())
+    .filter((value) => value.length > 0)
+    .slice(0, maxVariants);
+}
+
+function mergeChunkSearchResults(results: ChunkSearchResult[][], limit: number): ChunkSearchResult[] {
+  const byId = new Map<string, ChunkSearchResult>();
+  for (const batch of results) {
+    for (const chunk of batch) {
+      const existing = byId.get(chunk.id);
+      if (!existing || chunk.score > existing.score) {
+        byId.set(chunk.id, chunk);
+      }
+    }
+  }
+  return [...byId.values()]
+    .sort((left, right) => right.score - left.score || left.workId.localeCompare(right.workId) || left.chunkIndex - right.chunkIndex)
+    .slice(0, limit);
+}
+
 function normalizeSearchLanguageFilter(value: unknown): string | undefined {
   if (typeof value !== "string") {
     return undefined;
@@ -1590,37 +1632,47 @@ async function executeTool(
     }
     case "get_relevant_chunks": {
       const parsed = ToolArgsSchemas.get_relevant_chunks.parse(normalizedArgs);
-      let embedding: number[] | undefined;
-      try {
-        context.auditLog?.("internal.embedding.started", {
-          toolName,
-          query: parsed.query,
-          scopedWorkCount: Array.isArray(parsed.workIds) ? parsed.workIds.length : 0,
-        });
-        embedding = await deps.embedder.embedQuery(parsed.query, {
-          userId: context.userId,
-          sessionId: context.sessionId,
-          runId: context.runId,
-          source: "embedder",
-        });
-        context.auditLog?.("internal.embedding.completed", {
-          toolName,
-          dimensions: Array.isArray(embedding) ? embedding.length : 0,
-        });
-      } catch {
-        context.auditLog?.("internal.embedding.failed", {
-          toolName,
-          error: "Embedding generation failed; continuing without semantic query embedding.",
-        });
-        embedding = undefined;
+      const resultLimit = parsed.filters?.limit ?? 8;
+      const queryVariants = buildPassageQueryVariants(parsed.query, Array.isArray(parsed.workIds) ? parsed.workIds.length : 0, 3);
+      const chunkBatches: ChunkSearchResult[][] = [];
+      for (const variant of queryVariants.length > 0 ? queryVariants : [parsed.query]) {
+        let embedding: number[] | undefined;
+        try {
+          context.auditLog?.("internal.embedding.started", {
+            toolName,
+            query: variant,
+            scopedWorkCount: Array.isArray(parsed.workIds) ? parsed.workIds.length : 0,
+          });
+          embedding = await deps.embedder.embedQuery(variant, {
+            userId: context.userId,
+            sessionId: context.sessionId,
+            runId: context.runId,
+            source: "embedder",
+          });
+          context.auditLog?.("internal.embedding.completed", {
+            toolName,
+            dimensions: Array.isArray(embedding) ? embedding.length : 0,
+          });
+        } catch {
+          context.auditLog?.("internal.embedding.failed", {
+            toolName,
+            error: "Embedding generation failed; continuing without semantic query embedding.",
+          });
+          embedding = undefined;
+        }
+        const perQueryLimit = queryVariants.length > 1
+          ? Math.min(Math.max(resultLimit, 12), Math.max(resultLimit * 2, 24))
+          : resultLimit;
+        const chunks = await deps.store.getRelevantChunks(
+          variant,
+          parsed.workIds,
+          perQueryLimit,
+          embedding,
+          parsed.filters,
+        );
+        chunkBatches.push(chunks);
       }
-      const chunks = await deps.store.getRelevantChunks(
-        parsed.query,
-        parsed.workIds,
-        parsed.filters?.limit ?? 8,
-        embedding,
-        parsed.filters,
-      );
+      const chunks = mergeChunkSearchResults(chunkBatches, resultLimit);
       return {
         chunks,
         frontierWorkIds: Array.isArray(parsed.workIds) ? parsed.workIds : [],
@@ -1668,28 +1720,34 @@ async function executeTool(
         if (frontierWorkIds.length > 0 && existingChunkIds.length < Math.max(8, Math.floor(desiredSeedChunkCount / 2))) {
           const seedQuery = buildWorkspaceSeedPassageQuery(taskSpec);
           if (seedQuery.length > 0) {
-            let embedding: number[] | undefined;
-            try {
-              context.auditLog?.("internal.workspace_seed_embedding.started", {
-                toolName,
-                query: seedQuery,
-                scopedWorkCount: frontierWorkIds.length,
-              });
-              embedding = await deps.embedder.embedQuery(seedQuery, {
-                userId: context.userId,
-                sessionId: context.sessionId,
-                runId: context.runId,
-                source: "embedder",
-              });
-            } catch {
-              embedding = undefined;
+            const seedQueries = buildPassageQueryVariants(seedQuery, frontierWorkIds.length, 3);
+            const seedChunkBatches: ChunkSearchResult[][] = [];
+            for (const variant of seedQueries.length > 0 ? seedQueries : [seedQuery]) {
+              let embedding: number[] | undefined;
+              try {
+                context.auditLog?.("internal.workspace_seed_embedding.started", {
+                  toolName,
+                  query: variant,
+                  scopedWorkCount: frontierWorkIds.length,
+                });
+                embedding = await deps.embedder.embedQuery(variant, {
+                  userId: context.userId,
+                  sessionId: context.sessionId,
+                  runId: context.runId,
+                  source: "embedder",
+                });
+              } catch {
+                embedding = undefined;
+              }
+              const seedChunks = await deps.store.getRelevantChunks(
+                variant,
+                frontierWorkIds.slice(0, 120),
+                Math.min(Math.max(desiredSeedChunkCount, 12), Math.max(desiredSeedChunkCount * 2, 24)),
+                embedding,
+              );
+              seedChunkBatches.push(seedChunks);
             }
-            const seedChunks = await deps.store.getRelevantChunks(
-              seedQuery,
-              frontierWorkIds.slice(0, 120),
-              desiredSeedChunkCount,
-              embedding,
-            );
+            const seedChunks = mergeChunkSearchResults(seedChunkBatches, desiredSeedChunkCount);
             if (seedChunks.length > 0) {
               const verifiedWorkIds = uniqueWorkIds(
                 seedChunks.map((chunk) => (typeof chunk.workId === "string" ? chunk.workId : null)),
@@ -2841,6 +2899,54 @@ function collectSynthesisCitations(
     }
   }
   return [...deduped.values()];
+}
+
+function dedupeAppCitations(citations: Citation[]) {
+  const deduped = new Map<string, Citation>();
+  for (const citation of citations) {
+    const key = `${citation.workId}:${citation.chunkId ?? citation.label}`;
+    if (!deduped.has(key)) {
+      deduped.set(key, citation);
+    }
+  }
+  return [...deduped.values()];
+}
+
+function minimumCitationBreadthForRun(userMessage: string, citations: Citation[]) {
+  const distinctWorkIds = uniqueWorkIds(citations.map((citation) => citation.workId));
+  if (distinctWorkIds.length <= 1) {
+    return distinctWorkIds.length;
+  }
+  const broadCorpusQuery = isBroadCorpusResearchQuery(userMessage, 0);
+  if (!broadCorpusQuery) {
+    return Math.min(2, distinctWorkIds.length);
+  }
+  return Math.min(4, distinctWorkIds.length);
+}
+
+function ensureCitationBreadth(
+  userMessage: string,
+  chosenCitations: Citation[],
+  availableCitations: Citation[],
+) {
+  const minimumBreadth = minimumCitationBreadthForRun(userMessage, availableCitations);
+  if (minimumBreadth <= 1) {
+    return chosenCitations;
+  }
+  const selected = dedupeAppCitations(chosenCitations);
+  const selectedWorkIds = new Set(selected.map((citation) => citation.workId));
+  if (selectedWorkIds.size >= minimumBreadth) {
+    return selected;
+  }
+  const additions = availableCitations.filter((citation) => !selectedWorkIds.has(citation.workId));
+  for (const citation of additions) {
+    selected.push(citation);
+    selectedWorkIds.add(citation.workId);
+    if (selectedWorkIds.size >= minimumBreadth || selected.length >= 8) {
+      break;
+    }
+  }
+  return dedupeAppCitations(selected).slice(0, 8);
 }
 
 function runtimeIdFromToolCall(toolCall: Awaited<ReturnType<AppStore["listToolCalls"]>>[number]) {
@@ -4775,8 +4881,9 @@ async function synthesizeAnswer(
       sessionId: params.sessionId,
     });
 
+    const availableSynthesisCitations = collectSynthesisCitations(params.plannerCitations, params.toolHistory);
     const exactCitationLinks = await Promise.all(
-      collectSynthesisCitations(params.plannerCitations, params.toolHistory)
+      availableSynthesisCitations
         .slice(0, 16)
         .map(async (citation) => ({
           workId: citation.workId,
@@ -4809,6 +4916,7 @@ async function synthesizeAnswer(
         source: "synthesizer",
       },
     });
+    synthesis.citations = ensureCitationBreadth(params.userMessage, synthesis.citations, availableSynthesisCitations);
     synthesis.answer = await rewriteAnswerWithCitationLinks(
       deps,
       params.sessionId,
