@@ -5465,4 +5465,109 @@ test("estimateResearchScope returns budget and shard recommendations for broad q
   assert.ok(estimate.recommendedFrontierWorks >= 72);
   assert.ok(estimate.chunkMatchEstimate > 0);
   assert.ok(estimate.metadataWorkEstimate > 0);
+  assert.equal(estimate.recommendedShards.length, estimate.recommendedParallelism);
+  assert.equal(estimate.recommendedShards[0]?.axis, estimate.recommendedShardAxis);
+  assert.ok((estimate.recommendedShards[0]?.targetWorkCount ?? 0) > 0);
+});
+
+test("fallback planner carries shard planning into workspace task specs for broad queries", async () => {
+  const planner = new FallbackPlanner();
+  const decision = await planner.decide({
+    userMessage: "Find broad grief patterns across 19th century fiction.",
+    conversationHistory: [],
+    turns: 4,
+    toolHistory: [
+      {
+        toolName: "estimate_research_scope",
+        args: {
+          query: "Find broad grief patterns across 19th century fiction.",
+        },
+        result: {
+          recommendedIntensity: "maximum",
+          recommendedWallClockMinutes: 60,
+          recommendedParallelism: 8,
+          recommendedShardAxis: "work_id_hash",
+          recommendedFrontierWorks: 128,
+          recommendedShards: Array.from({ length: 8 }, (_, index) => ({
+            shardId: `work-hash-${index + 1}`,
+            index,
+            totalShards: 8,
+            axis: "work_id_hash",
+            label: `Work hash shard ${index + 1}`,
+            targetWorkCount: 16,
+            estimatedCoveragePercent: 100,
+          })),
+        },
+      },
+      {
+        toolName: "create_workspace",
+        args: {
+          workIds: [],
+          chunkIds: [],
+          taskContext: {},
+        },
+        result: {
+          ok: true,
+          runtimeId: "runtime-1",
+        },
+      },
+      {
+        toolName: "search_works",
+        args: {
+          query: "Find broad grief patterns across 19th century fiction.",
+        },
+        result: {
+          works: Array.from({ length: 32 }, (_, index) => ({
+            id: `work-${index + 1}`,
+            title: `Work ${index + 1}`,
+            authors: [`Author ${index + 1}`],
+            summary: "A work about grief and mourning.",
+            subjects: ["grief", "mourning"],
+            gutenbergId: index + 1,
+          })),
+        },
+      },
+      {
+        toolName: "get_work_metadata",
+        args: {
+          workIds: Array.from({ length: 12 }, (_, index) => `work-${index + 1}`),
+        },
+        result: {
+          works: Array.from({ length: 12 }, (_, index) => ({
+            id: `work-${index + 1}`,
+            title: `Work ${index + 1}`,
+            authors: [`Author ${index + 1}`],
+            summary: "A work about grief and mourning.",
+            subjects: ["grief", "mourning"],
+            gutenbergId: index + 1,
+          })),
+        },
+      },
+      {
+        toolName: "get_relevant_chunks",
+        args: {
+          query: "Find broad grief patterns across 19th century fiction.",
+        },
+        result: {
+          chunks: Array.from({ length: 16 }, (_, index) => ({
+            id: `chunk-${index + 1}`,
+            workId: `work-${(index % 16) + 1}`,
+            chunkIndex: index,
+            excerpt: "A grief passage.",
+            r2Key: `gutenberg/clean/${index + 1}/chunks.jsonl`,
+          })),
+        },
+      },
+    ],
+  });
+
+  assert.equal(decision.type, "tool_call");
+  assert.equal(decision.tool_name, "run_workspace_task");
+  const taskSpec = decision.args.taskSpec as Record<string, unknown>;
+  assert.equal(taskSpec.parallelism, 8);
+  assert.equal(taskSpec.shardAxis, "work_id_hash");
+  assert.ok(Array.isArray(taskSpec.shardPlan));
+  assert.equal((taskSpec.shardPlan as unknown[]).length, 8);
+  assert.ok(Array.isArray(taskSpec.candidateWorkIds));
+  assert.ok((taskSpec.candidateWorkIds as unknown[]).length >= 16);
 });

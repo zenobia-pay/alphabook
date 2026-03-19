@@ -10,6 +10,23 @@ export interface PassageSearchFilters {
   genre?: string[];
 }
 
+export interface ResearchShardDescriptor {
+  shardId: string;
+  index: number;
+  totalShards: number;
+  axis: "work_id_hash" | "author_initial" | "publication_year" | "retrieval_strategy";
+  label: string;
+  targetWorkCount: number;
+  estimatedCoveragePercent: number;
+  hashBucketStart?: number;
+  hashBucketEnd?: number;
+  authorInitialStart?: string;
+  authorInitialEnd?: string;
+  yearStart?: number;
+  yearEnd?: number;
+  strategy?: string;
+}
+
 export interface ResearchScopeEstimate {
   query: string;
   metadataWorkEstimate: number;
@@ -32,6 +49,7 @@ export interface ResearchScopeEstimate {
     title: string;
     authors: string[];
   }>;
+  recommendedShards: ResearchShardDescriptor[];
   rationale: string;
 }
 
@@ -821,6 +839,113 @@ function recommendedShardAxis(query: string, estimatedWorkBreadth: number): Rese
   return "retrieval_strategy";
 }
 
+function buildWorkIdHashShards(totalShards: number, targetWorkCount: number, estimatedCoveragePercent: number): ResearchShardDescriptor[] {
+  const totalBuckets = 256;
+  return Array.from({ length: totalShards }, (_, index) => {
+    const hashBucketStart = Math.floor((index * totalBuckets) / totalShards);
+    const hashBucketEnd = Math.floor(((index + 1) * totalBuckets) / totalShards) - 1;
+    return {
+      shardId: `work-hash-${index + 1}`,
+      index,
+      totalShards,
+      axis: "work_id_hash",
+      label: `Work hash ${hashBucketStart}-${hashBucketEnd}`,
+      targetWorkCount,
+      estimatedCoveragePercent,
+      hashBucketStart,
+      hashBucketEnd,
+    };
+  });
+}
+
+function buildAuthorInitialShards(totalShards: number, targetWorkCount: number, estimatedCoveragePercent: number): ResearchShardDescriptor[] {
+  const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+  return Array.from({ length: totalShards }, (_, index) => {
+    const startIndex = Math.floor((index * letters.length) / totalShards);
+    const endIndex = Math.min(letters.length - 1, Math.floor(((index + 1) * letters.length) / totalShards) - 1);
+    return {
+      shardId: `author-initial-${index + 1}`,
+      index,
+      totalShards,
+      axis: "author_initial",
+      label: `Authors ${letters[startIndex]}-${letters[endIndex]}`,
+      targetWorkCount,
+      estimatedCoveragePercent,
+      authorInitialStart: letters[startIndex],
+      authorInitialEnd: letters[endIndex],
+    };
+  });
+}
+
+function buildPublicationYearShards(totalShards: number, targetWorkCount: number, estimatedCoveragePercent: number): ResearchShardDescriptor[] {
+  const yearStart = 1800;
+  const yearEnd = 1899;
+  const span = yearEnd - yearStart + 1;
+  return Array.from({ length: totalShards }, (_, index) => {
+    const sliceStart = yearStart + Math.floor((index * span) / totalShards);
+    const sliceEnd = yearStart + Math.floor((((index + 1) * span) / totalShards)) - 1;
+    return {
+      shardId: `publication-year-${index + 1}`,
+      index,
+      totalShards,
+      axis: "publication_year",
+      label: `Years ${sliceStart}-${Math.max(sliceStart, sliceEnd)}`,
+      targetWorkCount,
+      estimatedCoveragePercent,
+      yearStart: sliceStart,
+      yearEnd: Math.max(sliceStart, sliceEnd),
+    };
+  });
+}
+
+function buildRetrievalStrategyShards(totalShards: number, targetWorkCount: number, estimatedCoveragePercent: number): ResearchShardDescriptor[] {
+  const strategies = [
+    "metadata_expansion",
+    "semantic_chunk_search",
+    "lexical_regex_search",
+    "neighbor_expansion",
+    "verification_rerank",
+    "gap_fill",
+  ];
+  return Array.from({ length: totalShards }, (_, index) => {
+    const strategy = strategies[index] ?? `strategy_${index + 1}`;
+    return {
+      shardId: `retrieval-strategy-${index + 1}`,
+      index,
+      totalShards,
+      axis: "retrieval_strategy",
+      label: strategy.replaceAll("_", " "),
+      targetWorkCount,
+      estimatedCoveragePercent,
+      strategy,
+    };
+  });
+}
+
+function buildRecommendedShards(
+  shardAxis: ResearchScopeEstimate["recommendedShardAxis"],
+  recommendedParallelism: number,
+  recommendedFrontierWorks: number,
+  effectiveWorkBreadth: number,
+) {
+  const totalShards = Math.max(1, recommendedParallelism);
+  const targetWorkCount = Math.max(8, Math.ceil(recommendedFrontierWorks / totalShards));
+  const estimatedCoveragePercent = clampPercentage((recommendedFrontierWorks / Math.max(effectiveWorkBreadth, 1)) * 100);
+  switch (shardAxis) {
+    case "author_initial":
+      return buildAuthorInitialShards(totalShards, targetWorkCount, estimatedCoveragePercent);
+    case "publication_year":
+      return buildPublicationYearShards(totalShards, targetWorkCount, estimatedCoveragePercent);
+    case "retrieval_strategy":
+      return buildRetrievalStrategyShards(totalShards, targetWorkCount, estimatedCoveragePercent);
+    case "none":
+      return [];
+    case "work_id_hash":
+    default:
+      return buildWorkIdHashShards(totalShards, targetWorkCount, estimatedCoveragePercent);
+  }
+}
+
 function buildResearchScopeEstimate(
   query: string,
   metadataWorkEstimate: number,
@@ -874,6 +999,12 @@ function buildResearchScopeEstimate(
   };
 
   const shardAxis = recommendedShardAxis(query, effectiveWorkBreadth);
+  const recommendedShards = buildRecommendedShards(
+    shardAxis,
+    recommendedParallelism,
+    recommendedFrontierWorks,
+    effectiveWorkBreadth,
+  );
   const rationale = [
     `The cheap probes suggest roughly ${effectiveWorkBreadth} books are in play`,
     chunkMatchEstimate > 0 ? `with about ${chunkMatchEstimate} matching passages` : "with sparse direct passage matches so far",
@@ -900,6 +1031,7 @@ function buildResearchScopeEstimate(
       title: work.title,
       authors: work.authors ?? [],
     })),
+    recommendedShards,
     rationale,
   };
 }

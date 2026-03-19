@@ -10,6 +10,8 @@ This guide is for measuring the assistant end to end against live production run
 - total passages mentioned in the document
 - total selected workspace books
 - total active books in the final answer
+- planned parallel shards
+- planned frontier works
 - final answer usefulness
 - final answer uniqueness
 - final answer support for the original question
@@ -132,6 +134,8 @@ Read these fields when present:
 - `metrics.totalPassagesMentioned`
 - `metrics.totalSelectedWorkspaceBooks`
 - `metrics.totalActiveBooksInFinalAnswer`
+- `metrics.plannedParallelShards`
+- `metrics.plannedFrontierWorks`
 - `metrics.booksMentioned`
 - `metrics.selectedWorkspaceBooks`
 - `metrics.activeBooksInFinalAnswer`

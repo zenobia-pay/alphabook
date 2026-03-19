@@ -908,6 +908,15 @@ function compactTaskSpec(task, openBookMode) {
     timeBudgetMinutes: typeof task.timeBudgetMinutes === "number" ? task.timeBudgetMinutes : null,
     parallelism: typeof task.parallelism === "number" ? task.parallelism : null,
     shardAxis: typeof task.shardAxis === "string" ? task.shardAxis : null,
+    shardPlan: Array.isArray(task.shardPlan)
+      ? task.shardPlan.slice(0, 16).map((shard) => ({
+          shardId: typeof shard?.shardId === "string" ? shard.shardId : null,
+          axis: typeof shard?.axis === "string" ? shard.axis : null,
+          label: typeof shard?.label === "string" ? normalizeWhitespace(shard.label).slice(0, 120) : null,
+          targetWorkCount: typeof shard?.targetWorkCount === "number" ? shard.targetWorkCount : null,
+          strategy: typeof shard?.strategy === "string" ? shard.strategy : null,
+        }))
+      : [],
     researchObjective:
       typeof task.researchObjective === "string"
         ? normalizeWhitespace(task.researchObjective).slice(0, 320)
@@ -961,6 +970,13 @@ function compactTaskSpec(task, openBookMode) {
           recommendedParallelism: typeof task.searchPlan.recommendedParallelism === "number" ? task.searchPlan.recommendedParallelism : null,
           recommendedShardAxis: typeof task.searchPlan.recommendedShardAxis === "string" ? task.searchPlan.recommendedShardAxis : null,
           recommendedFrontierWorks: typeof task.searchPlan.recommendedFrontierWorks === "number" ? task.searchPlan.recommendedFrontierWorks : null,
+          recommendedShards: Array.isArray(task.searchPlan.recommendedShards)
+            ? task.searchPlan.recommendedShards.slice(0, 16).map((shard) => ({
+                shardId: typeof shard?.shardId === "string" ? shard.shardId : null,
+                axis: typeof shard?.axis === "string" ? shard.axis : null,
+                label: typeof shard?.label === "string" ? normalizeWhitespace(shard.label).slice(0, 120) : null,
+              }))
+            : [],
           breadthBand: typeof task.searchPlan.breadthBand === "string" ? task.searchPlan.breadthBand : null,
           metadataWorkEstimate: typeof task.searchPlan.metadataWorkEstimate === "number" ? task.searchPlan.metadataWorkEstimate : null,
           chunkMatchEstimate: typeof task.searchPlan.chunkMatchEstimate === "number" ? task.searchPlan.chunkMatchEstimate : null,
@@ -1052,6 +1068,9 @@ function buildBriefingPrompt(runtimePrompt, manifest, task, evidence, question) 
       : null,
     !openBookMode && compactTask.parallelism
       ? `- Plan your sweep as one shard of a larger search plan that expects about ${compactTask.parallelism} parallel shard(s) over ${compactTask.shardAxis || "work_id_hash"}.`
+      : null,
+    !openBookMode && Array.isArray(compactTask.shardPlan) && compactTask.shardPlan.length > 0
+      ? `- The orchestrator's shard plan is: ${compactTask.shardPlan.map((shard) => shard.label || shard.shardId || "unnamed shard").join("; ")}.`
       : null,
     !openBookMode && compactTask.searchPlan?.recommendedFrontierWorks
       ? `- The orchestrator wants a frontier of about ${compactTask.searchPlan.recommendedFrontierWorks} active books before final verification narrows it.`

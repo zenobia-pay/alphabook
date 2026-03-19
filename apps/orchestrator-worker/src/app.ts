@@ -889,12 +889,18 @@ function searchPlanFromEstimate(
     : fallbackBroadCorpusQuery
       ? 72
       : 24;
+  const shards = Array.isArray(estimate?.recommendedShards)
+    ? estimate.recommendedShards
+      .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object")
+      .slice(0, 24)
+    : [];
   return {
     intensity,
     wallClockMinutes,
     parallelism,
     shardAxis,
     frontierWorks,
+    shards,
     estimate,
   };
 }
@@ -2133,6 +2139,8 @@ type RunMetricsSnapshot = {
   totalPassagesMentioned: number;
   totalSelectedWorkspaceBooks: number;
   totalActiveBooksInFinalAnswer: number;
+  plannedParallelShards: number;
+  plannedFrontierWorks: number;
   booksMentioned: string[];
   selectedWorkspaceBooks: string[];
   activeBooksInFinalAnswer: string[];
@@ -2152,6 +2160,8 @@ type LiveRunMetricsState = {
   mentionedChunkIds: Set<string>;
   selectedWorkspaceBookIds: Set<string>;
   activeBookIds: Set<string>;
+  plannedParallelShards: number;
+  plannedFrontierWorks: number;
   recorded: boolean;
 };
 
@@ -2170,6 +2180,8 @@ function createLiveRunMetricsState(startedAtMs: number): LiveRunMetricsState {
     mentionedChunkIds: new Set<string>(),
     selectedWorkspaceBookIds: new Set<string>(),
     activeBookIds: new Set<string>(),
+    plannedParallelShards: 0,
+    plannedFrontierWorks: 0,
     recorded: false,
   };
 }
@@ -2262,6 +2274,8 @@ function buildRunMetricsSnapshot(
     totalPassagesMentioned: state.mentionedChunkIds.size,
     totalSelectedWorkspaceBooks: state.selectedWorkspaceBookIds.size,
     totalActiveBooksInFinalAnswer: state.activeBookIds.size,
+    plannedParallelShards: state.plannedParallelShards,
+    plannedFrontierWorks: state.plannedFrontierWorks,
     booksMentioned: [...state.documentBookIds],
     selectedWorkspaceBooks: [...state.selectedWorkspaceBookIds],
     activeBooksInFinalAnswer: [...state.activeBookIds],
@@ -2292,6 +2306,8 @@ function buildRunMetricsAnalyticsSummary(
     totalPassagesMentioned: metrics.totalPassagesMentioned,
     totalSelectedWorkspaceBooks: metrics.totalSelectedWorkspaceBooks,
     totalActiveBooksInFinalAnswer: metrics.totalActiveBooksInFinalAnswer,
+    plannedParallelShards: metrics.plannedParallelShards,
+    plannedFrontierWorks: metrics.plannedFrontierWorks,
   };
 }
 
@@ -4872,6 +4888,16 @@ async function runOrchestrator(
       if (toolName === "run_workspace_task" && args?.taskSpec && typeof args.taskSpec === "object") {
         const taskSpec = args.taskSpec as Record<string, unknown>;
         const workIds = Array.isArray(taskSpec.workIds) ? taskSpec.workIds : [];
+        if (typeof taskSpec.parallelism === "number" && taskSpec.parallelism > 0) {
+          runMetrics.plannedParallelShards = Math.max(runMetrics.plannedParallelShards, taskSpec.parallelism);
+        }
+        const plannedFrontierWorks =
+          typeof taskSpec.searchPlan === "object" && taskSpec.searchPlan && typeof (taskSpec.searchPlan as Record<string, unknown>).recommendedFrontierWorks === "number"
+            ? (taskSpec.searchPlan as Record<string, unknown>).recommendedFrontierWorks as number
+            : Array.isArray(taskSpec.candidateWorkIds)
+              ? taskSpec.candidateWorkIds.length
+              : workIds.length;
+        runMetrics.plannedFrontierWorks = Math.max(runMetrics.plannedFrontierWorks, plannedFrontierWorks);
         for (const workId of workIds) {
           if (typeof workId === "string" && workId.length > 0) {
             runMetrics.selectedWorkspaceBookIds.add(workId);
@@ -4922,6 +4948,14 @@ async function runOrchestrator(
     if (event === "tool.completed") {
       const toolName = typeof data.toolName === "string" ? data.toolName : "";
       const result = data.result && typeof data.result === "object" ? data.result as Record<string, unknown> : {};
+      if (toolName === "estimate_research_scope") {
+        if (typeof result.recommendedParallelism === "number" && result.recommendedParallelism > 0) {
+          runMetrics.plannedParallelShards = Math.max(runMetrics.plannedParallelShards, result.recommendedParallelism);
+        }
+        if (typeof result.recommendedFrontierWorks === "number" && result.recommendedFrontierWorks > 0) {
+          runMetrics.plannedFrontierWorks = Math.max(runMetrics.plannedFrontierWorks, result.recommendedFrontierWorks);
+        }
+      }
       const candidateWorkIds = collectWorkIdsFromWorks(result.works);
       for (const workId of candidateWorkIds) {
         runMetrics.candidateBookIds.add(workId);
@@ -5532,6 +5566,7 @@ async function runOrchestrator(
           .filter((value): value is string => typeof value === "string")
           .slice(0, chunkLimit),
         candidateWorkIds,
+        shardPlan: searchPlan.shards,
         searchHints: {
           searchWorksQuery: routedQueryRef.current,
           passageSearchFocus: "Find the strongest directly quotable passages that best answer the research objective.",
@@ -5542,6 +5577,7 @@ async function runOrchestrator(
           recommendedParallelism: searchPlan.parallelism,
           recommendedShardAxis: searchPlan.shardAxis,
           recommendedFrontierWorks: searchPlan.frontierWorks,
+          recommendedShards: searchPlan.shards,
         },
         retrieval: {
           searchWorks: rankedSearchWorks.slice(0, workLimit).map((work) => ({

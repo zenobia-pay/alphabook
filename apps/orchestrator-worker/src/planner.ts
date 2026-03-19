@@ -273,6 +273,34 @@ function searchWorks(context: PlannerContext): WorkSummary[] {
   return Array.isArray(searchResult?.works) ? searchResult.works as WorkSummary[] : [];
 }
 
+function uniqueWorkIds(values: Array<string | null | undefined>, limit = 256): string[] {
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+  for (const value of values) {
+    if (!value || seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    ordered.push(value);
+    if (ordered.length >= limit) {
+      break;
+    }
+  }
+  return ordered;
+}
+
+function frontierWorkIds(context: PlannerContext, seedWorkIds: string[], chunks: ChunkSearchResult[], limit: number): string[] {
+  const searchResults = searchWorks(context);
+  const metadataResults = metadataWorks(context);
+  const chunkWorkIds = chunks.map((chunk) => chunk.workId);
+  return uniqueWorkIds([
+    ...seedWorkIds,
+    ...chunkWorkIds,
+    ...searchResults.map((work) => work.id),
+    ...metadataResults.map((work) => work.id),
+  ], limit);
+}
+
 function seedChunkPayload(context: PlannerContext): ChunkSearchResult[] {
   const chunkResult = context.toolHistory.find((item) => item.toolName === "get_relevant_chunks")?.result;
   return (chunkResult?.chunks as ChunkSearchResult[] | undefined) ?? [];
@@ -359,11 +387,16 @@ function lastToolCall(context: PlannerContext): PlannerContext["toolHistory"][nu
 function buildTaskContext(context: PlannerContext, workIds: string[], chunks: ChunkSearchResult[]) {
   const broadCorpusQuery = isBroadCorpusQuery(context);
   const estimate = scopeEstimate(context);
+  const recommendedFrontierWorks = estimateNumber(estimate, "recommendedFrontierWorks", broadCorpusQuery ? 24 : 12);
+  const frontierIds = frontierWorkIds(context, workIds, chunks, Math.max(broadCorpusQuery ? 40 : 16, recommendedFrontierWorks));
+  const recommendedShards = estimate && Array.isArray(estimate.recommendedShards)
+    ? estimate.recommendedShards.slice(0, 16)
+    : [];
   return {
     question: context.userMessage,
     researchObjective: context.userMessage,
     mode: workspaceMode(context),
-    candidateWorkIds: workIds,
+    candidateWorkIds: frontierIds,
     searchPlan: estimate
       ? {
           intensity: typeof estimate.recommendedIntensity === "string" ? estimate.recommendedIntensity : null,
@@ -372,6 +405,7 @@ function buildTaskContext(context: PlannerContext, workIds: string[], chunks: Ch
           shardAxis: typeof estimate.recommendedShardAxis === "string" ? estimate.recommendedShardAxis : null,
           breadthBand: typeof estimate.breadthBand === "string" ? estimate.breadthBand : null,
           frontierWorks: typeof estimate.recommendedFrontierWorks === "number" ? estimate.recommendedFrontierWorks : null,
+          shards: recommendedShards,
         }
       : null,
     topChunks: chunks.slice(0, broadCorpusQuery ? 24 : 12).map((chunk) => ({
@@ -392,6 +426,10 @@ function buildWorkspaceTaskSpec(context: PlannerContext, workIds: string[], chun
   const seedChunkLimit = Math.max(broadCorpusQuery ? 32 : 16, Math.min(64, recommendedFrontierWorks));
   const metadata = metadataWorks(context);
   const search = searchWorks(context);
+  const frontierIds = frontierWorkIds(context, workIds, chunks, Math.max(workLimit, recommendedFrontierWorks));
+  const recommendedShards = estimate && Array.isArray(estimate.recommendedShards)
+    ? estimate.recommendedShards.slice(0, 16)
+    : [];
   return {
     kind: "briefing_search",
     phase: "collect_and_brief",
@@ -402,16 +440,17 @@ function buildWorkspaceTaskSpec(context: PlannerContext, workIds: string[], chun
     timeBudgetMinutes: typeof estimate?.recommendedWallClockMinutes === "number" ? estimate.recommendedWallClockMinutes : broadCorpusQuery ? 15 : 5,
     parallelism: recommendedParallelism,
     shardAxis: typeof estimate?.recommendedShardAxis === "string" ? estimate.recommendedShardAxis : broadCorpusQuery ? "work_id_hash" : "none",
-    workIds,
+    workIds: frontierIds,
     chunkIds: chunks.slice(0, chunkLimit).map((chunk) => chunk.id),
-    candidateWorkIds: workIds,
+    candidateWorkIds: frontierIds,
+    shardPlan: recommendedShards,
     searchHints: {
       searchWorksQuery: context.userMessage,
       passageSearchFocus: "Find the strongest directly quotable passages that best answer the research objective.",
     },
     searchPlan: estimate ?? undefined,
     retrieval: {
-      searchWorks: search.slice(0, workLimit).map((work) => ({
+      searchWorks: search.slice(0, Math.max(workLimit, recommendedFrontierWorks)).map((work) => ({
         id: work.id,
         title: work.title,
         authors: work.authors ?? [],
@@ -419,7 +458,7 @@ function buildWorkspaceTaskSpec(context: PlannerContext, workIds: string[], chun
         subjects: work.subjects ?? [],
         gutenbergId: work.gutenbergId ?? null,
       })),
-      metadataWorks: metadata.slice(0, workLimit).map((work) => ({
+      metadataWorks: metadata.slice(0, Math.max(workLimit, recommendedFrontierWorks)).map((work) => ({
         id: work.id,
         title: work.title,
         authors: work.authors ?? [],
@@ -456,10 +495,7 @@ export class FallbackPlanner implements Planner {
     const scopedWorkIds = context.workScope?.length ? context.workScope : [];
     const chunks = seedChunkPayload(context);
     const metadataIds = scopedWorkIds.length > 0 ? scopedWorkIds.slice(0, metadataLimit) : metadataWorkIds(context, metadataLimit);
-    const workIds = Array.from(new Set([
-      ...metadataIds,
-      ...chunks.map((chunk) => chunk.workId),
-    ])).slice(0, workLimit);
+    const workIds = frontierWorkIds(context, metadataIds, chunks, workLimit);
 
     if (!toolNames.includes("estimate_research_scope")) {
       return {
