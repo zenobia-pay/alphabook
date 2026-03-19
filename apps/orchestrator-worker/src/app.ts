@@ -1465,6 +1465,12 @@ function mergeTaskSpecWithPriorEvidence(taskSpec: Record<string, unknown>, prior
     followUpContext.priorAssistantSummary = priorEvidence.priorAnswer.slice(0, 400);
   }
   merged.followUpContext = followUpContext;
+  merged.followUpReuseMetrics = {
+    frontierWorkCount: priorEvidence.frontierWorkIds.length,
+    verifiedWorkCount: priorEvidence.verifiedWorkIds.length,
+    chunkCount: priorEvidence.chunkIds.length,
+    citationCount: priorEvidence.citations.length,
+  };
   return merged;
 }
 
@@ -2934,6 +2940,7 @@ type ToolRunRawLogEntry = {
 
 type RunMetricsSnapshot = {
   status: string;
+  completionMode: string;
   startedAt: string;
   completedAt: string;
   timeToFirstBookMentionMs: number | null;
@@ -2947,6 +2954,15 @@ type RunMetricsSnapshot = {
   totalPassagesMentioned: number;
   totalSelectedWorkspaceBooks: number;
   totalActiveBooksInFinalAnswer: number;
+  estimatedTrueBreadthBooks: number;
+  probeBooksShown: number;
+  verifiedChunksAtVmHandoff: number;
+  verifiedWorksAtVmHandoff: number;
+  actualShardRuns: number;
+  successfulShardRuns: number;
+  reusedPriorFrontierWorks: number;
+  reusedPriorVerifiedWorks: number;
+  reusedPriorChunks: number;
   plannedParallelShards: number;
   plannedFrontierWorks: number;
   booksMentioned: string[];
@@ -2968,8 +2984,18 @@ type LiveRunMetricsState = {
   mentionedChunkIds: Set<string>;
   selectedWorkspaceBookIds: Set<string>;
   activeBookIds: Set<string>;
+  estimatedTrueBreadthBooks: number;
+  probeBooksShown: number;
+  verifiedChunksAtVmHandoff: number;
+  verifiedWorksAtVmHandoff: number;
+  actualShardRuns: number;
+  successfulShardRuns: number;
+  reusedPriorFrontierWorks: number;
+  reusedPriorVerifiedWorks: number;
+  reusedPriorChunks: number;
   plannedParallelShards: number;
   plannedFrontierWorks: number;
+  completionMode: string;
   recorded: boolean;
 };
 
@@ -2988,8 +3014,18 @@ function createLiveRunMetricsState(startedAtMs: number): LiveRunMetricsState {
     mentionedChunkIds: new Set<string>(),
     selectedWorkspaceBookIds: new Set<string>(),
     activeBookIds: new Set<string>(),
+    estimatedTrueBreadthBooks: 0,
+    probeBooksShown: 0,
+    verifiedChunksAtVmHandoff: 0,
+    verifiedWorksAtVmHandoff: 0,
+    actualShardRuns: 0,
+    successfulShardRuns: 0,
+    reusedPriorFrontierWorks: 0,
+    reusedPriorVerifiedWorks: 0,
+    reusedPriorChunks: 0,
     plannedParallelShards: 0,
     plannedFrontierWorks: 0,
+    completionMode: "standard",
     recorded: false,
   };
 }
@@ -3076,6 +3112,7 @@ function buildRunMetricsSnapshot(
   const delta = (value: number | null) => (value === null ? null : Math.max(0, value - state.startedAtMs));
   return {
     status,
+    completionMode: state.completionMode,
     startedAt: state.startedAtIso,
     completedAt: new Date(completedAtMs).toISOString(),
     timeToFirstBookMentionMs: delta(state.firstBookMentionAtMs),
@@ -3089,6 +3126,15 @@ function buildRunMetricsSnapshot(
     totalPassagesMentioned: state.mentionedChunkIds.size,
     totalSelectedWorkspaceBooks: state.selectedWorkspaceBookIds.size,
     totalActiveBooksInFinalAnswer: state.activeBookIds.size,
+    estimatedTrueBreadthBooks: state.estimatedTrueBreadthBooks,
+    probeBooksShown: state.probeBooksShown,
+    verifiedChunksAtVmHandoff: state.verifiedChunksAtVmHandoff,
+    verifiedWorksAtVmHandoff: state.verifiedWorksAtVmHandoff,
+    actualShardRuns: state.actualShardRuns,
+    successfulShardRuns: state.successfulShardRuns,
+    reusedPriorFrontierWorks: state.reusedPriorFrontierWorks,
+    reusedPriorVerifiedWorks: state.reusedPriorVerifiedWorks,
+    reusedPriorChunks: state.reusedPriorChunks,
     plannedParallelShards: state.plannedParallelShards,
     plannedFrontierWorks: state.plannedFrontierWorks,
     booksMentioned: [...state.documentBookIds],
@@ -3108,6 +3154,7 @@ function buildRunMetricsAnalyticsSummary(
     sessionId,
     runId,
     status: metrics.status,
+    completionMode: metrics.completionMode,
     startedAt: metrics.startedAt,
     completedAt: metrics.completedAt,
     timeToFirstBookMentionMs: metrics.timeToFirstBookMentionMs,
@@ -3121,6 +3168,15 @@ function buildRunMetricsAnalyticsSummary(
     totalPassagesMentioned: metrics.totalPassagesMentioned,
     totalSelectedWorkspaceBooks: metrics.totalSelectedWorkspaceBooks,
     totalActiveBooksInFinalAnswer: metrics.totalActiveBooksInFinalAnswer,
+    estimatedTrueBreadthBooks: metrics.estimatedTrueBreadthBooks,
+    probeBooksShown: metrics.probeBooksShown,
+    verifiedChunksAtVmHandoff: metrics.verifiedChunksAtVmHandoff,
+    verifiedWorksAtVmHandoff: metrics.verifiedWorksAtVmHandoff,
+    actualShardRuns: metrics.actualShardRuns,
+    successfulShardRuns: metrics.successfulShardRuns,
+    reusedPriorFrontierWorks: metrics.reusedPriorFrontierWorks,
+    reusedPriorVerifiedWorks: metrics.reusedPriorVerifiedWorks,
+    reusedPriorChunks: metrics.reusedPriorChunks,
     plannedParallelShards: metrics.plannedParallelShards,
     plannedFrontierWorks: metrics.plannedFrontierWorks,
   };
@@ -6279,31 +6335,107 @@ async function runOrchestrator(
   const originalSend = send;
   const started = deps.now?.() ?? Date.now();
   const runMetrics = createLiveRunMetricsState(started);
+  const captureTaskSpecRunMetrics = (taskSpec: Record<string, unknown>) => {
+    const workIds = Array.isArray(taskSpec.workIds) ? taskSpec.workIds : [];
+    if (typeof taskSpec.parallelism === "number" && taskSpec.parallelism > 0) {
+      runMetrics.plannedParallelShards = Math.max(runMetrics.plannedParallelShards, taskSpec.parallelism);
+    }
+    const verifiedChunkIds = Array.isArray(taskSpec.verifiedChunkIds)
+      ? taskSpec.verifiedChunkIds.filter((value): value is string => typeof value === "string")
+      : [];
+    const verifiedWorkIds = Array.isArray(taskSpec.verifiedWorkIds)
+      ? taskSpec.verifiedWorkIds.filter((value): value is string => typeof value === "string")
+      : [];
+    runMetrics.verifiedChunksAtVmHandoff = Math.max(runMetrics.verifiedChunksAtVmHandoff, verifiedChunkIds.length);
+    runMetrics.verifiedWorksAtVmHandoff = Math.max(runMetrics.verifiedWorksAtVmHandoff, verifiedWorkIds.length);
+    const followUpReuseMetrics =
+      taskSpec.followUpReuseMetrics && typeof taskSpec.followUpReuseMetrics === "object"
+        ? taskSpec.followUpReuseMetrics as Record<string, unknown>
+        : null;
+    if (followUpReuseMetrics) {
+      if (typeof followUpReuseMetrics.frontierWorkCount === "number") {
+        runMetrics.reusedPriorFrontierWorks = Math.max(
+          runMetrics.reusedPriorFrontierWorks,
+          followUpReuseMetrics.frontierWorkCount,
+        );
+      }
+      if (typeof followUpReuseMetrics.verifiedWorkCount === "number") {
+        runMetrics.reusedPriorVerifiedWorks = Math.max(
+          runMetrics.reusedPriorVerifiedWorks,
+          followUpReuseMetrics.verifiedWorkCount,
+        );
+      }
+      if (typeof followUpReuseMetrics.chunkCount === "number") {
+        runMetrics.reusedPriorChunks = Math.max(runMetrics.reusedPriorChunks, followUpReuseMetrics.chunkCount);
+      }
+    }
+    const plannedFrontierWorks =
+      Array.isArray(taskSpec.frontierWorkIds)
+        ? taskSpec.frontierWorkIds.length
+        : typeof taskSpec.searchPlan === "object" && taskSpec.searchPlan && typeof (taskSpec.searchPlan as Record<string, unknown>).recommendedFrontierWorks === "number"
+          ? (taskSpec.searchPlan as Record<string, unknown>).recommendedFrontierWorks as number
+          : Array.isArray(taskSpec.candidateWorkIds)
+            ? taskSpec.candidateWorkIds.length
+            : workIds.length;
+    runMetrics.plannedFrontierWorks = Math.max(runMetrics.plannedFrontierWorks, plannedFrontierWorks);
+    for (const workId of workIds) {
+      if (typeof workId === "string" && workId.length > 0) {
+        runMetrics.selectedWorkspaceBookIds.add(workId);
+      }
+    }
+  };
+  const captureToolResultRunMetrics = (toolName: string, result: Record<string, unknown>) => {
+    if (toolName === "estimate_research_scope") {
+      const probeWorks = Array.isArray(result.probeWorks) ? result.probeWorks : [];
+      const metadataWorkEstimate = typeof result.metadataWorkEstimate === "number" ? result.metadataWorkEstimate : 0;
+      const chunkWorkEstimate = typeof result.chunkWorkEstimate === "number" ? result.chunkWorkEstimate : 0;
+      runMetrics.estimatedTrueBreadthBooks = Math.max(
+        runMetrics.estimatedTrueBreadthBooks,
+        metadataWorkEstimate,
+        chunkWorkEstimate,
+        probeWorks.length,
+      );
+      runMetrics.probeBooksShown = Math.max(runMetrics.probeBooksShown, probeWorks.length);
+      if (typeof result.recommendedParallelism === "number" && result.recommendedParallelism > 0) {
+        runMetrics.plannedParallelShards = Math.max(runMetrics.plannedParallelShards, result.recommendedParallelism);
+      }
+      if (typeof result.recommendedFrontierWorks === "number" && result.recommendedFrontierWorks > 0) {
+        runMetrics.plannedFrontierWorks = Math.max(runMetrics.plannedFrontierWorks, result.recommendedFrontierWorks);
+      }
+      return;
+    }
+    if (toolName === "search_works") {
+      const frontier =
+        result.frontier && typeof result.frontier === "object"
+          ? result.frontier as Record<string, unknown>
+          : null;
+      const frontierCount = typeof frontier?.workCount === "number"
+        ? frontier.workCount
+        : Array.isArray(frontier?.works)
+          ? frontier.works.length
+          : Array.isArray(result.works)
+            ? result.works.length
+            : 0;
+      if (frontierCount > 0) {
+        runMetrics.estimatedTrueBreadthBooks = Math.max(runMetrics.estimatedTrueBreadthBooks, frontierCount);
+      }
+      return;
+    }
+    if (toolName === "run_workspace_task" && Array.isArray(result.shardResults)) {
+      runMetrics.actualShardRuns = Math.max(runMetrics.actualShardRuns, result.shardResults.length);
+      runMetrics.successfulShardRuns = Math.max(
+        runMetrics.successfulShardRuns,
+        result.shardResults.filter((value) => value && typeof value === "object" && (value as Record<string, unknown>).ok === true).length,
+      );
+    }
+  };
   send = async (event: string, data: Record<string, unknown>) => {
     const nowMs = deps.now?.() ?? Date.now();
     if (event === "tool.started") {
       const toolName = typeof data.toolName === "string" ? data.toolName : "";
       const args = data.args && typeof data.args === "object" ? data.args as Record<string, unknown> : null;
       if (toolName === "run_workspace_task" && args?.taskSpec && typeof args.taskSpec === "object") {
-        const taskSpec = args.taskSpec as Record<string, unknown>;
-        const workIds = Array.isArray(taskSpec.workIds) ? taskSpec.workIds : [];
-        if (typeof taskSpec.parallelism === "number" && taskSpec.parallelism > 0) {
-          runMetrics.plannedParallelShards = Math.max(runMetrics.plannedParallelShards, taskSpec.parallelism);
-        }
-        const plannedFrontierWorks =
-          Array.isArray(taskSpec.frontierWorkIds)
-            ? taskSpec.frontierWorkIds.length
-            : typeof taskSpec.searchPlan === "object" && taskSpec.searchPlan && typeof (taskSpec.searchPlan as Record<string, unknown>).recommendedFrontierWorks === "number"
-            ? (taskSpec.searchPlan as Record<string, unknown>).recommendedFrontierWorks as number
-            : Array.isArray(taskSpec.candidateWorkIds)
-              ? taskSpec.candidateWorkIds.length
-              : workIds.length;
-        runMetrics.plannedFrontierWorks = Math.max(runMetrics.plannedFrontierWorks, plannedFrontierWorks);
-        for (const workId of workIds) {
-          if (typeof workId === "string" && workId.length > 0) {
-            runMetrics.selectedWorkspaceBookIds.add(workId);
-          }
-        }
+        captureTaskSpecRunMetrics(args.taskSpec as Record<string, unknown>);
       }
     }
     if (event === "tool.progress") {
@@ -6349,14 +6481,7 @@ async function runOrchestrator(
     if (event === "tool.completed") {
       const toolName = typeof data.toolName === "string" ? data.toolName : "";
       const result = data.result && typeof data.result === "object" ? data.result as Record<string, unknown> : {};
-      if (toolName === "estimate_research_scope") {
-        if (typeof result.recommendedParallelism === "number" && result.recommendedParallelism > 0) {
-          runMetrics.plannedParallelShards = Math.max(runMetrics.plannedParallelShards, result.recommendedParallelism);
-        }
-        if (typeof result.recommendedFrontierWorks === "number" && result.recommendedFrontierWorks > 0) {
-          runMetrics.plannedFrontierWorks = Math.max(runMetrics.plannedFrontierWorks, result.recommendedFrontierWorks);
-        }
-      }
+      captureToolResultRunMetrics(toolName, result);
       const candidateWorkIds = uniqueWorkIds([
         ...collectWorkIdsFromWorks(result.works),
         ...collectWorkIdsFromFrontier(result.frontier),
@@ -6410,6 +6535,12 @@ async function runOrchestrator(
     }
     let nextData = data;
     if (event === "run.completed") {
+      runMetrics.completionMode =
+        typeof data.completionMode === "string"
+          ? data.completionMode
+          : typeof data.status === "string" && data.status !== "completed"
+            ? data.status
+            : runMetrics.completionMode;
       const metrics = buildRunMetricsSnapshot(
         runMetrics,
         typeof data.status === "string" ? data.status : "completed",
@@ -6740,6 +6871,7 @@ async function runOrchestrator(
     result: Record<string, unknown>,
   ) => {
     await deps.store.finishToolCall(toolCallId, status, result);
+    captureToolResultRunMetrics(toolName, result);
     if (status === "completed") {
       void recordBookAnalyticsEvents(
         deps,
@@ -7104,6 +7236,9 @@ async function runOrchestrator(
       rationale,
       args: normalizedToolArgs,
     });
+    if (toolName === "run_workspace_task" && normalizedToolArgs.taskSpec && typeof normalizedToolArgs.taskSpec === "object") {
+      captureTaskSpecRunMetrics(normalizedToolArgs.taskSpec as Record<string, unknown>);
+    }
     liveToolTrace = [
       ...liveToolTrace,
       {
@@ -7348,11 +7483,13 @@ async function runOrchestrator(
         runId: run.id,
         sessionId: session.id,
         status: "completed",
+        completionMode: "direct_response",
       });
       recordRawLog("run.completed", {
         runId: run.id,
         sessionId: session.id,
         status: "completed",
+        completionMode: "direct_response",
       });
       return;
     }
@@ -7510,11 +7647,13 @@ async function runOrchestrator(
           runId: run.id,
           sessionId: session.id,
           status: "completed",
+          completionMode: "standard",
         });
         recordRawLog("run.completed", {
           runId: run.id,
           sessionId: session.id,
           status: "completed",
+          completionMode: "standard",
         });
         return;
       }
@@ -7619,6 +7758,13 @@ async function runOrchestrator(
         rationale: toolCall.rationale ?? null,
         args: normalizedToolArgs,
       });
+      if (
+        toolCall.tool_name === "run_workspace_task"
+        && normalizedToolArgs.taskSpec
+        && typeof normalizedToolArgs.taskSpec === "object"
+      ) {
+        captureTaskSpecRunMetrics(normalizedToolArgs.taskSpec as Record<string, unknown>);
+      }
       liveToolTrace = [
         ...liveToolTrace,
         {
@@ -7787,11 +7933,13 @@ async function runOrchestrator(
           runId: run.id,
           sessionId: session.id,
           status: "failed",
+          completionMode: "failed",
         });
         recordRawLog("run.completed", {
           runId: run.id,
           sessionId: session.id,
           status: "failed",
+          completionMode: "failed",
         });
         return;
       }
@@ -7871,11 +8019,13 @@ async function runOrchestrator(
         runId: run.id,
         sessionId: session.id,
         status: "completed",
+        completionMode: "standard",
       });
       recordRawLog("run.completed", {
         runId: run.id,
         sessionId: session.id,
         status: "completed",
+        completionMode: "standard",
       });
     } else {
       const retrievalFallbackBriefing = buildRetrievalFallbackBriefing(input.message, toolHistory);
@@ -7904,6 +8054,7 @@ async function runOrchestrator(
           runId: run.id,
           sessionId: session.id,
           status: "completed",
+          completionMode: "retrieval_fallback",
         });
         recordRawLog("run.completed", {
           runId: run.id,
@@ -7938,11 +8089,13 @@ async function runOrchestrator(
         runId: run.id,
         sessionId: session.id,
         status: "timed_out",
+        completionMode: "timed_out",
       });
       recordRawLog("run.completed", {
         runId: run.id,
         sessionId: session.id,
         status: "timed_out",
+        completionMode: "timed_out",
       });
     }
   } catch (error) {
@@ -7999,11 +8152,13 @@ async function runOrchestrator(
       runId: run.id,
       sessionId: session.id,
       status: "failed",
+      completionMode: "failed",
     });
     recordRawLog("run.completed", {
       runId: run.id,
       sessionId: session.id,
       status: "failed",
+      completionMode: "failed",
       error: error instanceof Error ? error.message : "Unknown orchestrator error",
     });
     return;

@@ -12,6 +12,16 @@ This guide is for measuring the assistant end to end against live production run
 - total active books in the final answer
 - planned parallel shards
 - planned frontier works
+- estimated true breadth books
+- probe books shown
+- verified chunks at VM handoff
+- verified works at VM handoff
+- actual shard runs
+- successful shard runs
+- reused prior frontier works
+- reused prior verified works
+- reused prior chunks
+- completion mode
 - final answer usefulness
 - final answer uniqueness
 - final answer support for the original question
@@ -158,6 +168,16 @@ Read these fields when present:
 - `metrics.totalActiveBooksInFinalAnswer`
 - `metrics.plannedParallelShards`
 - `metrics.plannedFrontierWorks`
+- `metrics.estimatedTrueBreadthBooks`
+- `metrics.probeBooksShown`
+- `metrics.verifiedChunksAtVmHandoff`
+- `metrics.verifiedWorksAtVmHandoff`
+- `metrics.actualShardRuns`
+- `metrics.successfulShardRuns`
+- `metrics.reusedPriorFrontierWorks`
+- `metrics.reusedPriorVerifiedWorks`
+- `metrics.reusedPriorChunks`
+- `metrics.completionMode`
 - `metrics.booksMentioned`
 - `metrics.selectedWorkspaceBooks`
 - `metrics.activeBooksInFinalAnswer`
@@ -178,10 +198,14 @@ Current priorities, in order:
 5. `totalPassagesMentioned`
 6. `totalSelectedWorkspaceBooks`
 7. `totalActiveBooksInFinalAnswer`
-8. `usefulness`
-9. `uniqueness`
-10. `supportForQuestion`
-11. `openQuestionsCount`
+8. `verifiedChunksAtVmHandoff`
+9. `estimatedTrueBreadthBooks`
+10. `actualShardRuns`
+11. `successfulShardRuns`
+12. `usefulness`
+13. `uniqueness`
+14. `supportForQuestion`
+15. `openQuestionsCount`
 
 Healthy runs should:
 
@@ -189,6 +213,10 @@ Healthy runs should:
 - start `run_workspace_task` immediately after workspace readiness
 - surface multiple books before the VM finishes
 - keep the final answer grounded in several active books, not one or two
+- not enter the VM with `verifiedChunksAtVmHandoff = 0` on broad corpus runs
+- show `estimatedTrueBreadthBooks` materially larger than `probeBooksShown` on broad thematic prompts
+- have `successfulShardRuns` close to `plannedParallelShards` when intensity expects parallel fanout
+- show non-zero `reusedPrior*` metrics on genuine follow-up sessions
 
 ## 5. Run five-at-a-time experiments
 
@@ -201,6 +229,7 @@ For an experiment batch, record:
 - five run ids
 - per-run metrics
 - per-run answer-quality scores
+- per-run completion mode
 - min, median, max for each target metric
 - completion rate within the chosen deadline
 

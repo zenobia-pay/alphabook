@@ -303,6 +303,7 @@ test("orchestrator streams retrieval tool calls and final answer", async () => {
   assert.equal(runDetailsPayload.metrics?.totalCandidateBooks, 1);
   assert.equal(runDetailsPayload.metrics?.totalPassagesMentioned, 2);
   assert.equal(runDetailsPayload.metrics?.totalActiveBooksInFinalAnswer, 1);
+  assert.equal(runDetailsPayload.metrics?.completionMode, "standard");
   assert.equal(typeof runDetailsPayload.metrics?.timeToCompletionMs, "number");
 });
 
@@ -6357,6 +6358,192 @@ test("run metrics record candidate books from broad search_works passes", async 
   };
   assert.ok(typeof runDetailsPayload.metrics?.totalCandidateBooks === "number");
   assert.ok((runDetailsPayload.metrics?.totalCandidateBooks as number) >= 12);
+});
+
+test("run metrics record VM handoff quality, shard execution, and prior-evidence reuse", async () => {
+  const store = new InMemoryAppStore(
+    [
+      {
+        id: "work-1",
+        gutenbergId: 1,
+        title: "Grief Work One",
+        language: "en",
+        releaseDate: "1880-01-01",
+        rightsStatus: "public_domain",
+        summary: "A grief novel.",
+        authors: ["Author One"],
+        subjects: ["fiction", "grief"],
+        cleanTextKey: "gutenberg/clean/1/clean.txt",
+      },
+      {
+        id: "work-2",
+        gutenbergId: 2,
+        title: "Grief Work Two",
+        language: "en",
+        releaseDate: "1881-01-01",
+        rightsStatus: "public_domain",
+        summary: "Another grief novel.",
+        authors: ["Author Two"],
+        subjects: ["fiction", "grief"],
+        cleanTextKey: "gutenberg/clean/2/clean.txt",
+      },
+      {
+        id: "work-3",
+        gutenbergId: 3,
+        title: "Grief Work Three",
+        language: "en",
+        releaseDate: "1882-01-01",
+        rightsStatus: "public_domain",
+        summary: "A third grief novel.",
+        authors: ["Author Three"],
+        subjects: ["fiction", "grief"],
+        cleanTextKey: "gutenberg/clean/3/clean.txt",
+      },
+      {
+        id: "work-4",
+        gutenbergId: 4,
+        title: "Grief Work Four",
+        language: "en",
+        releaseDate: "1883-01-01",
+        rightsStatus: "public_domain",
+        summary: "A fourth grief novel.",
+        authors: ["Author Four"],
+        subjects: ["fiction", "grief"],
+        cleanTextKey: "gutenberg/clean/4/clean.txt",
+      },
+    ],
+    [],
+  );
+
+  let shardRuntimeCounter = 0;
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    router: new ScriptedRouter([
+      {
+        type: "tool_chain",
+        fullQuery: "Test grief follow-up breadth.",
+      },
+    ]),
+    planner: new ScriptedPlanner([
+      {
+        type: "tool_call",
+        tool_name: "run_workspace_task",
+        args: {
+          runtimeId: "runtime-main",
+          taskSpec: {
+            mode: "exhaustive_corpus_search",
+            intensity: "high",
+            question: "Test grief follow-up breadth.",
+            researchObjective: "Test grief follow-up breadth.",
+            taskIntent: "follow_up_refinement",
+            parallelism: 2,
+            workIds: ["work-1", "work-2"],
+            candidateWorkIds: ["work-1", "work-2", "work-3", "work-4"],
+            frontierWorkIds: ["work-1", "work-2", "work-3", "work-4"],
+            verifiedWorkIds: ["work-1", "work-2"],
+            verifiedChunkIds: ["chunk-1", "chunk-2"],
+            chunkIds: ["chunk-1", "chunk-2"],
+            followUpReuseMetrics: {
+              frontierWorkCount: 4,
+              verifiedWorkCount: 2,
+              chunkCount: 6,
+            },
+            shardPlan: [
+              {
+                shardId: "supporting",
+                label: "Supporting evidence",
+                strategy: "supporting_evidence",
+                axis: "retrieval_strategy",
+              },
+              {
+                shardId: "opposing",
+                label: "Opposing evidence",
+                strategy: "opposing_evidence",
+                axis: "retrieval_strategy",
+              },
+            ],
+          },
+        },
+      },
+      {
+        type: "final_answer",
+        answer: "Done.",
+        citations: [],
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        shardRuntimeCounter += 1;
+        return { ok: true, runtimeId: `runtime-${shardRuntimeCounter}` };
+      },
+      async runWorkspaceTask(input) {
+        const shardTaskSpec = input.taskSpec as Record<string, unknown>;
+        const shardLabel =
+          shardTaskSpec.shard && typeof shardTaskSpec.shard === "object" && typeof (shardTaskSpec.shard as Record<string, unknown>).label === "string"
+            ? String((shardTaskSpec.shard as Record<string, unknown>).label)
+            : "Shard";
+        return {
+          ok: true,
+          briefing: `${shardLabel} briefing`,
+          citations: [
+            {
+              workId: "work-1",
+              chunkId: "chunk-1",
+              label: `${shardLabel}#1`,
+              excerpt: "A grief excerpt.",
+              r2Key: "gutenberg/clean/1/chunks.jsonl",
+            },
+          ],
+        };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: false, files: [] };
+      },
+      async destroyWorkspace() {
+        return { ok: true };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const response = await app.request("/chat", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      userId: "metrics-explanatory-user",
+      message: "Test grief follow-up breadth.",
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  await response.text();
+
+  const sessions = await store.listSessions("metrics-explanatory-user");
+  const runs = await store.listRuns(sessions[0]!.id);
+  const runDetailsResponse = await app.request(`/sessions/${sessions[0]!.id}/runs/${runs[0]!.id}`);
+  assert.equal(runDetailsResponse.status, 200);
+  const runDetailsPayload = (await runDetailsResponse.json()) as {
+    metrics?: Record<string, unknown>;
+  };
+  assert.equal(runDetailsPayload.metrics?.verifiedChunksAtVmHandoff, 2);
+  assert.equal(runDetailsPayload.metrics?.verifiedWorksAtVmHandoff, 2);
+  assert.equal(runDetailsPayload.metrics?.actualShardRuns, 2);
+  assert.equal(runDetailsPayload.metrics?.successfulShardRuns, 2);
+  assert.equal(runDetailsPayload.metrics?.reusedPriorFrontierWorks, 4);
+  assert.equal(runDetailsPayload.metrics?.reusedPriorVerifiedWorks, 2);
+  assert.equal(runDetailsPayload.metrics?.reusedPriorChunks, 6);
 });
 
 test("synthesis preserves citation breadth across multiple verified works on broad runs", async () => {
