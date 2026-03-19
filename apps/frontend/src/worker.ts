@@ -9,6 +9,7 @@ export interface Env {
 type RewriterElement = {
   setAttribute(name: string, value: string): void;
   append(content: string, options?: { html?: boolean }): void;
+  before(content: string, options?: { html?: boolean }): void;
 };
 
 declare class HTMLRewriter {
@@ -29,6 +30,13 @@ type AssistantDocumentBootstrapPayload = {
   errorStatus?: number;
 };
 
+type AssistantDocumentArtifactSection = {
+  title?: unknown;
+  summary?: unknown;
+  meta?: unknown;
+  items?: unknown;
+};
+
 function buildBookHtmlKey(gutenbergId: string) {
   return `gutenberg/clean/${gutenbergId}/book.html`;
 }
@@ -47,6 +55,223 @@ function escapeInlineJson(value: unknown) {
     .replace(/&/g, "\\u0026")
     .replace(/\u2028/g, "\\u2028")
     .replace(/\u2029/g, "\\u2029");
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function firstNonEmptyString(...values: unknown[]) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return "";
+}
+
+function deriveDocumentTitle(bootstrap: AssistantDocumentBootstrapPayload) {
+  const explicitTitle = firstNonEmptyString(bootstrap.sessionTitle);
+  if (explicitTitle && explicitTitle.toLowerCase() !== "research log") {
+    return explicitTitle;
+  }
+  const messages = Array.isArray(bootstrap.messages) ? bootstrap.messages : [];
+  for (const message of messages) {
+    if (!message || typeof message !== "object") {
+      continue;
+    }
+    const record = message as { role?: unknown; content?: unknown };
+    if (record.role !== "user" || typeof record.content !== "string") {
+      continue;
+    }
+    const normalized = record.content.trim().replace(/\s+/g, " ");
+    if (normalized) {
+      return normalized.split(" ").slice(0, 8).join(" ");
+    }
+  }
+  return explicitTitle || "Research log";
+}
+
+function renderDocumentItemText(item: Record<string, unknown>) {
+  const linkLabel = typeof item.linkLabel === "string" ? item.linkLabel.trim() : "";
+  const text = typeof item.text === "string" ? item.text.trim() : "";
+  const citationText = typeof item.citationText === "string" ? item.citationText.trim() : "";
+  if (linkLabel && text.includes(linkLabel)) {
+    return `${text}${citationText ? ` ${citationText}` : ""}`;
+  }
+  if (text) {
+    return `${text}${citationText ? ` ${citationText}` : ""}`;
+  }
+  return linkLabel || citationText;
+}
+
+function renderAssistantDocumentFromArtifact(
+  bootstrap: AssistantDocumentBootstrapPayload,
+  rawArtifact: string,
+) {
+  try {
+    const parsed = JSON.parse(rawArtifact) as {
+      title?: unknown;
+      sections?: unknown;
+      ending?: unknown;
+    };
+    const sections = Array.isArray(parsed.sections) ? parsed.sections : [];
+    const renderedSections = sections.map((section) => {
+      if (!section || typeof section !== "object") {
+        return "";
+      }
+      const record = section as AssistantDocumentArtifactSection & Record<string, unknown>;
+      const title = firstNonEmptyString(record.title);
+      const summary = firstNonEmptyString(record.summary);
+      const meta = firstNonEmptyString(record.meta);
+      const items = Array.isArray(record.items) ? record.items : [];
+      const renderedItems = items.map((item) => {
+        if (!item || typeof item !== "object") {
+          return "";
+        }
+        const text = renderDocumentItemText(item as Record<string, unknown>);
+        if (!text) {
+          return "";
+        }
+        return `<p class="assistant-document-entry">${escapeHtml(text)}</p>`;
+      }).filter(Boolean).join("");
+      if (!title || !renderedItems) {
+        return "";
+      }
+      return [
+        `<details class="assistant-document-section" open>`,
+        `<summary class="assistant-document-section-summary">`,
+        `<span class="assistant-document-section-title-row">`,
+        `<span class="assistant-document-section-title">${escapeHtml(title)}</span>`,
+        meta ? `<span class="assistant-document-section-meta">${escapeHtml(meta)}</span>` : "",
+        `</span>`,
+        summary ? `<span class="assistant-document-section-kicker">${escapeHtml(summary)}</span>` : "",
+        `</summary>`,
+        `<div class="assistant-document-section-body">${renderedItems}</div>`,
+        `</details>`,
+      ].join("");
+    }).filter(Boolean).join("");
+    const ending = firstNonEmptyString(parsed.ending);
+    const title = firstNonEmptyString(deriveDocumentTitle(bootstrap), parsed.title);
+    if (!renderedSections && !ending) {
+      return null;
+    }
+    return [
+      `<section class="assistant-document-pane assistant-document-standalone" data-ssr="assistant-document">`,
+      `<div class="assistant-document-scroll">`,
+      `<div class="assistant-document-inner">`,
+      `<h1 class="assistant-document-entry is-title">${escapeHtml(title)}</h1>`,
+      renderedSections,
+      ending
+        ? `<details class="assistant-document-section assistant-document-section-ending" open><summary class="assistant-document-section-summary"><span class="assistant-document-section-title-row"><span class="assistant-document-section-title">Final Takeaway</span><span class="assistant-document-section-meta">summary</span></span><span class="assistant-document-section-kicker">What the run found and how it came together.</span></summary><div class="assistant-document-section-body"><p class="assistant-document-entry is-log">${escapeHtml(ending)}</p></div></details>`
+        : "",
+      `</div>`,
+      `</div>`,
+      `</section>`,
+    ].join("");
+  } catch {
+    return null;
+  }
+}
+
+function renderAssistantDocumentFromToolTrace(bootstrap: AssistantDocumentBootstrapPayload) {
+  const runState = bootstrap.runState && typeof bootstrap.runState === "object"
+    ? bootstrap.runState as { toolTrace?: unknown }
+    : null;
+  const toolTrace = Array.isArray(runState?.toolTrace) ? runState.toolTrace : [];
+  const sections = toolTrace.map((entry) => {
+    if (!entry || typeof entry !== "object") {
+      return "";
+    }
+    const record = entry as Record<string, unknown>;
+    const title = firstNonEmptyString(record.label, record.toolName);
+    const args = record.args && typeof record.args === "object" ? record.args as Record<string, unknown> : null;
+    const result = record.result && typeof record.result === "object" ? record.result as Record<string, unknown> : null;
+    const summary = firstNonEmptyString(result?.__summary, args?.__summary, record.rationale);
+    const works = Array.isArray(result?.works) ? result.works : [];
+    const chunks = Array.isArray(result?.chunks) ? result.chunks : [];
+    const workItems = works.slice(0, 6).map((work) => {
+      if (!work || typeof work !== "object") {
+        return "";
+      }
+      const titleText = firstNonEmptyString((work as Record<string, unknown>).title);
+      const authors = Array.isArray((work as Record<string, unknown>).authors)
+        ? ((work as Record<string, unknown>).authors as unknown[])
+          .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+          .join(", ")
+        : "";
+      if (!titleText) {
+        return "";
+      }
+      return `<p class="assistant-document-entry">${escapeHtml(`${titleText}${authors ? ` by ${authors}` : ""}`)}</p>`;
+    }).filter(Boolean).join("");
+    const chunkItems = chunks.slice(0, 6).map((chunk) => {
+      if (!chunk || typeof chunk !== "object") {
+        return "";
+      }
+      const text = firstNonEmptyString((chunk as Record<string, unknown>).text, (chunk as Record<string, unknown>).excerpt);
+      if (!text) {
+        return "";
+      }
+      return `<p class="assistant-document-entry is-log">${escapeHtml(text)}</p>`;
+    }).filter(Boolean).join("");
+    const body = chunkItems || workItems;
+    if (!title || (!summary && !body)) {
+      return "";
+    }
+    return [
+      `<details class="assistant-document-section" open>`,
+      `<summary class="assistant-document-section-summary">`,
+      `<span class="assistant-document-section-title-row">`,
+      `<span class="assistant-document-section-title">${escapeHtml(title)}</span>`,
+      `</span>`,
+      summary ? `<span class="assistant-document-section-kicker">${escapeHtml(summary)}</span>` : "",
+      `</summary>`,
+      body ? `<div class="assistant-document-section-body">${body}</div>` : "",
+      `</details>`,
+    ].join("");
+  }).filter(Boolean).join("");
+  if (!sections) {
+    return null;
+  }
+  return [
+    `<section class="assistant-document-pane assistant-document-standalone" data-ssr="assistant-document">`,
+    `<div class="assistant-document-scroll">`,
+    `<div class="assistant-document-inner">`,
+    `<h1 class="assistant-document-entry is-title">${escapeHtml(deriveDocumentTitle(bootstrap))}</h1>`,
+    sections,
+    `</div>`,
+    `</div>`,
+    `</section>`,
+  ].join("");
+}
+
+function renderAssistantDocumentMarkup(bootstrap: AssistantDocumentBootstrapPayload | null) {
+  if (!bootstrap || bootstrap.error) {
+    return null;
+  }
+  const runState = bootstrap.runState && typeof bootstrap.runState === "object"
+    ? bootstrap.runState as { artifacts?: unknown }
+    : null;
+  const artifacts = Array.isArray(runState?.artifacts) ? runState.artifacts : [];
+  for (const artifact of artifacts) {
+    if (!artifact || typeof artifact !== "object") {
+      continue;
+    }
+    const record = artifact as { filename?: unknown; content?: unknown };
+    if (record.filename === "research-document.json" && typeof record.content === "string" && record.content.trim().length > 0) {
+      const rendered = renderAssistantDocumentFromArtifact(bootstrap, record.content);
+      if (rendered) {
+        return rendered;
+      }
+    }
+  }
+  return renderAssistantDocumentFromToolTrace(bootstrap);
 }
 
 async function fetchApiJson(request: Request, env: Env, path: string) {
@@ -82,10 +307,9 @@ async function loadAssistantDocumentBootstrap(request: Request, env: Env, url: U
     };
   }
 
-  const [messagesResponse, runStateResponse, sessionsResponse] = await Promise.all([
+  const [messagesResponse, runStateResponse] = await Promise.all([
     fetchApiJson(request, env, `/sessions/${encodeURIComponent(sessionId)}/messages`),
-    fetchApiJson(request, env, `/sessions/${encodeURIComponent(sessionId)}/runs/${encodeURIComponent(runId)}`),
-    fetchApiJson(request, env, "/sessions"),
+    fetchApiJson(request, env, `/sessions/${encodeURIComponent(sessionId)}/runs/${encodeURIComponent(runId)}/document`),
   ]);
 
   const firstError = !runStateResponse.ok ? runStateResponse : !messagesResponse.ok ? messagesResponse : null;
@@ -105,16 +329,6 @@ async function loadAssistantDocumentBootstrap(request: Request, env: Env, url: U
   return {
     sessionId,
     runId,
-    sessionTitle:
-      sessionsResponse.ok
-      && sessionsResponse.json
-      && typeof sessionsResponse.json === "object"
-      && Array.isArray((sessionsResponse.json as { sessions?: Array<{ id?: unknown; title?: unknown }> }).sessions)
-        ? ((sessionsResponse.json as { sessions: Array<{ id?: unknown; title?: unknown }> }).sessions.find((session) => session?.id === sessionId)?.title)
-          && typeof (sessionsResponse.json as { sessions: Array<{ id?: unknown; title?: unknown }> }).sessions.find((session) => session?.id === sessionId)?.title === "string"
-            ? ((sessionsResponse.json as { sessions: Array<{ id?: unknown; title?: unknown }> }).sessions.find((session) => session?.id === sessionId)?.title as string)
-            : undefined
-        : undefined,
     messages:
       messagesResponse.json && typeof messagesResponse.json === "object" && Array.isArray((messagesResponse.json as { messages?: unknown[] }).messages)
         ? (messagesResponse.json as { messages: unknown[] }).messages
@@ -185,6 +399,8 @@ export default {
     headers.set("x-robots-tag", robots);
 
     const contentType = headers.get("content-type") ?? "";
+    let injectedAssistantDocumentBootstrap = false;
+    const assistantDocumentMarkup = renderAssistantDocumentMarkup(assistantDocumentBootstrap);
     const body = contentType.includes("text/html")
       ? new HTMLRewriter()
         .on("link[rel='canonical']", {
@@ -202,15 +418,36 @@ export default {
             element.setAttribute("content", robots);
           },
         })
+        .on("script[type='module'][src]", {
+          element(element) {
+            if (!assistantDocumentBootstrap || injectedAssistantDocumentBootstrap) {
+              return;
+            }
+            element.before(
+              `<script>window.__ALPHABOOK_ASSISTANT_DOCUMENT_BOOTSTRAP__=${escapeInlineJson(assistantDocumentBootstrap)};</script>`,
+              { html: true },
+            );
+            injectedAssistantDocumentBootstrap = true;
+          },
+        })
         .on("head", {
           element(element) {
-            if (!assistantDocumentBootstrap) {
+            if (!assistantDocumentBootstrap || injectedAssistantDocumentBootstrap) {
               return;
             }
             element.append(
               `<script>window.__ALPHABOOK_ASSISTANT_DOCUMENT_BOOTSTRAP__=${escapeInlineJson(assistantDocumentBootstrap)};</script>`,
               { html: true },
             );
+            injectedAssistantDocumentBootstrap = true;
+          },
+        })
+        .on("div#root", {
+          element(element) {
+            if (!assistantDocumentMarkup) {
+              return;
+            }
+            element.before(`<div id="assistant-document-ssr">${assistantDocumentMarkup}</div>`, { html: true });
           },
         })
         .transform(response).body

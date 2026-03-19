@@ -9330,6 +9330,32 @@ export function createApp(deps: AppDeps) {
     });
   });
 
+  app.get("/sessions/:sessionId/runs/:runId/document", async (c) => {
+    const sessionId = c.req.param("sessionId");
+    const runId = c.req.param("runId");
+    const session = await deps.store.getSession(sessionId);
+    if (!session) {
+      return c.json({ error: "Session not found." }, 404);
+    }
+    if (!(await canAccessSession(c, session))) {
+      return c.json({ error: "Not authorized for this session." }, 403);
+    }
+
+    const run = await deps.store.getRun(runId);
+    if (!run || run.sessionId !== sessionId) {
+      return c.json({ error: "Run not found." }, 404);
+    }
+    const reconciledRun = await reconcilePersistentRun(deps, c.req.raw, run, activeRuns);
+    const toolCalls = await deps.store.listToolCalls(runId);
+    const artifacts = await loadRunArtifacts(deps, sessionId, runId, toolCalls);
+
+    return c.json({
+      run: reconciledRun ?? run,
+      toolTrace: buildRecoveredToolTrace(toolCalls),
+      artifacts,
+    });
+  });
+
   app.get("/api/v1/sessions/:sessionId/runs/:runId", async (c) => {
     const sessionId = c.req.param("sessionId");
     const runId = c.req.param("runId");
@@ -9363,6 +9389,32 @@ export function createApp(deps: AppDeps) {
       artifacts,
       rawLog,
       metrics,
+    });
+  });
+
+  app.get("/api/v1/sessions/:sessionId/runs/:runId/document", async (c) => {
+    const sessionId = c.req.param("sessionId");
+    const runId = c.req.param("runId");
+    const session = await deps.store.getSession(sessionId);
+    if (!session) {
+      return c.json({ error: "Session not found." }, 404);
+    }
+    if (!(await canAccessSession(c, session))) {
+      return c.json({ error: "Not authorized for this session." }, 403);
+    }
+
+    const run = await deps.store.getRun(runId);
+    if (!run || run.sessionId !== sessionId) {
+      return c.json({ error: "Run not found." }, 404);
+    }
+    const reconciledRun = await reconcilePersistentRun(deps, c.req.raw, run, activeRuns);
+    const toolCalls = await deps.store.listToolCalls(runId);
+    const artifacts = await loadRunArtifacts(deps, sessionId, runId, toolCalls);
+
+    return c.json({
+      run: reconciledRun ?? run,
+      toolTrace: buildRecoveredToolTrace(toolCalls),
+      artifacts,
     });
   });
 

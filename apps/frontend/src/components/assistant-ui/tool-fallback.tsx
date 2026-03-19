@@ -149,12 +149,57 @@ function flattenRawLogLines(
 ) {
   const structuredLines = flattenStructuredLines(value);
   for (const line of structuredLines) {
-    lines.push({
+    const nextLine = {
       key: prefix ? `${prefix}.${line.key}` : line.key,
       value: line.value,
-    });
+    };
+    if (!isUsefulRawToolLine(nextLine)) {
+      continue;
+    }
+    lines.push(nextLine);
   }
   return lines;
+}
+
+function isUuidLike(value: string) {
+  return /\b[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\b/i.test(value);
+}
+
+function isUsefulRawToolLine(line: Pick<ToolLogLine, "key" | "value">) {
+  const key = line.key.trim();
+  const value = line.value.trim();
+  if (!value) {
+    return false;
+  }
+  if (/^(true|false|null|\[\]|\{…\})$/i.test(value)) {
+    return false;
+  }
+  if (/^\d+(?:\.\d+)?$/u.test(value)) {
+    return false;
+  }
+  if (isUuidLike(value)) {
+    return false;
+  }
+  if (/^(gutenberg\/|output\/|scratch\/|\/research run\/|[A-Za-z]:\\)/i.test(value)) {
+    return false;
+  }
+  if (key.length > 0) {
+    if (/^(works|chunks|probeWorks|frontierWorks|verifiedWorkIds|verifiedChunkIds|workIds|chunkIds)\[\d+\]/.test(key)) {
+      return false;
+    }
+    if (/^(taskSpec|taskContext)\.(downloads|fileCatalog|seedChunks|candidateWorkIds|frontierWorkIds|verifiedWorkIds|verifiedChunkIds)/.test(key)) {
+      return false;
+    }
+    if (/\.(subjects|authors|language|rightsStatus|gutenbergId|score|chunkIndex|readerPath)$/.test(key)) {
+      return false;
+    }
+  }
+  const letterCount = (value.match(/[A-Za-z]/g) ?? []).length;
+  const wordCount = value.split(/\s+/).filter(Boolean).length;
+  if (letterCount < 6 || wordCount < 2) {
+    return false;
+  }
+  return true;
 }
 
 function isPrimitive(value: unknown): value is string | number | boolean | null {

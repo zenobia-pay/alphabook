@@ -9,7 +9,7 @@ import { ChevronsLeft, ChevronsRight, Link2, MessageSquarePlus } from "lucide-re
 
 import { getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type PublicProfileResponse, type UserProfile, type WorkDetail, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
-import { ApiError, buildSignInUrl, buildSignOutUrl, cancelRun, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchCurrentUser, fetchMessages, fetchProfile, fetchRunState, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, getErrorMessage, queryAdminAnalytics, sendAnalyticsEvent, streamChat, streamRun, unfollowProfile, type RunArtifactRecord, type SessionRunRecord } from "./api";
+import { ApiError, buildSignInUrl, buildSignOutUrl, cancelRun, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchAssistantDocumentState, fetchCurrentUser, fetchMessages, fetchProfile, fetchRunState, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, getErrorMessage, queryAdminAnalytics, sendAnalyticsEvent, streamChat, streamRun, unfollowProfile, type RunArtifactRecord, type SessionRunRecord } from "./api";
 import { Thread } from "./components/assistant-ui/thread";
 import { Avatar, AvatarFallback, AvatarImage } from "./components/ui/avatar";
 import { Button } from "./components/ui/button";
@@ -3405,6 +3405,21 @@ function buildAssistantDocumentHref(sessionId: string, runId: string) {
   return `/?view=assistant_document&session=${encodeURIComponent(sessionId)}&run=${encodeURIComponent(runId)}`;
 }
 
+function deriveAssistantDocumentTitle(
+  sessionTitle: string | null | undefined,
+  messages: UiMessage[],
+) {
+  const explicitTitle = sessionTitle?.trim();
+  if (explicitTitle && !isGenericResearchDocumentTitle(explicitTitle)) {
+    return explicitTitle;
+  }
+  const firstUserText = messages.find((message) => message.role === "user" && typeof message.content === "string" && message.content.trim().length > 0);
+  if (firstUserText?.content) {
+    return firstUserText.content.trim().replace(/\s+/g, " ").split(" ").slice(0, 8).join(" ");
+  }
+  return explicitTitle || "Research log";
+}
+
 function readAssistantDocumentBootstrap(sessionId: string, runId: string) {
   if (typeof window === "undefined") {
     return null;
@@ -4145,17 +4160,24 @@ function AssistantDocumentFramePage({
     Array.isArray(bootstrap?.runState?.artifacts) ? bootstrap.runState.artifacts : []
   ));
   const [runStatus, setRunStatus] = useState<SessionRunRecord["status"] | null>(() => bootstrap?.runState?.run?.status ?? null);
-  const [sessionTitle, setSessionTitle] = useState<string>(() => bootstrap?.sessionTitle?.trim() || "Research log");
+  const [sessionTitle, setSessionTitle] = useState<string>(() => deriveAssistantDocumentTitle(bootstrap?.sessionTitle, bootstrapHydratedMessages));
   const [loading, setLoading] = useState(bootstrap ? false : true);
   const [error, setError] = useState<string | null>(bootstrap?.error ?? null);
   const [errorStatus, setErrorStatus] = useState<number | null>(bootstrap?.errorStatus ?? null);
+
+  useEffect(() => {
+    const serverRendered = document.getElementById("assistant-document-ssr");
+    if (serverRendered) {
+      serverRendered.remove();
+    }
+  }, []);
 
   useEffect(() => {
     setMessages(bootstrapHydratedMessages);
     setToolTrace(currentResearchToolTrace(bootstrapHydratedMessages, runId));
     setArtifacts(Array.isArray(bootstrap?.runState?.artifacts) ? bootstrap.runState.artifacts : []);
     setRunStatus(bootstrap?.runState?.run?.status ?? null);
-    setSessionTitle(bootstrap?.sessionTitle?.trim() || "Research log");
+    setSessionTitle(deriveAssistantDocumentTitle(bootstrap?.sessionTitle, bootstrapHydratedMessages));
     setLoading(bootstrap ? false : true);
     setError(bootstrap?.error ?? null);
     setErrorStatus(bootstrap?.errorStatus ?? null);
@@ -4169,7 +4191,7 @@ function AssistantDocumentFramePage({
       try {
         const [nextMessages, nextState] = await Promise.all([
           fetchMessages(sessionId),
-          fetchRunState(sessionId, runId),
+          fetchAssistantDocumentState(sessionId, runId),
         ]);
         if (cancelled) {
           return;
@@ -4182,6 +4204,7 @@ function AssistantDocumentFramePage({
         setToolTrace(currentResearchToolTrace(merged, runId));
         setArtifacts(Array.isArray(nextState.artifacts) ? nextState.artifacts : []);
         setRunStatus(nextState.run?.status ?? null);
+        setSessionTitle((current) => deriveAssistantDocumentTitle(current, merged));
         setLoading(false);
         setError(null);
         setErrorStatus(null);

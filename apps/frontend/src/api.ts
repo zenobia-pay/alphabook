@@ -177,6 +177,15 @@ export async function fetchRunState(sessionId: string, runId: string): Promise<R
   return await response.json() as RunStateRecord;
 }
 
+export async function fetchAssistantDocumentState(sessionId: string, runId: string): Promise<RunStateRecord> {
+  const response = await ensureOk(
+    await fetch(`${API_BASE}/sessions/${sessionId}/runs/${runId}/document`, {
+      credentials: "include",
+    }),
+  );
+  return await response.json() as RunStateRecord;
+}
+
 export async function fetchCurrentUser(): Promise<CurrentUserResponse> {
   const response = await ensureOk(
     await fetch(`${API_BASE}/me`, {
