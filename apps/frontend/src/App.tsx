@@ -127,6 +127,8 @@ const BOOK_ASSISTANT_MIN_WIDTH = 320;
 const BOOK_ASSISTANT_MAX_WIDTH = 720;
 const SEO_SITE_NAME = "alpha book";
 const SEO_SITE_ORIGIN = "https://alpha-book.org";
+const BOOK_CONTENT_ORIGIN = "https://books.alpha-book.org";
+const BOOK_CONTENT_VERSION = "20260319b";
 const DEFAULT_SEO_DESCRIPTION = "Search, read, and ask questions across a growing library of books with cited answers.";
 const DEFAULT_OG_IMAGE_PATH = "/social-card.svg";
 const ASSISTANT_WELCOME_SUGGESTIONS: ThreadSuggestion[] = [
@@ -2621,8 +2623,18 @@ function buildWorkHref(workId: string) {
 }
 
 function buildWorkContentHref(workId: string, gutenbergId?: string | number | null) {
-  void gutenbergId;
-  return `https://api.alpha-book.org/works/${encodeURIComponent(workId)}/content`;
+  if (gutenbergId != null && String(gutenbergId).trim().length > 0) {
+    return `${BOOK_CONTENT_ORIGIN}/${encodeURIComponent(String(gutenbergId))}?v=${BOOK_CONTENT_VERSION}`;
+  }
+  return `https://api.alpha-book.org/works/${encodeURIComponent(workId)}/content?v=${BOOK_CONTENT_VERSION}`;
+}
+
+function buildWorkContentFrameHref(workId: string, gutenbergId?: string | number | null, passageId?: string | null) {
+  const baseHref = buildWorkContentHref(workId, gutenbergId);
+  if (!passageId) {
+    return baseHref;
+  }
+  return `${baseHref}#${encodeURIComponent(passageId)}`;
 }
 
 function formatPassageLocation(chunkIndex: number | null) {
@@ -4832,7 +4844,7 @@ export default function App() {
                 <iframe
                   key={activeWorkId}
                   className="book-reader-frame"
-                  src={buildWorkContentHref(activeWorkId, activeWork.gutenbergId)}
+                  src={buildWorkContentFrameHref(activeWorkId, activeWork.gutenbergId, activePassageId)}
                   title={activeWork.title ? `${activeWork.title} text` : "Book text"}
                   loading="eager"
                 />

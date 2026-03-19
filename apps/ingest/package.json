@@ -5,7 +5,8 @@
   "type": "module",
   "dependencies": {
     "@alphabook/db": "0.1.0",
-    "@alphabook/source-gutenberg": "0.1.0"
+    "@alphabook/source-gutenberg": "0.1.0",
+    "linkedom": "^0.18.12"
   },
   "scripts": {
     "dev": "tsx watch src/index.ts",

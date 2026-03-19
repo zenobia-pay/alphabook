@@ -23,6 +23,7 @@ install -m 0755 "$SCRIPT_DIR/bin/gutenberg-rsync.sh" "$ALPHABOOK_ROOT/bin/gutenb
 install -m 0755 "$SCRIPT_DIR/bin/gutenberg-rsync-epub.sh" "$ALPHABOOK_ROOT/bin/gutenberg-rsync-epub.sh"
 install -m 0755 "$SCRIPT_DIR/bin/gutenberg-upload.sh" "$ALPHABOOK_ROOT/bin/gutenberg-upload.sh"
 install -m 0755 "$SCRIPT_DIR/bin/backfill-book-html-all.sh" "$ALPHABOOK_ROOT/bin/backfill-book-html-all.sh"
+install -m 0755 "$SCRIPT_DIR/bin/rebuild-book-html-all.sh" "$ALPHABOOK_ROOT/bin/rebuild-book-html-all.sh"
 install -m 0644 "$SCRIPT_DIR/systemd/alphabook-gutenberg-rsync.service" /etc/systemd/system/alphabook-gutenberg-rsync.service
 install -m 0644 "$SCRIPT_DIR/systemd/alphabook-gutenberg-rsync.timer" /etc/systemd/system/alphabook-gutenberg-rsync.timer
 install -m 0644 "$SCRIPT_DIR/systemd/alphabook-gutenberg-rsync-epub.service" /etc/systemd/system/alphabook-gutenberg-rsync-epub.service
@@ -40,6 +41,7 @@ Runner: $ALPHABOOK_ROOT/bin/gutenberg-rsync.sh
 EPUB runner: $ALPHABOOK_ROOT/bin/gutenberg-rsync-epub.sh
 Uploader: $ALPHABOOK_ROOT/bin/gutenberg-upload.sh
 Book HTML backfill: $ALPHABOOK_ROOT/bin/backfill-book-html-all.sh
+Book HTML rebuild: $ALPHABOOK_ROOT/bin/rebuild-book-html-all.sh
 
 Useful commands:
   systemctl status alphabook-gutenberg-rsync.timer

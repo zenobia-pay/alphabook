@@ -4,6 +4,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
 import { DeleteObjectsCommand, GetObjectCommand, S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import { parseHTML } from "linkedom";
 import { createNeonDb } from "@alphabook/db";
 import { listMirrorIds, resolveMirrorSource } from "@alphabook/source-gutenberg/mirror";
 import { gutenbergCorpusKeys } from "@alphabook/source-gutenberg/storage";
@@ -168,6 +169,32 @@ function normalizeWhitespace(value: string) {
   return value.replace(/\s+/g, " ").trim();
 }
 
+function normalizeReaderText(input: string, preserveLineBreaks = false) {
+  const normalized = input
+    .replace(/\u00a0/g, " ")
+    .replace(/\r\n/g, "\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .trim();
+
+  if (preserveLineBreaks) {
+    return normalized.replace(/\n{3,}/g, "\n\n").trim();
+  }
+
+  return normalized.replace(/\s+/g, " ").trim();
+}
+
+function hashText(value: string) {
+  let hash = 0;
+  for (const character of value) {
+    hash = (hash * 33 + character.charCodeAt(0)) >>> 0;
+  }
+  return hash.toString(36);
+}
+
+function createReaderPassageId(index: number, text: string) {
+  return `passage-${index + 1}-${hashText(text).slice(0, 6)}`;
+}
+
 function createExcerpt(value: string, maxLength = 240) {
   const normalized = normalizeWhitespace(stripTags(value));
   if (normalized.length <= maxLength) {
@@ -188,10 +215,10 @@ function sanitizeSourceHtml(content: string) {
 }
 
 function renderTextSource(content: string) {
-  const paragraphs = content
+  const paragraphs = stripGutenbergBoilerplate(content)
     .replace(/\r\n/g, "\n")
     .split(/\n{2,}/)
-    .map((paragraph) => paragraph.trim())
+    .map((paragraph) => normalizeReaderText(paragraph, true))
     .filter((paragraph) => paragraph.length > 0);
 
   if (paragraphs.length === 0) {
@@ -199,12 +226,47 @@ function renderTextSource(content: string) {
   }
 
   return paragraphs
-    .map((paragraph) => `<p>${escapeHtml(paragraph).replace(/\n/g, "<br />")}</p>`)
+    .map((paragraph, index) => {
+      const passageId = createReaderPassageId(index, paragraph);
+      return `<p id="${passageId}" data-passage-id="${passageId}">${escapeHtml(paragraph).replace(/\n/g, "<br />")}</p>`;
+    })
     .join("\n");
 }
 
+function renderAnchoredHtmlSource(content: string) {
+  const sanitized = sanitizeSourceHtml(content);
+  const { document } = parseHTML(`<!doctype html><html><body>${sanitized}</body></html>`);
+
+  for (const node of Array.from(document.querySelectorAll("script, style, link, meta, base, noscript, iframe"))) {
+    node.remove();
+  }
+
+  const selector = "h1, h2, h3, h4, h5, h6, p, li, blockquote, pre";
+  const blocks = Array.from(document.body.querySelectorAll(selector)).filter((element) => !element.parentElement?.closest(selector));
+  let passageIndex = 0;
+
+  for (const element of blocks) {
+    const tagName = element.tagName.toLowerCase();
+    const rawText = tagName === "pre"
+      ? element.textContent ?? ""
+      : (element.textContent ?? "").replace(/\s+/g, " ");
+    const text = normalizeReaderText(rawText, tagName === "pre");
+    if (!text) {
+      continue;
+    }
+
+    const passageText = tagName === "li" ? `• ${text}` : text;
+    const passageId = createReaderPassageId(passageIndex, passageText);
+    passageIndex += 1;
+    element.setAttribute("id", passageId);
+    element.setAttribute("data-passage-id", passageId);
+  }
+
+  return document.body.innerHTML;
+}
+
 function renderSourceMarkup(rawSource: string, sourceFormat: "text" | "html") {
-  return sourceFormat === "html" ? sanitizeSourceHtml(rawSource) : renderTextSource(rawSource);
+  return sourceFormat === "html" ? renderAnchoredHtmlSource(rawSource) : renderTextSource(rawSource);
 }
 
 function renderTagList(values: string[] | null | undefined) {
@@ -308,6 +370,14 @@ function buildBookHtmlArtifact(input: {
       }
       .reader-body p, .reader-body li, .reader-body blockquote, .reader-body pre {
         margin: 0 0 1.15em;
+      }
+      .reader-body [data-passage-id] {
+        scroll-margin-top: 24px;
+      }
+      .reader-body :target {
+        background: rgba(143, 79, 42, 0.12);
+        border-radius: 10px;
+        outline: none;
       }
       .reader-body blockquote {
         margin-left: 0;
@@ -853,6 +923,45 @@ async function listWorksMissingBookHtml(context: IngestContext, limit: number, s
   } satisfies ExistingBookHtmlWork));
 }
 
+async function listBookHtmlWorks(context: IngestContext, limit: number, startAfterGutenbergId?: string | null) {
+  const rows = await context.db.query<{
+    work_id: string;
+    gutenberg_id: string;
+    title: string;
+    summary: string | null;
+    language: string | null;
+    release_date: string | null;
+    metadata_json: Record<string, unknown> | null;
+  }>(
+    `
+      SELECT
+        w.id AS work_id,
+        w.gutenberg_id::bigint::text AS gutenberg_id,
+        w.title,
+        w.summary,
+        w.language,
+        w.release_date::text AS release_date,
+        w.metadata_json
+      FROM works w
+      WHERE w.gutenberg_id IS NOT NULL
+        AND ($1::bigint IS NULL OR w.gutenberg_id > $1::bigint)
+      ORDER BY w.gutenberg_id ASC
+      LIMIT $2
+    `,
+    [startAfterGutenbergId ? Number(startAfterGutenbergId) : null, limit],
+  );
+
+  return rows.rows.map((row) => ({
+    workId: row.work_id,
+    gutenbergId: String(row.gutenberg_id),
+    title: row.title,
+    summary: row.summary,
+    language: row.language,
+    releaseDate: row.release_date,
+    metadata: row.metadata_json ?? {},
+  } satisfies ExistingBookHtmlWork));
+}
+
 async function persistBookHtmlArtifact(
   context: IngestContext,
   work: ExistingBookHtmlWork,
@@ -902,6 +1011,33 @@ async function backfillBookHtml(context: IngestContext, options: { startAfterId?
     const result = await persistBookHtmlArtifact(context, work);
     results.push(result);
   }
+  return {
+    processed: results.length,
+    nextStartAfterId: works.length > 0 ? works[works.length - 1].gutenbergId : options.startAfterId ?? null,
+    results,
+  };
+}
+
+async function rebuildBookHtml(
+  context: IngestContext,
+  options: { startAfterId?: string | null; limit: number; concurrency?: number },
+) {
+  const works = await listBookHtmlWorks(context, options.limit, options.startAfterId ?? null);
+  const results: Array<Record<string, unknown>> = [];
+
+  const concurrency = Math.max(1, Number(options.concurrency ?? process.env.BOOK_HTML_REBUILD_CONCURRENCY ?? "8"));
+  let cursor = 0;
+
+  async function worker() {
+    while (cursor < works.length) {
+      const work = works[cursor++];
+      const result = await persistBookHtmlArtifact(context, work);
+      results.push(result);
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, works.length || 1) }, () => worker()));
+
   return {
     processed: results.length,
     nextStartAfterId: works.length > 0 ? works[works.length - 1].gutenbergId : options.startAfterId ?? null,
@@ -1161,6 +1297,17 @@ async function main() {
       return;
     }
 
+    if (command === "rebuild-book-html") {
+      const [startAfterId, limitValue, concurrencyValue] = args;
+      const result = await rebuildBookHtml(context, {
+        startAfterId: startAfterId && startAfterId !== "-" ? startAfterId : null,
+        limit: Number(limitValue ?? process.env.BOOK_HTML_BATCH_SIZE ?? "100"),
+        concurrency: Number(concurrencyValue ?? process.env.BOOK_HTML_REBUILD_CONCURRENCY ?? "8"),
+      });
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
     if (command === "delete-gutenberg") {
       if (args.length === 0) {
         throw new Error("Usage: delete-gutenberg <gutenbergId...>");
@@ -1176,6 +1323,7 @@ async function main() {
     console.log("  backfill-mirror [startAfterId|-] [limit]");
     console.log("  backfill-mirror-parallel [startAfterId|-] [limit] [concurrency]");
     console.log("  backfill-book-html [startAfterId|-] [limit]");
+    console.log("  rebuild-book-html [startAfterId|-] [limit] [concurrency]");
     console.log("  delete-gutenberg <gutenbergId...>");
     console.log("  run-once");
   } finally {

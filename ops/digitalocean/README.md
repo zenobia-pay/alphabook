@@ -10,6 +10,7 @@ Target layout on the VM:
 - `/srv/alphabook/bin/gutenberg-rsync-epub.sh`
 - `/srv/alphabook/bin/gutenberg-upload.sh`
 - `/srv/alphabook/bin/backfill-book-html-all.sh`
+- `/srv/alphabook/bin/rebuild-book-html-all.sh`
 - `/etc/systemd/system/alphabook-gutenberg-rsync.service`
 - `/etc/systemd/system/alphabook-gutenberg-rsync.timer`
 - `/etc/systemd/system/alphabook-gutenberg-rsync-epub.service`
@@ -32,6 +33,7 @@ That script:
 - installs the EPUB/RDF rsync runner into `/srv/alphabook/bin`
 - installs the upload runner into `/srv/alphabook/bin`
 - installs the full book HTML backfill runner into `/srv/alphabook/bin`
+- installs the full book HTML rebuild runner into `/srv/alphabook/bin`
 - installs the systemd services and timers
 - enables the daily timers
 
@@ -85,6 +87,12 @@ To backfill missing static book HTML for existing works without re-running full 
 
 ```bash
 sudo /srv/alphabook/bin/backfill-book-html-all.sh
+```
+
+To regenerate every stored static book HTML artifact after a template or anchor update:
+
+```bash
+sudo /srv/alphabook/bin/rebuild-book-html-all.sh
 ```
 
 To upload automatically after each mirror refresh, set:
