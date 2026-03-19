@@ -61,6 +61,7 @@ type UrlState = {
   view: ViewMode;
   sessionId: string | null | undefined;
   workId: string | null | undefined;
+  readerPath: string | null | undefined;
   profileUserId: string | null | undefined;
   runId: string | null | undefined;
   adminSection: "runs" | "users" | "analytics" | "incidents" | "logs";
@@ -128,7 +129,7 @@ const BOOK_ASSISTANT_MAX_WIDTH = 720;
 const SEO_SITE_NAME = "alpha book";
 const SEO_SITE_ORIGIN = "https://alpha-book.org";
 const BOOK_CONTENT_ORIGIN = "https://books.alpha-book.org";
-const BOOK_CONTENT_VERSION = "20260319i";
+const BOOK_CONTENT_VERSION = "20260319j";
 const DEFAULT_SEO_DESCRIPTION = "Search, read, and ask questions across a growing library of books with cited answers.";
 const DEFAULT_OG_IMAGE_PATH = "/social-card.svg";
 const ASSISTANT_WELCOME_SUGGESTIONS: ThreadSuggestion[] = [
@@ -314,6 +315,7 @@ function readUrlState(): UrlState {
       view: "assistant",
       sessionId: undefined,
       workId: undefined,
+      readerPath: undefined,
       profileUserId: undefined,
       runId: undefined,
       adminSection: "runs",
@@ -330,6 +332,7 @@ function readUrlState(): UrlState {
     view: pathnameMatch ? "book" : profilePathMatch ? "profile" : isViewMode(resolvedView) ? resolvedView : "assistant",
     sessionId: params.has("session") ? params.get("session") || null : undefined,
     workId: pathnameMatch ? decodeURIComponent(pathnameMatch[1]) : params.has("work") ? params.get("work") || null : undefined,
+    readerPath: params.has("reader") ? params.get("reader") || null : undefined,
     profileUserId: profilePathMatch ? decodeURIComponent(profilePathMatch[1]) : params.has("profile") ? params.get("profile") || null : undefined,
     runId: params.has("run") ? params.get("run") || null : undefined,
     adminSection:
@@ -383,6 +386,11 @@ function writeUrlState(next: UrlState, mode: UrlWriteMode = "replace") {
     url.searchParams.set("session", next.sessionId);
   } else {
     url.searchParams.delete("session");
+  }
+  if (next.view === "book" && next.readerPath) {
+    url.searchParams.set("reader", next.readerPath);
+  } else {
+    url.searchParams.delete("reader");
   }
   if (next.view !== "book" && next.workId) {
     url.searchParams.set("work", next.workId);
@@ -3275,7 +3283,37 @@ function buildWorkContentHref(workId: string, gutenbergId?: string | number | nu
   return `/api/works/${encodeURIComponent(workId)}/content?v=${BOOK_CONTENT_VERSION}`;
 }
 
-function buildWorkContentFrameHref(workId: string, gutenbergId?: string | number | null, passageId?: string | null) {
+function appendBookVersionToReaderPath(readerPath: string) {
+  const url = new URL(readerPath, BOOK_CONTENT_ORIGIN);
+  url.searchParams.set("v", BOOK_CONTENT_VERSION);
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
+function normalizeReaderPath(readerPath: string | null | undefined, gutenbergId?: string | number | null) {
+  if (!readerPath || gutenbergId == null || String(gutenbergId).trim().length === 0) {
+    return null;
+  }
+  try {
+    const url = new URL(readerPath, BOOK_CONTENT_ORIGIN);
+    if (url.origin !== BOOK_CONTENT_ORIGIN) {
+      return null;
+    }
+    const prefix = `/${encodeURIComponent(String(gutenbergId))}/`;
+    if (!url.pathname.startsWith(prefix) && url.pathname !== prefix.slice(0, -1)) {
+      return null;
+    }
+    url.searchParams.delete("v");
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return null;
+  }
+}
+
+function buildWorkContentFrameHref(workId: string, gutenbergId?: string | number | null, passageId?: string | null, readerPath?: string | null) {
+  const normalizedReaderPath = normalizeReaderPath(readerPath, gutenbergId);
+  if (normalizedReaderPath && gutenbergId != null && String(gutenbergId).trim().length > 0) {
+    return `${BOOK_CONTENT_ORIGIN}${appendBookVersionToReaderPath(normalizedReaderPath)}`;
+  }
   if (gutenbergId != null && String(gutenbergId).trim().length > 0 && passageId) {
     return `${BOOK_CONTENT_ORIGIN}/${encodeURIComponent(String(gutenbergId))}/passages/${encodeURIComponent(passageId)}?v=${BOOK_CONTENT_VERSION}`;
   }
@@ -3811,6 +3849,7 @@ export default function App() {
   const [activeWorkSource, setActiveWorkSource] = useState<WorkSource | null>(null);
   const [activeWorkLoading, setActiveWorkLoading] = useState(false);
   const [activeWorkSourceLoading, setActiveWorkSourceLoading] = useState(false);
+  const [activeReaderPath, setActiveReaderPath] = useState<string | null | undefined>(initialUrlState.readerPath);
   const [pendingCitation, setPendingCitation] = useState<Citation | null>(null);
   const [activePassageId, setActivePassageId] = useState<string | null>(null);
   const [highlightedPassageExcerpt, setHighlightedPassageExcerpt] = useState<string | null>(null);
@@ -4012,6 +4051,7 @@ export default function App() {
       setActiveView(next.view);
       setSelectedSessionId(next.sessionId);
       setActiveWorkId(next.workId);
+      setActiveReaderPath(next.readerPath);
       setActiveProfileUserId(next.profileUserId);
       setSelectedAdminRunId(next.runId);
       setAdminSection(next.adminSection);
@@ -4029,13 +4069,14 @@ export default function App() {
       view: activeView,
       sessionId: selectedSessionId,
       workId: activeWorkId,
+      readerPath: activeReaderPath,
       profileUserId: activeProfileUserId,
       runId: selectedAdminRunId,
       adminSection,
       debugEnabled,
     }, pendingUrlWriteModeRef.current);
     pendingUrlWriteModeRef.current = "replace";
-  }, [activeView, selectedSessionId, activeWorkId, activeProfileUserId, selectedAdminRunId, adminSection, debugEnabled]);
+  }, [activeView, selectedSessionId, activeWorkId, activeReaderPath, activeProfileUserId, selectedAdminRunId, adminSection, debugEnabled]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -4298,6 +4339,55 @@ export default function App() {
     }
     setPendingCitation(null);
   }, [activeWork, pendingCitation, readerPassages]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const handleReaderLocation = (event: MessageEvent) => {
+      if (event.origin !== BOOK_CONTENT_ORIGIN) {
+        return;
+      }
+      const data = event.data;
+      if (!data || typeof data !== "object" || data === null || (data as { type?: string }).type !== "alphabook-reader-location") {
+        return;
+      }
+      const path = typeof (data as { path?: unknown }).path === "string" ? (data as { path: string }).path : null;
+      const normalized = normalizeReaderPath(path, activeWork?.gutenbergId ?? null);
+      if (!normalized || normalized === activeReaderPath) {
+        return;
+      }
+      pendingUrlWriteModeRef.current = "replace";
+      setActiveReaderPath(normalized);
+    };
+
+    window.addEventListener("message", handleReaderLocation);
+    return () => window.removeEventListener("message", handleReaderLocation);
+  }, [activeReaderPath, activeWork?.gutenbergId]);
+
+  useEffect(() => {
+    if (!activeWorkId) {
+      setActiveReaderPath(null);
+    }
+  }, [activeWorkId]);
+
+  useEffect(() => {
+    if (!pendingCitation) {
+      return;
+    }
+    setActiveReaderPath(null);
+  }, [pendingCitation]);
+
+  useEffect(() => {
+    if (!activeWork?.gutenbergId) {
+      return;
+    }
+    const normalized = normalizeReaderPath(activeReaderPath, activeWork.gutenbergId);
+    if (activeReaderPath && !normalized) {
+      setActiveReaderPath(null);
+    }
+  }, [activeReaderPath, activeWork?.gutenbergId]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -5402,6 +5492,7 @@ export default function App() {
     });
     setMobileNavOpen(false);
     setPendingCitation(null);
+    setActiveReaderPath(null);
     setActiveProfileUserId(null);
     setActiveWorkId(workId);
     startNewBookChat();
@@ -5420,6 +5511,7 @@ export default function App() {
     });
     setMobileNavOpen(false);
     setPendingCitation(citation);
+    setActiveReaderPath(null);
     setActiveProfileUserId(null);
     setActiveWorkId(citation.workId);
     setActiveView("book");
@@ -5622,7 +5714,7 @@ export default function App() {
                 <iframe
                   key={activeWorkId}
                   className="book-reader-frame"
-                  src={buildWorkContentFrameHref(activeWorkId, activeWork.gutenbergId, activePassageId)}
+                  src={buildWorkContentFrameHref(activeWorkId, activeWork.gutenbergId, activePassageId, activeReaderPath)}
                   title={activeWork.title ? `${activeWork.title} text` : "Book text"}
                   loading="eager"
                 />

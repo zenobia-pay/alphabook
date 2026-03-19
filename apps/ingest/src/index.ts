@@ -312,7 +312,7 @@ function createBookSectionId(title: string, index: number) {
   return `section-${slugify(title)}-${index + 1}`;
 }
 
-const STATIC_BOOK_CONTENT_VERSION = "20260319i";
+const STATIC_BOOK_CONTENT_VERSION = "20260319j";
 
 function withBookVersion(href: string, fragment?: string | null) {
   const separator = href.includes("?") ? "&" : "?";
@@ -347,9 +347,9 @@ function renderBookStaticStyles() {
         text-underline-offset: 0.14em;
       }
       .page-shell {
-        width: min(72ch, calc(100vw - 32px));
+        width: min(84ch, calc(100vw - 12px));
         margin: 0 auto;
-        padding: 8px 0 18px;
+        padding: 4px 0 14px;
       }
       .hero {
         display: grid;
@@ -471,8 +471,8 @@ function renderBookStaticStyles() {
       }
       @media (max-width: 780px) {
         .page-shell {
-          width: min(100vw - 24px, 100%);
-          padding: 8px 0 16px;
+          width: min(100vw - 8px, 100%);
+          padding: 2px 0 12px;
         }
         .reader-body {
           font-size: 1.06rem;
@@ -498,6 +498,15 @@ function renderBookSelectionScript() {
           ? new Intl.Segmenter(document.documentElement.lang || undefined, { granularity: "sentence" })
           : null;
         let activeTarget = null;
+
+        function emitReaderLocation() {
+          try {
+            window.parent?.postMessage({
+              type: "alphabook-reader-location",
+              path: window.location.pathname + window.location.hash,
+            }, "*");
+          } catch {}
+        }
 
         function clearHighlight() {
           if (activeTarget) {
@@ -694,6 +703,7 @@ function renderBookSelectionScript() {
             }
             history.replaceState(null, "", "#" + anchorId);
             applyHash(false);
+            emitReaderLocation();
             return;
           }
           const block = target.closest("[data-passage-id]");
@@ -708,20 +718,27 @@ function renderBookSelectionScript() {
           if (/^H[1-6]$/.test(block.tagName)) {
             history.replaceState(null, "", "#" + passageId);
             applyHash(false);
+            emitReaderLocation();
             return;
           }
           if (block.tagName === "PRE") {
             history.replaceState(null, "", "#" + passageId);
             applyHash(false);
+            emitReaderLocation();
             return;
           }
           const sentenceIndex = sentenceIndexFromClick(block, event);
           history.replaceState(null, "", "#sentence-" + passageId + "-" + String(sentenceIndex + 1));
           applyHash(false);
+          emitReaderLocation();
         });
 
-        window.addEventListener("hashchange", () => applyHash(true));
+        window.addEventListener("hashchange", () => {
+          applyHash(true);
+          emitReaderLocation();
+        });
         applyHash(true);
+        emitReaderLocation();
       })();
   `;
 }
