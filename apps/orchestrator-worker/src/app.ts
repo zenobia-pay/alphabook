@@ -911,7 +911,7 @@ function searchPlanFromEstimate(
       wallClockMinutes = 5;
       parallelism = 1;
       shardAxis = "none";
-      frontierWorks = 24;
+      frontierWorks = 32;
       break;
     case "high":
       wallClockMinutes = 15;
@@ -1179,6 +1179,17 @@ function chunkSeedLimitForTaskMode(mode: unknown) {
   return mode === "exhaustive_corpus_search" ? 24 : 12;
 }
 
+function minimumVerifiedChunkFloorForTask(mode: unknown, intensity: "normal" | "high" | "maximum") {
+  const base = mode === "exhaustive_corpus_search" ? 8 : 4;
+  if (intensity === "maximum") {
+    return base + 4;
+  }
+  if (intensity === "high") {
+    return base + 2;
+  }
+  return base;
+}
+
 function buildWorkspaceSeedPassageQuery(taskSpec: Record<string, unknown>) {
   const searchHints = taskSpec.searchHints && typeof taskSpec.searchHints === "object"
     ? taskSpec.searchHints as Record<string, unknown>
@@ -1215,6 +1226,49 @@ function buildPassageQueryVariants(query: string, scopedWorkCount = 0, maxVarian
     .map((value) => value.replace(/\s+/gu, " ").trim())
     .filter((value) => value.length > 0)
     .slice(0, maxVariants);
+}
+
+function collectConfirmedWorkIds(
+  toolHistory: Array<{
+    toolName: ToolName;
+    args: Record<string, unknown>;
+    result: Record<string, unknown>;
+    progressDetails?: Array<Record<string, unknown>>;
+  }>,
+) {
+  const workIds = new Set<string>();
+  for (const entry of toolHistory) {
+    if (entry.toolName === "get_relevant_chunks" && Array.isArray(entry.result.verifiedWorkIds)) {
+      for (const workId of entry.result.verifiedWorkIds) {
+        if (typeof workId === "string" && workId.trim().length > 0) {
+          workIds.add(workId);
+        }
+      }
+    }
+    if (entry.toolName === "get_relevant_chunks" && Array.isArray(entry.result.chunks)) {
+      for (const chunk of entry.result.chunks as Array<Record<string, unknown>>) {
+        if (typeof chunk?.workId === "string" && chunk.workId.trim().length > 0) {
+          workIds.add(chunk.workId);
+        }
+      }
+    }
+    if (!Array.isArray(entry.progressDetails)) {
+      continue;
+    }
+    for (const detail of entry.progressDetails) {
+      if (!detail || typeof detail !== "object") {
+        continue;
+      }
+      if (
+        (detail.type === "research.work" || detail.type === "research.chunk")
+        && typeof detail.workId === "string"
+        && detail.workId.trim().length > 0
+      ) {
+        workIds.add(detail.workId);
+      }
+    }
+  }
+  return [...workIds];
 }
 
 function mergeChunkSearchResults(results: ChunkSearchResult[][], limit: number): ChunkSearchResult[] {
@@ -1839,6 +1893,9 @@ async function executeTool(
         const existingChunkIds = Array.isArray(taskSpec.chunkIds)
           ? taskSpec.chunkIds.filter((value): value is string => typeof value === "string")
           : [];
+        const existingVerifiedChunkIds = Array.isArray(taskSpec.verifiedChunkIds)
+          ? taskSpec.verifiedChunkIds.filter((value): value is string => typeof value === "string")
+          : [];
         const taskIntensity = taskSpec.intensity === "maximum" || taskSpec.intensity === "high" || taskSpec.intensity === "normal"
           ? taskSpec.intensity
           : "normal";
@@ -1852,10 +1909,11 @@ async function executeTool(
           }
           return base;
         })();
-        if (frontierWorkIds.length > 0 && existingChunkIds.length < Math.max(8, Math.floor(desiredSeedChunkCount / 2))) {
+        const minimumVerifiedChunkCount = minimumVerifiedChunkFloorForTask(taskSpec.mode, taskIntensity);
+        if (frontierWorkIds.length > 0 && existingVerifiedChunkIds.length < minimumVerifiedChunkCount) {
           const seedQuery = buildWorkspaceSeedPassageQuery(taskSpec);
           if (seedQuery.length > 0) {
-            const variantCount = taskIntensity === "maximum" ? 5 : taskIntensity === "high" ? 4 : 3;
+            const variantCount = taskIntensity === "maximum" ? 5 : taskIntensity === "high" ? 4 : 4;
             const seedQueries = buildPassageQueryVariants(seedQuery, frontierWorkIds.length, variantCount);
             const seedChunkBatches: ChunkSearchResult[][] = [];
             for (const variant of seedQueries.length > 0 ? seedQueries : [seedQuery]) {
@@ -1883,8 +1941,10 @@ async function executeTool(
               );
               seedChunkBatches.push(seedChunks);
             }
-            if (taskIntensity === "maximum" && seedChunkBatches.flat().length < Math.max(8, Math.floor(desiredSeedChunkCount / 3))) {
-              for (const variant of seedQueries.slice(0, Math.max(2, Math.ceil(seedQueries.length / 2)))) {
+            const needsBroadSeedFallback = seedChunkBatches.flat().length < minimumVerifiedChunkCount;
+            if (needsBroadSeedFallback) {
+              const broadVariantCount = taskIntensity === "maximum" ? Math.max(2, Math.ceil(seedQueries.length / 2)) : 1;
+              for (const variant of seedQueries.slice(0, broadVariantCount)) {
                 let embedding: number[] | undefined;
                 try {
                   embedding = await deps.embedder.embedQuery(variant, {
@@ -1899,7 +1959,10 @@ async function executeTool(
                 const broadSeedChunks = await deps.store.getRelevantChunks(
                   variant,
                   undefined,
-                  Math.min(Math.max(desiredSeedChunkCount, 24), Math.max(desiredSeedChunkCount * 2, 48)),
+                  Math.min(
+                    Math.max(desiredSeedChunkCount, taskIntensity === "normal" ? 20 : 24),
+                    Math.max(desiredSeedChunkCount * 2, taskIntensity === "normal" ? 32 : 48),
+                  ),
                   embedding,
                 );
                 seedChunkBatches.push(broadSeedChunks);
@@ -1927,6 +1990,8 @@ async function executeTool(
               taskSpec.verifiedChunkIds = seedChunks
                 .map((chunk) => chunk.id)
                 .filter((value): value is string => typeof value === "string")
+                .concat(existingVerifiedChunkIds)
+                .filter((value, index, all) => all.indexOf(value) === index)
                 .slice(0, desiredSeedChunkCount);
               taskSpec.workIds = uniqueWorkIds([
                 ...verifiedWorkIds,
@@ -3110,6 +3175,37 @@ function ensureCitationBreadth(
     }
   }
   return dedupeAppCitations(selected).slice(0, 8);
+}
+
+function buildRetrievalFallbackBriefing(
+  userMessage: string,
+  toolHistory: ToolHistoryEntry[],
+): { answer: string; citations: Citation[] } | null {
+  const confirmedWorkIds = new Set(collectConfirmedWorkIds(toolHistory));
+  const availableCitations = collectSynthesisCitations([], toolHistory);
+  const filteredCitations = confirmedWorkIds.size > 0
+    ? availableCitations.filter((citation) => confirmedWorkIds.has(citation.workId))
+    : availableCitations;
+  const distinctWorkIds = uniqueWorkIds(filteredCitations.map((citation) => citation.workId));
+  const broadCorpusQuery = isBroadCorpusResearchQuery(userMessage, distinctWorkIds.length);
+  const minimumCitations = broadCorpusQuery ? 4 : 2;
+  const minimumWorks = broadCorpusQuery ? 2 : 1;
+  if (filteredCitations.length < minimumCitations || distinctWorkIds.length < minimumWorks) {
+    return null;
+  }
+
+  const researchDocument = (buildSynthesisResearchDocument(toolHistory) ?? "").trim();
+  const answer = [
+    "The deeper research VM did not finish within the active time budget, so this answer is synthesized from the verified retrieval evidence collected before timeout.",
+    researchDocument.length > 0 ? researchDocument : null,
+  ]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .join("\n\n");
+
+  return {
+    answer,
+    citations: ensureCitationBreadth(userMessage, filteredCitations.slice(0, 8), filteredCitations),
+  };
 }
 
 function runtimeIdFromToolCall(toolCall: Awaited<ReturnType<AppStore["listToolCalls"]>>[number]) {
@@ -6357,12 +6453,17 @@ async function runOrchestrator(
     const broadCorpusQuery = isBroadCorpusResearchQuery(routedQueryRef.current, Array.isArray(input.workIds) ? input.workIds.length : 0);
     const estimate = latestScopeEstimateFromHistory(toolHistory);
     const searchPlan = searchPlanFromEstimate(estimate, broadCorpusQuery, input.intensityOverride);
-    const workLimit = Math.max(broadCorpusQuery ? 40 : 12, Math.min(64, searchPlan.frontierWorks));
+    const workLimit = Math.max(broadCorpusQuery ? (searchPlan.intensity === "normal" ? 48 : 40) : 12, Math.min(72, searchPlan.frontierWorks));
     const candidateLimit = broadCorpusQuery
-      ? Math.max(16, Math.min(24, Math.ceil(searchPlan.frontierWorks / 4)))
+      ? searchPlan.intensity === "normal"
+        ? Math.max(20, Math.min(28, Math.ceil(searchPlan.frontierWorks * 0.75)))
+        : Math.max(16, Math.min(24, Math.ceil(searchPlan.frontierWorks / 4)))
       : Math.max(8, Math.min(16, searchPlan.frontierWorks));
     const chunkLimit = Math.max(broadCorpusQuery ? 64 : 24, Math.min(128, searchPlan.frontierWorks * 2));
-    const seedChunkLimit = Math.max(broadCorpusQuery ? 40 : 16, Math.min(80, searchPlan.frontierWorks));
+    const seedChunkLimit = Math.max(
+      broadCorpusQuery ? (searchPlan.intensity === "normal" ? 48 : 40) : 16,
+      Math.min(96, searchPlan.frontierWorks),
+    );
     const scopedWorkIds = Array.isArray(input.workIds) ? input.workIds.slice(0, workLimit) : [];
     const searchWorks = searchWorksFromHistory();
     const metadataWorks = metadataWorksFromHistory();
@@ -6817,6 +6918,15 @@ async function runOrchestrator(
           : "I’m spinning up the deeper research workspace now so retrieval can feed into it immediately.",
       );
     }
+    const currentTimeBudgetMs = () => {
+      const estimate = latestScopeEstimateFromHistory(toolHistory);
+      const broadCorpusQuery = isBroadCorpusResearchQuery(routedQueryRef.current, Array.isArray(input.workIds) ? input.workIds.length : 0);
+      const searchPlan = searchPlanFromEstimate(estimate, broadCorpusQuery, input.intensityOverride);
+      return Math.min(
+        HARD_LIMITS.MAX_RUN_WALL_CLOCK_SECONDS * 1000,
+        Math.max(60_000, searchPlan.wallClockMinutes * 60_000),
+      );
+    };
     for (let turn = 1; turn <= HARD_LIMITS.MAX_TURNS; turn += 1) {
       await harvestPendingWorkspace(false);
       if (activeRuns.get(run.id)?.cancelRequested) {
@@ -6833,11 +6943,21 @@ async function runOrchestrator(
             buildBackgroundWorkspaceTaskSpec(runtimeId),
             Array.isArray(input.workIds) && input.workIds.length > 0
               ? "I’m starting the deeper research run now while metadata and passage search keep collecting evidence."
-              : "I’m starting the deeper research run now while metadata and passage search keep collecting evidence.",
+            : "I’m starting the deeper research run now while metadata and passage search keep collecting evidence.",
           );
         }
       }
-      if ((deps.now?.() ?? Date.now()) - started > HARD_LIMITS.MAX_RUN_WALL_CLOCK_SECONDS * 1000) {
+      const elapsedMs = (deps.now?.() ?? Date.now()) - started;
+      if (elapsedMs > currentTimeBudgetMs()) {
+        recordRawLog("run.time_budget_reached", {
+          runId: run.id,
+          sessionId: session.id,
+          elapsedMs,
+          timeBudgetMs: currentTimeBudgetMs(),
+        });
+        break;
+      }
+      if (elapsedMs > HARD_LIMITS.MAX_RUN_WALL_CLOCK_SECONDS * 1000) {
         break;
       }
       await deps.store.updateRun(run.id, {
@@ -7243,6 +7363,7 @@ async function runOrchestrator(
       }
     }
 
+    await harvestPendingWorkspace(true);
     const completedBriefing = latestCompletedBriefing(toolHistory);
     if (completedBriefing) {
       await deps.store.updateRun(run.id, {
@@ -7276,6 +7397,41 @@ async function runOrchestrator(
         status: "completed",
       });
     } else {
+      const retrievalFallbackBriefing = buildRetrievalFallbackBriefing(input.message, toolHistory);
+      if (retrievalFallbackBriefing) {
+        await deps.store.updateRun(run.id, {
+          status: "completed",
+          completedAt: new Date().toISOString(),
+        });
+        await synthesizeAnswer(
+          deps,
+          {
+            request,
+            userId: session.userId,
+            sessionId: session.id,
+            runId: run.id,
+            userMessage: input.message,
+            conversationHistory,
+            plannerDraft: retrievalFallbackBriefing.answer,
+            plannerCitations: retrievalFallbackBriefing.citations,
+            toolHistory,
+            auditLog: recordRawLog,
+          },
+          send,
+        );
+        await send("run.completed", {
+          runId: run.id,
+          sessionId: session.id,
+          status: "completed",
+        });
+        recordRawLog("run.completed", {
+          runId: run.id,
+          sessionId: session.id,
+          status: "completed",
+          completionMode: "retrieval_fallback",
+        });
+        return;
+      }
       await deps.store.updateRun(run.id, {
         status: "timed_out",
         completedAt: new Date().toISOString(),

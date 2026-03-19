@@ -467,13 +467,13 @@ function buildTaskContext(context: PlannerContext, workIds: string[], chunks: Ch
 function buildWorkspaceTaskSpec(context: PlannerContext, workIds: string[], chunks: ChunkSearchResult[]) {
   const broadCorpusQuery = isBroadCorpusQuery(context);
   const estimate = scopeEstimate(context);
-  const recommendedFrontierWorks = estimateNumber(estimate, "recommendedFrontierWorks", broadCorpusQuery ? 24 : 12);
+  const recommendedFrontierWorks = estimateNumber(estimate, "recommendedFrontierWorks", broadCorpusQuery ? 32 : 12);
   const recommendedParallelism = estimateNumber(estimate, "recommendedParallelism", broadCorpusQuery ? 2 : 1);
   const workLimit = broadCorpusQuery
-    ? Math.max(24, Math.min(40, Math.ceil(recommendedFrontierWorks / 3)))
+    ? Math.max(32, Math.min(48, Math.ceil(recommendedFrontierWorks * 0.75)))
     : Math.max(12, Math.min(18, recommendedFrontierWorks));
   const chunkLimit = Math.max(broadCorpusQuery ? 72 : 24, Math.min(128, recommendedFrontierWorks * 2));
-  const seedChunkLimit = Math.max(broadCorpusQuery ? 48 : 16, Math.min(96, recommendedFrontierWorks));
+  const seedChunkLimit = Math.max(broadCorpusQuery ? 56 : 16, Math.min(96, recommendedFrontierWorks));
   const metadata = metadataWorks(context);
   const search = searchWorks(context);
   const searchFrontier = searchFrontierWorks(context);
