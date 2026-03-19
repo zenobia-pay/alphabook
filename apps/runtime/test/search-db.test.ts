@@ -33,6 +33,25 @@ test("multiline implies a non-zero window", () => {
   assert.equal(args.window, 1);
 });
 
+test("parseArgs supports work-search date filters", () => {
+  const args = parseArgs([
+    "works",
+    "--query",
+    "grief mourning fiction",
+    "--language",
+    "en",
+    "--year-from",
+    "1800",
+    "--year-to",
+    "1899",
+  ]);
+
+  assert.equal(args.query, "grief mourning fiction");
+  assert.equal(args.language, "en");
+  assert.equal(args.yearFrom, 1800);
+  assert.equal(args.yearTo, 1899);
+});
+
 test("globToRegex handles single and double star wildcards", () => {
   const regex = new RegExp(globToRegex("gutenberg/clean/**/clean.txt"));
   assert.equal(regex.test("gutenberg/clean/9/clean.txt"), true);

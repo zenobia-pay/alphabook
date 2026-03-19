@@ -34,6 +34,7 @@ type ToolTraceEntry = {
   label: string;
   rationale?: string;
   progress: string[];
+  progressDetails?: Array<Record<string, unknown>>;
   args: Record<string, unknown>;
   result?: Record<string, unknown>;
   isError?: boolean;
@@ -425,6 +426,9 @@ function normalizeToolTraceEntry(entry: Record<string, unknown>, index: number):
   const progress = Array.isArray(entry.progress)
     ? entry.progress.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     : [];
+  const progressDetails = Array.isArray(entry.progressDetails)
+    ? entry.progressDetails.filter((value): value is Record<string, unknown> => Boolean(value) && typeof value === "object")
+    : [];
   const result = entry.result && typeof entry.result === "object" ? (entry.result as Record<string, unknown>) : undefined;
   const resultIndicatesError =
     result?.ok === false
@@ -455,6 +459,7 @@ function normalizeToolTraceEntry(entry: Record<string, unknown>, index: number):
     label: typeof entry.label === "string" ? entry.label : getToolLabel(toolName),
     rationale: typeof entry.rationale === "string" ? entry.rationale : undefined,
     progress,
+    ...(progressDetails.length > 0 ? { progressDetails } : {}),
     args: entry.args && typeof entry.args === "object" ? (entry.args as Record<string, unknown>) : {},
     result,
     isError: entry.isError === true || resultIndicatesError || state === "error",
@@ -632,6 +637,10 @@ function mergePersistedToolTrace(messages: UiMessage[], runId: string, trace: Ar
         label: existing.label || entry.label,
         rationale: existing.rationale ?? entry.rationale,
         progress: nextProgress,
+        progressDetails:
+          Array.isArray(existing.progressDetails) && existing.progressDetails.length >= (entry.progressDetails?.length ?? 0)
+            ? existing.progressDetails
+            : entry.progressDetails,
         args: nextArgs,
         result: nextResult,
         isError: entry.isError || existing.isError,
@@ -2361,6 +2370,35 @@ type ResearchDocumentModel = {
   }>;
 };
 
+function appendProgressDetail(
+  details: Array<Record<string, unknown>> | undefined,
+  detail: Record<string, unknown>,
+) {
+  const existing = Array.isArray(details) ? details : [];
+  const fingerprint = JSON.stringify(detail);
+  if (existing.some((candidate) => JSON.stringify(candidate) === fingerprint)) {
+    return existing;
+  }
+  return [...existing, detail];
+}
+
+function progressDetailString(value: unknown) {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : "";
+}
+
+function progressDetailNumber(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function buildProgressChunkCitation(detail: Record<string, unknown>) {
+  const title = progressDetailString(detail.workTitle) || progressDetailString(detail.title) || progressDetailString(detail.workId);
+  const authors = Array.isArray(detail.authors)
+    ? detail.authors.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    : [];
+  const chunkIndex = progressDetailNumber(detail.chunkIndex);
+  return `${title}${authors.length > 0 ? `, by ${authors.join(", ")}` : ""}, ${formatPassageLocation(chunkIndex)}`;
+}
+
 function researchArtifacts(artifacts: RunArtifactRecord[]) {
   return artifacts.filter((artifact) => {
     const kind = typeof artifact.metadata?.kind === "string" ? artifact.metadata.kind : "";
@@ -2609,6 +2647,49 @@ function buildResearchDocument(title: string, toolTrace: ToolTraceEntry[], artif
       text: summarizeToolSentence(entry),
       kind: "log",
     });
+
+    for (const [index, detail] of (entry.progressDetails ?? []).entries()) {
+      const detailType = progressDetailString(detail.type);
+      if (detailType === "research.work") {
+        const workId = progressDetailString(detail.workId) || `${entry.id}:progress-work:${index}`;
+        const titleText = progressDetailString(detail.workTitle) || progressDetailString(detail.title) || workId;
+        const authors = Array.isArray(detail.authors)
+          ? detail.authors.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+          : [];
+        appendDocumentEntry(entries, seen, {
+          key: `progress-book:${workId}`,
+          kind: "book",
+          text: `${titleText}${authors.length > 0 ? ` by ${authors.join(", ")}` : ""} was surfaced during the deeper research pass.`.trim(),
+          linkLabel: titleText,
+          linkHref: buildWorkHref(workId),
+          workId,
+          prefix: "",
+          suffix: `${authors.length > 0 ? ` by ${authors.join(", ")}` : ""} was surfaced during the deeper research pass.`.trim(),
+        });
+        continue;
+      }
+      if (detailType === "research.chunk") {
+        const workId = progressDetailString(detail.workId) || "work";
+        const chunkId = progressDetailString(detail.chunkId) || `${entry.id}:progress-chunk:${index}`;
+        const excerpt = progressDetailString(detail.excerpt).slice(0, 440);
+        const citationText = buildProgressChunkCitation(detail);
+        appendDocumentEntry(entries, seen, {
+          key: `progress-chunk:${chunkId}`,
+          kind: "chunk",
+          text: excerpt,
+          citationText,
+          linkLabel: citationText,
+          linkHref: buildWorkHref(workId),
+          citation: {
+            workId,
+            ...(progressDetailString(detail.chunkId) ? { chunkId: progressDetailString(detail.chunkId) } : {}),
+            label: progressDetailString(detail.workTitle) || progressDetailString(detail.title) || workId,
+            excerpt: excerpt || citationText,
+            ...(progressDetailString(detail.r2Key) ? { r2Key: progressDetailString(detail.r2Key) } : {}),
+          },
+        });
+      }
+    }
 
     if (entry.toolName === "search_works" || entry.toolName === "get_work_metadata") {
       const works = Array.isArray(entry.result?.works) ? entry.result.works as Array<Record<string, unknown>> : [];
@@ -4268,12 +4349,18 @@ export default function App() {
               const toolCallId = typeof event.data.toolCallId === "string" ? event.data.toolCallId : null;
               const toolName = event.data.toolName;
               const rationale = event.data.text;
+              const detail = event.data.detail && typeof event.data.detail === "object"
+                ? event.data.detail as Record<string, unknown>
+                : undefined;
               activityLog = activityLog.map((entry): ToolTraceEntry =>
                 (toolCallId ? entry.id === toolCallId : entry.toolName === toolName && entry.state === "running")
                   ? {
                       ...entry,
                       rationale,
                       progress: entry.progress.includes(rationale) ? entry.progress : [...entry.progress, rationale],
+                      ...(detail
+                        ? { progressDetails: appendProgressDetail(entry.progressDetails, detail) }
+                        : {}),
                     }
                   : entry,
               );

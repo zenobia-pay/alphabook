@@ -1486,9 +1486,27 @@ function normalizeRuntimeProgressLine(event: Record<string, unknown>): string | 
 
   const type = typeof event.type === "string" ? event.type : "";
   const line = typeof event.line === "string" ? event.line.trim() : "";
+  const title = typeof event.workTitle === "string" ? event.workTitle.trim() : "";
+  const authors = Array.isArray(event.authors)
+    ? event.authors.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    : [];
+  const chunkIndex = typeof event.chunkIndex === "number" ? event.chunkIndex : null;
 
   if (type === "codex.stdout" || type === "codex.stderr") {
     return line || null;
+  }
+  if (type === "research.work") {
+    return title
+      ? `Surfaced ${title}${authors.length > 0 ? ` by ${authors.join(", ")}` : ""}.`
+      : rawMessage;
+  }
+  if (type === "research.chunk") {
+    return title
+      ? `Reviewed a passage from ${title}${chunkIndex !== null ? ` around passage ${chunkIndex}` : ""}.`
+      : rawMessage;
+  }
+  if (type === "research.seed_summary") {
+    return rawMessage;
   }
 
   if (type === "codex.step.prepared") {
@@ -2547,18 +2565,27 @@ type LiveToolTraceEntry = {
   label: string;
   rationale?: string;
   progress: string[];
+  progressDetails?: Array<Record<string, unknown>>;
   args: Record<string, unknown>;
   result?: Record<string, unknown>;
   state: "running" | "completed" | "error";
   isError?: boolean;
 };
 
-function appendToolProgress(entry: LiveToolTraceEntry, nextText: string): LiveToolTraceEntry {
+function appendToolProgress(
+  entry: LiveToolTraceEntry,
+  nextText: string,
+  detail?: Record<string, unknown>,
+): LiveToolTraceEntry {
   const progress = entry.progress.includes(nextText) ? entry.progress : [...entry.progress, nextText];
+  const progressDetails = detail
+    ? [...(entry.progressDetails ?? []), structuredClone(detail)]
+    : entry.progressDetails;
   return {
     ...entry,
     rationale: progress[progress.length - 1] ?? entry.rationale,
     progress,
+    ...(progressDetails ? { progressDetails } : {}),
   };
 }
 
@@ -2583,6 +2610,11 @@ function cloneLiveToolTraceEntries(toolCalls: LiveToolTraceEntry[]): LiveToolTra
   return toolCalls.map((entry) => ({
     ...entry,
     progress: [...entry.progress],
+    ...(Array.isArray(entry.progressDetails)
+      ? {
+          progressDetails: entry.progressDetails.map((detail) => structuredClone(detail)),
+        }
+      : {}),
     args: structuredClone(entry.args),
     result: entry.result ? structuredClone(entry.result) : undefined,
   }));
@@ -2612,6 +2644,7 @@ function buildRecoveredToolTrace(
       toolName: toolCall.toolName,
       label: labelForToolCall(toolCall.toolName, normalizedArgs),
       progress: [],
+      progressDetails: [],
       args: {
         __logLines: startedLogLines,
       },
@@ -3990,7 +4023,7 @@ async function runOrchestrator(
   const flushToolProgress = async (
     toolCallId: string,
     context: { runId: string; toolName: ToolName },
-    onEmit: (text: string) => Promise<void>,
+    onEmit: (text: string, detail?: Record<string, unknown>) => Promise<void>,
   ) => {
     const buffer = progressBuffers.get(toolCallId);
     if (!buffer) {
@@ -4033,9 +4066,13 @@ async function runOrchestrator(
       text: string;
       detail?: Record<string, unknown>;
     },
-    onEmit: (text: string) => Promise<void>,
+    onEmit: (text: string, detail?: Record<string, unknown>) => Promise<void>,
   ) => {
     recordRawLog("tool.progress.raw", payload);
+    if (typeof payload.detail?.type === "string" && payload.detail.type.startsWith("research.")) {
+      void onEmit(payload.text, payload.detail);
+      return;
+    }
     const buffer = progressBuffers.get(payload.toolCallId) ?? {
       toolName: payload.toolName,
       lines: [],
@@ -4062,12 +4099,12 @@ async function runOrchestrator(
   };
 
   const flushAllToolProgress = async (
-    onEmit: (toolCallId: string, toolName: ToolName, text: string) => Promise<void>,
+    onEmit: (toolCallId: string, toolName: ToolName, text: string, detail?: Record<string, unknown>) => Promise<void>,
   ) => {
     await Promise.all(
       Array.from(progressBuffers.entries()).map(([toolCallId, buffer]) =>
-        flushToolProgress(toolCallId, { runId: "", toolName: buffer.toolName }, (text) =>
-          onEmit(toolCallId, buffer.toolName, text)
+        flushToolProgress(toolCallId, { runId: "", toolName: buffer.toolName }, (text, detail) =>
+          onEmit(toolCallId, buffer.toolName, text, detail)
         ),
       ),
     );
@@ -4488,10 +4525,10 @@ async function runOrchestrator(
             text: data.text,
             detail: data.detail && typeof data.detail === "object" ? data.detail as Record<string, unknown> : undefined,
           },
-          async (progressText) => {
+          async (progressText, detail) => {
             liveToolTrace = liveToolTrace.map((entry) =>
               entry.id === data.toolCallId
-                ? appendToolProgress(entry, progressText)
+                ? appendToolProgress(entry, progressText, detail)
                 : entry,
             );
             await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
@@ -4500,6 +4537,7 @@ async function runOrchestrator(
               toolCallId: data.toolCallId,
               toolName,
               text: progressText,
+              ...(detail ? { detail } : {}),
             });
           },
         );
@@ -4581,20 +4619,21 @@ async function runOrchestrator(
               runId: run.id,
               toolName,
             },
-            async (progressText) => {
+            async (progressText, detail) => {
               liveToolTrace = liveToolTrace.map((entry) =>
                 entry.id === toolRecord.id
-                  ? appendToolProgress(entry, progressText)
+                  ? appendToolProgress(entry, progressText, detail)
                   : entry,
               );
               await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
-                  await send("tool.progress", {
-                    runId: run.id,
-                    toolCallId: toolRecord.id,
-                    toolName,
-                    text: progressText,
-                  });
-                },
+              await send("tool.progress", {
+                runId: run.id,
+                toolCallId: toolRecord.id,
+                toolName,
+                text: progressText,
+                ...(detail ? { detail } : {}),
+              });
+            },
           );
         }
         if (pendingWorkspaceExecution) {
@@ -4945,10 +4984,10 @@ async function runOrchestrator(
               text: data.text,
               detail: data.detail && typeof data.detail === "object" ? data.detail as Record<string, unknown> : undefined,
             },
-            async (progressText) => {
+            async (progressText, detail) => {
               liveToolTrace = liveToolTrace.map((entry) =>
                 entry.id === data.toolCallId
-                  ? appendToolProgress(entry, progressText)
+                  ? appendToolProgress(entry, progressText, detail)
                   : entry,
               );
               await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
@@ -4957,6 +4996,7 @@ async function runOrchestrator(
                 toolCallId: data.toolCallId,
                 toolName: toolCall.tool_name,
                 text: progressText,
+                ...(detail ? { detail } : {}),
               });
             },
           );
@@ -5043,10 +5083,10 @@ async function runOrchestrator(
             runId: run.id,
             toolName: toolCall.tool_name,
           },
-          async (progressText) => {
+          async (progressText, detail) => {
             liveToolTrace = liveToolTrace.map((entry) =>
               entry.id === toolRecord.id
-                ? appendToolProgress(entry, progressText)
+                ? appendToolProgress(entry, progressText, detail)
                 : entry,
             );
             await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
@@ -5055,6 +5095,7 @@ async function runOrchestrator(
               toolCallId: toolRecord.id,
               toolName: toolCall.tool_name,
               text: progressText,
+              ...(detail ? { detail } : {}),
             });
           },
         );
@@ -5255,10 +5296,10 @@ async function runOrchestrator(
     return;
   } finally {
     await harvestPendingWorkspace(true);
-    await flushAllToolProgress(async (toolCallId, toolName, text) => {
+    await flushAllToolProgress(async (toolCallId, toolName, text, detail) => {
       liveToolTrace = liveToolTrace.map((entry) =>
         entry.id === toolCallId
-          ? appendToolProgress(entry, text)
+          ? appendToolProgress(entry, text, detail)
           : entry,
       );
       await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
@@ -5267,6 +5308,7 @@ async function runOrchestrator(
         toolCallId,
         toolName,
         text,
+        ...(detail ? { detail } : {}),
       });
     });
     if (pendingSessionTitleUpdate) {

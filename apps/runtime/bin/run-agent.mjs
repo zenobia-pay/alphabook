@@ -271,11 +271,18 @@ function expandWithNeighbors(hits, byWork) {
 function normalizeChunkRecord(chunk, workById) {
   const workId = String(chunk.work_id || chunk.workId || "");
   const work = workById.get(workId);
+  const chunkWorkTitle =
+    typeof chunk.workTitle === "string" && chunk.workTitle.trim()
+      ? chunk.workTitle.trim()
+      : typeof chunk.title === "string" && chunk.title.trim()
+        ? chunk.title.trim()
+        : null;
+  const chunkAuthors = Array.isArray(chunk.authors) ? chunk.authors : [];
   return {
     chunkId: String(chunk.id || chunk.chunkId || ""),
     workId,
-    workTitle: typeof work?.title === "string" ? work.title : null,
-    authors: Array.isArray(work?.authors) ? work.authors : [],
+    workTitle: typeof work?.title === "string" ? work.title : chunkWorkTitle,
+    authors: Array.isArray(work?.authors) && work.authors.length > 0 ? work.authors : chunkAuthors,
     chunkIndex:
       typeof chunk.chunk_index === "number"
         ? chunk.chunk_index
@@ -889,6 +896,7 @@ function compactTaskContext(taskContext) {
 }
 
 function compactTaskSpec(task, openBookMode) {
+  const retrieval = task && typeof task.retrieval === "object" ? task.retrieval : null;
   return {
     runtimeId: typeof task.runtimeId === "string" ? task.runtimeId : null,
     taskType: typeof task.taskType === "string" ? task.taskType : null,
@@ -907,6 +915,30 @@ function compactTaskSpec(task, openBookMode) {
     dedupe: typeof task.dedupe === "boolean" ? task.dedupe : null,
     prefer: Array.isArray(task.prefer) ? task.prefer.slice(0, 6).map((item) => normalizeWhitespace(String(item)).slice(0, 120)) : [],
     openBookMode,
+    workIds: sampleStrings(task.workIds, 12),
+    chunkIds: sampleStrings(task.chunkIds, 16),
+    candidateWorkIds: sampleStrings(task.candidateWorkIds, 16),
+    retrieval: retrieval
+      ? {
+          searchWorks: Array.isArray(retrieval.searchWorks)
+            ? retrieval.searchWorks.slice(0, 12).map((work) => ({
+                id: typeof work?.id === "string" ? work.id : null,
+                title: typeof work?.title === "string" ? work.title : null,
+                authors: Array.isArray(work?.authors) ? work.authors.slice(0, 3) : [],
+                summary: typeof work?.summary === "string" ? normalizeWhitespace(work.summary).slice(0, 220) : null,
+              }))
+            : [],
+          seedChunks: Array.isArray(retrieval.seedChunks)
+            ? retrieval.seedChunks.slice(0, 12).map((chunk) => ({
+                id: typeof chunk?.id === "string" ? chunk.id : null,
+                workId: typeof chunk?.workId === "string" ? chunk.workId : null,
+                title: typeof chunk?.title === "string" ? chunk.title : null,
+                chunkIndex: typeof chunk?.chunkIndex === "number" ? chunk.chunkIndex : null,
+                excerpt: typeof chunk?.excerpt === "string" ? normalizeWhitespace(chunk.excerpt).slice(0, 180) : null,
+              }))
+            : [],
+        }
+      : null,
     taskContext: compactTaskContext(task.taskContext),
   };
 }
@@ -955,6 +987,7 @@ function buildBriefingPrompt(runtimePrompt, manifest, task, evidence, question) 
     "Constraints:",
     "- Only use local files under /workspace.",
     "- Start from the local schema, the book metadata, the file catalog, and any seed evidence already in the workspace.",
+    "- If the task spec already includes candidate books or seed chunks, start there before you widen the search.",
     openBookMode
       ? "- Stay inside the current hydrated book unless the local evidence is clearly insufficient."
       : "- Start from the best available seed evidence, but widen across the full corpus whenever the prompt asks for a broad theme, comparison, or survey.",
@@ -965,6 +998,8 @@ function buildBriefingPrompt(runtimePrompt, manifest, task, evidence, question) 
     openBookMode
       ? "- Search the local clean text and local chunks first with rg and sed. Use the remote Postgres corpus CLI only as a fallback."
       : "- Use the remote Postgres database through the local corpus CLI at node /workspace/context/search-db.mjs as your main corpus-wide search surface. Do not assume relevant books are hydrated locally.",
+    "- If a whole-corpus regex query times out, do not repeat it unscoped. Narrow with works metadata results first, then run rg with explicit --work filters.",
+    "- Preserve any year, language, or fiction constraints from the question when you query works metadata or widen into passage search.",
     "- The CLI turns corpus-wide search requests into SQL over the remote chunks table and returns results in plain text or JSON so you can keep working with normal shell tools.",
     "- Guaranteed tools in this runtime image: node, python/python3, jq, rg, sed, awk, grep, cat, mkdir.",
     "- node /workspace/context/search-db.mjs rg behaves like ripgrep over the remote chunks table and can be piped into sed, awk, jq, and other shell tools.",
@@ -977,7 +1012,7 @@ function buildBriefingPrompt(runtimePrompt, manifest, task, evidence, question) 
     "  node /workspace/context/search-db.mjs rg -i 'anger|rage' | sed -n '1,40p'",
     "  node /workspace/context/search-db.mjs rg -U --window 2 'love.*again' --kind clean_text --json | jq '.hits[:10]'",
     "  node /workspace/context/search-db.mjs rg -i 'wrath|anger' --glob 'gutenberg/clean/**/clean.txt' --json | jq '.hits[:10]'",
-    "  node /workspace/context/search-db.mjs works --query 'break up reconcile lovers'",
+    "  node /workspace/context/search-db.mjs works --query 'break up reconcile lovers' --year-from 1800 --year-to 1899",
     "  node /workspace/context/search-db.mjs neighbors --chunk-id <chunkId> --radius 2",
     "- Always copy chunk IDs exactly as returned by the CLI, including hyphens.",
     "- Use repeated regex, keyword, metadata, and neighbor queries until you have enough direct quoted evidence to answer the question or until you exhaust the command budget.",
@@ -1340,10 +1375,25 @@ async function main() {
   const expansions = semanticExpansions(question);
   const searchTokens = Array.from(new Set([...tokens, ...expansions.tokens]));
   const searchPhrases = Array.from(new Set([normalizeWhitespace(question.toLowerCase()), ...expansions.phrases]));
+  const retrieval = task?.retrieval && typeof task.retrieval === "object" ? task.retrieval : null;
+  const retrievalWorks = [
+    ...(Array.isArray(retrieval?.searchWorks) ? retrieval.searchWorks : []),
+    ...(Array.isArray(retrieval?.metadataWorks) ? retrieval.metadataWorks : []),
+  ];
   const workById = new Map(
-    Array.isArray(manifest.works)
-      ? manifest.works.map((work) => [String(work.workId || ""), work])
-      : [],
+    [
+      ...(Array.isArray(manifest.works)
+        ? manifest.works.map((work) => [String(work.workId || ""), work])
+        : []),
+      ...retrievalWorks
+        .filter((work) => work && typeof work === "object" && typeof work.id === "string")
+        .map((work) => [String(work.id || ""), {
+          workId: String(work.id || ""),
+          title: typeof work.title === "string" ? work.title : "",
+          authors: Array.isArray(work.authors) ? work.authors : [],
+          language: typeof work.language === "string" ? work.language : null,
+        }]),
+    ],
   );
   const chunkFiles = await listChunkFiles(chunksRoot);
   if (chunkFiles.length === 0) {
@@ -1371,6 +1421,60 @@ async function main() {
   const topRuntimeHits = diversifyHits(expandWithNeighbors(filteredHits, chunkIndex), 10, 3);
   const seedChunks = gatherSeedChunks(task, selectedChunks, workById);
   const evidence = buildSearchEvidence(question, seedChunks.slice(0, 12), topRuntimeHits, workById);
+  const seededWorkIds = Array.from(new Set([
+    ...(Array.isArray(task.workIds) ? task.workIds.map((value) => String(value || "")) : []),
+    ...(Array.isArray(task.candidateWorkIds) ? task.candidateWorkIds.map((value) => String(value || "")) : []),
+    ...retrievalWorks.map((work) => String(work?.id || "")),
+  ])).filter(Boolean);
+
+  await appendProgressEvent(outputDir, {
+    type: "research.seed_summary",
+    candidateWorkCount: seededWorkIds.length,
+    seedChunkCount: seedChunks.length,
+    runtimeHitCount: topRuntimeHits.length,
+    message: `Seeded the deeper research run with ${seededWorkIds.length} candidate books, ${seedChunks.length} seed passages, and ${topRuntimeHits.length} local runtime hits.`,
+  });
+
+  for (const work of retrievalWorks.slice(0, 12)) {
+    if (!work || typeof work !== "object" || typeof work.id !== "string") {
+      continue;
+    }
+    await appendProgressEvent(outputDir, {
+      type: "research.work",
+      workId: work.id,
+      workTitle: typeof work.title === "string" ? work.title : "",
+      authors: Array.isArray(work.authors) ? work.authors : [],
+      message: `Surfaced ${typeof work.title === "string" ? work.title : work.id}.`,
+    });
+  }
+
+  for (const chunk of seedChunks.slice(0, 16)) {
+    await appendProgressEvent(outputDir, {
+      type: "research.chunk",
+      chunkId: chunk.id,
+      workId: chunk.workId,
+      workTitle: typeof chunk.title === "string" ? chunk.title : "",
+      chunkIndex: typeof chunk.chunkIndex === "number" ? chunk.chunkIndex : null,
+      excerpt: chunk.excerpt,
+      r2Key: typeof chunk.r2Key === "string" ? chunk.r2Key : null,
+      message: `Reviewed a seeded passage from ${chunk.title || chunk.workId}.`,
+    });
+  }
+
+  for (const chunk of topRuntimeHits.slice(0, 12)) {
+    const normalized = normalizeChunkRecord(chunk, workById);
+    await appendProgressEvent(outputDir, {
+      type: "research.chunk",
+      chunkId: normalized.chunkId,
+      workId: normalized.workId,
+      workTitle: normalized.workTitle,
+      authors: normalized.authors,
+      chunkIndex: normalized.chunkIndex,
+      excerpt: normalized.excerpt,
+      r2Key: normalized.r2Key,
+      message: `Identified a likely passage in ${normalized.workTitle || normalized.workId}.`,
+    });
+  }
 
   await writeFile(
     join(outputDir, "search-plan.json"),

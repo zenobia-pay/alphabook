@@ -12,6 +12,8 @@ export function parseArgs(argv) {
     query: "",
     language: "",
     title: "",
+    yearFrom: null,
+    yearTo: null,
     works: [],
     chunkIds: [],
     globs: [],
@@ -138,6 +140,16 @@ export function parseArgs(argv) {
     }
     if (arg === "--title") {
       args.title = next ?? "";
+      index += 1;
+      continue;
+    }
+    if (arg === "--year-from") {
+      args.yearFrom = Number.parseInt(next ?? "", 10) || null;
+      index += 1;
+      continue;
+    }
+    if (arg === "--year-to") {
+      args.yearTo = Number.parseInt(next ?? "", 10) || null;
       index += 1;
       continue;
     }
@@ -367,6 +379,16 @@ function buildChunkFilterWhere(options, literals, startParam = 1) {
     params.push(options.language);
     param += 1;
   }
+  if (typeof options.yearFrom === "number") {
+    clauses.push(`w.release_date >= make_date($${param}, 1, 1)`);
+    params.push(options.yearFrom);
+    param += 1;
+  }
+  if (typeof options.yearTo === "number") {
+    clauses.push(`w.release_date <= make_date($${param}, 12, 31)`);
+    params.push(options.yearTo);
+    param += 1;
+  }
   if (options.title) {
     clauses.push(`w.title ${options.ignoreCase ? "~*" : "~"} $${param}`);
     params.push(options.title);
@@ -398,14 +420,8 @@ function buildChunkFilterWhere(options, literals, startParam = 1) {
     param += 1;
   }
   if (!options.invertMatch && literals.length > 0) {
-    clauses.push(`
-      EXISTS (
-        SELECT 1
-        FROM unnest($${param}::text[]) AS hint(term)
-        WHERE c.text ILIKE '%' || hint.term || '%'
-      )
-    `);
-    params.push(literals);
+    clauses.push(`c.tsv @@ websearch_to_tsquery('english', $${param})`);
+    params.push(literals.join(" OR "));
     param += 1;
   }
 
@@ -683,6 +699,8 @@ async function runRg(client, options) {
     filters: {
       workIds: options.works,
       language: options.language || null,
+      yearFrom: options.yearFrom,
+      yearTo: options.yearTo,
       titleRegex: options.title || null,
       globs: options.globs,
       kinds: options.kinds,
@@ -696,6 +714,24 @@ async function runWorks(client, options) {
     throw new Error("works requires a query.");
   }
 
+  const filters = [];
+  const params = [query];
+  let paramIndex = 2;
+  if (options.language) {
+    filters.push(`w.language = $${paramIndex}`);
+    params.push(options.language);
+    paramIndex += 1;
+  }
+  if (typeof options.yearFrom === "number") {
+    filters.push(`w.release_date >= make_date($${paramIndex}, 1, 1)`);
+    params.push(options.yearFrom);
+    paramIndex += 1;
+  }
+  if (typeof options.yearTo === "number") {
+    filters.push(`w.release_date <= make_date($${paramIndex}, 12, 31)`);
+    params.push(options.yearTo);
+    paramIndex += 1;
+  }
   const rows = await client.query(
     `
       WITH query_input AS (
@@ -719,10 +755,11 @@ async function runWorks(client, options) {
         setweight(to_tsvector('english', COALESCE(w.title, '')), 'A') ||
         setweight(to_tsvector('english', COALESCE(w.summary, '')), 'B')
       ) @@ query_input.tsq
+      ${filters.length > 0 ? `AND ${filters.join("\n      AND ")}` : ""}
       ORDER BY score DESC, w.title ASC
-      LIMIT $2
+      LIMIT $${paramIndex}
     `,
-    [query, options.limit],
+    [...params, options.limit],
   );
 
   return {
@@ -738,6 +775,11 @@ async function runWorks(client, options) {
       releaseDate: row.release_date,
       score: row.score,
     })),
+    filters: {
+      language: options.language || null,
+      yearFrom: options.yearFrom,
+      yearTo: options.yearTo,
+    },
   };
 }
 
