@@ -4037,6 +4037,48 @@ test("sql metadata search broadens grief queries with additional mourning terms"
   assert.doesNotMatch(String(firstQueryParams[0] ?? ""), /death/);
 });
 
+test("sql metadata search overfetches and forces chunk expansion for broad survey queries", async () => {
+  const queries: Array<{ sql: string; params?: unknown[] }> = [];
+  const store = new NeonAppStore({
+    async query<T = Record<string, unknown>>(sql: string, params?: unknown[]) {
+      queries.push({ sql, params });
+      if (queries.length === 1) {
+        return {
+          rows: Array.from({ length: 12 }, (_, index) => ({
+            id: `work-${index + 1}`,
+            gutenberg_id: 1000 + index,
+            title: `Survey Work ${index + 1}`,
+            metadata_json: {},
+            language: "en",
+            release_date: "1850-01-01",
+            rights_status: "public_domain",
+            summary: "A fiction work about grief, mourning, and sorrow.",
+            authors: ["Author"],
+            subjects: ["Fiction", "Grief"],
+            score: 5 - index * 0.05,
+          })) as T[],
+        };
+      }
+      return { rows: [] as T[] };
+    },
+    async end() {},
+  });
+
+  const results = await store.searchWorks(
+    "Identify the different ways characters deal with grief across 19th century fiction",
+    {
+      language: "en",
+      yearRange: [1800, 1899],
+      genre: ["fiction"],
+      limit: 12,
+    },
+  );
+
+  assert.equal(results.length, 12);
+  assert.ok((queries[0]?.params?.[6] as number) > 12, "expected metadata overfetch for broad survey query");
+  assert.ok(queries.some((query) => /chunk_matches AS \(/.test(query.sql)), "expected broad survey query to force chunk expansion");
+});
+
 test("sql metadata search downranks death-title matches without stronger grief evidence", async () => {
   const store = new NeonAppStore({
     async query<T = Record<string, unknown>>() {

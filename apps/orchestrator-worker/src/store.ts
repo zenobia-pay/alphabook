@@ -750,9 +750,16 @@ function expandedSearchTokens(query: string): string[] {
   return [...expanded].slice(0, 16);
 }
 
+function isBroadMetadataSurveyQuery(query: string) {
+  return /\b(all|every|compare|comparison|trace|theme|pattern|survey|synthesize|search|find|why|how|where|when|across|identify|different|examples|kinds|types)\b/iu.test(
+    query,
+  );
+}
+
 function metadataSearchTerms(query: string): string[] {
   const expanded = expandedSearchTokens(query);
   const hasStrongGriefSignal = expanded.some((token) => GRIEF_THEME_TOKENS.has(token));
+  const broadSurveyQuery = isBroadMetadataSurveyQuery(query);
   const terms = hasStrongGriefSignal
     ? Array.from(new Set([...expanded, ...GRIEF_BROADENING_TERMS]))
     : expanded;
@@ -762,7 +769,7 @@ function metadataSearchTerms(query: string): string[] {
     .filter((token) => !(hasStrongGriefSignal && (token === "orphan" || token === "orphans")))
     .filter((token) => !(hasStrongGriefSignal && (token === "child" || token === "children" || token === "juvenile")))
     .filter((token) => !/^\d{4}$/u.test(token))
-    .slice(0, 16);
+    .slice(0, broadSurveyQuery ? 24 : 16);
 }
 
 function metadataTextHaystack(row: {
@@ -794,13 +801,15 @@ function shouldAcceptMetadataRows<T extends {
 }>(rows: T[], query: string, limit: number) {
   const terms = metadataSearchTerms(query);
   const hasStrongGriefSignal = terms.some((token) => GRIEF_THEME_TOKENS.has(token));
+  const broadSurveyQuery = isBroadMetadataSurveyQuery(query);
   if (!hasStrongGriefSignal) {
-    return rows.length >= Math.min(limit, 6);
+    const target = broadSurveyQuery ? Math.min(limit, 12) : Math.min(limit, 6);
+    return rows.length >= target;
   }
   const strongMatches = rows
-    .slice(0, Math.min(rows.length, 8))
+    .slice(0, Math.min(rows.length, broadSurveyQuery ? 14 : 8))
     .filter((row) => hasExplicitGriefMetadataMatch(metadataTextHaystack(row)));
-  return strongMatches.length >= Math.min(limit, 4);
+  return strongMatches.length >= Math.min(limit, broadSurveyQuery ? 6 : 4);
 }
 
 function rerankMetadataRows<T extends {
@@ -2994,6 +3003,10 @@ export class NeonAppStore implements AppStore {
 
   async searchWorks(query: string, filters: Record<string, unknown> = {}): Promise<WorkSummary[]> {
     const limit = Number(filters.limit ?? 20);
+    const broadSurveyQuery = isBroadMetadataSurveyQuery(query);
+    const metadataCandidateLimit = broadSurveyQuery ? Math.max(limit * 6, 72) : limit;
+    const chunkCandidateLimit = broadSurveyQuery ? Math.max(limit * 240, 1200) : Math.max(limit * 80, 240);
+    const chunkWorkLimit = broadSurveyQuery ? Math.max(limit * 4, 48) : limit;
     const tsQuery = buildMetadataTsQuery(query);
     const tokens = metadataSearchTerms(query);
     const lexicalMetadataQuery = tokens.join(" ");
@@ -3122,11 +3135,11 @@ export class NeonAppStore implements AppStore {
           Array.isArray(filters.yearRange) ? Number(filters.yearRange[0]) : null,
           Array.isArray(filters.yearRange) ? Number(filters.yearRange[1]) : null,
           Array.isArray(filters.genre) ? filters.genre : [],
-          limit,
+          metadataCandidateLimit,
         ],
       );
       const rerankedMetadataRows = rerankMetadataRows(result.rows, query);
-      if (tokens.length === 0 || shouldAcceptMetadataRows(rerankedMetadataRows, query, limit)) {
+      if (!broadSurveyQuery && (tokens.length === 0 || shouldAcceptMetadataRows(rerankedMetadataRows, query, limit))) {
         return mapRows(rerankedMetadataRows.slice(0, limit));
       }
 
@@ -3262,8 +3275,8 @@ export class NeonAppStore implements AppStore {
           Array.isArray(filters.genre) ? filters.genre : [],
           lexicalMetadataQuery,
           tokens,
-          Math.max(limit * 80, 240),
-          limit,
+          chunkCandidateLimit,
+          chunkWorkLimit,
         ],
         ), 8_000, "Metadata search chunk expansion timed out.");
         chunkBackedRows = chunkBackedResult.rows;
