@@ -2779,6 +2779,7 @@ type ResearchDocumentModel = {
     key: string;
     title: string;
     summary: string;
+    meta: string;
     items: Array<{
       key: string;
       kind: Exclude<ResearchDocumentEntryKind, "title">;
@@ -4069,6 +4070,13 @@ export default function App() {
   const authLocked = authState.authConfigured && !authState.user;
   const hasAuthenticatedUser = Boolean(authState.user);
   const authPending = authState.loading;
+  const bookComposerDisabled = authPending || authLocked;
+  const bookComposerDisabledNotice = authLocked ? (
+    <>
+      Sign in to ask about this book.{" "}
+      <a className="font-medium underline underline-offset-4" href={buildSignInUrl(window.location.href)}>Sign in</a>
+    </>
+  ) : undefined;
   const navigationItems = adminAccess.allowed
     ? [...NAV_ITEMS, { id: "admin" as const, label: "Admin", icon: ProfileIcon }]
     : NAV_ITEMS;
@@ -5748,13 +5756,6 @@ export default function App() {
     const assistantComposerNotice = authLocked ? (
       <>
         Sign in to start a research thread.{" "}
-        <a className="font-medium underline underline-offset-4" href={buildSignInUrl(window.location.href)}>Sign in</a>
-      </>
-    ) : undefined;
-    const bookComposerDisabled = authPending || authLocked;
-    const bookComposerDisabledNotice = authLocked ? (
-      <>
-        Sign in to ask about this book.{" "}
         <a className="font-medium underline underline-offset-4" href={buildSignInUrl(window.location.href)}>Sign in</a>
       </>
     ) : undefined;
