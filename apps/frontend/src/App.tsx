@@ -4059,6 +4059,7 @@ function AssistantDocumentFramePage({
   const [runStatus, setRunStatus] = useState<SessionRunRecord["status"] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [errorStatus, setErrorStatus] = useState<number | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -4083,6 +4084,7 @@ function AssistantDocumentFramePage({
         setRunStatus(nextState.run?.status ?? null);
         setLoading(false);
         setError(null);
+        setErrorStatus(null);
         if (nextState.run?.status === "running" || nextState.run?.status === "queued") {
           pollTimer = window.setTimeout(() => {
             void refresh();
@@ -4093,6 +4095,7 @@ function AssistantDocumentFramePage({
           return;
         }
         setLoading(false);
+        setErrorStatus(nextError instanceof ApiError ? nextError.status : null);
         setError(getErrorMessage(nextError, "We couldn't load this research document."));
       }
     };
@@ -4119,10 +4122,20 @@ function AssistantDocumentFramePage({
   }
 
   if (error) {
+    const requiresAuth = errorStatus === 401 || errorStatus === 403;
     return (
       <section className="assistant-document-pane assistant-document-standalone">
         <div className="assistant-document-scroll">
-          <div className="session-loading">{error}</div>
+          <div className="session-loading">
+            <div>{error}</div>
+            {requiresAuth ? (
+              <div className="mt-3">
+                <a className="font-medium underline underline-offset-4" href={buildSignInUrl(window.location.href)}>
+                  Sign in to view this research document
+                </a>
+              </div>
+            ) : null}
+          </div>
         </div>
       </section>
     );
