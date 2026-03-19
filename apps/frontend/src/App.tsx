@@ -128,7 +128,7 @@ const BOOK_ASSISTANT_MAX_WIDTH = 720;
 const SEO_SITE_NAME = "alpha book";
 const SEO_SITE_ORIGIN = "https://alpha-book.org";
 const BOOK_CONTENT_ORIGIN = "https://books.alpha-book.org";
-const BOOK_CONTENT_VERSION = "20260319e";
+const BOOK_CONTENT_VERSION = "20260319f";
 const DEFAULT_SEO_DESCRIPTION = "Search, read, and ask questions across a growing library of books with cited answers.";
 const DEFAULT_OG_IMAGE_PATH = "/social-card.svg";
 const ASSISTANT_WELCOME_SUGGESTIONS: ThreadSuggestion[] = [
@@ -2740,6 +2740,12 @@ function currentResearchDocumentEnding(messages: UiMessage[]) {
     if (message.content.trim().length === 0) {
       continue;
     }
+    if (
+      /^this run (?:failed|timed out|was cancelled)\b/i.test(message.content.trim())
+      || /^the run hit its hard limits\b/i.test(message.content.trim())
+    ) {
+      continue;
+    }
     return message.content;
   }
   return null;
@@ -2932,10 +2938,7 @@ function toSectionMeta(entry: ToolTraceEntry) {
   if (entry.state === "error") {
     return "failed";
   }
-  if (entry.state === "running") {
-    return "running";
-  }
-  return "done";
+  return "";
 }
 
 function ensureSection(
@@ -2975,6 +2978,37 @@ function progressDetailString(value: unknown) {
 
 function progressDetailNumber(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function isUsefulDocumentExcerpt(value: string) {
+  const text = value.trim();
+  if (text.length < 40) {
+    return false;
+  }
+  if (/^(Touched|Reviewed|Starting|Seeded|Surfaced)\b/iu.test(text)) {
+    return false;
+  }
+  if (/[{}[\]]/u.test(text)) {
+    return false;
+  }
+  if (/^(error:|exec\b|\/bin\/bash\b|node \/)/iu.test(text)) {
+    return false;
+  }
+  return true;
+}
+
+function isUsefulResearchNote(value: string) {
+  const text = value.trim();
+  if (text.length < 32 || text.length > 180) {
+    return false;
+  }
+  if (/^(Starting|Seeded|Surfaced|Touched|Reviewed|OpenAI deep research|The deeper research pass|Starting from the best current evidence)/iu.test(text)) {
+    return false;
+  }
+  if (/[{}[\]]/u.test(text) || /^(error:|exec\b|\/bin\/bash\b|node \/)/iu.test(text)) {
+    return false;
+  }
+  return true;
 }
 
 function buildProgressChunkCitation(detail: Record<string, unknown>) {
@@ -3276,6 +3310,9 @@ function buildResearchDocument(
         const workId = progressDetailString(detail.workId) || "work";
         const chunkId = progressDetailString(detail.chunkId) || `${entry.id}:progress-chunk:${index}`;
         const excerpt = progressDetailString(detail.excerpt).slice(0, 440);
+        if (!isUsefulDocumentExcerpt(excerpt)) {
+          continue;
+        }
         const citationText = buildProgressChunkCitation(detail);
         appendDocumentEntry(entries, seen, {
           sectionKey: section.key,
@@ -3302,17 +3339,9 @@ function buildResearchDocument(
       }
       if (detailType === "research.note") {
         const noteText = progressDetailString(detail.note) || progressDetailString(detail.message);
-        appendDocumentEntry(entries, seen, {
-          sectionKey: section.key,
-          sectionTitle: section.title,
-          sectionSummary: section.summary,
-          sectionMeta: section.meta,
-          item: {
-            key: `progress-note:${entry.id}:${index}`,
-            kind: "log",
-            text: noteText,
-          },
-        });
+        if (isUsefulResearchNote(noteText) && (section.summary.length === 0 || isLowValueSectionSummary(section.summary))) {
+          section.summary = noteText;
+        }
       }
     }
 
@@ -3383,6 +3412,9 @@ function buildResearchDocument(
           : typeof chunk.text === "string"
             ? chunk.text.trim()
             : "";
+        if (!isUsefulDocumentExcerpt(excerpt)) {
+          continue;
+        }
         const key = typeof chunk.id === "string" ? chunk.id : `${entry.id}:chunk:${index}`;
         const workTitle = typeof chunk.workTitle === "string" && chunk.workTitle.trim() ? chunk.workTitle.trim() : workId;
         const authors = Array.isArray(chunk.authors)
@@ -3421,6 +3453,9 @@ function buildResearchDocument(
   };
   for (const chunk of artifactSourceChunks(artifacts)) {
     const excerpt = chunk.text.replace(/\s+/g, " ").trim().slice(0, 280);
+    if (!isUsefulDocumentExcerpt(excerpt)) {
+      continue;
+    }
     appendDocumentEntry(entries, seen, {
       sectionKey: artifactSection?.key ?? "artifacts",
       sectionTitle: artifactSection?.title ?? "Evidence",
@@ -3429,7 +3464,9 @@ function buildResearchDocument(
       item: {
         key: `artifact-chunk:${chunk.key}`,
         kind: "chunk",
-        text: `${chunk.label} was carried forward as evidence. ${chunk.note}${excerpt ? ` ${excerpt}` : ""}`.trim(),
+        text: excerpt,
+        citationText: chunk.label,
+        linkLabel: chunk.label,
       },
     });
   }

@@ -1689,6 +1689,11 @@ function normalizeRuntimeProgressLine(event: Record<string, unknown>): {
     /^(OpenAI Codex v|workdir:|model:|provider:|approval:|sandbox:|reasoning effort:|reasoning summaries:|session id:|user|--------)$/iu.test(value)
     || /^(You are |You operate |Your goal is |Goal:|Constraints:|Research objective:|Task spec:|Workspace manifest summary:|Seed evidence from the orchestrator:|When finished,|Only use local files under |Start from |If the task spec already includes |Keep the search bounded:|Use the remote Postgres database |The CLI turns corpus-wide search requests |Guaranteed tools in this runtime image:|It also supports |Always copy chunk IDs exactly |Use repeated regex, keyword, metadata|Hydrate local book files only |Use shell tools like |To pull files into the workspace|Expand across more books |Create a focused local corpus |Your required deliverable is |The briefing should |Every quote should |Prefer primary-source quotations |Once you have 2 to 8 |If the evidence is thin|You may optionally write helper notes |Do not stop after searching\.)/iu.test(value)
     || /^(node \/workspace\/context\/|node \/research run\/context\/|\/bin\/bash\b|#!\/usr\/bin\/env\b|import\s|mcp startup:)/iu.test(value)
+    || /^(?:[-*•]\s+|[→✓]\s+)/u.test(value)
+    || /^(?:#|##|\*\*)/u.test(value)
+    || /^(?:Briefing saved to|Briefing written to|EOF$)/iu.test(value)
+    || /(?:in \/research run succeeded in|\/research run\/output\/briefing\.md)/iu.test(value)
+    || /^(?:os\.|with open\(|f\.write\(|briefing\s*=|quotes\s*=)/iu.test(value)
     || /^[\[\]{}]+,?$/u.test(value)
     || /^".*":\s*(?:.+)?$/u.test(value)
     || /^".*",?$/u.test(value)
@@ -1700,6 +1705,8 @@ function normalizeRuntimeProgressLine(event: Record<string, unknown>): {
     }
     if (
       /^(Touched|Reviewed|OpenAI deep research|provider:|session id:|You are |Goal:|Question:|Task spec:|Seed evidence|research run manifest summary:|exec|error:|!\/usr\/bin\/env|import |node \/research run|\/bin\/bash|mcp startup)/iu.test(note)
+      || /^(?:[-*•]\s+|[→✓]\s+|#|##|\*\*)/u.test(note)
+      || /^(?:Briefing saved to|Briefing written to|EOF$)/iu.test(note)
       || /\b(?:gutenberg\/|context\/search|context\/load|rg\b|jq\b|sed\b|awk\b|grep\b|cat\b)\b/iu.test(note)
       || /[{}[\]]/u.test(note)
       || /^".*":\s*(?:.+)?$/u.test(note)
