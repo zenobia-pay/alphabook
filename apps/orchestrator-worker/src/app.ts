@@ -3909,10 +3909,6 @@ async function finalizeRunFromCompletedTools(
 
   const messages = await deps.store.listMessages(session.id);
   const conversationHistory = formatConversationHistory(messages);
-  await deps.store.updateRun(run.id, {
-    status: "completed",
-    completedAt: new Date().toISOString(),
-  });
   await persistRecoveredPlanToolTrace(deps, session.id, run.id, toolCalls);
   await ensureRunAnswerPersisted(
     deps,
@@ -3924,6 +3920,10 @@ async function finalizeRunFromCompletedTools(
     completedBriefing,
     toolHistory,
   );
+  await deps.store.updateRun(run.id, {
+    status: "completed",
+    completedAt: new Date().toISOString(),
+  });
   return true;
 }
 
@@ -4096,10 +4096,6 @@ async function finalizeStaleRun(
         recoveredToolHistory,
       );
       if (retrievalFallbackBriefing) {
-        await deps.store.updateRun(run.id, {
-          status: "completed",
-          completedAt: new Date().toISOString(),
-        });
         await persistRecoveredPlanToolTrace(deps, session.id, run.id, toolCalls);
         const conversationHistory = formatConversationHistory(messages);
         await ensureRunAnswerPersisted(
@@ -4112,6 +4108,10 @@ async function finalizeStaleRun(
           retrievalFallbackBriefing,
           recoveredToolHistory,
         );
+        await deps.store.updateRun(run.id, {
+          status: "completed",
+          completedAt: new Date().toISOString(),
+        });
         await cancelLiveExecution(toolCalls);
         return deps.store.getRun(run.id);
       }
@@ -4140,10 +4140,6 @@ async function finalizeStaleRun(
         recoveredToolHistory,
       );
       if (retrievalFallbackBriefing) {
-        await deps.store.updateRun(run.id, {
-          status: "completed",
-          completedAt: new Date().toISOString(),
-        });
         await persistRecoveredPlanToolTrace(deps, session.id, run.id, toolCalls);
         const conversationHistory = formatConversationHistory(messages);
         await ensureRunAnswerPersisted(
@@ -4156,6 +4152,10 @@ async function finalizeStaleRun(
           retrievalFallbackBriefing,
           recoveredToolHistory,
         );
+        await deps.store.updateRun(run.id, {
+          status: "completed",
+          completedAt: new Date().toISOString(),
+        });
         await cancelLiveExecution(toolCalls);
         return deps.store.getRun(run.id);
       }

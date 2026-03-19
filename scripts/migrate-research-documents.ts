@@ -321,6 +321,15 @@ function renderToolHistoryDocumentHtml(toolHistory: ToolHistoryEntry[], ending: 
       }
     }
 
+    if (entry.toolName === "run_workspace_task") {
+      const briefing = normalizeText(entry.result.briefing ?? entry.result.answer);
+      if (briefing) {
+        for (const paragraph of briefing.split(/\n\s*\n/u).map((part) => part.replace(/\s+/gu, " ").trim()).filter(Boolean)) {
+          body.push(`<p class="assistant-document-entry is-log">${escapeHtml(paragraph)}</p>`);
+        }
+      }
+    }
+
     if (entry.toolName === "create_workspace") {
       const manifest = entry.result.manifest && typeof entry.result.manifest === "object"
         ? entry.result.manifest as Record<string, unknown>
