@@ -4122,17 +4122,22 @@ function AssistantDocumentFramePage({
   }
 
   if (error) {
-    const requiresAuth = errorStatus === 401 || errorStatus === 403;
+    const needsSignIn = errorStatus === 401;
+    const accessDenied = errorStatus === 403;
     return (
       <section className="assistant-document-pane assistant-document-standalone">
         <div className="assistant-document-scroll">
           <div className="session-loading">
-            <div>{error}</div>
-            {requiresAuth ? (
+            <div>{needsSignIn ? "Please sign in to view this research document." : error}</div>
+            {needsSignIn ? (
               <div className="mt-3">
                 <a className="font-medium underline underline-offset-4" href={buildSignInUrl(window.location.href)}>
                   Sign in to view this research document
                 </a>
+              </div>
+            ) : accessDenied ? (
+              <div className="mt-3 text-sm text-muted-foreground">
+                This session or run is not available to the current account.
               </div>
             ) : null}
           </div>
