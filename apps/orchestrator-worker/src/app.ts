@@ -4164,10 +4164,30 @@ function labelForToolCall(toolName: ToolName, args: Record<string, unknown>) {
 
 function clientSafeToolResult(toolName: ToolName, result: Record<string, unknown>): Record<string, unknown> {
   if (toolName === "estimate_research_scope") {
+    const probeWorks = Array.isArray(result.probeWorks) ? result.probeWorks : [];
+    const metadataWorkEstimate = typeof result.metadataWorkEstimate === "number" ? result.metadataWorkEstimate : undefined;
+    const chunkWorkEstimate = typeof result.chunkWorkEstimate === "number" ? result.chunkWorkEstimate : undefined;
+    const trueBreadthEstimate =
+      typeof metadataWorkEstimate === "number" || typeof chunkWorkEstimate === "number"
+        ? Math.max(metadataWorkEstimate ?? 0, chunkWorkEstimate ?? 0, probeWorks.length)
+        : undefined;
     return {
-      metadataWorkEstimate: typeof result.metadataWorkEstimate === "number" ? result.metadataWorkEstimate : undefined,
+      metadataWorkEstimate,
       chunkMatchEstimate: typeof result.chunkMatchEstimate === "number" ? result.chunkMatchEstimate : undefined,
-      chunkWorkEstimate: typeof result.chunkWorkEstimate === "number" ? result.chunkWorkEstimate : undefined,
+      chunkWorkEstimate,
+      trueBreadthEstimate,
+      probeWorkCount: probeWorks.length,
+      probeWorks: probeWorks.slice(0, 12).map((candidate) => {
+        if (!candidate || typeof candidate !== "object") {
+          return candidate;
+        }
+        const work = candidate as Record<string, unknown>;
+        return {
+          id: typeof work.id === "string" ? work.id : undefined,
+          title: typeof work.title === "string" ? work.title : undefined,
+          authors: Array.isArray(work.authors) ? work.authors.slice(0, 3) : undefined,
+        };
+      }),
       breadthBand: typeof result.breadthBand === "string" ? result.breadthBand : undefined,
       recommendedIntensity: typeof result.recommendedIntensity === "string" ? result.recommendedIntensity : undefined,
       recommendedWallClockMinutes: typeof result.recommendedWallClockMinutes === "number" ? result.recommendedWallClockMinutes : undefined,
@@ -4187,6 +4207,7 @@ function clientSafeToolResult(toolName: ToolName, result: Record<string, unknown
     return {
       workCount: frontierWorks.length,
       frontierWorkCount: frontierWorks.length,
+      visibleCandidateWorkCount: Math.min(frontierWorks.length, 12),
       works: frontierWorks.slice(0, 12).map((candidate) => {
         if (!candidate || typeof candidate !== "object") {
           return candidate;

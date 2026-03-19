@@ -2924,6 +2924,31 @@ function toSectionSummary(entry: ToolTraceEntry) {
 }
 
 function toSectionMeta(entry: ToolTraceEntry) {
+  if (entry.toolName === "estimate_research_scope") {
+    const trueBreadthEstimate =
+      typeof entry.result?.trueBreadthEstimate === "number"
+        ? entry.result.trueBreadthEstimate
+        : typeof entry.result?.metadataWorkEstimate === "number" || typeof entry.result?.chunkWorkEstimate === "number"
+          ? Math.max(
+              typeof entry.result?.metadataWorkEstimate === "number" ? entry.result.metadataWorkEstimate : 0,
+              typeof entry.result?.chunkWorkEstimate === "number" ? entry.result.chunkWorkEstimate : 0,
+            )
+          : 0;
+    if (trueBreadthEstimate > 0) {
+      return `breadth est. ${pluralize(trueBreadthEstimate, "book")}`;
+    }
+  }
+  if (entry.toolName === "search_works" || entry.toolName === "get_work_metadata") {
+    const frontierWorkCount = typeof entry.result?.frontierWorkCount === "number" ? entry.result.frontierWorkCount : 0;
+    const visibleCandidateWorkCount = typeof entry.result?.visibleCandidateWorkCount === "number"
+      ? entry.result.visibleCandidateWorkCount
+      : Array.isArray(entry.result?.works)
+        ? entry.result.works.length
+        : 0;
+    if (frontierWorkCount > 0) {
+      return `${pluralize(visibleCandidateWorkCount, "probe book")} shown · ${pluralize(frontierWorkCount, "candidate book")} in frontier`;
+    }
+  }
   const workCount = Array.isArray(entry.result?.works) ? entry.result.works.length : 0;
   const chunkCount = Array.isArray(entry.result?.chunks) ? entry.result.chunks.length : 0;
   const workspaceCount =
@@ -3294,6 +3319,19 @@ function hasUsefulSectionItems(section: ResearchDocumentSection) {
 function sectionMetaFromItems(section: ResearchDocumentSection) {
   const chunkCount = section.items.filter((item) => item.kind === "chunk").length;
   const bookCount = section.items.filter((item) => item.kind === "book").length;
+  if (section.title === "Metadata Search" || section.title === "Book Metadata") {
+    const shown = bookCount > 0 ? `${pluralize(bookCount, "book")} shown` : "";
+    const base = typeof section.meta === "string" ? section.meta.trim() : "";
+    if (shown && base) {
+      return `${shown} · ${base}`;
+    }
+    if (shown) {
+      return shown;
+    }
+    if (base) {
+      return base;
+    }
+  }
   if (chunkCount > 0) {
     return pluralize(chunkCount, "passage");
   }
