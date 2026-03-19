@@ -3912,7 +3912,62 @@ async function reconcilePersistentRun(
   };
 
   const toolCalls = await deps.store.listToolCalls(run.id);
+  const refreshCompletedWorkspaceTask = async () => {
+    const runningWorkspaceTool = [...toolCalls].reverse().find((toolCall) => (
+      toolCall.toolName === "run_workspace_task"
+      && (toolCall.status === "running" || toolCall.status === "queued")
+    ));
+    const runtimeId = runningWorkspaceTool ? runtimeIdFromToolCall(runningWorkspaceTool) : null;
+    if (!runningWorkspaceTool || !runtimeId || !deps.runtimeGateway.getWorkspaceTaskStatus) {
+      return false;
+    }
+    const taskStatus = await deps.runtimeGateway.getWorkspaceTaskStatus({ runtimeId });
+    if (taskStatus.status !== "completed" || !taskStatus.result || typeof taskStatus.result !== "object") {
+      return false;
+    }
+    const result: Record<string, unknown> = {
+      ...(taskStatus.result as Record<string, unknown>),
+      runtimeId,
+    };
+    await deps.store.finishToolCall(runningWorkspaceTool.id, "completed", result);
+    await trackRuntimeBillingEvents(deps, session, run, result.billingEvents);
+    const refreshedToolCalls = await deps.store.listToolCalls(run.id);
+    await persistRecoveredPlanToolTrace(deps, session.id, run.id, refreshedToolCalls);
+    const messages = await deps.store.listMessages(session.id);
+    const conversationHistory = formatConversationHistory(messages);
+    const completedBriefing = latestCompletedBriefing(
+      refreshedToolCalls
+        .filter((toolCall) => toolCall.resultJson && toolCall.status === "completed")
+        .map((toolCall) => ({
+          toolName: toolCall.toolName,
+          rationale: undefined,
+          args: toolCall.argsJson,
+          result: toolCall.resultJson as Record<string, unknown>,
+        })),
+    );
+    if (completedBriefing) {
+      await ensureRunAnswerPersisted(
+        deps,
+        request,
+        session,
+        run.id,
+        messages,
+        conversationHistory,
+        completedBriefing,
+        refreshedToolCalls
+          .filter((toolCall) => toolCall.resultJson && toolCall.status === "completed")
+          .map((toolCall) => ({
+            toolName: toolCall.toolName,
+            rationale: undefined,
+            args: toolCall.argsJson,
+            result: toolCall.resultJson as Record<string, unknown>,
+          })),
+      );
+    }
+    return true;
+  };
   if (run.status === "completed") {
+    await refreshCompletedWorkspaceTask();
     await closeDanglingToolCalls(toolCalls, "The run completed before this step finished.");
     const completedBriefing = latestCompletedBriefing(
       (await deps.store.listToolCalls(run.id))
