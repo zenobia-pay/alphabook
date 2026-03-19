@@ -3244,6 +3244,47 @@ test("sql metadata search fails loudly instead of silently falling back", async 
   );
 });
 
+test("sql metadata search can broaden into chunk-backed work discovery when metadata rows are empty", async () => {
+  const queries: string[] = [];
+  const store = new NeonAppStore({
+    async query<T = Record<string, unknown>>(sql: string) {
+      queries.push(sql);
+      if (queries.length === 1) {
+        return { rows: [] as T[] };
+      }
+      return {
+        rows: [
+          {
+            id: "work-fiction",
+            gutenberg_id: 1342,
+            title: "Pride and Prejudice",
+            metadata_json: {},
+            language: "en",
+            release_date: "1813-01-28",
+            rights_status: "public_domain",
+            summary: "A fiction novel of mourning and grief.",
+            authors: ["Jane Austen"],
+            subjects: ["Fiction", "Courtship"],
+            score: 3,
+          },
+        ] as T[],
+      };
+    },
+    async end() {},
+  });
+
+  const results = await store.searchWorks("grief mourning bereavement widow funeral 1800 1899 fiction", {
+    language: "en",
+    yearRange: [1800, 1899],
+    genre: ["fiction"],
+  });
+
+  assert.equal(results.length, 1);
+  assert.equal(results[0]?.id, "work-fiction");
+  assert.equal(queries.length, 2);
+  assert.match(queries[1] ?? "", /chunk_matches AS \(/);
+});
+
 test("OpenAIEmbedder requests 1536 dimensions for text-embedding-3 models", async () => {
   let requestBody: Record<string, unknown> | null = null;
   const embedder = new OpenAIEmbedder("test-key", "text-embedding-3-small", async (_input, init) => {

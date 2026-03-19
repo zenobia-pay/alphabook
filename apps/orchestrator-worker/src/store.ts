@@ -624,6 +624,35 @@ const QUERY_SYNONYMS: Record<string, string[]> = {
   rage: ["anger", "angry", "furious", "wrath"],
 };
 
+const METADATA_SEARCH_QUERY_STOP_WORDS = new Set([
+  "1800",
+  "1899",
+  "1900",
+  "19th",
+  "century",
+  "english",
+  "fiction",
+  "novel",
+  "novels",
+  "story",
+  "stories",
+  "tale",
+  "tales",
+  "literature",
+  "book",
+  "books",
+  "text",
+  "texts",
+  "work",
+  "works",
+  "public",
+  "domain",
+  "gutenberg",
+  "author",
+  "authors",
+  "en",
+]);
+
 function normalizeSearchQuery(query: string): string {
   const tokens = Array.from(
     new Set(
@@ -660,6 +689,20 @@ function expandedSearchTokens(query: string): string[] {
     }
   }
   return [...expanded].slice(0, 16);
+}
+
+function metadataSearchTerms(query: string): string[] {
+  return expandedSearchTokens(query)
+    .filter((token) => !METADATA_SEARCH_QUERY_STOP_WORDS.has(token))
+    .filter((token) => !/^\d{4}$/u.test(token))
+    .slice(0, 16);
+}
+
+function buildMetadataTsQuery(query: string): string {
+  const terms = metadataSearchTerms(query)
+    .filter((term) => /^[a-z0-9]+$/iu.test(term))
+    .map((term) => `${term}:*`);
+  return terms.join(" | ");
 }
 
 export class InMemoryAppStore implements AppStore {
@@ -2739,8 +2782,8 @@ export class NeonAppStore implements AppStore {
 
   async searchWorks(query: string, filters: Record<string, unknown> = {}): Promise<WorkSummary[]> {
     const limit = Number(filters.limit ?? 20);
-    const normalizedQuery = normalizeSearchQuery(query);
-    const tsQuery = normalizedQuery || query.trim();
+    const tsQuery = buildMetadataTsQuery(query);
+    const tokens = metadataSearchTerms(query);
     const mapRows = (
       rows: Array<{
         id: string;
@@ -2771,7 +2814,7 @@ export class NeonAppStore implements AppStore {
           metadata: row.metadata_json ?? {},
         }),
       );
-    if (!tsQuery) {
+    if (!tsQuery && tokens.length === 0) {
       return [];
     }
     try {
@@ -2790,7 +2833,7 @@ export class NeonAppStore implements AppStore {
       }>(
         `
           WITH query_input AS (
-            SELECT plainto_tsquery('english', CAST($1 AS text)) AS tsq
+            SELECT to_tsquery('english', CAST($1 AS text)) AS tsq
           ),
           work_index AS (
             SELECT
@@ -2869,7 +2912,118 @@ export class NeonAppStore implements AppStore {
           limit,
         ],
       );
-      return mapRows(result.rows);
+      if (result.rows.length > 0 || tokens.length === 0) {
+        return mapRows(result.rows);
+      }
+
+      const chunkBackedResult = await this.db.query<{
+        id: string;
+        gutenberg_id: number | string | null;
+        title: string;
+        metadata_json: Record<string, unknown>;
+        language: string | null;
+        release_date: string | null;
+        rights_status: string | null;
+        summary: string | null;
+        authors: string[];
+        subjects: string[];
+        score: number;
+      }>(
+        `
+          WITH eligible_works AS (
+            SELECT
+              w.id,
+              w.gutenberg_id,
+              w.title,
+              w.metadata_json,
+              w.language,
+              w.release_date::text,
+              w.rights_status,
+              w.summary
+            FROM works w
+            WHERE ($1::text IS NULL OR w.language = $1::text)
+              AND ($2::text IS NULL OR w.rights_status = $2::text)
+              AND (
+                $3::int IS NULL
+                OR (
+                  w.release_date IS NOT NULL
+                  AND w.release_date::text ~ '^[0-9]{4}'
+                  AND substring(w.release_date::text FROM 1 FOR 4)::int BETWEEN $3::int AND $4::int
+                )
+              )
+          ),
+          filtered_works AS (
+            SELECT *
+            FROM eligible_works ew
+            WHERE (
+              COALESCE(array_length($5::text[], 1), 0) = 0
+              OR EXISTS (
+                SELECT 1
+                FROM work_subjects ws
+                JOIN subjects s ON s.id = ws.subject_id
+                WHERE ws.work_id = ew.id
+                  AND EXISTS (
+                    SELECT 1
+                    FROM unnest($5::text[]) AS genre
+                    WHERE lower(
+                      concat_ws(
+                        ' ',
+                        ew.title,
+                        COALESCE(ew.summary, ''),
+                        COALESCE(ew.metadata_json::text, ''),
+                        s.label
+                      )
+                    ) LIKE '%' || lower(genre) || '%'
+                  )
+              )
+            )
+          ),
+          chunk_matches AS (
+            SELECT
+              c.work_id,
+              COUNT(*)::float AS score
+            FROM chunks c
+            JOIN filtered_works fw ON fw.id = c.work_id
+            WHERE EXISTS (
+              SELECT 1
+              FROM unnest($6::text[]) AS token
+              WHERE COALESCE(c.text, '') ILIKE '%' || token || '%'
+            )
+            GROUP BY c.work_id
+          )
+          SELECT
+            fw.id,
+            fw.gutenberg_id,
+            fw.title,
+            fw.metadata_json,
+            fw.language,
+            fw.release_date,
+            fw.rights_status,
+            fw.summary,
+            ARRAY_REMOVE(ARRAY_AGG(DISTINCT a.name), NULL) AS authors,
+            ARRAY_REMOVE(ARRAY_AGG(DISTINCT s.label), NULL) AS subjects,
+            chunk_matches.score
+          FROM chunk_matches
+          JOIN filtered_works fw ON fw.id = chunk_matches.work_id
+          LEFT JOIN work_authors wa ON wa.work_id = fw.id
+          LEFT JOIN authors a ON a.id = wa.author_id
+          LEFT JOIN work_subjects ws ON ws.work_id = fw.id
+          LEFT JOIN subjects s ON s.id = ws.subject_id
+          GROUP BY fw.id, fw.gutenberg_id, fw.title, fw.metadata_json, fw.language, fw.release_date, fw.rights_status, fw.summary, chunk_matches.score
+          ORDER BY chunk_matches.score DESC, fw.title ASC
+          LIMIT $7
+        `,
+        [
+          typeof filters.language === "string" ? filters.language : null,
+          typeof filters.rightsStatus === "string" ? filters.rightsStatus : null,
+          Array.isArray(filters.yearRange) ? Number(filters.yearRange[0]) : null,
+          Array.isArray(filters.yearRange) ? Number(filters.yearRange[1]) : null,
+          Array.isArray(filters.genre) ? filters.genre : [],
+          tokens,
+          limit,
+        ],
+      );
+      return mapRows(chunkBackedResult.rows);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(`Metadata search failed: ${message}`);
