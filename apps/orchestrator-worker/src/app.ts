@@ -3993,9 +3993,11 @@ async function ensureRunAnswerPersisted(
     deps,
     session.id,
     runId,
-    buildResearchDocumentHtmlFromToolHistory(toolHistory, recoveredSynthesis.citations, recoveredAnswer),
+    await buildResearchDocumentHtmlFromToolHistory(deps, session.id, toolHistory, recoveredSynthesis.citations, recoveredAnswer),
   );
-  const researchDocumentHtml = buildResearchDocumentHtmlFromToolHistory(
+  const researchDocumentHtml = await buildResearchDocumentHtmlFromToolHistory(
+    deps,
+    session.id,
     toolHistory,
     recoveredSynthesis.citations,
     recoveredAnswer,
@@ -4684,6 +4686,7 @@ function appendToolProgress(
 async function persistPlanToolTrace(
   deps: AppDeps,
   messageId: string | null,
+  sessionId: string,
   runId: string,
   toolCalls: LiveToolTraceEntry[],
 ) {
@@ -4695,7 +4698,9 @@ async function persistPlanToolTrace(
     runId,
     toolCalls,
     researchLog: toolCalls,
-    researchDocumentHtml: buildResearchDocumentHtmlFromToolHistory(
+    researchDocumentHtml: await buildResearchDocumentHtmlFromToolHistory(
+      deps,
+      sessionId,
       toolCalls.map((entry) => ({
         toolName: entry.toolName as ToolName,
         rationale: typeof entry.rationale === "string" ? entry.rationale : undefined,
@@ -4792,7 +4797,9 @@ async function persistRecoveredPlanToolTrace(
     runId,
     toolCalls: recoveredTrace,
     researchLog: recoveredTrace,
-    researchDocumentHtml: buildResearchDocumentHtmlFromToolHistory(
+    researchDocumentHtml: await buildResearchDocumentHtmlFromToolHistory(
+      deps,
+      sessionId,
       recoveredTrace.map((entry) => ({
         toolName: entry.toolName as ToolName,
         rationale: typeof entry.rationale === "string" ? entry.rationale : undefined,
@@ -6044,10 +6051,12 @@ async function synthesizeAnswer(
       deps,
       params.sessionId,
       params.runId,
-      buildResearchDocumentHtmlFromToolHistory(params.toolHistory, synthesis.citations, synthesis.answer),
+      await buildResearchDocumentHtmlFromToolHistory(deps, params.sessionId, params.toolHistory, synthesis.citations, synthesis.answer),
     );
     const summarizedToolHistory = summarizeToolHistory(params.toolHistory);
-    const researchDocumentHtml = buildResearchDocumentHtmlFromToolHistory(
+    const researchDocumentHtml = await buildResearchDocumentHtmlFromToolHistory(
+      deps,
+      params.sessionId,
       params.toolHistory,
       synthesis.citations,
       synthesis.answer,
@@ -6259,6 +6268,14 @@ function persistedPassageLocation(chunkIndex: number | null) {
   return `around passage ${chunkIndex}`;
 }
 
+function buildResearchDocumentWorkUrl(sessionId: string, workId: string) {
+  return `https://alpha-book.org/works/${encodeURIComponent(workId)}?session=${encodeURIComponent(sessionId)}`;
+}
+
+function buildResearchDocumentLink(label: string, href: string) {
+  return `<a class="assistant-document-link" href="${escapeResearchHtml(href)}">${escapeResearchHtml(label)}</a>`;
+}
+
 function persistedSectionLabel(entry: ToolHistoryEntry) {
   return labelForToolCall(entry.toolName, entry.args);
 }
@@ -6324,11 +6341,13 @@ function appendResearchDocumentHtmlSection(htmlSections: string[], title: string
   ].join(""));
 }
 
-function buildResearchDocumentHtmlFromToolHistory(
+async function buildResearchDocumentHtmlFromToolHistory(
+  deps: AppDeps,
+  sessionId: string,
   toolHistory: ToolHistoryEntry[],
   citations: Citation[],
   ending: string,
-): string {
+): Promise<string> {
   const sections: string[] = [];
   for (const entry of toolHistory) {
     const body: string[] = [];
@@ -6348,7 +6367,15 @@ function buildResearchDocumentHtmlFromToolHistory(
           const authors = Array.isArray(detail.authors)
             ? detail.authors.filter((value: unknown): value is string => typeof value === "string" && value.trim().length > 0)
             : [];
-          body.push(`<p class="assistant-document-entry is-book">${escapeResearchHtml(formatResearchDocumentBookLine(titleText, authors))}</p>`);
+          const workId = typeof detail.workId === "string" ? detail.workId : null;
+          const line = formatResearchDocumentBookLine(titleText, authors);
+          body.push(
+            `<p class="assistant-document-entry is-book">${
+              workId
+                ? buildResearchDocumentLink(line, buildResearchDocumentWorkUrl(sessionId, workId))
+                : escapeResearchHtml(line)
+            }</p>`,
+          );
           continue;
         }
         if (detailType === "research.chunk") {
@@ -6358,7 +6385,14 @@ function buildResearchDocumentHtmlFromToolHistory(
           }
           const workTitle = normalizeDocumentText(detail.workTitle ?? detail.title) || "Source";
           const chunkIndex = typeof detail.chunkIndex === "number" ? detail.chunkIndex : null;
-          body.push(`<blockquote class="assistant-document-entry is-chunk"><p class="assistant-document-quote">${escapeResearchHtml(excerpt)}</p><footer class="assistant-document-citation">${escapeResearchHtml(`Source: ${workTitle}, ${persistedPassageLocation(chunkIndex)}`)}</footer></blockquote>`);
+          const workId = typeof detail.workId === "string" ? detail.workId : null;
+          const href = workId && chunkIndex !== null
+            ? await buildChunkIndexPassageUrl(deps, sessionId, workId, chunkIndex)
+            : workId
+              ? buildResearchDocumentWorkUrl(sessionId, workId)
+              : null;
+          const sourceLabel = `Source: ${workTitle}, ${persistedPassageLocation(chunkIndex)}`;
+          body.push(`<blockquote class="assistant-document-entry is-chunk"><p class="assistant-document-quote">${escapeResearchHtml(excerpt)}</p><footer class="assistant-document-citation">${href ? buildResearchDocumentLink(sourceLabel, href) : escapeResearchHtml(sourceLabel)}</footer></blockquote>`);
         }
       }
     }
@@ -6373,7 +6407,15 @@ function buildResearchDocumentHtmlFromToolHistory(
         const authors = Array.isArray(work.authors)
           ? work.authors.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
           : [];
-        body.push(`<p class="assistant-document-entry is-book">${escapeResearchHtml(formatResearchDocumentBookLine(titleText, authors))}</p>`);
+        const workId = typeof work.id === "string" ? work.id : null;
+        const line = formatResearchDocumentBookLine(titleText, authors);
+        body.push(
+          `<p class="assistant-document-entry is-book">${
+            workId
+              ? buildResearchDocumentLink(line, buildResearchDocumentWorkUrl(sessionId, workId))
+              : escapeResearchHtml(line)
+          }</p>`,
+        );
       }
     }
 
@@ -6390,7 +6432,15 @@ function buildResearchDocumentHtmlFromToolHistory(
         const authors = Array.isArray(work.authors)
           ? work.authors.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
           : [];
-        body.push(`<p class="assistant-document-entry is-book">${escapeResearchHtml(formatResearchDocumentBookLine(titleText, authors))}</p>`);
+        const workId = typeof work.id === "string" ? work.id : null;
+        const line = formatResearchDocumentBookLine(titleText, authors);
+        body.push(
+          `<p class="assistant-document-entry is-book">${
+            workId
+              ? buildResearchDocumentLink(line, buildResearchDocumentWorkUrl(sessionId, workId))
+              : escapeResearchHtml(line)
+          }</p>`,
+        );
       }
     }
 
@@ -6406,7 +6456,14 @@ function buildResearchDocumentHtmlFromToolHistory(
           ? chunk.authors.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
           : [];
         const chunkIndex = typeof chunk.chunkIndex === "number" ? chunk.chunkIndex : null;
-        body.push(`<blockquote class="assistant-document-entry is-chunk"><p class="assistant-document-quote">${escapeResearchHtml(excerpt)}</p><footer class="assistant-document-citation">${escapeResearchHtml(`Source: ${workTitle}${authors.length > 0 ? `, by ${authors.join(", ")}` : ""}, ${persistedPassageLocation(chunkIndex)}`)}</footer></blockquote>`);
+        const workId = typeof chunk.workId === "string" ? chunk.workId : null;
+        const href = workId && chunkIndex !== null
+          ? await buildChunkIndexPassageUrl(deps, sessionId, workId, chunkIndex)
+          : workId
+            ? buildResearchDocumentWorkUrl(sessionId, workId)
+            : null;
+        const sourceLabel = `Source: ${workTitle}${authors.length > 0 ? `, by ${authors.join(", ")}` : ""}, ${persistedPassageLocation(chunkIndex)}`;
+        body.push(`<blockquote class="assistant-document-entry is-chunk"><p class="assistant-document-quote">${escapeResearchHtml(excerpt)}</p><footer class="assistant-document-citation">${href ? buildResearchDocumentLink(sourceLabel, href) : escapeResearchHtml(sourceLabel)}</footer></blockquote>`);
       }
     }
 
@@ -6420,7 +6477,9 @@ function buildResearchDocumentHtmlFromToolHistory(
       if (!isUsefulPersistedExcerpt(excerpt)) {
         continue;
       }
-      quoted.push(`<blockquote class="assistant-document-entry is-chunk"><p class="assistant-document-quote">${escapeResearchHtml(excerpt)}</p><footer class="assistant-document-citation">${escapeResearchHtml(`Source: ${citation.label}`)}</footer></blockquote>`);
+      const href = await buildCitationPassageUrl(deps, sessionId, citation);
+      const sourceLabel = `Source: ${citation.label}`;
+      quoted.push(`<blockquote class="assistant-document-entry is-chunk"><p class="assistant-document-quote">${escapeResearchHtml(excerpt)}</p><footer class="assistant-document-citation">${href ? buildResearchDocumentLink(sourceLabel, href) : escapeResearchHtml(sourceLabel)}</footer></blockquote>`);
     }
     appendResearchDocumentHtmlSection(sections, "Quoted Evidence", "Primary-source passages cited in the final answer.", quoted);
   }
@@ -6882,15 +6941,17 @@ async function runOrchestrator(
       if (version <= persistedPlanTraceVersion || version !== latestPlanTraceVersion) {
         return;
       }
-      await persistPlanToolTrace(deps, messageId, run!.id, snapshot);
+      await persistPlanToolTrace(deps, messageId, session!.id, run!.id, snapshot);
       persistedPlanTraceVersion = version;
     });
     planTracePersistChain = queuedWrite.catch(() => {});
     await queuedWrite;
   };
 
-  const currentResearchDocumentHtml = () =>
+  const currentResearchDocumentHtml = async () =>
     buildResearchDocumentHtmlFromToolHistory(
+      deps,
+      session!.id,
       liveToolTrace.map((entry) => ({
         toolName: entry.toolName as ToolName,
         rationale: typeof entry.rationale === "string" ? entry.rationale : undefined,
@@ -7084,7 +7145,7 @@ async function runOrchestrator(
       label: labelForToolCall(toolName, normalizedArgs),
       rationale: sanitizeUserFacingToolText(rationale) ?? null,
       status,
-      researchDocumentHtml: currentResearchDocumentHtml(),
+      researchDocumentHtml: await currentResearchDocumentHtml(),
       result: {
         ...streamedResult,
         __logLines: completedToolLines.normalizedLines,
@@ -7219,7 +7280,7 @@ async function runOrchestrator(
       sessionId: activeSession.id,
       messageId: planMessage.id,
       text: planText,
-      researchDocumentHtml: currentResearchDocumentHtml(),
+      researchDocumentHtml: await currentResearchDocumentHtml(),
     });
     recordRawLog("assistant.plan", {
       runId: run.id,
@@ -7470,7 +7531,7 @@ async function runOrchestrator(
       toolName,
       label: labelForToolCall(toolName, normalizedToolArgs),
       rationale: sanitizeUserFacingToolText(rationale) ?? null,
-      researchDocumentHtml: currentResearchDocumentHtml(),
+      researchDocumentHtml: await currentResearchDocumentHtml(),
       args: {
         __logLines: startedToolLines.normalizedLines,
         __summary: startedToolLines.summary || undefined,
@@ -7503,7 +7564,7 @@ async function runOrchestrator(
               toolCallId: data.toolCallId,
               toolName,
               text: progressText,
-              researchDocumentHtml: currentResearchDocumentHtml(),
+              researchDocumentHtml: await currentResearchDocumentHtml(),
               ...(detail ? { detail } : {}),
             });
           },
@@ -7557,7 +7618,7 @@ async function runOrchestrator(
                     toolCallId: toolRecord.id,
                     toolName,
                     text: progressText,
-                    researchDocumentHtml: currentResearchDocumentHtml(),
+                    researchDocumentHtml: await currentResearchDocumentHtml(),
                     ...(emittedDetail ? { detail: emittedDetail } : {}),
                   });
                 },
@@ -7631,7 +7692,7 @@ async function runOrchestrator(
                 toolCallId: toolRecord.id,
                 toolName,
                 text: progressText,
-                researchDocumentHtml: currentResearchDocumentHtml(),
+                researchDocumentHtml: await currentResearchDocumentHtml(),
                 ...(detail ? { detail } : {}),
               });
             },
@@ -7698,16 +7759,17 @@ async function runOrchestrator(
 
     if (routeDecision.type === "direct_response") {
       const artifactKey = await persistFinalArtifact(deps, session.id, run.id, routeDecision.answer, []);
+      const directResearchDocumentHtml = await buildResearchDocumentHtmlFromToolHistory(deps, session.id, [], [], routeDecision.answer);
       await persistResearchDocumentArtifact(
         deps,
         session.id,
         run.id,
-        buildResearchDocumentHtmlFromToolHistory([], [], routeDecision.answer),
+        directResearchDocumentHtml,
       );
       await deps.store.appendMessage(session.id, "assistant", routeDecision.answer, {
         artifactKey,
         route: "direct_response",
-        researchDocumentHtml: buildResearchDocumentHtmlFromToolHistory([], [], routeDecision.answer),
+        researchDocumentHtml: directResearchDocumentHtml,
       });
       await deps.store.updateRun(run.id, {
         status: "completed",
@@ -7718,7 +7780,7 @@ async function runOrchestrator(
         answer: routeDecision.answer,
         citations: [],
         artifactKey,
-        researchDocumentHtml: buildResearchDocumentHtmlFromToolHistory([], [], routeDecision.answer),
+        researchDocumentHtml: directResearchDocumentHtml,
       });
       recordRawLog("assistant.completed", {
         answer: routeDecision.answer,
@@ -8345,6 +8407,7 @@ async function runOrchestrator(
         completedAt: new Date().toISOString(),
       });
       const timeoutMessage = "The run hit its hard limits before it produced a valid answer.";
+      const timeoutResearchDocumentHtml = await buildResearchDocumentHtmlFromToolHistory(deps, session.id, [], [], timeoutMessage);
       await appendRunErrorMessageOnce(deps, session.id, run.id, timeoutMessage, {
         runId: run.id,
         phase: "error",
@@ -8355,7 +8418,7 @@ async function runOrchestrator(
         citations: [],
         artifactKey: null,
         phase: "error",
-        researchDocumentHtml: buildResearchDocumentHtmlFromToolHistory([], [], timeoutMessage),
+        researchDocumentHtml: timeoutResearchDocumentHtml,
       });
       recordRawLog("assistant.completed", {
         answer: timeoutMessage,
@@ -8412,6 +8475,7 @@ async function runOrchestrator(
     });
 
     const failureMessage = userFacingRunFailureMessage(error);
+    const failureResearchDocumentHtml = await buildResearchDocumentHtmlFromToolHistory(deps, session.id, [], [], failureMessage);
     await appendRunErrorMessageOnce(deps, session.id, run.id, failureMessage, {
       runId: run.id,
       phase: "error",
@@ -8422,7 +8486,7 @@ async function runOrchestrator(
       citations: [],
       artifactKey: null,
       phase: "error",
-      researchDocumentHtml: buildResearchDocumentHtmlFromToolHistory([], [], failureMessage),
+      researchDocumentHtml: failureResearchDocumentHtml,
     });
     recordRawLog("assistant.completed", {
       answer: failureMessage,
