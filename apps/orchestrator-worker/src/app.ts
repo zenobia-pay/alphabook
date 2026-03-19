@@ -2407,33 +2407,6 @@ async function executeTool(
               );
               seedChunkBatches.push(seedChunks);
             }
-            const needsBroadSeedFallback = seedChunkBatches.flat().length < minimumVerifiedChunkCount;
-            if (needsBroadSeedFallback) {
-              const broadVariantCount = taskIntensity === "maximum" ? Math.max(2, Math.ceil(seedQueries.length / 2)) : 1;
-              for (const variant of seedQueries.slice(0, broadVariantCount)) {
-                let embedding: number[] | undefined;
-                try {
-                  embedding = await deps.embedder.embedQuery(variant, {
-                    userId: context.userId,
-                    sessionId: context.sessionId,
-                    runId: context.runId,
-                    source: "embedder",
-                  });
-                } catch {
-                  embedding = undefined;
-                }
-                const broadSeedChunks = await deps.store.getRelevantChunks(
-                  variant,
-                  undefined,
-                  Math.min(
-                    Math.max(desiredSeedChunkCount, taskIntensity === "normal" ? 20 : 24),
-                    Math.max(desiredSeedChunkCount * 2, taskIntensity === "normal" ? 32 : 48),
-                  ),
-                  embedding,
-                );
-                seedChunkBatches.push(broadSeedChunks);
-              }
-            }
             const seedChunks = mergeChunkSearchResults(seedChunkBatches, desiredSeedChunkCount);
             if (seedChunks.length > 0) {
               const verifiedWorkIds = uniqueWorkIds(
@@ -7513,7 +7486,7 @@ async function runOrchestrator(
     const verifiedWorkIds = uniqueWorkIds(
       seedChunks.map((chunk) => (typeof chunk.workId === "string" ? chunk.workId : null)),
     ).slice(0, candidateLimit);
-    const strictVerifiedFrontier = verifiedWorkIds.length >= (broadCorpusQuery ? 4 : 2);
+    const strictVerifiedFrontier = verifiedWorkIds.length >= (broadCorpusQuery ? 3 : 2);
     const candidateWorkIds = uniqueWorkIds(
       strictVerifiedFrontier
         ? [
