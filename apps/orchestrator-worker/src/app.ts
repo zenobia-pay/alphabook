@@ -1612,6 +1612,22 @@ function parseRuntimeChunkProgressLine(line: string): Record<string, unknown> | 
   };
 }
 
+function parseRuntimeProgressMarker(line: string): Record<string, unknown> | null {
+  const match = line.match(/^ALPHABOOK_PROGRESS\s+(\{.+\})$/u);
+  if (!match) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(match[1]) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object" || typeof parsed.type !== "string") {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
 function normalizeRuntimeProgressLine(event: Record<string, unknown>): {
   text: string | null;
   detail?: Record<string, unknown>;
@@ -1630,6 +1646,41 @@ function normalizeRuntimeProgressLine(event: Record<string, unknown>): {
   const chunkIndex = typeof event.chunkIndex === "number" ? event.chunkIndex : null;
 
   if (type === "codex.stdout" || type === "codex.stderr") {
+    const parsedMarkerDetail = line ? parseRuntimeProgressMarker(line) : null;
+    if (parsedMarkerDetail) {
+      const detailType = typeof parsedMarkerDetail.type === "string" ? parsedMarkerDetail.type : "";
+      if (detailType === "research.work") {
+        const workTitle = typeof parsedMarkerDetail.workTitle === "string"
+          ? parsedMarkerDetail.workTitle.trim()
+          : typeof parsedMarkerDetail.title === "string"
+            ? parsedMarkerDetail.title.trim()
+            : typeof parsedMarkerDetail.workId === "string"
+              ? parsedMarkerDetail.workId
+              : "book";
+        const authors = Array.isArray(parsedMarkerDetail.authors)
+          ? parsedMarkerDetail.authors.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+          : [];
+        return {
+          text: `Touched ${workTitle}${authors.length > 0 ? ` by ${authors.join(", ")}` : ""}.`,
+          detail: parsedMarkerDetail,
+        };
+      }
+      if (detailType === "research.chunk") {
+        const workTitle = typeof parsedMarkerDetail.workTitle === "string"
+          ? parsedMarkerDetail.workTitle.trim()
+          : typeof parsedMarkerDetail.title === "string"
+            ? parsedMarkerDetail.title.trim()
+            : typeof parsedMarkerDetail.workId === "string"
+              ? parsedMarkerDetail.workId
+              : "book";
+        const markerChunkIndex = typeof parsedMarkerDetail.chunkIndex === "number" ? parsedMarkerDetail.chunkIndex : null;
+        return {
+          text: `Touched a passage in ${workTitle}${markerChunkIndex !== null ? ` around passage ${markerChunkIndex}` : ""}.`,
+          detail: parsedMarkerDetail,
+        };
+      }
+      return { text: null, detail: parsedMarkerDetail };
+    }
     const parsedChunkDetail = line ? parseRuntimeChunkProgressLine(line) : null;
     if (parsedChunkDetail) {
       return {

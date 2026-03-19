@@ -682,6 +682,25 @@ const GRIEF_THEME_TOKENS = new Set([
   "wept",
 ]);
 
+const GRIEF_BROADENING_TERMS = [
+  "grief",
+  "mourning",
+  "bereavement",
+  "sorrow",
+  "lament",
+  "melancholy",
+  "weep",
+  "wept",
+  "tears",
+  "funeral",
+  "buried",
+  "death",
+  "dead",
+  "loss",
+  "consolation",
+  "despair",
+];
+
 const GRIEF_EXPLICIT_MATCH_PATTERN = /\b(grief|mourning|bereavement|funeral|sorrow|lament|weep|wept|weeping|tears?|loss|dead|death|buried)\b/u;
 const JUVENILE_MATCH_PATTERN = /\b(juvenile|children|child|girls|boys|school|schools|orphans?|pz)\b/u;
 const ORPHAN_MATCH_PATTERN = /\borphans?\b/u;
@@ -727,7 +746,10 @@ function expandedSearchTokens(query: string): string[] {
 function metadataSearchTerms(query: string): string[] {
   const expanded = expandedSearchTokens(query);
   const hasStrongGriefSignal = expanded.some((token) => GRIEF_THEME_TOKENS.has(token));
-  return expanded
+  const terms = hasStrongGriefSignal
+    ? Array.from(new Set([...expanded, ...GRIEF_BROADENING_TERMS]))
+    : expanded;
+  return terms
     .filter((token) => !METADATA_SEARCH_QUERY_STOP_WORDS.has(token))
     .filter((token) => !(hasStrongGriefSignal && (token === "widow" || token === "widows")))
     .filter((token) => !(hasStrongGriefSignal && (token === "orphan" || token === "orphans")))
@@ -2947,6 +2969,7 @@ export class NeonAppStore implements AppStore {
     const limit = Number(filters.limit ?? 20);
     const tsQuery = buildMetadataTsQuery(query);
     const tokens = metadataSearchTerms(query);
+    const lexicalMetadataQuery = tokens.join(" ");
     const mapRows = (
       rows: Array<{
         id: string;
@@ -3210,7 +3233,7 @@ export class NeonAppStore implements AppStore {
           Array.isArray(filters.yearRange) ? Number(filters.yearRange[0]) : null,
           Array.isArray(filters.yearRange) ? Number(filters.yearRange[1]) : null,
           Array.isArray(filters.genre) ? filters.genre : [],
-          normalizeSearchQuery(query),
+          lexicalMetadataQuery,
           tokens,
           Math.max(limit * 80, 240),
           limit,

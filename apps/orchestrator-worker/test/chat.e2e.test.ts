@@ -3754,6 +3754,27 @@ test("sql metadata search downranks juvenile orphan results for grief queries wh
   assert.equal(results[1]?.id, "juvenile-work");
 });
 
+test("sql metadata search broadens grief queries with additional mourning terms", async () => {
+  const queries: Array<{ sql: string; params?: unknown[] }> = [];
+  const store = new NeonAppStore({
+    async query<T = Record<string, unknown>>(sql: string, params?: unknown[]) {
+      queries.push({ sql, params });
+      return { rows: [] as T[] };
+    },
+    async end() {},
+  });
+
+  await store.searchWorks("grief fiction", {
+    language: "en",
+    genre: ["fiction"],
+  });
+
+  const firstQueryParams = queries[0]?.params ?? [];
+  assert.match(String(firstQueryParams[0] ?? ""), /mourning/);
+  assert.match(String(firstQueryParams[0] ?? ""), /sorrow/);
+  assert.match(String(firstQueryParams[0] ?? ""), /funeral/);
+});
+
 test("OpenAIEmbedder requests 1536 dimensions for text-embedding-3 models", async () => {
   let requestBody: Record<string, unknown> | null = null;
   const embedder = new OpenAIEmbedder("test-key", "text-embedding-3-small", async (_input, init) => {

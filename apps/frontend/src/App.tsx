@@ -2302,6 +2302,23 @@ function currentResearchToolTrace(messages: UiMessage[], runId: string | null) {
   return planMessages[0]?.toolCalls ?? [];
 }
 
+function currentResearchDocumentEnding(messages: UiMessage[]) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role !== "assistant") {
+      continue;
+    }
+    if (message.toolCalls.length > 0) {
+      continue;
+    }
+    if (message.content.trim().length === 0) {
+      continue;
+    }
+    return message.content;
+  }
+  return null;
+}
+
 function artifactText(artifact: RunArtifactRecord) {
   return typeof artifact.content === "string" ? artifact.content.trim() : "";
 }
@@ -2644,7 +2661,30 @@ function formatPassageLocation(chunkIndex: number | null) {
   return `around passage ${chunkIndex}`;
 }
 
-function buildResearchDocument(title: string, toolTrace: ToolTraceEntry[], artifacts: RunArtifactRecord[]): ResearchDocumentModel {
+function normalizeResearchEnding(text: string | null | undefined) {
+  if (typeof text !== "string") {
+    return "";
+  }
+  const cleaned = text
+    .replace(/^#{1,6}\s+/gmu, "")
+    .replace(/^\s*[-*]\s+/gmu, "")
+    .trim();
+  if (!cleaned) {
+    return "";
+  }
+  const paragraphs = cleaned
+    .split(/\n\s*\n/u)
+    .map((paragraph) => paragraph.replace(/\s+/g, " ").trim())
+    .filter((paragraph) => paragraph.length > 0);
+  return paragraphs.slice(0, 2).join("\n\n");
+}
+
+function buildResearchDocument(
+  title: string,
+  toolTrace: ToolTraceEntry[],
+  artifacts: RunArtifactRecord[],
+  ending: string | null,
+): ResearchDocumentModel {
   const entries: ResearchDocumentModel["entries"] = [];
   const seen = new Set<string>();
   appendDocumentEntry(entries, seen, {
@@ -2654,37 +2694,8 @@ function buildResearchDocument(title: string, toolTrace: ToolTraceEntry[], artif
   });
 
   for (const entry of toolTrace) {
-    appendDocumentEntry(entries, seen, {
-      key: `summary:${entry.id}`,
-      text: summarizeToolSentence(entry),
-      kind: "log",
-    });
-
-    for (const [index, progressLine] of entry.progress.entries()) {
-      const normalizedProgressLine = progressLine.trim();
-      if (!normalizedProgressLine || normalizedProgressLine === summarizeToolSentence(entry).trim()) {
-        continue;
-      }
-      appendDocumentEntry(entries, seen, {
-        key: `progress-line:${entry.id}:${index}`,
-        text: normalizedProgressLine,
-        kind: "log",
-      });
-    }
-
     for (const [index, detail] of (entry.progressDetails ?? []).entries()) {
       const detailType = progressDetailString(detail.type);
-      if (detailType === "research.seed_summary") {
-        const message = progressDetailString(detail.message);
-        if (message) {
-          appendDocumentEntry(entries, seen, {
-            key: `progress-seed:${entry.id}:${index}`,
-            kind: "log",
-            text: message,
-          });
-        }
-        continue;
-      }
       if (detailType === "research.work") {
         const workId = progressDetailString(detail.workId) || `${entry.id}:progress-work:${index}`;
         const titleText = progressDetailString(detail.workTitle) || progressDetailString(detail.title) || workId;
@@ -2818,6 +2829,15 @@ function buildResearchDocument(title: string, toolTrace: ToolTraceEntry[], artif
     });
   }
 
+  const normalizedEnding = normalizeResearchEnding(ending);
+  if (normalizedEnding) {
+    appendDocumentEntry(entries, seen, {
+      key: "ending",
+      kind: "log",
+      text: normalizedEnding,
+    });
+  }
+
   return {
     title: title.trim() || "Research log",
     entries,
@@ -2828,18 +2848,20 @@ function ResearchArtifactPane({
   sessionTitle,
   toolTrace,
   artifacts,
+  ending,
   onOpenWork,
   onOpenCitation,
 }: {
   sessionTitle: string;
   toolTrace: ToolTraceEntry[];
   artifacts: RunArtifactRecord[];
+  ending: string | null;
   onOpenWork: (workId: string) => void;
   onOpenCitation: (citation: Citation) => void;
 }) {
   const document = useMemo(
-    () => buildResearchDocument(sessionTitle, toolTrace, artifacts),
-    [artifacts, sessionTitle, toolTrace],
+    () => buildResearchDocument(sessionTitle, toolTrace, artifacts, ending),
+    [artifacts, ending, sessionTitle, toolTrace],
   );
 
   return (
@@ -4758,6 +4780,7 @@ export default function App() {
         ))
       );
     const workspaceToolTrace = currentResearchToolTrace(visibleMessages, preferredAssistantRun?.id ?? null);
+    const workspaceDocumentEnding = currentResearchDocumentEnding(visibleMessages);
     const showBlankSession =
       !assistantSessionLoading
       && selectedSessionId == null
@@ -4812,6 +4835,7 @@ export default function App() {
                 sessionTitle={assistantSessionName(activeSession)}
                 toolTrace={workspaceToolTrace}
                 artifacts={runArtifacts}
+                ending={workspaceDocumentEnding}
                 onOpenWork={openWork}
                 onOpenCitation={openCitation}
               />

@@ -211,6 +211,17 @@ function writeStdout(text) {
   }
 }
 
+function writeProgressMarker(payload) {
+  try {
+    process.stderr.write(`ALPHABOOK_PROGRESS ${JSON.stringify(payload)}\n`);
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "EPIPE") {
+      return;
+    }
+    throw error;
+  }
+}
+
 function normalizeKinds(kinds) {
   const aliasMap = new Map([
     ["clean_text", "clean"],
@@ -630,6 +641,7 @@ async function runRg(client, options) {
 
   const hits = candidates.slice(options.offset, options.offset + effectiveLimit);
   const workMap = new Map();
+  const touchedWorkMap = new Map();
   for (const hit of hits) {
     if (!workMap.has(hit.workId)) {
       workMap.set(hit.workId, {
@@ -642,6 +654,17 @@ async function runRg(client, options) {
       });
     }
     workMap.get(hit.workId).matchCount += 1;
+  }
+  for (const candidate of candidates) {
+    if (!touchedWorkMap.has(candidate.workId)) {
+      touchedWorkMap.set(candidate.workId, {
+        workId: candidate.workId,
+        title: candidate.title,
+        language: candidate.language,
+        gutenbergId: candidate.gutenbergId,
+        releaseDate: candidate.releaseDate,
+      });
+    }
   }
 
   let contextRows = [];
@@ -694,6 +717,7 @@ async function runRg(client, options) {
     literalHints: literals,
     count: hits.length,
     works: [...workMap.values()],
+    touchedWorks: [...touchedWorkMap.values()],
     hits,
     context: contextRows,
     filters: {
@@ -775,6 +799,13 @@ async function runWorks(client, options) {
       releaseDate: row.release_date,
       score: row.score,
     })),
+    touchedWorks: rows.rows.map((row) => ({
+      workId: row.id,
+      title: row.title,
+      language: row.language,
+      summary: row.summary,
+      releaseDate: row.release_date,
+    })),
     filters: {
       language: options.language || null,
       yearFrom: options.yearFrom,
@@ -818,6 +849,18 @@ async function runNeighbors(client, options) {
     chunkIds: options.chunkIds,
     radius: options.radius,
     count: rows.rows.length,
+    touchedWorks: Array.from(
+      new Map(
+        rows.rows.map((row) => [
+          String(row.work_id),
+          {
+            workId: row.work_id,
+            title: row.title,
+            gutenbergId: row.gutenberg_id,
+          },
+        ]),
+      ).values(),
+    ),
     hits: rows.rows.map((row) => ({
       chunkId: row.id,
       workId: row.work_id,
@@ -859,6 +902,68 @@ function formatHit(hit, options, marker = ":") {
     ? (hit.text ?? hit.excerpt ?? "")
     : (hit.excerpt ?? hit.text ?? "");
   return prefix ? `${prefix}${marker}${body}` : body;
+}
+
+function emitProgressMarkers(result) {
+  if (!result || typeof result !== "object") {
+    return;
+  }
+
+  const mode = typeof result.mode === "string" ? result.mode : "unknown";
+  const touchedWorks = Array.isArray(result.touchedWorks)
+    ? result.touchedWorks.filter((value) => value && typeof value === "object")
+    : Array.isArray(result.works)
+      ? result.works.filter((value) => value && typeof value === "object")
+      : [];
+  for (const work of touchedWorks) {
+    const record = work;
+    const workId =
+      typeof record.workId === "string" ? record.workId
+      : typeof record.id === "string" ? record.id
+      : null;
+    if (!workId) {
+      continue;
+    }
+    writeProgressMarker({
+      type: "research.work",
+      source: `runtime.${mode}`,
+      workId,
+      workTitle:
+        typeof record.title === "string" ? record.title
+        : typeof record.workTitle === "string" ? record.workTitle
+        : workId,
+      ...(Array.isArray(record.authors) ? { authors: record.authors } : {}),
+      ...(typeof record.releaseDate === "string" ? { releaseDate: record.releaseDate } : {}),
+      ...(typeof record.summary === "string" ? { summary: record.summary } : {}),
+    });
+  }
+
+  const touchedChunks = Array.isArray(result.hits)
+    ? result.hits.filter((value) => value && typeof value === "object")
+    : [];
+  for (const chunk of touchedChunks) {
+    const record = chunk;
+    const workId = typeof record.workId === "string" ? record.workId : null;
+    if (!workId) {
+      continue;
+    }
+    writeProgressMarker({
+      type: "research.chunk",
+      source: `runtime.${mode}`,
+      workId,
+      ...(typeof record.chunkId === "string" ? { chunkId: record.chunkId } : {}),
+      ...(typeof record.chunkIndex === "number" ? { chunkIndex: record.chunkIndex } : {}),
+      workTitle:
+        typeof record.title === "string" ? record.title
+        : typeof record.workTitle === "string" ? record.workTitle
+        : workId,
+      excerpt:
+        typeof record.excerpt === "string" ? record.excerpt
+        : typeof record.text === "string" ? record.text.slice(0, 420)
+        : "",
+      ...(typeof record.r2Key === "string" ? { r2Key: record.r2Key } : {}),
+    });
+  }
 }
 
 function printText(result, options) {
@@ -935,10 +1040,12 @@ export async function main(argv = process.argv.slice(2)) {
   });
 
   if (args.json) {
+    emitProgressMarkers(result);
     writeStdout(JSON.stringify(result, null, 2));
     return result;
   }
 
+  emitProgressMarkers(result);
   printText(result, args);
   return result;
 }
