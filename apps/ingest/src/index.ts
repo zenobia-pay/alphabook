@@ -1004,13 +1004,26 @@ async function persistBookHtmlArtifact(
   };
 }
 
-async function backfillBookHtml(context: IngestContext, options: { startAfterId?: string | null; limit: number }) {
+async function backfillBookHtml(
+  context: IngestContext,
+  options: { startAfterId?: string | null; limit: number; concurrency?: number },
+) {
   const works = await listWorksMissingBookHtml(context, options.limit, options.startAfterId ?? null);
   const results: Array<Record<string, unknown>> = [];
-  for (const work of works) {
-    const result = await persistBookHtmlArtifact(context, work);
-    results.push(result);
+
+  const concurrency = Math.max(1, Number(options.concurrency ?? process.env.BOOK_HTML_BACKFILL_CONCURRENCY ?? "8"));
+  let cursor = 0;
+
+  async function worker() {
+    while (cursor < works.length) {
+      const work = works[cursor++];
+      const result = await persistBookHtmlArtifact(context, work);
+      results.push(result);
+    }
   }
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, works.length || 1) }, () => worker()));
+
   return {
     processed: results.length,
     nextStartAfterId: works.length > 0 ? works[works.length - 1].gutenbergId : options.startAfterId ?? null,
@@ -1288,10 +1301,11 @@ async function main() {
     }
 
     if (command === "backfill-book-html") {
-      const [startAfterId, limitValue] = args;
+      const [startAfterId, limitValue, concurrencyValue] = args;
       const result = await backfillBookHtml(context, {
         startAfterId: startAfterId && startAfterId !== "-" ? startAfterId : null,
         limit: Number(limitValue ?? process.env.BOOK_HTML_BATCH_SIZE ?? "100"),
+        concurrency: Number(concurrencyValue ?? process.env.BOOK_HTML_BACKFILL_CONCURRENCY ?? "8"),
       });
       console.log(JSON.stringify(result, null, 2));
       return;
@@ -1322,7 +1336,7 @@ async function main() {
     console.log("  ingest-gutenberg <gutenbergId> [title]");
     console.log("  backfill-mirror [startAfterId|-] [limit]");
     console.log("  backfill-mirror-parallel [startAfterId|-] [limit] [concurrency]");
-    console.log("  backfill-book-html [startAfterId|-] [limit]");
+    console.log("  backfill-book-html [startAfterId|-] [limit] [concurrency]");
     console.log("  rebuild-book-html [startAfterId|-] [limit] [concurrency]");
     console.log("  delete-gutenberg <gutenbergId...>");
     console.log("  run-once");
