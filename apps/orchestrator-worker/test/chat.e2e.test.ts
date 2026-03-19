@@ -26,6 +26,18 @@ class EchoSynthesizer implements Synthesizer {
   }
 }
 
+class RuntimeAwareSynthesizer implements Synthesizer {
+  lastInput: SynthesisInput | null = null;
+
+  async synthesize(input: SynthesisInput): Promise<SynthesisResult> {
+    this.lastInput = input;
+    return {
+      answer: `Summary: ${(input.runtimeBriefing ?? "").slice(0, 40)} | ${(input.researchDocument ?? "").slice(0, 80)}`.trim(),
+      citations: input.plannerCitations,
+    };
+  }
+}
+
 class CapturingBlobStore extends MemoryBlobStore {
   readonly writes: Array<{ key: string; value: string }> = [];
 
@@ -2969,6 +2981,120 @@ test("run details endpoint recovers a completed run answer from a persisted brie
   assert.equal(payload.messages[1]?.role, "assistant");
   assert.equal(payload.messages[1]?.content, "Recovered briefing content.");
   assert.equal(payload.messages[1]?.metadata.runId, run.id);
+});
+
+test("run recovery synthesizes a user-facing answer from the saved briefing and research document", async () => {
+  const store = new InMemoryAppStore();
+  const session = await store.createSession("reader-user", "Recover synthesized briefing");
+  await store.appendMessage(session.id, "user", "Find grief passages.");
+  const run = await store.createRun(session.id);
+  const workTool = await store.startToolCall(run.id, "search_works", {
+    query: "grief mourning fiction",
+  });
+  await store.finishToolCall(workTool.id, "completed", {
+    ok: true,
+    works: [
+      {
+        id: "work-1",
+        title: "Little Women",
+        authors: ["Louisa May Alcott"],
+      },
+    ],
+  });
+  const chunkTool = await store.startToolCall(run.id, "get_relevant_chunks", {
+    query: "grief mourning",
+    workIds: ["work-1"],
+  });
+  await store.finishToolCall(chunkTool.id, "completed", {
+    ok: true,
+    chunks: [
+      {
+        id: "chunk-1",
+        workId: "work-1",
+        title: "Little Women",
+        author: "Louisa May Alcott",
+        chunkIndex: 12,
+        excerpt: "Beth bears suffering quietly while the family mourns around her.",
+        text: "Beth bears suffering quietly while the family mourns around her.",
+        r2Key: "gutenberg/clean/514/chunks.jsonl",
+      },
+    ],
+  });
+  const toolCall = await store.startToolCall(run.id, "run_workspace_task", {
+    runtimeId: "runtime-1",
+    taskSpec: {
+      phase: "collect_and_brief",
+    },
+  });
+  await store.finishToolCall(toolCall.id, "completed", {
+    ok: true,
+    runtimeId: "runtime-1",
+    briefing: "Recovered briefing content about grief rituals and family comfort.",
+    citations: [
+      {
+        workId: "work-1",
+        chunkId: "chunk-1",
+        label: "Little Women#12",
+        excerpt: "Beth bears suffering quietly while the family mourns around her.",
+        r2Key: "gutenberg/clean/514/chunks.jsonl",
+      },
+    ],
+  });
+  await store.updateRun(run.id, {
+    status: "completed",
+    completedAt: new Date().toISOString(),
+  });
+
+  const synthesizer = new RuntimeAwareSynthesizer();
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    planner: new ScriptedPlanner([
+      {
+        type: "final_answer",
+        answer: "unused",
+        citations: [],
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer,
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+      async runWorkspaceTask() {
+        return { ok: false, error: "disabled" };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: true, files: [] };
+      },
+      async destroyWorkspace() {
+        return { ok: true };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const repairResponse = await app.request(`/sessions/${session.id}/runs/${run.id}?userId=reader-user`);
+  assert.equal(repairResponse.status, 200);
+
+  const messagesResponse = await app.request(`/sessions/${session.id}/messages?userId=reader-user`);
+  assert.equal(messagesResponse.status, 200);
+  const payload = await messagesResponse.json() as {
+    messages: Array<{ role: string; content: string; metadata: Record<string, unknown> }>;
+  };
+  assert.equal(payload.messages[1]?.role, "assistant");
+  assert.match(payload.messages[1]?.content ?? "", /^Summary:/);
+  assert.notEqual(payload.messages[1]?.content, "Recovered briefing content about grief rituals and family comfort.");
+  assert.equal(synthesizer.lastInput?.runtimeBriefing, "Recovered briefing content about grief rituals and family comfort.");
+  assert.match(synthesizer.lastInput?.researchDocument ?? "", /Little Women by Louisa May Alcott/);
 });
 
 test("run details endpoint fails orphaned running runs with no active tool call", async () => {

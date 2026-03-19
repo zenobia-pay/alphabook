@@ -2288,23 +2288,51 @@ async function ensureRunAnswerPersisted(
     return;
   }
 
+  const exactCitationLinks = await Promise.all(
+    collectSynthesisCitations(completedBriefing.citations, toolHistory)
+      .slice(0, 16)
+      .map(async (citation) => ({
+        workId: citation.workId,
+        ...(citation.chunkId ? { chunkId: citation.chunkId } : {}),
+        label: citation.label,
+        excerpt: citation.excerpt,
+        url: await buildCitationPassageUrl(deps, session.id, citation),
+      })),
+  );
+  const recoveredSynthesis = await deps.synthesizer.synthesize({
+    userMessage: messages.filter((message) => message.role === "user").at(-1)?.content ?? completedBriefing.answer,
+    conversationHistory,
+    plannerDraft: completedBriefing.answer,
+    plannerCitations: completedBriefing.citations,
+    toolHistory,
+    runtimeBriefing: completedBriefing.answer,
+    runtimeEvidenceNotes: latestWorkspaceFileContent(toolHistory, /evidence-notes\.md$/u),
+    researchDocument: buildSynthesisResearchDocument(toolHistory),
+    exactCitationLinks,
+    billingContext: {
+      userId: session.userId,
+      sessionId: session.id,
+      runId,
+      source: "synthesizer",
+    },
+  });
   const recoveredAnswer = await rewriteAnswerWithCitationLinks(
     deps,
     session.id,
-    completedBriefing.answer,
-    completedBriefing.citations,
+    recoveredSynthesis.answer,
+    recoveredSynthesis.citations,
   );
   const artifactKey = await persistFinalArtifact(
     deps,
     session.id,
     runId,
     recoveredAnswer,
-    completedBriefing.citations,
+    recoveredSynthesis.citations,
   );
   await deps.store.appendMessage(session.id, "assistant", recoveredAnswer, {
     runId,
     phase: "answer",
-    citations: completedBriefing.citations,
+    citations: recoveredSynthesis.citations,
     artifactKey,
     researchLog: summarizeToolHistory(toolHistory),
     recoveredFromBriefing: true,
@@ -4104,6 +4132,10 @@ async function synthesizeAnswer(
         })),
     );
 
+    const latestBriefing = latestCompletedBriefing(params.toolHistory);
+    const runtimeEvidenceNotes = latestWorkspaceFileContent(params.toolHistory, /evidence-notes\.md$/u);
+    const researchDocument = buildSynthesisResearchDocument(params.toolHistory);
+
     let synthesis;
     synthesis = await deps.synthesizer.synthesize({
       userMessage: params.userMessage,
@@ -4111,6 +4143,9 @@ async function synthesizeAnswer(
       plannerDraft: params.plannerDraft,
       plannerCitations: params.plannerCitations,
       toolHistory: params.toolHistory,
+      runtimeBriefing: latestBriefing?.answer ?? null,
+      runtimeEvidenceNotes,
+      researchDocument,
       exactCitationLinks,
       billingContext: {
         userId: params.userId,
@@ -4192,6 +4227,78 @@ async function synthesizeAnswer(
     });
     throw error;
   }
+}
+
+function latestWorkspaceFileContent(
+  toolHistory: Array<{
+    toolName: ToolName;
+    args: Record<string, unknown>;
+    result: Record<string, unknown>;
+  }>,
+  pathPattern: RegExp,
+): string | null {
+  for (let index = toolHistory.length - 1; index >= 0; index -= 1) {
+    const candidate = toolHistory[index];
+    if (
+      candidate.toolName === "read_workspace_file"
+      && typeof candidate.args.path === "string"
+      && pathPattern.test(candidate.args.path)
+      && typeof candidate.result.content === "string"
+      && candidate.result.content.trim().length > 0
+    ) {
+      return candidate.result.content.trim();
+    }
+  }
+  return null;
+}
+
+function buildSynthesisResearchDocument(
+  toolHistory: Array<{
+    toolName: ToolName;
+    args: Record<string, unknown>;
+    result: Record<string, unknown>;
+  }>,
+) {
+  const lines: string[] = [];
+  for (const entry of toolHistory) {
+    if ((entry.toolName === "search_works" || entry.toolName === "get_work_metadata") && Array.isArray(entry.result.works)) {
+      const works = (entry.result.works as Array<Record<string, unknown>>)
+        .slice(0, 10)
+        .map((work) => {
+          const title = typeof work.title === "string" ? work.title.trim() : "Untitled work";
+          const authors = Array.isArray(work.authors)
+            ? work.authors.filter((author): author is string => typeof author === "string" && author.trim().length > 0).slice(0, 2)
+            : [];
+          return authors.length > 0 ? `${title} by ${authors.join(", ")}` : title;
+        });
+      if (works.length > 0) {
+        lines.push(`Books surfaced: ${works.join("; ")}`);
+      }
+    }
+
+    if (entry.toolName === "get_relevant_chunks" && Array.isArray(entry.result.chunks)) {
+      const chunks = (entry.result.chunks as Array<Record<string, unknown>>)
+        .slice(0, 10)
+        .map((chunk) => {
+          const title = typeof chunk.title === "string" ? chunk.title.trim() : null;
+          const author = typeof chunk.author === "string" ? chunk.author.trim() : null;
+          const chunkIndex = typeof chunk.chunkIndex === "number" ? chunk.chunkIndex : null;
+          const excerpt = typeof chunk.excerpt === "string"
+            ? chunk.excerpt.replace(/\s+/g, " ").trim().slice(0, 180)
+            : null;
+          const source = title
+            ? (author ? `${title} by ${author}` : title)
+            : (typeof chunk.workId === "string" ? chunk.workId : "unknown work");
+          const location = chunkIndex !== null ? `around passage ${chunkIndex}` : "passage surfaced";
+          return `${source} (${location})${excerpt ? `: ${excerpt}` : ""}`;
+        });
+      if (chunks.length > 0) {
+        lines.push(`Passages surfaced: ${chunks.join(" | ")}`);
+      }
+    }
+  }
+
+  return lines.length > 0 ? lines.join("\n") : null;
 }
 
 async function runOrchestrator(

@@ -32,6 +32,9 @@ export interface SynthesisInput {
   plannerDraft?: string;
   plannerCitations: Citation[];
   toolHistory: ToolHistoryEntry[];
+  runtimeBriefing?: string | null;
+  runtimeEvidenceNotes?: string | null;
+  researchDocument?: string | null;
   exactCitationLinks?: Array<{
     workId: string;
     chunkId?: string;
@@ -255,6 +258,58 @@ function extractRuntimeSummary(toolHistory: ToolHistoryEntry[]): string | null {
   return null;
 }
 
+function compactParagraphs(value: string, maxParagraphs = 6) {
+  return value
+    .split(/\n\s*\n/u)
+    .map((paragraph) => paragraph.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .slice(0, maxParagraphs)
+    .join("\n\n");
+}
+
+function extractResearchDocument(toolHistory: ToolHistoryEntry[]): string | null {
+  const lines: string[] = [];
+  for (const entry of toolHistory) {
+    if ((entry.toolName === "search_works" || entry.toolName === "get_work_metadata") && Array.isArray(entry.result.works)) {
+      const works = (entry.result.works as Array<Record<string, unknown>>)
+        .slice(0, 8)
+        .map((work) => {
+          const title = typeof work.title === "string" ? work.title.trim() : "Untitled work";
+          const authors = Array.isArray(work.authors)
+            ? work.authors.filter((author): author is string => typeof author === "string" && author.trim().length > 0).slice(0, 2)
+            : [];
+          return authors.length > 0 ? `${title} by ${authors.join(", ")}` : title;
+        });
+      if (works.length > 0) {
+        lines.push(`${entry.toolName}: ${works.join("; ")}`);
+      }
+    }
+    if (entry.toolName === "get_relevant_chunks" && Array.isArray(entry.result.chunks)) {
+      const chunks = (entry.result.chunks as Array<Record<string, unknown>>)
+        .slice(0, 8)
+        .map((chunk) => {
+          const title = typeof chunk.title === "string" ? chunk.title.trim() : null;
+          const author = typeof chunk.author === "string" ? chunk.author.trim() : null;
+          const chunkIndex = typeof chunk.chunkIndex === "number" ? chunk.chunkIndex : null;
+          const excerpt = typeof chunk.excerpt === "string" ? truncateForModel(chunk.excerpt, 160) : null;
+          const source = title
+            ? (author ? `${title} by ${author}` : title)
+            : (typeof chunk.workId === "string" ? chunk.workId : "unknown work");
+          const location = chunkIndex !== null ? `around passage ${chunkIndex}` : "passage surfaced";
+          return `${source} (${location})${excerpt ? `: ${excerpt}` : ""}`;
+        });
+      if (chunks.length > 0) {
+        lines.push(`${entry.toolName}: ${chunks.join(" | ")}`);
+      }
+    }
+  }
+
+  if (lines.length === 0) {
+    return null;
+  }
+  return lines.join("\n");
+}
+
 function extractRuntimeCitations(toolHistory: ToolHistoryEntry[]): Citation[] {
   for (let index = toolHistory.length - 1; index >= 0; index -= 1) {
     const candidate = toolHistory[index];
@@ -304,7 +359,7 @@ function userFacingErrorSummary(toolHistory: ToolHistoryEntry[]): string | null 
 export class FallbackSynthesizer implements Synthesizer {
   async synthesize(input: SynthesisInput): Promise<SynthesisResult> {
     const chunks = extractChunks(input.toolHistory);
-    const runtimeSummary = extractRuntimeSummary(input.toolHistory);
+    const runtimeSummary = input.runtimeBriefing ?? extractRuntimeSummary(input.toolHistory);
     const runtimeCitations = extractRuntimeCitations(input.toolHistory);
     const citations = dedupeCitations([
       ...runtimeCitations,
@@ -312,17 +367,22 @@ export class FallbackSynthesizer implements Synthesizer {
       ...chunks.slice(0, 4).map(chunkCitation),
     ]).slice(0, 6);
 
-    if (runtimeSummary) {
-      return {
-        answer: runtimeSummary,
-        citations,
-      };
-    }
-
     const failureSummary = userFacingErrorSummary(input.toolHistory);
     if (failureSummary) {
       return {
         answer: failureSummary,
+        citations,
+      };
+    }
+
+    const researchDocument = input.researchDocument ?? extractResearchDocument(input.toolHistory);
+    if (runtimeSummary) {
+      const opening = "I searched the corpus, gathered primary-source passages, and assembled a quoted briefing before writing this summary for you.";
+      const evidenceLine = researchDocument
+        ? `Books and passages touched during the run included:\n${compactParagraphs(researchDocument, 4)}`
+        : null;
+      return {
+        answer: [opening, compactParagraphs(runtimeSummary, 6), evidenceLine].filter(Boolean).join("\n\n"),
         citations,
       };
     }
@@ -343,20 +403,8 @@ export class OpenAISynthesizer implements Synthesizer {
   ) {}
 
   async synthesize(input: SynthesisInput): Promise<SynthesisResult> {
-    const runtimeSummary = extractRuntimeSummary(input.toolHistory);
-    if (runtimeSummary) {
-      const runtimeCitations = extractRuntimeCitations(input.toolHistory);
-      const chunkCitations = extractChunks(input.toolHistory).map(chunkCitation);
-      return {
-        answer: runtimeSummary,
-        citations: dedupeCitations([
-          ...runtimeCitations,
-          ...input.plannerCitations,
-          ...chunkCitations,
-        ]).slice(0, 16),
-      };
-    }
-
+    const runtimeSummary = input.runtimeBriefing ?? extractRuntimeSummary(input.toolHistory);
+    const researchDocument = input.researchDocument ?? extractResearchDocument(input.toolHistory);
     const summarizedToolHistory = summarizeToolHistoryForModel(input.toolHistory);
     const exactCitationLinks = Array.isArray(input.exactCitationLinks)
       ? input.exactCitationLinks.slice(0, 16).map((entry) => ({
@@ -384,6 +432,9 @@ Use the exact provided absolute URL as the href. Do not invent, shorten, rewrite
             question: input.userMessage,
             conversationHistory: input.conversationHistory,
             plannerDraft: input.plannerDraft ?? null,
+            runtimeBriefing: runtimeSummary,
+            runtimeEvidenceNotes: input.runtimeEvidenceNotes ?? null,
+            researchDocument,
             toolHistory: summarizedToolHistory,
             exactCitationLinks,
             responseInstructions: "Reply with JSON only.",
