@@ -1,9 +1,9 @@
 [Unit]
-Description=Run AlphaBook Gutenberg rsync mirror refresh daily
+Description=Run AlphaBook Gutenberg rsync mirror refresh continuously
 
 [Timer]
-OnBootSec=10min
-OnCalendar=*-*-* 03:15:00
+OnBootSec=2min
+OnUnitActiveSec=15min
 Persistent=true
 Unit=alphabook-gutenberg-rsync.service
 

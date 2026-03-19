@@ -35,7 +35,7 @@ That script:
 - installs the full book HTML backfill runner into `/srv/alphabook/bin`
 - installs the full book HTML rebuild runner into `/srv/alphabook/bin`
 - installs the systemd services and timers
-- enables the daily timers
+- enables the recurring timers
 
 ## Manual Sync
 
@@ -101,7 +101,11 @@ To upload automatically after each mirror refresh, set:
 BOOK_HTML_BATCH_SIZE=100
 ```
 
-The shipped systemd service already enables `ALPHABOOK_UPLOAD_AFTER_SYNC=1`, so the main daily rsync run will upload new books and backfill a batch of missing `book_html` artifacts after the mirror refresh finishes.
+The shipped systemd service already enables `ALPHABOOK_UPLOAD_AFTER_SYNC=1`, so the main recurring rsync run will:
+
+- ingest new Gutenberg mirror files in parallel
+- backfill a batch of missing `book_html` artifacts
+- ensure the full paginated static-book rebuild loop is running in the background
 
 ## Notes
 

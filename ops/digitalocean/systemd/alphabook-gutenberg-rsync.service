@@ -8,7 +8,12 @@ Type=oneshot
 Environment=ALPHABOOK_ROOT=/srv/alphabook
 Environment=GUTENBERG_MIRROR_ROOT=/srv/alphabook/gutenberg
 Environment=ALPHABOOK_UPLOAD_AFTER_SYNC=1
-Environment=BOOK_HTML_BATCH_SIZE=100
+Environment=MIRROR_BATCH_SIZE=500
+Environment=MIRROR_BACKFILL_CONCURRENCY=12
+Environment=BOOK_HTML_BATCH_SIZE=500
+Environment=BOOK_HTML_BACKFILL_CONCURRENCY=12
+Environment=BOOK_HTML_REBUILD_CONCURRENCY=12
+Environment=BOOK_HTML_TRIGGER_FULL_REBUILD=1
 ExecStart=/srv/alphabook/bin/gutenberg-rsync.sh
 Nice=10
 IOSchedulingClass=best-effort
