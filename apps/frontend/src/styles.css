@@ -1944,6 +1944,13 @@ button {
   border-left: 2px solid rgba(38, 38, 38, 0.1);
 }
 
+.assistant-document-entry.is-log {
+  font-family: "Manrope", sans-serif;
+  font-size: 0.9rem;
+  line-height: 1.55;
+  color: var(--ink-subtle);
+}
+
 .assistant-document-entry.is-chunk {
   margin: 2px 0 6px;
   padding: 0 0 0 18px;

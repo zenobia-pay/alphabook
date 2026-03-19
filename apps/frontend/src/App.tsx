@@ -2887,6 +2887,14 @@ function normalizeSectionSummaryText(text: string) {
 }
 
 function toSectionSummary(entry: ToolTraceEntry) {
+  const resultSummary = typeof entry.result?.__summary === "string" ? entry.result.__summary.trim() : "";
+  if (resultSummary.length > 0) {
+    return resultSummary;
+  }
+  const argsSummary = typeof entry.args.__summary === "string" ? entry.args.__summary.trim() : "";
+  if (argsSummary.length > 0) {
+    return argsSummary;
+  }
   const rationale = typeof entry.rationale === "string" ? normalizeSectionSummaryText(entry.rationale) : "";
   if (rationale.length > 0 && rationale.length <= 260) {
     return rationale.endsWith(".") ? rationale : `${rationale}.`;
@@ -3274,6 +3282,21 @@ function buildResearchDocument(
               excerpt: excerpt || citationText,
               ...(progressDetailString(detail.r2Key) ? { r2Key: progressDetailString(detail.r2Key) } : {}),
             },
+          },
+        });
+        continue;
+      }
+      if (detailType === "research.note") {
+        const noteText = progressDetailString(detail.note) || progressDetailString(detail.message);
+        appendDocumentEntry(entries, seen, {
+          sectionKey: section.key,
+          sectionTitle: section.title,
+          sectionSummary: section.summary,
+          sectionMeta: section.meta,
+          item: {
+            key: `progress-note:${entry.id}:${index}`,
+            kind: "log",
+            text: noteText,
           },
         });
       }

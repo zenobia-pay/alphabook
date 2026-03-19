@@ -181,7 +181,7 @@ function omitInternalKeys(record: JsonRecord | null) {
     return null;
   }
   const filtered = Object.fromEntries(
-    Object.entries(record).filter(([key]) => key !== "__rationale" && key !== "__progress" && key !== "__logLines"),
+    Object.entries(record).filter(([key]) => key !== "__rationale" && key !== "__progress" && key !== "__logLines" && key !== "__summary"),
   );
   return Object.keys(filtered).length ? filtered : null;
 }
@@ -240,6 +240,7 @@ function pruneValue(value: unknown): unknown {
     "__rationale",
     "__progress",
     "__logLines",
+    "__summary",
     "downloads",
     "fileCatalog",
     "manifest",

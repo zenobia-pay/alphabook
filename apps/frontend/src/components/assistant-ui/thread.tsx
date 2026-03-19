@@ -100,12 +100,18 @@ function assistantMessageToMarkdown(parts: readonly MessagePartRecord[]) {
       if ("__logLines" in args) {
         delete args.__logLines;
       }
+      if ("__summary" in args) {
+        delete args.__summary;
+      }
       const resultRecord = part.result && typeof part.result === "object" ? { ...(part.result as Record<string, unknown>) } : null;
       const completedLogLines = resultRecord && Array.isArray(resultRecord.__logLines)
         ? resultRecord.__logLines.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
         : [];
       if (resultRecord && "__logLines" in resultRecord) {
         delete resultRecord.__logLines;
+      }
+      if (resultRecord && "__summary" in resultRecord) {
+        delete resultRecord.__summary;
       }
 
       const toolSections = [`### Tool Call: ${part.toolName ?? "Tool"}`];

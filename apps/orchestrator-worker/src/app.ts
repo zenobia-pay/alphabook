@@ -1680,6 +1680,26 @@ function normalizeRuntimeProgressLine(event: Record<string, unknown>): {
     ? event.authors.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     : [];
   const chunkIndex = typeof event.chunkIndex === "number" ? event.chunkIndex : null;
+  const noteDetail = (note: string): Record<string, unknown> => ({
+    type: "research.note",
+    note,
+    message: note,
+  });
+  const maybeResearchNote = (value: string): Record<string, unknown> | undefined => {
+    const note = sanitizeUserFacingToolText(value)?.replace(/\s+/g, " ").trim() ?? "";
+    if (!note || note.length < 24 || note.length > 180) {
+      return undefined;
+    }
+    if (
+      /^(Touched|Reviewed|OpenAI deep research|provider:|session id:|You are |Goal:|Question:|Task spec:|Seed evidence|research run manifest summary:|exec|error:|!\/usr\/bin\/env|import |node \/research run|\/bin\/bash|mcp startup)/iu.test(note)
+      || /\b(?:gutenberg\/|context\/search|context\/load|rg\b|jq\b|sed\b|awk\b|grep\b|cat\b)\b/iu.test(note)
+      || /[{}[\]]/u.test(note)
+      || /[a-f0-9]{8}(?:[- ][a-f0-9]{4}){3}[- ][a-f0-9]{12}/iu.test(note)
+    ) {
+      return undefined;
+    }
+    return noteDetail(note);
+  };
 
   if (type === "codex.stdout" || type === "codex.stderr") {
     const parsedMarkerDetail = line ? parseRuntimeProgressMarker(line) : null;
@@ -1745,7 +1765,10 @@ function normalizeRuntimeProgressLine(event: Record<string, unknown>): {
         text: "A corpus-wide search inside the VM timed out and needs a narrower follow-up query.",
       };
     }
-    return { text: line };
+    const note = maybeResearchNote(line);
+    return note
+      ? { text: note.note as string, detail: note }
+      : { text: line };
   }
   if (type === "research.work") {
     return {
@@ -1783,16 +1806,19 @@ function normalizeRuntimeProgressLine(event: Record<string, unknown>): {
     return { text: "The deeper research pass failed." };
   }
   if (type === "workspace.local_chunks.missing") {
-    return { text: "Starting from the best current evidence and searching the full corpus directly." };
+    const text = "Starting from the best current evidence and searching the full corpus directly.";
+    return { text, detail: noteDetail(text) };
   }
 
-  return {
-    text: rawMessage
-      .replace(/^codex-briefing:\s*/i, "")
-      .replace(/\bCodex corpus briefing\b/gi, "Deep research")
-      .replace(/\bCodex step\b/gi, "Research step")
-      .replace(/\bCodex\b/gi, "the research engine"),
-  };
+  const normalizedText = rawMessage
+    .replace(/^codex-briefing:\s*/i, "")
+    .replace(/\bCodex corpus briefing\b/gi, "Deep research")
+    .replace(/\bCodex step\b/gi, "Research step")
+    .replace(/\bCodex\b/gi, "the research engine");
+  const note = maybeResearchNote(normalizedText);
+  return note
+    ? { text: normalizedText, detail: note }
+    : { text: normalizedText };
 }
 
 function sanitizeUserFacingToolText(text: string | null | undefined): string | null {
@@ -2104,24 +2130,44 @@ async function normalizeToolLinesForUser(
   auditLog?: AuditLogger,
 ) {
   const fallback = fallbackNormalizeToolLines(input.lines);
+  const fallbackSummary = fallback[0] ?? "";
+  const cleanupLines = (() => {
+    const lines = input.lines.filter((line) => line.value.trim().length > 0);
+    if (input.toolName !== "run_workspace_task") {
+      return lines.slice(0, 36);
+    }
+    const preferred = lines.filter((line) =>
+      line.key === "rationale"
+      || line.key === "taskSpec.mode"
+      || line.key === "taskSpec.researchObjective"
+      || line.key === "taskSpec.goal"
+      || line.key === "taskSpec.query"
+      || line.key === "taskSpec.retrievalQuery"
+      || /^taskSpec\.(candidateWorkIds|workIds|chunkIds)\[(?:0|1|2|3|4|\+)\]$/u.test(line.key)
+      || /^taskSpec\.retrieval\.searchWorks\[(?:0|1|2|3|4)\]\.(title|authors\[\d+\]|summary)$/u.test(line.key),
+    );
+    return (preferred.length > 0 ? preferred : lines).slice(0, 28);
+  })();
   if (
     !deps.ai
-    || input.lines.length === 0
+    || cleanupLines.length === 0
     || input.toolName === "create_workspace"
-    || input.toolName === "run_workspace_task"
   ) {
-    return fallback;
+    return {
+      summary: fallbackSummary,
+      normalizedLines: fallback,
+    };
   }
   auditLog?.("internal.glm_cleanup.started", {
     toolName: input.toolName,
     model: deps.toolStreamCleanupModel ?? DEFAULT_SESSION_TITLE_MODEL,
-    lineCount: input.lines.length,
+    lineCount: cleanupLines.length,
   });
   try {
     const cleaned = await cleanupToolStreamWithWorkersAi(deps.ai, {
       model: deps.toolStreamCleanupModel,
       toolName: input.toolName,
-      lines: input.lines,
+      lines: cleanupLines,
     });
     auditLog?.("internal.glm_cleanup.completed", {
       toolName: input.toolName,
@@ -2136,14 +2182,22 @@ async function normalizeToolLinesForUser(
         value: line,
       })),
     );
-    return normalized.length > 0 ? normalized : fallback;
+    return {
+      summary: typeof cleaned.summary === "string" && cleaned.summary.trim().length > 0
+        ? cleaned.summary.trim()
+        : fallbackSummary,
+      normalizedLines: normalized.length > 0 ? normalized : fallback,
+    };
   } catch (error) {
     auditLog?.("internal.glm_cleanup.failed", {
       toolName: input.toolName,
       model: deps.toolStreamCleanupModel ?? DEFAULT_SESSION_TITLE_MODEL,
       error: error instanceof Error ? error.message : "Unknown cleanup error",
     });
-    return fallback;
+    return {
+      summary: fallbackSummary,
+      normalizedLines: fallback,
+    };
   }
 }
 
@@ -4699,11 +4753,11 @@ async function runOrchestrator(
       return;
     }
     buffer.flushPromise = (async () => {
-      const normalizedLines = await normalizeToolLinesForUser(deps, {
+      const normalizedToolLines = await normalizeToolLinesForUser(deps, {
         toolName: context.toolName,
         lines: batch,
       }, recordRawLog);
-      for (const text of normalizedLines) {
+      for (const text of normalizedToolLines.normalizedLines) {
         await onEmit(text);
       }
     })().finally(() => {
@@ -4922,7 +4976,7 @@ async function runOrchestrator(
       );
     }
     const streamedResult = clientSafeToolResult(toolName, result);
-    const completedLogLines = await normalizeToolLinesForUser(deps, {
+    const completedToolLines = await normalizeToolLinesForUser(deps, {
       toolName,
       lines: flattenValueForCleanup(streamedResult).map((line) => ({
         ...line,
@@ -4948,7 +5002,8 @@ async function runOrchestrator(
             progress: entry.progress,
             result: {
               ...streamedResult,
-              __logLines: completedLogLines,
+              __logLines: completedToolLines.normalizedLines,
+              __summary: completedToolLines.summary || undefined,
               error: typeof streamedResult.error === "string" ? streamedResult.error : undefined,
             },
             isError: status === "failed",
@@ -4966,7 +5021,8 @@ async function runOrchestrator(
       status,
       result: {
         ...streamedResult,
-        __logLines: completedLogLines,
+        __logLines: completedToolLines.normalizedLines,
+        __summary: completedToolLines.summary || undefined,
         error: typeof streamedResult.error === "string" ? streamedResult.error : undefined,
       },
     });
@@ -5180,7 +5236,7 @@ async function runOrchestrator(
     runtimeTasks += 1;
     const toolRecord = await deps.store.startToolCall(run.id, toolName, normalizedToolArgs);
     await ensureInitialPlanSent(routedQueryRef.current);
-    const startedLogLines = await normalizeToolLinesForUser(deps, {
+    const startedToolLines = await normalizeToolLinesForUser(deps, {
       toolName,
       lines: [
         {
@@ -5188,10 +5244,10 @@ async function runOrchestrator(
           key: "rationale",
           value: rationale,
         },
-        ...flattenValueForCleanup(normalizedToolArgs).map((line) => ({
-          ...line,
-          toolName,
-        })),
+          ...flattenValueForCleanup(normalizedToolArgs).map((line) => ({
+            ...line,
+            toolName,
+          })),
       ],
     });
     recordRawLog("tool.started.raw", {
@@ -5210,7 +5266,8 @@ async function runOrchestrator(
         rationale: sanitizeUserFacingToolText(rationale) ?? undefined,
         progress: sanitizeUserFacingToolText(rationale) ? [sanitizeUserFacingToolText(rationale)!] : [],
         args: {
-          __logLines: startedLogLines,
+          __logLines: startedToolLines.normalizedLines,
+          __summary: startedToolLines.summary || undefined,
         },
         state: "running",
       },
@@ -5223,7 +5280,8 @@ async function runOrchestrator(
       label: labelForToolCall(toolName, normalizedToolArgs),
       rationale: sanitizeUserFacingToolText(rationale) ?? null,
       args: {
-        __logLines: startedLogLines,
+        __logLines: startedToolLines.normalizedLines,
+        __summary: startedToolLines.summary || undefined,
       },
     });
     const progressEmitter = startToolProgressEmitter(
@@ -5641,7 +5699,7 @@ async function runOrchestrator(
       }
       const toolRecord = await deps.store.startToolCall(run.id, toolCall.tool_name, normalizedToolArgs);
       await ensureInitialPlanSent(routedQuery);
-      const startedLogLines = await normalizeToolLinesForUser(deps, {
+      const startedToolLines = await normalizeToolLinesForUser(deps, {
         toolName: toolCall.tool_name,
         lines: [
           ...(toolCall.rationale
@@ -5673,7 +5731,8 @@ async function runOrchestrator(
           rationale: sanitizeUserFacingToolText(toolCall.rationale) ?? undefined,
           progress: sanitizeUserFacingToolText(toolCall.rationale) ? [sanitizeUserFacingToolText(toolCall.rationale)!] : [],
           args: {
-            __logLines: startedLogLines,
+            __logLines: startedToolLines.normalizedLines,
+            __summary: startedToolLines.summary || undefined,
           },
           state: "running",
         },
@@ -5686,7 +5745,8 @@ async function runOrchestrator(
         label: labelForToolCall(toolCall.tool_name, normalizedToolArgs),
         rationale: sanitizeUserFacingToolText(toolCall.rationale) ?? null,
         args: {
-          __logLines: startedLogLines,
+          __logLines: startedToolLines.normalizedLines,
+          __summary: startedToolLines.summary || undefined,
         },
       });
       const progressEmitter = startToolProgressEmitter(
