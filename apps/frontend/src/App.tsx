@@ -25,7 +25,7 @@ type UiMessage = MessageRecord & {
 
 type RawUiMessage = MessageRecord & {
   citations: Citation[];
-  toolCalls: Array<Record<string, unknown>>;
+  toolCalls?: Array<Record<string, unknown>>;
 };
 
 type ToolTraceEntry = {
@@ -522,13 +522,24 @@ function toReadonlyJsonObject(args: Record<string, unknown>): ReadonlyJSONObject
   return Object.fromEntries(Object.entries(args).map(([key, value]) => [key, toReadonlyJsonValue(value)])) as ReadonlyJSONObject;
 }
 
+function rawMessageToolCalls(message: RawUiMessage): Array<Record<string, unknown>> {
+  if (Array.isArray(message.toolCalls)) {
+    return message.toolCalls;
+  }
+  const metadataToolCalls = message.metadata?.toolCalls;
+  return Array.isArray(metadataToolCalls)
+    ? metadataToolCalls.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object")
+    : [];
+}
+
 function hydrateStoredMessage(message: RawUiMessage): UiMessage {
   const phase = typeof message.metadata?.phase === "string" ? message.metadata.phase : null;
+  const hydratedToolCalls = rawMessageToolCalls(message);
   return {
     ...message,
     citations: message.citations ?? [],
-    toolCalls: phase === "plan" && Array.isArray(message.toolCalls)
-      ? message.toolCalls.map((entry, index) =>
+    toolCalls: phase === "plan" && hydratedToolCalls.length > 0
+      ? hydratedToolCalls.map((entry, index) =>
           entry && typeof entry === "object"
             ? normalizeToolTraceEntry(entry as Record<string, unknown>, index)
             : {
