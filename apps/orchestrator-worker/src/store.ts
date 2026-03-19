@@ -3902,20 +3902,26 @@ export class NeonAppStore implements AppStore {
     filters: PassageSearchFilters = {},
   ): Promise<ChunkSearchResult[]> {
     const usableEmbedding = embedding?.length === EXPECTED_EMBEDDING_DIMENSIONS ? embedding : undefined;
-    const vectorLiteral = usableEmbedding ? `[${usableEmbedding.join(",")}]` : null;
     const normalizedQuery = normalizeSearchQuery(query);
     const tsQuery = normalizedQuery || query.trim();
-    const tokens = expandedSearchTokens(query);
-    const semanticCandidateLimit = Math.max(limit * 20, 192);
-    const rankedResultLimit = shouldDiversifyChunkResults(query, workIds, limit)
-      ? Math.min(Math.max(limit * 3, 96), 256)
-      : limit;
     const startYear = Array.isArray(filters.yearRange) ? Math.min(filters.yearRange[0], filters.yearRange[1]) : null;
     const endYear = Array.isArray(filters.yearRange) ? Math.max(filters.yearRange[0], filters.yearRange[1]) : null;
     const genres = Array.isArray(filters.genre)
       ? filters.genre.map((genre) => genre.trim()).filter((genre) => genre.length > 0).slice(0, 8)
       : [];
-    const result = await withTimeout(this.db.query<{
+    const runChunkQuery = async (
+      options: {
+        tokens: string[];
+        scopedWorkIds?: string[];
+        queryText: string;
+        queryEmbedding?: number[];
+        semanticLimit: number;
+        rankedLimit: number;
+        timeoutMs: number;
+      },
+    ) => {
+      const vectorLiteral = options.queryEmbedding ? `[${options.queryEmbedding.join(",")}]` : null;
+      return withTimeout(this.db.query<{
       id: string;
       work_id: string;
       chunk_index: number;
@@ -4039,19 +4045,55 @@ export class NeonAppStore implements AppStore {
         LIMIT $3
       `,
       [
-        tsQuery,
-        workIds?.length ? workIds : null,
-        rankedResultLimit,
+        options.queryText,
+        options.scopedWorkIds?.length ? options.scopedWorkIds : null,
+        options.rankedLimit,
         vectorLiteral,
-        tokens,
-        semanticCandidateLimit,
+        options.tokens,
+        options.semanticLimit,
         typeof filters.language === "string" ? filters.language : null,
         typeof filters.rightsStatus === "string" ? filters.rightsStatus : null,
         Number.isInteger(startYear) ? startYear : null,
         Number.isInteger(endYear) ? endYear : null,
         genres,
       ],
-    ), PASSAGE_SEARCH_TIMEOUT_MS, "Passage search timed out before the database returned chunks.");
+    ), options.timeoutMs, "Passage search timed out before the database returned chunks.");
+    };
+    const tokens = expandedSearchTokens(query);
+    const primaryScopedWorkIds = workIds?.length ? workIds : undefined;
+    const primaryRankedResultLimit = shouldDiversifyChunkResults(query, workIds, limit)
+      ? Math.min(Math.max(limit * 3, 96), 256)
+      : limit;
+    let result;
+    try {
+      result = await runChunkQuery({
+        tokens,
+        scopedWorkIds: primaryScopedWorkIds,
+        queryText: tsQuery,
+        queryEmbedding: usableEmbedding,
+        semanticLimit: Math.max(limit * 20, 192),
+        rankedLimit: primaryRankedResultLimit,
+        timeoutMs: PASSAGE_SEARCH_TIMEOUT_MS,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!/timed out/i.test(message)) {
+        throw error;
+      }
+      const fallbackTokens = tokens.slice(0, 12);
+      const fallbackQueryText = fallbackTokens.join(" ").trim() || tsQuery;
+      result = await runChunkQuery({
+        tokens: fallbackTokens,
+        scopedWorkIds: primaryScopedWorkIds?.slice(0, 16),
+        queryText: fallbackQueryText,
+        queryEmbedding: undefined,
+        semanticLimit: 0,
+        rankedLimit: shouldDiversifyChunkResults(query, primaryScopedWorkIds, limit)
+          ? Math.min(Math.max(limit * 2, 48), 128)
+          : Math.max(limit, 16),
+        timeoutMs: Math.max(15_000, Math.floor(PASSAGE_SEARCH_TIMEOUT_MS / 2)),
+      });
+    }
     const rankedRows = result.rows.map((row) => ({
       id: row.id,
       workId: row.work_id,
