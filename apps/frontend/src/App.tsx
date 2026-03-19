@@ -2594,7 +2594,7 @@ function SidebarRecents({
   sessionsLoading: boolean;
   onSelectSession: (sessionId: string) => void;
 }) {
-  if (collapsed || sessionsLoading) {
+  if (collapsed || (sessionsLoading && sessions.length === 0)) {
     return null;
   }
 
@@ -4315,7 +4315,7 @@ export default function App() {
         setSessionsResolved(true);
       }
     })();
-  }, [authState.authConfigured, currentUserId, selectedSessionId]);
+  }, [authState.authConfigured, currentUserId]);
 
   useEffect(() => {
     if (authState.loading) {
