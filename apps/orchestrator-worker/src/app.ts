@@ -7771,7 +7771,7 @@ async function runOrchestrator(
   const routedQueryRef = { current: input.message };
   let prefetchedScopeEstimate:
     | {
-      key: string;
+      keys: Set<string>;
       promise: Promise<Record<string, unknown>>;
     }
     | null = null;
@@ -8223,7 +8223,7 @@ async function runOrchestrator(
         if (toolCall.tool_name === "estimate_research_scope" && typeof normalizedToolArgs.query === "string") {
           const estimateFilters = normalizedScopeEstimateFilters(normalizedToolArgs.filters);
           const estimateKey = scopeEstimateCacheKey(normalizedToolArgs.query, estimateFilters);
-          if (prefetchedScopeEstimate && prefetchedScopeEstimate.key === estimateKey) {
+          if (prefetchedScopeEstimate && prefetchedScopeEstimate.keys.has(estimateKey)) {
             result = await prefetchedScopeEstimate.promise;
           } else {
             result = await executeTool(deps, toolCall.tool_name, normalizedToolArgs, {
@@ -8296,9 +8296,17 @@ async function runOrchestrator(
         addRuntimeIds(runtimeIdsToCleanup, normalizedToolArgs, result);
         if (toolCall.tool_name === "search_works" && typeof normalizedToolArgs.query === "string") {
           const estimateFilters = normalizedScopeEstimateFilters(normalizedToolArgs.filters);
-          const estimateKey = scopeEstimateCacheKey(normalizedToolArgs.query, estimateFilters);
+          const estimateKeys = new Set<string>([
+            scopeEstimateCacheKey(normalizedToolArgs.query, estimateFilters),
+          ]);
+          if (typeof routedQueryRef.current === "string" && routedQueryRef.current.trim().length > 0) {
+            estimateKeys.add(scopeEstimateCacheKey(routedQueryRef.current, estimateFilters));
+          }
+          if (typeof input.message === "string" && input.message.trim().length > 0) {
+            estimateKeys.add(scopeEstimateCacheKey(input.message, estimateFilters));
+          }
           prefetchedScopeEstimate = {
-            key: estimateKey,
+            keys: estimateKeys,
             promise: Promise.resolve(deriveScopeEstimateFromSearchResult(normalizedToolArgs.query, result)),
           };
         }
