@@ -1494,10 +1494,45 @@ function genericProgressEmitter(
   };
 }
 
-function normalizeRuntimeProgressLine(event: Record<string, unknown>): string | null {
+function normalizeRuntimeUuid(value: string): string {
+  const compact = value.replace(/[^a-f0-9]/giu, "").toLowerCase();
+  if (compact.length !== 32) {
+    return value.trim();
+  }
+  return [
+    compact.slice(0, 8),
+    compact.slice(8, 12),
+    compact.slice(12, 16),
+    compact.slice(16, 20),
+    compact.slice(20),
+  ].join("-");
+}
+
+function parseRuntimeChunkProgressLine(line: string): Record<string, unknown> | null {
+  const match = line.match(
+    /^([a-f0-9]{8}(?:[- ][a-f0-9]{4}){3}[- ][a-f0-9]{12})\s+(\d+):([^:]+):(.+)$/iu,
+  );
+  if (!match) {
+    return null;
+  }
+  const [, rawWorkId, rawChunkIndex, rawTitle, rawExcerpt] = match;
+  return {
+    type: "research.chunk",
+    workId: normalizeRuntimeUuid(rawWorkId),
+    workTitle: rawTitle.trim(),
+    chunkIndex: Number(rawChunkIndex),
+    excerpt: rawExcerpt.trim(),
+    message: `Reviewed a passage from ${rawTitle.trim() || normalizeRuntimeUuid(rawWorkId)}.`,
+  };
+}
+
+function normalizeRuntimeProgressLine(event: Record<string, unknown>): {
+  text: string | null;
+  detail?: Record<string, unknown>;
+} {
   const rawMessage = typeof event.message === "string" ? event.message.trim() : "";
   if (!rawMessage) {
-    return null;
+    return { text: null };
   }
 
   const type = typeof event.type === "string" ? event.type : "";
@@ -1509,46 +1544,82 @@ function normalizeRuntimeProgressLine(event: Record<string, unknown>): string | 
   const chunkIndex = typeof event.chunkIndex === "number" ? event.chunkIndex : null;
 
   if (type === "codex.stdout" || type === "codex.stderr") {
-    return line || null;
+    const parsedChunkDetail = line ? parseRuntimeChunkProgressLine(line) : null;
+    if (parsedChunkDetail) {
+      return {
+        text: `Reviewed a passage from ${String(parsedChunkDetail.workTitle ?? parsedChunkDetail.workId)}${typeof parsedChunkDetail.chunkIndex === "number" ? ` around passage ${parsedChunkDetail.chunkIndex}` : ""}.`,
+        detail: parsedChunkDetail,
+      };
+    }
+    if (!line) {
+      return { text: null };
+    }
+    if (
+      /^\/bin\/bash\b/iu.test(line)
+      || /^at\s+/u.test(line)
+      || /^node:internal\//u.test(line)
+      || /^Error \[ERR_MODULE_NOT_FOUND\]/u.test(line)
+    ) {
+      return { text: null };
+    }
+    if (/invalid input syntax for type uuid/iu.test(line)) {
+      return {
+        text: "A corpus neighbor lookup failed because the VM passed a malformed chunk id.",
+      };
+    }
+    if (/statement timeout/iu.test(line)) {
+      return {
+        text: "A corpus-wide search inside the VM timed out and needs a narrower follow-up query.",
+      };
+    }
+    return { text: line };
   }
   if (type === "research.work") {
-    return title
-      ? `Surfaced ${title}${authors.length > 0 ? ` by ${authors.join(", ")}` : ""}.`
-      : rawMessage;
+    return {
+      text: title
+        ? `Surfaced ${title}${authors.length > 0 ? ` by ${authors.join(", ")}` : ""}.`
+        : rawMessage,
+      detail: event,
+    };
   }
   if (type === "research.chunk") {
-    return title
-      ? `Reviewed a passage from ${title}${chunkIndex !== null ? ` around passage ${chunkIndex}` : ""}.`
-      : rawMessage;
+    return {
+      text: title
+        ? `Reviewed a passage from ${title}${chunkIndex !== null ? ` around passage ${chunkIndex}` : ""}.`
+        : rawMessage,
+      detail: event,
+    };
   }
   if (type === "research.seed_summary") {
-    return rawMessage;
+    return { text: rawMessage, detail: event };
   }
 
   if (type === "codex.step.prepared") {
-    return "The deeper research pass is ready to run.";
+    return { text: "The deeper research pass is ready to run." };
   }
   if (type === "codex.step.attempt") {
-    return "Starting the deeper research pass.";
+    return { text: "Starting the deeper research pass." };
   }
   if (type === "codex.step.completed") {
-    return "The deeper research pass finished writing the briefing.";
+    return { text: "The deeper research pass finished writing the briefing." };
   }
   if (type === "codex.step.attempt_failed") {
-    return "The deeper research pass hit an error and is retrying.";
+    return { text: "The deeper research pass hit an error and is retrying." };
   }
   if (type === "codex.step.failed") {
-    return "The deeper research pass failed.";
+    return { text: "The deeper research pass failed." };
   }
   if (type === "workspace.local_chunks.missing") {
-    return "Starting from the best current evidence and searching the full corpus directly.";
+    return { text: "Starting from the best current evidence and searching the full corpus directly." };
   }
 
-  return rawMessage
-    .replace(/^codex-briefing:\s*/i, "")
-    .replace(/\bCodex corpus briefing\b/gi, "Deep research")
-    .replace(/\bCodex step\b/gi, "Research step")
-    .replace(/\bCodex\b/gi, "the research engine");
+  return {
+    text: rawMessage
+      .replace(/^codex-briefing:\s*/i, "")
+      .replace(/\bCodex corpus briefing\b/gi, "Deep research")
+      .replace(/\bCodex step\b/gi, "Research step")
+      .replace(/\bCodex\b/gi, "the research engine"),
+  };
 }
 
 function sanitizeUserFacingToolText(text: string | null | undefined): string | null {
@@ -1812,9 +1883,9 @@ function startRuntimeTaskProgressEmitter(
       for (let index = seenLines; index < lines.length; index += 1) {
         try {
           const event = JSON.parse(lines[index]) as Record<string, unknown>;
-          const text = normalizeRuntimeProgressLine(event);
+          const { text, detail } = normalizeRuntimeProgressLine(event);
           if (text) {
-            await emit(text, event);
+            await emit(text, detail ?? event);
           }
         } catch {
           continue;
@@ -4246,6 +4317,18 @@ async function runOrchestrator(
     result?: Record<string, unknown>;
   };
   let pendingWorkspaceExecution: PendingWorkspaceExecution | null = null;
+  const completedForegroundRetrievalCount = () =>
+    toolHistory.filter((entry) => entry.toolName !== "create_workspace" && entry.toolName !== "run_workspace_task").length;
+
+  const waitForPendingWorkspace = async (timeoutMs: number) => {
+    if (!pendingWorkspaceExecution || pendingWorkspaceExecution.settled) {
+      return;
+    }
+    await Promise.race([
+      pendingWorkspaceExecution.promise,
+      new Promise((resolve) => setTimeout(resolve, timeoutMs)),
+    ]);
+  };
 
   const finalizeToolExecution = async (
     toolCallId: string,
@@ -4806,6 +4889,27 @@ async function runOrchestrator(
       }
       if ((deps.now?.() ?? Date.now()) - started > HARD_LIMITS.MAX_RUN_WALL_CLOCK_SECONDS * 1000) {
         break;
+      }
+      const hasPendingWorkspaceBootstrap =
+        pendingWorkspaceExecution !== null
+        && (pendingWorkspaceExecution as PendingWorkspaceExecution).toolName === "create_workspace"
+        && !(pendingWorkspaceExecution as PendingWorkspaceExecution).settled
+        && completedForegroundRetrievalCount() > 0;
+      if (hasPendingWorkspaceBootstrap) {
+        recordRawLog("planner.deferred_for_pending_workspace", {
+          runId: run.id,
+          sessionId: session.id,
+          turn,
+          completedForegroundRetrievalCount: completedForegroundRetrievalCount(),
+        });
+        await waitForPendingWorkspace(2_500);
+        await harvestPendingWorkspace(false);
+        if (
+          pendingWorkspaceExecution !== null
+          && !(pendingWorkspaceExecution as PendingWorkspaceExecution).settled
+        ) {
+          continue;
+        }
       }
 
       await deps.store.updateRun(run.id, {

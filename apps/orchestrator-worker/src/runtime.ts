@@ -588,7 +588,12 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     return response;
   }
 
-  private async callRuntime(machineId: string, path: string, init: RequestInit) {
+  private async callRuntime(
+    machineId: string,
+    path: string,
+    init: RequestInit,
+    options: { timeoutMs?: number } = {},
+  ) {
     const headers = new Headers(init.headers);
     if (init.body && !headers.has("content-type")) {
       headers.set("content-type", "application/json");
@@ -601,7 +606,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     const response = await this.fetchImpl(new URL(path, this.runtimeAppUrl).toString(), {
       ...init,
       headers,
-      signal: AbortSignal.timeout(HARD_LIMITS.MAX_RUNTIME_TOOL_TIMEOUT_SECONDS * 1000),
+      signal: AbortSignal.timeout(options.timeoutMs ?? HARD_LIMITS.MAX_RUNTIME_TOOL_TIMEOUT_SECONDS * 1000),
     });
     if (!response.ok) {
       const contentType = response.headers.get("content-type") ?? "";
@@ -626,7 +631,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
 
     while (Date.now() - startedAt < maxWaitMs) {
       try {
-        await this.callRuntime(machineId, "/health", { method: "GET" });
+        await this.callRuntime(machineId, "/health", { method: "GET" }, { timeoutMs: 8_000 });
         return;
       } catch (error) {
         lastError = error;
@@ -647,7 +652,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
         return await this.callRuntime(machineId, "/prepare", {
           method: "POST",
           body: JSON.stringify(payload),
-        });
+        }, { timeoutMs: 20_000 });
       } catch (error) {
         lastError = error;
         if (attempt >= 3 || !isRetryableRuntimeStartupError(error)) {

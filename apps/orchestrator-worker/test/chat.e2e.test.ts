@@ -1185,6 +1185,139 @@ test("orchestrator prewarms the deep research workspace before the first planner
   assert.match(body, /Searching while the .* boots\./);
 });
 
+test("orchestrator defers planner churn while background workspace startup is still pending after retrieval", async () => {
+  const store = new InMemoryAppStore(
+    [
+      {
+        id: "work-1",
+        gutenbergId: 996,
+        title: "Don Quixote",
+        language: "en",
+        releaseDate: "2000-01-01",
+        rightsStatus: "public_domain",
+        summary: "A novel about grief and errantry.",
+        authors: ["Miguel de Cervantes"],
+        subjects: ["fiction"],
+        cleanTextKey: "gutenberg/clean/996/clean.txt",
+      },
+    ],
+    [],
+  );
+
+  let createWorkspaceCalls = 0;
+  let plannerTurnCount = 0;
+  let releaseWorkspace!: () => void;
+  const workspaceReady = new Promise<void>((resolve) => {
+    releaseWorkspace = resolve;
+  });
+
+  const planner = {
+    async decide(context: PlannerContext) {
+      plannerTurnCount += 1;
+      if (context.turns === 1) {
+        return {
+          type: "tool_call" as const,
+          tool_name: "search_works" as const,
+          args: {
+            query: context.userMessage,
+            filters: {
+              limit: 5,
+            },
+          },
+          rationale: "Searching while the workspace boots.",
+        };
+      }
+      return {
+        type: "final_answer" as const,
+        answer: "Done.",
+        citations: [],
+      };
+    },
+  };
+
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    planner,
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        createWorkspaceCalls += 1;
+        await workspaceReady;
+        return {
+          ok: true,
+          runtimeId: "runtime-prewarm",
+        };
+      },
+      async runWorkspaceTask() {
+        return {
+          ok: true,
+          runtimeId: "runtime-prewarm",
+          answer: "workspace complete",
+          artifacts: [],
+        };
+      },
+      async readWorkspaceFile() {
+        return {
+          ok: false,
+          error: "not used",
+        };
+      },
+      async listWorkspaceFiles() {
+        return {
+          ok: true,
+          files: [],
+        };
+      },
+      async destroyWorkspace() {
+        return {
+          ok: true,
+        };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const responsePromise = app.request("/chat", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      userId: "11111111-1111-1111-1111-111111111111",
+      message: "Find grief across the corpus.",
+    }),
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  releaseWorkspace();
+  const response = await responsePromise;
+  assert.equal(response.status, 200);
+  await response.text();
+
+  assert.equal(createWorkspaceCalls, 1);
+  assert.equal(plannerTurnCount, 2);
+
+  const sessions = await store.listSessions("11111111-1111-1111-1111-111111111111");
+  const sessionId = sessions[0]?.id;
+  assert.ok(sessionId);
+  const runs = await store.listRuns(sessionId!);
+  const runId = runs[0]?.id;
+  assert.ok(runId);
+  const logsResponse = await app.request(`/sessions/${sessionId}/runs/${runId}/logs`);
+  assert.equal(logsResponse.status, 200);
+  const logsPayload = (await logsResponse.json()) as {
+    rawLog: Array<{ event?: string }>;
+  };
+  const rawEvents = logsPayload.rawLog.map((entry) => entry.event);
+  assert.ok(rawEvents.includes("planner.deferred_for_pending_workspace"));
+});
+
 test("auth sign-up route redirects into WorkOS authkit with sign-up hint", async () => {
   const store = new InMemoryAppStore();
   const auth = new WorkOSAuth(

@@ -8,7 +8,7 @@ RUN apt-get update \
 
 COPY package.json package-lock.json* tsconfig.base.json tsconfig.json ./
 COPY apps/runtime ./apps/runtime
-COPY packages/shared ./packages/shared
+COPY packages ./packages
 
 RUN npm install
 
