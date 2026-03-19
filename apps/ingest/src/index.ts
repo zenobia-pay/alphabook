@@ -922,14 +922,24 @@ async function backfillMirror(context: IngestContext, options: MirrorBackfillOpt
   const startIndex = startAfterId ? (firstGreaterIndex >= 0 ? firstGreaterIndex : allIds.length) : 0;
   const selectedIds = allIds.slice(startIndex, startIndex + options.limit);
   const results: Array<Record<string, unknown>> = [];
+  const errors: Array<Record<string, unknown>> = [];
+  let lastProcessedId = startAfterId;
 
   for (const gutenbergId of selectedIds) {
-    const result = await ingestFromMirror(context, gutenbergId);
-    results.push(result);
+    try {
+      const result = await ingestFromMirror(context, gutenbergId);
+      results.push(result);
+    } catch (error) {
+      errors.push({
+        gutenbergId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    lastProcessedId = gutenbergId;
     if (options.checkpointPath) {
       await writeCheckpoint(options.checkpointPath, {
-        lastProcessedId: gutenbergId,
-        processed: (checkpoint?.processed ?? 0) + results.length,
+        lastProcessedId,
+        processed: (checkpoint?.processed ?? 0) + results.length + errors.length,
         updatedAt: new Date().toISOString(),
       });
     }
@@ -938,8 +948,10 @@ async function backfillMirror(context: IngestContext, options: MirrorBackfillOpt
   return {
     mirrorRoot,
     startAfterId,
-    processed: results.length,
-    nextStartAfterId: results.length > 0 ? selectedIds[selectedIds.length - 1] : startAfterId,
+    processed: results.length + errors.length,
+    inserted: results.length,
+    errors,
+    nextStartAfterId: selectedIds.length > 0 ? selectedIds[selectedIds.length - 1] : startAfterId,
     results,
   };
 }

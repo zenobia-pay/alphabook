@@ -9,6 +9,7 @@ Target layout on the VM:
 - `/srv/alphabook/bin/gutenberg-rsync.sh`
 - `/srv/alphabook/bin/gutenberg-rsync-epub.sh`
 - `/srv/alphabook/bin/gutenberg-upload.sh`
+- `/srv/alphabook/bin/backfill-book-html-all.sh`
 - `/etc/systemd/system/alphabook-gutenberg-rsync.service`
 - `/etc/systemd/system/alphabook-gutenberg-rsync.timer`
 - `/etc/systemd/system/alphabook-gutenberg-rsync-epub.service`
@@ -25,10 +26,12 @@ sudo ./ops/digitalocean/bootstrap-rsync-box.sh
 That script:
 
 - installs `rsync`, `curl`, `ca-certificates`, and `jq`
+- installs `nodejs` and `npm` so ingest can run directly on the box
 - creates `/srv/alphabook`
 - installs the rsync runner into `/srv/alphabook/bin`
 - installs the EPUB/RDF rsync runner into `/srv/alphabook/bin`
 - installs the upload runner into `/srv/alphabook/bin`
+- installs the full book HTML backfill runner into `/srv/alphabook/bin`
 - installs the systemd services and timers
 - enables the daily timers
 
@@ -81,21 +84,16 @@ sudo /srv/alphabook/bin/gutenberg-upload.sh
 To backfill missing static book HTML for existing works without re-running full ingest:
 
 ```bash
-docker run --rm \
-  --env-file /srv/alphabook/.ingest.env \
-  -v /srv/alphabook/gutenberg:/mirror:ro \
-  alphabook-ingest:latest \
-  npx tsx apps/ingest/src/index.ts backfill-book-html - 500
+sudo /srv/alphabook/bin/backfill-book-html-all.sh
 ```
 
 To upload automatically after each mirror refresh, set:
 
 ```bash
-ALPHABOOK_UPLOAD_AFTER_SYNC=1
 BOOK_HTML_BATCH_SIZE=100
 ```
 
-in the systemd service environment or shell before running `gutenberg-rsync.sh`.
+The shipped systemd service already enables `ALPHABOOK_UPLOAD_AFTER_SYNC=1`, so the main daily rsync run will upload new books and backfill a batch of missing `book_html` artifacts after the mirror refresh finishes.
 
 ## Notes
 

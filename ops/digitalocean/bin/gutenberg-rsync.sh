@@ -9,6 +9,21 @@ ALPHABOOK_UPLOAD_AFTER_SYNC="${ALPHABOOK_UPLOAD_AFTER_SYNC:-0}"
 UPLOAD_SCRIPT="${UPLOAD_SCRIPT:-$ALPHABOOK_ROOT/bin/gutenberg-upload.sh}"
 RSYNC_PARTIAL_ROOT="${RSYNC_PARTIAL_ROOT:-$ALPHABOOK_ROOT/.rsync-partial/main}"
 
+run_rsync() {
+  local exit_code=0
+  set +e
+  rsync "$@"
+  exit_code=$?
+  set -e
+
+  if [[ "$exit_code" -eq 23 ]]; then
+    echo "[$(date -Is)] rsync reported code 23; keeping the mirror and continuing so upload/backfill can still run." >&2
+    return 0
+  fi
+
+  return "$exit_code"
+}
+
 mkdir -p "$GUTENBERG_MIRROR_ROOT"
 mkdir -p "$GUTENBERG_MIRROR_ROOT/cache/epub"
 mkdir -p "$RSYNC_PARTIAL_ROOT"
@@ -48,12 +63,12 @@ EPUB_FILTERS=(
 )
 
 echo "[$(date -Is)] Syncing Project Gutenberg main corpus into $GUTENBERG_MIRROR_ROOT"
-rsync "${RSYNC_FLAGS[@]}" --exclude 'cache/' "${MAIN_FILTERS[@]}" \
+run_rsync "${RSYNC_FLAGS[@]}" --exclude 'cache/' "${MAIN_FILTERS[@]}" \
   "$PG_RSYNC_HOST::gutenberg" \
   "$GUTENBERG_MIRROR_ROOT"
 
 echo "[$(date -Is)] Syncing Project Gutenberg generated EPUB/cache corpus into $GUTENBERG_MIRROR_ROOT/cache/epub"
-rsync "${RSYNC_FLAGS[@]}" --exclude '*/mbt-*' "${EPUB_FILTERS[@]}" \
+run_rsync "${RSYNC_FLAGS[@]}" --exclude '*/mbt-*' "${EPUB_FILTERS[@]}" \
   "$PG_RSYNC_HOST::gutenberg-epub" \
   "$GUTENBERG_MIRROR_ROOT/cache/epub"
 
