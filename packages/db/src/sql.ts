@@ -246,4 +246,15 @@ CREATE INDEX IF NOT EXISTS idx_agent_identities_claim_token ON agent_identities(
 CREATE INDEX IF NOT EXISTS idx_agent_identities_api_key_hash ON agent_identities(api_key_hash);
 `,
   },
+  {
+    id: "0006_book_html",
+    sql: `
+ALTER TABLE work_files
+  DROP CONSTRAINT IF EXISTS work_files_kind_check;
+
+ALTER TABLE work_files
+  ADD CONSTRAINT work_files_kind_check
+  CHECK (kind IN ('raw', 'metadata', 'clean', 'chunks', 'book_html'));
+`,
+  },
 ] as const;
