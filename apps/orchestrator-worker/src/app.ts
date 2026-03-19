@@ -1472,7 +1472,15 @@ function genericProgressEmitter(
 
   const steps = workspaceProgressSteps(args);
   let stepIndex = 0;
+  let timer: ReturnType<typeof setInterval> | null = null;
   const emitStep = () => {
+    if (stepIndex >= steps.length) {
+      if (timer) {
+        clearInterval(timer);
+        timer = null;
+      }
+      return;
+    }
     const text = steps[stepIndex % steps.length];
     stepIndex += 1;
     void send("tool.progress", {
@@ -1483,15 +1491,93 @@ function genericProgressEmitter(
     });
   };
   emitStep();
-  const timer = setInterval(() => {
+  timer = setInterval(() => {
     emitStep();
   }, 3000);
 
   return {
     async stop() {
-      clearInterval(timer);
+      if (timer) {
+        clearInterval(timer);
+        timer = null;
+      }
     },
   };
+}
+
+function candidateWorkHaystack(work: Record<string, unknown>) {
+  const title = typeof work.title === "string" ? work.title : "";
+  const summary = typeof work.summary === "string" ? work.summary : "";
+  const subjects = Array.isArray(work.subjects) ? work.subjects.filter((value): value is string => typeof value === "string") : [];
+  const authors = Array.isArray(work.authors) ? work.authors.filter((value): value is string => typeof value === "string") : [];
+  return [title, summary, ...subjects, ...authors].join(" ").toLowerCase();
+}
+
+function rankWorkspaceCandidateWorks(
+  works: Array<Record<string, unknown>>,
+  query: string,
+  seededWorkIds: Set<string>,
+) {
+  const asksForJuvenile = /\b(children|child|juvenile|girl|girls|boy|boys|school|orphan|orphans)\b/iu.test(query);
+  const griefQuery = /\b(grief|mourning|bereavement|funeral|sorrow|lament|weep|wept|tears?|loss|dead|death)\b/iu.test(query);
+  return [...works]
+    .map((work, index) => {
+      const haystack = candidateWorkHaystack(work);
+      let bonus = 0;
+      if (seededWorkIds.has(typeof work.id === "string" ? work.id : "")) {
+        bonus += 1.5;
+      }
+      if (griefQuery) {
+        if (/\b(grief|mourning|bereavement|funeral|sorrow|lament|weep|wept|tears?|loss|dead|death)\b/iu.test(haystack)) {
+          bonus += 0.9;
+        }
+        if (!asksForJuvenile) {
+          if (/\b(juvenile|children|child|girls|boys|school|schools|pz)\b/iu.test(haystack)) {
+            bonus -= 0.8;
+          }
+          if (/\borphans?\b/iu.test(haystack)) {
+            bonus -= 0.45;
+          }
+        }
+      }
+      const baseScore = typeof work.score === "number" && Number.isFinite(work.score) ? work.score : 0;
+      return {
+        work,
+        totalScore: baseScore + bonus,
+        index,
+      };
+    })
+    .sort((left, right) =>
+      right.totalScore - left.totalScore
+      || left.index - right.index)
+    .map(({ work, totalScore }) => ({
+      work,
+      totalScore,
+    }));
+}
+
+function shouldSeedWorkspaceWork(
+  work: Record<string, unknown>,
+  query: string,
+  seededWorkIds: Set<string>,
+  totalScore: number,
+) {
+  const workId = typeof work.id === "string" ? work.id : "";
+  if (seededWorkIds.has(workId)) {
+    return true;
+  }
+  const haystack = candidateWorkHaystack(work);
+  const griefQuery = /\b(grief|mourning|bereavement|funeral|sorrow|lament|weep|wept|tears?|loss|dead|death)\b/iu.test(query);
+  const asksForJuvenile = /\b(children|child|juvenile|girl|girls|boy|boys|school|orphan|orphans)\b/iu.test(query);
+  if (
+    griefQuery
+    && !asksForJuvenile
+    && /\b(juvenile|children|child|girls|boys|school|schools|pz|orphans?)\b/iu.test(haystack)
+    && !/\b(grief|mourning|bereavement|funeral|sorrow|lament|weep|wept|tears?|loss|dead|death)\b/iu.test(haystack.replace(/\bjuvenile fiction\b/giu, ""))
+  ) {
+    return false;
+  }
+  return totalScore > 0;
 }
 
 function normalizeRuntimeUuid(value: string): string {
@@ -4437,8 +4523,26 @@ async function runOrchestrator(
     if (pendingWorkspaceExecution.toolName === "create_workspace" && pendingWorkspaceExecution.status === "failed") {
       workspaceLastFailureAt = deps.now?.() ?? Date.now();
     }
+    const completedWorkspaceRuntimeId =
+      pendingWorkspaceExecution.toolName === "create_workspace"
+      && pendingWorkspaceExecution.status === "completed"
+      && typeof pendingWorkspaceExecution.result?.runtimeId === "string"
+        ? pendingWorkspaceExecution.result.runtimeId
+        : null;
     const wasCompleted = pendingWorkspaceExecution.status === "completed";
     pendingWorkspaceExecution = null;
+    if (
+      completedWorkspaceRuntimeId
+      && !toolHistory.some((entry) => entry.toolName === "run_workspace_task")
+    ) {
+      await startBackgroundTool(
+        "run_workspace_task",
+        buildBackgroundWorkspaceTaskSpec(completedWorkspaceRuntimeId),
+        Array.isArray(input.workIds) && input.workIds.length > 0
+          ? "I’m starting the deeper research run now while metadata and passage search keep collecting evidence."
+          : "I’m starting the deeper research run now while metadata and passage search keep collecting evidence.",
+      );
+    }
     return wasCompleted;
   };
 
@@ -4507,12 +4611,25 @@ async function runOrchestrator(
     const searchWorks = searchWorksFromHistory();
     const metadataWorks = metadataWorksFromHistory();
     const seedChunks = chunksFromHistory();
+    const seededWorkIds = new Set(
+      seedChunks
+        .map((chunk) => (typeof chunk.workId === "string" ? chunk.workId : null))
+        .filter((value): value is string => typeof value === "string"),
+    );
+    const rankedSearchWorks = rankWorkspaceCandidateWorks(searchWorks, routedQueryRef.current, seededWorkIds)
+      .filter(({ work, totalScore }) => shouldSeedWorkspaceWork(work, routedQueryRef.current, seededWorkIds, totalScore))
+      .slice(0, 8)
+      .map(({ work }) => work);
+    const rankedMetadataWorks = rankWorkspaceCandidateWorks(metadataWorks, routedQueryRef.current, seededWorkIds)
+      .filter(({ work, totalScore }) => shouldSeedWorkspaceWork(work, routedQueryRef.current, seededWorkIds, totalScore))
+      .slice(0, 8)
+      .map(({ work }) => work);
     const candidateWorkIds = uniqueWorkIds([
       ...scopedWorkIds,
-      ...searchWorks.map((work) => (typeof work.id === "string" ? work.id : null)),
-      ...metadataWorks.map((work) => (typeof work.id === "string" ? work.id : null)),
+      ...rankedSearchWorks.map((work) => (typeof work.id === "string" ? work.id : null)),
+      ...rankedMetadataWorks.map((work) => (typeof work.id === "string" ? work.id : null)),
       ...seedChunks.map((chunk) => (typeof chunk.workId === "string" ? chunk.workId : null)),
-    ]).slice(0, 12);
+    ]).slice(0, 8);
     return normalizeToolArgs("run_workspace_task", {
       runtimeId,
       taskSpec: {
@@ -4532,7 +4649,7 @@ async function runOrchestrator(
           passageSearchFocus: "Find the strongest directly quotable passages that best answer the research objective.",
         },
         retrieval: {
-          searchWorks: searchWorks.slice(0, 12).map((work) => ({
+          searchWorks: rankedSearchWorks.map((work) => ({
             id: typeof work.id === "string" ? work.id : null,
             title: typeof work.title === "string" ? work.title : "",
             authors: Array.isArray(work.authors) ? work.authors : [],
@@ -4540,7 +4657,7 @@ async function runOrchestrator(
             subjects: Array.isArray(work.subjects) ? work.subjects : [],
             gutenbergId: typeof work.gutenbergId === "number" ? work.gutenbergId : null,
           })),
-          metadataWorks: metadataWorks.slice(0, 12).map((work) => ({
+          metadataWorks: rankedMetadataWorks.map((work) => ({
             id: typeof work.id === "string" ? work.id : null,
             title: typeof work.title === "string" ? work.title : "",
             authors: Array.isArray(work.authors) ? work.authors : [],

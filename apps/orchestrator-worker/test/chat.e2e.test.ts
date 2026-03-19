@@ -1318,6 +1318,114 @@ test("orchestrator defers planner churn while background workspace startup is st
   assert.ok(rawEvents.includes("planner.deferred_for_pending_workspace"));
 });
 
+test("orchestrator starts the deep research run as soon as the workspace becomes ready", async () => {
+  const store = new InMemoryAppStore(
+    [
+      {
+        id: "work-1",
+        gutenbergId: 996,
+        title: "Don Quixote",
+        language: "en",
+        releaseDate: "2000-01-01",
+        rightsStatus: "public_domain",
+        summary: "A novel about grief and errantry.",
+        authors: ["Miguel de Cervantes"],
+        subjects: ["fiction"],
+        cleanTextKey: "gutenberg/clean/996/clean.txt",
+      },
+    ],
+    [],
+  );
+
+  let plannerSawPendingRuntimeTask = false;
+
+  const planner = {
+    async decide(context: PlannerContext) {
+      if (context.turns === 1) {
+        return {
+          type: "tool_call" as const,
+          tool_name: "search_works" as const,
+          args: {
+            query: context.userMessage,
+            filters: {
+              limit: 5,
+            },
+          },
+          rationale: "Searching while the workspace boots.",
+        };
+      }
+      plannerSawPendingRuntimeTask = (context.pendingTools ?? []).some((entry) => entry.toolName === "run_workspace_task");
+      return {
+        type: "final_answer" as const,
+        answer: "Done.",
+        citations: [],
+      };
+    },
+  };
+
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    planner,
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        return {
+          ok: true,
+          runtimeId: "runtime-prewarm",
+        };
+      },
+      async runWorkspaceTask() {
+        return {
+          ok: true,
+          runtimeId: "runtime-prewarm",
+          answer: "workspace complete",
+          artifacts: [],
+        };
+      },
+      async readWorkspaceFile() {
+        return {
+          ok: false,
+          error: "not used",
+        };
+      },
+      async listWorkspaceFiles() {
+        return {
+          ok: true,
+          files: [],
+        };
+      },
+      async destroyWorkspace() {
+        return {
+          ok: true,
+        };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const response = await app.request("/chat", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      userId: "11111111-1111-1111-1111-111111111111",
+      message: "Find grief across the corpus.",
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  await response.text();
+  assert.equal(plannerSawPendingRuntimeTask, true);
+});
+
 test("auth sign-up route redirects into WorkOS authkit with sign-up hint", async () => {
   const store = new InMemoryAppStore();
   const auth = new WorkOSAuth(
@@ -3414,8 +3522,140 @@ test("sql metadata search can broaden into chunk-backed work discovery when meta
 
   assert.equal(results.length, 1);
   assert.equal(results[0]?.id, "work-fiction");
-  assert.equal(queries.length, 2);
-  assert.match(queries[1] ?? "", /chunk_matches AS \(/);
+  assert.ok(queries.length >= 2);
+  assert.ok(queries.some((query) => /chunk_matches AS \(/.test(query)));
+});
+
+test("sql metadata search keeps broadening when grief metadata hits are plentiful but low-signal", async () => {
+  const queries: string[] = [];
+  const store = new NeonAppStore({
+    async query<T = Record<string, unknown>>(sql: string) {
+      queries.push(sql);
+      if (queries.length === 1) {
+        return {
+          rows: [
+            {
+              id: "juvenile-work",
+              gutenberg_id: 19514,
+              title: "A Little Princess",
+              metadata_json: {},
+              language: "en",
+              release_date: "1905-01-01",
+              rights_status: "public_domain",
+              summary: "An orphan girl at a boarding school.",
+              authors: ["Frances Hodgson Burnett"],
+              subjects: ["Orphans -- Juvenile fiction", "Girls -- Juvenile fiction", "PZ"],
+              score: 1.4,
+            },
+            {
+              id: "juvenile-work-2",
+              gutenberg_id: 45,
+              title: "Anne of Green Gables",
+              metadata_json: {},
+              language: "en",
+              release_date: "1908-01-01",
+              rights_status: "public_domain",
+              summary: "Another orphan story.",
+              authors: ["L. M. Montgomery"],
+              subjects: ["Orphans -- Fiction", "Girls -- Fiction"],
+              score: 1.3,
+            },
+          ] as T[],
+        };
+      }
+      return {
+        rows: [
+          {
+            id: "adult-work",
+            gutenberg_id: 1342,
+            title: "Pride and Prejudice",
+            metadata_json: {},
+            language: "en",
+            release_date: "1813-01-28",
+            rights_status: "public_domain",
+            summary: "A fiction novel of mourning and grief.",
+            authors: ["Jane Austen"],
+            subjects: ["Fiction", "Courtship"],
+            score: 3,
+          },
+        ] as T[],
+      };
+    },
+    async end() {},
+  });
+
+  const results = await store.searchWorks("grief mourning bereavement funeral orphan fiction", {
+    language: "en",
+    yearRange: [1800, 1899],
+    genre: ["fiction"],
+  });
+
+  assert.equal(results[0]?.id, "adult-work");
+  assert.ok(queries.length >= 2);
+  assert.ok(queries.some((query) => /chunk_matches AS \(/.test(query)));
+});
+
+test("sql metadata search relaxes again when grief matches remain low-signal after chunk expansion", async () => {
+  const seenParams: unknown[][] = [];
+  let queryCount = 0;
+  const store = new NeonAppStore({
+    async query<T = Record<string, unknown>>(_sql: string, params?: unknown[]) {
+      queryCount += 1;
+      seenParams.push(params ?? []);
+      if (queryCount === 1) {
+        return {
+          rows: [
+            {
+              id: "juvenile-work",
+              gutenberg_id: 19514,
+              title: "A Little Princess",
+              metadata_json: {},
+              language: "en",
+              release_date: "1905-01-01",
+              rights_status: "public_domain",
+              summary: "An orphan girl at a boarding school.",
+              authors: ["Frances Hodgson Burnett"],
+              subjects: ["Orphans -- Juvenile fiction", "Girls -- Juvenile fiction", "PZ"],
+              score: 1.4,
+            },
+          ] as T[],
+        };
+      }
+      if (queryCount === 2) {
+        return { rows: [] as T[] };
+      }
+      return {
+        rows: [
+          {
+            id: "adult-work",
+            gutenberg_id: 1342,
+            title: "Pride and Prejudice",
+            metadata_json: {},
+            language: null,
+            release_date: null,
+            rights_status: "public_domain",
+            summary: "A fiction novel of mourning and grief.",
+            authors: ["Jane Austen"],
+            subjects: ["Fiction", "Courtship"],
+            score: 2,
+          },
+        ] as T[],
+      };
+    },
+    async end() {},
+  });
+
+  const results = await store.searchWorks("grief mourning bereavement funeral orphan", {
+    language: "en",
+    yearRange: [1800, 1899],
+    genre: ["fiction"],
+  });
+
+  assert.equal(results[0]?.id, "adult-work");
+  assert.ok(
+    seenParams.some((params) => params[2] === null && params[3] === null),
+    "expected a relaxed query without yearRange after low-signal grief hits",
+  );
 });
 
 test("sql metadata search relaxes sparse year and language filters after empty discovery", async () => {
@@ -3465,6 +3705,53 @@ test("sql metadata search relaxes sparse year and language filters after empty d
     seenParams.some((params) => params[1] === null),
     "expected a relaxed query without language",
   );
+});
+
+test("sql metadata search downranks juvenile orphan results for grief queries when adult grief matches exist", async () => {
+  const store = new NeonAppStore({
+    async query<T = Record<string, unknown>>() {
+      return {
+        rows: [
+          {
+            id: "juvenile-work",
+            gutenberg_id: 19514,
+            title: "A Little Princess",
+            metadata_json: {},
+            language: "en",
+            release_date: "1905-01-01",
+            rights_status: "public_domain",
+            summary: "An orphan girl at a boarding school.",
+            authors: ["Frances Hodgson Burnett"],
+            subjects: ["Orphans -- Juvenile fiction", "Girls -- Juvenile fiction", "PZ"],
+            score: 1.4,
+          },
+          {
+            id: "adult-work",
+            gutenberg_id: 1342,
+            title: "Pride and Prejudice",
+            metadata_json: {},
+            language: "en",
+            release_date: "1813-01-28",
+            rights_status: "public_domain",
+            summary: "A fiction novel with mourning, grief, and family sorrow.",
+            authors: ["Jane Austen"],
+            subjects: ["Fiction", "Courtship"],
+            score: 1.0,
+          },
+        ] as T[],
+      };
+    },
+    async end() {},
+  });
+
+  const results = await store.searchWorks("grief mourning bereavement funeral 1800 1899 fiction", {
+    language: "en",
+    yearRange: [1800, 1899],
+    genre: ["fiction"],
+  });
+
+  assert.equal(results[0]?.id, "adult-work");
+  assert.equal(results[1]?.id, "juvenile-work");
 });
 
 test("OpenAIEmbedder requests 1536 dimensions for text-embedding-3 models", async () => {

@@ -2660,8 +2660,31 @@ function buildResearchDocument(title: string, toolTrace: ToolTraceEntry[], artif
       kind: "log",
     });
 
+    for (const [index, progressLine] of entry.progress.entries()) {
+      const normalizedProgressLine = progressLine.trim();
+      if (!normalizedProgressLine || normalizedProgressLine === summarizeToolSentence(entry).trim()) {
+        continue;
+      }
+      appendDocumentEntry(entries, seen, {
+        key: `progress-line:${entry.id}:${index}`,
+        text: normalizedProgressLine,
+        kind: "log",
+      });
+    }
+
     for (const [index, detail] of (entry.progressDetails ?? []).entries()) {
       const detailType = progressDetailString(detail.type);
+      if (detailType === "research.seed_summary") {
+        const message = progressDetailString(detail.message);
+        if (message) {
+          appendDocumentEntry(entries, seen, {
+            key: `progress-seed:${entry.id}:${index}`,
+            kind: "log",
+            text: message,
+          });
+        }
+        continue;
+      }
       if (detailType === "research.work") {
         const workId = progressDetailString(detail.workId) || `${entry.id}:progress-work:${index}`;
         const titleText = progressDetailString(detail.workTitle) || progressDetailString(detail.title) || workId;

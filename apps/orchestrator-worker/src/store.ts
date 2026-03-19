@@ -682,6 +682,10 @@ const GRIEF_THEME_TOKENS = new Set([
   "wept",
 ]);
 
+const GRIEF_EXPLICIT_MATCH_PATTERN = /\b(grief|mourning|bereavement|funeral|sorrow|lament|weep|wept|weeping|tears?|loss|dead|death|buried)\b/u;
+const JUVENILE_MATCH_PATTERN = /\b(juvenile|children|child|girls|boys|school|schools|orphans?|pz)\b/u;
+const ORPHAN_MATCH_PATTERN = /\borphans?\b/u;
+
 function normalizeSearchQuery(query: string): string {
   const tokens = Array.from(
     new Set(
@@ -726,6 +730,8 @@ function metadataSearchTerms(query: string): string[] {
   return expanded
     .filter((token) => !METADATA_SEARCH_QUERY_STOP_WORDS.has(token))
     .filter((token) => !(hasStrongGriefSignal && (token === "widow" || token === "widows")))
+    .filter((token) => !(hasStrongGriefSignal && (token === "orphan" || token === "orphans")))
+    .filter((token) => !(hasStrongGriefSignal && (token === "child" || token === "children" || token === "juvenile")))
     .filter((token) => !/^\d{4}$/u.test(token))
     .slice(0, 16);
 }
@@ -746,6 +752,28 @@ function metadataTextHaystack(row: {
   ].join(" ").toLowerCase();
 }
 
+function hasExplicitGriefMetadataMatch(haystack: string) {
+  return GRIEF_EXPLICIT_MATCH_PATTERN.test(haystack);
+}
+
+function shouldAcceptMetadataRows<T extends {
+  title: string;
+  summary: string | null;
+  authors: string[];
+  subjects: string[];
+  metadata_json: Record<string, unknown>;
+}>(rows: T[], query: string, limit: number) {
+  const terms = metadataSearchTerms(query);
+  const hasStrongGriefSignal = terms.some((token) => GRIEF_THEME_TOKENS.has(token));
+  if (!hasStrongGriefSignal) {
+    return rows.length >= Math.min(limit, 6);
+  }
+  const strongMatches = rows
+    .slice(0, Math.min(rows.length, 8))
+    .filter((row) => hasExplicitGriefMetadataMatch(metadataTextHaystack(row)));
+  return strongMatches.length >= Math.min(limit, 4);
+}
+
 function rerankMetadataRows<T extends {
   title: string;
   summary: string | null;
@@ -756,6 +784,7 @@ function rerankMetadataRows<T extends {
 }>(rows: T[], query: string): T[] {
   const terms = metadataSearchTerms(query);
   const hasStrongGriefSignal = terms.some((token) => GRIEF_THEME_TOKENS.has(token));
+  const asksForJuvenile = /\b(children|child|juvenile|girl|girls|boy|boys|school|orphan|orphans)\b/iu.test(query);
   return rows
     .map((row) => {
       const haystack = metadataTextHaystack(row);
@@ -766,8 +795,22 @@ function rerankMetadataRows<T extends {
         }
         bonus += GRIEF_THEME_TOKENS.has(term) ? 0.35 : 0.12;
       }
-      if (hasStrongGriefSignal && /\bwidows?\b/u.test(haystack) && !/\b(grief|mourning|bereavement|funeral|sorrow|lament|weep|wept|tears?)\b/u.test(haystack)) {
+      const hasExplicitGriefMatch = GRIEF_EXPLICIT_MATCH_PATTERN.test(haystack);
+      if (hasStrongGriefSignal && /\bwidows?\b/u.test(haystack) && !hasExplicitGriefMatch) {
         bonus -= 0.45;
+      }
+      if (hasStrongGriefSignal && !asksForJuvenile) {
+        if (JUVENILE_MATCH_PATTERN.test(haystack) && !hasExplicitGriefMatch) {
+          bonus -= 0.7;
+        } else if (JUVENILE_MATCH_PATTERN.test(haystack)) {
+          bonus -= 0.22;
+        }
+        if (ORPHAN_MATCH_PATTERN.test(haystack) && !hasExplicitGriefMatch) {
+          bonus -= 0.35;
+        }
+      }
+      if (hasStrongGriefSignal && hasExplicitGriefMatch) {
+        bonus += 0.45;
       }
       return {
         row,
@@ -3032,8 +3075,9 @@ export class NeonAppStore implements AppStore {
           limit,
         ],
       );
-      if (result.rows.length >= Math.min(limit, 6) || tokens.length === 0) {
-        return mapRows(rerankMetadataRows(result.rows, query).slice(0, limit));
+      const rerankedMetadataRows = rerankMetadataRows(result.rows, query);
+      if (tokens.length === 0 || shouldAcceptMetadataRows(rerankedMetadataRows, query, limit)) {
+        return mapRows(rerankedMetadataRows.slice(0, limit));
       }
 
       let chunkBackedRows: Array<{
@@ -3182,13 +3226,17 @@ export class NeonAppStore implements AppStore {
       const mergedRows = dedupeMetadataRows(
         rerankMetadataRows(
           [
-            ...result.rows,
+            ...rerankedMetadataRows,
             ...chunkBackedRows,
           ],
           query,
         ),
       );
-      if (mergedRows.length > 0 || tokens.length === 0) {
+      if (tokens.length === 0) {
+        return mapRows(mergedRows.slice(0, limit));
+      }
+
+      if (shouldAcceptMetadataRows(mergedRows, query, limit)) {
         return mapRows(mergedRows.slice(0, limit));
       }
 
@@ -3197,6 +3245,9 @@ export class NeonAppStore implements AppStore {
         if (relaxedResults.length > 0) {
           return relaxedResults;
         }
+      }
+      if (mergedRows.length > 0) {
+        return mapRows(mergedRows.slice(0, limit));
       }
       return [];
     } catch (error) {
