@@ -44,6 +44,8 @@ import { type FC, useCallback, useEffect, useMemo, useRef, useState } from "reac
 import { useAuiState } from "@assistant-ui/store";
 import type { RunArtifactRecord } from "@/api";
 
+type AssistantEffortLevel = "normal" | "high" | "maximum";
+
 type MessagePartRecord = {
   type?: string;
   text?: string;
@@ -155,24 +157,26 @@ const suggestionIconMap = {
 
 export const Thread: FC<{
   isRunning?: boolean;
-  streamConnected?: boolean;
   artifacts?: RunArtifactRecord[];
   showArtifacts?: boolean;
   showWelcome?: boolean;
   suggestions?: ThreadSuggestion[];
   onSuggestionSelect?: (prompt: string) => void;
   onCancel?: () => void;
+  effortLevel: AssistantEffortLevel;
+  onEffortLevelChange: (value: AssistantEffortLevel) => void;
   composerDisabled?: boolean;
   composerDisabledNotice?: React.ReactNode;
 }> = ({
   isRunning = false,
-  streamConnected = false,
   artifacts = [],
   showArtifacts = true,
   showWelcome = true,
   suggestions = [],
   onSuggestionSelect,
   onCancel,
+  effortLevel,
+  onEffortLevelChange,
   composerDisabled = false,
   composerDisabledNotice,
 }) => {
@@ -238,8 +242,9 @@ export const Thread: FC<{
           <ThreadScrollToBottom />
           <Composer
             isRunning={isRunning}
-            streamConnected={streamConnected}
             onCancel={onCancel}
+            effortLevel={effortLevel}
+            onEffortLevelChange={onEffortLevelChange}
             disabled={composerDisabled}
             notice={composerDisabledNotice}
           />
@@ -492,11 +497,12 @@ const ThreadSuggestionItem: FC<{
 
 const Composer: FC<{
   isRunning?: boolean;
-  streamConnected?: boolean;
   onCancel?: () => void;
+  effortLevel: AssistantEffortLevel;
+  onEffortLevelChange: (value: AssistantEffortLevel) => void;
   disabled?: boolean;
   notice?: React.ReactNode;
-}> = ({ isRunning = false, streamConnected = false, onCancel, disabled = false, notice }) => {
+}> = ({ isRunning = false, onCancel, effortLevel, onEffortLevelChange, disabled = false, notice }) => {
   return (
     <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
       <ComposerPrimitive.AttachmentDropzone asChild>
@@ -513,7 +519,13 @@ const Composer: FC<{
             aria-label="Message input"
             disabled={isRunning || disabled}
           />
-          <ComposerAction isRunning={isRunning} streamConnected={streamConnected} onCancel={onCancel} disabled={disabled} />
+          <ComposerAction
+            isRunning={isRunning}
+            onCancel={onCancel}
+            effortLevel={effortLevel}
+            onEffortLevelChange={onEffortLevelChange}
+            disabled={disabled}
+          />
           {disabled && notice ? <div className="aui-composer-disabled-note px-1.5 pb-1 text-sm text-muted-foreground">{notice}</div> : null}
         </div>
       </ComposerPrimitive.AttachmentDropzone>
@@ -521,24 +533,33 @@ const Composer: FC<{
   );
 };
 
-const ComposerAction: FC<{ isRunning?: boolean; streamConnected?: boolean; onCancel?: () => void; disabled?: boolean }> = ({
+const ComposerAction: FC<{
+  isRunning?: boolean;
+  onCancel?: () => void;
+  effortLevel: AssistantEffortLevel;
+  onEffortLevelChange: (value: AssistantEffortLevel) => void;
+  disabled?: boolean;
+}> = ({
   isRunning = false,
-  streamConnected = false,
   onCancel,
+  effortLevel,
+  onEffortLevelChange,
   disabled = false,
 }) => {
   return (
     <div className="aui-composer-action-wrapper relative flex items-center gap-2">
-      {isRunning ? (
-        <span
-          className={cn(
-            "aui-composer-stream-dot",
-            streamConnected ? "is-connected" : "is-disconnected",
-          )}
-          aria-label={streamConnected ? "Connected to live stream" : "Disconnected from live stream"}
-          title={streamConnected ? "Connected to live stream" : "Disconnected from live stream"}
-        />
-      ) : null}
+      <label className="aui-composer-effort-shell" aria-label="Effort level">
+        <select
+          className="aui-composer-effort-select"
+          value={effortLevel}
+          onChange={(event) => onEffortLevelChange(event.target.value as AssistantEffortLevel)}
+          disabled={isRunning || disabled}
+        >
+          <option value="normal">Low</option>
+          <option value="high">Medium</option>
+          <option value="maximum">High</option>
+        </select>
+      </label>
       <AuiIf condition={() => !isRunning}>
         <ComposerPrimitive.Send asChild>
           <TooltipIconButton

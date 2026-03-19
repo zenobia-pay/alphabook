@@ -127,6 +127,8 @@ type ThreadSuggestion = {
   prompt: string;
 };
 
+type AssistantEffortLevel = "normal" | "high" | "maximum";
+
 type ReaderPassageKind = "heading" | "paragraph" | "quote" | "list-item" | "preformatted";
 
 type ReaderPassage = {
@@ -144,6 +146,7 @@ declare global {
 
 const USER_STORAGE_KEY = "alphabook.localUserId";
 const BOOK_ASSISTANT_WIDTH_STORAGE_KEY = "alphabook.bookAssistantWidth";
+const ASSISTANT_EFFORT_STORAGE_KEY = "alphabook.assistantEffort";
 const BOOK_ASSISTANT_MIN_WIDTH = 320;
 const BOOK_ASSISTANT_MAX_WIDTH = 720;
 const SEO_SITE_NAME = "alpha book";
@@ -2702,11 +2705,12 @@ function SidebarRecents({
 function AssistantSurface({
   messages,
   isSending,
-  streamConnected,
   streamingAssistantId,
   artifacts,
   showArtifacts = true,
   showWelcome = true,
+  effortLevel,
+  onEffortLevelChange,
   onPrompt,
   onCancel,
   suggestions = ASSISTANT_WELCOME_SUGGESTIONS,
@@ -2715,11 +2719,12 @@ function AssistantSurface({
 }: {
   messages: UiMessage[];
   isSending: boolean;
-  streamConnected: boolean;
   streamingAssistantId: string | null;
   artifacts: RunArtifactRecord[];
   showArtifacts?: boolean;
   showWelcome?: boolean;
+  effortLevel: AssistantEffortLevel;
+  onEffortLevelChange: (value: AssistantEffortLevel) => void;
   onPrompt: (prompt: string) => Promise<void>;
   onCancel: () => Promise<void>;
   suggestions?: ThreadSuggestion[];
@@ -2747,11 +2752,12 @@ function AssistantSurface({
     <AssistantRuntimeProvider runtime={runtime}>
       <Thread
         isRunning={isSending}
-        streamConnected={streamConnected}
         artifacts={artifacts}
         showArtifacts={showArtifacts}
         showWelcome={showWelcome}
         suggestions={suggestions}
+        effortLevel={effortLevel}
+        onEffortLevelChange={onEffortLevelChange}
         composerDisabled={composerDisabled}
         composerDisabledNotice={composerDisabledNotice}
         onCancel={() => {
@@ -4529,6 +4535,13 @@ export default function App() {
   const [isSending, setIsSending] = useState(false);
   const [recoveredActiveRunId, setRecoveredActiveRunId] = useState<string | null>(null);
   const [streamConnected, setStreamConnected] = useState(false);
+  const [assistantEffort, setAssistantEffort] = useState<AssistantEffortLevel>(() => {
+    if (typeof window === "undefined") {
+      return "high";
+    }
+    const saved = window.localStorage.getItem(ASSISTANT_EFFORT_STORAGE_KEY);
+    return saved === "normal" || saved === "high" || saved === "maximum" ? saved : "high";
+  });
   const [sessionRuns, setSessionRuns] = useState<SessionRunRecord[]>([]);
   const [runArtifacts, setRunArtifacts] = useState<RunArtifactRecord[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -5137,6 +5150,13 @@ export default function App() {
     }
     window.localStorage.setItem(BOOK_ASSISTANT_WIDTH_STORAGE_KEY, String(bookAssistantWidth));
   }, [bookAssistantWidth]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    window.localStorage.setItem(ASSISTANT_EFFORT_STORAGE_KEY, assistantEffort);
+  }, [assistantEffort]);
 
   useEffect(() => {
     if (!isDraggingBookAssistant) {
@@ -5803,6 +5823,7 @@ export default function App() {
           userId: authState.authConfigured ? undefined : currentUserId,
           message: transportQuestion,
           workIds: options.workIdsOverride,
+          intensityOverride: assistantEffort,
         },
         {
           onEvent: (event) => {
@@ -6372,9 +6393,10 @@ export default function App() {
               key="assistant-landing"
               messages={[]}
               isSending={false}
-              streamConnected={false}
               streamingAssistantId={null}
               artifacts={[]}
+              effortLevel={assistantEffort}
+              onEffortLevelChange={setAssistantEffort}
               onPrompt={sendPrompt}
               onCancel={cancelActiveRun}
               composerDisabled={authLocked}
@@ -6402,10 +6424,11 @@ export default function App() {
                 key={selectedSessionId ?? "new-thread"}
                 messages={visibleMessages}
                 isSending={isSending || recoveredActiveRunId !== null}
-                streamConnected={streamConnected}
                 streamingAssistantId={streamingAssistantId}
                 artifacts={runArtifacts}
                 showArtifacts={false}
+                effortLevel={assistantEffort}
+                onEffortLevelChange={setAssistantEffort}
                 onPrompt={sendPrompt}
                 onCancel={cancelActiveRun}
                 composerDisabled={authLocked}
@@ -6486,9 +6509,10 @@ export default function App() {
                 key={`book-${activeWorkId ?? "unknown"}-${selectedSessionId ?? "new-thread"}`}
                 messages={visibleMessages}
                 isSending={isSending || recoveredActiveRunId !== null}
-                streamConnected={streamConnected}
                 streamingAssistantId={streamingAssistantId}
                 artifacts={runArtifacts}
+                effortLevel={assistantEffort}
+                onEffortLevelChange={setAssistantEffort}
                 onPrompt={bookPromptHandler}
                 onCancel={cancelActiveRun}
                 suggestions={ASSISTANT_WELCOME_SUGGESTIONS}
