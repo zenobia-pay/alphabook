@@ -1032,8 +1032,47 @@ function mergeToolTraceEntries(existing: ToolTraceEntry, incoming: ToolTraceEntr
 
 function mergeFetchedMessages(existingMessages: UiMessage[], incomingMessages: UiMessage[]) {
   const existingById = new Map(existingMessages.map((message) => [message.id, message]));
+  const consumedOptimisticIds = new Set<string>();
+  const findOptimisticMatch = (incoming: UiMessage) => {
+    if (incoming.role !== "user") {
+      return null;
+    }
+    const incomingContent = incoming.content.trim();
+    if (!incomingContent) {
+      return null;
+    }
+    const incomingCreatedAt = Date.parse(incoming.createdAt);
+    for (const candidate of existingMessages) {
+      if (consumedOptimisticIds.has(candidate.id)) {
+        continue;
+      }
+      if (candidate.role !== "user") {
+        continue;
+      }
+      if (candidate.metadata?.optimistic !== true) {
+        continue;
+      }
+      if (candidate.content.trim() !== incomingContent) {
+        continue;
+      }
+      if (candidate.sessionId !== incoming.sessionId) {
+        continue;
+      }
+      const candidateCreatedAt = Date.parse(candidate.createdAt);
+      if (!Number.isFinite(incomingCreatedAt) || !Number.isFinite(candidateCreatedAt)) {
+        consumedOptimisticIds.add(candidate.id);
+        return candidate;
+      }
+      if (Math.abs(incomingCreatedAt - candidateCreatedAt) <= 15_000) {
+        consumedOptimisticIds.add(candidate.id);
+        return candidate;
+      }
+    }
+    return null;
+  };
+
   const merged = incomingMessages.map((incoming) => {
-    const existing = existingById.get(incoming.id);
+    const existing = existingById.get(incoming.id) ?? findOptimisticMatch(incoming);
     if (!existing) {
       return incoming;
     }
@@ -1067,6 +1106,7 @@ function mergeFetchedMessages(existingMessages: UiMessage[], incomingMessages: U
 
     return {
       ...incoming,
+      id: incoming.id,
       content:
         incoming.content.length >= existing.content.length
           ? incoming.content
@@ -1075,13 +1115,16 @@ function mergeFetchedMessages(existingMessages: UiMessage[], incomingMessages: U
         incoming.citations.length >= existing.citations.length
           ? incoming.citations
           : existing.citations,
+      metadata: existing.metadata?.optimistic === true
+        ? incoming.metadata
+        : incoming.metadata,
       toolCalls: mergedToolCalls,
     };
   });
 
   const seenIds = new Set(merged.map((message) => message.id));
   for (const existing of existingMessages) {
-    if (!seenIds.has(existing.id)) {
+    if (!seenIds.has(existing.id) && !consumedOptimisticIds.has(existing.id)) {
       merged.push(existing);
     }
   }
@@ -5760,7 +5803,7 @@ export default function App() {
       sessionId: initialSessionId ?? "pending",
       role: "user",
       content: normalizedQuestion,
-      metadata: {},
+      metadata: { optimistic: true },
       createdAt: new Date().toISOString(),
       citations: [],
       toolCalls: [],
