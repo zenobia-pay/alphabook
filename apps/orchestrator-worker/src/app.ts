@@ -2253,10 +2253,13 @@ async function executeTool(
       const frontierLimit = broadSurveyQuery
         ? Math.max(requestedLimit * 3, Math.min(128, requestedLimit * 4))
         : Math.max(requestedLimit, Math.min(80, requestedLimit * 2));
-      const frontierWorks = await deps.store.searchWorks(parsed.query, {
+      const rawFrontierWorks = await deps.store.searchWorks(parsed.query, {
         ...(parsed.filters ?? {}),
         limit: frontierLimit,
       });
+      const frontierWorks = rankWorkspaceCandidateWorks(rawFrontierWorks, parsed.query, new Set<string>())
+        .filter(({ work, totalScore }, index) => shouldSeedWorkspaceWork(work, parsed.query, new Set<string>(), totalScore, index))
+        .map(({ work }) => work);
       const visibleLimit = broadSurveyQuery
         ? Math.min(frontierLimit, Math.max(requestedLimit, 24))
         : Math.min(20, frontierLimit);
