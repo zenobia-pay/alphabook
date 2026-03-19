@@ -248,7 +248,8 @@ function getDisplayLogLines(value: unknown) {
   return logLines.flatMap((line): ToolLogLine[] => {
     if (typeof line === "string") {
       const trimmed = line.trim();
-      return trimmed ? [{ key: "", value: trimmed }] : [];
+      const candidate = trimmed ? { key: "", value: trimmed } : null;
+      return candidate && isUsefulRawToolLine(candidate) ? [candidate] : [];
     }
     const entry = safeObject(line);
     if (!entry) {
@@ -258,14 +259,15 @@ function getDisplayLogLines(value: unknown) {
     if (!valueText) {
       return [];
     }
-    return [{
+    const candidate = {
       key: typeof entry.key === "string" ? entry.key : "",
       value: valueText,
       tone:
         entry.tone === "default" || entry.tone === "error" || entry.tone === "muted"
           ? entry.tone
           : undefined,
-    }];
+    };
+    return isUsefulRawToolLine(candidate) ? [candidate] : [];
   });
 }
 
