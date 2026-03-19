@@ -44,6 +44,7 @@ type ToolTraceEntry = {
 type AssistantDocumentBootstrapPayload = {
   sessionId: string;
   runId: string;
+  sessionTitle?: string;
   messages?: RawUiMessage[];
   runState?: {
     run?: SessionRunRecord;
@@ -3592,6 +3593,11 @@ function persistedResearchDocument(
   return parseResearchDocumentArtifact(candidate, linkMode);
 }
 
+function isGenericResearchDocumentTitle(value: string | null | undefined) {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return normalized === "" || normalized === "research log";
+}
+
 function mergeResearchDocumentModels(
   primary: ResearchDocumentModel,
   supplement: ResearchDocumentModel,
@@ -3664,7 +3670,10 @@ function mergeResearchDocumentModels(
     .filter((section) => hasUsefulSectionItems(section));
 
   return {
-    title: primary.title || supplement.title,
+    title:
+      !isGenericResearchDocumentTitle(primary.title)
+        ? primary.title
+        : (supplement.title || primary.title),
     sections: sortDocumentSections(sections),
     ending: primary.ending || supplement.ending,
   };
@@ -4136,6 +4145,7 @@ function AssistantDocumentFramePage({
     Array.isArray(bootstrap?.runState?.artifacts) ? bootstrap.runState.artifacts : []
   ));
   const [runStatus, setRunStatus] = useState<SessionRunRecord["status"] | null>(() => bootstrap?.runState?.run?.status ?? null);
+  const [sessionTitle, setSessionTitle] = useState<string>(() => bootstrap?.sessionTitle?.trim() || "Research log");
   const [loading, setLoading] = useState(bootstrap ? false : true);
   const [error, setError] = useState<string | null>(bootstrap?.error ?? null);
   const [errorStatus, setErrorStatus] = useState<number | null>(bootstrap?.errorStatus ?? null);
@@ -4145,6 +4155,7 @@ function AssistantDocumentFramePage({
     setToolTrace(currentResearchToolTrace(bootstrapHydratedMessages, runId));
     setArtifacts(Array.isArray(bootstrap?.runState?.artifacts) ? bootstrap.runState.artifacts : []);
     setRunStatus(bootstrap?.runState?.run?.status ?? null);
+    setSessionTitle(bootstrap?.sessionTitle?.trim() || "Research log");
     setLoading(bootstrap ? false : true);
     setError(bootstrap?.error ?? null);
     setErrorStatus(bootstrap?.errorStatus ?? null);
@@ -4250,7 +4261,7 @@ function AssistantDocumentFramePage({
   return (
     <section className="assistant-document-pane assistant-document-standalone" data-run-status={runStatus ?? "unknown"}>
       <ResearchArtifactDocument
-        sessionTitle="Research log"
+        sessionTitle={sessionTitle}
         toolTrace={toolTrace}
         artifacts={artifacts}
         ending={ending}

@@ -22,6 +22,7 @@ const BOOK_CONTENT_CACHE_TTL_SECONDS = 60 * 60 * 4;
 type AssistantDocumentBootstrapPayload = {
   sessionId: string;
   runId: string;
+  sessionTitle?: string;
   messages?: unknown[];
   runState?: unknown;
   error?: string;
@@ -81,9 +82,10 @@ async function loadAssistantDocumentBootstrap(request: Request, env: Env, url: U
     };
   }
 
-  const [messagesResponse, runStateResponse] = await Promise.all([
+  const [messagesResponse, runStateResponse, sessionsResponse] = await Promise.all([
     fetchApiJson(request, env, `/sessions/${encodeURIComponent(sessionId)}/messages`),
     fetchApiJson(request, env, `/sessions/${encodeURIComponent(sessionId)}/runs/${encodeURIComponent(runId)}`),
+    fetchApiJson(request, env, "/sessions"),
   ]);
 
   const firstError = !runStateResponse.ok ? runStateResponse : !messagesResponse.ok ? messagesResponse : null;
@@ -103,6 +105,16 @@ async function loadAssistantDocumentBootstrap(request: Request, env: Env, url: U
   return {
     sessionId,
     runId,
+    sessionTitle:
+      sessionsResponse.ok
+      && sessionsResponse.json
+      && typeof sessionsResponse.json === "object"
+      && Array.isArray((sessionsResponse.json as { sessions?: Array<{ id?: unknown; title?: unknown }> }).sessions)
+        ? ((sessionsResponse.json as { sessions: Array<{ id?: unknown; title?: unknown }> }).sessions.find((session) => session?.id === sessionId)?.title)
+          && typeof (sessionsResponse.json as { sessions: Array<{ id?: unknown; title?: unknown }> }).sessions.find((session) => session?.id === sessionId)?.title === "string"
+            ? ((sessionsResponse.json as { sessions: Array<{ id?: unknown; title?: unknown }> }).sessions.find((session) => session?.id === sessionId)?.title as string)
+            : undefined
+        : undefined,
     messages:
       messagesResponse.json && typeof messagesResponse.json === "object" && Array.isArray((messagesResponse.json as { messages?: unknown[] }).messages)
         ? (messagesResponse.json as { messages: unknown[] }).messages
