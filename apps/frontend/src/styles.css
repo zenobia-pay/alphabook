@@ -1852,6 +1852,51 @@ button {
   font-weight: 600;
 }
 
+.assistant-document-section {
+  border-top: 1px solid rgba(38, 38, 38, 0.08);
+  padding-top: 14px;
+}
+
+.assistant-document-section:first-of-type {
+  border-top: none;
+  padding-top: 0;
+}
+
+.assistant-document-section-summary {
+  display: grid;
+  gap: 4px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.assistant-document-section-summary::-webkit-details-marker {
+  display: none;
+}
+
+.assistant-document-section-title {
+  display: block;
+  font-family: "Manrope", sans-serif;
+  font-size: 0.92rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+
+.assistant-document-section-kicker {
+  display: block;
+  font-family: "Newsreader", serif;
+  font-size: 1rem;
+  line-height: 1.5;
+  color: var(--ink-subtle);
+}
+
+.assistant-document-section-body {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
 .assistant-document-link {
   color: inherit;
   text-decoration: underline;

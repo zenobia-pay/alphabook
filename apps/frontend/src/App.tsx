@@ -2617,18 +2617,101 @@ type SourceChunkRecord = {
 
 type ResearchDocumentModel = {
   title: string;
-  entries: Array<{
+  sections: Array<{
     key: string;
-    kind: ResearchDocumentEntryKind;
-    text: string;
-    citationText?: string;
-    linkLabel?: string;
-    linkHref?: string;
-    workId?: string;
-    citation?: Citation;
-    prefix?: string;
-    suffix?: string;
+    title: string;
+    summary: string;
+    items: Array<{
+      key: string;
+      kind: Exclude<ResearchDocumentEntryKind, "title">;
+      text: string;
+      citationText?: string;
+      linkLabel?: string;
+      linkHref?: string;
+      workId?: string;
+      citation?: Citation;
+      prefix?: string;
+      suffix?: string;
+    }>;
   }>;
+  ending: string;
+};
+
+type ResearchDocumentItem = {
+  key: string;
+  kind: Exclude<ResearchDocumentEntryKind, "title">;
+  text: string;
+  citationText?: string;
+  linkLabel?: string;
+  linkHref?: string;
+  workId?: string;
+  citation?: Citation;
+  prefix?: string;
+  suffix?: string;
+};
+
+type ResearchDocumentSection = {
+  key: string;
+  title: string;
+  summary: string;
+  items: ResearchDocumentItem[];
+};
+
+type ResearchDocumentFlatEntry = {
+  sectionKey: string;
+  sectionTitle: string;
+  sectionSummary: string;
+  item: ResearchDocumentItem;
+};
+
+function appendDocumentEntry(
+  entries: ResearchDocumentFlatEntry[],
+  seen: Set<string>,
+  entry: {
+    sectionKey: string;
+    sectionTitle: string;
+    sectionSummary: string;
+    item: ResearchDocumentItem;
+  },
+) {
+  const normalized = entry.item.text.trim();
+  if (!normalized || seen.has(entry.item.key)) {
+    return;
+  }
+  seen.add(entry.item.key);
+  entries.push({
+    ...entry,
+    item: {
+      ...entry.item,
+      text: normalized,
+    },
+  });
+}
+
+function toSectionTitle(entry: ToolTraceEntry) {
+  return entry.label || getToolLabel(entry.toolName);
+}
+
+function toSectionSummary(entry: ToolTraceEntry) {
+  return summarizeToolSentence(entry).trim();
+}
+
+function ensureSection(
+  sections: Map<string, ResearchDocumentSection>,
+  entry: ToolTraceEntry,
+) {
+  const existing = sections.get(entry.id);
+  if (existing) {
+    return existing;
+  }
+  const created: ResearchDocumentSection = {
+    key: entry.id,
+    title: toSectionTitle(entry),
+    summary: toSectionSummary(entry),
+    items: [],
+  };
+  sections.set(entry.id, created);
+  return created;
 };
 
 function appendProgressDetail(
@@ -2861,22 +2944,6 @@ function artifactSourceChunks(artifacts: RunArtifactRecord[]) {
   return collectSourceChunks([], artifacts);
 }
 
-function appendDocumentEntry(
-  entries: ResearchDocumentModel["entries"],
-  seen: Set<string>,
-  entry: ResearchDocumentModel["entries"][number],
-) {
-  const normalized = entry.text.trim();
-  if (!normalized || seen.has(entry.key)) {
-    return;
-  }
-  seen.add(entry.key);
-  entries.push({
-    ...entry,
-    text: normalized,
-  });
-}
-
 function buildWorkHref(workId: string) {
   return `/works/${encodeURIComponent(workId)}`;
 }
@@ -2927,15 +2994,12 @@ function buildResearchDocument(
   artifacts: RunArtifactRecord[],
   ending: string | null,
 ): ResearchDocumentModel {
-  const entries: ResearchDocumentModel["entries"] = [];
+  const entries: ResearchDocumentFlatEntry[] = [];
+  const sections = new Map<string, ResearchDocumentSection>();
   const seen = new Set<string>();
-  appendDocumentEntry(entries, seen, {
-    key: "title",
-    text: `# ${title.trim() || "Research log"}`,
-    kind: "title",
-  });
 
   for (const entry of toolTrace) {
+    const section = ensureSection(sections, entry);
     for (const [index, detail] of (entry.progressDetails ?? []).entries()) {
       const detailType = progressDetailString(detail.type);
       if (detailType === "research.work") {
@@ -2945,14 +3009,19 @@ function buildResearchDocument(
           ? detail.authors.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
           : [];
         appendDocumentEntry(entries, seen, {
-          key: `progress-book:${workId}`,
-          kind: "book",
-          text: `${titleText}${authors.length > 0 ? ` by ${authors.join(", ")}` : ""} was surfaced during the deeper research pass.`.trim(),
-          linkLabel: titleText,
-          linkHref: buildWorkHref(workId),
-          workId,
-          prefix: "",
-          suffix: `${authors.length > 0 ? ` by ${authors.join(", ")}` : ""} was surfaced during the deeper research pass.`.trim(),
+          sectionKey: section.key,
+          sectionTitle: section.title,
+          sectionSummary: section.summary,
+          item: {
+            key: `progress-book:${workId}`,
+            kind: "book",
+            text: `${titleText}${authors.length > 0 ? ` by ${authors.join(", ")}` : ""}`.trim(),
+            linkLabel: titleText,
+            linkHref: buildWorkHref(workId),
+            workId,
+            prefix: "",
+            suffix: authors.length > 0 ? `by ${authors.join(", ")}` : "",
+          },
         });
         continue;
       }
@@ -2962,18 +3031,23 @@ function buildResearchDocument(
         const excerpt = progressDetailString(detail.excerpt).slice(0, 440);
         const citationText = buildProgressChunkCitation(detail);
         appendDocumentEntry(entries, seen, {
-          key: `progress-chunk:${chunkId}`,
-          kind: "chunk",
-          text: excerpt,
-          citationText,
-          linkLabel: citationText,
-          linkHref: buildWorkHref(workId),
-          citation: {
-            workId,
-            ...(progressDetailString(detail.chunkId) ? { chunkId: progressDetailString(detail.chunkId) } : {}),
-            label: progressDetailString(detail.workTitle) || progressDetailString(detail.title) || workId,
-            excerpt: excerpt || citationText,
-            ...(progressDetailString(detail.r2Key) ? { r2Key: progressDetailString(detail.r2Key) } : {}),
+          sectionKey: section.key,
+          sectionTitle: section.title,
+          sectionSummary: section.summary,
+          item: {
+            key: `progress-chunk:${chunkId}`,
+            kind: "chunk",
+            text: excerpt,
+            citationText,
+            linkLabel: citationText,
+            linkHref: buildWorkHref(workId),
+            citation: {
+              workId,
+              ...(progressDetailString(detail.chunkId) ? { chunkId: progressDetailString(detail.chunkId) } : {}),
+              label: progressDetailString(detail.workTitle) || progressDetailString(detail.title) || workId,
+              excerpt: excerpt || citationText,
+              ...(progressDetailString(detail.r2Key) ? { r2Key: progressDetailString(detail.r2Key) } : {}),
+            },
           },
         });
       }
@@ -2987,18 +3061,20 @@ function buildResearchDocument(
         const authors = Array.isArray(work.authors)
           ? work.authors.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
           : [];
-        const note = entry.toolName === "search_works"
-          ? "Surfaced in the corpus search."
-          : "Pulled in for more metadata context.";
         appendDocumentEntry(entries, seen, {
-          key: `book:${workId}`,
-          kind: "book",
-          text: `${titleText} ${authors.length > 0 ? `by ${authors.join(", ")}` : ""} ${note}`.trim(),
-          linkLabel: titleText || workId,
-          linkHref: buildWorkHref(workId),
-          workId,
-          prefix: "",
-          suffix: `${authors.length > 0 ? ` by ${authors.join(", ")}` : ""} ${note}`.trim(),
+          sectionKey: section.key,
+          sectionTitle: section.title,
+          sectionSummary: section.summary,
+          item: {
+            key: `book:${workId}`,
+            kind: "book",
+            text: `${titleText} ${authors.length > 0 ? `by ${authors.join(", ")}` : ""}`.trim(),
+            linkLabel: titleText || workId,
+            linkHref: buildWorkHref(workId),
+            workId,
+            prefix: "",
+            suffix: authors.length > 0 ? `by ${authors.join(", ")}` : "",
+          },
         });
       }
     }
@@ -3015,14 +3091,19 @@ function buildResearchDocument(
           ? work.authors.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
           : [];
         appendDocumentEntry(entries, seen, {
-          key: `workspace-book:${workId}`,
-          kind: "book",
-          text: `${titleText} ${authors.length > 0 ? `by ${authors.join(", ")}` : ""} was added to the deeper research workspace.`.trim(),
-          linkLabel: titleText || workId,
-          linkHref: buildWorkHref(workId),
-          workId,
-          prefix: "",
-          suffix: `${authors.length > 0 ? ` by ${authors.join(", ")}` : ""} was added to the deeper research workspace.`.trim(),
+          sectionKey: section.key,
+          sectionTitle: section.title,
+          sectionSummary: section.summary,
+          item: {
+            key: `workspace-book:${workId}`,
+            kind: "book",
+            text: `${titleText} ${authors.length > 0 ? `by ${authors.join(", ")}` : ""}`.trim(),
+            linkLabel: titleText || workId,
+            linkHref: buildWorkHref(workId),
+            workId,
+            prefix: "",
+            suffix: authors.length > 0 ? `by ${authors.join(", ")}` : "",
+          },
         });
       }
     }
@@ -3044,45 +3125,67 @@ function buildResearchDocument(
           : [];
         const citationText = `${workTitle}${authors.length > 0 ? `, by ${authors.join(", ")}` : ""}, ${formatPassageLocation(chunkIndex)}`;
         appendDocumentEntry(entries, seen, {
-          key: `chunk:${key}`,
-          kind: "chunk",
-          text: excerpt.slice(0, 440),
-          citationText,
-          linkLabel: citationText,
-          linkHref: buildWorkHref(workId),
-          citation: {
-            workId,
-            chunkId: typeof chunk.id === "string" ? chunk.id : undefined,
-            label: workTitle,
-            excerpt: excerpt || workTitle,
-            r2Key: typeof chunk.r2Key === "string" ? chunk.r2Key : undefined,
+          sectionKey: section.key,
+          sectionTitle: section.title,
+          sectionSummary: section.summary,
+          item: {
+            key: `chunk:${key}`,
+            kind: "chunk",
+            text: excerpt.slice(0, 440),
+            citationText,
+            linkLabel: citationText,
+            linkHref: buildWorkHref(workId),
+            citation: {
+              workId,
+              chunkId: typeof chunk.id === "string" ? chunk.id : undefined,
+              label: workTitle,
+              excerpt: excerpt || workTitle,
+              r2Key: typeof chunk.r2Key === "string" ? chunk.r2Key : undefined,
+            },
           },
         });
       }
     }
   }
 
+  const artifactSection = entries.length > 0 ? null : {
+    key: "artifacts",
+    title: "Evidence",
+    summary: "Primary-source passages carried forward into the final briefing.",
+  };
   for (const chunk of artifactSourceChunks(artifacts)) {
     const excerpt = chunk.text.replace(/\s+/g, " ").trim().slice(0, 280);
     appendDocumentEntry(entries, seen, {
-      key: `artifact-chunk:${chunk.key}`,
-      kind: "chunk",
-      text: `${chunk.label} was carried forward as evidence. ${chunk.note}${excerpt ? ` ${excerpt}` : ""}`.trim(),
+      sectionKey: artifactSection?.key ?? "artifacts",
+      sectionTitle: artifactSection?.title ?? "Evidence",
+      sectionSummary: artifactSection?.summary ?? "Primary-source passages carried forward into the final briefing.",
+      item: {
+        key: `artifact-chunk:${chunk.key}`,
+        kind: "chunk",
+        text: `${chunk.label} was carried forward as evidence. ${chunk.note}${excerpt ? ` ${excerpt}` : ""}`.trim(),
+      },
     });
   }
 
   const normalizedEnding = normalizeResearchEnding(ending);
-  if (normalizedEnding) {
-    appendDocumentEntry(entries, seen, {
-      key: "ending",
-      kind: "log",
-      text: normalizedEnding,
+  for (const entry of entries) {
+    const section = sections.get(entry.sectionKey);
+    if (section) {
+      section.items.push(entry.item);
+      continue;
+    }
+    sections.set(entry.sectionKey, {
+      key: entry.sectionKey,
+      title: entry.sectionTitle,
+      summary: entry.sectionSummary,
+      items: [entry.item],
     });
   }
 
   return {
     title: title.trim() || "Research log",
-    entries,
+    sections: [...sections.values()].filter((section) => section.items.length > 0),
+    ending: normalizedEnding,
   };
 }
 
@@ -3110,66 +3213,78 @@ function ResearchArtifactPane({
     <section className="assistant-document-pane">
       <div className="assistant-document-scroll">
         <div className="assistant-document-text">
-          {document.entries.map((entry) => (
-            entry.kind === "title" ? (
-              <h1 key={entry.key} className="assistant-document-entry is-title">
-                {entry.text.replace(/^#\s+/, "")}
-              </h1>
-            ) : entry.kind === "chunk" ? (
-              <blockquote key={entry.key} className="assistant-document-entry is-chunk">
-                <p className="assistant-document-quote">
-                  {entry.text}
-                </p>
-                {(entry.linkLabel && (entry.workId || entry.citation)) ? (
-                  <footer className="assistant-document-citation">
-                    <a
-                      className="assistant-document-link"
-                      href={entry.linkHref}
-                      onClick={(event) => {
-                        event.preventDefault();
-                        if (entry.citation) {
-                          onOpenCitation(entry.citation);
-                          return;
-                        }
-                        if (entry.workId) {
-                          onOpenWork(entry.workId);
-                        }
-                      }}
-                    >
-                      {entry.citationText ?? entry.linkLabel}
-                    </a>
-                  </footer>
-                ) : null}
-              </blockquote>
-            ) : (
-              <p key={entry.key} className={cn("assistant-document-entry", `is-${entry.kind}`)}>
-                {entry.linkLabel && (entry.workId || entry.citation) ? (
-                  <>
-                    {entry.prefix ? `${entry.prefix} ` : null}
-                    <a
-                      className="assistant-document-link"
-                      href={entry.linkHref}
-                      onClick={(event) => {
-                        event.preventDefault();
-                        if (entry.citation) {
-                          onOpenCitation(entry.citation);
-                          return;
-                        }
-                        if (entry.workId) {
-                          onOpenWork(entry.workId);
-                        }
-                      }}
-                    >
-                      {entry.linkLabel}
-                    </a>
-                    {entry.suffix ? ` ${entry.suffix}` : null}
-                  </>
-                ) : (
-                  entry.text
-                )}
-              </p>
-            )
+          <h1 className="assistant-document-entry is-title">
+            {document.title}
+          </h1>
+          {document.sections.map((section) => (
+            <details key={section.key} className="assistant-document-section" open>
+              <summary className="assistant-document-section-summary">
+                <span className="assistant-document-section-title">{section.title}</span>
+                <span className="assistant-document-section-kicker">{section.summary}</span>
+              </summary>
+              <div className="assistant-document-section-body">
+                {section.items.map((entry) => (
+                  entry.kind === "chunk" ? (
+                    <blockquote key={entry.key} className="assistant-document-entry is-chunk">
+                      <p className="assistant-document-quote">
+                        {entry.text}
+                      </p>
+                      {(entry.linkLabel && (entry.workId || entry.citation)) ? (
+                        <footer className="assistant-document-citation">
+                          <a
+                            className="assistant-document-link"
+                            href={entry.linkHref}
+                            onClick={(event) => {
+                              event.preventDefault();
+                              if (entry.citation) {
+                                onOpenCitation(entry.citation);
+                                return;
+                              }
+                              if (entry.workId) {
+                                onOpenWork(entry.workId);
+                              }
+                            }}
+                          >
+                            {entry.citationText ?? entry.linkLabel}
+                          </a>
+                        </footer>
+                      ) : null}
+                    </blockquote>
+                  ) : (
+                    <p key={entry.key} className={cn("assistant-document-entry", `is-${entry.kind}`)}>
+                      {entry.linkLabel && (entry.workId || entry.citation) ? (
+                        <>
+                          {entry.prefix ? `${entry.prefix} ` : null}
+                          <a
+                            className="assistant-document-link"
+                            href={entry.linkHref}
+                            onClick={(event) => {
+                              event.preventDefault();
+                              if (entry.citation) {
+                                onOpenCitation(entry.citation);
+                                return;
+                              }
+                              if (entry.workId) {
+                                onOpenWork(entry.workId);
+                              }
+                            }}
+                          >
+                            {entry.linkLabel}
+                          </a>
+                          {entry.suffix ? ` ${entry.suffix}` : null}
+                        </>
+                      ) : (
+                        entry.text
+                      )}
+                    </p>
+                  )
+                ))}
+              </div>
+            </details>
           ))}
+          {document.ending ? (
+            <p className="assistant-document-entry is-log">{document.ending}</p>
+          ) : null}
         </div>
       </div>
     </section>
