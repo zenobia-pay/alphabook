@@ -1125,6 +1125,9 @@ function buildBriefingPrompt(runtimePrompt, manifest, task, evidence, question) 
     (!openBookMode && seededCandidateCount >= 3)
       ? "- Do not roam outside the supplied candidate/frontier books unless those books are exhausted and a new book is directly justified by a relevant passage hit."
       : null,
+    (!openBookMode && seededCandidateCount >= 3)
+      ? "- Reject incidental fuzzy matches. A title touching death, sadness, war, or generic suffering is not enough by itself; stay with books that have explicit grief, mourning, consolation, bereavement, lament, tears, funeral, or loss evidence."
+      : null,
     openBookMode
       ? "- Stay inside the current hydrated book unless the local evidence is clearly insufficient."
       : "- Start from the best available seed evidence, but widen across the full corpus whenever the prompt asks for a broad theme, comparison, or survey.",

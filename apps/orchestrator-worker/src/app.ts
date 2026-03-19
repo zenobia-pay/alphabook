@@ -1614,6 +1614,9 @@ function selectShardWorkIds(taskSpec: Record<string, unknown>, shard: Record<str
   const retrieval = taskSpec.retrieval && typeof taskSpec.retrieval === "object"
     ? taskSpec.retrieval as Record<string, unknown>
     : null;
+  const verifiedWorkIds = Array.isArray(taskSpec.verifiedWorkIds)
+    ? uniqueWorkIds(taskSpec.verifiedWorkIds.filter((value): value is string => typeof value === "string"))
+    : [];
   const retrievalFrontierIds = Array.isArray(retrieval?.frontierWorks)
     ? uniqueWorkIds(
         (retrieval.frontierWorks as Array<Record<string, unknown>>).map((work) =>
@@ -1621,6 +1624,7 @@ function selectShardWorkIds(taskSpec: Record<string, unknown>, shard: Record<str
       )
     : [];
   const frontierWorkIds = uniqueWorkIds([
+    ...verifiedWorkIds,
     ...(Array.isArray(taskSpec.frontierWorkIds)
       ? taskSpec.frontierWorkIds.filter((value): value is string => typeof value === "string")
       : []),
@@ -1675,12 +1679,52 @@ function selectShardWorkIds(taskSpec: Record<string, unknown>, shard: Record<str
 
 function buildShardTaskSpec(baseTaskSpec: Record<string, unknown>, shard: Record<string, unknown>, shardWorkIds: string[]) {
   const shardTaskSpec = structuredClone(baseTaskSpec);
+  const shardWorkIdSet = new Set(shardWorkIds);
   shardTaskSpec.shardWorker = true;
   shardTaskSpec.parallelism = 1;
   shardTaskSpec.currentShard = shard;
   shardTaskSpec.workIds = shardWorkIds.slice(0, 32);
   shardTaskSpec.candidateWorkIds = shardWorkIds.slice(0, 32);
   shardTaskSpec.frontierWorkIds = shardWorkIds.slice(0, 48);
+  if (Array.isArray(shardTaskSpec.verifiedWorkIds)) {
+    shardTaskSpec.verifiedWorkIds = uniqueWorkIds(
+      shardTaskSpec.verifiedWorkIds.filter((value): value is string => typeof value === "string" && shardWorkIdSet.has(value)),
+    );
+  }
+  if (Array.isArray(shardTaskSpec.chunkIds)) {
+    const retrieval = shardTaskSpec.retrieval && typeof shardTaskSpec.retrieval === "object"
+      ? shardTaskSpec.retrieval as Record<string, unknown>
+      : null;
+    const shardChunkIds = new Set<string>();
+    for (const key of ["seedChunks", "verifiedChunks"] as const) {
+      const chunks = Array.isArray(retrieval?.[key]) ? retrieval[key] as Array<Record<string, unknown>> : [];
+      for (const chunk of chunks) {
+        if (typeof chunk?.id === "string" && typeof chunk?.workId === "string" && shardWorkIdSet.has(chunk.workId)) {
+          shardChunkIds.add(chunk.id);
+        }
+      }
+    }
+    if (shardChunkIds.size > 0) {
+      shardTaskSpec.chunkIds = shardTaskSpec.chunkIds.filter((value): value is string => typeof value === "string" && shardChunkIds.has(value));
+    }
+  }
+  if (shardTaskSpec.retrieval && typeof shardTaskSpec.retrieval === "object") {
+    const retrieval = { ...(shardTaskSpec.retrieval as Record<string, unknown>) };
+    const filterWorks = (input: unknown) =>
+      Array.isArray(input)
+        ? (input as Array<Record<string, unknown>>).filter((work) => typeof work?.id === "string" && shardWorkIdSet.has(work.id))
+        : input;
+    const filterChunks = (input: unknown) =>
+      Array.isArray(input)
+        ? (input as Array<Record<string, unknown>>).filter((chunk) => typeof chunk?.workId === "string" && shardWorkIdSet.has(chunk.workId))
+        : input;
+    retrieval.frontierWorks = filterWorks(retrieval.frontierWorks);
+    retrieval.searchWorks = filterWorks(retrieval.searchWorks);
+    retrieval.metadataWorks = filterWorks(retrieval.metadataWorks);
+    retrieval.seedChunks = filterChunks(retrieval.seedChunks);
+    retrieval.verifiedChunks = filterChunks(retrieval.verifiedChunks);
+    shardTaskSpec.retrieval = retrieval;
+  }
   const searchHints = shardTaskSpec.searchHints && typeof shardTaskSpec.searchHints === "object"
     ? { ...(shardTaskSpec.searchHints as Record<string, unknown>) }
     : {};
@@ -1697,6 +1741,7 @@ function buildShardTaskSpec(baseTaskSpec: Record<string, unknown>, shard: Record
   } else if (strategy === "gap_fill") {
     searchHints.passageSearchFocus = "Find missing categories, underrepresented evidence, and gaps left by earlier retrieval.";
   }
+  searchHints.frontierDiscipline = "Only inspect the supplied shard-local books and shard-local seed passages. Do not open or touch unrelated titles unless a new title is directly justified by a verified grief-relevant passage.";
   shardTaskSpec.searchHints = searchHints;
   return shardTaskSpec;
 }
@@ -2747,7 +2792,8 @@ function rankWorkspaceCandidateWorks(
   seededWorkIds: Set<string>,
 ) {
   const asksForJuvenile = /\b(children|child|juvenile|girl|girls|boy|boys|school|orphan|orphans)\b/iu.test(query);
-  const griefQuery = /\b(grief|mourning|bereavement|funeral|sorrow|lament|weep|wept|tears?|loss|dead|death)\b/iu.test(query);
+  const griefQuery = /\b(grief|mourning|bereavement|funeral|sorrow|lament|weep|wept|tears?|loss|consolation|despair)\b/iu.test(query);
+  const explicitGriefMatch = /\b(grief|mourning|bereavement|funeral|sorrow|lament|weep|wept|weeping|tears?|loss|consolation|despair)\b/iu;
   const broadCorpusQuery = isBroadCorpusResearchQuery(query, 0);
   return [...works]
     .map((work, index) => {
@@ -2757,8 +2803,11 @@ function rankWorkspaceCandidateWorks(
         bonus += 1.5;
       }
       if (griefQuery) {
-        if (/\b(grief|mourning|bereavement|funeral|sorrow|lament|weep|wept|tears?|loss|dead|death)\b/iu.test(haystack)) {
+        const hasExplicitGriefMatch = explicitGriefMatch.test(haystack);
+        if (hasExplicitGriefMatch) {
           bonus += 0.9;
+        } else {
+          bonus -= 0.8;
         }
         if (!asksForJuvenile) {
           if (/\b(juvenile|children|child|girls|boys|school|schools|pz)\b/iu.test(haystack)) {
@@ -2767,6 +2816,12 @@ function rankWorkspaceCandidateWorks(
           if (/\borphans?\b/iu.test(haystack)) {
             bonus -= 0.45;
           }
+        }
+        if (/\b(dead|death)\b/iu.test(haystack) && !hasExplicitGriefMatch) {
+          bonus -= 1.1;
+        }
+        if (/\b(science fiction|robots?|wireless|war tank|uncle sam|poster advertising|helpful robots)\b/iu.test(haystack)) {
+          bonus -= 1.3;
         }
       }
       if (broadCorpusQuery) {
@@ -2800,18 +2855,25 @@ function shouldSeedWorkspaceWork(
     return true;
   }
   const haystack = candidateWorkHaystack(work);
-  const griefQuery = /\b(grief|mourning|bereavement|funeral|sorrow|lament|weep|wept|tears?|loss|dead|death)\b/iu.test(query);
+  const griefQuery = /\b(grief|mourning|bereavement|funeral|sorrow|lament|weep|wept|tears?|loss|consolation|despair)\b/iu.test(query);
   const asksForJuvenile = /\b(children|child|juvenile|girl|girls|boy|boys|school|orphan|orphans)\b/iu.test(query);
   const broadCorpusQuery = isBroadCorpusResearchQuery(query, 0);
+  const hasExplicitGriefMatch = /\b(grief|mourning|bereavement|funeral|sorrow|lament|weep|wept|weeping|tears?|loss|consolation|despair)\b/iu.test(haystack);
   if (
     griefQuery
     && !asksForJuvenile
     && /\b(juvenile|children|child|girls|boys|school|schools|pz|orphans?)\b/iu.test(haystack)
-    && !/\b(grief|mourning|bereavement|funeral|sorrow|lament|weep|wept|tears?|loss|dead|death)\b/iu.test(haystack.replace(/\bjuvenile fiction\b/giu, ""))
+    && !/\b(grief|mourning|bereavement|funeral|sorrow|lament|weep|wept|weeping|tears?|loss|consolation|despair)\b/iu.test(haystack.replace(/\bjuvenile fiction\b/giu, ""))
   ) {
     return false;
   }
-  if (broadCorpusQuery && index < 24) {
+  if (griefQuery && !hasExplicitGriefMatch && /\b(dead|death)\b/iu.test(haystack)) {
+    return false;
+  }
+  if (griefQuery && !hasExplicitGriefMatch && /\b(science fiction|robots?|wireless|war tank|uncle sam|poster advertising|helpful robots)\b/iu.test(haystack)) {
+    return false;
+  }
+  if (broadCorpusQuery && !griefQuery && index < 24) {
     return true;
   }
   return totalScore > 0;
