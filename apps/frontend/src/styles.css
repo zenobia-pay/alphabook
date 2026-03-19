@@ -1869,6 +1869,13 @@ button {
   list-style: none;
 }
 
+.assistant-document-section-title-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .assistant-document-section-summary::-webkit-details-marker {
   display: none;
 }
@@ -1883,6 +1890,16 @@ button {
   color: var(--ink);
 }
 
+.assistant-document-section-meta {
+  flex-shrink: 0;
+  font-family: "Manrope", sans-serif;
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ink-subtle);
+}
+
 .assistant-document-section-kicker {
   display: block;
   font-family: "Newsreader", serif;
@@ -1895,6 +1912,20 @@ button {
   display: grid;
   gap: 12px;
   margin-top: 14px;
+}
+
+.assistant-document-section-summary::after {
+  content: "Hide";
+  font-family: "Manrope", sans-serif;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ink-subtle);
+}
+
+.assistant-document-section:not([open]) .assistant-document-section-summary::after {
+  content: "Show";
 }
 
 .assistant-document-link {

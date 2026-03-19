@@ -2654,6 +2654,7 @@ type ResearchDocumentSection = {
   key: string;
   title: string;
   summary: string;
+  meta: string;
   items: ResearchDocumentItem[];
 };
 
@@ -2661,6 +2662,7 @@ type ResearchDocumentFlatEntry = {
   sectionKey: string;
   sectionTitle: string;
   sectionSummary: string;
+  sectionMeta: string;
   item: ResearchDocumentItem;
 };
 
@@ -2671,6 +2673,7 @@ function appendDocumentEntry(
     sectionKey: string;
     sectionTitle: string;
     sectionSummary: string;
+    sectionMeta: string;
     item: ResearchDocumentItem;
   },
 ) {
@@ -2692,8 +2695,44 @@ function toSectionTitle(entry: ToolTraceEntry) {
   return entry.label || getToolLabel(entry.toolName);
 }
 
+function normalizeSectionSummaryText(text: string) {
+  return text
+    .replace(/\s+/g, " ")
+    .replace(/\s+\./g, ".")
+    .trim();
+}
+
 function toSectionSummary(entry: ToolTraceEntry) {
+  const rationale = typeof entry.rationale === "string" ? normalizeSectionSummaryText(entry.rationale) : "";
+  if (rationale.length > 0 && rationale.length <= 260) {
+    return rationale.endsWith(".") ? rationale : `${rationale}.`;
+  }
   return summarizeToolSentence(entry).trim();
+}
+
+function toSectionMeta(entry: ToolTraceEntry) {
+  const workCount = Array.isArray(entry.result?.works) ? entry.result.works.length : 0;
+  const chunkCount = Array.isArray(entry.result?.chunks) ? entry.result.chunks.length : 0;
+  const workspaceCount =
+    entry.result?.manifest && typeof entry.result.manifest === "object" && Array.isArray((entry.result.manifest as Record<string, unknown>).works)
+      ? ((entry.result.manifest as Record<string, unknown>).works as unknown[]).length
+      : 0;
+  if (chunkCount > 0) {
+    return pluralize(chunkCount, "passage");
+  }
+  if (workCount > 0) {
+    return pluralize(workCount, "book");
+  }
+  if (workspaceCount > 0) {
+    return pluralize(workspaceCount, "workspace book");
+  }
+  if (entry.state === "error") {
+    return "failed";
+  }
+  if (entry.state === "running") {
+    return "running";
+  }
+  return "done";
 }
 
 function ensureSection(
@@ -2708,6 +2747,7 @@ function ensureSection(
     key: entry.id,
     title: toSectionTitle(entry),
     summary: toSectionSummary(entry),
+    meta: toSectionMeta(entry),
     items: [],
   };
   sections.set(entry.id, created);
@@ -3012,6 +3052,7 @@ function buildResearchDocument(
           sectionKey: section.key,
           sectionTitle: section.title,
           sectionSummary: section.summary,
+          sectionMeta: section.meta,
           item: {
             key: `progress-book:${workId}`,
             kind: "book",
@@ -3034,6 +3075,7 @@ function buildResearchDocument(
           sectionKey: section.key,
           sectionTitle: section.title,
           sectionSummary: section.summary,
+          sectionMeta: section.meta,
           item: {
             key: `progress-chunk:${chunkId}`,
             kind: "chunk",
@@ -3065,6 +3107,7 @@ function buildResearchDocument(
           sectionKey: section.key,
           sectionTitle: section.title,
           sectionSummary: section.summary,
+          sectionMeta: section.meta,
           item: {
             key: `book:${workId}`,
             kind: "book",
@@ -3094,6 +3137,7 @@ function buildResearchDocument(
           sectionKey: section.key,
           sectionTitle: section.title,
           sectionSummary: section.summary,
+          sectionMeta: section.meta,
           item: {
             key: `workspace-book:${workId}`,
             kind: "book",
@@ -3128,6 +3172,7 @@ function buildResearchDocument(
           sectionKey: section.key,
           sectionTitle: section.title,
           sectionSummary: section.summary,
+          sectionMeta: section.meta,
           item: {
             key: `chunk:${key}`,
             kind: "chunk",
@@ -3159,6 +3204,7 @@ function buildResearchDocument(
       sectionKey: artifactSection?.key ?? "artifacts",
       sectionTitle: artifactSection?.title ?? "Evidence",
       sectionSummary: artifactSection?.summary ?? "Primary-source passages carried forward into the final briefing.",
+      sectionMeta: "evidence",
       item: {
         key: `artifact-chunk:${chunk.key}`,
         kind: "chunk",
@@ -3178,6 +3224,7 @@ function buildResearchDocument(
       key: entry.sectionKey,
       title: entry.sectionTitle,
       summary: entry.sectionSummary,
+      meta: entry.sectionMeta,
       items: [entry.item],
     });
   }
@@ -3216,10 +3263,13 @@ function ResearchArtifactPane({
           <h1 className="assistant-document-entry is-title">
             {document.title}
           </h1>
-          {document.sections.map((section) => (
-            <details key={section.key} className="assistant-document-section" open>
+          {document.sections.map((section, index) => (
+            <details key={section.key} className="assistant-document-section" open={index < 3}>
               <summary className="assistant-document-section-summary">
-                <span className="assistant-document-section-title">{section.title}</span>
+                <span className="assistant-document-section-title-row">
+                  <span className="assistant-document-section-title">{section.title}</span>
+                  <span className="assistant-document-section-meta">{section.meta}</span>
+                </span>
                 <span className="assistant-document-section-kicker">{section.summary}</span>
               </summary>
               <div className="assistant-document-section-body">
@@ -3283,7 +3333,18 @@ function ResearchArtifactPane({
             </details>
           ))}
           {document.ending ? (
-            <p className="assistant-document-entry is-log">{document.ending}</p>
+            <details className="assistant-document-section assistant-document-section-ending" open>
+              <summary className="assistant-document-section-summary">
+                <span className="assistant-document-section-title-row">
+                  <span className="assistant-document-section-title">Final Takeaway</span>
+                  <span className="assistant-document-section-meta">summary</span>
+                </span>
+                <span className="assistant-document-section-kicker">What the run found and how it came together.</span>
+              </summary>
+              <div className="assistant-document-section-body">
+                <p className="assistant-document-entry is-log">{document.ending}</p>
+              </div>
+            </details>
           ) : null}
         </div>
       </div>
