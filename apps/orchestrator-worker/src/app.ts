@@ -5411,6 +5411,17 @@ function buildPersistedResearchDocumentBundle(
         }
       }
     }
+    if (Array.isArray(entry.progressDetails)) {
+      for (const detail of entry.progressDetails) {
+        if (!detail || typeof detail !== "object") {
+          continue;
+        }
+        const detailType = typeof detail.type === "string" ? detail.type : "";
+        if ((detailType === "research.work" || detailType === "research.chunk") && typeof detail.workId === "string" && detail.workId.trim().length > 0) {
+          confirmedWorkIds.add(detail.workId);
+        }
+      }
+    }
   }
 
   const sections: PersistedResearchDocumentSection[] = [];
@@ -5434,6 +5445,71 @@ function buildPersistedResearchDocumentBundle(
       evidenceTier: entry.toolName === "get_relevant_chunks" ? "verified" : "frontier",
       items: [],
     };
+
+    if (Array.isArray(entry.progressDetails)) {
+      for (const [detailIndex, detail] of entry.progressDetails.entries()) {
+        if (!detail || typeof detail !== "object") {
+          continue;
+        }
+        const detailType = typeof detail.type === "string" ? detail.type : "";
+        if (detailType === "research.work") {
+          const workId = typeof detail.workId === "string" ? detail.workId : null;
+          const titleText = normalizeDocumentText(detail.workTitle ?? detail.title) || workId || "Untitled work";
+          if (!workId || !titleText) {
+            continue;
+          }
+          const authors = Array.isArray(detail.authors)
+            ? detail.authors.filter((value: unknown): value is string => typeof value === "string" && value.trim().length > 0)
+            : [];
+          const itemKey = `${section.key}:progress-book:${workId}`;
+          if (seenItems.has(itemKey)) {
+            continue;
+          }
+          seenItems.add(itemKey);
+          section.items.push({
+            key: itemKey,
+            anchorId: `entry-${slugifyDocumentId(itemKey)}`,
+            kind: "book",
+            evidenceTier: "verified",
+            text: `${titleText}${authors.length > 0 ? ` by ${authors.join(", ")}` : ""}`.trim(),
+            linkLabel: titleText,
+            workId,
+          });
+          continue;
+        }
+        if (detailType === "research.chunk") {
+          const workId = typeof detail.workId === "string" ? detail.workId : null;
+          const excerpt = normalizeDocumentText(detail.excerpt).slice(0, 440);
+          if (!workId || !isUsefulPersistedExcerpt(excerpt)) {
+            continue;
+          }
+          const workTitle = normalizeDocumentText(detail.workTitle ?? detail.title) || workId;
+          const chunkIndex = typeof detail.chunkIndex === "number" ? detail.chunkIndex : null;
+          const itemKey = `${section.key}:progress-chunk:${typeof detail.chunkId === "string" ? detail.chunkId : `${workId}-${detailIndex}`}`;
+          if (seenItems.has(itemKey)) {
+            continue;
+          }
+          seenItems.add(itemKey);
+          section.items.push({
+            key: itemKey,
+            anchorId: `entry-${slugifyDocumentId(itemKey)}`,
+            kind: "chunk",
+            evidenceTier: "verified",
+            text: excerpt,
+            citationText: `${workTitle}, ${persistedPassageLocation(chunkIndex)}`,
+            linkLabel: `${workTitle}, ${persistedPassageLocation(chunkIndex)}`,
+            workId,
+            citation: {
+              workId,
+              ...(typeof detail.chunkId === "string" ? { chunkId: detail.chunkId } : {}),
+              label: workTitle,
+              excerpt,
+              ...(typeof detail.r2Key === "string" ? { r2Key: detail.r2Key } : {}),
+            },
+          });
+        }
+      }
+    }
 
     if (entry.toolName === "search_works" || entry.toolName === "get_work_metadata") {
       const works = Array.isArray(entry.result.works) ? entry.result.works as Array<Record<string, unknown>> : [];

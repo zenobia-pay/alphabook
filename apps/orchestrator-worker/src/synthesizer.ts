@@ -29,6 +29,7 @@ export interface ToolHistoryEntry {
   rationale?: string;
   args: Record<string, unknown>;
   result: Record<string, unknown>;
+  progressDetails?: Array<Record<string, unknown>>;
 }
 
 export interface SynthesisInput {
