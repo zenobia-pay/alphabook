@@ -4919,9 +4919,23 @@ function buildSynthesisResearchDocument(
   }>,
 ) {
   const lines: string[] = [];
+  const verifiedWorkIds = new Set<string>();
+  for (const entry of toolHistory) {
+    if (entry.toolName === "get_relevant_chunks" && Array.isArray(entry.result.verifiedWorkIds)) {
+      for (const workId of entry.result.verifiedWorkIds) {
+        if (typeof workId === "string" && workId.trim().length > 0) {
+          verifiedWorkIds.add(workId);
+        }
+      }
+    }
+  }
   for (const entry of toolHistory) {
     if ((entry.toolName === "search_works" || entry.toolName === "get_work_metadata") && Array.isArray(entry.result.works)) {
       const works = (entry.result.works as Array<Record<string, unknown>>)
+        .filter((work) => {
+          const workId = typeof work.id === "string" ? work.id : null;
+          return workId ? verifiedWorkIds.has(workId) : false;
+        })
         .slice(0, 10)
         .map((work) => {
           const title = typeof work.title === "string" ? work.title.trim() : "Untitled work";
@@ -4931,7 +4945,7 @@ function buildSynthesisResearchDocument(
           return authors.length > 0 ? `${title} by ${authors.join(", ")}` : title;
         });
       if (works.length > 0) {
-        lines.push(`Books surfaced: ${works.join("; ")}`);
+        lines.push(`Verified books: ${works.join("; ")}`);
       }
     }
 

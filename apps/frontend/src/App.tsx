@@ -3146,6 +3146,13 @@ function collectResearchSteps(toolTrace: ToolTraceEntry[]) {
 function collectConfirmedDocumentWorkIds(toolTrace: ToolTraceEntry[]) {
   const confirmed = new Set<string>();
   for (const entry of toolTrace) {
+    if (entry.toolName === "get_relevant_chunks" && Array.isArray(entry.result?.verifiedWorkIds)) {
+      for (const workId of entry.result.verifiedWorkIds) {
+        if (typeof workId === "string" && workId.trim().length > 0) {
+          confirmed.add(workId);
+        }
+      }
+    }
     if (entry.toolName === "get_relevant_chunks") {
       const chunks = recordArray(entry.result?.chunks);
       for (const chunk of chunks) {
@@ -3251,6 +3258,19 @@ function collectSurfacingBooks(toolTrace: ToolTraceEntry[]) {
   }
 
   return [...books.values()];
+}
+
+function hasUsefulSectionItems(section: ResearchDocumentSection) {
+  if (section.items.length === 0) {
+    return false;
+  }
+  if (section.title === "Metadata Search" || section.title === "Book Metadata") {
+    return section.items.some((item) => item.kind === "book" || item.kind === "chunk");
+  }
+  if (section.title === "Corpus Briefing" || section.title === "Passage Search") {
+    return section.items.some((item) => item.kind === "chunk" || item.kind === "book");
+  }
+  return true;
 }
 
 function artifactSourceChunks(artifacts: RunArtifactRecord[]) {
@@ -3367,6 +3387,7 @@ function buildResearchDocument(
   const sections = new Map<string, ResearchDocumentSection>();
   const seen = new Set<string>();
   const confirmedWorkIds = collectConfirmedDocumentWorkIds(toolTrace);
+  const surfacedWorkspaceWorkIds = new Set<string>();
 
   for (const entry of toolTrace) {
     const section = ensureSection(sections, entry);
@@ -3447,7 +3468,7 @@ function buildResearchDocument(
         const workId = typeof work.id === "string" ? work.id : "";
         return workId.length > 0 && confirmedWorkIds.has(workId);
       });
-      const displayWorks = (filteredWorks.length > 0 ? filteredWorks : works.slice(0, 3));
+      const displayWorks = filteredWorks;
       for (const [index, work] of displayWorks.entries()) {
         const workId = typeof work.id === "string" ? work.id : `${entry.id}:work:${index}`;
         const titleText = typeof work.title === "string" ? work.title.trim() : "";
@@ -3480,10 +3501,14 @@ function buildResearchDocument(
         : [];
       for (const [index, work] of works.entries()) {
         const workId = typeof work.workId === "string" ? work.workId : `${entry.id}:workspace:${index}`;
+        if (surfacedWorkspaceWorkIds.has(workId)) {
+          continue;
+        }
         const titleText = typeof work.title === "string" ? work.title.trim() : "";
         const authors = Array.isArray(work.authors)
           ? work.authors.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
           : [];
+        surfacedWorkspaceWorkIds.add(workId);
         appendDocumentEntry(entries, seen, {
           sectionKey: section.key,
           sectionTitle: section.title,
@@ -3596,7 +3621,7 @@ function buildResearchDocument(
 
   return {
     title: title.trim() || "Research log",
-    sections: [...sections.values()].filter((section) => section.items.length > 0),
+    sections: [...sections.values()].filter((section) => hasUsefulSectionItems(section)),
     ending: normalizedEnding,
   };
 }
