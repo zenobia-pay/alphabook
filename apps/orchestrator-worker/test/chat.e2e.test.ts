@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { artifactKeys } from "@alphabook/corpus-core";
 import { decodePaymentRequiredHeader, encodePaymentSignatureHeader } from "@x402/core/http";
 
-import { createApp } from "../src/app";
+import { createApp, reapExpiredRuntimeInstances } from "../src/app";
 import { WorkOSAuth } from "../src/auth";
 import { createBillingService } from "../src/billing";
 import { HashEmbedder, OpenAIEmbedder } from "../src/embeddings";
@@ -2282,6 +2282,65 @@ test("orchestrator reaps expired runtimes from older sessions", async () => {
   await response.text();
   assert.deepEqual(destroyed, ["runtime-expired-1"]);
   const expiredRuntime = await store.getRuntimeInstance("runtime-expired-1");
+  assert.equal(expiredRuntime?.status, "destroyed");
+});
+
+test("scheduled janitor reaps expired runtimes without a chat run", async () => {
+  const store = new InMemoryAppStore();
+  const expiredSession = await store.createSession("expired-user", "Expired runtime");
+  await store.saveRuntimeInstance({
+    sessionId: expiredSession.id,
+    runtimeId: "runtime-expired-2",
+    provider: "fly-machines",
+    providerMachineId: "machine-expired-2",
+    status: "ready",
+    manifestJson: {},
+    lastUsedAt: "2026-03-16T00:00:00.000Z",
+    expiresAt: "2026-03-16T00:05:00.000Z",
+  });
+
+  const destroyed: string[] = [];
+  await reapExpiredRuntimeInstances(
+    {
+      store,
+      billing: createBillingService(store),
+      planner: new FallbackPlanner(),
+      embedder: new HashEmbedder(),
+      synthesizer: new EchoSynthesizer(),
+      blobStore: new MemoryBlobStore(),
+      runtimeGateway: {
+        async createWorkspace() {
+          return { ok: false, error: "disabled" };
+        },
+        async runWorkspaceTask() {
+          return { ok: false, error: "disabled" };
+        },
+        async readWorkspaceFile() {
+          return { ok: false, error: "disabled" };
+        },
+        async listWorkspaceFiles() {
+          return { ok: false, error: "disabled" };
+        },
+        async destroyWorkspace(args) {
+          destroyed.push(String(args.runtimeId ?? ""));
+          await store.updateRuntimeInstance(String(args.runtimeId ?? ""), {
+            status: "destroyed",
+            lastUsedAt: new Date().toISOString(),
+            expiresAt: new Date().toISOString(),
+          });
+          return { ok: true };
+        },
+      },
+      queues: {
+        ingestName: "alphabook-ingest",
+        jobsName: "alphabook-jobs",
+      },
+    },
+    { runId: "scheduled-janitor-test" },
+  );
+
+  assert.deepEqual(destroyed, ["runtime-expired-2"]);
+  const expiredRuntime = await store.getRuntimeInstance("runtime-expired-2");
   assert.equal(expiredRuntime?.status, "destroyed");
 });
 

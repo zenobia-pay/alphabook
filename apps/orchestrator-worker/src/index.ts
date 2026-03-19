@@ -1,6 +1,6 @@
 import { createNeonDb } from "@alphabook/db";
 
-import { createApp } from "./app";
+import { createApp, reapExpiredRuntimeInstances } from "./app";
 import { WorkOSAuth } from "./auth";
 import { createBillingService } from "./billing";
 import { OpenAIEmbedder } from "./embeddings";
@@ -196,9 +196,68 @@ function buildFetchHandler(env: Env) {
   return app.fetch;
 }
 
+async function runScheduledJanitor(env: Env) {
+  if (!env.OPENAI_API_KEY) {
+    throw new Error("OPENAI_API_KEY is required.");
+  }
+  const db = createNeonDb(env.DATABASE_URL);
+  const store = new NeonAppStore(db);
+  const blobStore = new CloudflareR2Store(env.CORPUS_BUCKET);
+  const billing = createBillingService(store, {
+    monthlyLimitUsd: env.BILLING_MONTHLY_LIMIT_USD ? Number(env.BILLING_MONTHLY_LIMIT_USD) : undefined,
+    modelPricing: env.BILLING_MODEL_PRICING_JSON
+      ? JSON.parse(env.BILLING_MODEL_PRICING_JSON) as Record<string, {
+        inputPerMillionUsd: number;
+        outputPerMillionUsd: number;
+        cachedInputPerMillionUsd?: number;
+      }>
+      : undefined,
+  });
+  const planner = new OpenAIPlanner(env.OPENAI_API_KEY, env.OPENAI_MODEL ?? "gpt-5.2", undefined, billing);
+  const embedder = new OpenAIEmbedder(
+    env.OPENAI_API_KEY,
+    env.OPENAI_EMBEDDING_MODEL ?? "text-embedding-3-small",
+    undefined,
+    billing,
+  );
+  const synthesizer = new OpenAISynthesizer(
+    env.OPENAI_API_KEY,
+    env.OPENAI_SYNTH_MODEL ?? env.OPENAI_MODEL ?? "gpt-5.2",
+    undefined,
+    billing,
+  );
+
+  await reapExpiredRuntimeInstances(
+    {
+      store,
+      billing,
+      planner,
+      embedder,
+      synthesizer,
+      blobStore,
+      runtimeGateway: resolveRuntimeGateway(env, store, blobStore),
+      queues: {
+        ingestName: env.QUEUE_INGEST_NAME ?? "alphabook-ingest",
+        jobsName: env.QUEUE_JOBS_NAME ?? "alphabook-jobs",
+      },
+      openAIApiKey: env.OPENAI_API_KEY,
+      openAIModel: env.OPENAI_SYNTH_MODEL ?? env.OPENAI_MODEL ?? "gpt-5.2",
+      ai: env.AI,
+      toolStreamCleanupModel: env.TOOL_STREAM_CLEANUP_MODEL,
+      errorAlertWebhookUrl: env.ERROR_ALERT_WEBHOOK_URL,
+    },
+    {
+      runId: `scheduled-janitor-${new Date().toISOString()}`,
+    },
+  );
+}
+
 export default {
   async fetch(request: Request, env: Env, executionCtx: ExecutionContext) {
     return buildFetchHandler(env)(request, env, executionCtx);
+  },
+  async scheduled(_controller: ScheduledController, env: Env, executionCtx: ExecutionContext) {
+    executionCtx.waitUntil(runScheduledJanitor(env));
   },
   async queue(batch: MessageBatch<unknown>) {
     for (const message of batch.messages) {

@@ -9,6 +9,9 @@ upload_source_maps = true
 [observability]
 enabled = true
 
+[triggers]
+crons = ["*/15 * * * *"]
+
 [vars]
 OPENAI_MODEL = "gpt-5.2"
 OPENAI_SYNTH_MODEL = "gpt-5.2"

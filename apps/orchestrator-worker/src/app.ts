@@ -2906,7 +2906,7 @@ async function destroyTrackedRuntimes(
   }
 }
 
-async function reapExpiredRuntimeInstances(
+export async function reapExpiredRuntimeInstances(
   deps: AppDeps,
   context: { runId: string },
   limit = 25,
