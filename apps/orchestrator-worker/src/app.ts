@@ -5776,8 +5776,22 @@ async function buildCitationPassageUrl(
   sessionId: string,
   citation: Citation,
 ): Promise<string> {
-  const baseUrl = `https://alpha-book.org/works/${encodeURIComponent(citation.workId)}?session=${encodeURIComponent(sessionId)}`;
   const work = await deps.store.getWorkById(citation.workId);
+  const directChunkUrl =
+    typeof citation.chunkId === "string" && citation.chunkId.trim().length > 0
+      ? buildResearchDocumentChunkUrl(
+          sessionId,
+          citation.workId,
+          citation.chunkId,
+          typeof work?.gutenbergId === "number" || typeof work?.gutenbergId === "string"
+            ? work.gutenbergId
+            : null,
+        )
+      : null;
+  if (directChunkUrl) {
+    return directChunkUrl;
+  }
+  const baseUrl = buildResearchDocumentWorkUrl(sessionId, citation.workId);
   const files = await deps.store.getWorkFiles([citation.workId], ["raw", "clean"]);
   const rawFile = files.find((file) => file.kind === "raw") ?? null;
   const cleanFile = files.find((file) => file.kind === "clean") ?? null;
@@ -5812,13 +5826,15 @@ async function buildChunkIndexPassageUrl(
   if (!chunk) {
     return null;
   }
-  return buildCitationPassageUrl(deps, sessionId, {
+  const work = await deps.store.getWorkById(workId);
+  return buildResearchDocumentChunkUrl(
+    sessionId,
     workId,
-    chunkId: chunk.id,
-    label: `chunk #${chunkIndex}`,
-    excerpt: chunk.text,
-    r2Key: chunk.r2Key ?? undefined,
-  });
+    chunk.id,
+    typeof work?.gutenbergId === "number" || typeof work?.gutenbergId === "string"
+      ? work.gutenbergId
+      : null,
+  ) ?? buildResearchDocumentWorkUrl(sessionId, workId);
 }
 
 async function buildChunkIdPassageUrl(
@@ -5830,13 +5846,15 @@ async function buildChunkIdPassageUrl(
   if (!chunk) {
     return null;
   }
-  return buildCitationPassageUrl(deps, sessionId, {
-    workId: chunk.workId,
-    chunkId: chunk.id,
-    label: `chunk ${chunk.id}`,
-    excerpt: chunk.text,
-    r2Key: chunk.r2Key ?? undefined,
-  });
+  const work = await deps.store.getWorkById(chunk.workId);
+  return buildResearchDocumentChunkUrl(
+    sessionId,
+    chunk.workId,
+    chunk.id,
+    typeof work?.gutenbergId === "number" || typeof work?.gutenbergId === "string"
+      ? work.gutenbergId
+      : null,
+  ) ?? buildResearchDocumentWorkUrl(sessionId, chunk.workId);
 }
 
 async function rewriteAnswerWithCitationLinks(
@@ -6269,7 +6287,24 @@ function persistedPassageLocation(chunkIndex: number | null) {
 }
 
 function buildResearchDocumentWorkUrl(sessionId: string, workId: string) {
-  return `https://alpha-book.org/works/${encodeURIComponent(workId)}?session=${encodeURIComponent(sessionId)}`;
+  const url = new URL(`https://alpha-book.org/works/${encodeURIComponent(workId)}`);
+  url.searchParams.set("session", sessionId);
+  return url.toString();
+}
+
+function buildResearchDocumentChunkUrl(
+  sessionId: string,
+  workId: string,
+  chunkId: string,
+  gutenbergId: string | number | null | undefined,
+) {
+  if (!chunkId || gutenbergId == null || String(gutenbergId).trim().length === 0) {
+    return null;
+  }
+  const url = new URL(`https://alpha-book.org/works/${encodeURIComponent(workId)}`);
+  url.searchParams.set("session", sessionId);
+  url.searchParams.set("reader", `/${encodeURIComponent(String(gutenbergId))}/passages/${encodeURIComponent(chunkId)}`);
+  return url.toString();
 }
 
 function buildResearchDocumentLink(label: string, href: string) {
