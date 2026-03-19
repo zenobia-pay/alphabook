@@ -1286,6 +1286,305 @@ function mergeChunkSearchResults(results: ChunkSearchResult[][], limit: number):
     .slice(0, limit);
 }
 
+type PriorRunEvidence = {
+  frontierWorkIds: string[];
+  verifiedWorkIds: string[];
+  chunkIds: string[];
+  citations: Citation[];
+  priorAnswer: string | null;
+};
+
+function sanitizeAppCitations(input: unknown): Citation[] {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+  return input.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") {
+      return [];
+    }
+    const record = entry as Record<string, unknown>;
+    if (typeof record.workId !== "string" || typeof record.label !== "string" || typeof record.excerpt !== "string") {
+      return [];
+    }
+    return [{
+      workId: record.workId,
+      label: record.label,
+      excerpt: record.excerpt,
+      ...(typeof record.chunkId === "string" ? { chunkId: record.chunkId } : {}),
+      ...(typeof record.r2Key === "string" ? { r2Key: record.r2Key } : {}),
+    }];
+  });
+}
+
+function looksLikeFollowUpMessage(message: string) {
+  const trimmed = message.trim();
+  if (trimmed.length === 0) {
+    return false;
+  }
+  if (trimmed.split(/\s+/u).length <= 12) {
+    return true;
+  }
+  return /\b(that|those|these|them|it|this|previous|prior|before|earlier|follow up|follow-up|more examples|go deeper|expand|refine|counterexample|against that|for that)\b/i.test(trimmed);
+}
+
+function extractPriorRunEvidence(messages: MessageRecord[], currentRunId: string): PriorRunEvidence | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role !== "assistant") {
+      continue;
+    }
+    if (typeof message.metadata?.runId === "string" && message.metadata.runId === currentRunId) {
+      continue;
+    }
+    const researchLog = Array.isArray(message.metadata?.researchLog)
+      ? message.metadata.researchLog as Array<Record<string, unknown>>
+      : [];
+    if (researchLog.length === 0) {
+      continue;
+    }
+    const frontierWorkIds = new Set<string>();
+    const verifiedWorkIds = new Set<string>();
+    const chunkIds = new Set<string>();
+    const citations = Array.isArray(message.metadata?.citations)
+      ? sanitizeAppCitations(message.metadata.citations)
+      : [];
+    for (const entry of researchLog) {
+      if (!entry || typeof entry !== "object") {
+        continue;
+      }
+      const toolName = typeof entry.toolName === "string" ? entry.toolName : null;
+      const args = entry.args && typeof entry.args === "object" ? entry.args as Record<string, unknown> : null;
+      const result = entry.result && typeof entry.result === "object" ? entry.result as Record<string, unknown> : null;
+      if (toolName === "run_workspace_task" && args?.taskSpec && typeof args.taskSpec === "object") {
+        const taskSpec = args.taskSpec as Record<string, unknown>;
+        const frontier = Array.isArray(taskSpec.frontierWorkIds) ? taskSpec.frontierWorkIds : [];
+        const verified = Array.isArray(taskSpec.verifiedWorkIds) ? taskSpec.verifiedWorkIds : [];
+        const chunks = Array.isArray(taskSpec.verifiedChunkIds) ? taskSpec.verifiedChunkIds : [];
+        for (const workId of frontier) {
+          if (typeof workId === "string" && workId.trim().length > 0) {
+            frontierWorkIds.add(workId);
+          }
+        }
+        for (const workId of verified) {
+          if (typeof workId === "string" && workId.trim().length > 0) {
+            verifiedWorkIds.add(workId);
+          }
+        }
+        for (const chunkId of chunks) {
+          if (typeof chunkId === "string" && chunkId.trim().length > 0) {
+            chunkIds.add(chunkId);
+          }
+        }
+      }
+      if (toolName === "get_relevant_chunks") {
+        const verified = Array.isArray(result?.verifiedWorkIds) ? result.verifiedWorkIds : [];
+        const chunks = Array.isArray(result?.chunks) ? result.chunks as Array<Record<string, unknown>> : [];
+        for (const workId of verified) {
+          if (typeof workId === "string" && workId.trim().length > 0) {
+            verifiedWorkIds.add(workId);
+            frontierWorkIds.add(workId);
+          }
+        }
+        for (const chunk of chunks) {
+          if (!chunk || typeof chunk !== "object") {
+            continue;
+          }
+          if (typeof chunk.workId === "string" && chunk.workId.trim().length > 0) {
+            verifiedWorkIds.add(chunk.workId);
+            frontierWorkIds.add(chunk.workId);
+          }
+          if (typeof chunk.id === "string" && chunk.id.trim().length > 0) {
+            chunkIds.add(chunk.id);
+          }
+        }
+      }
+    }
+    if (frontierWorkIds.size === 0 && verifiedWorkIds.size === 0 && chunkIds.size === 0 && citations.length === 0) {
+      continue;
+    }
+    return {
+      frontierWorkIds: [...frontierWorkIds],
+      verifiedWorkIds: [...verifiedWorkIds],
+      chunkIds: [...chunkIds],
+      citations,
+      priorAnswer: typeof message.content === "string" && message.content.trim().length > 0
+        ? message.content.trim()
+        : null,
+    };
+  }
+  return null;
+}
+
+function shouldReusePriorEvidence(taskSpec: Record<string, unknown>, inputMessage: string) {
+  const taskIntent = typeof taskSpec.taskIntent === "string" ? taskSpec.taskIntent : null;
+  if (taskIntent === "follow_up_refinement" || taskIntent === "verification" || taskIntent === "counterexample_search") {
+    return true;
+  }
+  return looksLikeFollowUpMessage(inputMessage);
+}
+
+function mergeTaskSpecWithPriorEvidence(taskSpec: Record<string, unknown>, priorEvidence: PriorRunEvidence | null, inputMessage: string) {
+  if (!priorEvidence || !shouldReusePriorEvidence(taskSpec, inputMessage)) {
+    return taskSpec;
+  }
+  const merged = { ...taskSpec };
+  const existingFrontier = Array.isArray(taskSpec.frontierWorkIds) ? taskSpec.frontierWorkIds : [];
+  const existingVerified = Array.isArray(taskSpec.verifiedWorkIds) ? taskSpec.verifiedWorkIds : [];
+  const existingChunkIds = Array.isArray(taskSpec.chunkIds) ? taskSpec.chunkIds : [];
+  const existingVerifiedChunkIds = Array.isArray(taskSpec.verifiedChunkIds) ? taskSpec.verifiedChunkIds : [];
+  merged.frontierWorkIds = uniqueWorkIds([
+    ...priorEvidence.frontierWorkIds,
+    ...priorEvidence.verifiedWorkIds,
+    ...existingFrontier.filter((value): value is string => typeof value === "string"),
+  ]).slice(0, 160);
+  merged.verifiedWorkIds = uniqueWorkIds([
+    ...priorEvidence.verifiedWorkIds,
+    ...existingVerified.filter((value): value is string => typeof value === "string"),
+  ]).slice(0, 80);
+  merged.chunkIds = uniqueWorkIds([
+    ...priorEvidence.chunkIds,
+    ...existingChunkIds.filter((value): value is string => typeof value === "string"),
+  ]).slice(0, 128);
+  merged.verifiedChunkIds = uniqueWorkIds([
+    ...priorEvidence.chunkIds,
+    ...existingVerifiedChunkIds.filter((value): value is string => typeof value === "string"),
+  ]).slice(0, 128);
+  merged.workIds = uniqueWorkIds([
+    ...(Array.isArray(merged.verifiedWorkIds) ? merged.verifiedWorkIds as string[] : []),
+    ...(Array.isArray(taskSpec.workIds) ? taskSpec.workIds.filter((value): value is string => typeof value === "string") : []),
+  ]).slice(0, 64);
+  merged.candidateWorkIds = uniqueWorkIds([
+    ...(Array.isArray(merged.verifiedWorkIds) ? merged.verifiedWorkIds as string[] : []),
+    ...(Array.isArray(taskSpec.candidateWorkIds) ? taskSpec.candidateWorkIds.filter((value): value is string => typeof value === "string") : []),
+    ...(Array.isArray(merged.frontierWorkIds) ? merged.frontierWorkIds as string[] : []),
+  ]).slice(0, 64);
+  const followUpContext = merged.followUpContext && typeof merged.followUpContext === "object"
+    ? { ...(merged.followUpContext as Record<string, unknown>) }
+    : {};
+  if (!followUpContext.priorAssistantSummary && priorEvidence.priorAnswer) {
+    followUpContext.priorAssistantSummary = priorEvidence.priorAnswer.slice(0, 400);
+  }
+  merged.followUpContext = followUpContext;
+  return merged;
+}
+
+function frontierWorkMetadataById(taskSpec: Record<string, unknown>) {
+  const retrieval = taskSpec.retrieval && typeof taskSpec.retrieval === "object"
+    ? taskSpec.retrieval as Record<string, unknown>
+    : null;
+  const frontierWorks = Array.isArray(retrieval?.frontierWorks)
+    ? retrieval.frontierWorks as Array<Record<string, unknown>>
+    : [];
+  return new Map(
+    frontierWorks
+      .filter((work) => work && typeof work === "object" && typeof work.id === "string")
+      .map((work) => [String(work.id), work]),
+  );
+}
+
+function shardWorkerLimitForIntensity(intensity: unknown) {
+  if (intensity === "maximum") {
+    return 3;
+  }
+  if (intensity === "high") {
+    return 2;
+  }
+  return 1;
+}
+
+function shouldExecuteShardedWorkspaceTask(taskSpec: Record<string, unknown>) {
+  if (taskSpec.shardWorker === true || taskSpec.shardReducer === true) {
+    return false;
+  }
+  if (taskSpec.mode !== "exhaustive_corpus_search") {
+    return false;
+  }
+  const parallelism = typeof taskSpec.parallelism === "number" ? taskSpec.parallelism : 1;
+  const shardPlan = Array.isArray(taskSpec.shardPlan) ? taskSpec.shardPlan : [];
+  return parallelism > 1 && shardPlan.length > 1;
+}
+
+function hashBucketForWorkId(workId: string) {
+  let hash = 0;
+  for (let index = 0; index < workId.length; index += 1) {
+    hash = (hash * 31 + workId.charCodeAt(index)) >>> 0;
+  }
+  return hash % 1000;
+}
+
+function selectShardWorkIds(taskSpec: Record<string, unknown>, shard: Record<string, unknown>, fallbackIndex: number, fallbackTotal: number) {
+  const frontierWorkIds = Array.isArray(taskSpec.frontierWorkIds)
+    ? uniqueWorkIds(taskSpec.frontierWorkIds.filter((value): value is string => typeof value === "string"))
+    : Array.isArray(taskSpec.candidateWorkIds)
+      ? uniqueWorkIds(taskSpec.candidateWorkIds.filter((value): value is string => typeof value === "string"))
+      : Array.isArray(taskSpec.workIds)
+        ? uniqueWorkIds(taskSpec.workIds.filter((value): value is string => typeof value === "string"))
+        : [];
+  const metadataById = frontierWorkMetadataById(taskSpec);
+  const axis = typeof shard.axis === "string" ? shard.axis : null;
+  if (axis === "work_id_hash") {
+    const start = typeof shard.hashBucketStart === "number" ? shard.hashBucketStart : 0;
+    const end = typeof shard.hashBucketEnd === "number" ? shard.hashBucketEnd : 1000;
+    return frontierWorkIds.filter((workId) => {
+      const bucket = hashBucketForWorkId(workId);
+      return bucket >= start && bucket < end;
+    });
+  }
+  if (axis === "author_initial") {
+    const start = typeof shard.authorInitialStart === "string" ? shard.authorInitialStart.toUpperCase() : "A";
+    const end = typeof shard.authorInitialEnd === "string" ? shard.authorInitialEnd.toUpperCase() : "Z";
+    return frontierWorkIds.filter((workId) => {
+      const work = metadataById.get(workId);
+      const authors = Array.isArray(work?.authors) ? work.authors : [];
+      const firstAuthor = authors.find((author): author is string => typeof author === "string" && author.trim().length > 0) ?? "";
+      const initial = firstAuthor.trim().charAt(0).toUpperCase();
+      return initial >= start && initial <= end;
+    });
+  }
+  if (axis === "publication_year") {
+    const start = typeof shard.yearStart === "number" ? shard.yearStart : -Infinity;
+    const end = typeof shard.yearEnd === "number" ? shard.yearEnd : Infinity;
+    return frontierWorkIds.filter((workId) => {
+      const work = metadataById.get(workId);
+      const year = typeof work?.firstPublishedYear === "number"
+        ? work.firstPublishedYear
+        : typeof work?.publicationYear === "number"
+          ? work.publicationYear
+          : null;
+      return year !== null && year >= start && year <= end;
+    });
+  }
+  return frontierWorkIds.filter((_, index) => index % Math.max(1, fallbackTotal) === fallbackIndex);
+}
+
+function buildShardTaskSpec(baseTaskSpec: Record<string, unknown>, shard: Record<string, unknown>, shardWorkIds: string[]) {
+  const shardTaskSpec = structuredClone(baseTaskSpec);
+  shardTaskSpec.shardWorker = true;
+  shardTaskSpec.parallelism = 1;
+  shardTaskSpec.currentShard = shard;
+  shardTaskSpec.workIds = shardWorkIds.slice(0, 20);
+  shardTaskSpec.candidateWorkIds = shardWorkIds.slice(0, 20);
+  shardTaskSpec.frontierWorkIds = shardWorkIds.slice(0, 32);
+  const searchHints = shardTaskSpec.searchHints && typeof shardTaskSpec.searchHints === "object"
+    ? { ...(shardTaskSpec.searchHints as Record<string, unknown>) }
+    : {};
+  const strategy = typeof shard.strategy === "string" ? shard.strategy : null;
+  if (strategy === "supporting_evidence") {
+    searchHints.passageSearchFocus = "Find the strongest passages that support the hypothesis or claim.";
+    searchHints.synthesisMode = "verdict_supporting";
+  } else if (strategy === "opposing_evidence") {
+    searchHints.passageSearchFocus = "Find the strongest passages that challenge, weaken, or contradict the hypothesis or claim.";
+    searchHints.synthesisMode = "verdict_opposing";
+  } else if (strategy === "verification") {
+    searchHints.passageSearchFocus = "Find passages that directly verify whether the prior claim is actually supported.";
+    searchHints.synthesisMode = "verification";
+  } else if (strategy === "gap_fill") {
+    searchHints.passageSearchFocus = "Find missing categories, underrepresented evidence, and gaps left by earlier retrieval.";
+  }
+  shardTaskSpec.searchHints = searchHints;
+  return shardTaskSpec;
+}
+
 function normalizeSearchLanguageFilter(value: unknown): string | undefined {
   if (typeof value !== "string") {
     return undefined;
@@ -2024,6 +2323,16 @@ async function executeTool(
             }
           }
         }
+        if (shouldExecuteShardedWorkspaceTask(taskSpec)) {
+          return executeShardedWorkspaceTask(
+            deps,
+            {
+              runtimeId: parsed.runtimeId,
+              taskSpec,
+            },
+            context,
+          );
+        }
         return deps.runtimeGateway.runWorkspaceTask({
           ...parsed,
           taskSpec,
@@ -2046,6 +2355,130 @@ async function executeTool(
     default:
       return { ok: false, error: `Unsupported tool: ${toolName}` };
   }
+}
+
+async function executeShardedWorkspaceTask(
+  deps: AppDeps,
+  parsed: { runtimeId: string; taskSpec: Record<string, unknown> },
+  context: { userId: string; sessionId: string; runId: string; auditLog?: AuditLogger },
+) {
+  const taskSpec = parsed.taskSpec;
+  const shardPlan = Array.isArray(taskSpec.shardPlan)
+    ? taskSpec.shardPlan.filter((value): value is Record<string, unknown> => Boolean(value && typeof value === "object"))
+    : [];
+  const selectedShards = shardPlan.slice(
+    0,
+    Math.min(
+      shardPlan.length,
+      Math.max(1, typeof taskSpec.parallelism === "number" ? taskSpec.parallelism : 1),
+      shardWorkerLimitForIntensity(taskSpec.intensity),
+    ),
+  );
+  const chunkIds = Array.isArray(taskSpec.chunkIds)
+    ? taskSpec.chunkIds.filter((value): value is string => typeof value === "string")
+    : [];
+  const shardResults = await Promise.all(selectedShards.map(async (shard, index) => {
+    const shardWorkIds = selectShardWorkIds(taskSpec, shard, index, selectedShards.length).slice(0, 20);
+    const shardId = typeof shard.shardId === "string" ? shard.shardId : `shard-${index + 1}`;
+    const label = typeof shard.label === "string" ? shard.label : `Shard ${index + 1}`;
+    const strategy = typeof shard.strategy === "string" ? shard.strategy : null;
+    if (shardWorkIds.length === 0) {
+      return { ok: false, shardId, label, strategy, error: "No works matched this shard." };
+    }
+    const shardTaskSpec = buildShardTaskSpec(taskSpec, shard, shardWorkIds);
+    const workspace = await deps.runtimeGateway.createWorkspace({
+      workIds: shardWorkIds,
+      chunkIds: chunkIds.slice(0, 100),
+      taskContext: {
+        question: typeof taskSpec.question === "string" ? taskSpec.question : "",
+        researchObjective: typeof taskSpec.researchObjective === "string" ? taskSpec.researchObjective : "",
+        taskIntent: typeof taskSpec.taskIntent === "string" ? taskSpec.taskIntent : null,
+        followUpContext: taskSpec.followUpContext && typeof taskSpec.followUpContext === "object" ? taskSpec.followUpContext : null,
+        shard,
+      },
+      sessionId: context.sessionId,
+      runId: context.runId,
+    });
+    const shardRuntimeId = typeof workspace.runtimeId === "string" ? workspace.runtimeId : null;
+    if (!shardRuntimeId) {
+      return { ok: false, shardId, label, strategy, error: typeof workspace.error === "string" ? workspace.error : "Shard workspace startup failed." };
+    }
+    try {
+      const result = await deps.runtimeGateway.runWorkspaceTask({
+        runtimeId: shardRuntimeId,
+        taskSpec: shardTaskSpec,
+        sessionId: context.sessionId,
+        runId: context.runId,
+      });
+      return { ok: result.ok !== false, shardId, label, strategy, result };
+    } finally {
+      await deps.runtimeGateway.destroyWorkspace({
+        runtimeId: shardRuntimeId,
+        sessionId: context.sessionId,
+        runId: context.runId,
+      }).catch(() => {});
+    }
+  }));
+
+  const successful = shardResults.filter((entry) => entry.ok && "result" in entry) as Array<{
+    ok: true;
+    shardId: string;
+    label: string;
+    strategy: string | null;
+    result: Record<string, unknown>;
+  }>;
+  const mergedCitations = dedupeAppCitations(
+    successful.flatMap((entry) => sanitizeAppCitations(Array.isArray(entry.result.citations) ? entry.result.citations : [])),
+  ).slice(0, 16);
+  const mergedBillingEvents = successful.flatMap((entry) =>
+    Array.isArray(entry.result.billingEvents) ? entry.result.billingEvents as Array<Record<string, unknown>> : [],
+  );
+  const combinedBriefing = successful
+    .map((entry) => {
+      const briefing = typeof entry.result.briefing === "string" ? entry.result.briefing.trim() : "";
+      return briefing ? `## ${entry.label}\n\n${briefing}` : null;
+    })
+    .filter((value): value is string => Boolean(value))
+    .join("\n\n");
+  let reducedBriefing = combinedBriefing;
+  if (combinedBriefing) {
+    try {
+      const reduced = await deps.synthesizer.synthesize({
+        userMessage: typeof taskSpec.question === "string" ? taskSpec.question : "",
+        conversationHistory: [],
+        plannerDraft: combinedBriefing,
+        plannerCitations: mergedCitations,
+        toolHistory: [],
+        runtimeBriefing: combinedBriefing,
+        runtimeEvidenceNotes: null,
+        researchDocument: null,
+        exactCitationLinks: [],
+        billingContext: {
+          userId: context.userId,
+          sessionId: context.sessionId,
+          runId: context.runId,
+          source: "synthesizer",
+        },
+      });
+      reducedBriefing = reduced.answer;
+    } catch {
+      // Fall back to the combined shard briefing.
+    }
+  }
+  return {
+    ok: successful.length > 0,
+    runtimeId: parsed.runtimeId,
+    briefing: reducedBriefing,
+    citations: mergedCitations,
+    shardResults: shardResults.map((entry) => ({
+      shardId: entry.shardId,
+      label: entry.label,
+      strategy: entry.strategy,
+      ok: entry.ok,
+      ...("error" in entry ? { error: entry.error } : {}),
+    })),
+    billingEvents: mergedBillingEvents,
+  };
 }
 
 function workspaceProgressSteps(args: Record<string, unknown>): string[] {
@@ -6198,7 +6631,8 @@ async function runOrchestrator(
     sessionId: activeSession.id,
     content: input.message,
   });
-  const conversationHistory = formatConversationHistory(await deps.store.listMessages(activeSession.id));
+  const sessionMessages = await deps.store.listMessages(activeSession.id);
+  const conversationHistory = formatConversationHistory(sessionMessages);
   run = await deps.store.createRun(activeSession.id);
   activeRuns.set(run.id, {
     sessionId: activeSession.id,
@@ -6226,6 +6660,7 @@ async function runOrchestrator(
   }> = [];
   const runtimeIdsToCleanup = new Set<string>();
   const toolResults: Record<string, unknown>[] = [];
+  const priorRunEvidence = extractPriorRunEvidence(sessionMessages, run.id);
   let liveToolTrace: LiveToolTraceEntry[] = [];
   let runtimeTasks = 0;
   let workspaceStartAttempts = 0;
@@ -6497,96 +6932,97 @@ async function runOrchestrator(
       ...rankedSearchWorks.map((work) => (typeof work.id === "string" ? work.id : null)),
       ...frontierWorkIds,
     ]).slice(0, candidateLimit);
+    const mergedTaskSpec = mergeTaskSpecWithPriorEvidence({
+      kind: "briefing_search",
+      phase: "collect_and_brief",
+      question: routedQueryRef.current,
+      researchObjective: routedQueryRef.current,
+      mode: scopedWorkIds.length > 0 ? "open_book_analysis" : "exhaustive_corpus_search",
+      intensity: searchPlan.intensity,
+      timeBudgetMinutes: searchPlan.wallClockMinutes,
+      parallelism: searchPlan.parallelism,
+      shardAxis: searchPlan.shardAxis,
+      workIds: candidateWorkIds,
+      chunkIds: seedChunks
+        .map((chunk) => (typeof chunk.id === "string" ? chunk.id : null))
+        .filter((value): value is string => typeof value === "string")
+        .slice(0, chunkLimit),
+      candidateWorkIds,
+      frontierWorkIds,
+      verifiedWorkIds,
+      verifiedChunkIds: seedChunks
+        .map((chunk) => (typeof chunk.id === "string" ? chunk.id : null))
+        .filter((value): value is string => typeof value === "string")
+        .slice(0, chunkLimit),
+      shardPlan: searchPlan.shards,
+      searchHints: {
+        searchWorksQuery: routedQueryRef.current,
+        passageSearchFocus: "Find the strongest directly quotable passages that best answer the research objective.",
+      },
+      searchPlan: searchPlan.estimate ?? {
+        recommendedIntensity: searchPlan.intensity,
+        recommendedWallClockMinutes: searchPlan.wallClockMinutes,
+        recommendedParallelism: searchPlan.parallelism,
+        recommendedShardAxis: searchPlan.shardAxis,
+        recommendedFrontierWorks: searchPlan.frontierWorks,
+        recommendedShards: searchPlan.shards,
+      },
+      retrieval: {
+        frontierWorks: uniqueWorkIds([
+          ...rankedSearchWorks.map((work) => (typeof work.id === "string" ? work.id : null)),
+          ...rankedMetadataWorks.map((work) => (typeof work.id === "string" ? work.id : null)),
+        ])
+          .map((workId) => rankedSearchWorks.find((work) => work.id === workId) ?? rankedMetadataWorks.find((work) => work.id === workId))
+          .filter((work): work is Record<string, unknown> => Boolean(work && typeof work === "object"))
+          .slice(0, workLimit)
+          .map((work) => ({
+            id: typeof work.id === "string" ? work.id : null,
+            title: typeof work.title === "string" ? work.title : "",
+            authors: Array.isArray(work.authors) ? work.authors : [],
+            summary: typeof work.summary === "string" ? work.summary : null,
+            subjects: Array.isArray(work.subjects) ? work.subjects : [],
+            gutenbergId: typeof work.gutenbergId === "number" ? work.gutenbergId : null,
+          })),
+        searchWorks: rankedSearchWorks.slice(0, workLimit).map((work) => ({
+          id: typeof work.id === "string" ? work.id : null,
+          title: typeof work.title === "string" ? work.title : "",
+          authors: Array.isArray(work.authors) ? work.authors : [],
+          summary: typeof work.summary === "string" ? work.summary : null,
+          subjects: Array.isArray(work.subjects) ? work.subjects : [],
+          gutenbergId: typeof work.gutenbergId === "number" ? work.gutenbergId : null,
+        })),
+        metadataWorks: rankedMetadataWorks.slice(0, workLimit).map((work) => ({
+          id: typeof work.id === "string" ? work.id : null,
+          title: typeof work.title === "string" ? work.title : "",
+          authors: Array.isArray(work.authors) ? work.authors : [],
+          summary: typeof work.summary === "string" ? work.summary : null,
+          subjects: Array.isArray(work.subjects) ? work.subjects : [],
+          gutenbergId: typeof work.gutenbergId === "number" ? work.gutenbergId : null,
+        })),
+        seedChunks: seedChunks.slice(0, seedChunkLimit).map((chunk) => ({
+          id: typeof chunk.id === "string" ? chunk.id : null,
+          workId: typeof chunk.workId === "string" ? chunk.workId : null,
+          chunkIndex: typeof chunk.chunkIndex === "number" ? chunk.chunkIndex : null,
+          excerpt: typeof chunk.excerpt === "string" ? chunk.excerpt : "",
+          r2Key: typeof chunk.r2Key === "string" ? chunk.r2Key : null,
+        })),
+        verifiedChunks: seedChunks.slice(0, chunkLimit).map((chunk) => ({
+          id: typeof chunk.id === "string" ? chunk.id : null,
+          workId: typeof chunk.workId === "string" ? chunk.workId : null,
+          chunkIndex: typeof chunk.chunkIndex === "number" ? chunk.chunkIndex : null,
+          excerpt: typeof chunk.excerpt === "string" ? chunk.excerpt : "",
+          r2Key: typeof chunk.r2Key === "string" ? chunk.r2Key : null,
+        })),
+      },
+      evidenceFile: "output/evidence.json",
+      evidenceNotesFile: "output/evidence-notes.md",
+      briefingFile: "output/briefing.md",
+      briefingJsonFile: "output/briefing.json",
+      prewarmed: true,
+    }, priorRunEvidence, input.message);
     return normalizeToolArgs("run_workspace_task", {
       runtimeId,
-      taskSpec: {
-        kind: "briefing_search",
-        phase: "collect_and_brief",
-        question: routedQueryRef.current,
-        researchObjective: routedQueryRef.current,
-        mode: scopedWorkIds.length > 0 ? "open_book_analysis" : "exhaustive_corpus_search",
-        intensity: searchPlan.intensity,
-        timeBudgetMinutes: searchPlan.wallClockMinutes,
-        parallelism: searchPlan.parallelism,
-        shardAxis: searchPlan.shardAxis,
-        workIds: candidateWorkIds,
-        chunkIds: seedChunks
-          .map((chunk) => (typeof chunk.id === "string" ? chunk.id : null))
-          .filter((value): value is string => typeof value === "string")
-          .slice(0, chunkLimit),
-        candidateWorkIds,
-        frontierWorkIds,
-        verifiedWorkIds,
-        verifiedChunkIds: seedChunks
-          .map((chunk) => (typeof chunk.id === "string" ? chunk.id : null))
-          .filter((value): value is string => typeof value === "string")
-          .slice(0, chunkLimit),
-        shardPlan: searchPlan.shards,
-        searchHints: {
-          searchWorksQuery: routedQueryRef.current,
-          passageSearchFocus: "Find the strongest directly quotable passages that best answer the research objective.",
-        },
-        searchPlan: searchPlan.estimate ?? {
-          recommendedIntensity: searchPlan.intensity,
-          recommendedWallClockMinutes: searchPlan.wallClockMinutes,
-          recommendedParallelism: searchPlan.parallelism,
-          recommendedShardAxis: searchPlan.shardAxis,
-          recommendedFrontierWorks: searchPlan.frontierWorks,
-          recommendedShards: searchPlan.shards,
-        },
-        retrieval: {
-          frontierWorks: uniqueWorkIds([
-            ...rankedSearchWorks.map((work) => (typeof work.id === "string" ? work.id : null)),
-            ...rankedMetadataWorks.map((work) => (typeof work.id === "string" ? work.id : null)),
-          ])
-            .map((workId) => rankedSearchWorks.find((work) => work.id === workId) ?? rankedMetadataWorks.find((work) => work.id === workId))
-            .filter((work): work is Record<string, unknown> => Boolean(work && typeof work === "object"))
-            .slice(0, workLimit)
-            .map((work) => ({
-              id: typeof work.id === "string" ? work.id : null,
-              title: typeof work.title === "string" ? work.title : "",
-              authors: Array.isArray(work.authors) ? work.authors : [],
-              summary: typeof work.summary === "string" ? work.summary : null,
-              subjects: Array.isArray(work.subjects) ? work.subjects : [],
-              gutenbergId: typeof work.gutenbergId === "number" ? work.gutenbergId : null,
-            })),
-          searchWorks: rankedSearchWorks.slice(0, workLimit).map((work) => ({
-            id: typeof work.id === "string" ? work.id : null,
-            title: typeof work.title === "string" ? work.title : "",
-            authors: Array.isArray(work.authors) ? work.authors : [],
-            summary: typeof work.summary === "string" ? work.summary : null,
-            subjects: Array.isArray(work.subjects) ? work.subjects : [],
-            gutenbergId: typeof work.gutenbergId === "number" ? work.gutenbergId : null,
-          })),
-          metadataWorks: rankedMetadataWorks.slice(0, workLimit).map((work) => ({
-            id: typeof work.id === "string" ? work.id : null,
-            title: typeof work.title === "string" ? work.title : "",
-            authors: Array.isArray(work.authors) ? work.authors : [],
-            summary: typeof work.summary === "string" ? work.summary : null,
-            subjects: Array.isArray(work.subjects) ? work.subjects : [],
-            gutenbergId: typeof work.gutenbergId === "number" ? work.gutenbergId : null,
-          })),
-          seedChunks: seedChunks.slice(0, seedChunkLimit).map((chunk) => ({
-            id: typeof chunk.id === "string" ? chunk.id : null,
-            workId: typeof chunk.workId === "string" ? chunk.workId : null,
-            chunkIndex: typeof chunk.chunkIndex === "number" ? chunk.chunkIndex : null,
-            excerpt: typeof chunk.excerpt === "string" ? chunk.excerpt : "",
-            r2Key: typeof chunk.r2Key === "string" ? chunk.r2Key : null,
-          })),
-          verifiedChunks: seedChunks.slice(0, chunkLimit).map((chunk) => ({
-            id: typeof chunk.id === "string" ? chunk.id : null,
-            workId: typeof chunk.workId === "string" ? chunk.workId : null,
-            chunkIndex: typeof chunk.chunkIndex === "number" ? chunk.chunkIndex : null,
-            excerpt: typeof chunk.excerpt === "string" ? chunk.excerpt : "",
-            r2Key: typeof chunk.r2Key === "string" ? chunk.r2Key : null,
-          })),
-        },
-        evidenceFile: "output/evidence.json",
-        evidenceNotesFile: "output/evidence-notes.md",
-        briefingFile: "output/briefing.md",
-        briefingJsonFile: "output/briefing.json",
-        prewarmed: true,
-      },
+      taskSpec: mergedTaskSpec,
     });
   };
 
@@ -7072,6 +7508,13 @@ async function runOrchestrator(
         ),
         toolHistory,
       );
+      if (toolCall.tool_name === "run_workspace_task" && normalizedToolArgs.taskSpec && typeof normalizedToolArgs.taskSpec === "object") {
+        normalizedToolArgs.taskSpec = mergeTaskSpecWithPriorEvidence(
+          normalizedToolArgs.taskSpec as Record<string, unknown>,
+          priorRunEvidence,
+          input.message,
+        );
+      }
       if (toolCall.tool_name === "create_workspace" && pendingWorkspaceExecution) {
         continue;
       }
