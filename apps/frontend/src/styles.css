@@ -1886,6 +1886,10 @@ button {
   line-height: 1.7;
 }
 
+.assistant-document-body {
+  white-space: pre-wrap;
+}
+
 .assistant-document-entry {
   margin: 0;
 }

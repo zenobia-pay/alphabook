@@ -3993,7 +3993,12 @@ async function ensureRunAnswerPersisted(
     deps,
     session.id,
     runId,
-    buildPersistedResearchDocumentBundle(toolHistory, recoveredSynthesis.citations, recoveredAnswer),
+    buildResearchDocumentMarkdownFromToolHistory(toolHistory, recoveredSynthesis.citations, recoveredAnswer),
+  );
+  const researchDocumentText = buildResearchDocumentMarkdownFromToolHistory(
+    toolHistory,
+    recoveredSynthesis.citations,
+    recoveredAnswer,
   );
   await deps.store.appendMessage(session.id, "assistant", recoveredAnswer, {
     runId,
@@ -4001,6 +4006,7 @@ async function ensureRunAnswerPersisted(
     citations: recoveredSynthesis.citations,
     artifactKey,
     researchLog: summarizeToolHistory(toolHistory),
+    researchDocumentText,
     recoveredFromBriefing: true,
   });
 }
@@ -4689,6 +4695,17 @@ async function persistPlanToolTrace(
     runId,
     toolCalls,
     researchLog: toolCalls,
+    researchDocumentText: buildResearchDocumentMarkdownFromToolHistory(
+      toolCalls.map((entry) => ({
+        toolName: entry.toolName as ToolName,
+        rationale: typeof entry.rationale === "string" ? entry.rationale : undefined,
+        args: entry.args,
+        result: entry.result ?? {},
+        ...(Array.isArray(entry.progressDetails) ? { progressDetails: entry.progressDetails } : {}),
+      })),
+      [],
+      "",
+    ),
   });
 }
 
@@ -4775,6 +4792,17 @@ async function persistRecoveredPlanToolTrace(
     runId,
     toolCalls: recoveredTrace,
     researchLog: recoveredTrace,
+    researchDocumentText: buildResearchDocumentMarkdownFromToolHistory(
+      recoveredTrace.map((entry) => ({
+        toolName: entry.toolName as ToolName,
+        rationale: typeof entry.rationale === "string" ? entry.rationale : undefined,
+        args: entry.args,
+        result: entry.result ?? {},
+        ...(Array.isArray(entry.progressDetails) ? { progressDetails: entry.progressDetails } : {}),
+      })),
+      [],
+      "",
+    ),
   });
 }
 
@@ -6016,9 +6044,14 @@ async function synthesizeAnswer(
       deps,
       params.sessionId,
       params.runId,
-      buildPersistedResearchDocumentBundle(params.toolHistory, synthesis.citations, synthesis.answer),
+      buildResearchDocumentMarkdownFromToolHistory(params.toolHistory, synthesis.citations, synthesis.answer),
     );
     const summarizedToolHistory = summarizeToolHistory(params.toolHistory);
+    const researchDocumentText = buildResearchDocumentMarkdownFromToolHistory(
+      params.toolHistory,
+      synthesis.citations,
+      synthesis.answer,
+    );
     await deps.store.appendMessage(params.sessionId, "assistant", synthesis.answer, {
       runId: params.runId,
       phase: "answer",
@@ -6026,6 +6059,7 @@ async function synthesizeAnswer(
       answerEvaluation,
       artifactKey,
       researchLog: summarizedToolHistory,
+      researchDocumentText,
     });
 
     const citedWorkIds = uniqueWorkIds(synthesis.citations.map((citation) => citation.workId));
@@ -6172,43 +6206,6 @@ function buildSynthesisResearchDocument(
   return lines.length > 0 ? lines.join("\n") : null;
 }
 
-type PersistedResearchDocumentItem = {
-  key: string;
-  anchorId: string;
-  kind: "book" | "chunk" | "log";
-  evidenceTier: "frontier" | "verified" | "quoted";
-  text: string;
-  citationText?: string;
-  linkLabel?: string;
-  workId?: string;
-  citation?: Citation;
-};
-
-type PersistedResearchDocumentSection = {
-  key: string;
-  anchorId: string;
-  title: string;
-  summary: string;
-  meta: string;
-  evidenceTier: "frontier" | "verified" | "quoted";
-  items: PersistedResearchDocumentItem[];
-};
-
-type PersistedResearchDocumentBundle = {
-  version: 1;
-  title: string;
-  sections: PersistedResearchDocumentSection[];
-  ending: string;
-};
-
-function slugifyDocumentId(value: string) {
-  const normalized = value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/gu, "-")
-    .replace(/^-+|-+$/gu, "");
-  return normalized || "entry";
-}
-
 function normalizeDocumentText(value: unknown) {
   return typeof value === "string" ? value.replace(/\s+/gu, " ").trim() : "";
 }
@@ -6245,10 +6242,6 @@ function normalizeDocumentEnding(text: string | null | undefined) {
     .join("\n\n");
 }
 
-function persistedPluralize(count: number, singular: string, plural = `${singular}s`) {
-  return `${count} ${count === 1 ? singular : plural}`;
-}
-
 function persistedPassageLocation(chunkIndex: number | null) {
   if (chunkIndex === null || !Number.isFinite(chunkIndex)) {
     return "roughly mid-book";
@@ -6276,138 +6269,64 @@ function persistedSectionSummary(entry: ToolHistoryEntry) {
   return `${persistedSectionLabel(entry)} completed.`.trim();
 }
 
-function persistedSectionMeta(items: PersistedResearchDocumentItem[]) {
-  const chunkCount = items.filter((item) => item.kind === "chunk").length;
-  const bookCount = items.filter((item) => item.kind === "book").length;
-  if (chunkCount > 0) {
-    return persistedPluralize(chunkCount, "passage");
-  }
-  if (bookCount > 0) {
-    return persistedPluralize(bookCount, "book");
-  }
-  return "";
+function formatResearchDocumentBookLine(titleText: string, authors: string[]) {
+  return authors.length > 0 ? `- ${titleText} by ${authors.join(", ")}` : `- ${titleText}`;
 }
 
-function buildPersistedResearchDocumentBundle(
+function appendResearchDocumentSection(lines: string[], title: string, body: string[]) {
+  const filtered = body
+    .map((line) => line.trimEnd())
+    .filter((line) => line.trim().length > 0);
+  if (filtered.length === 0) {
+    return;
+  }
+  if (lines.length > 0) {
+    lines.push("");
+  }
+  lines.push(`## ${title}`);
+  lines.push("");
+  lines.push(...filtered);
+}
+
+function buildResearchDocumentMarkdownFromToolHistory(
   toolHistory: ToolHistoryEntry[],
   citations: Citation[],
   ending: string,
-): PersistedResearchDocumentBundle {
-  const confirmedWorkIds = new Set<string>();
+): string {
+  const lines: string[] = [];
   for (const entry of toolHistory) {
-    if (entry.toolName === "get_relevant_chunks" && Array.isArray(entry.result.verifiedWorkIds)) {
-      for (const workId of entry.result.verifiedWorkIds) {
-        if (typeof workId === "string" && workId.trim().length > 0) {
-          confirmedWorkIds.add(workId);
-        }
-      }
+    const body: string[] = [];
+    const summary = persistedSectionSummary(entry);
+    if (summary) {
+      body.push(summary);
     }
-    if (entry.toolName === "get_relevant_chunks" && Array.isArray(entry.result.chunks)) {
-      for (const chunk of entry.result.chunks as Array<Record<string, unknown>>) {
-        if (typeof chunk.workId === "string" && chunk.workId.trim().length > 0) {
-          confirmedWorkIds.add(chunk.workId);
-        }
-      }
-    }
+
     if (Array.isArray(entry.progressDetails)) {
       for (const detail of entry.progressDetails) {
         if (!detail || typeof detail !== "object") {
           continue;
         }
         const detailType = typeof detail.type === "string" ? detail.type : "";
-        if ((detailType === "research.work" || detailType === "research.chunk") && typeof detail.workId === "string" && detail.workId.trim().length > 0) {
-          confirmedWorkIds.add(detail.workId);
-        }
-      }
-    }
-  }
-  const allowMetadataFallback = confirmedWorkIds.size === 0 && toolHistory.some(
-    (entry) => (entry.toolName === "search_works" || entry.toolName === "get_work_metadata") && Array.isArray(entry.result.works) && entry.result.works.length > 0,
-  );
-
-  const sections: PersistedResearchDocumentSection[] = [];
-  const seenItems = new Set<string>();
-  const pushSection = (section: PersistedResearchDocumentSection) => {
-    if (section.items.length === 0) {
-      return;
-    }
-    section.meta = persistedSectionMeta(section.items);
-    sections.push(section);
-  };
-
-  for (const [index, entry] of toolHistory.entries()) {
-    const title = persistedSectionLabel(entry);
-    const section: PersistedResearchDocumentSection = {
-      key: `${entry.toolName}-${index}`,
-      anchorId: `section-${slugifyDocumentId(`${entry.toolName}-${index}-${title}`)}`,
-      title,
-      summary: persistedSectionSummary(entry),
-      meta: "",
-      evidenceTier: entry.toolName === "get_relevant_chunks" ? "verified" : "frontier",
-      items: [],
-    };
-
-    if (Array.isArray(entry.progressDetails)) {
-      for (const [detailIndex, detail] of entry.progressDetails.entries()) {
-        if (!detail || typeof detail !== "object") {
-          continue;
-        }
-        const detailType = typeof detail.type === "string" ? detail.type : "";
         if (detailType === "research.work") {
-          const workId = typeof detail.workId === "string" ? detail.workId : null;
-          const titleText = normalizeDocumentText(detail.workTitle ?? detail.title) || workId || "Untitled work";
-          if (!workId || !titleText) {
+          const titleText = normalizeDocumentText(detail.workTitle ?? detail.title);
+          if (!titleText) {
             continue;
           }
           const authors = Array.isArray(detail.authors)
             ? detail.authors.filter((value: unknown): value is string => typeof value === "string" && value.trim().length > 0)
             : [];
-          const itemKey = `${section.key}:progress-book:${workId}`;
-          if (seenItems.has(itemKey)) {
-            continue;
-          }
-          seenItems.add(itemKey);
-          section.items.push({
-            key: itemKey,
-            anchorId: `entry-${slugifyDocumentId(itemKey)}`,
-            kind: "book",
-            evidenceTier: "verified",
-            text: `${titleText}${authors.length > 0 ? ` by ${authors.join(", ")}` : ""}`.trim(),
-            linkLabel: titleText,
-            workId,
-          });
+          body.push(formatResearchDocumentBookLine(titleText, authors));
           continue;
         }
         if (detailType === "research.chunk") {
-          const workId = typeof detail.workId === "string" ? detail.workId : null;
           const excerpt = normalizeDocumentText(detail.excerpt).slice(0, 440);
-          if (!workId || !isUsefulPersistedExcerpt(excerpt)) {
+          if (!isUsefulPersistedExcerpt(excerpt)) {
             continue;
           }
-          const workTitle = normalizeDocumentText(detail.workTitle ?? detail.title) || workId;
+          const workTitle = normalizeDocumentText(detail.workTitle ?? detail.title) || "Source";
           const chunkIndex = typeof detail.chunkIndex === "number" ? detail.chunkIndex : null;
-          const itemKey = `${section.key}:progress-chunk:${typeof detail.chunkId === "string" ? detail.chunkId : `${workId}-${detailIndex}`}`;
-          if (seenItems.has(itemKey)) {
-            continue;
-          }
-          seenItems.add(itemKey);
-          section.items.push({
-            key: itemKey,
-            anchorId: `entry-${slugifyDocumentId(itemKey)}`,
-            kind: "chunk",
-            evidenceTier: "verified",
-            text: excerpt,
-            citationText: `${workTitle}, ${persistedPassageLocation(chunkIndex)}`,
-            linkLabel: `${workTitle}, ${persistedPassageLocation(chunkIndex)}`,
-            workId,
-            citation: {
-              workId,
-              ...(typeof detail.chunkId === "string" ? { chunkId: detail.chunkId } : {}),
-              label: workTitle,
-              excerpt,
-              ...(typeof detail.r2Key === "string" ? { r2Key: detail.r2Key } : {}),
-            },
-          });
+          body.push(`> ${excerpt}`);
+          body.push(`Source: ${workTitle}, ${persistedPassageLocation(chunkIndex)}`);
         }
       }
     }
@@ -6415,28 +6334,14 @@ function buildPersistedResearchDocumentBundle(
     if (entry.toolName === "search_works" || entry.toolName === "get_work_metadata") {
       const works = Array.isArray(entry.result.works) ? entry.result.works as Array<Record<string, unknown>> : [];
       for (const work of works) {
-        const workId = typeof work.id === "string" ? work.id : null;
         const titleText = normalizeDocumentText(work.title);
-        if (!workId || !titleText || (!allowMetadataFallback && !confirmedWorkIds.has(workId))) {
+        if (!titleText) {
           continue;
         }
         const authors = Array.isArray(work.authors)
           ? work.authors.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
           : [];
-        const itemKey = `${section.key}:book:${workId}`;
-        if (seenItems.has(itemKey)) {
-          continue;
-        }
-        seenItems.add(itemKey);
-        section.items.push({
-          key: itemKey,
-          anchorId: `entry-${slugifyDocumentId(itemKey)}`,
-          kind: "book",
-          evidenceTier: "frontier",
-          text: `${titleText}${authors.length > 0 ? ` by ${authors.join(", ")}` : ""}`.trim(),
-          linkLabel: titleText,
-          workId,
-        });
+        body.push(formatResearchDocumentBookLine(titleText, authors));
       }
     }
 
@@ -6446,158 +6351,79 @@ function buildPersistedResearchDocumentBundle(
         : null;
       const works = Array.isArray(manifest?.works) ? manifest.works as Array<Record<string, unknown>> : [];
       for (const work of works) {
-        const workId = typeof work.workId === "string" ? work.workId : null;
         const titleText = normalizeDocumentText(work.title);
-        if (!workId || !titleText || !confirmedWorkIds.has(workId)) {
+        if (!titleText) {
           continue;
         }
         const authors = Array.isArray(work.authors)
           ? work.authors.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
           : [];
-        const itemKey = `${section.key}:workspace:${workId}`;
-        if (seenItems.has(itemKey)) {
-          continue;
-        }
-        seenItems.add(itemKey);
-        section.items.push({
-          key: itemKey,
-          anchorId: `entry-${slugifyDocumentId(itemKey)}`,
-          kind: "book",
-          evidenceTier: "frontier",
-          text: `${titleText}${authors.length > 0 ? ` by ${authors.join(", ")}` : ""}`.trim(),
-          linkLabel: titleText,
-          workId,
-        });
+        body.push(formatResearchDocumentBookLine(titleText, authors));
       }
     }
 
     if (entry.toolName === "get_relevant_chunks") {
-      const verifiedWorkIds = Array.isArray(entry.result.verifiedWorkIds)
-        ? new Set(
-            (entry.result.verifiedWorkIds as unknown[])
-              .filter((value): value is string => typeof value === "string" && value.trim().length > 0),
-          )
-        : null;
       const chunks = Array.isArray(entry.result.chunks) ? entry.result.chunks as Array<Record<string, unknown>> : [];
       for (const chunk of chunks) {
-        const workId = typeof chunk.workId === "string" ? chunk.workId : null;
-        if (!workId) {
-          continue;
-        }
-        if (verifiedWorkIds && verifiedWorkIds.size > 0 && !verifiedWorkIds.has(workId)) {
-          continue;
-        }
         const excerpt = normalizeDocumentText(chunk.excerpt ?? chunk.text).slice(0, 440);
         if (!isUsefulPersistedExcerpt(excerpt)) {
           continue;
         }
-        const chunkId = typeof chunk.id === "string" ? chunk.id : `${workId}-${section.items.length}`;
-        const workTitle = normalizeDocumentText(chunk.workTitle) || workId;
+        const workTitle = normalizeDocumentText(chunk.workTitle) || "Source";
         const authors = Array.isArray(chunk.authors)
           ? chunk.authors.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
           : [];
         const chunkIndex = typeof chunk.chunkIndex === "number" ? chunk.chunkIndex : null;
-        const citationText = `${workTitle}${authors.length > 0 ? `, by ${authors.join(", ")}` : ""}, ${persistedPassageLocation(chunkIndex)}`;
-        const itemKey = `${section.key}:chunk:${chunkId}`;
-        if (seenItems.has(itemKey)) {
-          continue;
-        }
-        seenItems.add(itemKey);
-        section.items.push({
-          key: itemKey,
-          anchorId: `entry-${slugifyDocumentId(itemKey)}`,
-          kind: "chunk",
-          evidenceTier: "verified",
-          text: excerpt,
-          citationText,
-          linkLabel: citationText,
-          workId,
-          citation: {
-            workId,
-            ...(typeof chunk.id === "string" ? { chunkId: chunk.id } : {}),
-            label: workTitle,
-            excerpt,
-            ...(typeof chunk.r2Key === "string" ? { r2Key: chunk.r2Key } : {}),
-          },
-        });
+        body.push(`> ${excerpt}`);
+        body.push(
+          `Source: ${workTitle}${authors.length > 0 ? `, by ${authors.join(", ")}` : ""}, ${persistedPassageLocation(chunkIndex)}`,
+        );
       }
     }
 
-    pushSection(section);
+    appendResearchDocumentSection(lines, persistedSectionLabel(entry), body);
   }
 
   if (citations.length > 0) {
-    const quotedSection: PersistedResearchDocumentSection = {
-      key: "quoted-evidence",
-      anchorId: "section-quoted-evidence",
-      title: "Quoted Evidence",
-      summary: "Primary-source passages cited in the final answer.",
-      meta: "",
-      evidenceTier: "quoted",
-      items: [],
-    };
-    for (const [index, citation] of citations.entries()) {
+    const quoted: string[] = [];
+    for (const citation of citations) {
       const excerpt = normalizeDocumentText(citation.excerpt).slice(0, 440);
       if (!isUsefulPersistedExcerpt(excerpt)) {
         continue;
       }
-      const itemKey = `quoted:${citation.workId}:${citation.chunkId ?? index}`;
-      if (seenItems.has(itemKey)) {
-        continue;
-      }
-      seenItems.add(itemKey);
-      quotedSection.items.push({
-        key: itemKey,
-        anchorId: `entry-${slugifyDocumentId(itemKey)}`,
-        kind: "chunk",
-        evidenceTier: "quoted",
-        text: excerpt,
-        citationText: citation.label,
-        linkLabel: citation.label,
-        workId: citation.workId,
-        citation,
-      });
+      quoted.push(`> ${excerpt}`);
+      quoted.push(`Source: ${citation.label}`);
     }
-    pushSection(quotedSection);
+    appendResearchDocumentSection(lines, "Quoted Evidence", quoted);
   }
 
-  sections.sort((left, right) => {
-    const priority = { quoted: 0, verified: 1, frontier: 2 } as const;
-    const tierDiff = priority[left.evidenceTier] - priority[right.evidenceTier];
-    if (tierDiff !== 0) {
-      return tierDiff;
-    }
-    return left.title.localeCompare(right.title);
-  });
+  const normalizedEnding = normalizeDocumentEnding(ending);
+  if (normalizedEnding) {
+    appendResearchDocumentSection(lines, "Final Takeaway", [normalizedEnding]);
+  }
 
-  return {
-    version: 1,
-    title: "Research log",
-    sections,
-    ending: normalizeDocumentEnding(ending),
-  };
+  return lines.join("\n");
 }
 
 async function persistResearchDocumentArtifact(
   deps: AppDeps,
   sessionId: string,
   runId: string,
-  bundle: PersistedResearchDocumentBundle,
+  markdown: string,
 ) {
-  const filename = `${runId}-research-document.json`;
+  const filename = `${runId}-research-document.md`;
   const r2Key = artifactKeys.sessionArtifact(sessionId, filename);
-  await deps.blobStore.putJson(r2Key, bundle);
+  await deps.blobStore.putText(r2Key, markdown);
   await deps.store.saveArtifact({
     sessionId,
     runtimeId: null,
     r2Key,
     filename,
-    mimeType: "application/json",
+    mimeType: "text/markdown",
     metadata: {
       kind: "research_document",
       runId,
-      version: bundle.version,
-      sectionCount: bundle.sections.length,
+      format: "markdown",
     },
   });
   return r2Key;
@@ -7824,11 +7650,12 @@ async function runOrchestrator(
         deps,
         session.id,
         run.id,
-        buildPersistedResearchDocumentBundle([], [], routeDecision.answer),
+        buildResearchDocumentMarkdownFromToolHistory([], [], routeDecision.answer),
       );
       await deps.store.appendMessage(session.id, "assistant", routeDecision.answer, {
         artifactKey,
         route: "direct_response",
+        researchDocumentText: buildResearchDocumentMarkdownFromToolHistory([], [], routeDecision.answer),
       });
       await deps.store.updateRun(run.id, {
         status: "completed",

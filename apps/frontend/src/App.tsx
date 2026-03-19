@@ -2890,6 +2890,12 @@ function currentResearchDocumentEnding(messages: UiMessage[], runActive = false)
   return null;
 }
 
+function messageResearchDocumentText(message: UiMessage) {
+  return typeof message.metadata?.researchDocumentText === "string"
+    ? message.metadata.researchDocumentText.trim()
+    : "";
+}
+
 function artifactText(artifact: RunArtifactRecord) {
   return typeof artifact.content === "string" ? artifact.content.trim() : "";
 }
@@ -2900,6 +2906,34 @@ function artifactCreatedAtTimestamp(artifact: RunArtifactRecord) {
   }
   const timestamp = Date.parse(artifact.createdAt);
   return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function persistedResearchDocumentText(artifacts: RunArtifactRecord[]) {
+  const candidate = [...artifacts]
+    .filter((artifact) =>
+      artifact.metadata?.kind === "research_document"
+      || artifact.filename.endsWith("-research-document.md"),
+    )
+    .sort((left, right) => artifactCreatedAtTimestamp(right) - artifactCreatedAtTimestamp(left))[0];
+  return candidate ? artifactText(candidate) : "";
+}
+
+function currentResearchDocumentText(messages: UiMessage[], artifacts: RunArtifactRecord[], runId: string | null) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role !== "assistant") {
+      continue;
+    }
+    const messageRunId = typeof message.metadata?.runId === "string" ? message.metadata.runId : null;
+    if (runId && messageRunId && messageRunId !== runId) {
+      continue;
+    }
+    const text = messageResearchDocumentText(message);
+    if (text) {
+      return text;
+    }
+  }
+  return persistedResearchDocumentText(artifacts);
 }
 
 function AssistantSessionToolbar({
@@ -4115,135 +4149,22 @@ class ResearchDocumentErrorBoundary extends Component<
 
 function ResearchArtifactDocument({
   sessionTitle,
-  toolTrace,
-  artifacts,
-  ending,
-  linkMode,
-  onOpenWork,
-  onOpenCitation,
+  documentText,
 }: {
   sessionTitle: string;
-  toolTrace: ToolTraceEntry[];
-  artifacts: RunArtifactRecord[];
-  ending: string | null;
-  linkMode: "app" | "iframe";
-  onOpenWork?: (workId: string) => void;
-  onOpenCitation?: (citation: Citation) => void;
+  documentText: string;
 }) {
-  const document = useMemo(() => {
-    const persisted = persistedResearchDocument(artifacts, linkMode);
-    const live = buildResearchDocument(sessionTitle, toolTrace, artifacts, ending, linkMode);
-    if (live.sections.length > 0) {
-      return live;
-    }
-    if (persisted) {
-      return persisted;
-    }
-    return live;
-  }, [artifacts, ending, linkMode, sessionTitle, toolTrace]);
-
   return (
     <ResearchDocumentErrorBoundary>
       <section className="assistant-document-pane">
         <div className="assistant-document-scroll">
           <div className="assistant-document-text">
             <h1 className="assistant-document-entry is-title">
-              {document.title}
+              {sessionTitle.trim() || "Research log"}
             </h1>
-            {document.sections.map((section, index) => (
-              <details
-                key={section.key}
-                id={section.anchorId}
-                className="assistant-document-section"
-                open={section.evidenceTier ? section.evidenceTier !== "frontier" : index < 3}
-              >
-                <summary className="assistant-document-section-summary">
-                  <span className="assistant-document-section-title-row">
-                    <span className="assistant-document-section-title">{section.title}</span>
-                    <span className="assistant-document-section-meta">{section.meta}</span>
-                  </span>
-                  <span className="assistant-document-section-kicker">{section.summary}</span>
-                </summary>
-                <div className="assistant-document-section-body">
-                  {section.items.map((entry) => (
-                    entry.kind === "chunk" ? (
-                      <blockquote key={entry.key} id={entry.anchorId} className="assistant-document-entry is-chunk">
-                        <p className="assistant-document-quote">
-                          {entry.text}
-                        </p>
-                        {(entry.linkLabel && (entry.workId || entry.citation)) ? (
-                          <footer className="assistant-document-citation">
-                            <a
-                              className="assistant-document-link"
-                              href={entry.linkHref}
-                              onClick={(event) => {
-                                if (linkMode === "iframe") {
-                                  return;
-                                }
-                                event.preventDefault();
-                                if (entry.citation && onOpenCitation) {
-                                  onOpenCitation(entry.citation);
-                                  return;
-                                }
-                                if (entry.workId && onOpenWork) {
-                                  onOpenWork(entry.workId);
-                                }
-                              }}
-                            >
-                              {entry.citationText ?? entry.linkLabel}
-                            </a>
-                          </footer>
-                        ) : null}
-                      </blockquote>
-                    ) : (
-                      <p key={entry.key} id={entry.anchorId} className={cn("assistant-document-entry", `is-${entry.kind}`)}>
-                        {entry.linkLabel && (entry.workId || entry.citation) ? (
-                          <>
-                            {entry.prefix ? `${entry.prefix} ` : null}
-                            <a
-                              className="assistant-document-link"
-                              href={entry.linkHref}
-                              onClick={(event) => {
-                                if (linkMode === "iframe") {
-                                  return;
-                                }
-                                event.preventDefault();
-                                if (entry.citation && onOpenCitation) {
-                                  onOpenCitation(entry.citation);
-                                  return;
-                                }
-                                if (entry.workId && onOpenWork) {
-                                  onOpenWork(entry.workId);
-                                }
-                              }}
-                            >
-                              {entry.linkLabel}
-                            </a>
-                            {entry.suffix ? ` ${entry.suffix}` : null}
-                          </>
-                        ) : (
-                          entry.text
-                        )}
-                      </p>
-                    )
-                  ))}
-                </div>
-              </details>
-            ))}
-            {document.ending ? (
-              <details className="assistant-document-section assistant-document-section-ending" open>
-                <summary className="assistant-document-section-summary">
-                  <span className="assistant-document-section-title-row">
-                    <span className="assistant-document-section-title">Final Takeaway</span>
-                    <span className="assistant-document-section-meta">summary</span>
-                  </span>
-                  <span className="assistant-document-section-kicker">What the run found and how it came together.</span>
-                </summary>
-                <div className="assistant-document-section-body">
-                  <p className="assistant-document-entry is-log">{document.ending}</p>
-                </div>
-              </details>
-            ) : null}
+            <div className="assistant-document-body">
+              {documentText.trim().length > 0 ? documentText : "No research has been written yet."}
+            </div>
           </div>
         </div>
       </section>
@@ -4253,13 +4174,9 @@ function ResearchArtifactDocument({
 
 function ResearchArtifactPane(props: {
   sessionTitle: string;
-  toolTrace: ToolTraceEntry[];
-  artifacts: RunArtifactRecord[];
-  ending: string | null;
-  onOpenWork: (workId: string) => void;
-  onOpenCitation: (citation: Citation) => void;
+  documentText: string;
 }) {
-  return <ResearchArtifactDocument {...props} linkMode="app" />;
+  return <ResearchArtifactDocument {...props} />;
 }
 
 function AssistantDocumentFramePage({
@@ -4400,6 +4317,10 @@ function AssistantDocumentFramePage({
     () => currentResearchDocumentEnding(messages, runStatus === "running" || runStatus === "queued"),
     [messages, runStatus],
   );
+  const documentText = useMemo(
+    () => currentResearchDocumentText(messages, artifacts, runId),
+    [artifacts, messages, runId],
+  );
 
   if (loading && !hasServerRenderedDocument) {
     return (
@@ -4440,10 +4361,7 @@ function AssistantDocumentFramePage({
     <section className="assistant-document-pane assistant-document-standalone" data-run-status={runStatus ?? "unknown"}>
       <ResearchArtifactDocument
         sessionTitle={sessionTitle}
-        toolTrace={toolTrace}
-        artifacts={artifacts}
-        ending={ending}
-        linkMode="iframe"
+        documentText={documentText}
       />
     </section>
   );
@@ -6401,10 +6319,10 @@ export default function App() {
           || messagesLoading
         ))
       );
-    const workspaceToolTrace = currentResearchToolTrace(visibleMessages, preferredAssistantRun?.id ?? null);
-    const workspaceDocumentEnding = currentResearchDocumentEnding(
+    const workspaceDocumentText = currentResearchDocumentText(
       visibleMessages,
-      isSending || recoveredActiveRunId !== null || preferredAssistantRun?.status === "running" || preferredAssistantRun?.status === "queued",
+      runArtifacts,
+      preferredAssistantRun?.id ?? null,
     );
     const showBlankSession =
       !assistantSessionLoading
@@ -6459,11 +6377,7 @@ export default function App() {
             leftPane={(
               <ResearchArtifactPane
                 sessionTitle={assistantSessionName(activeSession)}
-                toolTrace={workspaceToolTrace}
-                artifacts={runArtifacts}
-                ending={workspaceDocumentEnding}
-                onOpenWork={openWork}
-                onOpenCitation={openCitation}
+                documentText={workspaceDocumentText}
               />
             )}
             rightPane={(
