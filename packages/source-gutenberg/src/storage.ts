@@ -5,4 +5,6 @@ export const gutenbergCorpusKeys = {
   cleanText: (id: string) => `gutenberg/clean/${id}/clean.txt`,
   chunks: (id: string) => `gutenberg/clean/${id}/chunks.jsonl`,
   bookHtml: (id: string) => `gutenberg/clean/${id}/book.html`,
+  bookManifest: (id: string) => `gutenberg/clean/${id}/book/manifest.json`,
+  bookPage: (id: string, pageNumber: number) => `gutenberg/clean/${id}/book/pages/page-${String(pageNumber).padStart(4, "0")}.html`,
 } as const;

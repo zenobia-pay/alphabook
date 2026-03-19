@@ -3182,12 +3182,15 @@ function buildWorkHref(workId: string) {
 
 function buildWorkContentHref(workId: string, gutenbergId?: string | number | null) {
   if (gutenbergId != null && String(gutenbergId).trim().length > 0) {
-    return `${BOOK_CONTENT_ORIGIN}/${encodeURIComponent(String(gutenbergId))}?v=${BOOK_CONTENT_VERSION}`;
+    return `${BOOK_CONTENT_ORIGIN}/${encodeURIComponent(String(gutenbergId))}/?v=${BOOK_CONTENT_VERSION}`;
   }
   return `/api/works/${encodeURIComponent(workId)}/content?v=${BOOK_CONTENT_VERSION}`;
 }
 
 function buildWorkContentFrameHref(workId: string, gutenbergId?: string | number | null, passageId?: string | null) {
+  if (gutenbergId != null && String(gutenbergId).trim().length > 0 && passageId) {
+    return `${BOOK_CONTENT_ORIGIN}/${encodeURIComponent(String(gutenbergId))}/passages/${encodeURIComponent(passageId)}?v=${BOOK_CONTENT_VERSION}`;
+  }
   const baseHref = buildWorkContentHref(workId, gutenbergId);
   if (!passageId) {
     return baseHref;

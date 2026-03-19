@@ -61,6 +61,47 @@ interface ExistingBookHtmlWork {
   metadata: Record<string, unknown>;
 }
 
+type BookBlockKind = "heading" | "paragraph" | "blockquote" | "preformatted" | "list";
+
+type BookBlock = {
+  kind: BookBlockKind;
+  html: string;
+  text: string;
+  wordCount: number;
+  passageIds: string[];
+  headingLevel?: number;
+  sectionId?: string | null;
+  sectionTitle?: string | null;
+};
+
+type BookPage = {
+  pageNumber: number;
+  href: string;
+  wordCount: number;
+  sectionTitle: string | null;
+  firstPassageId: string | null;
+  lastPassageId: string | null;
+  blocks: BookBlock[];
+};
+
+type BookSection = {
+  id: string;
+  title: string;
+  level: number;
+  pageNumber: number;
+  href: string;
+  passageId: string;
+};
+
+type BookArtifactBundle = {
+  landingHtml: string;
+  manifestJson: string;
+  pages: Array<{
+    pageNumber: number;
+    html: string;
+  }>;
+};
+
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -212,6 +253,551 @@ function sanitizeSourceHtml(content: string) {
     .replace(/<(?:link|meta|base|iframe|object|embed|form|input|button)[^>]*>/gi, "")
     .replace(/\son[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "")
     .replace(/\s(?:href|src)\s*=\s*(['"])\s*javascript:[\s\S]*?\1/gi, "");
+}
+
+const PAGE_TARGET_WORDS = 400;
+const PAGE_MIN_WORDS = 360;
+const PAGE_MAX_WORDS = 440;
+const PAGE_TINY_MERGE_THRESHOLD = 180;
+
+type PaginatedBookBlockKind = "heading" | "paragraph" | "blockquote" | "preformatted" | "list";
+
+type PaginatedBookBlock = {
+  kind: PaginatedBookBlockKind;
+  html: string;
+  text: string;
+  wordCount: number;
+  passageIds: string[];
+  sectionTitle?: string | null;
+  sectionId?: string | null;
+};
+
+type PaginatedBookPage = {
+  pageNumber: number;
+  href: string;
+  wordCount: number;
+  sectionTitle: string | null;
+  firstPassageId: string | null;
+  lastPassageId: string | null;
+  blocks: PaginatedBookBlock[];
+};
+
+type PaginatedBookSection = {
+  id: string;
+  title: string;
+  href: string;
+  pageNumber: number;
+  passageId: string;
+};
+
+function countWords(value: string) {
+  return normalizeWhitespace(value).split(/\s+/).filter(Boolean).length;
+}
+
+function slugify(value: string) {
+  return value
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[^\w\s-]/g, "")
+    .trim()
+    .replace(/[-\s]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "section";
+}
+
+function createBookPageHref(pageNumber: number) {
+  return `./pages/page-${String(pageNumber).padStart(4, "0")}.html`;
+}
+
+function createBookSectionId(title: string, index: number) {
+  return `section-${slugify(title)}-${index + 1}`;
+}
+
+function renderBookStaticStyles() {
+  return `
+      :root {
+        color-scheme: light;
+        --bg: #f8f4ee;
+        --paper: rgba(255, 252, 247, 0.92);
+        --ink: #1f1b16;
+        --muted: #635848;
+        --line: rgba(73, 58, 41, 0.14);
+        --accent-soft: rgba(143, 79, 42, 0.12);
+      }
+      * { box-sizing: border-box; }
+      html { scroll-behavior: smooth; }
+      body {
+        margin: 0;
+        font-family: Georgia, "Times New Roman", serif;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at top left, rgba(196, 157, 112, 0.08), transparent 28%),
+          linear-gradient(180deg, #f9f6f0 0%, #f3ede3 100%);
+      }
+      a { color: inherit; }
+      .page-shell {
+        width: min(900px, calc(100vw - 40px));
+        margin: 0 auto;
+        padding: 28px 0 40px;
+      }
+      .surface {
+        background: var(--paper);
+        border: 1px solid var(--line);
+        border-radius: 28px;
+        box-shadow: 0 18px 60px rgba(31, 27, 22, 0.08);
+        padding: 26px;
+      }
+      .hero {
+        display: grid;
+        gap: 10px;
+      }
+      .eyebrow, .byline, .summary, .page-kicker, .page-meta {
+        margin: 0;
+        color: var(--muted);
+        font-size: 1rem;
+        line-height: 1.7;
+      }
+      h1 {
+        margin: 0;
+        font-size: clamp(2.2rem, 4vw, 3.7rem);
+        line-height: 0.98;
+      }
+      .chip-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+      .chip-row span {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        padding: 8px 12px;
+        background: var(--accent-soft);
+        color: var(--muted);
+        font-size: 0.88rem;
+      }
+      .toc-list, .page-list {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        display: grid;
+        gap: 10px;
+      }
+      .toc-link, .page-link, .nav-link {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 14px;
+        padding: 14px 16px;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: rgba(255, 255, 255, 0.72);
+        text-decoration: none;
+      }
+      .reader-body {
+        font-size: 1.08rem;
+        line-height: 1.85;
+      }
+      .reader-body h1, .reader-body h2, .reader-body h3, .reader-body h4, .reader-body h5, .reader-body h6 {
+        font-size: 1.35em;
+        line-height: 1.2;
+        margin: 1.8em 0 0.75em;
+      }
+      .reader-body p, .reader-body li, .reader-body blockquote, .reader-body pre {
+        margin: 0 0 1.15em;
+      }
+      .reader-body blockquote {
+        margin-left: 0;
+        padding-left: 18px;
+        border-left: 3px solid var(--accent-soft);
+        color: var(--muted);
+      }
+      .reader-body pre {
+        white-space: pre-wrap;
+        font-family: "Courier New", monospace;
+        background: #f2eadf;
+        border-radius: 16px;
+        padding: 16px;
+      }
+      .reader-body [data-passage-id] {
+        scroll-margin-top: 24px;
+      }
+      .reader-body :target {
+        background: rgba(143, 79, 42, 0.12);
+        border-radius: 10px;
+        outline: none;
+      }
+      .page-nav {
+        display: flex;
+        justify-content: space-between;
+        gap: 14px;
+        margin-bottom: 24px;
+      }
+      @media (max-width: 780px) {
+        .page-shell { width: min(100vw - 24px, 100%); }
+        .surface { padding: 20px; border-radius: 22px; }
+        .page-nav { flex-direction: column; }
+      }
+  `;
+}
+
+function looksLikePlaintextHeading(value: string) {
+  const cleaned = value.trim();
+  const words = countWords(cleaned);
+  return words > 0 && words <= 12 && cleaned.length <= 96 && !/[.!?;:]$/.test(cleaned);
+}
+
+function looksLikeVerseBlock(value: string) {
+  const lines = value.split("\n").map((line) => line.trim()).filter(Boolean);
+  if (lines.length < 3) {
+    return false;
+  }
+  const averageLength = lines.reduce((total, line) => total + line.length, 0) / lines.length;
+  return averageLength <= 42;
+}
+
+function buildPaginatedTextBlocks(content: string) {
+  const paragraphs = stripGutenbergBoilerplate(content)
+    .replace(/\r\n/g, "\n")
+    .split(/\n{2,}/)
+    .map((paragraph) => normalizeReaderText(paragraph, true))
+    .filter(Boolean);
+  const blocks: PaginatedBookBlock[] = [];
+  let passageIndex = 0;
+  let sectionIndex = 0;
+
+  for (const paragraph of paragraphs) {
+    const passageId = createReaderPassageId(passageIndex, paragraph);
+    passageIndex += 1;
+    if (looksLikePlaintextHeading(paragraph)) {
+      blocks.push({
+        kind: "heading",
+        html: `<h2 id="${passageId}" data-passage-id="${passageId}">${escapeHtml(paragraph)}</h2>`,
+        text: paragraph,
+        wordCount: countWords(paragraph),
+        passageIds: [passageId],
+        sectionTitle: paragraph,
+        sectionId: createBookSectionId(paragraph, sectionIndex++),
+      });
+      continue;
+    }
+    if (looksLikeVerseBlock(paragraph)) {
+      blocks.push({
+        kind: "preformatted",
+        html: `<pre id="${passageId}" data-passage-id="${passageId}">${escapeHtml(paragraph)}</pre>`,
+        text: paragraph,
+        wordCount: countWords(paragraph),
+        passageIds: [passageId],
+      });
+      continue;
+    }
+    blocks.push({
+      kind: "paragraph",
+      html: `<p id="${passageId}" data-passage-id="${passageId}">${escapeHtml(paragraph).replace(/\n/g, "<br />")}</p>`,
+      text: paragraph,
+      wordCount: countWords(paragraph),
+      passageIds: [passageId],
+    });
+  }
+
+  return blocks;
+}
+
+function buildPaginatedHtmlBlocks(content: string) {
+  const sanitized = sanitizeSourceHtml(content);
+  const { document } = parseHTML(`<!doctype html><html><body>${sanitized}</body></html>`);
+  for (const node of Array.from(document.querySelectorAll("script, style, link, meta, base, noscript, iframe"))) {
+    node.remove();
+  }
+
+  const selector = "h1, h2, h3, h4, h5, h6, p, blockquote, pre, ul, ol";
+  const elements = Array.from(document.body.querySelectorAll(selector))
+    .filter((element) => !element.parentElement?.closest(selector));
+  const blocks: PaginatedBookBlock[] = [];
+  let passageIndex = 0;
+  let sectionIndex = 0;
+
+  for (const element of elements) {
+    const tagName = element.tagName.toLowerCase();
+    const text = normalizeReaderText(
+      tagName === "pre" ? element.textContent ?? "" : (element.textContent ?? "").replace(/\s+/g, " "),
+      tagName === "pre",
+    );
+    if (!text) {
+      continue;
+    }
+
+    if (/^h[1-6]$/.test(tagName)) {
+      const passageId = createReaderPassageId(passageIndex, text);
+      passageIndex += 1;
+      element.setAttribute("id", passageId);
+      element.setAttribute("data-passage-id", passageId);
+      blocks.push({
+        kind: "heading",
+        html: element.outerHTML,
+        text,
+        wordCount: countWords(text),
+        passageIds: [passageId],
+        sectionTitle: text,
+        sectionId: createBookSectionId(text, sectionIndex++),
+      });
+      continue;
+    }
+
+    if (tagName === "ul" || tagName === "ol") {
+      const items = Array.from(element.querySelectorAll(":scope > li"));
+      const passageIds: string[] = [];
+      for (const item of items) {
+        const itemText = normalizeReaderText((item.textContent ?? "").replace(/\s+/g, " "));
+        if (!itemText) {
+          continue;
+        }
+        const passageId = createReaderPassageId(passageIndex, `• ${itemText}`);
+        passageIndex += 1;
+        item.setAttribute("id", passageId);
+        item.setAttribute("data-passage-id", passageId);
+        passageIds.push(passageId);
+      }
+      blocks.push({
+        kind: "list",
+        html: element.outerHTML,
+        text,
+        wordCount: countWords(text),
+        passageIds,
+      });
+      continue;
+    }
+
+    const passageId = createReaderPassageId(passageIndex, text);
+    passageIndex += 1;
+    element.setAttribute("id", passageId);
+    element.setAttribute("data-passage-id", passageId);
+    blocks.push({
+      kind: tagName === "blockquote" ? "blockquote" : tagName === "pre" ? "preformatted" : "paragraph",
+      html: element.outerHTML,
+      text,
+      wordCount: countWords(text),
+      passageIds: [passageId],
+    });
+  }
+
+  return blocks.length > 0 ? blocks : buildPaginatedTextBlocks(document.body.textContent ?? "");
+}
+
+function buildPaginatedBookBlocks(rawSource: string, sourceFormat: "text" | "html") {
+  return sourceFormat === "html" ? buildPaginatedHtmlBlocks(rawSource) : buildPaginatedTextBlocks(rawSource);
+}
+
+function chunkBlocksIntoPaginatedPages(blocks: PaginatedBookBlock[]) {
+  const pages: PaginatedBookPage[] = [];
+  let index = 0;
+  let currentSectionTitle: string | null = null;
+
+  while (index < blocks.length) {
+    const pageBlocks: PaginatedBookBlock[] = [];
+    let pageWordCount = 0;
+
+    while (index < blocks.length) {
+      const block = blocks[index];
+      const projected = pageWordCount + block.wordCount;
+
+      if (pageBlocks.length > 0 && pageWordCount >= PAGE_MIN_WORDS) {
+        if (block.kind === "heading" || projected > PAGE_MAX_WORDS) {
+          break;
+        }
+      }
+
+      pageBlocks.push(block);
+      pageWordCount = projected;
+      index += 1;
+
+      if (block.kind === "heading") {
+        currentSectionTitle = block.sectionTitle ?? currentSectionTitle;
+        if (index < blocks.length) {
+          const nextBlock = blocks[index];
+          pageBlocks.push(nextBlock);
+          pageWordCount += nextBlock.wordCount;
+          index += 1;
+        }
+      }
+
+      if (pageWordCount >= PAGE_TARGET_WORDS && index < blocks.length) {
+        const nextBlock = blocks[index];
+        if (nextBlock.kind === "heading" || pageWordCount >= PAGE_MIN_WORDS) {
+          break;
+        }
+      }
+    }
+
+    const passageIds = pageBlocks.flatMap((block) => block.passageIds);
+    pages.push({
+      pageNumber: pages.length + 1,
+      href: createBookPageHref(pages.length + 1),
+      wordCount: pageWordCount,
+      sectionTitle: currentSectionTitle,
+      firstPassageId: passageIds[0] ?? null,
+      lastPassageId: passageIds.length > 0 ? passageIds[passageIds.length - 1] : null,
+      blocks: pageBlocks,
+    });
+  }
+
+  if (pages.length > 1) {
+    const lastPage = pages[pages.length - 1];
+    if (lastPage.wordCount < PAGE_TINY_MERGE_THRESHOLD) {
+      const previousPage = pages[pages.length - 2];
+      previousPage.blocks.push(...lastPage.blocks);
+      previousPage.wordCount += lastPage.wordCount;
+      previousPage.lastPassageId = lastPage.lastPassageId;
+      pages.pop();
+    }
+  }
+
+  return pages.map((page, index) => ({
+    ...page,
+    pageNumber: index + 1,
+    href: createBookPageHref(index + 1),
+  }));
+}
+
+function buildPaginatedBookArtifactBundle(input: {
+  gutenbergId: string;
+  title: string;
+  subtitle?: string | null;
+  authors: string[];
+  bookshelves?: string[];
+  summary?: string | null;
+  language?: string | null;
+  releaseDate?: string | null;
+  rawSource: string;
+  sourceFormat: "text" | "html";
+}) {
+  const meta = [
+    input.gutenbergId ? `Project Gutenberg #${input.gutenbergId}` : null,
+    input.language ? input.language.toUpperCase() : null,
+    input.releaseDate ? input.releaseDate.slice(0, 4) : null,
+  ].filter((value): value is string => Boolean(value)).join(" · ");
+  const byline = input.authors.filter((author) => author.trim().length > 0).join(" · ");
+  const blocks = buildPaginatedBookBlocks(input.rawSource, input.sourceFormat);
+  const pages = chunkBlocksIntoPaginatedPages(blocks);
+  const sections: PaginatedBookSection[] = [];
+  const passageMap: Record<string, { pageNumber: number; href: string }> = {};
+
+  for (const page of pages) {
+    for (const block of page.blocks) {
+      for (const passageId of block.passageIds) {
+        passageMap[passageId] = {
+          pageNumber: page.pageNumber,
+          href: page.href,
+        };
+      }
+      if (block.kind === "heading" && block.sectionTitle && block.passageIds[0]) {
+        sections.push({
+          id: block.sectionId ?? createBookSectionId(block.sectionTitle, sections.length),
+          title: block.sectionTitle,
+          href: page.href,
+          pageNumber: page.pageNumber,
+          passageId: block.passageIds[0],
+        });
+      }
+    }
+  }
+
+  const landingHtml = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${escapeHtml(input.title)} | alpha book</title>
+    <meta name="description" content="${escapeHtml(createExcerpt(input.summary ?? input.rawSource ?? input.title))}" />
+    <meta name="robots" content="noindex,nofollow" />
+    <style>${renderBookStaticStyles()}</style>
+  </head>
+  <body>
+    <main class="page-shell">
+      <div class="surface">
+        <section class="hero">
+          ${meta ? `<p class="eyebrow">${escapeHtml(meta)}</p>` : ""}
+          <h1>${escapeHtml(input.title)}</h1>
+          ${input.subtitle ? `<p class="summary">${escapeHtml(input.subtitle)}</p>` : ""}
+          ${byline ? `<p class="byline">${escapeHtml(byline)}</p>` : ""}
+          ${input.summary ? `<p class="summary">${escapeHtml(input.summary)}</p>` : ""}
+          ${renderTagList(input.bookshelves)}
+        </section>
+        ${pages[0] ? `<p><a class="page-link" href="${pages[0].href}"><strong>Start Reading</strong><span>Page 1</span></a></p>` : ""}
+        <section>
+          <p class="page-kicker">Table of contents</p>
+          <ul class="toc-list">
+            ${sections.map((section) => `
+              <li>
+                <a class="toc-link" href="${section.href}#${section.passageId}">
+                  <span>${escapeHtml(section.title)}</span>
+                  <span>Page ${section.pageNumber}</span>
+                </a>
+              </li>
+            `).join("")}
+          </ul>
+        </section>
+      </div>
+    </main>
+  </body>
+</html>`;
+
+  const pageFiles = pages.map((page) => {
+    const previousPage = pages[page.pageNumber - 2] ?? null;
+    const nextPage = pages[page.pageNumber] ?? null;
+    const previousPageHref = previousPage ? `./page-${String(previousPage.pageNumber).padStart(4, "0")}.html` : null;
+    const nextPageHref = nextPage ? `./page-${String(nextPage.pageNumber).padStart(4, "0")}.html` : null;
+    return {
+      pageNumber: page.pageNumber,
+      html: `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${escapeHtml(input.title)} · Page ${page.pageNumber} | alpha book</title>
+    <meta name="description" content="${escapeHtml(`Page ${page.pageNumber} of ${input.title}`)}" />
+    <meta name="robots" content="noindex,nofollow" />
+    ${previousPageHref ? `<link rel="prev" href="${previousPageHref}" />` : ""}
+    ${nextPageHref ? `<link rel="next" href="${nextPageHref}" />` : ""}
+    <style>${renderBookStaticStyles()}</style>
+  </head>
+  <body>
+    <main class="page-shell">
+      <div class="surface">
+        <nav class="page-nav">
+          ${previousPageHref ? `<a class="nav-link" href="${previousPageHref}"><span>Previous</span><strong>Page ${previousPage.pageNumber}</strong></a>` : `<a class="nav-link" href="../"><span>Contents</span><strong>Title page</strong></a>`}
+          ${nextPageHref ? `<a class="nav-link" href="${nextPageHref}"><span>Next</span><strong>Page ${nextPage.pageNumber}</strong></a>` : `<a class="nav-link" href="../"><span>Contents</span><strong>Title page</strong></a>`}
+        </nav>
+        <section class="hero">
+          <p class="page-kicker">Page ${page.pageNumber} of ${pages.length}</p>
+          <h1>${escapeHtml(page.sectionTitle ?? input.title)}</h1>
+          ${meta ? `<p class="page-meta">${escapeHtml(meta)}</p>` : ""}
+        </section>
+        <div class="reader-body">${page.blocks.map((block) => block.html).join("\n")}</div>
+      </div>
+    </main>
+  </body>
+</html>`,
+    };
+  });
+
+  return {
+    landingHtml,
+    manifestJson: JSON.stringify({
+      gutenbergId: input.gutenbergId,
+      title: input.title,
+      pageCount: pages.length,
+      pages: pages.map((page) => ({
+        pageNumber: page.pageNumber,
+        href: page.href,
+        firstPassageId: page.firstPassageId,
+        lastPassageId: page.lastPassageId,
+        sectionTitle: page.sectionTitle,
+      })),
+      sections,
+      passages: passageMap,
+    }, null, 2),
+    pageFiles,
+  };
 }
 
 function renderTextSource(content: string) {
@@ -659,7 +1245,7 @@ async function persistIngestedWork(context: IngestContext, source: IngestSourceI
       }),
     )
     .join("\n");
-  const bookHtml = buildBookHtmlArtifact({
+  const bookBundle = buildPaginatedBookArtifactBundle({
     gutenbergId: source.gutenbergId,
     title: source.title,
     subtitle: typeof source.metadata?.subtitle === "string" ? source.metadata.subtitle : null,
@@ -673,6 +1259,7 @@ async function persistIngestedWork(context: IngestContext, source: IngestSourceI
     rawSource: source.rawSource,
     sourceFormat: source.sourceFormat ?? "text",
   });
+  const bookManifestKey = gutenbergCorpusKeys.bookManifest(source.gutenbergId);
 
   await Promise.all([
     putText(
@@ -691,7 +1278,16 @@ async function persistIngestedWork(context: IngestContext, source: IngestSourceI
     ),
     putText(context.r2, context.r2Bucket, cleanKey, cleanText, "text/plain; charset=utf-8"),
     putText(context.r2, context.r2Bucket, chunksKey, chunksPayload, "application/x-ndjson"),
-    putText(context.r2, context.r2Bucket, bookHtmlKey, bookHtml, "text/html; charset=utf-8"),
+    putText(context.r2, context.r2Bucket, bookHtmlKey, bookBundle.landingHtml, "text/html; charset=utf-8"),
+    putText(context.r2, context.r2Bucket, bookManifestKey, bookBundle.manifestJson, "application/json; charset=utf-8"),
+    ...bookBundle.pageFiles.map((page) =>
+      putText(
+        context.r2,
+        context.r2Bucket,
+        gutenbergCorpusKeys.bookPage(source.gutenbergId, page.pageNumber),
+        page.html,
+        "text/html; charset=utf-8",
+      )),
     ...(coverImagePath && coverImageKey
       ? [
           readFile(coverImagePath).then((bytes) =>
@@ -973,7 +1569,7 @@ async function persistBookHtmlArtifact(
     throw new Error(`Raw source missing for Gutenberg ${work.gutenbergId} (${resolvedRawKey}).`);
   }
   const metadata = work.metadata ?? {};
-  const bookHtml = buildBookHtmlArtifact({
+  const bookBundle = buildPaginatedBookArtifactBundle({
     gutenbergId: work.gutenbergId,
     title: work.title,
     subtitle: typeof metadata.subtitle === "string" ? metadata.subtitle : null,
@@ -986,8 +1582,20 @@ async function persistBookHtmlArtifact(
     sourceFormat: metadata.sourceFormat === "html" ? "html" : "text",
   });
   const bookHtmlKey = gutenbergCorpusKeys.bookHtml(work.gutenbergId);
+  const bookManifestKey = gutenbergCorpusKeys.bookManifest(work.gutenbergId);
 
-  await putText(context.r2, context.r2Bucket, bookHtmlKey, bookHtml, "text/html; charset=utf-8");
+  await Promise.all([
+    putText(context.r2, context.r2Bucket, bookHtmlKey, bookBundle.landingHtml, "text/html; charset=utf-8"),
+    putText(context.r2, context.r2Bucket, bookManifestKey, bookBundle.manifestJson, "application/json; charset=utf-8"),
+    ...bookBundle.pageFiles.map((page) =>
+      putText(
+        context.r2,
+        context.r2Bucket,
+        gutenbergCorpusKeys.bookPage(work.gutenbergId, page.pageNumber),
+        page.html,
+        "text/html; charset=utf-8",
+      )),
+  ]);
   await context.db.query(
     `
       INSERT INTO work_files (id, work_id, kind, r2_key, metadata_json)
