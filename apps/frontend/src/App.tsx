@@ -6861,7 +6861,6 @@ export default function App() {
             activeView={activeView}
             sessions={sessions}
             selectedSessionId={selectedSessionId}
-            sessionsLoading={sessionsLoading}
             onSelectSession={openSession}
           />
         </div>
