@@ -2351,6 +2351,7 @@ type ResearchDocumentModel = {
     key: string;
     kind: ResearchDocumentEntryKind;
     text: string;
+    citationText?: string;
     linkLabel?: string;
     linkHref?: string;
     workId?: string;
@@ -2588,6 +2589,13 @@ function buildWorkContentHref(workId: string, gutenbergId?: string | number | nu
   return `/api/works/${encodeURIComponent(workId)}/content`;
 }
 
+function formatPassageLocation(chunkIndex: number | null) {
+  if (chunkIndex === null || !Number.isFinite(chunkIndex)) {
+    return "roughly mid-book";
+  }
+  return `around passage ${chunkIndex}`;
+}
+
 function buildResearchDocument(title: string, toolTrace: ToolTraceEntry[], artifacts: RunArtifactRecord[]): ResearchDocumentModel {
   const entries: ResearchDocumentModel["entries"] = [];
   const seen = new Set<string>();
@@ -2664,22 +2672,24 @@ function buildResearchDocument(title: string, toolTrace: ToolTraceEntry[], artif
             : "";
         const key = typeof chunk.id === "string" ? chunk.id : `${entry.id}:chunk:${index}`;
         const workTitle = typeof chunk.workTitle === "string" && chunk.workTitle.trim() ? chunk.workTitle.trim() : workId;
-        const label = chunkIndex !== null ? `${workTitle} #${chunkIndex}` : workTitle;
+        const authors = Array.isArray(chunk.authors)
+          ? chunk.authors.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+          : [];
+        const citationText = `${workTitle}${authors.length > 0 ? `, by ${authors.join(", ")}` : ""}, ${formatPassageLocation(chunkIndex)}`;
         appendDocumentEntry(entries, seen, {
           key: `chunk:${key}`,
           kind: "chunk",
-          text: `${label} surfaced as a relevant passage. ${excerpt.slice(0, 280)}`.trim(),
-          linkLabel: label,
+          text: excerpt.slice(0, 440),
+          citationText,
+          linkLabel: citationText,
           linkHref: buildWorkHref(workId),
           citation: {
             workId,
             chunkId: typeof chunk.id === "string" ? chunk.id : undefined,
-            label,
-            excerpt: excerpt || label,
+            label: workTitle,
+            excerpt: excerpt || workTitle,
             r2Key: typeof chunk.r2Key === "string" ? chunk.r2Key : undefined,
           },
-          prefix: "",
-          suffix: ` surfaced as a relevant passage. ${excerpt.slice(0, 280)}`.trim(),
         });
       }
     }
@@ -2727,6 +2737,32 @@ function ResearchArtifactPane({
               <h1 key={entry.key} className="assistant-document-entry is-title">
                 {entry.text.replace(/^#\s+/, "")}
               </h1>
+            ) : entry.kind === "chunk" ? (
+              <blockquote key={entry.key} className="assistant-document-entry is-chunk">
+                <p className="assistant-document-quote">
+                  {entry.text}
+                </p>
+                {(entry.linkLabel && (entry.workId || entry.citation)) ? (
+                  <footer className="assistant-document-citation">
+                    <a
+                      className="assistant-document-link"
+                      href={entry.linkHref}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        if (entry.citation) {
+                          onOpenCitation(entry.citation);
+                          return;
+                        }
+                        if (entry.workId) {
+                          onOpenWork(entry.workId);
+                        }
+                      }}
+                    >
+                      {entry.citationText ?? entry.linkLabel}
+                    </a>
+                  </footer>
+                ) : null}
+              </blockquote>
             ) : (
               <p key={entry.key} className={cn("assistant-document-entry", `is-${entry.kind}`)}>
                 {entry.linkLabel && (entry.workId || entry.citation) ? (

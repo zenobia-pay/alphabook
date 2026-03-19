@@ -1869,12 +1869,40 @@ button {
 }
 
 .assistant-document-entry.is-chunk {
-  padding: 14px 16px;
-  border: 1px solid rgba(38, 38, 38, 0.08);
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.62);
-  font-size: 0.99rem;
-  line-height: 1.66;
+  margin: 2px 0 6px;
+  padding: 0 0 0 18px;
+  border-left: 2px solid rgba(38, 38, 38, 0.14);
+}
+
+.assistant-document-quote {
+  margin: 0;
+  font-size: 1.02rem;
+  line-height: 1.72;
+}
+
+.assistant-document-quote::before {
+  content: open-quote;
+}
+
+.assistant-document-quote::after {
+  content: close-quote;
+}
+
+.assistant-document-citation {
+  margin-top: 8px;
+  font-size: 0.92rem;
+  line-height: 1.45;
+  color: var(--ink-subtle);
+}
+
+.assistant-document-citation .assistant-document-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.assistant-document-citation .assistant-document-link:hover {
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
 }
 
 .book-page {
