@@ -2886,13 +2886,24 @@ function normalizeSectionSummaryText(text: string) {
     .trim();
 }
 
+function isLowValueSectionSummary(text: string) {
+  const normalized = text.trim().toLowerCase();
+  if (!normalized) {
+    return true;
+  }
+  if (normalized === "running" || normalized === "done" || normalized === "failed" || normalized === "summary") {
+    return true;
+  }
+  return /^\d+\s+(book|books|passage|passages|workspace book|workspace books)$/u.test(normalized);
+}
+
 function toSectionSummary(entry: ToolTraceEntry) {
   const resultSummary = typeof entry.result?.__summary === "string" ? entry.result.__summary.trim() : "";
-  if (resultSummary.length > 0) {
+  if (resultSummary.length > 0 && !isLowValueSectionSummary(resultSummary)) {
     return resultSummary;
   }
   const argsSummary = typeof entry.args.__summary === "string" ? entry.args.__summary.trim() : "";
-  if (argsSummary.length > 0) {
+  if (argsSummary.length > 0 && !isLowValueSectionSummary(argsSummary)) {
     return argsSummary;
   }
   const rationale = typeof entry.rationale === "string" ? normalizeSectionSummaryText(entry.rationale) : "";

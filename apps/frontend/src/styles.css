@@ -1914,20 +1914,6 @@ button {
   margin-top: 14px;
 }
 
-.assistant-document-section-summary::after {
-  content: "Hide";
-  font-family: "Manrope", sans-serif;
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--ink-subtle);
-}
-
-.assistant-document-section:not([open]) .assistant-document-section-summary::after {
-  content: "Show";
-}
-
 .assistant-document-link {
   color: inherit;
   text-decoration: underline;
