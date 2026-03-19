@@ -1027,6 +1027,64 @@ function mergeToolTraceEntries(existing: ToolTraceEntry, incoming: ToolTraceEntr
   return nextEntry;
 }
 
+function mergeFetchedMessages(existingMessages: UiMessage[], incomingMessages: UiMessage[]) {
+  const existingById = new Map(existingMessages.map((message) => [message.id, message]));
+  const merged = incomingMessages.map((incoming) => {
+    const existing = existingById.get(incoming.id);
+    if (!existing) {
+      return incoming;
+    }
+
+    const incomingRunId = typeof incoming.metadata?.runId === "string" ? incoming.metadata.runId : null;
+    const existingRunId = typeof existing.metadata?.runId === "string" ? existing.metadata.runId : null;
+    const incomingPhase = typeof incoming.metadata?.phase === "string" ? incoming.metadata.phase : null;
+    const existingPhase = typeof existing.metadata?.phase === "string" ? existing.metadata.phase : null;
+
+    const mergedToolCalls =
+      incomingRunId
+      && incomingRunId === existingRunId
+      && incomingPhase === "plan"
+      && existingPhase === "plan"
+        ? (() => {
+            const incomingById = new Map(incoming.toolCalls.map((entry) => [entry.id, entry]));
+            const combined: ToolTraceEntry[] = incoming.toolCalls.map((entry) => {
+              const existingEntry = existing.toolCalls.find((candidate) => candidate.id === entry.id);
+              return existingEntry ? mergeToolTraceEntries(existingEntry, entry) : entry;
+            });
+            for (const existingEntry of existing.toolCalls) {
+              if (!incomingById.has(existingEntry.id)) {
+                combined.push(existingEntry);
+              }
+            }
+            return combined;
+          })()
+        : incoming.toolCalls.length > 0
+          ? incoming.toolCalls
+          : existing.toolCalls;
+
+    return {
+      ...incoming,
+      content:
+        incoming.content.length >= existing.content.length
+          ? incoming.content
+          : existing.content,
+      citations:
+        incoming.citations.length >= existing.citations.length
+          ? incoming.citations
+          : existing.citations,
+      toolCalls: mergedToolCalls,
+    };
+  });
+
+  const seenIds = new Set(merged.map((message) => message.id));
+  for (const existing of existingMessages) {
+    if (!seenIds.has(existing.id)) {
+      merged.push(existing);
+    }
+  }
+  return merged;
+}
+
 function formatRelativeTime(value: string | null | undefined) {
   if (!value) {
     return "Just now";
@@ -5166,7 +5224,8 @@ export default function App() {
       try {
         setMessagesLoading(true);
         const nextMessages = await fetchMessages(selectedSessionId);
-        setMessages(nextMessages.map(hydrateStoredMessage));
+        const hydrated = nextMessages.map(hydrateStoredMessage);
+        setMessages((current) => mergeFetchedMessages(current, hydrated));
       } catch (error) {
         setLoadError(getErrorMessage(error, "We couldn't load this conversation."));
       } finally {
@@ -5199,7 +5258,8 @@ export default function App() {
           return;
         }
         consecutivePollFailures = 0;
-        setMessages(nextMessages.map(hydrateStoredMessage));
+        const hydrated = nextMessages.map(hydrateStoredMessage);
+        setMessages((current) => mergeFetchedMessages(current, hydrated));
         pollTimer = window.setTimeout(() => {
           void pollMessages();
         }, 2000);
@@ -5225,7 +5285,8 @@ export default function App() {
       if (cancelled) {
         return;
       }
-      setMessages(nextMessages.map(hydrateStoredMessage));
+      const hydrated = nextMessages.map(hydrateStoredMessage);
+      setMessages((current) => mergeFetchedMessages(current, hydrated));
     };
 
     void streamRun(
