@@ -2939,6 +2939,12 @@ async function ensureRunAnswerPersisted(
     recoveredAnswer,
     recoveredSynthesis.citations,
   );
+  await persistResearchDocumentArtifact(
+    deps,
+    session.id,
+    runId,
+    buildPersistedResearchDocumentBundle(toolHistory, recoveredSynthesis.citations, recoveredAnswer),
+  );
   await deps.store.appendMessage(session.id, "assistant", recoveredAnswer, {
     runId,
     phase: "answer",
@@ -4824,6 +4830,12 @@ async function synthesizeAnswer(
     });
 
     const artifactKey = await persistFinalArtifact(deps, params.sessionId, params.runId, synthesis.answer, synthesis.citations);
+    await persistResearchDocumentArtifact(
+      deps,
+      params.sessionId,
+      params.runId,
+      buildPersistedResearchDocumentBundle(params.toolHistory, synthesis.citations, synthesis.answer),
+    );
     const summarizedToolHistory = summarizeToolHistory(params.toolHistory);
     await deps.store.appendMessage(params.sessionId, "assistant", synthesis.answer, {
       runId: params.runId,
@@ -4976,6 +4988,358 @@ function buildSynthesisResearchDocument(
   }
 
   return lines.length > 0 ? lines.join("\n") : null;
+}
+
+type PersistedResearchDocumentItem = {
+  key: string;
+  anchorId: string;
+  kind: "book" | "chunk" | "log";
+  evidenceTier: "frontier" | "verified" | "quoted";
+  text: string;
+  citationText?: string;
+  linkLabel?: string;
+  workId?: string;
+  citation?: Citation;
+};
+
+type PersistedResearchDocumentSection = {
+  key: string;
+  anchorId: string;
+  title: string;
+  summary: string;
+  meta: string;
+  evidenceTier: "frontier" | "verified" | "quoted";
+  items: PersistedResearchDocumentItem[];
+};
+
+type PersistedResearchDocumentBundle = {
+  version: 1;
+  title: string;
+  sections: PersistedResearchDocumentSection[];
+  ending: string;
+};
+
+function slugifyDocumentId(value: string) {
+  const normalized = value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gu, "-")
+    .replace(/^-+|-+$/gu, "");
+  return normalized || "entry";
+}
+
+function normalizeDocumentText(value: unknown) {
+  return typeof value === "string" ? value.replace(/\s+/gu, " ").trim() : "";
+}
+
+function isUsefulPersistedExcerpt(value: string) {
+  if (value.length < 40) {
+    return false;
+  }
+  if (/^(Touched|Reviewed|Starting|Seeded|Surfaced)\b/iu.test(value)) {
+    return false;
+  }
+  if (/[{}[\]]/u.test(value)) {
+    return false;
+  }
+  return !/^(error:|exec\b|\/bin\/bash\b|node \/)/iu.test(value);
+}
+
+function normalizeDocumentEnding(text: string | null | undefined) {
+  if (typeof text !== "string") {
+    return "";
+  }
+  const cleaned = text
+    .replace(/^#{1,6}\s+/gmu, "")
+    .replace(/^\s*[-*]\s+/gmu, "")
+    .trim();
+  if (!cleaned) {
+    return "";
+  }
+  return cleaned
+    .split(/\n\s*\n/u)
+    .map((paragraph) => paragraph.replace(/\s+/gu, " ").trim())
+    .filter((paragraph) => paragraph.length > 0)
+    .slice(0, 2)
+    .join("\n\n");
+}
+
+function persistedPluralize(count: number, singular: string, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function persistedPassageLocation(chunkIndex: number | null) {
+  if (chunkIndex === null || !Number.isFinite(chunkIndex)) {
+    return "roughly mid-book";
+  }
+  return `around passage ${chunkIndex}`;
+}
+
+function persistedSectionLabel(entry: ToolHistoryEntry) {
+  return labelForToolCall(entry.toolName, entry.args);
+}
+
+function persistedSectionSummary(entry: ToolHistoryEntry) {
+  const resultSummary = normalizeDocumentText(entry.result.__summary);
+  if (resultSummary) {
+    return resultSummary;
+  }
+  const argsSummary = normalizeDocumentText(entry.args.__summary);
+  if (argsSummary) {
+    return argsSummary;
+  }
+  const rationale = normalizeDocumentText(entry.rationale);
+  if (rationale) {
+    return rationale.endsWith(".") ? rationale : `${rationale}.`;
+  }
+  return `${persistedSectionLabel(entry)} completed.`.trim();
+}
+
+function persistedSectionMeta(items: PersistedResearchDocumentItem[]) {
+  const chunkCount = items.filter((item) => item.kind === "chunk").length;
+  const bookCount = items.filter((item) => item.kind === "book").length;
+  if (chunkCount > 0) {
+    return persistedPluralize(chunkCount, "passage");
+  }
+  if (bookCount > 0) {
+    return persistedPluralize(bookCount, "book");
+  }
+  return "";
+}
+
+function buildPersistedResearchDocumentBundle(
+  toolHistory: ToolHistoryEntry[],
+  citations: Citation[],
+  ending: string,
+): PersistedResearchDocumentBundle {
+  const confirmedWorkIds = new Set<string>();
+  for (const entry of toolHistory) {
+    if (entry.toolName === "get_relevant_chunks" && Array.isArray(entry.result.verifiedWorkIds)) {
+      for (const workId of entry.result.verifiedWorkIds) {
+        if (typeof workId === "string" && workId.trim().length > 0) {
+          confirmedWorkIds.add(workId);
+        }
+      }
+    }
+    if (entry.toolName === "get_relevant_chunks" && Array.isArray(entry.result.chunks)) {
+      for (const chunk of entry.result.chunks as Array<Record<string, unknown>>) {
+        if (typeof chunk.workId === "string" && chunk.workId.trim().length > 0) {
+          confirmedWorkIds.add(chunk.workId);
+        }
+      }
+    }
+  }
+
+  const sections: PersistedResearchDocumentSection[] = [];
+  const seenItems = new Set<string>();
+  const pushSection = (section: PersistedResearchDocumentSection) => {
+    if (section.items.length === 0) {
+      return;
+    }
+    section.meta = persistedSectionMeta(section.items);
+    sections.push(section);
+  };
+
+  for (const [index, entry] of toolHistory.entries()) {
+    const title = persistedSectionLabel(entry);
+    const section: PersistedResearchDocumentSection = {
+      key: `${entry.toolName}-${index}`,
+      anchorId: `section-${slugifyDocumentId(`${entry.toolName}-${index}-${title}`)}`,
+      title,
+      summary: persistedSectionSummary(entry),
+      meta: "",
+      evidenceTier: entry.toolName === "get_relevant_chunks" ? "verified" : "frontier",
+      items: [],
+    };
+
+    if (entry.toolName === "search_works" || entry.toolName === "get_work_metadata") {
+      const works = Array.isArray(entry.result.works) ? entry.result.works as Array<Record<string, unknown>> : [];
+      for (const work of works) {
+        const workId = typeof work.id === "string" ? work.id : null;
+        const titleText = normalizeDocumentText(work.title);
+        if (!workId || !titleText || !confirmedWorkIds.has(workId)) {
+          continue;
+        }
+        const authors = Array.isArray(work.authors)
+          ? work.authors.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+          : [];
+        const itemKey = `${section.key}:book:${workId}`;
+        if (seenItems.has(itemKey)) {
+          continue;
+        }
+        seenItems.add(itemKey);
+        section.items.push({
+          key: itemKey,
+          anchorId: `entry-${slugifyDocumentId(itemKey)}`,
+          kind: "book",
+          evidenceTier: "frontier",
+          text: `${titleText}${authors.length > 0 ? ` by ${authors.join(", ")}` : ""}`.trim(),
+          linkLabel: titleText,
+          workId,
+        });
+      }
+    }
+
+    if (entry.toolName === "create_workspace") {
+      const manifest = entry.result.manifest && typeof entry.result.manifest === "object"
+        ? entry.result.manifest as Record<string, unknown>
+        : null;
+      const works = Array.isArray(manifest?.works) ? manifest.works as Array<Record<string, unknown>> : [];
+      for (const work of works) {
+        const workId = typeof work.workId === "string" ? work.workId : null;
+        const titleText = normalizeDocumentText(work.title);
+        if (!workId || !titleText || !confirmedWorkIds.has(workId)) {
+          continue;
+        }
+        const authors = Array.isArray(work.authors)
+          ? work.authors.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+          : [];
+        const itemKey = `${section.key}:workspace:${workId}`;
+        if (seenItems.has(itemKey)) {
+          continue;
+        }
+        seenItems.add(itemKey);
+        section.items.push({
+          key: itemKey,
+          anchorId: `entry-${slugifyDocumentId(itemKey)}`,
+          kind: "book",
+          evidenceTier: "frontier",
+          text: `${titleText}${authors.length > 0 ? ` by ${authors.join(", ")}` : ""}`.trim(),
+          linkLabel: titleText,
+          workId,
+        });
+      }
+    }
+
+    if (entry.toolName === "get_relevant_chunks") {
+      const verifiedWorkIds = Array.isArray(entry.result.verifiedWorkIds)
+        ? new Set(
+            (entry.result.verifiedWorkIds as unknown[])
+              .filter((value): value is string => typeof value === "string" && value.trim().length > 0),
+          )
+        : null;
+      const chunks = Array.isArray(entry.result.chunks) ? entry.result.chunks as Array<Record<string, unknown>> : [];
+      for (const chunk of chunks) {
+        const workId = typeof chunk.workId === "string" ? chunk.workId : null;
+        if (!workId) {
+          continue;
+        }
+        if (verifiedWorkIds && verifiedWorkIds.size > 0 && !verifiedWorkIds.has(workId)) {
+          continue;
+        }
+        const excerpt = normalizeDocumentText(chunk.excerpt ?? chunk.text).slice(0, 440);
+        if (!isUsefulPersistedExcerpt(excerpt)) {
+          continue;
+        }
+        const chunkId = typeof chunk.id === "string" ? chunk.id : `${workId}-${section.items.length}`;
+        const workTitle = normalizeDocumentText(chunk.workTitle) || workId;
+        const authors = Array.isArray(chunk.authors)
+          ? chunk.authors.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+          : [];
+        const chunkIndex = typeof chunk.chunkIndex === "number" ? chunk.chunkIndex : null;
+        const citationText = `${workTitle}${authors.length > 0 ? `, by ${authors.join(", ")}` : ""}, ${persistedPassageLocation(chunkIndex)}`;
+        const itemKey = `${section.key}:chunk:${chunkId}`;
+        if (seenItems.has(itemKey)) {
+          continue;
+        }
+        seenItems.add(itemKey);
+        section.items.push({
+          key: itemKey,
+          anchorId: `entry-${slugifyDocumentId(itemKey)}`,
+          kind: "chunk",
+          evidenceTier: "verified",
+          text: excerpt,
+          citationText,
+          linkLabel: citationText,
+          workId,
+          citation: {
+            workId,
+            ...(typeof chunk.id === "string" ? { chunkId: chunk.id } : {}),
+            label: workTitle,
+            excerpt,
+            ...(typeof chunk.r2Key === "string" ? { r2Key: chunk.r2Key } : {}),
+          },
+        });
+      }
+    }
+
+    pushSection(section);
+  }
+
+  if (citations.length > 0) {
+    const quotedSection: PersistedResearchDocumentSection = {
+      key: "quoted-evidence",
+      anchorId: "section-quoted-evidence",
+      title: "Quoted Evidence",
+      summary: "Primary-source passages cited in the final answer.",
+      meta: "",
+      evidenceTier: "quoted",
+      items: [],
+    };
+    for (const [index, citation] of citations.entries()) {
+      const excerpt = normalizeDocumentText(citation.excerpt).slice(0, 440);
+      if (!isUsefulPersistedExcerpt(excerpt)) {
+        continue;
+      }
+      const itemKey = `quoted:${citation.workId}:${citation.chunkId ?? index}`;
+      if (seenItems.has(itemKey)) {
+        continue;
+      }
+      seenItems.add(itemKey);
+      quotedSection.items.push({
+        key: itemKey,
+        anchorId: `entry-${slugifyDocumentId(itemKey)}`,
+        kind: "chunk",
+        evidenceTier: "quoted",
+        text: excerpt,
+        citationText: citation.label,
+        linkLabel: citation.label,
+        workId: citation.workId,
+        citation,
+      });
+    }
+    pushSection(quotedSection);
+  }
+
+  sections.sort((left, right) => {
+    const priority = { quoted: 0, verified: 1, frontier: 2 } as const;
+    const tierDiff = priority[left.evidenceTier] - priority[right.evidenceTier];
+    if (tierDiff !== 0) {
+      return tierDiff;
+    }
+    return left.title.localeCompare(right.title);
+  });
+
+  return {
+    version: 1,
+    title: "Research log",
+    sections,
+    ending: normalizeDocumentEnding(ending),
+  };
+}
+
+async function persistResearchDocumentArtifact(
+  deps: AppDeps,
+  sessionId: string,
+  runId: string,
+  bundle: PersistedResearchDocumentBundle,
+) {
+  const filename = `${runId}-research-document.json`;
+  const r2Key = artifactKeys.sessionArtifact(sessionId, filename);
+  await deps.blobStore.putJson(r2Key, bundle);
+  await deps.store.saveArtifact({
+    sessionId,
+    runtimeId: null,
+    r2Key,
+    filename,
+    mimeType: "application/json",
+    metadata: {
+      kind: "research_document",
+      runId,
+      version: bundle.version,
+      sectionCount: bundle.sections.length,
+    },
+  });
+  return r2Key;
 }
 
 async function runOrchestrator(
@@ -6017,6 +6381,12 @@ async function runOrchestrator(
 
     if (routeDecision.type === "direct_response") {
       const artifactKey = await persistFinalArtifact(deps, session.id, run.id, routeDecision.answer, []);
+      await persistResearchDocumentArtifact(
+        deps,
+        session.id,
+        run.id,
+        buildPersistedResearchDocumentBundle([], [], routeDecision.answer),
+      );
       await deps.store.appendMessage(session.id, "assistant", routeDecision.answer, {
         artifactKey,
         route: "direct_response",

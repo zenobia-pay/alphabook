@@ -2735,6 +2735,14 @@ function artifactText(artifact: RunArtifactRecord) {
   return typeof artifact.content === "string" ? artifact.content.trim() : "";
 }
 
+function artifactCreatedAtTimestamp(artifact: RunArtifactRecord) {
+  if (!artifact.createdAt) {
+    return 0;
+  }
+  const timestamp = Date.parse(artifact.createdAt);
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
 function AssistantSessionToolbar({
   sessions,
   selectedSessionId,
@@ -2785,15 +2793,20 @@ type SourceChunkRecord = {
   note: string;
 };
 
+type ResearchEvidenceTier = "frontier" | "verified" | "quoted";
+
 type ResearchDocumentModel = {
   title: string;
   sections: Array<{
     key: string;
+    anchorId?: string;
     title: string;
     summary: string;
     meta: string;
+    evidenceTier?: ResearchEvidenceTier;
     items: Array<{
       key: string;
+      anchorId?: string;
       kind: Exclude<ResearchDocumentEntryKind, "title">;
       text: string;
       citationText?: string;
@@ -2803,6 +2816,7 @@ type ResearchDocumentModel = {
       citation?: Citation;
       prefix?: string;
       suffix?: string;
+      evidenceTier?: ResearchEvidenceTier;
     }>;
   }>;
   ending: string;
@@ -2810,6 +2824,7 @@ type ResearchDocumentModel = {
 
 type ResearchDocumentItem = {
   key: string;
+  anchorId?: string;
   kind: Exclude<ResearchDocumentEntryKind, "title">;
   text: string;
   citationText?: string;
@@ -2819,13 +2834,16 @@ type ResearchDocumentItem = {
   citation?: Citation;
   prefix?: string;
   suffix?: string;
+  evidenceTier?: ResearchEvidenceTier;
 };
 
 type ResearchDocumentSection = {
   key: string;
+  anchorId?: string;
   title: string;
   summary: string;
   meta: string;
+  evidenceTier?: ResearchEvidenceTier;
   items: ResearchDocumentItem[];
 };
 
@@ -3420,6 +3438,92 @@ function normalizeResearchEnding(text: string | null | undefined) {
   return paragraphs.slice(0, 2).join("\n\n");
 }
 
+function parseResearchDocumentArtifact(
+  artifact: RunArtifactRecord,
+  linkMode: "app" | "iframe",
+): ResearchDocumentModel | null {
+  const raw = artifactText(artifact);
+  if (!raw) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const sections = Array.isArray(parsed.sections) ? parsed.sections : [];
+    const normalizedSections: ResearchDocumentSection[] = sections.flatMap((section, sectionIndex) => {
+      if (!section || typeof section !== "object") {
+        return [];
+      }
+      const record = section as Record<string, unknown>;
+      const items = Array.isArray(record.items) ? record.items : [];
+      const normalizedItems: ResearchDocumentItem[] = items.flatMap((item, itemIndex) => {
+        if (!item || typeof item !== "object") {
+          return [];
+        }
+        const entry = item as Record<string, unknown>;
+        const kind = entry.kind === "book" || entry.kind === "chunk" || entry.kind === "log" ? entry.kind : null;
+        const text = typeof entry.text === "string" ? entry.text.trim() : "";
+        if (!kind || !text) {
+          return [];
+        }
+        const citation = entry.citation && typeof entry.citation === "object"
+          ? entry.citation as Citation
+          : undefined;
+        const workId = typeof entry.workId === "string" ? entry.workId : citation?.workId;
+        return [{
+          key: typeof entry.key === "string" ? entry.key : `artifact-item-${sectionIndex}-${itemIndex}`,
+          anchorId: typeof entry.anchorId === "string" ? entry.anchorId : undefined,
+          kind,
+          text,
+          citationText: typeof entry.citationText === "string" ? entry.citationText : undefined,
+          linkLabel: typeof entry.linkLabel === "string" ? entry.linkLabel : undefined,
+          linkHref: buildResearchDocumentLinkHref(linkMode, workId, citation),
+          workId,
+          citation,
+          evidenceTier:
+            entry.evidenceTier === "frontier" || entry.evidenceTier === "verified" || entry.evidenceTier === "quoted"
+              ? entry.evidenceTier
+              : undefined,
+        }];
+      });
+      if (normalizedItems.length === 0) {
+        return [];
+      }
+      return [{
+        key: typeof record.key === "string" ? record.key : `artifact-section-${sectionIndex}`,
+        anchorId: typeof record.anchorId === "string" ? record.anchorId : undefined,
+        title: typeof record.title === "string" && record.title.trim().length > 0 ? record.title.trim() : "Evidence",
+        summary: typeof record.summary === "string" ? record.summary.trim() : "",
+        meta: typeof record.meta === "string" ? record.meta.trim() : "",
+        evidenceTier:
+          record.evidenceTier === "frontier" || record.evidenceTier === "verified" || record.evidenceTier === "quoted"
+            ? record.evidenceTier
+            : undefined,
+        items: normalizedItems,
+      }];
+    });
+    return {
+      title: typeof parsed.title === "string" && parsed.title.trim().length > 0 ? parsed.title.trim() : "Research log",
+      sections: normalizedSections,
+      ending: typeof parsed.ending === "string" ? parsed.ending.trim() : "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+function persistedResearchDocument(
+  artifacts: RunArtifactRecord[],
+  linkMode: "app" | "iframe",
+): ResearchDocumentModel | null {
+  const candidate = [...artifacts]
+    .filter((artifact) => artifact.filename.endsWith("-research-document.json") || artifact.metadata?.kind === "research_document")
+    .sort((left, right) => artifactCreatedAtTimestamp(right) - artifactCreatedAtTimestamp(left))[0];
+  if (!candidate) {
+    return null;
+  }
+  return parseResearchDocumentArtifact(candidate, linkMode);
+}
+
 function buildResearchDocument(
   title: string,
   toolTrace: ToolTraceEntry[],
@@ -3699,10 +3803,7 @@ class ResearchDocumentErrorBoundary extends Component<
   }
 
   componentDidCatch(error: unknown, info: ErrorInfo) {
-    reportClientIncident(error, {
-      source: "research_document_render",
-      componentStack: info.componentStack || null,
-    });
+    console.error("research_document_render", error, info.componentStack || "");
   }
 
   render() {
@@ -3738,10 +3839,13 @@ function ResearchArtifactDocument({
   onOpenWork?: (workId: string) => void;
   onOpenCitation?: (citation: Citation) => void;
 }) {
-  const document = useMemo(
-    () => buildResearchDocument(sessionTitle, toolTrace, artifacts, ending, linkMode),
-    [artifacts, ending, linkMode, sessionTitle, toolTrace],
-  );
+  const document = useMemo(() => {
+    const persisted = persistedResearchDocument(artifacts, linkMode);
+    if (persisted) {
+      return persisted;
+    }
+    return buildResearchDocument(sessionTitle, toolTrace, artifacts, ending, linkMode);
+  }, [artifacts, ending, linkMode, sessionTitle, toolTrace]);
 
   return (
     <ResearchDocumentErrorBoundary>
@@ -3752,7 +3856,12 @@ function ResearchArtifactDocument({
               {document.title}
             </h1>
             {document.sections.map((section, index) => (
-              <details key={section.key} className="assistant-document-section" open={index < 3}>
+              <details
+                key={section.key}
+                id={section.anchorId}
+                className="assistant-document-section"
+                open={section.evidenceTier ? section.evidenceTier !== "frontier" : index < 3}
+              >
                 <summary className="assistant-document-section-summary">
                   <span className="assistant-document-section-title-row">
                     <span className="assistant-document-section-title">{section.title}</span>
@@ -3763,7 +3872,7 @@ function ResearchArtifactDocument({
                 <div className="assistant-document-section-body">
                   {section.items.map((entry) => (
                     entry.kind === "chunk" ? (
-                      <blockquote key={entry.key} className="assistant-document-entry is-chunk">
+                      <blockquote key={entry.key} id={entry.anchorId} className="assistant-document-entry is-chunk">
                         <p className="assistant-document-quote">
                           {entry.text}
                         </p>
@@ -3792,7 +3901,7 @@ function ResearchArtifactDocument({
                         ) : null}
                       </blockquote>
                     ) : (
-                      <p key={entry.key} className={cn("assistant-document-entry", `is-${entry.kind}`)}>
+                      <p key={entry.key} id={entry.anchorId} className={cn("assistant-document-entry", `is-${entry.kind}`)}>
                         {entry.linkLabel && (entry.workId || entry.citation) ? (
                           <>
                             {entry.prefix ? `${entry.prefix} ` : null}
