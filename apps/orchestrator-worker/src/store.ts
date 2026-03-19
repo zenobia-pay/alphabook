@@ -4194,9 +4194,15 @@ export class NeonAppStore implements AppStore {
     const batches = scopedWorkIds.length > batchSize
       ? chunkStringArray(scopedWorkIds, batchSize)
       : [scopedWorkIds];
-    const batchResults = await Promise.all(
-      batches.map((batch: string[]) => runScopedQuery(batch.length > 0 ? batch : undefined)),
-    );
+    const batchResults: ChunkSearchResult[][] = [];
+    const batchConcurrency = scopedWorkIds.length > batchSize ? 2 : 1;
+    for (let index = 0; index < batches.length; index += batchConcurrency) {
+      const window = batches.slice(index, index + batchConcurrency);
+      const windowResults = await Promise.all(
+        window.map((batch: string[]) => runScopedQuery(batch.length > 0 ? batch : undefined)),
+      );
+      batchResults.push(...windowResults);
+    }
     const dedupedRows = new Map<string, ChunkSearchResult>();
     for (const batch of batchResults) {
       for (const row of batch) {

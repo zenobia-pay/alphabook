@@ -1094,6 +1094,18 @@ function latestSearchWorksResultFromHistory(
   return null;
 }
 
+function hasCompletedSearchWorks(
+  toolHistory: Array<{
+    toolName: ToolName;
+    args: Record<string, unknown>;
+    result: Record<string, unknown>;
+  }>,
+) {
+  return toolHistory.some((entry) =>
+    entry.toolName === "search_works" && (Array.isArray(entry.result.works) || typeof entry.result.error === "string"),
+  );
+}
+
 function hasCompletedChunkSearch(
   toolHistory: Array<{
     toolName: ToolName;
@@ -8104,6 +8116,9 @@ async function runOrchestrator(
           input.message,
         );
       }
+      if (toolCall.tool_name === "search_works" && hasCompletedSearchWorks(toolHistory)) {
+        continue;
+      }
       if (toolCall.tool_name === "get_relevant_chunks" && hasCompletedChunkSearch(toolHistory)) {
         continue;
       }
@@ -8121,6 +8136,8 @@ async function runOrchestrator(
         if (workspaceLastFailureAt > 0 && now - workspaceLastFailureAt < 30_000) {
           continue;
         }
+        await startBackgroundTool("create_workspace", normalizedToolArgs, toolCall.rationale ?? "Preparing the deeper research workspace.");
+        continue;
       }
       const pendingExecution = pendingWorkspaceExecution as PendingWorkspaceExecution | null;
       if (toolCall.tool_name === "run_workspace_task" && pendingExecution) {
@@ -8148,9 +8165,7 @@ async function runOrchestrator(
       const runtimeId =
         typeof normalizedToolArgs.runtimeId === "string"
           ? normalizedToolArgs.runtimeId
-          : toolCall.tool_name === "create_workspace" && typeof normalizedToolArgs.runtime_id === "string"
-            ? normalizedToolArgs.runtime_id
-            : null;
+          : null;
       if (runtimeId) {
         activeRun?.runtimeIds.add(runtimeId);
       }
@@ -8257,17 +8272,6 @@ async function runOrchestrator(
 
       let result: Record<string, unknown>;
       let status: "completed" | "failed" = "completed";
-      if (toolCall.tool_name === "create_workspace") {
-        await progressEmitter.stop();
-        liveToolTrace = liveToolTrace.filter((entry) => entry.id !== toolRecord.id);
-        await deps.store.finishToolCall(toolRecord.id, "failed", {
-          ok: false,
-          error: "Replaced by background workspace startup.",
-        });
-        await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
-        await startBackgroundTool("create_workspace", normalizedToolArgs, toolCall.rationale ?? "Preparing the deeper research workspace.");
-        continue;
-      }
       try {
         if (toolCall.tool_name === "estimate_research_scope" && typeof normalizedToolArgs.query === "string") {
           const estimateFilters = normalizedScopeEstimateFilters(normalizedToolArgs.filters);

@@ -1122,6 +1122,9 @@ function buildBriefingPrompt(runtimePrompt, manifest, task, evidence, question) 
     (!openBookMode && (seededCandidateCount >= 3 || seededChunkCount >= 4))
       ? `- This run already starts with ${seededCandidateCount} candidate books and ${seededChunkCount} seed passages. Review those first, draft the strongest categories from them, and widen only if major coping strategies or book variety are still missing.`
       : null,
+    (!openBookMode && seededCandidateCount >= 3)
+      ? "- Do not roam outside the supplied candidate/frontier books unless those books are exhausted and a new book is directly justified by a relevant passage hit."
+      : null,
     openBookMode
       ? "- Stay inside the current hydrated book unless the local evidence is clearly insufficient."
       : "- Start from the best available seed evidence, but widen across the full corpus whenever the prompt asks for a broad theme, comparison, or survey.",
