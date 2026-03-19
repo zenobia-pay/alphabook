@@ -602,7 +602,19 @@ function dedupeAdjacentErrorMessages(messages: UiMessage[]) {
   return deduped;
 }
 
+function hasCanonicalPlanToolTrace(messages: UiMessage[], runId: string) {
+  return messages.some((message) => {
+    const messageRunId = typeof message.metadata?.runId === "string" ? message.metadata.runId : null;
+    const phase = typeof message.metadata?.phase === "string" ? message.metadata.phase : null;
+    return messageRunId === runId && phase === "plan" && message.toolCalls.length > 0;
+  });
+}
+
 function mergePersistedToolTrace(messages: UiMessage[], runId: string, trace: Array<Record<string, unknown>>) {
+  if (hasCanonicalPlanToolTrace(messages, runId)) {
+    return messages;
+  }
+
   const normalizedTrace = trace.map((entry, index) => normalizeToolTraceEntry(entry, index));
   if (normalizedTrace.length === 0) {
     return messages;
