@@ -1,6 +1,6 @@
 import { createNeonDb } from "@alphabook/db";
 
-import { createApp, reapExpiredRuntimeInstances } from "./app";
+import { createApp, reapExpiredRuntimeInstances, reapStaleRuns } from "./app";
 import { WorkOSAuth } from "./auth";
 import { createBillingService } from "./billing";
 import { OpenAIEmbedder } from "./embeddings";
@@ -228,6 +228,29 @@ async function runScheduledJanitor(env: Env) {
   );
 
   await reapExpiredRuntimeInstances(
+    {
+      store,
+      billing,
+      planner,
+      embedder,
+      synthesizer,
+      blobStore,
+      runtimeGateway: resolveRuntimeGateway(env, store, blobStore),
+      queues: {
+        ingestName: env.QUEUE_INGEST_NAME ?? "alphabook-ingest",
+        jobsName: env.QUEUE_JOBS_NAME ?? "alphabook-jobs",
+      },
+      openAIApiKey: env.OPENAI_API_KEY,
+      openAIModel: env.OPENAI_SYNTH_MODEL ?? env.OPENAI_MODEL ?? "gpt-5.2",
+      ai: env.AI,
+      toolStreamCleanupModel: env.TOOL_STREAM_CLEANUP_MODEL,
+      errorAlertWebhookUrl: env.ERROR_ALERT_WEBHOOK_URL,
+    },
+    {
+      runId: `scheduled-janitor-${new Date().toISOString()}`,
+    },
+  );
+  await reapStaleRuns(
     {
       store,
       billing,

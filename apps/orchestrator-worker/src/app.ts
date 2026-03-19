@@ -4935,6 +4935,29 @@ export async function reapExpiredRuntimeInstances(
   }
 }
 
+export async function reapStaleRuns(
+  deps: AppDeps,
+  context: { runId: string },
+  limit = 100,
+) {
+  const allRuns = await deps.store.listAllRuns();
+  const staleRuns = allRuns
+    .filter((run) => run.status === "running" || run.status === "queued")
+    .slice(0, limit);
+  const janitorRequest = new Request("https://api.alpha-book.org/internal/janitor");
+  for (const run of staleRuns) {
+    const runRecord = await deps.store.getRun(run.id);
+    if (!runRecord) {
+      continue;
+    }
+    try {
+      await reconcilePersistentRun(deps, janitorRequest, runRecord);
+    } catch {
+      // Best-effort janitor pass; the next schedule can retry this run.
+    }
+  }
+}
+
 function shouldReadLiveRuntimeFile(path: string) {
   if (path === "context/manifest.json" || path === "context/task.json" || path === "context/selected-chunks.json") {
     return true;
@@ -9372,8 +9395,6 @@ export function createApp(deps: AppDeps) {
     if (!run || run.sessionId !== sessionId) {
       return c.json({ error: "Run not found." }, 404);
     }
-    const reconciledRun = await reconcilePersistentRun(deps, c.req.raw, run, activeRuns);
-
     const [toolCalls, runtimeInstances] = await Promise.all([
       deps.store.listToolCalls(runId),
       deps.store.listRuntimeInstances(sessionId),
@@ -9383,7 +9404,7 @@ export function createApp(deps: AppDeps) {
     const metrics = extractRecordedRunMetrics(rawLog);
 
     return c.json({
-      run: reconciledRun ?? run,
+      run,
       toolCalls,
       toolTrace: buildRecoveredToolTrace(toolCalls),
       runtimeInstances,
@@ -9408,12 +9429,11 @@ export function createApp(deps: AppDeps) {
     if (!run || run.sessionId !== sessionId) {
       return c.json({ error: "Run not found." }, 404);
     }
-    const reconciledRun = await reconcilePersistentRun(deps, c.req.raw, run, activeRuns);
     const toolCalls = await deps.store.listToolCalls(runId);
     const artifacts = await loadRunArtifacts(deps, sessionId, runId, toolCalls);
 
     return c.json({
-      run: reconciledRun ?? run,
+      run,
       toolTrace: buildRecoveredToolTrace(toolCalls),
       artifacts,
     });
@@ -9434,8 +9454,6 @@ export function createApp(deps: AppDeps) {
     if (!run || run.sessionId !== sessionId) {
       return c.json({ error: "Run not found." }, 404);
     }
-    const reconciledRun = await reconcilePersistentRun(deps, c.req.raw, run, activeRuns);
-
     const [toolCalls, runtimeInstances] = await Promise.all([
       deps.store.listToolCalls(runId),
       deps.store.listRuntimeInstances(sessionId),
@@ -9445,7 +9463,7 @@ export function createApp(deps: AppDeps) {
     const metrics = extractRecordedRunMetrics(rawLog);
 
     return c.json({
-      run: reconciledRun ?? run,
+      run,
       toolCalls,
       toolTrace: buildRecoveredToolTrace(toolCalls),
       runtimeInstances,
@@ -9470,12 +9488,11 @@ export function createApp(deps: AppDeps) {
     if (!run || run.sessionId !== sessionId) {
       return c.json({ error: "Run not found." }, 404);
     }
-    const reconciledRun = await reconcilePersistentRun(deps, c.req.raw, run, activeRuns);
     const toolCalls = await deps.store.listToolCalls(runId);
     const artifacts = await loadRunArtifacts(deps, sessionId, runId, toolCalls);
 
     return c.json({
-      run: reconciledRun ?? run,
+      run,
       toolTrace: buildRecoveredToolTrace(toolCalls),
       artifacts,
     });
@@ -9536,8 +9553,6 @@ export function createApp(deps: AppDeps) {
     if (!run || run.sessionId !== sessionId) {
       return c.json({ error: "Run not found." }, 404);
     }
-    const reconciledRun = await reconcilePersistentRun(deps, c.req.raw, run, activeRuns);
-
     const [messages, toolCalls, runtimeInstances, artifacts] = await Promise.all([
       deps.store.listMessages(sessionId),
       deps.store.listToolCalls(runId),
@@ -9553,7 +9568,7 @@ export function createApp(deps: AppDeps) {
 
     return c.json({
       session,
-      run: reconciledRun ?? run,
+      run,
       messages,
       toolCalls,
       runtimeInstances,
@@ -9578,8 +9593,6 @@ export function createApp(deps: AppDeps) {
     if (!run || run.sessionId !== sessionId) {
       return c.json({ error: "Run not found." }, 404);
     }
-    const reconciledRun = await reconcilePersistentRun(deps, c.req.raw, run, activeRuns);
-
     const [messages, toolCalls, runtimeInstances] = await Promise.all([
       deps.store.listMessages(sessionId),
       deps.store.listToolCalls(runId),
@@ -9591,7 +9604,7 @@ export function createApp(deps: AppDeps) {
 
     return c.json({
       session,
-      run: reconciledRun ?? run,
+      run,
       messages,
       toolCalls,
       runtimeInstances,
@@ -9616,8 +9629,6 @@ export function createApp(deps: AppDeps) {
     if (!run || run.sessionId !== sessionId) {
       return c.json({ error: "Run not found." }, 404);
     }
-    const reconciledRun = await reconcilePersistentRun(deps, c.req.raw, run, activeRuns);
-
     const [messages, toolCalls, runtimeInstances] = await Promise.all([
       deps.store.listMessages(sessionId),
       deps.store.listToolCalls(runId),
@@ -9629,7 +9640,7 @@ export function createApp(deps: AppDeps) {
 
     return c.json({
       session,
-      run: reconciledRun ?? run,
+      run,
       messages,
       toolCalls,
       runtimeInstances,
@@ -9650,9 +9661,7 @@ export function createApp(deps: AppDeps) {
     if (!run) {
       return c.json({ error: "Run not found." }, 404);
     }
-    const reconciledRun = await reconcilePersistentRun(deps, c.req.raw, run, activeRuns);
-
-    const session = await deps.store.getSession((reconciledRun ?? run).sessionId);
+    const session = await deps.store.getSession(run.sessionId);
     if (!session) {
       return c.json({ error: "Session not found." }, 404);
     }
@@ -9671,11 +9680,11 @@ export function createApp(deps: AppDeps) {
       requestedBy: {
         id: admin.id,
         email: admin.email,
-        name: admin.name,
+      name: admin.name,
       },
       owner,
       session,
-      run: reconciledRun ?? run,
+      run,
       messages,
       toolCalls,
       runtimeInstances,
