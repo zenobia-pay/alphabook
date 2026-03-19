@@ -250,6 +250,11 @@ function metadataWorks(context: PlannerContext): WorkSummary[] {
   return Array.isArray(metadataResult?.works) ? metadataResult.works as WorkSummary[] : [];
 }
 
+function isBroadCorpusQuery(context: PlannerContext): boolean {
+  return workspaceMode(context) === "exhaustive_corpus_search"
+    && needsWorkspaceSearch(context.userMessage, context.workScope ?? [], seedChunkPayload(context).length);
+}
+
 function searchWorks(context: PlannerContext): WorkSummary[] {
   const searchResult = context.toolHistory.find((item) => item.toolName === "search_works")?.result;
   return Array.isArray(searchResult?.works) ? searchResult.works as WorkSummary[] : [];
@@ -325,12 +330,13 @@ function lastToolCall(context: PlannerContext): PlannerContext["toolHistory"][nu
 }
 
 function buildTaskContext(context: PlannerContext, workIds: string[], chunks: ChunkSearchResult[]) {
+  const broadCorpusQuery = isBroadCorpusQuery(context);
   return {
     question: context.userMessage,
     researchObjective: context.userMessage,
     mode: workspaceMode(context),
     candidateWorkIds: workIds,
-    topChunks: chunks.slice(0, 12).map((chunk) => ({
+    topChunks: chunks.slice(0, broadCorpusQuery ? 24 : 12).map((chunk) => ({
       chunkId: chunk.id,
       workId: chunk.workId,
       excerpt: chunk.excerpt,
@@ -339,6 +345,10 @@ function buildTaskContext(context: PlannerContext, workIds: string[], chunks: Ch
 }
 
 function buildWorkspaceTaskSpec(context: PlannerContext, workIds: string[], chunks: ChunkSearchResult[]) {
+  const broadCorpusQuery = isBroadCorpusQuery(context);
+  const workLimit = broadCorpusQuery ? 24 : 12;
+  const chunkLimit = broadCorpusQuery ? 48 : 24;
+  const seedChunkLimit = broadCorpusQuery ? 32 : 16;
   const metadata = metadataWorks(context);
   const search = searchWorks(context);
   return {
@@ -348,14 +358,14 @@ function buildWorkspaceTaskSpec(context: PlannerContext, workIds: string[], chun
     researchObjective: context.userMessage,
     mode: workspaceMode(context),
     workIds,
-    chunkIds: chunks.slice(0, 24).map((chunk) => chunk.id),
+    chunkIds: chunks.slice(0, chunkLimit).map((chunk) => chunk.id),
     candidateWorkIds: workIds,
     searchHints: {
       searchWorksQuery: context.userMessage,
       passageSearchFocus: "Find the strongest directly quotable passages that best answer the research objective.",
     },
     retrieval: {
-      searchWorks: search.slice(0, 12).map((work) => ({
+      searchWorks: search.slice(0, workLimit).map((work) => ({
         id: work.id,
         title: work.title,
         authors: work.authors ?? [],
@@ -363,7 +373,7 @@ function buildWorkspaceTaskSpec(context: PlannerContext, workIds: string[], chun
         subjects: work.subjects ?? [],
         gutenbergId: work.gutenbergId ?? null,
       })),
-      metadataWorks: metadata.slice(0, 12).map((work) => ({
+      metadataWorks: metadata.slice(0, workLimit).map((work) => ({
         id: work.id,
         title: work.title,
         authors: work.authors ?? [],
@@ -371,7 +381,7 @@ function buildWorkspaceTaskSpec(context: PlannerContext, workIds: string[], chun
         subjects: work.subjects ?? [],
         gutenbergId: work.gutenbergId ?? null,
       })),
-      seedChunks: chunks.slice(0, 16).map((chunk) => ({
+      seedChunks: chunks.slice(0, seedChunkLimit).map((chunk) => ({
         id: chunk.id,
         workId: chunk.workId,
         chunkIndex: chunk.chunkIndex,
@@ -388,17 +398,21 @@ function buildWorkspaceTaskSpec(context: PlannerContext, workIds: string[], chun
 
 export class FallbackPlanner implements Planner {
   async decide(context: PlannerContext): Promise<PlannerDecision> {
+    const broadCorpusQuery = isBroadCorpusQuery(context);
+    const metadataLimit = broadCorpusQuery ? 24 : 12;
+    const workLimit = broadCorpusQuery ? 24 : 12;
+    const chunkLimit = broadCorpusQuery ? 36 : 20;
     const toolNames = [
       ...context.toolHistory.map((item) => item.toolName),
       ...(context.pendingTools ?? []).map((item) => item.toolName),
     ];
     const scopedWorkIds = context.workScope?.length ? context.workScope : [];
     const chunks = seedChunkPayload(context);
-    const metadataIds = scopedWorkIds.length > 0 ? scopedWorkIds.slice(0, 12) : metadataWorkIds(context, 12);
+    const metadataIds = scopedWorkIds.length > 0 ? scopedWorkIds.slice(0, metadataLimit) : metadataWorkIds(context, metadataLimit);
     const workIds = Array.from(new Set([
       ...metadataIds,
       ...chunks.map((chunk) => chunk.workId),
-    ])).slice(0, 12);
+    ])).slice(0, workLimit);
 
     if (!toolNames.includes("create_workspace")) {
       return {
@@ -423,7 +437,7 @@ export class FallbackPlanner implements Planner {
         args: {
           query: context.userMessage,
           filters: {
-            limit: 12,
+            limit: metadataLimit,
           },
         },
       };
@@ -451,7 +465,7 @@ export class FallbackPlanner implements Planner {
           query: context.userMessage,
           ...(metadataIds.length > 0 ? { workIds: metadataIds } : {}),
           filters: {
-            limit: 20,
+            limit: chunkLimit,
           },
         },
       };

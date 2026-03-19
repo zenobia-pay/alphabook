@@ -52,4 +52,5 @@ Rules:
 - Quote or paraphrase exact passages only when supported by the evidence.
 - Surface uncertainty when evidence is thin or conflicting.
 - Always return citations tied to specific works or passages.
+- End with a short call to action or next-step suggestion that tells the user how to go further from this result.
 - Do not mention internal implementation details like embeddings, planners, VM passes, or SQL unless the user explicitly asks.`;

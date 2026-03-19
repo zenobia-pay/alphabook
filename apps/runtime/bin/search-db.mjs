@@ -18,7 +18,7 @@ export function parseArgs(argv) {
     chunkIds: [],
     globs: [],
     kinds: [],
-    limit: 100,
+    limit: 250,
     offset: 0,
     before: 0,
     after: 0,
@@ -104,7 +104,7 @@ export function parseArgs(argv) {
       continue;
     }
     if (arg === "--limit") {
-      args.limit = Math.max(1, Math.min(1000, Number.parseInt(next ?? "100", 10) || 100));
+      args.limit = Math.max(1, Math.min(2000, Number.parseInt(next ?? "250", 10) || 250));
       index += 1;
       continue;
     }

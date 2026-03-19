@@ -897,6 +897,9 @@ function compactTaskContext(taskContext) {
 
 function compactTaskSpec(task, openBookMode) {
   const retrieval = task && typeof task.retrieval === "object" ? task.retrieval : null;
+  const broadCorpusMode = !openBookMode && typeof task?.mode === "string" && task.mode === "exhaustive_corpus_search";
+  const workLimit = broadCorpusMode ? 24 : 12;
+  const chunkLimit = broadCorpusMode ? 32 : 16;
   return {
     runtimeId: typeof task.runtimeId === "string" ? task.runtimeId : null,
     taskType: typeof task.taskType === "string" ? task.taskType : null,
@@ -915,13 +918,21 @@ function compactTaskSpec(task, openBookMode) {
     dedupe: typeof task.dedupe === "boolean" ? task.dedupe : null,
     prefer: Array.isArray(task.prefer) ? task.prefer.slice(0, 6).map((item) => normalizeWhitespace(String(item)).slice(0, 120)) : [],
     openBookMode,
-    workIds: sampleStrings(task.workIds, 12),
-    chunkIds: sampleStrings(task.chunkIds, 16),
-    candidateWorkIds: sampleStrings(task.candidateWorkIds, 16),
+    workIds: sampleStrings(task.workIds, workLimit),
+    chunkIds: sampleStrings(task.chunkIds, chunkLimit),
+    candidateWorkIds: sampleStrings(task.candidateWorkIds, workLimit),
     retrieval: retrieval
       ? {
           searchWorks: Array.isArray(retrieval.searchWorks)
-            ? retrieval.searchWorks.slice(0, 12).map((work) => ({
+            ? retrieval.searchWorks.slice(0, workLimit).map((work) => ({
+                id: typeof work?.id === "string" ? work.id : null,
+                title: typeof work?.title === "string" ? work.title : null,
+                authors: Array.isArray(work?.authors) ? work.authors.slice(0, 3) : [],
+                summary: typeof work?.summary === "string" ? normalizeWhitespace(work.summary).slice(0, 220) : null,
+              }))
+            : [],
+          metadataWorks: Array.isArray(retrieval.metadataWorks)
+            ? retrieval.metadataWorks.slice(0, workLimit).map((work) => ({
                 id: typeof work?.id === "string" ? work.id : null,
                 title: typeof work?.title === "string" ? work.title : null,
                 authors: Array.isArray(work?.authors) ? work.authors.slice(0, 3) : [],
@@ -929,7 +940,7 @@ function compactTaskSpec(task, openBookMode) {
               }))
             : [],
           seedChunks: Array.isArray(retrieval.seedChunks)
-            ? retrieval.seedChunks.slice(0, 12).map((chunk) => ({
+            ? retrieval.seedChunks.slice(0, chunkLimit).map((chunk) => ({
                 id: typeof chunk?.id === "string" ? chunk.id : null,
                 workId: typeof chunk?.workId === "string" ? chunk.workId : null,
                 title: typeof chunk?.title === "string" ? chunk.title : null,
@@ -941,6 +952,17 @@ function compactTaskSpec(task, openBookMode) {
       : null,
     taskContext: compactTaskContext(task.taskContext),
   };
+}
+
+function isBroadCorpusTask(task, openBookMode) {
+  if (openBookMode) {
+    return false;
+  }
+  if (typeof task?.mode === "string" && task.mode === "exhaustive_corpus_search") {
+    return true;
+  }
+  const query = String(task?.researchObjective || task?.question || task?.goal || "");
+  return /\b(all|every|compare|comparison|trace|theme|pattern|survey|synthesize|search|find|why|how|where|when|corpus|across)\b/i.test(query);
 }
 
 function buildBriefingPrompt(runtimePrompt, manifest, task, evidence, question) {
@@ -979,6 +1001,7 @@ function buildBriefingPrompt(runtimePrompt, manifest, task, evidence, question) 
   const researchObjective = compactTask.researchObjective || question;
   const seededCandidateCount = Array.isArray(compactTask.candidateWorkIds) ? compactTask.candidateWorkIds.length : 0;
   const seededChunkCount = Array.isArray(compactTask.chunkIds) ? compactTask.chunkIds.length : 0;
+  const broadCorpusTask = isBroadCorpusTask(task, openBookMode);
   return [
     runtimePrompt,
     "",
@@ -998,7 +1021,9 @@ function buildBriefingPrompt(runtimePrompt, manifest, task, evidence, question) 
       : "- Start from the best available seed evidence, but widen across the full corpus whenever the prompt asks for a broad theme, comparison, or survey.",
     openBookMode
       ? "- Use at most 5 shell commands total before you return your answer."
-      : "- Keep the search bounded: use at most 14 shell commands total before you return your answer.",
+      : broadCorpusTask
+        ? "- Keep the search bounded but wide: use at most 28 shell commands total before you return your answer."
+        : "- Keep the search bounded: use at most 14 shell commands total before you return your answer.",
     "- Prefer finishing with a good briefing over exhaustively exploring every possible lead.",
     openBookMode
       ? "- Search the local clean text and local chunks first with rg and sed. Use the remote Postgres corpus CLI only as a fallback."
@@ -1031,15 +1056,28 @@ function buildBriefingPrompt(runtimePrompt, manifest, task, evidence, question) 
     "- Use the schema, books, and metadata to decide what to hydrate only after the corpus-wide search narrows the scope.",
     "- Do not browse the internet.",
     "- Expand across more books until the candidate search space is exhausted or clearly irrelevant.",
+    broadCorpusTask
+      ? "- For broad corpus questions, do not stop after the first few promising books. Sweep widely first, keep a larger active set, then narrow only after repeated search passes converge."
+      : null,
+    broadCorpusTask
+      ? "- Aim to touch dozens of books when the corpus evidence supports it, and prefer at least 6 distinct books in the final evidence set before you stop widening."
+      : null,
+    broadCorpusTask
+      ? "- After broad search surfaces many hits, cluster by work, keep the best 12 to 24 works active, and fetch neighbors or hydrated local text for the strongest subset before writing."
+      : null,
     "- Create a focused local corpus in /workspace/scratch/research-corpus by copying or excerpting only the most relevant passages or files.",
     "- Your required deliverable is one file: /workspace/output/briefing.md",
     "- The briefing should mix primary-source quotes with short explanations.",
     "- Every quote should include a nearby source reference using the work title and chunk/source identifier when available.",
     "- Prefer primary-source quotations and preserve source identifiers.",
     (!openBookMode && seededChunkCount >= 4)
-      ? "- If the seed passages already give you 2 to 8 strong quotations across multiple books, stop widening and write the briefing from that grounded evidence."
+      ? broadCorpusTask
+        ? "- If the seed passages already give you strong quotations but only from a narrow slice of books, keep widening until the broader search stops adding new categories or clearly relevant works."
+        : "- If the seed passages already give you 2 to 8 strong quotations across multiple books, stop widening and write the briefing from that grounded evidence."
       : null,
-    "- Once you have 2 to 8 strong quotations, stop searching and write the briefing.",
+    broadCorpusTask
+      ? "- Once you have roughly 8 to 16 strong quotations across several books and additional wide searches are no longer adding new categories, stop searching and write the briefing."
+      : "- Once you have 2 to 8 strong quotations, stop searching and write the briefing.",
     "- If the evidence is thin, still write /workspace/output/briefing.md and say that clearly.",
     "- You may optionally write helper notes under /workspace/output, but only /workspace/output/briefing.md is required.",
     "- Do not stop after searching. A run is incomplete until /workspace/output/briefing.md exists with real content.",
@@ -1412,6 +1450,10 @@ async function main() {
   ]);
 
   const question = String(task.researchObjective || task.question || task.goal || task.prompt || task.task || "Analyze the workspace corpus.");
+  const broadCorpusTask = isBroadCorpusTask(task, false);
+  const retrievalWorkLimit = broadCorpusTask ? 24 : 12;
+  const seedChunkLimit = broadCorpusTask ? 32 : 16;
+  const runtimeHitLimit = broadCorpusTask ? 24 : 12;
   const tokens = queryTokens(question);
   const expansions = semanticExpansions(question);
   const searchTokens = Array.from(new Set([...tokens, ...expansions.tokens]));
@@ -1459,9 +1501,9 @@ async function main() {
   }
   const mergedHits = mergeHits(iterations);
   const filteredHits = prioritizeFamilyHits(filterFamilyHits(mergedHits, chunkIndex, expansions.families), expansions.families);
-  const topRuntimeHits = diversifyHits(expandWithNeighbors(filteredHits, chunkIndex), 10, 3);
+  const topRuntimeHits = diversifyHits(expandWithNeighbors(filteredHits, chunkIndex), broadCorpusTask ? 24 : 10, broadCorpusTask ? 6 : 3);
   const seedChunks = gatherSeedChunks(task, selectedChunks, workById);
-  const evidence = buildSearchEvidence(question, seedChunks.slice(0, 12), topRuntimeHits, workById);
+  const evidence = buildSearchEvidence(question, seedChunks.slice(0, seedChunkLimit), topRuntimeHits.slice(0, runtimeHitLimit), workById);
   const seededWorkIds = Array.from(new Set([
     ...(Array.isArray(task.workIds) ? task.workIds.map((value) => String(value || "")) : []),
     ...(Array.isArray(task.candidateWorkIds) ? task.candidateWorkIds.map((value) => String(value || "")) : []),
@@ -1476,7 +1518,7 @@ async function main() {
     message: `Seeded the deeper research run with ${seededWorkIds.length} candidate books, ${seedChunks.length} seed passages, and ${topRuntimeHits.length} local runtime hits.`,
   });
 
-  for (const work of retrievalWorks.slice(0, 12)) {
+  for (const work of retrievalWorks.slice(0, retrievalWorkLimit)) {
     if (!work || typeof work !== "object" || typeof work.id !== "string") {
       continue;
     }
@@ -1489,7 +1531,7 @@ async function main() {
     });
   }
 
-  for (const chunk of seedChunks.slice(0, 16)) {
+  for (const chunk of seedChunks.slice(0, seedChunkLimit)) {
     await appendProgressEvent(outputDir, {
       type: "research.chunk",
       chunkId: chunk.id,
@@ -1502,7 +1544,7 @@ async function main() {
     });
   }
 
-  for (const chunk of topRuntimeHits.slice(0, 12)) {
+  for (const chunk of topRuntimeHits.slice(0, runtimeHitLimit)) {
     const normalized = normalizeChunkRecord(chunk, workById);
     await appendProgressEvent(outputDir, {
       type: "research.chunk",

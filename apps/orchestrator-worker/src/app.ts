@@ -2009,6 +2009,13 @@ function collectChunkIds(input: unknown) {
     .filter((value): value is string => typeof value === "string" && value.length > 0);
 }
 
+function isBroadCorpusResearchQuery(query: string, scopedWorkCount = 0) {
+  if (scopedWorkCount > 0) {
+    return false;
+  }
+  return /\b(all|every|compare|comparison|trace|theme|pattern|survey|synthesize|search|find|why|how|where|when|corpus|across)\b/i.test(query);
+}
+
 function buildRunMetricsSnapshot(
   state: LiveRunMetricsState,
   status: string,
@@ -4440,6 +4447,28 @@ async function synthesizeAnswer(
       synthesis.answer,
       synthesis.citations,
     );
+    const answerEvaluation = typeof deps.synthesizer.evaluateAnswer === "function"
+      ? await deps.synthesizer.evaluateAnswer({
+          userMessage: params.userMessage,
+          answer: synthesis.answer,
+          citations: synthesis.citations,
+          billingContext: {
+            userId: params.userId,
+            sessionId: params.sessionId,
+            runId: params.runId,
+            source: "synthesizer-eval",
+          },
+        }).catch(() => null)
+      : null;
+    if (answerEvaluation) {
+      params.auditLog?.("answer.evaluation", answerEvaluation as unknown as Record<string, unknown>);
+      void recordAnalyticsEvent(deps, params.request, "answer_quality_summary", {
+        userId: params.userId,
+        sessionId: params.sessionId,
+        runId: params.runId,
+        ...answerEvaluation,
+      }).catch(() => {});
+    }
     params.auditLog?.("internal.synthesis.completed", {
       citationCount: synthesis.citations.length,
       answerLength: synthesis.answer.length,
@@ -4451,6 +4480,7 @@ async function synthesizeAnswer(
       runId: params.runId,
       phase: "answer",
       citations: synthesis.citations,
+      answerEvaluation,
       artifactKey,
       researchLog: summarizedToolHistory,
     });
@@ -5211,7 +5241,12 @@ async function runOrchestrator(
   };
 
   const buildBackgroundWorkspaceTaskSpec = (runtimeId: string) => {
-    const scopedWorkIds = Array.isArray(input.workIds) ? input.workIds.slice(0, 12) : [];
+    const broadCorpusQuery = isBroadCorpusResearchQuery(routedQueryRef.current, Array.isArray(input.workIds) ? input.workIds.length : 0);
+    const workLimit = broadCorpusQuery ? 24 : 12;
+    const candidateLimit = broadCorpusQuery ? 24 : 8;
+    const chunkLimit = broadCorpusQuery ? 48 : 24;
+    const seedChunkLimit = broadCorpusQuery ? 32 : 16;
+    const scopedWorkIds = Array.isArray(input.workIds) ? input.workIds.slice(0, workLimit) : [];
     const searchWorks = searchWorksFromHistory();
     const metadataWorks = metadataWorksFromHistory();
     const seedChunks = chunksFromHistory();
@@ -5222,18 +5257,18 @@ async function runOrchestrator(
     );
     const rankedSearchWorks = rankWorkspaceCandidateWorks(searchWorks, routedQueryRef.current, seededWorkIds)
       .filter(({ work, totalScore }) => shouldSeedWorkspaceWork(work, routedQueryRef.current, seededWorkIds, totalScore))
-      .slice(0, 8)
+      .slice(0, candidateLimit)
       .map(({ work }) => work);
     const rankedMetadataWorks = rankWorkspaceCandidateWorks(metadataWorks, routedQueryRef.current, seededWorkIds)
       .filter(({ work, totalScore }) => shouldSeedWorkspaceWork(work, routedQueryRef.current, seededWorkIds, totalScore))
-      .slice(0, 8)
+      .slice(0, candidateLimit)
       .map(({ work }) => work);
     const candidateWorkIds = uniqueWorkIds([
       ...scopedWorkIds,
       ...rankedSearchWorks.map((work) => (typeof work.id === "string" ? work.id : null)),
       ...rankedMetadataWorks.map((work) => (typeof work.id === "string" ? work.id : null)),
       ...seedChunks.map((chunk) => (typeof chunk.workId === "string" ? chunk.workId : null)),
-    ]).slice(0, 8);
+    ]).slice(0, candidateLimit);
     return normalizeToolArgs("run_workspace_task", {
       runtimeId,
       taskSpec: {
@@ -5246,14 +5281,14 @@ async function runOrchestrator(
         chunkIds: seedChunks
           .map((chunk) => (typeof chunk.id === "string" ? chunk.id : null))
           .filter((value): value is string => typeof value === "string")
-          .slice(0, 24),
+          .slice(0, chunkLimit),
         candidateWorkIds,
         searchHints: {
           searchWorksQuery: routedQueryRef.current,
           passageSearchFocus: "Find the strongest directly quotable passages that best answer the research objective.",
         },
         retrieval: {
-          searchWorks: rankedSearchWorks.map((work) => ({
+          searchWorks: rankedSearchWorks.slice(0, workLimit).map((work) => ({
             id: typeof work.id === "string" ? work.id : null,
             title: typeof work.title === "string" ? work.title : "",
             authors: Array.isArray(work.authors) ? work.authors : [],
@@ -5261,7 +5296,7 @@ async function runOrchestrator(
             subjects: Array.isArray(work.subjects) ? work.subjects : [],
             gutenbergId: typeof work.gutenbergId === "number" ? work.gutenbergId : null,
           })),
-          metadataWorks: rankedMetadataWorks.map((work) => ({
+          metadataWorks: rankedMetadataWorks.slice(0, workLimit).map((work) => ({
             id: typeof work.id === "string" ? work.id : null,
             title: typeof work.title === "string" ? work.title : "",
             authors: Array.isArray(work.authors) ? work.authors : [],
@@ -5269,7 +5304,7 @@ async function runOrchestrator(
             subjects: Array.isArray(work.subjects) ? work.subjects : [],
             gutenbergId: typeof work.gutenbergId === "number" ? work.gutenbergId : null,
           })),
-          seedChunks: seedChunks.slice(0, 16).map((chunk) => ({
+          seedChunks: seedChunks.slice(0, seedChunkLimit).map((chunk) => ({
             id: typeof chunk.id === "string" ? chunk.id : null,
             workId: typeof chunk.workId === "string" ? chunk.workId : null,
             chunkIndex: typeof chunk.chunkIndex === "number" ? chunk.chunkIndex : null,
@@ -5577,14 +5612,16 @@ async function runOrchestrator(
     routedQueryRef.current = routedQuery;
     await ensureInitialPlanSent(routedQuery);
     if (!pendingWorkspaceExecution && workspaceStartAttempts === 0) {
+      const broadCorpusQuery = isBroadCorpusResearchQuery(routedQuery, Array.isArray(input.workIds) ? input.workIds.length : 0);
+      const prewarmWorkLimit = broadCorpusQuery ? 24 : 12;
       const prewarmToolArgs = normalizeToolArgs("create_workspace", {
-        workIds: Array.isArray(input.workIds) ? input.workIds.slice(0, 12) : [],
+        workIds: Array.isArray(input.workIds) ? input.workIds.slice(0, prewarmWorkLimit) : [],
         chunkIds: [],
         taskContext: {
           question: routedQuery,
           researchObjective: routedQuery,
           mode: Array.isArray(input.workIds) && input.workIds.length > 0 ? "open_book_analysis" : "exhaustive_corpus_search",
-          candidateWorkIds: Array.isArray(input.workIds) ? input.workIds.slice(0, 12) : [],
+          candidateWorkIds: Array.isArray(input.workIds) ? input.workIds.slice(0, prewarmWorkLimit) : [],
           topChunks: [],
           prewarmed: true,
         },

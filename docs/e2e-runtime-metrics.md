@@ -7,8 +7,13 @@ This guide is for measuring the assistant end to end against live production run
 - time to workspace ready
 - total time to completion
 - total books mentioned in the document
+- total passages mentioned in the document
 - total selected workspace books
 - total active books in the final answer
+- final answer usefulness
+- final answer uniqueness
+- final answer support for the original question
+- final answer open questions count
 
 ## 1. Launch a live run
 
@@ -124,6 +129,7 @@ Read these fields when present:
 
 - `metrics.timeToFirstPrimarySourceMs`
 - `metrics.totalBooksMentioned`
+- `metrics.totalPassagesMentioned`
 - `metrics.totalSelectedWorkspaceBooks`
 - `metrics.totalActiveBooksInFinalAnswer`
 - `metrics.booksMentioned`
@@ -143,8 +149,13 @@ Current priorities, in order:
 2. `timeToFirstCodexCliStartMs`
 3. `timeToCompletionMs`
 4. `totalBooksMentioned`
-5. `totalSelectedWorkspaceBooks`
-6. `totalActiveBooksInFinalAnswer`
+5. `totalPassagesMentioned`
+6. `totalSelectedWorkspaceBooks`
+7. `totalActiveBooksInFinalAnswer`
+8. `usefulness`
+9. `uniqueness`
+10. `supportForQuestion`
+11. `openQuestionsCount`
 
 Healthy runs should:
 
@@ -163,6 +174,7 @@ For an experiment batch, record:
 - five session ids
 - five run ids
 - per-run metrics
+- per-run answer-quality scores
 - min, median, max for each target metric
 - completion rate within the chosen deadline
 

@@ -16,6 +16,14 @@ const SynthesizerResponseSchema = z.object({
   citations: z.array(CitationSchema),
 });
 
+const AnswerEvaluationSchema = z.object({
+  usefulness: z.number().min(1).max(10),
+  uniqueness: z.number().min(1).max(10),
+  supportForQuestion: z.number().min(1).max(10),
+  openQuestionsCount: z.number().int().min(0),
+  rationale: z.string(),
+});
+
 export interface ToolHistoryEntry {
   toolName: ToolName;
   rationale?: string;
@@ -50,8 +58,33 @@ export interface SynthesisResult {
   citations: Citation[];
 }
 
+export interface AnswerEvaluation {
+  usefulness: number;
+  uniqueness: number;
+  supportForQuestion: number;
+  openQuestionsCount: number;
+  rationale: string;
+}
+
 export interface Synthesizer {
   synthesize(input: SynthesisInput): Promise<SynthesisResult>;
+  evaluateAnswer?(input: {
+    userMessage: string;
+    answer: string;
+    citations: Citation[];
+    billingContext?: BillingContext;
+  }): Promise<AnswerEvaluation | null>;
+}
+
+function ensureCallToAction(answer: string) {
+  const trimmed = answer.trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+  if (/\b(next steps?|go further|if you want,? i can|i can next|to go further)\b/i.test(trimmed)) {
+    return trimmed;
+  }
+  return `${trimmed}\n\nNext steps: I can widen this into a broader scan, compare the strongest books side by side, or open the best passages for closer reading.`;
 }
 
 function truncateForModel(value: string, maxChars = 240) {
@@ -382,13 +415,13 @@ export class FallbackSynthesizer implements Synthesizer {
         ? `Books and passages touched during the run included:\n${compactParagraphs(researchDocument, 4)}`
         : null;
       return {
-        answer: [opening, compactParagraphs(runtimeSummary, 6), evidenceLine].filter(Boolean).join("\n\n"),
+        answer: ensureCallToAction([opening, compactParagraphs(runtimeSummary, 6), evidenceLine].filter(Boolean).join("\n\n")),
         citations,
       };
     }
 
     return {
-      answer: "The corpus search did not produce a usable briefing for this run, so I am stopping instead of guessing from partial retrieval.",
+      answer: ensureCallToAction("The corpus search did not produce a usable briefing for this run, so I am stopping instead of guessing from partial retrieval."),
       citations: [],
     };
   }
@@ -508,8 +541,66 @@ Use the exact provided absolute URL as the href. Do not invent, shorten, rewrite
       citations: sanitizeCitations(parsedJson.citations),
     });
     return {
-      answer: parsed.answer,
+      answer: ensureCallToAction(parsed.answer),
       citations: reconcileCitationsWithEvidence(parsed.citations, input.plannerCitations, input.toolHistory),
     };
+  }
+
+  async evaluateAnswer(input: {
+    userMessage: string;
+    answer: string;
+    citations: Citation[];
+    billingContext?: BillingContext;
+  }): Promise<AnswerEvaluation | null> {
+    const body = {
+      model: this.model,
+      response_format: { type: "json_object" as const },
+      messages: [
+        {
+          role: "system",
+          content: "You are grading the quality of a corpus research answer. Return JSON only.",
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            question: input.userMessage,
+            answer: input.answer,
+            citations: input.citations.map((citation) => ({
+              workId: citation.workId,
+              chunkId: citation.chunkId ?? null,
+              label: citation.label,
+            })),
+            rubric: {
+              usefulness: "1-10 score for practical usefulness to the user",
+              uniqueness: "1-10 score for whether the answer says something non-generic and specific",
+              supportForQuestion: "1-10 score for how directly the answer addresses the original question with evidence",
+              openQuestionsCount: "integer count of important unresolved questions or obvious missing follow-ups",
+              rationale: "one short paragraph explaining the scores",
+            },
+          }),
+        },
+      ],
+    };
+    const response = await this.fetchImpl("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${this.apiKey}`,
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(HARD_LIMITS.MAX_TOOL_TIMEOUT_SECONDS * 1000),
+    });
+    if (!response.ok) {
+      return null;
+    }
+    const payload = (await response.json()) as {
+      choices?: Array<{ message?: { content?: string } }>;
+    };
+    const content = payload.choices?.[0]?.message?.content;
+    if (!content) {
+      return null;
+    }
+    const parsedJson = parseModelJsonObject<Record<string, unknown>>(content);
+    return AnswerEvaluationSchema.parse(parsedJson);
   }
 }
