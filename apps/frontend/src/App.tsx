@@ -4138,6 +4138,88 @@ function ResearchArtifactPane(props: {
   return <ResearchArtifactDocument {...props} linkMode="app" />;
 }
 
+function AssistantDocumentPane({
+  sessionTitle,
+  sessionId,
+  run,
+  toolTrace,
+  artifacts,
+  ending,
+  onOpenWork,
+  onOpenCitation,
+}: {
+  sessionTitle: string;
+  sessionId: string;
+  run: SessionRunRecord;
+  toolTrace: ToolTraceEntry[];
+  artifacts: RunArtifactRecord[];
+  ending: string | null;
+  onOpenWork: (workId: string) => void;
+  onOpenCitation: (citation: Citation) => void;
+}) {
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const [iframeReady, setIframeReady] = useState(false);
+  const useIframe = run.status === "completed";
+
+  useEffect(() => {
+    setIframeReady(false);
+  }, [run.id, run.status]);
+
+  useEffect(() => {
+    if (!useIframe) {
+      return;
+    }
+    const iframe = iframeRef.current;
+    if (!iframe) {
+      return;
+    }
+    const handleLoad = () => {
+      try {
+        const text = iframe.contentWindow?.document?.body?.innerText?.trim() ?? "";
+        if (!text || text.includes("Loading research document")) {
+          setIframeReady(false);
+          return;
+        }
+      } catch {
+        // Same-origin checks should succeed here; if they do not, stay on the live pane.
+        setIframeReady(false);
+        return;
+      }
+      setIframeReady(true);
+    };
+    iframe.addEventListener("load", handleLoad);
+    return () => {
+      iframe.removeEventListener("load", handleLoad);
+    };
+  }, [useIframe, run.id]);
+
+  return (
+    <section className="assistant-document-pane assistant-document-iframe-pane">
+      {!iframeReady ? (
+        <ResearchArtifactPane
+          sessionTitle={sessionTitle}
+          toolTrace={toolTrace}
+          artifacts={artifacts}
+          ending={ending}
+          onOpenWork={onOpenWork}
+          onOpenCitation={onOpenCitation}
+        />
+      ) : null}
+      {useIframe ? (
+        <iframe
+          key={`${sessionId}-${run.id}`}
+          ref={iframeRef}
+          className="assistant-document-frame"
+          src={buildAssistantDocumentHref(sessionId, run.id)}
+          title="Research document"
+          loading="eager"
+          style={iframeReady ? undefined : { display: "none" }}
+        />
+      ) : null}
+    </section>
+  );
+}
+
 function AssistantDocumentFramePage({
   sessionId,
   runId,
@@ -6278,15 +6360,16 @@ export default function App() {
             pageRef={bookPageRef}
             leftPane={(
               preferredAssistantRun?.id && selectedSessionId ? (
-                <section className="assistant-document-pane assistant-document-iframe-pane">
-                  <iframe
-                    key={`${selectedSessionId}-${preferredAssistantRun.id}`}
-                    className="assistant-document-frame"
-                    src={buildAssistantDocumentHref(selectedSessionId, preferredAssistantRun.id)}
-                    title="Research document"
-                    loading="eager"
-                  />
-                </section>
+                <AssistantDocumentPane
+                  sessionTitle={assistantSessionName(activeSession)}
+                  sessionId={selectedSessionId}
+                  run={preferredAssistantRun}
+                  toolTrace={workspaceToolTrace}
+                  artifacts={runArtifacts}
+                  ending={workspaceDocumentEnding}
+                  onOpenWork={openWork}
+                  onOpenCitation={openCitation}
+                />
               ) : (
                 <ResearchArtifactPane
                   sessionTitle={assistantSessionName(activeSession)}
