@@ -3273,6 +3273,18 @@ function hasUsefulSectionItems(section: ResearchDocumentSection) {
   return true;
 }
 
+function sectionMetaFromItems(section: ResearchDocumentSection) {
+  const chunkCount = section.items.filter((item) => item.kind === "chunk").length;
+  const bookCount = section.items.filter((item) => item.kind === "book").length;
+  if (chunkCount > 0) {
+    return pluralize(chunkCount, "passage");
+  }
+  if (bookCount > 0) {
+    return pluralize(bookCount, "book");
+  }
+  return section.meta;
+}
+
 function artifactSourceChunks(artifacts: RunArtifactRecord[]) {
   return collectSourceChunks([], artifacts);
 }
@@ -3617,6 +3629,10 @@ function buildResearchDocument(
       meta: entry.sectionMeta,
       items: [entry.item],
     });
+  }
+
+  for (const section of sections.values()) {
+    section.meta = sectionMetaFromItems(section);
   }
 
   return {

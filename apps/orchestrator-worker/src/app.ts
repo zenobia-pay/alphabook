@@ -4951,6 +4951,10 @@ function buildSynthesisResearchDocument(
 
     if (entry.toolName === "get_relevant_chunks" && Array.isArray(entry.result.chunks)) {
       const chunks = (entry.result.chunks as Array<Record<string, unknown>>)
+        .filter((chunk) => {
+          const workId = typeof chunk.workId === "string" ? chunk.workId : null;
+          return workId ? verifiedWorkIds.has(workId) : false;
+        })
         .slice(0, 10)
         .map((chunk) => {
           const title = typeof chunk.title === "string" ? chunk.title.trim() : null;
