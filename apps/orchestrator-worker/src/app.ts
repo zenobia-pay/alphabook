@@ -18,7 +18,7 @@ import { FallbackPlanner, parseToolCall } from "./planner";
 import type { Router } from "./router";
 import { cleanupToolStreamWithWorkersAi, type ToolStreamCleanupLine } from "./tool-stream-cleanup";
 import type { Synthesizer, ToolHistoryEntry } from "./synthesizer";
-import type { AgentIdentityRecord, AnalyticsEventRecord, AppStore, MessageRecord, SessionRecord, UserRecord, WorkDetailRecord } from "./store";
+import type { AgentIdentityRecord, AnalyticsEventRecord, AppStore, MessageRecord, PassageSearchFilters, SessionRecord, UserRecord, WorkDetailRecord } from "./store";
 import type { WorkersAiBinding } from "./index";
 
 export interface WorkerQueues {
@@ -1034,6 +1034,48 @@ function searchPlanFromEstimate(
     shards,
     estimate,
   };
+}
+
+function deriveScopeEstimateFromSearchResult(query: string, result: Record<string, unknown>) {
+  const visibleWorks = Array.isArray(result.works)
+    ? result.works.filter((value): value is Record<string, unknown> => Boolean(value) && typeof value === "object")
+    : [];
+  const frontierCount = typeof result.frontier === "object" && result.frontier && typeof (result.frontier as Record<string, unknown>).workCount === "number"
+    ? Math.max(visibleWorks.length, (result.frontier as Record<string, unknown>).workCount as number)
+    : visibleWorks.length;
+  const broad = isBroadCorpusResearchQuery(query, frontierCount);
+  const recommendedIntensity = frontierCount >= 128 ? "maximum" : broad || frontierCount >= 24 ? "high" : "normal";
+  const recommendedWallClockMinutes = recommendedIntensity === "maximum" ? 60 : recommendedIntensity === "high" ? 15 : 5;
+  const recommendedParallelism = recommendedIntensity === "maximum" ? 8 : recommendedIntensity === "high" ? 3 : 1;
+  const recommendedShardAxis = frontierCount > 24 ? "work_id_hash" : "none";
+  const chunkWorkEstimate = Math.max(visibleWorks.length, Math.round(frontierCount * (broad ? 0.7 : 0.5)));
+  const chunkMatchEstimate = Math.max(visibleWorks.length, chunkWorkEstimate * (broad ? 4 : 3));
+  return {
+    query,
+    metadataWorkEstimate: frontierCount,
+    chunkMatchEstimate,
+    chunkWorkEstimate,
+    breadthBand:
+      frontierCount >= 160 ? "huge" : frontierCount >= 72 ? "large" : frontierCount >= 24 ? "medium" : frontierCount >= 8 ? "small" : "tiny",
+    recommendedIntensity,
+    recommendedWallClockMinutes,
+    recommendedParallelism,
+    recommendedShardAxis,
+    recommendedVmWorkBudget: recommendedIntensity === "maximum" ? 48 : recommendedIntensity === "high" ? 24 : 12,
+    recommendedFrontierWorks: recommendedIntensity === "maximum" ? Math.max(128, frontierCount) : recommendedIntensity === "high" ? Math.max(72, frontierCount) : Math.max(24, frontierCount),
+    estimatedCoveragePercent: {
+      normal: Math.max(15, Math.min(55, Math.round((24 / Math.max(frontierCount, 1)) * 100))),
+      high: Math.max(35, Math.min(80, Math.round((72 / Math.max(frontierCount, 1)) * 100))),
+      maximum: Math.max(60, Math.min(100, Math.round((128 / Math.max(frontierCount, 1)) * 100))),
+    },
+    probeWorks: visibleWorks.slice(0, 12).map((work) => ({
+      id: typeof work.id === "string" ? work.id : "",
+      title: typeof work.title === "string" ? work.title : "",
+      authors: Array.isArray(work.authors) ? work.authors.filter((value): value is string => typeof value === "string") : [],
+    })),
+    recommendedShards: [],
+    rationale: "Derived from the live metadata frontier surfaced by Metadata Search.",
+  } as Record<string, unknown>;
 }
 
 function latestCandidateWorkIdsFromHistory(
@@ -3278,6 +3320,57 @@ async function withToolExecutionDeadline<T>(promise: Promise<T>, timeoutMs: numb
   }
 }
 
+function normalizedScopeEstimateFilters(input: unknown): PassageSearchFilters {
+  if (!input || typeof input !== "object") {
+    return {};
+  }
+  const filters = input as Record<string, unknown>;
+  const yearRange = Array.isArray(filters.yearRange)
+    && filters.yearRange.length >= 2
+    && typeof filters.yearRange[0] === "number"
+    && typeof filters.yearRange[1] === "number"
+      ? [filters.yearRange[0], filters.yearRange[1]] as [number, number]
+      : undefined;
+  return {
+    ...(typeof filters.language === "string" ? { language: filters.language } : {}),
+    ...(typeof filters.rightsStatus === "string" ? { rightsStatus: filters.rightsStatus } : {}),
+    ...(Array.isArray(filters.genre)
+      ? { genre: filters.genre.filter((value): value is string => typeof value === "string") }
+      : {}),
+    ...(yearRange ? { yearRange } : {}),
+  };
+}
+
+function scopeEstimateCacheKey(query: string, filters: PassageSearchFilters): string {
+  return JSON.stringify({
+    query,
+    language: filters.language ?? null,
+    rightsStatus: filters.rightsStatus ?? null,
+    genre: Array.isArray(filters.genre) ? [...filters.genre] : [],
+    yearRange: Array.isArray(filters.yearRange) ? [...filters.yearRange] : null,
+  });
+}
+
+function backgroundToolDeadlineMs(toolName: "create_workspace" | "run_workspace_task", normalizedToolArgs: Record<string, unknown>) {
+  if (toolName === "create_workspace") {
+    return {
+      timeoutMs: 70_000,
+      message: "Workspace startup exceeded the orchestrator deadline.",
+    };
+  }
+  const taskSpec = normalizedToolArgs.taskSpec && typeof normalizedToolArgs.taskSpec === "object"
+    ? normalizedToolArgs.taskSpec as Record<string, unknown>
+    : null;
+  const requestedMinutes = typeof taskSpec?.timeBudgetMinutes === "number"
+    ? taskSpec.timeBudgetMinutes
+    : 5;
+  const boundedMinutes = Math.max(5, Math.min(requestedMinutes, HARD_LIMITS.MAX_RUN_WALL_CLOCK_SECONDS / 60));
+  return {
+    timeoutMs: Math.min(HARD_LIMITS.MAX_RUN_WALL_CLOCK_SECONDS * 1000, boundedMinutes * 60_000 + 30_000),
+    message: `Corpus briefing exceeded the ${boundedMinutes}-minute task budget.`,
+  };
+}
+
 type ToolProgressBuffer = {
   toolName: ToolName;
   lines: ToolStreamCleanupLine[];
@@ -4093,6 +4186,53 @@ async function finalizeStaleRun(
   }
 
   if (taskStatus.status === "running" || taskStatus.status === "idle") {
+    if (runningToolCall.toolName === "run_workspace_task") {
+      const runningDurationMs = Date.now() - Date.parse(runningToolCall.startedAt);
+      if (runningDurationMs > 10 * 60_000) {
+        const [artifacts, runtimeInstances] = await Promise.all([
+          deps.store.listArtifacts(session.id),
+          deps.store.listRuntimeInstances(session.id),
+        ]);
+        const recentArtifacts = artifacts.filter((artifact) => Date.parse(artifact.createdAt) >= Date.parse(run.startedAt));
+        const selectedChunkArtifacts = recentArtifacts.filter((artifact) => artifact.filename === "selected-chunks.json");
+        const briefingArtifacts = recentArtifacts.filter((artifact) =>
+          artifact.filename === "briefing.md" || artifact.filename === "briefing.json");
+        const childRuntimes = runtimeInstances.filter((instance) =>
+          instance.runtimeId !== runtimeId && Date.parse(instance.createdAt) >= Date.parse(run.startedAt));
+        const childrenQuiesced = childRuntimes.length > 0
+          && childRuntimes.every((instance) => instance.status !== "busy" && instance.status !== "creating");
+        const latestSelectedChunkAt = selectedChunkArtifacts.reduce<number>((latest, artifact) =>
+          Math.max(latest, Date.parse(artifact.createdAt)), 0);
+        if (
+          selectedChunkArtifacts.length > 0
+          && briefingArtifacts.length === 0
+          && childrenQuiesced
+          && latestSelectedChunkAt > 0
+          && Date.now() - latestSelectedChunkAt > 5 * 60_000
+        ) {
+          const failedResult = {
+            ok: false,
+            error: "Deep research stalled after shard passage selection and never produced a briefing.",
+            runtimeId,
+          };
+          await deps.store.finishToolCall(runningToolCall.id, "failed", failedResult);
+          const refreshedToolCalls = await deps.store.listToolCalls(run.id);
+          await persistRecoveredPlanToolTrace(deps, session.id, run.id, refreshedToolCalls);
+          await deps.store.updateRun(run.id, {
+            status: "failed",
+            completedAt: new Date().toISOString(),
+          });
+          await appendRunErrorMessageOnce(deps, session.id, run.id, failedResult.error, {
+            runId: run.id,
+            phase: "error",
+            toolCalls: buildRecoveredToolTrace(refreshedToolCalls),
+            researchLog: buildRecoveredToolTrace(refreshedToolCalls),
+          });
+          await cancelLiveExecution(refreshedToolCalls);
+          return deps.store.getRun(run.id);
+        }
+      }
+    }
     return run;
   }
 
@@ -4112,6 +4252,12 @@ async function finalizeStaleRun(
     await deps.store.updateRun(run.id, {
       status: "failed",
       completedAt: new Date().toISOString(),
+    });
+    await appendRunErrorMessageOnce(deps, session.id, run.id, failedResult.error, {
+      runId: run.id,
+      phase: "error",
+      toolCalls: buildRecoveredToolTrace(refreshedToolCalls),
+      researchLog: buildRecoveredToolTrace(refreshedToolCalls),
     });
     await cancelLiveExecution(refreshedToolCalls);
     return deps.store.getRun(run.id);
@@ -7541,13 +7687,12 @@ async function runOrchestrator(
               );
             },
           });
-          backgroundResult = await (toolName === "create_workspace"
-            ? withToolExecutionDeadline(
-                executionPromise,
-                70_000,
-                "Workspace startup exceeded the orchestrator deadline.",
-              )
-            : executionPromise);
+          const deadline = backgroundToolDeadlineMs(toolName, normalizedToolArgs);
+          backgroundResult = await withToolExecutionDeadline(
+            executionPromise,
+            deadline.timeoutMs,
+            deadline.message,
+          );
           addRuntimeIds(runtimeIdsToCleanup, normalizedToolArgs, backgroundResult);
           if (toolName === "run_workspace_task") {
             await trackRuntimeBillingEvents(deps, activeSession, run, backgroundResult.billingEvents);
@@ -7624,6 +7769,12 @@ async function runOrchestrator(
   };
 
   const routedQueryRef = { current: input.message };
+  let prefetchedScopeEstimate:
+    | {
+      key: string;
+      promise: Promise<Record<string, unknown>>;
+    }
+    | null = null;
   try {
     recordRawLog("router.started", {
       sessionId: session.id,
@@ -8069,39 +8220,88 @@ async function runOrchestrator(
         continue;
       }
       try {
-        result = await executeTool(deps, toolCall.tool_name, normalizedToolArgs, {
-          userId: session.userId,
-          sessionId: session.id,
-          runId: run.id,
-          auditLog: recordRawLog,
-          progressReporter: async (text, detail) => {
-            queueToolProgress(
-              {
-                runId: run.id,
-                toolCallId: toolRecord.id,
-                toolName: toolCall.tool_name,
-                text,
-                detail,
-              },
-              async (progressText, emittedDetail) => {
-                liveToolTrace = liveToolTrace.map((entry) =>
-                  entry.id === toolRecord.id
-                    ? appendToolProgress(entry, progressText, emittedDetail)
-                    : entry,
+        if (toolCall.tool_name === "estimate_research_scope" && typeof normalizedToolArgs.query === "string") {
+          const estimateFilters = normalizedScopeEstimateFilters(normalizedToolArgs.filters);
+          const estimateKey = scopeEstimateCacheKey(normalizedToolArgs.query, estimateFilters);
+          if (prefetchedScopeEstimate && prefetchedScopeEstimate.key === estimateKey) {
+            result = await prefetchedScopeEstimate.promise;
+          } else {
+            result = await executeTool(deps, toolCall.tool_name, normalizedToolArgs, {
+              userId: session.userId,
+              sessionId: session.id,
+              runId: run.id,
+              auditLog: recordRawLog,
+              progressReporter: async (text, detail) => {
+                queueToolProgress(
+                  {
+                    runId: run.id,
+                    toolCallId: toolRecord.id,
+                    toolName: toolCall.tool_name,
+                    text,
+                    detail,
+                  },
+                  async (progressText, emittedDetail) => {
+                    liveToolTrace = liveToolTrace.map((entry) =>
+                      entry.id === toolRecord.id
+                        ? appendToolProgress(entry, progressText, emittedDetail)
+                        : entry,
+                    );
+                    await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
+                    await send("tool.progress", {
+                      runId: run.id,
+                      toolCallId: toolRecord.id,
+                      toolName: toolCall.tool_name,
+                      text: progressText,
+                      ...(emittedDetail ? { detail: emittedDetail } : {}),
+                    });
+                  },
                 );
-                await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
-                await send("tool.progress", {
+              },
+            });
+          }
+        } else {
+          result = await executeTool(deps, toolCall.tool_name, normalizedToolArgs, {
+            userId: session.userId,
+            sessionId: session.id,
+            runId: run.id,
+            auditLog: recordRawLog,
+            progressReporter: async (text, detail) => {
+              queueToolProgress(
+                {
                   runId: run.id,
                   toolCallId: toolRecord.id,
                   toolName: toolCall.tool_name,
-                  text: progressText,
-                  ...(emittedDetail ? { detail: emittedDetail } : {}),
-                });
-              },
-            );
-          },
-        });
+                  text,
+                  detail,
+                },
+                async (progressText, emittedDetail) => {
+                  liveToolTrace = liveToolTrace.map((entry) =>
+                    entry.id === toolRecord.id
+                      ? appendToolProgress(entry, progressText, emittedDetail)
+                      : entry,
+                  );
+                  await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
+                  await send("tool.progress", {
+                    runId: run.id,
+                    toolCallId: toolRecord.id,
+                    toolName: toolCall.tool_name,
+                    text: progressText,
+                    ...(emittedDetail ? { detail: emittedDetail } : {}),
+                  });
+                },
+              );
+            },
+          });
+        }
         addRuntimeIds(runtimeIdsToCleanup, normalizedToolArgs, result);
+        if (toolCall.tool_name === "search_works" && typeof normalizedToolArgs.query === "string") {
+          const estimateFilters = normalizedScopeEstimateFilters(normalizedToolArgs.filters);
+          const estimateKey = scopeEstimateCacheKey(normalizedToolArgs.query, estimateFilters);
+          prefetchedScopeEstimate = {
+            key: estimateKey,
+            promise: Promise.resolve(deriveScopeEstimateFromSearchResult(normalizedToolArgs.query, result)),
+          };
+        }
         if (toolCall.tool_name === "run_workspace_task") {
           await trackRuntimeBillingEvents(deps, session, run, result.billingEvents);
         }

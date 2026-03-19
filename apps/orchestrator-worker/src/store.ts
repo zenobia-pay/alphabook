@@ -714,6 +714,38 @@ const METADATA_SEARCH_QUERY_STOP_WORDS = new Set([
   "widowers",
 ]);
 
+const PASSAGE_SEARCH_QUERY_STOP_WORDS = new Set([
+  "1800",
+  "1899",
+  "19th",
+  "authors",
+  "book",
+  "books",
+  "century",
+  "characters",
+  "cite",
+  "citing",
+  "compile",
+  "deal",
+  "fiction",
+  "identify",
+  "locations",
+  "location",
+  "novel",
+  "novels",
+  "passage",
+  "passages",
+  "portrayals",
+  "published",
+  "relevant",
+  "retrieve",
+  "short",
+  "stories",
+  "story",
+  "summarize",
+  "titles",
+]);
+
 const GRIEF_THEME_TOKENS = new Set([
   "bereavement",
   "comfort",
@@ -792,6 +824,17 @@ function expandedSearchTokens(query: string): string[] {
     }
   }
   return [...expanded].slice(0, 16);
+}
+
+function passageSearchTokens(query: string): string[] {
+  const expanded = expandedSearchTokens(query)
+    .filter((token) => !PASSAGE_SEARCH_QUERY_STOP_WORDS.has(token))
+    .filter((token) => !/^\d{4}$/u.test(token));
+  const hasStrongGriefSignal = expanded.some((token) => GRIEF_THEME_TOKENS.has(token) || token === "grief");
+  const focused = hasStrongGriefSignal
+    ? Array.from(new Set([...expanded, ...GRIEF_BROADENING_TERMS]))
+    : expanded;
+  return focused.slice(0, isBroadMetadataSurveyQuery(query) ? 14 : 10);
 }
 
 function isBroadMetadataSurveyQuery(query: string) {
@@ -1232,6 +1275,15 @@ function shouldDiversifyChunkResults(query: string, workIds: string[] | undefine
     return true;
   }
   return isBroadMetadataSurveyQuery(query);
+}
+
+function chunkStringArray(values: string[], size: number): string[][] {
+  const chunkSize = Math.max(1, size);
+  const chunks: string[][] = [];
+  for (let index = 0; index < values.length; index += chunkSize) {
+    chunks.push(values.slice(index, index + chunkSize));
+  }
+  return chunks;
 }
 
 function diversifyChunkResults<T extends { workId: string; score: number }>(
@@ -3338,12 +3390,7 @@ export class NeonAppStore implements AppStore {
   async estimateResearchScope(query: string, filters: PassageSearchFilters = {}): Promise<ResearchScopeEstimate> {
     const tsQuery = scopeEstimateTsQuery(query);
     const estimateTerms = scopeEstimateTerms(query);
-    const lexicalProbeQuery = estimateTerms.join(" ");
-    const probeLimit = isBroadMetadataSurveyQuery(query) ? 12 : 6;
-    const probeWorks = await this.searchWorks(query, {
-      ...filters,
-      limit: probeLimit,
-    } as Record<string, unknown>);
+    const probeWorks: WorkSummary[] = [];
     const startYear = Array.isArray(filters.yearRange) ? Math.min(filters.yearRange[0], filters.yearRange[1]) : null;
     const endYear = Array.isArray(filters.yearRange) ? Math.max(filters.yearRange[0], filters.yearRange[1]) : null;
     const genres = Array.isArray(filters.genre)
@@ -3356,8 +3403,6 @@ export class NeonAppStore implements AppStore {
 
     const estimateResult = await withTimeout(this.db.query<{
       metadata_work_estimate: number;
-      chunk_match_estimate: number;
-      chunk_work_estimate: number;
     }>(
       `
         WITH query_input AS (
@@ -3395,7 +3440,7 @@ export class NeonAppStore implements AppStore {
                   OR COALESCE(w.summary, '') ILIKE '%' || genre || '%'
                   OR COALESCE(w.metadata_json::text, '') ILIKE '%' || genre || '%'
               )
-            )
+          )
         ),
         metadata_hits AS (
           SELECT COUNT(*)::int AS metadata_work_estimate
@@ -3418,28 +3463,10 @@ export class NeonAppStore implements AppStore {
                 OR COALESCE(ew.metadata_json::text, '') ILIKE '%' || token || '%'
             )
           )
-        ),
-        chunk_hits AS (
-          SELECT
-            COUNT(*)::int AS chunk_match_estimate,
-            COUNT(DISTINCT c.work_id)::int AS chunk_work_estimate
-          FROM chunks c
-          JOIN eligible_works ew ON ew.id = c.work_id,
-          query_input
-          WHERE (
-            (query_input.tsq IS NOT NULL AND c.tsv @@ query_input.tsq)
-            OR EXISTS (
-              SELECT 1
-              FROM unnest($7::text[]) AS token
-              WHERE COALESCE(c.text, '') ILIKE '%' || token || '%'
-            )
-          )
         )
         SELECT
-          metadata_hits.metadata_work_estimate,
-          chunk_hits.chunk_match_estimate,
-          chunk_hits.chunk_work_estimate
-        FROM metadata_hits, chunk_hits
+          metadata_hits.metadata_work_estimate
+        FROM metadata_hits
       `,
       [
         tsQuery,
@@ -3454,15 +3481,22 @@ export class NeonAppStore implements AppStore {
 
     const row = estimateResult.rows[0] ?? {
       metadata_work_estimate: 0,
-      chunk_match_estimate: 0,
-      chunk_work_estimate: 0,
     };
-    const probeFloor = lexicalProbeQuery.length > 0 ? probeWorks.length : 0;
+    const metadataEstimate = Math.max(Number(row.metadata_work_estimate ?? 0), 0);
+    const broadSurvey = isBroadMetadataSurveyQuery(query);
+    const chunkWorkEstimate = Math.max(
+      0,
+      Math.min(metadataEstimate, broadSurvey ? Math.round(metadataEstimate * 0.7) : Math.round(metadataEstimate * 0.5)),
+    );
+    const chunkMatchEstimate = Math.max(
+      0,
+      chunkWorkEstimate * (broadSurvey ? 4 : 3),
+    );
     return buildResearchScopeEstimate(
       query,
-      Math.max(Number(row.metadata_work_estimate ?? 0), probeFloor),
-      Math.max(Number(row.chunk_match_estimate ?? 0), probeFloor),
-      Math.max(Number(row.chunk_work_estimate ?? 0), probeFloor),
+      metadataEstimate,
+      chunkMatchEstimate,
+      chunkWorkEstimate,
       probeWorks,
     );
   }
@@ -3903,10 +3937,10 @@ export class NeonAppStore implements AppStore {
   ): Promise<ChunkSearchResult[]> {
     const usableEmbedding = embedding?.length === EXPECTED_EMBEDDING_DIMENSIONS ? embedding : undefined;
     const vectorLiteral = usableEmbedding ? `[${usableEmbedding.join(",")}]` : null;
-    const normalizedQuery = normalizeSearchQuery(query);
-    const tsQuery = normalizedQuery || query.trim();
-    const tokens = expandedSearchTokens(query);
-    const semanticCandidateLimit = Math.max(limit * 20, 192);
+    const tokens = passageSearchTokens(query);
+    const tsQuery = tokens.join(" ").trim() || normalizeSearchQuery(query) || query.trim();
+    const semanticCandidateLimit = Math.max(limit * 8, 64);
+    const lexicalCandidateLimit = Math.min(Math.max(limit * 4, 64), 192);
     const rankedResultLimit = shouldDiversifyChunkResults(query, workIds, limit)
       ? Math.min(Math.max(limit * 3, 96), 256)
       : limit;
@@ -3915,7 +3949,8 @@ export class NeonAppStore implements AppStore {
     const genres = Array.isArray(filters.genre)
       ? filters.genre.map((genre) => genre.trim()).filter((genre) => genre.length > 0).slice(0, 8)
       : [];
-    const result = await withTimeout(this.db.query<{
+    const runScopedQuery = async (scopedWorkIds?: string[]) => {
+      const result = await withTimeout(this.db.query<{
       id: string;
       work_id: string;
       chunk_index: number;
@@ -3984,25 +4019,38 @@ export class NeonAppStore implements AppStore {
           ORDER BY c.embedding <=> query_input.embedding
           LIMIT $6
         ),
-        lexical_candidates AS (
+        ts_candidates AS (
           SELECT c.id
           FROM chunks c
           JOIN eligible_works ew ON ew.id = c.work_id,
           query_input
           WHERE
-            (
-              (query_input.tsq IS NOT NULL AND c.tsv @@ query_input.tsq)
-              OR EXISTS (
-                SELECT 1
-                FROM UNNEST($5::text[]) AS token
-                WHERE COALESCE(c.text, '') ILIKE '%' || token || '%'
-              )
+            query_input.tsq IS NOT NULL
+            AND c.tsv @@ query_input.tsq
+          ORDER BY ts_rank_cd(c.tsv, query_input.tsq) DESC, c.work_id ASC, c.chunk_index ASC
+          LIMIT $12
+        ),
+        token_candidates AS (
+          SELECT c.id
+          FROM chunks c
+          JOIN eligible_works ew ON ew.id = c.work_id,
+          query_input
+          WHERE
+            query_input.tsq IS NULL
+            AND EXISTS (
+              SELECT 1
+              FROM UNNEST($5::text[]) AS token
+              WHERE COALESCE(c.text, '') ILIKE '%' || token || '%'
             )
+          ORDER BY c.work_id ASC, c.chunk_index ASC
+          LIMIT $12
         ),
         candidate_ids AS (
           SELECT id FROM semantic_candidates
           UNION
-          SELECT id FROM lexical_candidates
+          SELECT id FROM ts_candidates
+          UNION
+          SELECT id FROM token_candidates
         ),
         ranked AS (
           SELECT
@@ -4040,7 +4088,7 @@ export class NeonAppStore implements AppStore {
       `,
       [
         tsQuery,
-        workIds?.length ? workIds : null,
+        scopedWorkIds?.length ? scopedWorkIds : null,
         rankedResultLimit,
         vectorLiteral,
         tokens,
@@ -4050,9 +4098,10 @@ export class NeonAppStore implements AppStore {
         Number.isInteger(startYear) ? startYear : null,
         Number.isInteger(endYear) ? endYear : null,
         genres,
+        lexicalCandidateLimit,
       ],
     ), PASSAGE_SEARCH_TIMEOUT_MS, "Passage search timed out before the database returned chunks.");
-    const rankedRows = result.rows.map((row) => ({
+      return result.rows.map((row) => ({
       id: row.id,
       workId: row.work_id,
       chunkIndex: row.chunk_index,
@@ -4060,7 +4109,27 @@ export class NeonAppStore implements AppStore {
       r2Key: row.r2_key,
       score: Number(row.semantic_score ?? 0) + Number(row.token_score ?? 0),
       excerpt: excerpt(row.text, query),
-    }));
+      }));
+    };
+    const scopedWorkIds = Array.isArray(workIds)
+      ? workIds.filter((value): value is string => typeof value === "string")
+      : [];
+    const batchSize = shouldDiversifyChunkResults(query, scopedWorkIds, limit) ? 12 : 24;
+    const batches = scopedWorkIds.length > batchSize
+      ? chunkStringArray(scopedWorkIds, batchSize)
+      : [scopedWorkIds];
+    const batchResults = await Promise.all(
+      batches.map((batch: string[]) => runScopedQuery(batch.length > 0 ? batch : undefined)),
+    );
+    const dedupedRows = new Map<string, ChunkSearchResult>();
+    for (const batch of batchResults) {
+      for (const row of batch) {
+        if (!dedupedRows.has(row.id)) {
+          dedupedRows.set(row.id, row);
+        }
+      }
+    }
+    const rankedRows = [...dedupedRows.values()].sort((left, right) => right.score - left.score);
     return diversifyChunkResults(query, workIds, rankedRows, limit);
   }
 
