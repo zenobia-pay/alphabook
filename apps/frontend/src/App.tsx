@@ -2901,7 +2901,7 @@ function appendDocumentEntry(
   },
 ) {
   const normalized = entry.item.text.trim();
-  if (!normalized || seen.has(entry.item.key)) {
+  if (!normalized || !isUsefulDocumentItemText(entry.item.kind, normalized) || seen.has(entry.item.key)) {
     return;
   }
   seen.add(entry.item.key);
@@ -2912,6 +2912,28 @@ function appendDocumentEntry(
       text: normalized,
     },
   });
+}
+
+function isUsefulDocumentItemText(
+  kind: Exclude<ResearchDocumentEntryKind, "title">,
+  text: string,
+) {
+  const normalized = text.trim();
+  if (!normalized) {
+    return false;
+  }
+  if (/^\d+(?:\s+\d+)+$/u.test(normalized) || /^\d+(?:\.\d+)?$/u.test(normalized)) {
+    return false;
+  }
+  if (kind === "log") {
+    if (normalized.length < 24) {
+      return false;
+    }
+    if (/[{}[\]]/u.test(normalized)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function toSectionTitle(entry: ToolTraceEntry) {
