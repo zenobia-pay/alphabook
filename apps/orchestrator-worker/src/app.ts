@@ -7235,11 +7235,6 @@ async function runOrchestrator(
     if (runFinalized) {
       return;
     }
-    runFinalized = true;
-    await deps.store.updateRun(run.id, {
-      status: "completed",
-      completedAt: new Date().toISOString(),
-    });
     await synthesizeAnswer(
       deps,
       {
@@ -7256,6 +7251,11 @@ async function runOrchestrator(
       },
       send,
     );
+    runFinalized = true;
+    await deps.store.updateRun(run.id, {
+      status: "completed",
+      completedAt: new Date().toISOString(),
+    });
     await send("run.completed", {
       runId: run.id,
       sessionId: activeSession.id,
