@@ -90,8 +90,8 @@ function deriveDocumentTitle(bootstrap: AssistantDocumentBootstrapPayload) {
   return explicitTitle || "Research log";
 }
 
-function renderAssistantDocumentText(bootstrap: AssistantDocumentBootstrapPayload, text: string) {
-  if (!text.trim()) {
+function renderAssistantDocumentHtml(bootstrap: AssistantDocumentBootstrapPayload, html: string) {
+  if (!html.trim()) {
     return null;
   }
   return [
@@ -99,7 +99,7 @@ function renderAssistantDocumentText(bootstrap: AssistantDocumentBootstrapPayloa
     `<div class="assistant-document-scroll">`,
     `<div class="assistant-document-inner">`,
     `<h1 class="assistant-document-entry is-title">${escapeHtml(deriveDocumentTitle(bootstrap))}</h1>`,
-    `<div class="assistant-document-body">${escapeHtml(text)}</div>`,
+    `<div class="assistant-document-body">${html}</div>`,
     `</div>`,
     `</div>`,
     `</section>`,
@@ -126,12 +126,12 @@ function renderAssistantDocumentMarkup(bootstrap: AssistantDocumentBootstrapPayl
       typeof record.content === "string"
       && record.content.trim().length > 0
       && (
-        record.filename === "research-document.md"
-        || (typeof record.filename === "string" && record.filename.endsWith("-research-document.md"))
+        record.filename === "research-document.html"
+        || (typeof record.filename === "string" && record.filename.endsWith("-research-document.html"))
         || metadata?.kind === "research_document"
       )
     ) {
-      return renderAssistantDocumentText(bootstrap, record.content);
+      return renderAssistantDocumentHtml(bootstrap, record.content);
     }
   }
   const messages = Array.isArray(bootstrap.messages) ? bootstrap.messages : [];
@@ -144,11 +144,11 @@ function renderAssistantDocumentMarkup(bootstrap: AssistantDocumentBootstrapPayl
     if (!metadata || typeof metadata !== "object") {
       continue;
     }
-    const text = typeof (metadata as { researchDocumentText?: unknown }).researchDocumentText === "string"
-      ? (metadata as { researchDocumentText: string }).researchDocumentText
+    const html = typeof (metadata as { researchDocumentHtml?: unknown }).researchDocumentHtml === "string"
+      ? (metadata as { researchDocumentHtml: string }).researchDocumentHtml
       : "";
-    if (text.trim()) {
-      return renderAssistantDocumentText(bootstrap, text);
+    if (html.trim()) {
+      return renderAssistantDocumentHtml(bootstrap, html);
     }
   }
   return null;

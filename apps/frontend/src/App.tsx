@@ -1115,9 +1115,10 @@ function mergeFetchedMessages(existingMessages: UiMessage[], incomingMessages: U
         incoming.citations.length >= existing.citations.length
           ? incoming.citations
           : existing.citations,
-      metadata: existing.metadata?.optimistic === true
-        ? incoming.metadata
-        : incoming.metadata,
+      metadata: {
+        ...(existing.metadata ?? {}),
+        ...(incoming.metadata ?? {}),
+      },
       toolCalls: mergedToolCalls,
     };
   });
@@ -2890,9 +2891,9 @@ function currentResearchDocumentEnding(messages: UiMessage[], runActive = false)
   return null;
 }
 
-function messageResearchDocumentText(message: UiMessage) {
-  return typeof message.metadata?.researchDocumentText === "string"
-    ? message.metadata.researchDocumentText.trim()
+function messageResearchDocumentHtml(message: UiMessage) {
+  return typeof message.metadata?.researchDocumentHtml === "string"
+    ? message.metadata.researchDocumentHtml.trim()
     : "";
 }
 
@@ -2908,17 +2909,17 @@ function artifactCreatedAtTimestamp(artifact: RunArtifactRecord) {
   return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
-function persistedResearchDocumentText(artifacts: RunArtifactRecord[]) {
+function persistedResearchDocumentHtml(artifacts: RunArtifactRecord[]) {
   const candidate = [...artifacts]
     .filter((artifact) =>
       artifact.metadata?.kind === "research_document"
-      || artifact.filename.endsWith("-research-document.md"),
+      || artifact.filename.endsWith("-research-document.html"),
     )
     .sort((left, right) => artifactCreatedAtTimestamp(right) - artifactCreatedAtTimestamp(left))[0];
   return candidate ? artifactText(candidate) : "";
 }
 
-function currentResearchDocumentText(messages: UiMessage[], artifacts: RunArtifactRecord[], runId: string | null) {
+function currentResearchDocumentHtml(messages: UiMessage[], artifacts: RunArtifactRecord[], runId: string | null) {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (message.role !== "assistant") {
@@ -2928,12 +2929,12 @@ function currentResearchDocumentText(messages: UiMessage[], artifacts: RunArtifa
     if (runId && messageRunId && messageRunId !== runId) {
       continue;
     }
-    const text = messageResearchDocumentText(message);
-    if (text) {
-      return text;
+    const html = messageResearchDocumentHtml(message);
+    if (html) {
+      return html;
     }
   }
-  return persistedResearchDocumentText(artifacts);
+  return persistedResearchDocumentHtml(artifacts);
 }
 
 function AssistantSessionToolbar({
@@ -4149,10 +4150,10 @@ class ResearchDocumentErrorBoundary extends Component<
 
 function ResearchArtifactDocument({
   sessionTitle,
-  documentText,
+  documentHtml,
 }: {
   sessionTitle: string;
-  documentText: string;
+  documentHtml: string;
 }) {
   return (
     <ResearchDocumentErrorBoundary>
@@ -4162,9 +4163,14 @@ function ResearchArtifactDocument({
             <h1 className="assistant-document-entry is-title">
               {sessionTitle.trim() || "Research log"}
             </h1>
-            <div className="assistant-document-body">
-              {documentText.trim().length > 0 ? documentText : "No research has been written yet."}
-            </div>
+            {documentHtml.trim().length > 0 ? (
+              <div
+                className="assistant-document-body"
+                dangerouslySetInnerHTML={{ __html: documentHtml }}
+              />
+            ) : (
+              <div className="assistant-document-body">No research has been written yet.</div>
+            )}
           </div>
         </div>
       </section>
@@ -4174,7 +4180,7 @@ function ResearchArtifactDocument({
 
 function ResearchArtifactPane(props: {
   sessionTitle: string;
-  documentText: string;
+  documentHtml: string;
 }) {
   return <ResearchArtifactDocument {...props} />;
 }
@@ -4317,8 +4323,8 @@ function AssistantDocumentFramePage({
     () => currentResearchDocumentEnding(messages, runStatus === "running" || runStatus === "queued"),
     [messages, runStatus],
   );
-  const documentText = useMemo(
-    () => currentResearchDocumentText(messages, artifacts, runId),
+  const documentHtml = useMemo(
+    () => currentResearchDocumentHtml(messages, artifacts, runId),
     [artifacts, messages, runId],
   );
 
@@ -4361,7 +4367,7 @@ function AssistantDocumentFramePage({
     <section className="assistant-document-pane assistant-document-standalone" data-run-status={runStatus ?? "unknown"}>
       <ResearchArtifactDocument
         sessionTitle={sessionTitle}
-        documentText={documentText}
+        documentHtml={documentHtml}
       />
     </section>
   );
@@ -5848,6 +5854,7 @@ export default function App() {
 
             if (event.event === "assistant.plan" && typeof event.data.text === "string") {
               const messageId = typeof event.data.messageId === "string" ? event.data.messageId : crypto.randomUUID();
+              const researchDocumentHtml = typeof event.data.researchDocumentHtml === "string" ? event.data.researchDocumentHtml : undefined;
               planMessageId = messageId;
               setMessages((current) => {
                 const existingIndex = current.findIndex((message) => message.id === messageId);
@@ -5858,6 +5865,7 @@ export default function App() {
                   content: event.data.text as string,
                   metadata: {
                     phase: "plan",
+                    ...(researchDocumentHtml ? { researchDocumentHtml } : {}),
                   },
                   createdAt: new Date().toISOString(),
                   citations: [],
@@ -5871,6 +5879,7 @@ export default function App() {
                     metadata: {
                       ...copy[existingIndex].metadata,
                       phase: "plan",
+                      ...(researchDocumentHtml ? { researchDocumentHtml } : {}),
                     },
                     toolCalls: activityLog,
                   };
@@ -5899,6 +5908,12 @@ export default function App() {
               ];
               updatePlanMessage((message) => ({
                 ...message,
+                metadata: {
+                  ...message.metadata,
+                  ...(typeof event.data.researchDocumentHtml === "string"
+                    ? { researchDocumentHtml: event.data.researchDocumentHtml }
+                    : {}),
+                },
                 toolCalls: activityLog,
               }));
               return;
@@ -5936,6 +5951,12 @@ export default function App() {
                 ?? activityLog.find((entry) => entry.toolName === toolName);
               updatePlanMessage((message) => ({
                 ...message,
+                metadata: {
+                  ...message.metadata,
+                  ...(typeof event.data.researchDocumentHtml === "string"
+                    ? { researchDocumentHtml: event.data.researchDocumentHtml }
+                    : {}),
+                },
                 toolCalls: activityLog,
               }));
               return;
@@ -5962,6 +5983,12 @@ export default function App() {
               );
               updatePlanMessage((message) => ({
                 ...message,
+                metadata: {
+                  ...message.metadata,
+                  ...(typeof event.data.researchDocumentHtml === "string"
+                    ? { researchDocumentHtml: event.data.researchDocumentHtml }
+                    : {}),
+                },
                 toolCalls: activityLog,
               }));
               return;
@@ -6002,6 +6029,7 @@ export default function App() {
             if (event.event === "assistant.completed") {
               const completionPhase = typeof event.data.phase === "string" ? event.data.phase : null;
               const completedAnswer = typeof event.data.answer === "string" ? event.data.answer : null;
+              const researchDocumentHtml = typeof event.data.researchDocumentHtml === "string" ? event.data.researchDocumentHtml : undefined;
               if (!finalAssistantMessageId) {
                 finalAssistantMessageId = crypto.randomUUID();
                 setMessages((current) => [
@@ -6011,7 +6039,10 @@ export default function App() {
                     sessionId: workingSessionId ?? "pending",
                     role: "assistant",
                     content: completedAnswer ?? "",
-                    metadata: completionPhase ? { phase: completionPhase } : {},
+                    metadata: {
+                      ...(completionPhase ? { phase: completionPhase } : {}),
+                      ...(researchDocumentHtml ? { researchDocumentHtml } : {}),
+                    },
                     createdAt: new Date().toISOString(),
                     citations: Array.isArray(event.data.citations) ? (event.data.citations as Citation[]) : [],
                     toolCalls: [],
@@ -6024,7 +6055,11 @@ export default function App() {
                     ? {
                         ...message,
                         content: completedAnswer ?? message.content,
-                        metadata: completionPhase ? { ...message.metadata, phase: completionPhase } : message.metadata,
+                        metadata: {
+                          ...message.metadata,
+                          ...(completionPhase ? { phase: completionPhase } : {}),
+                          ...(researchDocumentHtml ? { researchDocumentHtml } : {}),
+                        },
                         citations: Array.isArray(event.data.citations) ? (event.data.citations as Citation[]) : [],
                         toolCalls: [],
                       }
@@ -6319,7 +6354,7 @@ export default function App() {
           || messagesLoading
         ))
       );
-    const workspaceDocumentText = currentResearchDocumentText(
+    const workspaceDocumentHtml = currentResearchDocumentHtml(
       visibleMessages,
       runArtifacts,
       preferredAssistantRun?.id ?? null,
@@ -6377,7 +6412,7 @@ export default function App() {
             leftPane={(
               <ResearchArtifactPane
                 sessionTitle={assistantSessionName(activeSession)}
-                documentText={workspaceDocumentText}
+                documentHtml={workspaceDocumentHtml}
               />
             )}
             rightPane={(
