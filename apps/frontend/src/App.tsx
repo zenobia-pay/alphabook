@@ -2485,10 +2485,6 @@ function BookLoadingState() {
   return <div className="book-reader-frame book-reader-frame-empty" aria-hidden="true" />;
 }
 
-function BookAssistantPaneSkeleton() {
-  return <div className="book-assistant-pane-empty" aria-hidden="true" />;
-}
-
 function ProfileEmptyState({
   title,
   copy,
@@ -2558,17 +2554,15 @@ function SidebarRecents({
   activeView,
   sessions,
   selectedSessionId,
-  sessionsLoading,
   onSelectSession,
 }: {
   collapsed: boolean;
   activeView: ViewMode;
   sessions: ChatSessionSummary[];
   selectedSessionId: string | null | undefined;
-  sessionsLoading: boolean;
   onSelectSession: (sessionId: string) => void;
 }) {
-  if (collapsed || (sessionsLoading && sessions.length === 0)) {
+  if (collapsed || sessions.length === 0) {
     return null;
   }
 
@@ -2579,27 +2573,21 @@ function SidebarRecents({
         <span>{pluralize(sessions.length, "chat")}</span>
       </div>
 
-      {sessions.length > 0 ? (
-        <div className="sidebar-recents-list">
-          {sessions.map((session) => {
-            const isActive = activeView === "assistant" && selectedSessionId === session.id;
-            return (
-              <button
-                key={session.id}
-                type="button"
-                className={cn("sidebar-recent-row", isActive && "is-active")}
-                onClick={() => onSelectSession(session.id)}
-              >
-                <span>{sessionDisplayTitle(session)}</span>
-              </button>
-            );
-          })}
-        </div>
-      ) : (
-        <div className="sidebar-recents-empty">
-          <span>No recent chats yet.</span>
-        </div>
-      )}
+      <div className="sidebar-recents-list">
+        {sessions.map((session) => {
+          const isActive = activeView === "assistant" && selectedSessionId === session.id;
+          return (
+            <button
+              key={session.id}
+              type="button"
+              className={cn("sidebar-recent-row", isActive && "is-active")}
+              onClick={() => onSelectSession(session.id)}
+            >
+              <span>{sessionDisplayTitle(session)}</span>
+            </button>
+          );
+        })}
+      </div>
     </section>
   );
 }
@@ -2874,15 +2862,20 @@ function isLowValueSectionSummary(text: string) {
   if (normalized === "running" || normalized === "done" || normalized === "failed" || normalized === "summary") {
     return true;
   }
+  if (/^\d+(?:\.\d+)?$/u.test(normalized)) {
+    return true;
+  }
   return /^\d+\s+(book|books|passage|passages|workspace book|workspace books)$/u.test(normalized);
 }
 
 function toSectionSummary(entry: ToolTraceEntry) {
-  const resultSummary = typeof entry.result?.__summary === "string" ? entry.result.__summary.trim() : "";
+  const resultSummary =
+    typeof entry.result?.__summary === "string" ? normalizeSectionSummaryText(entry.result.__summary) : "";
   if (resultSummary.length > 0 && !isLowValueSectionSummary(resultSummary)) {
     return resultSummary;
   }
-  const argsSummary = typeof entry.args.__summary === "string" ? entry.args.__summary.trim() : "";
+  const argsSummary =
+    typeof entry.args.__summary === "string" ? normalizeSectionSummaryText(entry.args.__summary) : "";
   if (argsSummary.length > 0 && !isLowValueSectionSummary(argsSummary)) {
     return argsSummary;
   }
@@ -5588,6 +5581,13 @@ export default function App() {
         <a className="font-medium underline underline-offset-4" href={buildSignInUrl(window.location.href)}>Sign in</a>
       </>
     ) : undefined;
+    const bookComposerDisabled = authPending || authLocked;
+    const bookComposerDisabledNotice = authLocked ? (
+      <>
+        Sign in to ask about this book.{" "}
+        <a className="font-medium underline underline-offset-4" href={buildSignInUrl(window.location.href)}>Sign in</a>
+      </>
+    ) : undefined;
 
     return (
       <section className="assistant-page">
@@ -5707,9 +5707,7 @@ export default function App() {
               onSelectSession={openBookSession}
               onStartNewChat={startNewBookChat}
             />
-            {authPending ? (
-              <BookAssistantPaneSkeleton />
-            ) : authLocked ? (
+            {authLocked && !authPending ? (
               <LockedState
                 compact
                 title="Sign in to ask about this book."
@@ -5725,6 +5723,8 @@ export default function App() {
                 onPrompt={bookPromptHandler}
                 onCancel={cancelActiveRun}
                 suggestions={ASSISTANT_WELCOME_SUGGESTIONS}
+                composerDisabled={bookComposerDisabled}
+                composerDisabledNotice={bookComposerDisabledNotice}
               />
             )}
           </div>
