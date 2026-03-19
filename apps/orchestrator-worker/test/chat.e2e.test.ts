@@ -3419,6 +3419,385 @@ test("get_relevant_chunks tolerates null workIds from planner output", async () 
   assert.equal(compactChunks.length, 1);
 });
 
+test("get_relevant_chunks simplifies scoped metadata-style queries into thematic passage search", async () => {
+  const store = new InMemoryAppStore(
+    [
+      {
+        id: "work-1",
+        gutenbergId: 71152,
+        title: "A lady and her husband",
+        language: "en",
+        releaseDate: "1914-01-01",
+        rightsStatus: "public_domain",
+        summary: "A novel of marriage and inward conflict.",
+        authors: ["Amber Reeves Blanco White"],
+        subjects: ["Fiction", "Marriage -- Fiction"],
+      },
+    ],
+    [
+      {
+        id: "chunk-1",
+        workId: "work-1",
+        chunkIndex: 12,
+        text: "Within myself I reproached my own conscience and asked myself whether I had mistaken the whole course of my life.",
+        r2Key: "gutenberg/clean/71152/chunks.jsonl",
+        score: 0,
+        excerpt: "",
+      },
+    ],
+  );
+
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    router: new ScriptedRouter([
+      {
+        type: "tool_chain",
+        fullQuery: "Find introspective passages in notable lives.",
+      },
+    ]),
+    planner: new ScriptedPlanner([
+      {
+        type: "tool_call",
+        tool_name: "get_relevant_chunks",
+        args: {
+          query: "\"examine myself\" OR \"my conscience\" OR \"I asked myself\" OR \"within myself\" AND (Napoleon OR Lincoln OR \"John Stuart Mill\")",
+          workIds: ["work-1"],
+          filters: {
+            language: "en",
+          },
+        },
+      },
+      {
+        type: "final_answer",
+        answer: "Found one introspective passage.",
+        citations: [],
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+      async runWorkspaceTask() {
+        return { ok: false, error: "disabled" };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: false, error: "disabled" };
+      },
+      async destroyWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const response = await app.request("/chat", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      userId: "scoped-chunk-user",
+      message: "Find introspective passages in notable lives.",
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  await response.text();
+
+  const sessionsResponse = await app.request("/sessions?userId=scoped-chunk-user");
+  const sessionsPayload = await sessionsResponse.json() as {
+    sessions: Array<{ id: string }>;
+  };
+  const sessionId = sessionsPayload.sessions[0]?.id;
+  assert.ok(sessionId);
+
+  const messagesResponse = await app.request(`/sessions/${sessionId}/messages?userId=scoped-chunk-user`);
+  const messagesPayload = await messagesResponse.json() as {
+    messages: Array<{ metadata: Record<string, unknown> }>;
+  };
+  const planMessage = messagesPayload.messages.find((message) => message.metadata?.phase === "plan");
+  const toolCalls = Array.isArray(planMessage?.metadata?.toolCalls)
+    ? planMessage?.metadata?.toolCalls as Array<Record<string, unknown>>
+    : [];
+  const chunkResult = toolCalls.find((entry) => entry.toolName === "get_relevant_chunks");
+  assert.equal(chunkResult?.state, "completed");
+  const result = chunkResult?.result && typeof chunkResult.result === "object"
+    ? chunkResult.result as Record<string, unknown>
+    : null;
+  const compactChunks = Array.isArray(result?.chunks) ? result.chunks as Array<Record<string, unknown>> : [];
+  assert.equal(compactChunks.length, 1);
+  assert.match(String(compactChunks[0]?.excerpt ?? ""), /within myself|conscience|asked myself/i);
+});
+
+test("get_relevant_chunks widens scoped workIds with metadata candidates from history", async () => {
+  const store = new InMemoryAppStore(
+    [
+      {
+        id: "work-1",
+        gutenbergId: 1702,
+        title: "Little Masterpieces of Autobiography",
+        language: "en",
+        releaseDate: "1900-01-01",
+        rightsStatus: "public_domain",
+        summary: "Autobiographical selections.",
+        authors: ["George Iles"],
+        subjects: ["Autobiographies"],
+      },
+      {
+        id: "work-2",
+        gutenbergId: 2523,
+        title: "The Memoirs of Victor Hugo",
+        language: "en",
+        releaseDate: "1900-01-01",
+        rightsStatus: "public_domain",
+        summary: "A memoir with self-reflective passages.",
+        authors: ["Victor Hugo"],
+        subjects: ["Autobiographies", "Memoirs"],
+      },
+    ],
+    [
+      {
+        id: "chunk-2",
+        workId: "work-2",
+        chunkIndex: 7,
+        text: "Within myself I found the same doubts, the same conscience, and the same need to judge my own life.",
+        r2Key: "gutenberg/clean/2523/chunks.jsonl",
+        score: 0,
+        excerpt: "",
+      },
+    ],
+  );
+
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    router: new ScriptedRouter([
+      {
+        type: "tool_chain",
+        fullQuery: "Find introspective passages in notable lives.",
+      },
+    ]),
+    planner: new ScriptedPlanner([
+      {
+        type: "tool_call",
+        tool_name: "search_works",
+        args: {
+          query: "memoir autobiography reflection",
+          filters: {
+            language: "en",
+          },
+        },
+      },
+      {
+        type: "tool_call",
+        tool_name: "get_relevant_chunks",
+        args: {
+          query: "\"within myself\" OR conscience OR reflection",
+          workIds: ["work-1"],
+          filters: {
+            language: "en",
+          },
+        },
+      },
+      {
+        type: "final_answer",
+        answer: "Found one introspective passage.",
+        citations: [],
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+      async runWorkspaceTask() {
+        return { ok: false, error: "disabled" };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: false, error: "disabled" };
+      },
+      async destroyWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const response = await app.request("/chat", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      userId: "history-expanded-chunks-user",
+      message: "Find introspective passages in notable lives.",
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  await response.text();
+
+  const sessionsResponse = await app.request("/sessions?userId=history-expanded-chunks-user");
+  const sessionsPayload = await sessionsResponse.json() as {
+    sessions: Array<{ id: string }>;
+  };
+  const sessionId = sessionsPayload.sessions[0]?.id;
+  assert.ok(sessionId);
+
+  const messagesResponse = await app.request(`/sessions/${sessionId}/messages?userId=history-expanded-chunks-user`);
+  const messagesPayload = await messagesResponse.json() as {
+    messages: Array<{ metadata: Record<string, unknown> }>;
+  };
+  const planMessage = messagesPayload.messages.find((message) => message.metadata?.phase === "plan");
+  const toolCalls = Array.isArray(planMessage?.metadata?.toolCalls)
+    ? planMessage?.metadata?.toolCalls as Array<Record<string, unknown>>
+    : [];
+  const chunkResult = toolCalls.find((entry) => entry.toolName === "get_relevant_chunks");
+  assert.equal(chunkResult?.state, "completed");
+  const result = chunkResult?.result && typeof chunkResult.result === "object"
+    ? chunkResult.result as Record<string, unknown>
+    : null;
+  const compactChunks = Array.isArray(result?.chunks) ? result.chunks as Array<Record<string, unknown>> : [];
+  assert.equal(compactChunks.length, 1);
+  assert.equal(compactChunks[0]?.workId, "work-2");
+});
+
+test("run_workspace_task auto-seeds scoped chunks when the planner provides books but no passages", async () => {
+  const store = new InMemoryAppStore(
+    [
+      {
+        id: "work-1",
+        gutenbergId: 71152,
+        title: "A lady and her husband",
+        language: "en",
+        releaseDate: "1914-01-01",
+        rightsStatus: "public_domain",
+        summary: "A novel of marriage and inward conflict.",
+        authors: ["Amber Reeves Blanco White"],
+        subjects: ["Fiction", "Marriage -- Fiction"],
+      },
+    ],
+    [
+      {
+        id: "chunk-1",
+        workId: "work-1",
+        chunkIndex: 12,
+        text: "Within myself I reproached my own conscience and asked myself whether I had mistaken the whole course of my life.",
+        r2Key: "gutenberg/clean/71152/chunks.jsonl",
+        score: 0,
+        excerpt: "",
+      },
+    ],
+  );
+
+  let receivedTaskSpec: Record<string, unknown> | null = null;
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    router: new ScriptedRouter([
+      {
+        type: "tool_chain",
+        fullQuery: "Find introspective passages in notable lives.",
+      },
+    ]),
+    planner: new ScriptedPlanner([
+      {
+        type: "tool_call",
+        tool_name: "run_workspace_task",
+        args: {
+          runtimeId: "runtime-1",
+          taskSpec: {
+            mode: "open_book_analysis",
+            question: "Find introspective passages in notable lives.",
+            researchObjective: "Find introspective passages in notable lives.",
+            searchHints: {
+              passageSearchFocus: "\"within myself\" OR \"my conscience\" OR \"I asked myself\"",
+            },
+            workIds: ["work-1"],
+            chunkIds: [],
+            retrieval: {
+              seedChunks: [],
+            },
+          },
+        },
+      },
+      {
+        type: "final_answer",
+        answer: "Done.",
+        citations: [],
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+      async runWorkspaceTask(input) {
+        receivedTaskSpec = input.taskSpec as Record<string, unknown>;
+        return { ok: true, briefing: "Briefing written." };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: false, error: "disabled" };
+      },
+      async destroyWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const response = await app.request("/chat", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      userId: "seeded-runtime-user",
+      message: "Find introspective passages in notable lives.",
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  await response.text();
+  assert.ok(receivedTaskSpec);
+  const taskSpecRecord = receivedTaskSpec as Record<string, unknown>;
+  const chunkIds = Array.isArray(taskSpecRecord.chunkIds) ? taskSpecRecord.chunkIds : [];
+  assert.equal(chunkIds.length, 1);
+  assert.equal(chunkIds[0], "chunk-1");
+  const retrieval = taskSpecRecord.retrieval && typeof taskSpecRecord.retrieval === "object"
+    ? taskSpecRecord.retrieval as Record<string, unknown>
+    : null;
+  const seedChunks = Array.isArray(retrieval?.seedChunks) ? retrieval.seedChunks as Array<Record<string, unknown>> : [];
+  assert.equal(seedChunks.length, 1);
+  assert.equal(seedChunks[0]?.id, "chunk-1");
+});
+
 test("search_works ignores unsupported human-readable language filters from planner output", async () => {
   const store = new InMemoryAppStore([
     {

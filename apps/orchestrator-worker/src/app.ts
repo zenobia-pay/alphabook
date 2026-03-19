@@ -871,17 +871,104 @@ function augmentToolArgsFromHistory(
     result: Record<string, unknown>;
   }>,
 ) {
-  if (toolName !== "get_relevant_chunks" || Array.isArray(args.workIds) && args.workIds.length > 0) {
+  if (toolName !== "get_relevant_chunks") {
     return args;
   }
   const candidateWorkIds = latestCandidateWorkIdsFromHistory(toolHistory);
   if (candidateWorkIds.length === 0) {
     return args;
   }
+  if (Array.isArray(args.workIds) && args.workIds.length > 0) {
+    return {
+      ...args,
+      workIds: uniqueWorkIds([
+        ...args.workIds.filter((value): value is string => typeof value === "string"),
+        ...candidateWorkIds,
+      ]).slice(0, 24),
+    };
+  }
   return {
     ...args,
     workIds: candidateWorkIds,
   };
+}
+
+const SCOPED_CHUNK_QUERY_STOP_WORDS = new Set([
+  "about",
+  "across",
+  "after",
+  "again",
+  "among",
+  "because",
+  "between",
+  "book",
+  "books",
+  "find",
+  "from",
+  "into",
+  "like",
+  "many",
+  "passage",
+  "passages",
+  "people",
+  "quote",
+  "quotes",
+  "search",
+  "their",
+  "them",
+  "they",
+  "where",
+  "which",
+  "with",
+]);
+
+function looksLikeProperNamePhrase(phrase: string) {
+  const words = phrase
+    .trim()
+    .split(/\s+/u)
+    .filter(Boolean);
+  if (words.length === 0) {
+    return false;
+  }
+  const lowercaseCount = words.filter((word) => /^[a-z]/u.test(word)).length;
+  if (lowercaseCount > 0) {
+    return false;
+  }
+  return words.every((word) => /^[A-Z][A-Za-z.'-]*$/u.test(word));
+}
+
+function simplifyScopedChunkQuery(query: string) {
+  const quotedPhrases = [...query.matchAll(/"([^"]+)"/gu)]
+    .map((match) => match[1]?.trim() ?? "")
+    .filter((phrase) => phrase.length > 0)
+    .filter((phrase) => !looksLikeProperNamePhrase(phrase));
+  const lowered = query
+    .replace(/"[^"]+"/gu, " ")
+    .replace(/\b(?:AND|OR|NOT)\b/giu, " ")
+    .replace(/[()]/gu, " ");
+  const thematicTokens = lowered
+    .split(/[^A-Za-z]+/u)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 4)
+    .filter((token) => /^[a-z]+$/u.test(token))
+    .filter((token) => !SCOPED_CHUNK_QUERY_STOP_WORDS.has(token));
+  const uniqueParts = Array.from(new Set([...quotedPhrases, ...thematicTokens])).slice(0, 20);
+  return uniqueParts.join(" ");
+}
+
+function chunkSeedLimitForTaskMode(mode: unknown) {
+  return mode === "exhaustive_corpus_search" ? 24 : 12;
+}
+
+function buildWorkspaceSeedPassageQuery(taskSpec: Record<string, unknown>) {
+  const searchHints = taskSpec.searchHints && typeof taskSpec.searchHints === "object"
+    ? taskSpec.searchHints as Record<string, unknown>
+    : null;
+  const passageSearchFocus = typeof searchHints?.passageSearchFocus === "string" ? searchHints.passageSearchFocus : "";
+  const question = typeof taskSpec.question === "string" ? taskSpec.question : "";
+  const researchObjective = typeof taskSpec.researchObjective === "string" ? taskSpec.researchObjective : "";
+  const fallback = passageSearchFocus || question || researchObjective;
+  return simplifyScopedChunkQuery(fallback).trim() || fallback.trim();
 }
 
 function normalizeSearchLanguageFilter(value: unknown): string | undefined {
@@ -1084,6 +1171,12 @@ function normalizeToolArgs(toolName: ToolName, args: Record<string, unknown>): R
           delete filters.genre;
         }
         normalized.filters = filters;
+      }
+      if (typeof normalized.query === "string" && Array.isArray(normalized.workIds) && normalized.workIds.length > 0) {
+        const simplifiedScopedQuery = simplifyScopedChunkQuery(normalized.query);
+        if (simplifiedScopedQuery.length > 0) {
+          normalized.query = simplifiedScopedQuery;
+        }
       }
       break;
     case "get_work_text":
@@ -1430,11 +1523,68 @@ async function executeTool(
         runId: context.runId,
       });
     case "run_workspace_task":
-      return deps.runtimeGateway.runWorkspaceTask({
-        ...ToolArgsSchemas.run_workspace_task.parse(normalizedArgs),
-        sessionId: context.sessionId,
-        runId: context.runId,
-      });
+      {
+        const parsed = ToolArgsSchemas.run_workspace_task.parse(normalizedArgs);
+        const taskSpec = parsed.taskSpec && typeof parsed.taskSpec === "object"
+          ? { ...(parsed.taskSpec as Record<string, unknown>) }
+          : {};
+        const workIds = Array.isArray(taskSpec.workIds)
+          ? taskSpec.workIds.filter((value): value is string => typeof value === "string")
+          : [];
+        const existingChunkIds = Array.isArray(taskSpec.chunkIds)
+          ? taskSpec.chunkIds.filter((value): value is string => typeof value === "string")
+          : [];
+        if (workIds.length > 0 && existingChunkIds.length === 0) {
+          const seedQuery = buildWorkspaceSeedPassageQuery(taskSpec);
+          if (seedQuery.length > 0) {
+            let embedding: number[] | undefined;
+            try {
+              context.auditLog?.("internal.workspace_seed_embedding.started", {
+                toolName,
+                query: seedQuery,
+                scopedWorkCount: workIds.length,
+              });
+              embedding = await deps.embedder.embedQuery(seedQuery, {
+                userId: context.userId,
+                sessionId: context.sessionId,
+                runId: context.runId,
+                source: "embedder",
+              });
+            } catch {
+              embedding = undefined;
+            }
+            const seedChunks = await deps.store.getRelevantChunks(
+              seedQuery,
+              workIds,
+              chunkSeedLimitForTaskMode(taskSpec.mode),
+              embedding,
+            );
+            if (seedChunks.length > 0) {
+              taskSpec.chunkIds = seedChunks
+                .map((chunk) => chunk.id)
+                .filter((value): value is string => typeof value === "string")
+                .slice(0, chunkSeedLimitForTaskMode(taskSpec.mode));
+              const retrieval = taskSpec.retrieval && typeof taskSpec.retrieval === "object"
+                ? { ...(taskSpec.retrieval as Record<string, unknown>) }
+                : {};
+              retrieval.seedChunks = seedChunks.slice(0, chunkSeedLimitForTaskMode(taskSpec.mode)).map((chunk) => ({
+                id: chunk.id,
+                workId: chunk.workId,
+                chunkIndex: chunk.chunkIndex,
+                excerpt: chunk.excerpt,
+                r2Key: chunk.r2Key ?? null,
+              }));
+              taskSpec.retrieval = retrieval;
+            }
+          }
+        }
+        return deps.runtimeGateway.runWorkspaceTask({
+          ...parsed,
+          taskSpec,
+          sessionId: context.sessionId,
+          runId: context.runId,
+        });
+      }
     case "read_workspace_file":
       return deps.runtimeGateway.readWorkspaceFile({
         ...ToolArgsSchemas.read_workspace_file.parse(normalizedArgs),
