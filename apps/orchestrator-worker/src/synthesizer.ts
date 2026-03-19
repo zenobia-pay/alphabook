@@ -77,7 +77,52 @@ export interface Synthesizer {
   }): Promise<AnswerEvaluation | null>;
 }
 
-function ensureCallToAction(answer: string) {
+type SynthesisMode =
+  | "survey"
+  | "hypothesis"
+  | "comparison"
+  | "follow_up"
+  | "verification"
+  | "counterexample";
+
+function detectSynthesisMode(userMessage: string) {
+  const normalized = userMessage.toLowerCase();
+  if (/\b(compare|contrast|versus|vs\.?|between)\b/.test(normalized)) {
+    return "comparison" satisfies SynthesisMode;
+  }
+  if (/\b(counterexample|exception|against|disprove|contradict)\b/.test(normalized)) {
+    return "counterexample" satisfies SynthesisMode;
+  }
+  if (/\b(true|false|does this hold|is it really|test|hypothesis|claim|verdict|evidence for|evidence against)\b/.test(normalized)) {
+    return "hypothesis" satisfies SynthesisMode;
+  }
+  if (/\b(follow up|follow-up|go deeper|refine|expand|more on|narrow to|build on that|continue)\b/.test(normalized)) {
+    return "follow_up" satisfies SynthesisMode;
+  }
+  if (/\b(verify|verify whether|check whether|supported|actually supported)\b/.test(normalized)) {
+    return "verification" satisfies SynthesisMode;
+  }
+  return "survey" satisfies SynthesisMode;
+}
+
+function callToActionForMode(mode: SynthesisMode) {
+  switch (mode) {
+    case "hypothesis":
+      return "Next steps: I can widen the for/against evidence, stress-test the verdict with counterexamples, or turn this into a cleaner argument map.";
+    case "comparison":
+      return "Next steps: I can expand this comparison across more books, isolate the sharpest contrasts, or open the strongest passages side by side.";
+    case "follow_up":
+      return "Next steps: I can push deeper into the strongest books, fill the remaining gaps, or widen outward from the evidence already found.";
+    case "verification":
+      return "Next steps: I can verify each major claim one by one, look for weak spots in the support, or find stronger confirming passages.";
+    case "counterexample":
+      return "Next steps: I can widen the exception search, compare the strongest counterexamples to the main pattern, or test a narrower version of the claim.";
+    default:
+      return "Next steps: I can widen this into a broader scan, compare the strongest books side by side, or open the best passages for closer reading.";
+  }
+}
+
+function ensureCallToAction(answer: string, mode: SynthesisMode = "survey") {
   const trimmed = answer.trim();
   if (!trimmed) {
     return trimmed;
@@ -85,7 +130,7 @@ function ensureCallToAction(answer: string) {
   if (/\b(next steps?|go further|if you want,? i can|i can next|to go further)\b/i.test(trimmed)) {
     return trimmed;
   }
-  return `${trimmed}\n\nNext steps: I can widen this into a broader scan, compare the strongest books side by side, or open the best passages for closer reading.`;
+  return `${trimmed}\n\n${callToActionForMode(mode)}`;
 }
 
 function truncateForModel(value: string, maxChars = 240) {
@@ -137,6 +182,86 @@ function dedupeCitations(citations: Citation[]): Citation[] {
     deduped.push(citation);
   }
   return deduped;
+}
+
+function minimumCitationBreadthForAnswer(userMessage: string, citations: Citation[]) {
+  const distinctWorkIds = new Set(citations.map((citation) => citation.workId));
+  if (distinctWorkIds.size <= 1) {
+    return distinctWorkIds.size;
+  }
+  const mode = detectSynthesisMode(userMessage);
+  switch (mode) {
+    case "hypothesis":
+    case "comparison":
+    case "counterexample":
+      return Math.min(3, distinctWorkIds.size);
+    case "survey":
+      return /\b(all|every|across|different|ways|types|survey|broad)\b/i.test(userMessage)
+        ? Math.min(4, distinctWorkIds.size)
+        : Math.min(2, distinctWorkIds.size);
+    default:
+      return Math.min(2, distinctWorkIds.size);
+  }
+}
+
+function ensureSynthesisCitationBreadth(userMessage: string, chosenCitations: Citation[], availableCitations: Citation[]) {
+  const minimumBreadth = minimumCitationBreadthForAnswer(userMessage, availableCitations);
+  if (minimumBreadth <= 1) {
+    return dedupeCitations(chosenCitations);
+  }
+  const selected = dedupeCitations(chosenCitations);
+  const selectedWorkIds = new Set(selected.map((citation) => citation.workId));
+  if (selectedWorkIds.size >= minimumBreadth) {
+    return selected;
+  }
+  for (const citation of availableCitations) {
+    if (selectedWorkIds.has(citation.workId)) {
+      continue;
+    }
+    selected.push(citation);
+    selectedWorkIds.add(citation.workId);
+    if (selectedWorkIds.size >= minimumBreadth || selected.length >= 8) {
+      break;
+    }
+  }
+  return dedupeCitations(selected).slice(0, 8);
+}
+
+function synthesisInstructionsForMode(mode: SynthesisMode) {
+  switch (mode) {
+    case "hypothesis":
+      return [
+        "Start with a direct verdict in the first paragraph.",
+        "Separate the strongest supporting evidence from the strongest opposing evidence.",
+        "End by stating whether the claim is supported, mixed, or weakly supported.",
+      ];
+    case "comparison":
+      return [
+        "Start with the main comparison in one sentence.",
+        "Organize the answer around the clearest similarities and differences.",
+        "Prefer evidence from more than one work when available.",
+      ];
+    case "follow_up":
+      return [
+        "Start by stating what this follow-up adds or changes relative to the earlier answer.",
+        "Reuse the strongest prior evidence before widening into new books or passages.",
+      ];
+    case "verification":
+      return [
+        "Start by saying whether the earlier claim is actually supported.",
+        "Distinguish well-supported points from weak or uncertain ones.",
+      ];
+    case "counterexample":
+      return [
+        "Lead with the strongest exception or disconfirming pattern.",
+        "Explain how the counterevidence changes the broader claim.",
+      ];
+    default:
+      return [
+        "Start with the main takeaway in plain English.",
+        "Group the evidence into the clearest categories or patterns.",
+      ];
+  }
 }
 
 function canonicalizeSearchCharacter(character: string) {
@@ -392,37 +517,46 @@ function userFacingErrorSummary(toolHistory: ToolHistoryEntry[]): string | null 
 
 export class FallbackSynthesizer implements Synthesizer {
   async synthesize(input: SynthesisInput): Promise<SynthesisResult> {
+    const mode = detectSynthesisMode(input.userMessage);
     const chunks = extractChunks(input.toolHistory);
     const runtimeSummary = input.runtimeBriefing ?? extractRuntimeSummary(input.toolHistory);
     const runtimeCitations = extractRuntimeCitations(input.toolHistory);
-    const citations = dedupeCitations([
+    const citations = ensureSynthesisCitationBreadth(input.userMessage, dedupeCitations([
       ...runtimeCitations,
       ...input.plannerCitations,
       ...chunks.slice(0, 4).map(chunkCitation),
-    ]).slice(0, 6);
+    ]).slice(0, 6), dedupeCitations([
+      ...runtimeCitations,
+      ...input.plannerCitations,
+      ...chunks.map(chunkCitation),
+    ]));
 
     const failureSummary = userFacingErrorSummary(input.toolHistory);
     if (failureSummary) {
       return {
-        answer: failureSummary,
+        answer: ensureCallToAction(failureSummary, mode),
         citations,
       };
     }
 
     const researchDocument = input.researchDocument ?? extractResearchDocument(input.toolHistory);
     if (runtimeSummary) {
-      const opening = "I searched the corpus, gathered primary-source passages, and assembled a quoted briefing before writing this summary for you.";
+      const opening = mode === "hypothesis"
+        ? "I searched the corpus for evidence on both sides before reducing it into a single verdict."
+        : mode === "follow_up"
+          ? "I continued from the earlier evidence and tightened the answer with the strongest passages from this run."
+          : "I searched the corpus, gathered primary-source passages, and assembled a quoted briefing before writing this summary for you.";
       const evidenceLine = researchDocument
         ? `Books and passages touched during the run included:\n${compactParagraphs(researchDocument, 4)}`
         : null;
       return {
-        answer: ensureCallToAction([opening, compactParagraphs(runtimeSummary, 6), evidenceLine].filter(Boolean).join("\n\n")),
+        answer: ensureCallToAction([opening, compactParagraphs(runtimeSummary, 6), evidenceLine].filter(Boolean).join("\n\n"), mode),
         citations,
       };
     }
 
     return {
-      answer: ensureCallToAction("The corpus search did not produce a usable briefing for this run, so I am stopping instead of guessing from partial retrieval."),
+      answer: ensureCallToAction("The corpus search did not produce a usable briefing for this run, so I am stopping instead of guessing from partial retrieval.", mode),
       citations: [],
     };
   }
@@ -437,6 +571,7 @@ export class OpenAISynthesizer implements Synthesizer {
   ) {}
 
   async synthesize(input: SynthesisInput): Promise<SynthesisResult> {
+    const mode = detectSynthesisMode(input.userMessage);
     const runtimeSummary = input.runtimeBriefing ?? extractRuntimeSummary(input.toolHistory);
     const researchDocument = input.researchDocument ?? extractResearchDocument(input.toolHistory);
     const summarizedToolHistory = summarizeToolHistoryForModel(input.toolHistory);
@@ -471,6 +606,8 @@ Use the exact provided absolute URL as the href. Do not invent, shorten, rewrite
             researchDocument,
             toolHistory: summarizedToolHistory,
             exactCitationLinks,
+            synthesisMode: mode,
+            responseStructure: synthesisInstructionsForMode(mode),
             responseInstructions: "Reply with JSON only.",
             outputShape: {
               answer: "string",
@@ -541,9 +678,15 @@ Use the exact provided absolute URL as the href. Do not invent, shorten, rewrite
       answer: typeof parsedJson.answer === "string" ? parsedJson.answer : "",
       citations: sanitizeCitations(parsedJson.citations),
     });
+    const reconciled = reconcileCitationsWithEvidence(parsed.citations, input.plannerCitations, input.toolHistory);
+    const available = dedupeCitations([
+      ...input.plannerCitations,
+      ...extractRuntimeCitations(input.toolHistory),
+      ...extractChunks(input.toolHistory).map(chunkCitation),
+    ]);
     return {
-      answer: ensureCallToAction(parsed.answer),
-      citations: reconcileCitationsWithEvidence(parsed.citations, input.plannerCitations, input.toolHistory),
+      answer: ensureCallToAction(parsed.answer, mode),
+      citations: ensureSynthesisCitationBreadth(input.userMessage, reconciled, available),
     };
   }
 
@@ -576,7 +719,7 @@ Use the exact provided absolute URL as the href. Do not invent, shorten, rewrite
               uniqueness: "1-10 score for whether the answer says something non-generic and specific",
               supportForQuestion: "1-10 score for how directly the answer addresses the original question with evidence",
               openQuestionsCount: "integer count of important unresolved questions or obvious missing follow-ups",
-              rationale: "one short paragraph explaining the scores",
+              rationale: "one short paragraph explaining the scores, explicitly considering evidence breadth, clarity of the takeaway, and whether the answer is generic or decisive enough for the prompt type",
             },
           }),
         },

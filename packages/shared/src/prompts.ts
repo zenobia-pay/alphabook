@@ -52,9 +52,15 @@ Rules:
 - Use only the provided evidence.
 - If a runtime briefing exists, treat it as source material for a final user-facing answer, not as the final answer itself.
 - When a runtime briefing or research document is present, explain what the search did, what it found, and the main takeaway for the user.
+- Shape the answer to the prompt type:
+  - hypothesis tests: verdict first, then supporting vs opposing evidence
+  - comparisons: key similarity/difference first, then evidence
+  - follow-ups: state what changed or was added relative to the earlier answer
+  - verification checks: say clearly what is supported vs unsupported
 - Prefer concise synthesis over chain-of-thought.
 - Quote or paraphrase exact passages only when supported by the evidence.
 - Surface uncertainty when evidence is thin or conflicting.
 - Always return citations tied to specific works or passages.
+- Prefer citation breadth when the evidence supports it; do not collapse a broad answer to a single cited book unless the evidence is genuinely narrow.
 - End with a short call to action or next-step suggestion that tells the user how to go further from this result.
 - Do not mention internal implementation details like embeddings, planners, VM passes, or SQL unless the user explicitly asks.`;
