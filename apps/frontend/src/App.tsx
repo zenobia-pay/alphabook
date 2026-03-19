@@ -41,6 +41,19 @@ type ToolTraceEntry = {
   state: "running" | "completed" | "error";
 };
 
+type AssistantDocumentBootstrapPayload = {
+  sessionId: string;
+  runId: string;
+  messages?: RawUiMessage[];
+  runState?: {
+    run?: SessionRunRecord;
+    toolTrace?: Array<Record<string, unknown>>;
+    artifacts?: RunArtifactRecord[];
+  };
+  error?: string;
+  errorStatus?: number;
+};
+
 type ResearchDocumentEntryKind = "title" | "log" | "book" | "chunk";
 
 type CitationNavigationContextValue = {
@@ -121,6 +134,12 @@ type ReaderPassage = {
   text: string;
   searchText: string;
 };
+
+declare global {
+  interface Window {
+    __ALPHABOOK_ASSISTANT_DOCUMENT_BOOTSTRAP__?: AssistantDocumentBootstrapPayload;
+  }
+}
 
 const USER_STORAGE_KEY = "alphabook.localUserId";
 const BOOK_ASSISTANT_WIDTH_STORAGE_KEY = "alphabook.bookAssistantWidth";
@@ -3385,6 +3404,17 @@ function buildAssistantDocumentHref(sessionId: string, runId: string) {
   return `/?view=assistant_document&session=${encodeURIComponent(sessionId)}&run=${encodeURIComponent(runId)}`;
 }
 
+function readAssistantDocumentBootstrap(sessionId: string, runId: string) {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  const payload = window.__ALPHABOOK_ASSISTANT_DOCUMENT_BOOTSTRAP__;
+  if (!payload || payload.sessionId !== sessionId || payload.runId !== runId) {
+    return null;
+  }
+  return payload;
+}
+
 function buildWorkContentHref(workId: string, gutenbergId?: string | number | null) {
   if (gutenbergId != null && String(gutenbergId).trim().length > 0) {
     return `${BOOK_CONTENT_ORIGIN}/${encodeURIComponent(String(gutenbergId))}/?v=${BOOK_CONTENT_VERSION}`;
@@ -4091,13 +4121,34 @@ function AssistantDocumentFramePage({
   sessionId: string;
   runId: string;
 }) {
-  const [messages, setMessages] = useState<UiMessage[]>([]);
-  const [toolTrace, setToolTrace] = useState<ToolTraceEntry[]>([]);
-  const [artifacts, setArtifacts] = useState<RunArtifactRecord[]>([]);
-  const [runStatus, setRunStatus] = useState<SessionRunRecord["status"] | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [errorStatus, setErrorStatus] = useState<number | null>(null);
+  const bootstrap = useMemo(() => readAssistantDocumentBootstrap(sessionId, runId), [runId, sessionId]);
+  const bootstrapHydratedMessages = useMemo(() => {
+    const rawMessages = Array.isArray(bootstrap?.messages) ? bootstrap.messages : [];
+    const hydrated = rawMessages.map(hydrateStoredMessage);
+    const bootstrapToolTrace = Array.isArray(bootstrap?.runState?.toolTrace) ? bootstrap.runState.toolTrace : [];
+    return bootstrapToolTrace.length > 0
+      ? mergePersistedToolTrace(hydrated, runId, bootstrapToolTrace)
+      : hydrated;
+  }, [bootstrap, runId]);
+  const [messages, setMessages] = useState<UiMessage[]>(bootstrapHydratedMessages);
+  const [toolTrace, setToolTrace] = useState<ToolTraceEntry[]>(() => currentResearchToolTrace(bootstrapHydratedMessages, runId));
+  const [artifacts, setArtifacts] = useState<RunArtifactRecord[]>(() => (
+    Array.isArray(bootstrap?.runState?.artifacts) ? bootstrap.runState.artifacts : []
+  ));
+  const [runStatus, setRunStatus] = useState<SessionRunRecord["status"] | null>(() => bootstrap?.runState?.run?.status ?? null);
+  const [loading, setLoading] = useState(bootstrap ? false : true);
+  const [error, setError] = useState<string | null>(bootstrap?.error ?? null);
+  const [errorStatus, setErrorStatus] = useState<number | null>(bootstrap?.errorStatus ?? null);
+
+  useEffect(() => {
+    setMessages(bootstrapHydratedMessages);
+    setToolTrace(currentResearchToolTrace(bootstrapHydratedMessages, runId));
+    setArtifacts(Array.isArray(bootstrap?.runState?.artifacts) ? bootstrap.runState.artifacts : []);
+    setRunStatus(bootstrap?.runState?.run?.status ?? null);
+    setLoading(bootstrap ? false : true);
+    setError(bootstrap?.error ?? null);
+    setErrorStatus(bootstrap?.errorStatus ?? null);
+  }, [bootstrap, bootstrapHydratedMessages, runId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -4138,14 +4189,26 @@ function AssistantDocumentFramePage({
       }
     };
 
-    void refresh();
+    if (bootstrap) {
+      if (bootstrap.error) {
+        setLoading(false);
+        setError(bootstrap.error);
+        setErrorStatus(bootstrap.errorStatus ?? null);
+      } else if (bootstrap.runState?.run?.status === "running" || bootstrap.runState?.run?.status === "queued") {
+        pollTimer = window.setTimeout(() => {
+          void refresh();
+        }, 1500);
+      }
+    } else {
+      void refresh();
+    }
     return () => {
       cancelled = true;
       if (pollTimer !== null) {
         window.clearTimeout(pollTimer);
       }
     };
-  }, [runId, sessionId]);
+  }, [bootstrap, runId, sessionId]);
 
   const ending = useMemo(() => currentResearchDocumentEnding(messages), [messages]);
 
