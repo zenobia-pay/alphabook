@@ -2762,6 +2762,24 @@ function currentResearchDocumentEnding(messages: UiMessage[], runActive = false)
     }
     return message.content;
   }
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role !== "assistant" || message.toolCalls.length === 0) {
+      continue;
+    }
+    for (let toolIndex = message.toolCalls.length - 1; toolIndex >= 0; toolIndex -= 1) {
+      const toolCall = message.toolCalls[toolIndex];
+      const briefing =
+        typeof toolCall.result?.briefing === "string"
+          ? toolCall.result.briefing.trim()
+          : typeof toolCall.result?.answer === "string"
+            ? toolCall.result.answer.trim()
+            : "";
+      if (briefing.length > 0) {
+        return briefing;
+      }
+    }
+  }
   return null;
 }
 
@@ -2922,7 +2940,11 @@ function isUsefulDocumentItemText(
   if (!normalized) {
     return false;
   }
-  if (/^\d+(?:\s+\d+)+$/u.test(normalized) || /^\d+(?:\.\d+)?$/u.test(normalized)) {
+  if (
+    /^\d+(?:\s+\d+)+$/u.test(normalized)
+    || /^\d+(?:\.\d+)?$/u.test(normalized)
+    || /^\d+(?:\s*[-–]\s*\d+)+$/u.test(normalized)
+  ) {
     return false;
   }
   if (kind === "log") {
@@ -2981,29 +3003,10 @@ function toSectionSummary(entry: ToolTraceEntry) {
 
 function toSectionMeta(entry: ToolTraceEntry) {
   if (entry.toolName === "estimate_research_scope") {
-    const trueBreadthEstimate =
-      typeof entry.result?.trueBreadthEstimate === "number"
-        ? entry.result.trueBreadthEstimate
-        : typeof entry.result?.metadataWorkEstimate === "number" || typeof entry.result?.chunkWorkEstimate === "number"
-          ? Math.max(
-              typeof entry.result?.metadataWorkEstimate === "number" ? entry.result.metadataWorkEstimate : 0,
-              typeof entry.result?.chunkWorkEstimate === "number" ? entry.result.chunkWorkEstimate : 0,
-            )
-          : 0;
-    if (trueBreadthEstimate > 0) {
-      return `breadth est. ${pluralize(trueBreadthEstimate, "book")}`;
-    }
+    return "";
   }
   if (entry.toolName === "search_works" || entry.toolName === "get_work_metadata") {
-    const frontierWorkCount = typeof entry.result?.frontierWorkCount === "number" ? entry.result.frontierWorkCount : 0;
-    const visibleCandidateWorkCount = typeof entry.result?.visibleCandidateWorkCount === "number"
-      ? entry.result.visibleCandidateWorkCount
-      : Array.isArray(entry.result?.works)
-        ? entry.result.works.length
-        : 0;
-    if (frontierWorkCount > 0) {
-      return `${pluralize(visibleCandidateWorkCount, "probe book")} shown · ${pluralize(frontierWorkCount, "candidate book")} in frontier`;
-    }
+    return "";
   }
   const workCount = Array.isArray(entry.result?.works) ? entry.result.works.length : 0;
   const chunkCount = Array.isArray(entry.result?.chunks) ? entry.result.chunks.length : 0;
@@ -3388,17 +3391,7 @@ function sectionMetaFromItems(section: ResearchDocumentSection) {
   const chunkCount = section.items.filter((item) => item.kind === "chunk").length;
   const bookCount = section.items.filter((item) => item.kind === "book").length;
   if (section.title === "Metadata Search" || section.title === "Book Metadata") {
-    const shown = bookCount > 0 ? `${pluralize(bookCount, "book")} shown` : "";
-    const base = typeof section.meta === "string" ? section.meta.trim() : "";
-    if (shown && base) {
-      return `${shown} · ${base}`;
-    }
-    if (shown) {
-      return shown;
-    }
-    if (base) {
-      return base;
-    }
+    return bookCount > 0 ? pluralize(bookCount, "book") : "";
   }
   if (chunkCount > 0) {
     return pluralize(chunkCount, "passage");
@@ -3413,7 +3406,7 @@ function sectionPriority(section: ResearchDocumentSection) {
   const title = section.title.toLowerCase();
   const chunkCount = section.items.filter((item) => item.kind === "chunk").length;
   const bookCount = section.items.filter((item) => item.kind === "book").length;
-  if (title.includes("corpus briefing")) {
+  if (title.includes("metadata")) {
     return 0;
   }
   if (title.includes("passage")) {
@@ -3422,11 +3415,11 @@ function sectionPriority(section: ResearchDocumentSection) {
   if (chunkCount > 0) {
     return 2;
   }
-  if (title.includes("metadata")) {
-    return 4;
-  }
   if (bookCount > 0) {
     return 3;
+  }
+  if (title.includes("corpus briefing")) {
+    return 4;
   }
   return 5;
 }
