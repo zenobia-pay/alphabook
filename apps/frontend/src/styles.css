@@ -152,9 +152,9 @@ button {
 .sidebar-scroll-region {
   min-height: 0;
   display: grid;
-  align-content: start;
-  overflow-y: auto;
-  overflow-x: hidden;
+  grid-template-rows: auto minmax(0, 1fr);
+  align-content: stretch;
+  overflow: hidden;
   padding-right: 2px;
 }
 
@@ -201,8 +201,10 @@ button {
 
 .sidebar-recents {
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 8px;
   padding-top: 16px;
+  min-height: 0;
 }
 
 .sidebar-recents-header {
@@ -233,6 +235,10 @@ button {
   display: grid;
   gap: 2px;
   min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 2px;
 }
 
 .sidebar-recent-row {
