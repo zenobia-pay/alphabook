@@ -704,31 +704,31 @@ export class FallbackPlanner implements Planner {
       };
     }
 
-    if (!toolNames.includes("create_workspace")) {
-      return {
-        type: "tool_call",
-        tool_name: "create_workspace",
-        rationale: scopedWorkIds.length > 0
-          ? "Starting the Codex workspace for this book with the estimated search budget, then I’ll seed it with passages before running the deeper search."
-          : "Starting the Codex workspace with the estimated search budget, then I’ll seed it with corpus retrieval before running the deeper search.",
-        args: {
-          workIds: scopedWorkIds.length > 0 ? scopedWorkIds.slice(0, 12) : [],
-          chunkIds: [],
-          taskContext: buildTaskContext(context, workIds, chunks),
-        },
-      };
-    }
-
     if (!toolNames.includes("search_works")) {
       return {
         type: "tool_call",
         tool_name: "search_works",
-        rationale: "Scanning the library for likely books and themes.",
+        rationale: "Surfacing likely books immediately so the research document starts filling with candidate evidence while the deeper search is prepared.",
         args: {
           query: context.userMessage,
           filters: {
             limit: metadataLimit,
           },
+        },
+      };
+    }
+
+    if (!toolNames.includes("create_workspace")) {
+      return {
+        type: "tool_call",
+        tool_name: "create_workspace",
+        rationale: scopedWorkIds.length > 0
+          ? "Starting the Codex workspace for this book with the estimated search budget after the first visible metadata pass."
+          : "Starting the Codex workspace with the estimated search budget after the first visible metadata pass.",
+        args: {
+          workIds: scopedWorkIds.length > 0 ? scopedWorkIds.slice(0, 12) : [],
+          chunkIds: [],
+          taskContext: buildTaskContext(context, workIds, chunks),
         },
       };
     }
@@ -955,6 +955,19 @@ export class OpenAIPlanner implements Planner {
         },
       };
     }
+    if (!hasToolStarted(context, "search_works")) {
+      return {
+        type: "tool_call",
+        tool_name: "search_works",
+        rationale: "I’m surfacing likely books immediately so the research document starts filling before the deeper workspace search begins.",
+        args: {
+          query: context.userMessage,
+          filters: {
+            limit: 24,
+          },
+        },
+      };
+    }
     if (!hasToolStarted(context, "create_workspace")) {
       const chunks = seedChunkPayload(context);
       const metadataIds = context.workScope?.length ? context.workScope.slice(0, 12) : metadataWorkIds(context, 12);
@@ -966,8 +979,8 @@ export class OpenAIPlanner implements Planner {
         type: "tool_call",
         tool_name: "create_workspace",
         rationale: context.workScope?.length
-          ? "I’m starting the Codex workspace for this book first, then I’ll seed it with retrieval before the full search."
-          : "I’m starting the Codex workspace first, then I’ll seed it with retrieval before the full search.",
+          ? "I’m starting the Codex workspace for this book after the first visible metadata pass."
+          : "I’m starting the Codex workspace after the first visible metadata pass.",
         args: {
           workIds: context.workScope?.length ? context.workScope.slice(0, 12) : [],
           chunkIds: [],

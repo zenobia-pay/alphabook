@@ -2739,7 +2739,10 @@ function currentResearchToolTrace(messages: UiMessage[], runId: string | null) {
   return order.map((id) => merged.get(id)).filter((entry): entry is ToolTraceEntry => Boolean(entry));
 }
 
-function currentResearchDocumentEnding(messages: UiMessage[]) {
+function currentResearchDocumentEnding(messages: UiMessage[], runActive = false) {
+  if (runActive || messages.some((message) => message.toolCalls.some((toolCall) => toolCall.state === "running"))) {
+    return null;
+  }
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (message.role !== "assistant") {
@@ -4283,7 +4286,10 @@ function AssistantDocumentFramePage({
     };
   }, [bootstrap, hasServerRenderedDocument, runId, sessionId]);
 
-  const ending = useMemo(() => currentResearchDocumentEnding(messages), [messages]);
+  const ending = useMemo(
+    () => currentResearchDocumentEnding(messages, runStatus === "running" || runStatus === "queued"),
+    [messages, runStatus],
+  );
 
   if (loading && !hasServerRenderedDocument) {
     return (
@@ -6260,7 +6266,10 @@ export default function App() {
         ))
       );
     const workspaceToolTrace = currentResearchToolTrace(visibleMessages, preferredAssistantRun?.id ?? null);
-    const workspaceDocumentEnding = currentResearchDocumentEnding(visibleMessages);
+    const workspaceDocumentEnding = currentResearchDocumentEnding(
+      visibleMessages,
+      isSending || recoveredActiveRunId !== null || preferredAssistantRun?.status === "running" || preferredAssistantRun?.status === "queued",
+    );
     const showBlankSession =
       !assistantSessionLoading
       && selectedSessionId == null
