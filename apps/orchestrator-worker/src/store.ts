@@ -1190,6 +1190,65 @@ function relaxMetadataSearchFilters(filters: Record<string, unknown>) {
   return variants;
 }
 
+function shouldDiversifyChunkResults(query: string, workIds: string[] | undefined, limit: number) {
+  if (limit < 12) {
+    return false;
+  }
+  if (Array.isArray(workIds) && workIds.length >= 16) {
+    return true;
+  }
+  return isBroadMetadataSurveyQuery(query);
+}
+
+function diversifyChunkResults<T extends { workId: string; score: number }>(
+  query: string,
+  workIds: string[] | undefined,
+  rows: T[],
+  limit: number,
+) {
+  if (!shouldDiversifyChunkResults(query, workIds, limit) || rows.length <= limit) {
+    return rows.slice(0, limit);
+  }
+  const perWorkCap = Array.isArray(workIds) && workIds.length > 48 ? 2 : 3;
+  const grouped = new Map<string, T[]>();
+  for (const row of rows) {
+    const bucket = grouped.get(row.workId) ?? [];
+    bucket.push(row);
+    grouped.set(row.workId, bucket);
+  }
+  for (const bucket of grouped.values()) {
+    bucket.sort((left, right) => right.score - left.score);
+  }
+  const selected: T[] = [];
+  for (let pass = 0; selected.length < limit && pass < perWorkCap; pass += 1) {
+    for (const bucket of grouped.values()) {
+      const candidate = bucket[pass];
+      if (!candidate) {
+        continue;
+      }
+      selected.push(candidate);
+      if (selected.length >= limit) {
+        break;
+      }
+    }
+  }
+  if (selected.length < limit) {
+    const seen = new Set(selected.map((row) => `${row.workId}:${JSON.stringify(row)}`));
+    for (const row of rows) {
+      const key = `${row.workId}:${JSON.stringify(row)}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      selected.push(row);
+      seen.add(key);
+      if (selected.length >= limit) {
+        break;
+      }
+    }
+  }
+  return selected.slice(0, limit);
+}
+
 export class InMemoryAppStore implements AppStore {
   private readonly users = new Set<string>();
   private readonly userProfiles = new Map<string, UserRecord>();
@@ -1792,7 +1851,7 @@ export class InMemoryAppStore implements AppStore {
       )
       : null;
     const lexicalQuery = expandedSearchTokens(query).join(" ");
-    return this.chunks
+    const rankedRows = this.chunks
       .filter((chunk) => !allowedWorkIds || allowedWorkIds.has(chunk.workId))
       .map((chunk) => ({
         ...chunk,
@@ -1802,8 +1861,8 @@ export class InMemoryAppStore implements AppStore {
         excerpt: excerpt(chunk.text, lexicalQuery || query),
       }))
       .filter((chunk) => chunk.score > 0)
-      .sort((left, right) => right.score - left.score)
-      .slice(0, limit);
+      .sort((left, right) => right.score - left.score);
+    return diversifyChunkResults(query, workIds, rankedRows, limit);
   }
 
   async getWorkTextFile(workId: string): Promise<WorkTextRecord | null> {
@@ -3771,6 +3830,9 @@ export class NeonAppStore implements AppStore {
     const tsQuery = normalizedQuery || query.trim();
     const tokens = expandedSearchTokens(query);
     const semanticCandidateLimit = Math.max(limit * 20, 192);
+    const rankedResultLimit = shouldDiversifyChunkResults(query, workIds, limit)
+      ? Math.min(Math.max(limit * 3, 96), 256)
+      : limit;
     const startYear = Array.isArray(filters.yearRange) ? Math.min(filters.yearRange[0], filters.yearRange[1]) : null;
     const endYear = Array.isArray(filters.yearRange) ? Math.max(filters.yearRange[0], filters.yearRange[1]) : null;
     const genres = Array.isArray(filters.genre)
@@ -3902,7 +3964,7 @@ export class NeonAppStore implements AppStore {
       [
         tsQuery,
         workIds?.length ? workIds : null,
-        limit,
+        rankedResultLimit,
         vectorLiteral,
         tokens,
         semanticCandidateLimit,
@@ -3913,7 +3975,7 @@ export class NeonAppStore implements AppStore {
         genres,
       ],
     ), PASSAGE_SEARCH_TIMEOUT_MS, "Passage search timed out before the database returned chunks.");
-    return result.rows.map((row) => ({
+    const rankedRows = result.rows.map((row) => ({
       id: row.id,
       workId: row.work_id,
       chunkIndex: row.chunk_index,
@@ -3922,6 +3984,7 @@ export class NeonAppStore implements AppStore {
       score: Number(row.semantic_score ?? 0) + Number(row.token_score ?? 0),
       excerpt: excerpt(row.text, query),
     }));
+    return diversifyChunkResults(query, workIds, rankedRows, limit);
   }
 
   async getWorkTextFile(workId: string): Promise<WorkTextRecord | null> {

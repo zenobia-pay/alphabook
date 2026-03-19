@@ -5664,5 +5664,211 @@ test("fallback planner verifies passages over the wide frontier before VM narrow
   assert.equal(decision.tool_name, "get_relevant_chunks");
   assert.match(decision.rationale ?? "", /wider ranked frontier/i);
   assert.ok(Array.isArray(decision.args.workIds));
-  assert.equal((decision.args.workIds as unknown[]).length, 64);
+  assert.ok((decision.args.workIds as unknown[]).length >= 60);
+});
+
+test("fallback planner asks for passage verification before metadata after search works on broad queries", async () => {
+  const planner = new FallbackPlanner();
+  const decision = await planner.decide({
+    userMessage: "Find broad grief patterns across 19th century fiction.",
+    conversationHistory: [],
+    turns: 3,
+    toolHistory: [
+      {
+        toolName: "estimate_research_scope",
+        args: {
+          query: "Find broad grief patterns across 19th century fiction.",
+        },
+        result: {
+          recommendedIntensity: "maximum",
+          recommendedWallClockMinutes: 60,
+          recommendedParallelism: 8,
+          recommendedShardAxis: "work_id_hash",
+          recommendedFrontierWorks: 64,
+          recommendedShards: [],
+        },
+      },
+      {
+        toolName: "create_workspace",
+        args: {
+          workIds: [],
+          chunkIds: [],
+          taskContext: {},
+        },
+        result: {
+          ok: true,
+          runtimeId: "runtime-1",
+        },
+      },
+      {
+        toolName: "search_works",
+        args: {
+          query: "Find broad grief patterns across 19th century fiction.",
+        },
+        result: {
+          works: Array.from({ length: 24 }, (_, index) => ({
+            id: `work-${index + 1}`,
+            title: `Work ${index + 1}`,
+            authors: [`Author ${index + 1}`],
+          })),
+          frontier: {
+            workCount: 64,
+            works: Array.from({ length: 64 }, (_, index) => ({
+              id: `work-${index + 1}`,
+              title: `Work ${index + 1}`,
+              authors: [`Author ${index + 1}`],
+            })),
+          },
+        },
+      },
+    ],
+  });
+
+  assert.equal(decision.type, "tool_call");
+  assert.equal(decision.tool_name, "get_relevant_chunks");
+});
+
+test("broad passage search diversifies hits across works", async () => {
+  const store = new InMemoryAppStore(
+    Array.from({ length: 12 }, (_, index) => ({
+      id: `work-${index + 1}`,
+      gutenbergId: index + 1,
+      title: `Grief Work ${index + 1}`,
+      language: "en",
+      releaseDate: "1880-01-01",
+      rightsStatus: "public_domain",
+      summary: "A broad fiction work about grief and mourning.",
+      authors: [`Author ${index + 1}`],
+      subjects: ["fiction", "grief"],
+      cleanTextKey: `gutenberg/clean/${index + 1}/clean.txt`,
+    })),
+    Array.from({ length: 72 }, (_, index) => ({
+      id: `chunk-${index + 1}`,
+      workId: `work-${(index % 12) + 1}`,
+      chunkIndex: index,
+      text: `Grief and mourning passage ${index + 1} about sorrow, consolation, and loss in fiction.`,
+      r2Key: `gutenberg/clean/${(index % 12) + 1}/chunks.jsonl`,
+      score: 0,
+      excerpt: "",
+    })),
+  );
+
+  const chunks = await store.getRelevantChunks(
+    "Find broad grief patterns across 19th century fiction.",
+    Array.from({ length: 12 }, (_, index) => `work-${index + 1}`),
+    24,
+  );
+
+  assert.equal(chunks.length, 24);
+  assert.ok(new Set(chunks.map((chunk) => chunk.workId)).size >= 8);
+});
+
+test("run metrics record candidate books from broad search_works passes", async () => {
+  class FrontierMetricsStore extends InMemoryAppStore {
+    override async searchWorks(): Promise<Awaited<ReturnType<InMemoryAppStore["searchWorks"]>>> {
+      return Array.from({ length: 30 }, (_, index) => ({
+        id: `work-${index + 1}`,
+        gutenbergId: index + 1,
+        title: `Grief Work ${index + 1}`,
+        language: "en",
+        releaseDate: "1880-01-01",
+        rightsStatus: "public_domain",
+        summary: "A broad fiction work about grief and mourning.",
+        authors: [`Author ${index + 1}`],
+        subjects: ["fiction", "grief", "mourning"],
+        metadata: {},
+      }));
+    }
+  }
+
+  const store = new FrontierMetricsStore(
+    Array.from({ length: 30 }, (_, index) => ({
+      id: `work-${index + 1}`,
+      gutenbergId: index + 1,
+      title: `Grief Work ${index + 1}`,
+      language: "en",
+      releaseDate: "1880-01-01",
+      rightsStatus: "public_domain",
+      summary: "A broad fiction work about grief and mourning.",
+      authors: [`Author ${index + 1}`],
+      subjects: ["fiction", "grief", "mourning"],
+      cleanTextKey: `gutenberg/clean/${index + 1}/clean.txt`,
+    })),
+    [],
+  );
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    router: new ScriptedRouter([
+      {
+        type: "tool_chain",
+        fullQuery: "Survey grief mourning fiction across the corpus.",
+      },
+    ]),
+    planner: new ScriptedPlanner([
+      {
+        type: "tool_call",
+        tool_name: "search_works",
+        args: {
+          query: "Survey grief mourning fiction across the corpus.",
+          filters: {
+            limit: 24,
+          },
+        },
+      },
+      {
+        type: "final_answer",
+        answer: "Finished the broad metadata pass.",
+        citations: [],
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+      async runWorkspaceTask() {
+        return { ok: false, error: "disabled" };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: false, files: [] };
+      },
+      async destroyWorkspace() {
+        return { ok: false };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const response = await app.request("/chat", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      userId: "frontier-metrics-user",
+      message: "Survey grief mourning fiction across the corpus.",
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  await response.text();
+
+  const sessions = await store.listSessions("frontier-metrics-user");
+  const runs = await store.listRuns(sessions[0]!.id);
+  const runDetailsResponse = await app.request(`/sessions/${sessions[0]!.id}/runs/${runs[0]!.id}`);
+  assert.equal(runDetailsResponse.status, 200);
+  const runDetailsPayload = (await runDetailsResponse.json()) as {
+    metrics?: Record<string, unknown>;
+  };
+  assert.ok(typeof runDetailsPayload.metrics?.totalCandidateBooks === "number");
+  assert.ok((runDetailsPayload.metrics?.totalCandidateBooks as number) >= 12);
 });

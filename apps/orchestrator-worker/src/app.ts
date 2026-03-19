@@ -1567,13 +1567,16 @@ async function executeTool(
     case "search_works": {
       const parsed = ToolArgsSchemas.search_works.parse(normalizedArgs);
       const requestedLimit = typeof parsed.filters?.limit === "number" ? parsed.filters.limit : 8;
-      const frontierLimit = Math.max(requestedLimit, Math.min(80, requestedLimit * 2));
+      const broadSurveyQuery = isBroadCorpusResearchQuery(parsed.query);
+      const frontierLimit = broadSurveyQuery
+        ? Math.max(requestedLimit * 3, Math.min(128, requestedLimit * 4))
+        : Math.max(requestedLimit, Math.min(80, requestedLimit * 2));
       const frontierWorks = await deps.store.searchWorks(parsed.query, {
         ...(parsed.filters ?? {}),
         limit: frontierLimit,
       });
       return {
-        works: frontierWorks.slice(0, Math.min(20, requestedLimit)),
+        works: frontierWorks.slice(0, Math.min(broadSurveyQuery ? 24 : 20, frontierLimit)),
         frontier: {
           workCount: frontierWorks.length,
           works: frontierWorks,
@@ -1661,7 +1664,8 @@ async function executeTool(
         const existingChunkIds = Array.isArray(taskSpec.chunkIds)
           ? taskSpec.chunkIds.filter((value): value is string => typeof value === "string")
           : [];
-        if (frontierWorkIds.length > 0 && existingChunkIds.length === 0) {
+        const desiredSeedChunkCount = chunkSeedLimitForTaskMode(taskSpec.mode);
+        if (frontierWorkIds.length > 0 && existingChunkIds.length < Math.max(8, Math.floor(desiredSeedChunkCount / 2))) {
           const seedQuery = buildWorkspaceSeedPassageQuery(taskSpec);
           if (seedQuery.length > 0) {
             let embedding: number[] | undefined;
@@ -1682,8 +1686,8 @@ async function executeTool(
             }
             const seedChunks = await deps.store.getRelevantChunks(
               seedQuery,
-              frontierWorkIds.slice(0, 80),
-              chunkSeedLimitForTaskMode(taskSpec.mode),
+              frontierWorkIds.slice(0, 120),
+              desiredSeedChunkCount,
               embedding,
             );
             if (seedChunks.length > 0) {
@@ -1691,25 +1695,27 @@ async function executeTool(
                 seedChunks.map((chunk) => (typeof chunk.workId === "string" ? chunk.workId : null)),
               );
               const workLimit = taskSpec.mode === "exhaustive_corpus_search" ? 32 : 12;
-              taskSpec.chunkIds = seedChunks
-                .map((chunk) => chunk.id)
-                .filter((value): value is string => typeof value === "string")
-                .slice(0, chunkSeedLimitForTaskMode(taskSpec.mode));
-              taskSpec.frontierWorkIds = frontierWorkIds.slice(0, 80);
+              taskSpec.chunkIds = uniqueWorkIds([
+                ...existingChunkIds,
+                ...seedChunks
+                  .map((chunk) => chunk.id)
+                  .filter((value): value is string => typeof value === "string"),
+              ]).slice(0, desiredSeedChunkCount);
+              taskSpec.frontierWorkIds = frontierWorkIds.slice(0, 120);
               taskSpec.verifiedWorkIds = verifiedWorkIds;
               taskSpec.verifiedChunkIds = seedChunks
                 .map((chunk) => chunk.id)
                 .filter((value): value is string => typeof value === "string")
-                .slice(0, chunkSeedLimitForTaskMode(taskSpec.mode));
+                .slice(0, desiredSeedChunkCount);
               taskSpec.workIds = uniqueWorkIds([
                 ...verifiedWorkIds,
                 ...workIds,
-              ]).slice(0, workLimit);
+              ]).slice(0, taskSpec.mode === "exhaustive_corpus_search" ? Math.max(workLimit, 40) : workLimit);
               taskSpec.candidateWorkIds = Array.isArray(taskSpec.candidateWorkIds)
                 ? uniqueWorkIds([
                     ...verifiedWorkIds,
                     ...(taskSpec.candidateWorkIds as unknown[]).filter((value): value is string => typeof value === "string"),
-                  ]).slice(0, workLimit)
+                  ]).slice(0, taskSpec.mode === "exhaustive_corpus_search" ? Math.max(workLimit, 40) : workLimit)
                 : taskSpec.workIds;
               const retrieval = taskSpec.retrieval && typeof taskSpec.retrieval === "object"
                 ? { ...(taskSpec.retrieval as Record<string, unknown>) }
@@ -2285,6 +2291,13 @@ function collectWorkIdsFromWorks(input: unknown) {
         ? (candidate as Record<string, unknown>).id as string
         : null)
     .filter((value): value is string => typeof value === "string" && value.length > 0);
+}
+
+function collectWorkIdsFromFrontier(input: unknown) {
+  if (!input || typeof input !== "object" || !Array.isArray((input as Record<string, unknown>).works)) {
+    return [];
+  }
+  return collectWorkIdsFromWorks((input as Record<string, unknown>).works);
 }
 
 function collectWorkIdsFromManifest(input: unknown) {
@@ -5430,7 +5443,10 @@ async function runOrchestrator(
           runMetrics.plannedFrontierWorks = Math.max(runMetrics.plannedFrontierWorks, result.recommendedFrontierWorks);
         }
       }
-      const candidateWorkIds = collectWorkIdsFromWorks(result.works);
+      const candidateWorkIds = uniqueWorkIds([
+        ...collectWorkIdsFromWorks(result.works),
+        ...collectWorkIdsFromFrontier(result.frontier),
+      ]);
       for (const workId of candidateWorkIds) {
         runMetrics.candidateBookIds.add(workId);
         runMetrics.documentBookIds.add(workId);
