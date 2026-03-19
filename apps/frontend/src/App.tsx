@@ -763,7 +763,7 @@ function mergePersistedToolTrace(messages: UiMessage[], runId: string, trace: Ar
           ? entry.state
           : existing.state;
       const nextEntry: ToolTraceEntry = {
-        ...entry,
+        ...existing,
         label: existing.label || entry.label,
         rationale: existing.rationale ?? entry.rationale,
         progress: nextProgress,
