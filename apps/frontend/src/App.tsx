@@ -3150,6 +3150,49 @@ function collectResearchSteps(toolTrace: ToolTraceEntry[]) {
   return lines;
 }
 
+function collectConfirmedDocumentWorkIds(toolTrace: ToolTraceEntry[]) {
+  const confirmed = new Set<string>();
+  for (const entry of toolTrace) {
+    if (entry.toolName === "get_relevant_chunks") {
+      const chunks = Array.isArray(entry.result?.chunks) ? entry.result.chunks as Array<Record<string, unknown>> : [];
+      for (const chunk of chunks) {
+        if (typeof chunk.workId === "string" && chunk.workId.trim().length > 0) {
+          confirmed.add(chunk.workId);
+        }
+      }
+    }
+    if (entry.toolName === "run_workspace_task") {
+      const taskSpec = entry.args?.taskSpec && typeof entry.args.taskSpec === "object"
+        ? entry.args.taskSpec as Record<string, unknown>
+        : null;
+      if (Array.isArray(taskSpec?.workIds)) {
+        for (const workId of taskSpec.workIds) {
+          if (typeof workId === "string" && workId.trim().length > 0) {
+            confirmed.add(workId);
+          }
+        }
+      }
+    }
+    for (const detail of entry.progressDetails ?? []) {
+      if (typeof detail?.workId === "string" && detail.workId.trim().length > 0) {
+        confirmed.add(detail.workId);
+      }
+    }
+    if (entry.toolName === "create_workspace") {
+      const manifest = entry.result?.manifest;
+      const works = manifest && typeof manifest === "object" && Array.isArray((manifest as Record<string, unknown>).works)
+        ? (manifest as Record<string, unknown>).works as Array<Record<string, unknown>>
+        : [];
+      for (const work of works) {
+        if (typeof work.workId === "string" && work.workId.trim().length > 0) {
+          confirmed.add(work.workId);
+        }
+      }
+    }
+  }
+  return confirmed;
+}
+
 type SurfacingBook = {
   key: string;
   title: string;
@@ -3277,6 +3320,7 @@ function buildResearchDocument(
   const entries: ResearchDocumentFlatEntry[] = [];
   const sections = new Map<string, ResearchDocumentSection>();
   const seen = new Set<string>();
+  const confirmedWorkIds = collectConfirmedDocumentWorkIds(toolTrace);
 
   for (const entry of toolTrace) {
     const section = ensureSection(sections, entry);
@@ -3347,7 +3391,12 @@ function buildResearchDocument(
 
     if (entry.toolName === "search_works" || entry.toolName === "get_work_metadata") {
       const works = Array.isArray(entry.result?.works) ? entry.result.works as Array<Record<string, unknown>> : [];
-      for (const [index, work] of works.entries()) {
+      const filteredWorks = works.filter((work) => {
+        const workId = typeof work.id === "string" ? work.id : "";
+        return workId.length > 0 && confirmedWorkIds.has(workId);
+      });
+      const displayWorks = (filteredWorks.length > 0 ? filteredWorks : works.slice(0, 3));
+      for (const [index, work] of displayWorks.entries()) {
         const workId = typeof work.id === "string" ? work.id : `${entry.id}:work:${index}`;
         const titleText = typeof work.title === "string" ? work.title.trim() : "";
         const authors = Array.isArray(work.authors)
