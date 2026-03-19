@@ -200,7 +200,28 @@ function getDisplayLogLines(value: unknown) {
   if (!Array.isArray(logLines)) {
     return [];
   }
-  return logLines.filter((line): line is string => typeof line === "string" && line.trim().length > 0);
+  return logLines.flatMap((line): ToolLogLine[] => {
+    if (typeof line === "string") {
+      const trimmed = line.trim();
+      return trimmed ? [{ key: "", value: trimmed }] : [];
+    }
+    const entry = safeObject(line);
+    if (!entry) {
+      return [];
+    }
+    const valueText = typeof entry.value === "string" ? entry.value.trim() : "";
+    if (!valueText) {
+      return [];
+    }
+    return [{
+      key: typeof entry.key === "string" ? entry.key : "",
+      value: valueText,
+      tone:
+        entry.tone === "default" || entry.tone === "error" || entry.tone === "muted"
+          ? entry.tone
+          : undefined,
+    }];
+  });
 }
 
 function pruneValue(value: unknown): unknown {
@@ -636,7 +657,8 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
   const progress = useMemo(() => getProgress(args), [args]);
   const startedLogLines = useMemo(() => getDisplayLogLines(args), [args]);
   const cleanedArgs = useMemo(() => pruneValue(omitInternalKeys(args)), [args]);
-  const resultObject = useMemo(() => pruneValue(safeObject(result) ?? result), [result]);
+  const safeResultObject = useMemo(() => safeObject(result), [result]);
+  const resultObject = useMemo(() => pruneValue(safeResultObject ?? result), [result, safeResultObject]);
   const completedLogLines = useMemo(() => getDisplayLogLines(result), [result]);
   const errorText = useMemo(() => {
     if (status?.type !== "incomplete") {
@@ -653,12 +675,7 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
   const logLines = useMemo(() => {
     const lines: ToolLogLine[] = [];
     if (startedLogLines.length > 0) {
-      startedLogLines.forEach((item) => {
-        lines.push({
-          key: "",
-          value: item,
-        });
-      });
+      lines.push(...startedLogLines);
     } else if (cleanedArgs !== undefined && cleanedArgs !== null) {
       flattenRawLogLines(cleanedArgs, undefined, lines);
     }
@@ -670,12 +687,7 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
       });
     });
     if (completedLogLines.length > 0) {
-      completedLogLines.forEach((item) => {
-        lines.push({
-          key: "",
-          value: item,
-        });
-      });
+      lines.push(...completedLogLines);
     } else if (resultObject !== undefined && resultObject !== null) {
       flattenRawLogLines(resultObject, undefined, lines);
     }
@@ -695,8 +707,8 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
     });
   }, [cleanedArgs, completedLogLines, errorText, progress, resultObject, startedLogLines]);
   const summary = useMemo(
-    () => summarizeTool(toolName, args, safeObject(result), status),
-    [toolName, args, result, status],
+    () => summarizeTool(toolName, args, safeResultObject, status),
+    [toolName, args, safeResultObject, status],
   );
 
   return (
@@ -706,7 +718,7 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
         summary={summary}
         progressPreview={progress}
         status={status}
-        result={resultObject}
+        result={safeResultObject}
         open={open}
         hasDetailLines={logLines.length > 0}
       />

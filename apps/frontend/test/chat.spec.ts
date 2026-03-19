@@ -832,6 +832,170 @@ test("failed tool calls show a failed status instead of looking completed", asyn
   await expect(page.getByRole("button", { name: /Passage Search Failed/ })).toBeVisible();
 });
 
+test("recovered tool traces keep friendly log lines after refresh", async ({ page }) => {
+  const sessionId = "11111111-1111-4111-8111-111111111129";
+  const runId = "22222222-2222-4222-8222-222222222239";
+
+  await page.route("**/api/me", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        authConfigured: true,
+        authenticated: true,
+        user: {
+          id: "local-user",
+          email: "local@example.com",
+          name: "Local User",
+        },
+      }),
+    });
+  });
+
+  await page.route("**/api/admin/access", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        allowed: false,
+        authenticated: true,
+        authConfigured: true,
+        user: {
+          id: "local-user",
+          email: "local@example.com",
+          name: "Local User",
+        },
+      }),
+    });
+  });
+
+  await page.route("**/api/sessions", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        sessions: [
+          {
+            id: sessionId,
+            userId: "local-user",
+            title: "Recovered trace",
+            createdAt: "2026-03-16T12:00:00.000Z",
+            lastMessageAt: "2026-03-16T12:00:00.000Z",
+            lastMessagePreview: "Recovered trace",
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.route(`**/api/sessions/${sessionId}/messages`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        messages: [
+          {
+            id: "33333333-3333-4333-8333-333333333349",
+            sessionId,
+            role: "assistant",
+            content: "Recovered message.",
+            metadata: {
+              phase: "plan",
+              runId,
+              toolCalls: [
+                {
+                  id: "metadata-tool",
+                  toolName: "search_works",
+                  label: "Metadata Search",
+                  progress: [],
+                  args: {
+                    __logLines: [
+                      { key: "", value: "Checking titles, summaries, subjects, and catalog metadata for 'grief in fiction'" },
+                    ],
+                  },
+                  result: {
+                    __logLines: [
+                      { key: "", value: "Checking titles, summaries, subjects, and catalog metadata for 'grief in fiction' found 20 candidate books." },
+                    ],
+                  },
+                  state: "completed",
+                },
+              ],
+            },
+            createdAt: "2026-03-16T12:00:01.000Z",
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.route(`**/api/sessions/${sessionId}/runs`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        runs: [
+          {
+            id: runId,
+            sessionId,
+            status: "completed",
+            plannerTurns: 3,
+            startedAt: "2026-03-16T12:00:00.000Z",
+            completedAt: "2026-03-16T12:00:05.000Z",
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.route(`**/api/sessions/${sessionId}/runs/${runId}`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        run: {
+          id: runId,
+          sessionId,
+          status: "completed",
+          plannerTurns: 3,
+          startedAt: "2026-03-16T12:00:00.000Z",
+          completedAt: "2026-03-16T12:00:05.000Z",
+        },
+        toolTrace: [
+          {
+            id: "metadata-tool",
+            toolName: "search_works",
+            label: "Metadata Search",
+            progress: [],
+            args: {
+              __logLines: [
+                { key: "", value: "Checking titles, summaries, subjects, and catalog metadata for 'grief in fiction'" },
+              ],
+            },
+            result: {
+              __logLines: [
+                { key: "", value: "Checking titles, summaries, subjects, and catalog metadata for 'grief in fiction' found 20 candidate books." },
+              ],
+            },
+            state: "completed",
+          },
+        ],
+        artifacts: [],
+      }),
+    });
+  });
+
+  await page.goto(`/?view=assistant&session=${sessionId}`);
+
+  const metadataCard = page.getByRole("button", { name: /Metadata Search Done/i });
+  await metadataCard.click();
+  const metadataPanel = metadataCard.locator("xpath=ancestor::*[contains(@class,'aui-tool-fallback-root')][1]");
+  await expect(metadataPanel.getByText("Checking titles, summaries, subjects, and catalog metadata for 'grief in fiction'").first()).toBeVisible();
+  await expect(metadataPanel.getByText("Checking titles, summaries, subjects, and catalog metadata for 'grief in fiction' found 20 candidate books.").first()).toBeVisible();
+  await expect(page.getByText(/^workCount$/)).toHaveCount(0);
+  await expect(page.getByText(/^works$/)).toHaveCount(0);
+});
+
 test("full assistant flow keeps the final briefing and tool details after refresh", async ({ page }) => {
   await page.goto("/");
 
