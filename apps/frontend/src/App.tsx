@@ -4272,6 +4272,18 @@ function AssistantDocumentFramePage({
   useEffect(() => {
     let cancelled = false;
     let pollTimer: number | null = null;
+    let loadingTimer: number | null = null;
+
+    if (!bootstrap && !hasServerRenderedDocument) {
+      loadingTimer = window.setTimeout(() => {
+        if (cancelled) {
+          return;
+        }
+        setLoading(false);
+        setError("We couldn't load this research document.");
+        setErrorStatus(503);
+      }, 6000);
+    }
 
     const refresh = async () => {
       try {
@@ -4281,6 +4293,10 @@ function AssistantDocumentFramePage({
         ]);
         if (cancelled) {
           return;
+        }
+        if (loadingTimer !== null) {
+          window.clearTimeout(loadingTimer);
+          loadingTimer = null;
         }
         const hydrated = nextMessages.map(hydrateStoredMessage);
         const merged = Array.isArray(nextState.toolTrace)
@@ -4302,6 +4318,10 @@ function AssistantDocumentFramePage({
       } catch (nextError) {
         if (cancelled) {
           return;
+        }
+        if (loadingTimer !== null) {
+          window.clearTimeout(loadingTimer);
+          loadingTimer = null;
         }
         setLoading(false);
         setErrorStatus(nextError instanceof ApiError ? nextError.status : null);
@@ -4327,6 +4347,9 @@ function AssistantDocumentFramePage({
       cancelled = true;
       if (pollTimer !== null) {
         window.clearTimeout(pollTimer);
+      }
+      if (loadingTimer !== null) {
+        window.clearTimeout(loadingTimer);
       }
     };
   }, [bootstrap, hasServerRenderedDocument, runId, sessionId]);
