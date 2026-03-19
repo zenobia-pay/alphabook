@@ -1,4 +1,4 @@
-import { createContext, type ComponentType, type CSSProperties, type FormEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type UIEvent, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { Component, createContext, type ComponentType, type CSSProperties, type ErrorInfo, type FormEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type UIEvent, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   AssistantRuntimeProvider,
   useExternalStoreRuntime,
@@ -3601,6 +3601,42 @@ function buildResearchDocument(
   };
 }
 
+class ResearchDocumentErrorBoundary extends Component<
+  { children: ReactNode },
+  { hasError: boolean }
+> {
+  constructor(props: { children: ReactNode }) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: unknown, info: ErrorInfo) {
+    reportClientIncident(error, {
+      source: "research_document_render",
+      componentStack: info.componentStack || null,
+    });
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <section className="assistant-document-pane">
+          <div className="assistant-document-scroll">
+            <div className="session-loading">
+              We couldn&apos;t render this research document. Try refreshing the run.
+            </div>
+          </div>
+        </section>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 function ResearchArtifactDocument({
   sessionTitle,
   toolTrace,
@@ -3624,104 +3660,106 @@ function ResearchArtifactDocument({
   );
 
   return (
-    <section className="assistant-document-pane">
-      <div className="assistant-document-scroll">
-        <div className="assistant-document-text">
-          <h1 className="assistant-document-entry is-title">
-            {document.title}
-          </h1>
-          {document.sections.map((section, index) => (
-            <details key={section.key} className="assistant-document-section" open={index < 3}>
-              <summary className="assistant-document-section-summary">
-                <span className="assistant-document-section-title-row">
-                  <span className="assistant-document-section-title">{section.title}</span>
-                  <span className="assistant-document-section-meta">{section.meta}</span>
-                </span>
-                <span className="assistant-document-section-kicker">{section.summary}</span>
-              </summary>
-              <div className="assistant-document-section-body">
-                {section.items.map((entry) => (
-                  entry.kind === "chunk" ? (
-                    <blockquote key={entry.key} className="assistant-document-entry is-chunk">
-                      <p className="assistant-document-quote">
-                        {entry.text}
+    <ResearchDocumentErrorBoundary>
+      <section className="assistant-document-pane">
+        <div className="assistant-document-scroll">
+          <div className="assistant-document-text">
+            <h1 className="assistant-document-entry is-title">
+              {document.title}
+            </h1>
+            {document.sections.map((section, index) => (
+              <details key={section.key} className="assistant-document-section" open={index < 3}>
+                <summary className="assistant-document-section-summary">
+                  <span className="assistant-document-section-title-row">
+                    <span className="assistant-document-section-title">{section.title}</span>
+                    <span className="assistant-document-section-meta">{section.meta}</span>
+                  </span>
+                  <span className="assistant-document-section-kicker">{section.summary}</span>
+                </summary>
+                <div className="assistant-document-section-body">
+                  {section.items.map((entry) => (
+                    entry.kind === "chunk" ? (
+                      <blockquote key={entry.key} className="assistant-document-entry is-chunk">
+                        <p className="assistant-document-quote">
+                          {entry.text}
+                        </p>
+                        {(entry.linkLabel && (entry.workId || entry.citation)) ? (
+                          <footer className="assistant-document-citation">
+                            <a
+                              className="assistant-document-link"
+                              href={entry.linkHref}
+                              onClick={(event) => {
+                                if (linkMode === "iframe") {
+                                  return;
+                                }
+                                event.preventDefault();
+                                if (entry.citation && onOpenCitation) {
+                                  onOpenCitation(entry.citation);
+                                  return;
+                                }
+                                if (entry.workId && onOpenWork) {
+                                  onOpenWork(entry.workId);
+                                }
+                              }}
+                            >
+                              {entry.citationText ?? entry.linkLabel}
+                            </a>
+                          </footer>
+                        ) : null}
+                      </blockquote>
+                    ) : (
+                      <p key={entry.key} className={cn("assistant-document-entry", `is-${entry.kind}`)}>
+                        {entry.linkLabel && (entry.workId || entry.citation) ? (
+                          <>
+                            {entry.prefix ? `${entry.prefix} ` : null}
+                            <a
+                              className="assistant-document-link"
+                              href={entry.linkHref}
+                              onClick={(event) => {
+                                if (linkMode === "iframe") {
+                                  return;
+                                }
+                                event.preventDefault();
+                                if (entry.citation && onOpenCitation) {
+                                  onOpenCitation(entry.citation);
+                                  return;
+                                }
+                                if (entry.workId && onOpenWork) {
+                                  onOpenWork(entry.workId);
+                                }
+                              }}
+                            >
+                              {entry.linkLabel}
+                            </a>
+                            {entry.suffix ? ` ${entry.suffix}` : null}
+                          </>
+                        ) : (
+                          entry.text
+                        )}
                       </p>
-                      {(entry.linkLabel && (entry.workId || entry.citation)) ? (
-                        <footer className="assistant-document-citation">
-                          <a
-                            className="assistant-document-link"
-                            href={entry.linkHref}
-                            onClick={(event) => {
-                              if (linkMode === "iframe") {
-                                return;
-                              }
-                              event.preventDefault();
-                              if (entry.citation && onOpenCitation) {
-                                onOpenCitation(entry.citation);
-                                return;
-                              }
-                              if (entry.workId && onOpenWork) {
-                                onOpenWork(entry.workId);
-                              }
-                            }}
-                          >
-                            {entry.citationText ?? entry.linkLabel}
-                          </a>
-                        </footer>
-                      ) : null}
-                    </blockquote>
-                  ) : (
-                    <p key={entry.key} className={cn("assistant-document-entry", `is-${entry.kind}`)}>
-                      {entry.linkLabel && (entry.workId || entry.citation) ? (
-                        <>
-                          {entry.prefix ? `${entry.prefix} ` : null}
-                          <a
-                            className="assistant-document-link"
-                            href={entry.linkHref}
-                            onClick={(event) => {
-                              if (linkMode === "iframe") {
-                                return;
-                              }
-                              event.preventDefault();
-                              if (entry.citation && onOpenCitation) {
-                                onOpenCitation(entry.citation);
-                                return;
-                              }
-                              if (entry.workId && onOpenWork) {
-                                onOpenWork(entry.workId);
-                              }
-                            }}
-                          >
-                            {entry.linkLabel}
-                          </a>
-                          {entry.suffix ? ` ${entry.suffix}` : null}
-                        </>
-                      ) : (
-                        entry.text
-                      )}
-                    </p>
-                  )
-                ))}
-              </div>
-            </details>
-          ))}
-          {document.ending ? (
-            <details className="assistant-document-section assistant-document-section-ending" open>
-              <summary className="assistant-document-section-summary">
-                <span className="assistant-document-section-title-row">
-                  <span className="assistant-document-section-title">Final Takeaway</span>
-                  <span className="assistant-document-section-meta">summary</span>
-                </span>
-                <span className="assistant-document-section-kicker">What the run found and how it came together.</span>
-              </summary>
-              <div className="assistant-document-section-body">
-                <p className="assistant-document-entry is-log">{document.ending}</p>
-              </div>
-            </details>
-          ) : null}
+                    )
+                  ))}
+                </div>
+              </details>
+            ))}
+            {document.ending ? (
+              <details className="assistant-document-section assistant-document-section-ending" open>
+                <summary className="assistant-document-section-summary">
+                  <span className="assistant-document-section-title-row">
+                    <span className="assistant-document-section-title">Final Takeaway</span>
+                    <span className="assistant-document-section-meta">summary</span>
+                  </span>
+                  <span className="assistant-document-section-kicker">What the run found and how it came together.</span>
+                </summary>
+                <div className="assistant-document-section-body">
+                  <p className="assistant-document-entry is-log">{document.ending}</p>
+                </div>
+              </details>
+            ) : null}
+          </div>
         </div>
-      </div>
-    </section>
+      </section>
+    </ResearchDocumentErrorBoundary>
   );
 }
 
