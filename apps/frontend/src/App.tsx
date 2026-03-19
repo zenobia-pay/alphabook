@@ -3285,6 +3285,38 @@ function sectionMetaFromItems(section: ResearchDocumentSection) {
   return section.meta;
 }
 
+function sectionPriority(section: ResearchDocumentSection) {
+  const title = section.title.toLowerCase();
+  const chunkCount = section.items.filter((item) => item.kind === "chunk").length;
+  const bookCount = section.items.filter((item) => item.kind === "book").length;
+  if (title.includes("corpus briefing")) {
+    return 0;
+  }
+  if (title.includes("passage")) {
+    return 1;
+  }
+  if (chunkCount > 0) {
+    return 2;
+  }
+  if (title.includes("metadata")) {
+    return 4;
+  }
+  if (bookCount > 0) {
+    return 3;
+  }
+  return 5;
+}
+
+function sortDocumentSections(sections: ResearchDocumentSection[]) {
+  return [...sections].sort((left, right) => {
+    const priorityDiff = sectionPriority(left) - sectionPriority(right);
+    if (priorityDiff !== 0) {
+      return priorityDiff;
+    }
+    return left.title.localeCompare(right.title);
+  });
+}
+
 function artifactSourceChunks(artifacts: RunArtifactRecord[]) {
   return collectSourceChunks([], artifacts);
 }
@@ -3513,6 +3545,9 @@ function buildResearchDocument(
         : [];
       for (const [index, work] of works.entries()) {
         const workId = typeof work.workId === "string" ? work.workId : `${entry.id}:workspace:${index}`;
+        if (typeof work.workId === "string" && confirmedWorkIds.size > 0 && !confirmedWorkIds.has(work.workId)) {
+          continue;
+        }
         if (surfacedWorkspaceWorkIds.has(workId)) {
           continue;
         }
@@ -3541,9 +3576,15 @@ function buildResearchDocument(
     }
 
     if (entry.toolName === "get_relevant_chunks") {
+      const verifiedWorkIds = Array.isArray(entry.result?.verifiedWorkIds)
+        ? new Set(entry.result.verifiedWorkIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0))
+        : null;
       const chunks = recordArray(entry.result?.chunks);
       for (const [index, chunk] of chunks.entries()) {
         const workId = typeof chunk.workId === "string" ? chunk.workId : "work";
+        if (verifiedWorkIds && verifiedWorkIds.size > 0 && !verifiedWorkIds.has(workId)) {
+          continue;
+        }
         const chunkIndex = typeof chunk.chunkIndex === "number" ? chunk.chunkIndex : null;
         const excerpt = typeof chunk.excerpt === "string"
           ? chunk.excerpt.trim()
@@ -3637,7 +3678,9 @@ function buildResearchDocument(
 
   return {
     title: title.trim() || "Research log",
-    sections: [...sections.values()].filter((section) => hasUsefulSectionItems(section)),
+    sections: sortDocumentSections(
+      [...sections.values()].filter((section) => hasUsefulSectionItems(section)),
+    ),
     ending: normalizedEnding,
   };
 }
