@@ -910,6 +910,19 @@ function normalizeYearRangeFilter(value: unknown): [number, number] | undefined 
   return [Math.min(first, second), Math.max(first, second)];
 }
 
+function normalizeDateRangeFilter(value: unknown): [number, number] | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  const from = Number(record.from ?? record.start ?? record.gte ?? record.min);
+  const to = Number(record.to ?? record.end ?? record.lte ?? record.max);
+  if (!Number.isInteger(from) || !Number.isInteger(to)) {
+    return undefined;
+  }
+  return [Math.min(from, to), Math.max(from, to)];
+}
+
 function normalizeGenreFilter(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) {
     return undefined;
@@ -920,6 +933,17 @@ function normalizeGenreFilter(value: unknown): string[] | undefined {
     .filter((candidate) => candidate.length > 0)
     .slice(0, 8);
   return genres.length > 0 ? genres : undefined;
+}
+
+function inferGenreFilterFromQuery(value: unknown): string[] | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.toLowerCase();
+  if (/\b(fiction|novel|novels|story|stories|tale|tales)\b/u.test(normalized)) {
+    return ["fiction"];
+  }
+  return undefined;
 }
 
 function normalizeToolArgs(toolName: ToolName, args: Record<string, unknown>): Record<string, unknown> {
@@ -936,6 +960,19 @@ function normalizeToolArgs(toolName: ToolName, args: Record<string, unknown>): R
         }
         if (typeof filters.limit === "number") {
           filters.limit = Math.max(1, Math.min(20, Math.trunc(filters.limit)));
+        }
+        const yearRange = normalizeYearRangeFilter(filters.yearRange) ?? normalizeDateRangeFilter(filters.dateRange);
+        if (yearRange) {
+          filters.yearRange = yearRange;
+        } else {
+          delete filters.yearRange;
+        }
+        delete filters.dateRange;
+        const genre = normalizeGenreFilter(filters.genre) ?? inferGenreFilterFromQuery(normalized.query);
+        if (genre) {
+          filters.genre = genre;
+        } else {
+          delete filters.genre;
         }
         normalized.filters = filters;
       }

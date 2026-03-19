@@ -3118,6 +3118,132 @@ test("search_works ignores unsupported human-readable language filters from plan
   assert.equal(works[0]?.id, "work-1");
 });
 
+test("search_works normalizes planner date ranges and fiction intent before ranking works", async () => {
+  const store = new InMemoryAppStore([
+    {
+      id: "work-fiction",
+      gutenbergId: 1342,
+      title: "Pride and Prejudice",
+      language: "en",
+      releaseDate: "1813-01-28",
+      rightsStatus: "public_domain",
+      summary: "A fiction novel of mourning, grief, and recovery.",
+      authors: ["Jane Austen"],
+      subjects: ["Fiction", "Courtship"],
+    },
+    {
+      id: "work-lincoln",
+      gutenbergId: 9,
+      title: "Lincoln’s First Inaugural Address",
+      language: "en",
+      releaseDate: "1861-01-01",
+      rightsStatus: "public_domain",
+      summary: "An address about the crisis of the Union.",
+      authors: ["Abraham Lincoln"],
+      subjects: ["Politics", "United States"],
+    },
+  ], []);
+
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    router: new ScriptedRouter([
+      {
+        type: "tool_chain",
+        fullQuery: "Find grief in 19th century fiction.",
+      },
+    ]),
+    planner: new ScriptedPlanner([
+      {
+        type: "tool_call",
+        tool_name: "search_works",
+        args: {
+          query: "(grief OR mourning OR bereavement OR widow* OR funeral) AND (novel OR story) AND (18* OR 19*)",
+          filters: {
+            dateRange: { from: 1800, to: 1899 },
+            language: "en",
+          },
+        },
+      },
+      {
+        type: "final_answer",
+        answer: "done",
+        citations: [],
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+      async runWorkspaceTask() {
+        return { ok: false, error: "disabled" };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: true, files: [] };
+      },
+      async destroyWorkspace() {
+        return { ok: true };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const response = await app.request("/chat", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      userId: "search-filter-user",
+      message: "Find grief in fiction.",
+    }),
+  });
+  await response.text();
+
+  const sessions = await store.listSessions("search-filter-user");
+  const runs = await store.listRuns(sessions[0]!.id);
+  const toolCalls = await store.listToolCalls(runs[0]!.id);
+  const searchCall = toolCalls.find((entry) => entry.toolName === "search_works");
+  assert.ok(searchCall);
+  assert.deepEqual(searchCall.argsJson.filters, {
+    language: "en",
+    yearRange: [1800, 1899],
+    genre: ["fiction"],
+  });
+  assert.equal(searchCall.status, "completed");
+  const resultWorks = Array.isArray(searchCall.resultJson?.works)
+    ? searchCall.resultJson?.works as Array<Record<string, unknown>>
+    : [];
+  assert.deepEqual(resultWorks.map((work) => work.id), ["work-fiction"]);
+});
+
+test("sql metadata search fails loudly instead of silently falling back", async () => {
+  const store = new NeonAppStore({
+    async query() {
+      throw new Error("db blew up");
+    },
+    async end() {},
+  });
+
+  await assert.rejects(
+    () => store.searchWorks("grief fiction", {
+      language: "en",
+      yearRange: [1800, 1899],
+      genre: ["fiction"],
+    }),
+    /Metadata search failed: db blew up/,
+  );
+});
+
 test("OpenAIEmbedder requests 1536 dimensions for text-embedding-3 models", async () => {
   let requestBody: Record<string, unknown> | null = null;
   const embedder = new OpenAIEmbedder("test-key", "text-embedding-3-small", async (_input, init) => {

@@ -465,6 +465,51 @@ function toWorkSummary(
   };
 }
 
+function parseReleaseYear(releaseDate: string | null | undefined) {
+  if (typeof releaseDate !== "string" || releaseDate.length < 4) {
+    return Number.NaN;
+  }
+  return Number.parseInt(releaseDate.slice(0, 4), 10);
+}
+
+function workGenreHaystack(
+  work: Pick<SeedWork, "title" | "summary" | "language" | "subjects" | "metadata">,
+) {
+  return [
+    work.title,
+    work.summary ?? "",
+    work.language ?? "",
+    ...(work.subjects ?? []),
+    JSON.stringify(work.metadata ?? {}),
+  ].join(" ").toLowerCase();
+}
+
+function workMatchesSearchFilters(
+  work: Pick<SeedWork, "title" | "summary" | "language" | "releaseDate" | "rightsStatus" | "subjects" | "metadata">,
+  filters: Record<string, unknown> = {},
+) {
+  if (typeof filters.language === "string" && work.language !== filters.language) {
+    return false;
+  }
+  if (typeof filters.rightsStatus === "string" && work.rightsStatus !== filters.rightsStatus) {
+    return false;
+  }
+  if (Array.isArray(filters.yearRange) && filters.yearRange.length === 2) {
+    const year = parseReleaseYear(work.releaseDate);
+    const [startYear, endYear] = filters.yearRange as [number, number];
+    if (!Number.isFinite(year) || year < startYear || year > endYear) {
+      return false;
+    }
+  }
+  if (Array.isArray(filters.genre) && filters.genre.length > 0) {
+    const haystack = workGenreHaystack(work);
+    if (!(filters.genre as unknown[]).some((genre) => typeof genre === "string" && textMatchesGenre(haystack, genre))) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function lexicalScore(query: string, text: string): number {
   const tokens = query
     .toLowerCase()
@@ -1130,11 +1175,12 @@ export class InMemoryAppStore implements AppStore {
       : 20;
     const lexicalQuery = expandedSearchTokens(query).join(" ");
     return [...this.works]
+      .filter((work) => workMatchesSearchFilters(work, filters))
       .map((work) => ({
         ...work,
         score: lexicalScore(
           lexicalQuery,
-          `${work.title} ${work.summary ?? ""} ${work.subjects.join(" ")}`,
+          `${work.title} ${work.summary ?? ""} ${work.authors.join(" ")} ${work.subjects.join(" ")} ${JSON.stringify(work.metadata ?? {})}`,
         ),
       }))
       .filter((work) => (work.score ?? 0) > 0)
@@ -2695,7 +2741,6 @@ export class NeonAppStore implements AppStore {
     const limit = Number(filters.limit ?? 20);
     const normalizedQuery = normalizeSearchQuery(query);
     const tsQuery = normalizedQuery || query.trim();
-    const tokens = expandedSearchTokens(query);
     const mapRows = (
       rows: Array<{
         id: string;
@@ -2726,7 +2771,9 @@ export class NeonAppStore implements AppStore {
           metadata: row.metadata_json ?? {},
         }),
       );
-
+    if (!tsQuery) {
+      return [];
+    }
     try {
       const result = await this.db.query<{
         id: string;
@@ -2743,9 +2790,9 @@ export class NeonAppStore implements AppStore {
       }>(
         `
           WITH query_input AS (
-            SELECT websearch_to_tsquery('english', CAST($1 AS text)) AS tsq
+            SELECT plainto_tsquery('english', CAST($1 AS text)) AS tsq
           ),
-          ranked AS (
+          work_index AS (
             SELECT
               w.id,
               w.gutenberg_id,
@@ -2755,193 +2802,78 @@ export class NeonAppStore implements AppStore {
               w.release_date::text,
               w.rights_status,
               w.summary,
-              ts_rank_cd(
-                setweight(to_tsvector('english', COALESCE(w.title, '')), 'A') ||
-                setweight(to_tsvector('english', COALESCE(w.summary, '')), 'B'),
-                query_input.tsq
-              ) AS score
-            FROM works w, query_input
-            WHERE
-              (
-                setweight(to_tsvector('english', COALESCE(w.title, '')), 'A') ||
-                setweight(to_tsvector('english', COALESCE(w.summary, '')), 'B')
-              ) @@ query_input.tsq
-              AND ($2::text IS NULL OR w.language = $2::text)
-              AND ($3::text IS NULL OR w.rights_status = $3::text)
+              ARRAY_REMOVE(ARRAY_AGG(DISTINCT a.name), NULL) AS authors,
+              ARRAY_REMOVE(ARRAY_AGG(DISTINCT s.label), NULL) AS subjects,
+              setweight(to_tsvector('english', COALESCE(w.title, '')), 'A') ||
+              setweight(to_tsvector('english', COALESCE(w.summary, '')), 'B') ||
+              setweight(to_tsvector('english', COALESCE(string_agg(DISTINCT a.name, ' '), '')), 'C') ||
+              setweight(to_tsvector('english', COALESCE(string_agg(DISTINCT s.label, ' '), '')), 'B') ||
+              setweight(to_tsvector('english', COALESCE(w.metadata_json::text, '')), 'D') AS document
+            FROM works w
+            LEFT JOIN work_authors wa ON wa.work_id = w.id
+            LEFT JOIN authors a ON a.id = wa.author_id
+            LEFT JOIN work_subjects ws ON ws.work_id = w.id
+            LEFT JOIN subjects s ON s.id = ws.subject_id
+            GROUP BY w.id, w.gutenberg_id, w.title, w.metadata_json, w.language, w.release_date, w.rights_status, w.summary
           )
           SELECT
-            ranked.id,
-            ranked.gutenberg_id,
-            ranked.title,
-            ranked.metadata_json,
-            ranked.language,
-            ranked.release_date,
-            ranked.rights_status,
-            ranked.summary,
-            ARRAY_REMOVE(ARRAY_AGG(DISTINCT a.name), NULL) AS authors,
-            ARRAY_REMOVE(ARRAY_AGG(DISTINCT s.label), NULL) AS subjects,
-            ranked.score
-          FROM ranked
-          LEFT JOIN work_authors wa ON wa.work_id = ranked.id
-          LEFT JOIN authors a ON a.id = wa.author_id
-          LEFT JOIN work_subjects ws ON ws.work_id = ranked.id
-          LEFT JOIN subjects s ON s.id = ws.subject_id
-          GROUP BY ranked.id, ranked.gutenberg_id, ranked.title, ranked.metadata_json, ranked.language, ranked.release_date, ranked.rights_status, ranked.summary, ranked.score
-          ORDER BY ranked.score DESC, ranked.title ASC
-          LIMIT $4
+            work_index.id,
+            work_index.gutenberg_id,
+            work_index.title,
+            work_index.metadata_json,
+            work_index.language,
+            work_index.release_date,
+            work_index.rights_status,
+            work_index.summary,
+            work_index.authors,
+            work_index.subjects,
+            ts_rank_cd(work_index.document, query_input.tsq) AS score
+          FROM work_index, query_input
+          WHERE work_index.document @@ query_input.tsq
+            AND ($2::text IS NULL OR work_index.language = $2::text)
+            AND ($3::text IS NULL OR work_index.rights_status = $3::text)
+            AND (
+              $4::int IS NULL
+              OR (
+                work_index.release_date IS NOT NULL
+                AND work_index.release_date ~ '^[0-9]{4}'
+                AND substring(work_index.release_date FROM 1 FOR 4)::int BETWEEN $4::int AND $5::int
+              )
+            )
+            AND (
+              COALESCE(array_length($6::text[], 1), 0) = 0
+              OR EXISTS (
+                SELECT 1
+                FROM unnest($6::text[]) AS genre
+                WHERE lower(
+                  concat_ws(
+                    ' ',
+                    work_index.title,
+                    COALESCE(work_index.summary, ''),
+                    array_to_string(work_index.subjects, ' '),
+                    COALESCE(work_index.metadata_json::text, '')
+                  )
+                ) LIKE '%' || lower(genre) || '%'
+              )
+            )
+          ORDER BY score DESC, work_index.title ASC
+          LIMIT $7
         `,
         [
           tsQuery,
           typeof filters.language === "string" ? filters.language : null,
           typeof filters.rightsStatus === "string" ? filters.rightsStatus : null,
+          Array.isArray(filters.yearRange) ? Number(filters.yearRange[0]) : null,
+          Array.isArray(filters.yearRange) ? Number(filters.yearRange[1]) : null,
+          Array.isArray(filters.genre) ? filters.genre : [],
           limit,
         ],
       );
-      if (result.rows.length > 0) {
-        return mapRows(result.rows);
-      }
-    } catch {
-      // Fall back to simpler token matching if the tsquery path rejects a query shape.
+      return mapRows(result.rows);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Metadata search failed: ${message}`);
     }
-
-    if (tokens.length === 0) {
-      return [];
-    }
-
-    const fallbackResult = await this.db.query<{
-      id: string;
-      gutenberg_id: number | string | null;
-      title: string;
-      metadata_json: Record<string, unknown>;
-      language: string | null;
-      release_date: string | null;
-      rights_status: string | null;
-      summary: string | null;
-      authors: string[];
-      subjects: string[];
-      score: number;
-    }>(
-      `
-        WITH matches AS (
-          SELECT
-            w.id,
-            w.gutenberg_id,
-            w.title,
-            w.metadata_json,
-            w.language,
-            w.release_date::text,
-            w.rights_status,
-            w.summary,
-            COUNT(*)::float AS score
-          FROM works w
-          LEFT JOIN work_authors wa_seed ON wa_seed.work_id = w.id
-          LEFT JOIN authors a_seed ON a_seed.id = wa_seed.author_id
-          LEFT JOIN work_subjects ws_seed ON ws_seed.work_id = w.id
-          LEFT JOIN subjects s_seed ON s_seed.id = ws_seed.subject_id
-          CROSS JOIN UNNEST($3::text[]) AS token
-          WHERE
-            ($1::text IS NULL OR w.language = $1::text)
-            AND ($2::text IS NULL OR w.rights_status = $2::text)
-            AND (
-              COALESCE(w.title, '') ILIKE '%' || token || '%'
-              OR COALESCE(w.summary, '') ILIKE '%' || token || '%'
-              OR COALESCE(a_seed.name, '') ILIKE '%' || token || '%'
-              OR COALESCE(s_seed.label, '') ILIKE '%' || token || '%'
-              OR COALESCE(w.metadata_json::text, '') ILIKE '%' || token || '%'
-            )
-          GROUP BY w.id, w.gutenberg_id, w.title, w.metadata_json, w.language, w.release_date, w.rights_status, w.summary
-        )
-        SELECT
-          matches.id,
-          matches.gutenberg_id,
-          matches.title,
-          matches.metadata_json,
-          matches.language,
-          matches.release_date,
-          matches.rights_status,
-          matches.summary,
-          ARRAY_REMOVE(ARRAY_AGG(DISTINCT a.name), NULL) AS authors,
-          ARRAY_REMOVE(ARRAY_AGG(DISTINCT s.label), NULL) AS subjects,
-          matches.score
-        FROM matches
-        LEFT JOIN work_authors wa ON wa.work_id = matches.id
-        LEFT JOIN authors a ON a.id = wa.author_id
-        LEFT JOIN work_subjects ws ON ws.work_id = matches.id
-        LEFT JOIN subjects s ON s.id = ws.subject_id
-        GROUP BY matches.id, matches.gutenberg_id, matches.title, matches.metadata_json, matches.language, matches.release_date, matches.rights_status, matches.summary, matches.score
-        ORDER BY matches.score DESC, matches.title ASC
-        LIMIT $4
-      `,
-      [
-        typeof filters.language === "string" ? filters.language : null,
-        typeof filters.rightsStatus === "string" ? filters.rightsStatus : null,
-        tokens,
-        limit,
-      ],
-    );
-    if (fallbackResult.rows.length > 0) {
-      return mapRows(fallbackResult.rows);
-    }
-
-    const chunkBackedResult = await this.db.query<{
-      id: string;
-      gutenberg_id: number | string | null;
-      title: string;
-      metadata_json: Record<string, unknown>;
-      language: string | null;
-      release_date: string | null;
-      rights_status: string | null;
-      summary: string | null;
-      authors: string[];
-      subjects: string[];
-      score: number;
-    }>(
-      `
-        WITH chunk_matches AS (
-          SELECT
-            c.work_id,
-            COUNT(*)::float AS score
-          FROM chunks c
-          WHERE EXISTS (
-            SELECT 1
-            FROM UNNEST($3::text[]) AS token
-            WHERE COALESCE(c.text, '') ILIKE '%' || token || '%'
-          )
-          GROUP BY c.work_id
-        )
-        SELECT
-          w.id,
-          w.gutenberg_id,
-          w.title,
-          w.metadata_json,
-          w.language,
-          w.release_date::text,
-          w.rights_status,
-          w.summary,
-          ARRAY_REMOVE(ARRAY_AGG(DISTINCT a.name), NULL) AS authors,
-          ARRAY_REMOVE(ARRAY_AGG(DISTINCT s.label), NULL) AS subjects,
-          chunk_matches.score
-        FROM chunk_matches
-        JOIN works w ON w.id = chunk_matches.work_id
-        LEFT JOIN work_authors wa ON wa.work_id = w.id
-        LEFT JOIN authors a ON a.id = wa.author_id
-        LEFT JOIN work_subjects ws ON ws.work_id = w.id
-        LEFT JOIN subjects s ON s.id = ws.subject_id
-        WHERE
-          ($1::text IS NULL OR w.language = $1::text)
-          AND ($2::text IS NULL OR w.rights_status = $2::text)
-        GROUP BY w.id, w.gutenberg_id, w.title, w.metadata_json, w.language, w.release_date, w.rights_status, w.summary, chunk_matches.score
-        ORDER BY chunk_matches.score DESC, w.title ASC
-        LIMIT $4
-      `,
-      [
-        typeof filters.language === "string" ? filters.language : null,
-        typeof filters.rightsStatus === "string" ? filters.rightsStatus : null,
-        tokens,
-        limit,
-      ],
-    );
-    return mapRows(chunkBackedResult.rows);
   }
 
   async getWorkMetadata(workIds: string[]): Promise<WorkSummary[]> {

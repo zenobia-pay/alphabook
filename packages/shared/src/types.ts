@@ -29,6 +29,8 @@ export const SearchWorksArgsSchema = z.object({
     .object({
       language: z.string().optional(),
       rightsStatus: z.string().optional(),
+      yearRange: z.tuple([z.number().int(), z.number().int()]).optional(),
+      genre: z.array(z.string().min(1)).max(8).optional(),
       subjects: z.array(z.string()).optional(),
       limit: z.number().int().positive().max(20).optional(),
     })
