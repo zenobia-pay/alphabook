@@ -3698,7 +3698,29 @@ function buildRetrievalFallbackBriefing(
   const minimumCitations = broadCorpusQuery ? 4 : 2;
   const minimumWorks = broadCorpusQuery ? 2 : 1;
   if (filteredCitations.length < minimumCitations || distinctWorkIds.length < minimumWorks) {
-    return null;
+    const surfacedWorks = toolHistory
+      .filter((entry) => (entry.toolName === "search_works" || entry.toolName === "get_work_metadata") && Array.isArray(entry.result.works))
+      .flatMap((entry) => (entry.result.works as Array<Record<string, unknown>>).slice(0, 8))
+      .map((work) => {
+        const title = typeof work.title === "string" ? work.title.trim() : "Untitled work";
+        const authors = Array.isArray(work.authors)
+          ? work.authors.filter((author): author is string => typeof author === "string" && author.trim().length > 0).slice(0, 2)
+          : [];
+        return authors.length > 0 ? `${title} by ${authors.join(", ")}` : title;
+      })
+      .filter((value, index, array) => value.length > 0 && array.indexOf(value) === index)
+      .slice(0, 8);
+    if (surfacedWorks.length === 0) {
+      return null;
+    }
+    return {
+      answer: [
+        "The deeper research VM failed before it could extract quoted passages, so this fallback preserves the strongest surfaced candidate books from retrieval.",
+        `Candidate books surfaced: ${surfacedWorks.join("; ")}.`,
+        "Next step: rerun passage retrieval against these books to extract direct grief passages and synthesize the coping categories from primary text.",
+      ].join("\n\n"),
+      citations: [],
+    };
   }
 
   const researchDocument = (buildSynthesisResearchDocument(toolHistory) ?? "").trim();
@@ -3938,9 +3960,44 @@ async function reconcilePersistentRun(
   }
 
   const runAgeMs = Date.now() - Date.parse(run.startedAt);
+  const recoveredToolHistory = toolCalls
+    .filter((toolCall) => toolCall.resultJson && (toolCall.status === "completed" || toolCall.status === "failed"))
+    .map((toolCall) => ({
+      toolName: toolCall.toolName,
+      rationale: undefined,
+      args: toolCall.argsJson,
+      result: toolCall.resultJson as Record<string, unknown>,
+    }));
   const runningToolCall = [...toolCalls].reverse().find((toolCall) => toolCall.status === "running");
   if (!runningToolCall) {
     if (toolCalls.length > 0 && runAgeMs > ORPHANED_RUN_GRACE_MS) {
+      const messages = await deps.store.listMessages(session.id);
+      const latestUserMessage =
+        [...messages].reverse().find((message) => message.role === "user" && typeof message.content === "string")?.content ?? "";
+      const retrievalFallbackBriefing = buildRetrievalFallbackBriefing(
+        latestUserMessage,
+        recoveredToolHistory,
+      );
+      if (retrievalFallbackBriefing) {
+        await deps.store.updateRun(run.id, {
+          status: "completed",
+          completedAt: new Date().toISOString(),
+        });
+        await persistRecoveredPlanToolTrace(deps, session.id, run.id, toolCalls);
+        const conversationHistory = formatConversationHistory(messages);
+        await ensureRunAnswerPersisted(
+          deps,
+          request,
+          session,
+          run.id,
+          messages,
+          conversationHistory,
+          retrievalFallbackBriefing,
+          recoveredToolHistory,
+        );
+        await cancelLiveExecution(toolCalls);
+        return deps.store.getRun(run.id);
+      }
       const failureMessage = "This run stopped unexpectedly before it produced an answer.";
       await deps.store.updateRun(run.id, {
         status: "failed",
@@ -3958,6 +4015,33 @@ async function reconcilePersistentRun(
       return deps.store.getRun(run.id);
     }
     if (runAgeMs > HARD_LIMITS.MAX_RUN_WALL_CLOCK_SECONDS * 1000) {
+      const messages = await deps.store.listMessages(session.id);
+      const latestUserMessage =
+        [...messages].reverse().find((message) => message.role === "user" && typeof message.content === "string")?.content ?? "";
+      const retrievalFallbackBriefing = buildRetrievalFallbackBriefing(
+        latestUserMessage,
+        recoveredToolHistory,
+      );
+      if (retrievalFallbackBriefing) {
+        await deps.store.updateRun(run.id, {
+          status: "completed",
+          completedAt: new Date().toISOString(),
+        });
+        await persistRecoveredPlanToolTrace(deps, session.id, run.id, toolCalls);
+        const conversationHistory = formatConversationHistory(messages);
+        await ensureRunAnswerPersisted(
+          deps,
+          request,
+          session,
+          run.id,
+          messages,
+          conversationHistory,
+          retrievalFallbackBriefing,
+          recoveredToolHistory,
+        );
+        await cancelLiveExecution(toolCalls);
+        return deps.store.getRun(run.id);
+      }
       const failureMessage = "This run timed out before it produced an answer.";
       await deps.store.updateRun(run.id, {
         status: "failed",
@@ -6064,6 +6148,9 @@ function buildPersistedResearchDocumentBundle(
       }
     }
   }
+  const allowMetadataFallback = confirmedWorkIds.size === 0 && toolHistory.some(
+    (entry) => (entry.toolName === "search_works" || entry.toolName === "get_work_metadata") && Array.isArray(entry.result.works) && entry.result.works.length > 0,
+  );
 
   const sections: PersistedResearchDocumentSection[] = [];
   const seenItems = new Set<string>();
@@ -6157,7 +6244,7 @@ function buildPersistedResearchDocumentBundle(
       for (const work of works) {
         const workId = typeof work.id === "string" ? work.id : null;
         const titleText = normalizeDocumentText(work.title);
-        if (!workId || !titleText || !confirmedWorkIds.has(workId)) {
+        if (!workId || !titleText || (!allowMetadataFallback && !confirmedWorkIds.has(workId))) {
           continue;
         }
         const authors = Array.isArray(work.authors)

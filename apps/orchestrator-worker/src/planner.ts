@@ -693,17 +693,6 @@ export class FallbackPlanner implements Planner {
     const frontierIds = frontierWorkIds(context, metadataIds, chunks, Math.max(workLimit, metadataLimit));
     const workIds = candidateWorkIds(context, frontierIds, chunks, workLimit);
 
-    if (!toolNames.includes("estimate_research_scope")) {
-      return {
-        type: "tool_call",
-        tool_name: "estimate_research_scope",
-        rationale: "Sizing the breadth of the search first so I can choose the right time budget and shard plan.",
-        args: {
-          query: context.userMessage,
-        },
-      };
-    }
-
     if (!toolNames.includes("search_works")) {
       return {
         type: "tool_call",
@@ -714,6 +703,17 @@ export class FallbackPlanner implements Planner {
           filters: {
             limit: metadataLimit,
           },
+        },
+      };
+    }
+
+    if (!toolNames.includes("estimate_research_scope")) {
+      return {
+        type: "tool_call",
+        tool_name: "estimate_research_scope",
+        rationale: "Sizing the breadth of the search after the first visible metadata pass so I can choose the right time budget and shard plan without delaying the first books.",
+        args: {
+          query: context.userMessage,
         },
       };
     }
@@ -945,16 +945,6 @@ export class OpenAIPlanner implements Planner {
       return fallbackPlanner.decide(context);
     }
     const parsed = parsedResult.data;
-    if (!hasToolStarted(context, "estimate_research_scope")) {
-      return {
-        type: "tool_call",
-        tool_name: "estimate_research_scope",
-        rationale: "Sizing the breadth of the search first so I can choose the right time budget and shard plan.",
-        args: {
-          query: context.userMessage,
-        },
-      };
-    }
     if (!hasToolStarted(context, "search_works")) {
       return {
         type: "tool_call",
@@ -965,6 +955,16 @@ export class OpenAIPlanner implements Planner {
           filters: {
             limit: 24,
           },
+        },
+      };
+    }
+    if (!hasToolStarted(context, "estimate_research_scope")) {
+      return {
+        type: "tool_call",
+        tool_name: "estimate_research_scope",
+        rationale: "I’m sizing the breadth of the search after the first visible metadata pass so I can choose the right time budget and shard plan without delaying the first books.",
+        args: {
+          query: context.userMessage,
         },
       };
     }

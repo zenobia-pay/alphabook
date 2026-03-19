@@ -3270,6 +3270,18 @@ function collectConfirmedDocumentWorkIds(toolTrace: ToolTraceEntry[]) {
   return confirmed;
 }
 
+function allowUnverifiedMetadataFallback(toolTrace: ToolTraceEntry[], confirmedWorkIds: Set<string>) {
+  if (confirmedWorkIds.size > 0) {
+    return false;
+  }
+  return toolTrace.some((entry) => {
+    if (entry.toolName !== "search_works" && entry.toolName !== "get_work_metadata") {
+      return false;
+    }
+    return Array.isArray(entry.result?.works) && entry.result.works.length > 0;
+  });
+}
+
 type SurfacingBook = {
   key: string;
   title: string;
@@ -3719,6 +3731,7 @@ function buildResearchDocument(
   const sections = new Map<string, ResearchDocumentSection>();
   const seen = new Set<string>();
   const confirmedWorkIds = collectConfirmedDocumentWorkIds(toolTrace);
+  const allowMetadataFallback = allowUnverifiedMetadataFallback(toolTrace, confirmedWorkIds);
   const surfacedWorkspaceWorkIds = new Set<string>();
 
   for (const entry of toolTrace) {
@@ -3796,7 +3809,9 @@ function buildResearchDocument(
 
     if (entry.toolName === "search_works" || entry.toolName === "get_work_metadata") {
       const works = Array.isArray(entry.result?.works) ? entry.result.works as Array<Record<string, unknown>> : [];
-      const filteredWorks = works.filter((work) => {
+      const filteredWorks = allowMetadataFallback
+        ? works
+        : works.filter((work) => {
         const workId = typeof work.id === "string" ? work.id : "";
         return workId.length > 0 && confirmedWorkIds.has(workId);
       });
