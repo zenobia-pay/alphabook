@@ -312,7 +312,7 @@ function createBookSectionId(title: string, index: number) {
   return `section-${slugify(title)}-${index + 1}`;
 }
 
-const STATIC_BOOK_CONTENT_VERSION = "20260319h";
+const STATIC_BOOK_CONTENT_VERSION = "20260319i";
 
 function withBookVersion(href: string, fragment?: string | null) {
   const separator = href.includes("?") ? "&" : "?";
@@ -336,7 +336,7 @@ function renderBookStaticStyles() {
         margin: 0;
         font-family: "Newsreader", Georgia, serif;
         color: var(--ink);
-        background: var(--bg);
+        background: transparent;
         text-rendering: optimizeLegibility;
         -webkit-font-smoothing: antialiased;
         -moz-osx-font-smoothing: grayscale;
@@ -349,12 +349,12 @@ function renderBookStaticStyles() {
       .page-shell {
         width: min(72ch, calc(100vw - 32px));
         margin: 0 auto;
-        padding: 18px 0 32px;
+        padding: 8px 0 18px;
       }
       .hero {
         display: grid;
         gap: 6px;
-        margin-bottom: 1.6rem;
+        margin-bottom: 1.2rem;
       }
       .eyebrow, .byline, .summary, .page-kicker, .page-meta, .page-position {
         margin: 0;
@@ -401,9 +401,9 @@ function renderBookStaticStyles() {
       }
       .reader-body blockquote {
         margin-left: 0;
-        padding-left: 1rem;
-        border-left: 1px solid var(--line);
+        padding-left: 0;
         color: var(--muted);
+        font-style: italic;
       }
       .reader-body pre {
         white-space: pre-wrap;
@@ -417,12 +417,17 @@ function renderBookStaticStyles() {
       .reader-body [data-passage-id].is-selected,
       .reader-body .reader-line.is-selected,
       .reader-body [data-passage-id]:target {
-        background: var(--accent);
+        text-decoration-line: underline;
+        text-decoration-color: var(--accent-strong);
+        text-decoration-thickness: 0.14em;
+        text-underline-offset: 0.14em;
         outline: none;
       }
       .reader-body [data-passage-id].is-block-selected {
-        background:
-          linear-gradient(180deg, transparent 0%, transparent 0.18rem, var(--accent) 0.18rem, var(--accent) calc(100% - 0.18rem), transparent calc(100% - 0.18rem), transparent 100%);
+        text-decoration-line: underline;
+        text-decoration-color: var(--accent);
+        text-decoration-thickness: 0.12em;
+        text-underline-offset: 0.14em;
       }
       .reader-body .reader-heading {
         cursor: pointer;
@@ -445,16 +450,10 @@ function renderBookStaticStyles() {
         justify-content: space-between;
         align-items: baseline;
         gap: 1rem;
-        margin: 0 0 1.2rem;
-        padding-bottom: 0.8rem;
-        border-bottom: 1px solid var(--line);
+        margin: 0 0 0.8rem;
       }
       .page-nav-bottom {
-        margin-top: 1.6rem;
-        padding-top: 0.8rem;
-        border-top: 1px solid var(--line);
-        border-bottom: none;
-        padding-bottom: 0;
+        margin-top: 1rem;
       }
       .page-nav-links {
         display: flex;
@@ -473,7 +472,7 @@ function renderBookStaticStyles() {
       @media (max-width: 780px) {
         .page-shell {
           width: min(100vw - 24px, 100%);
-          padding: 16px 0 24px;
+          padding: 8px 0 16px;
         }
         .reader-body {
           font-size: 1.06rem;
