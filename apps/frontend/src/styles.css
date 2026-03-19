@@ -2040,6 +2040,10 @@ button {
   background: transparent;
 }
 
+.book-reader-frame-empty {
+  min-height: max(70vh, 640px);
+}
+
 .book-reader-header-skeleton {
   min-height: 132px;
 }
@@ -2179,6 +2183,12 @@ button {
 .book-reader-surface-loading {
   min-height: 0;
   display: flex;
+}
+
+.book-assistant-pane-empty {
+  flex: 1;
+  min-height: 0;
+  background: transparent;
 }
 
 .book-reader-passages-loading {

@@ -2482,45 +2482,11 @@ function ProfileLoadingState({ publicView = false }: { publicView?: boolean }) {
 }
 
 function BookLoadingState() {
-  return (
-    <div className="book-reader-surface book-reader-surface-loading" aria-hidden="true">
-      <div className="book-reader-passages book-reader-passages-loading">
-        {[0, 1, 2, 3, 4].map((item) => (
-          <div key={item} className="book-loading-passage">
-            <Skeleton className="book-loading-anchor" />
-            <div className="book-loading-lines">
-              <Skeleton className="book-loading-line is-wide" />
-              <Skeleton className="book-loading-line" />
-              <Skeleton className="book-loading-line is-short" />
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
+  return <div className="book-reader-frame book-reader-frame-empty" aria-hidden="true" />;
 }
 
 function BookAssistantPaneSkeleton() {
-  return (
-    <div className="book-loading-thread" aria-hidden="true">
-      <div className="book-loading-thread-messages">
-        {[0, 1].map((item) => (
-          <div key={item} className="book-loading-bubble">
-            <Skeleton className="book-loading-bubble-title" />
-            <Skeleton className="book-loading-bubble-line is-wide" />
-            <Skeleton className="book-loading-bubble-line" />
-          </div>
-        ))}
-      </div>
-      <div className="book-loading-composer">
-        <Skeleton className="book-loading-composer-line is-wide" />
-        <div className="book-loading-composer-footer">
-          <Skeleton className="book-loading-composer-plus" />
-          <Skeleton className="book-loading-composer-send" />
-        </div>
-      </div>
-    </div>
-  );
+  return <div className="book-assistant-pane-empty" aria-hidden="true" />;
 }
 
 function ProfileEmptyState({
