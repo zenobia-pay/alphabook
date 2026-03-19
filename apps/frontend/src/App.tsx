@@ -2958,6 +2958,13 @@ function appendProgressDetail(
   return [...existing, detail];
 }
 
+function recordArray(value: unknown): Array<Record<string, unknown>> {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object");
+}
+
 function progressDetailString(value: unknown) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : "";
 }
@@ -3037,7 +3044,7 @@ function collectSourceChunks(toolTrace: ToolTraceEntry[], artifacts: RunArtifact
     if (entry.toolName !== "get_relevant_chunks") {
       continue;
     }
-    const chunks = Array.isArray(entry.result?.chunks) ? entry.result.chunks as Array<Record<string, unknown>> : [];
+    const chunks = recordArray(entry.result?.chunks);
     for (const chunk of chunks) {
       const workId = typeof chunk.workId === "string" ? chunk.workId : "work";
       const chunkIndex = typeof chunk.chunkIndex === "number" ? chunk.chunkIndex : null;
@@ -3059,7 +3066,7 @@ function collectSourceChunks(toolTrace: ToolTraceEntry[], artifacts: RunArtifact
     }
     try {
       const parsed = JSON.parse(raw) as { chunks?: Array<Record<string, unknown>> };
-      const chunks = Array.isArray(parsed.chunks) ? parsed.chunks : [];
+      const chunks = recordArray(parsed.chunks);
       for (const chunk of chunks) {
         const workId = typeof chunk.workId === "string" ? chunk.workId : "work";
         const chunkIndex = typeof chunk.chunkIndex === "number" ? chunk.chunkIndex : null;
@@ -3140,7 +3147,7 @@ function collectConfirmedDocumentWorkIds(toolTrace: ToolTraceEntry[]) {
   const confirmed = new Set<string>();
   for (const entry of toolTrace) {
     if (entry.toolName === "get_relevant_chunks") {
-      const chunks = Array.isArray(entry.result?.chunks) ? entry.result.chunks as Array<Record<string, unknown>> : [];
+      const chunks = recordArray(entry.result?.chunks);
       for (const chunk of chunks) {
         if (typeof chunk.workId === "string" && chunk.workId.trim().length > 0) {
           confirmed.add(chunk.workId);
@@ -3166,8 +3173,8 @@ function collectConfirmedDocumentWorkIds(toolTrace: ToolTraceEntry[]) {
     }
     if (entry.toolName === "create_workspace") {
       const manifest = entry.result?.manifest;
-      const works = manifest && typeof manifest === "object" && Array.isArray((manifest as Record<string, unknown>).works)
-        ? (manifest as Record<string, unknown>).works as Array<Record<string, unknown>>
+      const works = manifest && typeof manifest === "object"
+        ? recordArray((manifest as Record<string, unknown>).works)
         : [];
       for (const work of works) {
         if (typeof work.workId === "string" && work.workId.trim().length > 0) {
@@ -3215,7 +3222,7 @@ function collectSurfacingBooks(toolTrace: ToolTraceEntry[]) {
 
   for (const entry of toolTrace) {
     if (entry.toolName === "search_works" || entry.toolName === "get_work_metadata") {
-      const works = Array.isArray(entry.result?.works) ? entry.result.works as Array<Record<string, unknown>> : [];
+      const works = recordArray(entry.result?.works);
       for (const work of works) {
         const title = typeof work.title === "string" ? work.title : "";
         const authors = Array.isArray(work.authors)
@@ -3230,8 +3237,8 @@ function collectSurfacingBooks(toolTrace: ToolTraceEntry[]) {
 
     if (entry.toolName === "create_workspace") {
       const manifest = entry.result?.manifest;
-      const works = manifest && typeof manifest === "object" && Array.isArray((manifest as Record<string, unknown>).works)
-        ? (manifest as Record<string, unknown>).works as Array<Record<string, unknown>>
+      const works = manifest && typeof manifest === "object"
+        ? recordArray((manifest as Record<string, unknown>).works)
         : [];
       for (const work of works) {
         const title = typeof work.title === "string" ? work.title : "";
@@ -3497,7 +3504,7 @@ function buildResearchDocument(
     }
 
     if (entry.toolName === "get_relevant_chunks") {
-      const chunks = Array.isArray(entry.result?.chunks) ? entry.result.chunks as Array<Record<string, unknown>> : [];
+      const chunks = recordArray(entry.result?.chunks);
       for (const [index, chunk] of chunks.entries()) {
         const workId = typeof chunk.workId === "string" ? chunk.workId : "work";
         const chunkIndex = typeof chunk.chunkIndex === "number" ? chunk.chunkIndex : null;
