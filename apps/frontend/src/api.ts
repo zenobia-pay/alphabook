@@ -24,16 +24,6 @@ function resolveApiBase() {
     return configured;
   }
 
-  if (typeof window !== "undefined") {
-    const hostname = window.location.hostname;
-    if (hostname === "alpha-book.org" || hostname === "www.alpha-book.org") {
-      return "https://api.alpha-book.org";
-    }
-    if (hostname.endsWith(".workers.dev")) {
-      return "https://alphabook-orchestrator-api.founders-0e1.workers.dev";
-    }
-  }
-
   return "/api";
 }
 
