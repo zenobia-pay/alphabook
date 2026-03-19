@@ -4,6 +4,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
 import { DeleteObjectsCommand, GetObjectCommand, S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import { NodeHttpHandler } from "@smithy/node-http-handler";
 import { parseHTML } from "linkedom";
 import { createNeonDb } from "@alphabook/db";
 import { listMirrorIds, resolveMirrorSource } from "@alphabook/source-gutenberg/mirror";
@@ -2169,6 +2170,13 @@ async function buildContext(): Promise<IngestContext> {
     r2: new S3Client({
       region: "auto",
       endpoint: r2Endpoint,
+      requestHandler: new NodeHttpHandler({
+        socketAcquisitionWarningTimeout: 15_000,
+        httpsAgent: {
+          keepAlive: true,
+          maxSockets: 256,
+        },
+      }),
       credentials: {
         accessKeyId: r2AccessKeyId,
         secretAccessKey: r2SecretAccessKey,
