@@ -10,7 +10,7 @@ upload_source_maps = true
 enabled = true
 
 [triggers]
-crons = ["*/15 * * * *"]
+crons = ["* * * * *"]
 
 [vars]
 OPENAI_MODEL = "gpt-5.2"
