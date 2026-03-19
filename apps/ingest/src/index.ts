@@ -312,132 +312,427 @@ function createBookSectionId(title: string, index: number) {
   return `section-${slugify(title)}-${index + 1}`;
 }
 
+const STATIC_BOOK_CONTENT_VERSION = "20260319h";
+
+function withBookVersion(href: string, fragment?: string | null) {
+  const separator = href.includes("?") ? "&" : "?";
+  return `${href}${separator}v=${STATIC_BOOK_CONTENT_VERSION}${fragment ? `#${fragment}` : ""}`;
+}
+
 function renderBookStaticStyles() {
   return `
       :root {
         color-scheme: light;
-        --bg: #f8f4ee;
-        --paper: rgba(255, 252, 247, 0.92);
-        --ink: #1f1b16;
-        --muted: #635848;
-        --line: rgba(73, 58, 41, 0.14);
-        --accent-soft: rgba(143, 79, 42, 0.12);
+        --bg: #f6f3ee;
+        --ink: #171717;
+        --muted: rgba(23, 23, 23, 0.62);
+        --line: rgba(23, 23, 23, 0.08);
+        --accent: rgba(37, 99, 235, 0.16);
+        --accent-strong: rgba(37, 99, 235, 0.24);
       }
       * { box-sizing: border-box; }
       html { scroll-behavior: smooth; }
       body {
         margin: 0;
-        font-family: Georgia, "Times New Roman", serif;
+        font-family: "Newsreader", Georgia, serif;
         color: var(--ink);
-        background:
-          radial-gradient(circle at top left, rgba(196, 157, 112, 0.08), transparent 28%),
-          linear-gradient(180deg, #f9f6f0 0%, #f3ede3 100%);
+        background: var(--bg);
+        text-rendering: optimizeLegibility;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
       }
-      a { color: inherit; }
+      a {
+        color: inherit;
+        text-decoration-thickness: 0.06em;
+        text-underline-offset: 0.14em;
+      }
       .page-shell {
-        width: min(900px, calc(100vw - 40px));
+        width: min(72ch, calc(100vw - 32px));
         margin: 0 auto;
-        padding: 28px 0 40px;
-      }
-      .surface {
-        background: var(--paper);
-        border: 1px solid var(--line);
-        border-radius: 28px;
-        box-shadow: 0 18px 60px rgba(31, 27, 22, 0.08);
-        padding: 26px;
+        padding: 18px 0 32px;
       }
       .hero {
         display: grid;
-        gap: 10px;
+        gap: 6px;
+        margin-bottom: 1.6rem;
       }
-      .eyebrow, .byline, .summary, .page-kicker, .page-meta {
+      .eyebrow, .byline, .summary, .page-kicker, .page-meta, .page-position {
         margin: 0;
         color: var(--muted);
-        font-size: 1rem;
-        line-height: 1.7;
+        font-size: 0.96rem;
+        line-height: 1.5;
       }
       h1 {
         margin: 0;
-        font-size: clamp(2.2rem, 4vw, 3.7rem);
-        line-height: 0.98;
+        font-size: clamp(2rem, 4vw, 3.25rem);
+        line-height: 0.96;
+        letter-spacing: -0.04em;
+        font-weight: 600;
       }
-      .chip-row {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 10px;
-      }
-      .chip-row span {
-        display: inline-flex;
-        align-items: center;
-        border-radius: 999px;
-        padding: 8px 12px;
-        background: var(--accent-soft);
+      .meta-list {
+        margin: 0;
         color: var(--muted);
-        font-size: 0.88rem;
       }
-      .toc-list, .page-list {
+      .meta-list span + span::before {
+        content: " · ";
+      }
+      .toc-list {
         list-style: none;
         padding: 0;
         margin: 0;
         display: grid;
-        gap: 10px;
+        gap: 0.55rem;
       }
       .toc-link, .page-link, .nav-link {
-        display: flex;
-        justify-content: space-between;
-        align-items: baseline;
-        gap: 14px;
-        padding: 14px 16px;
-        border: 1px solid var(--line);
-        border-radius: 18px;
-        background: rgba(255, 255, 255, 0.72);
-        text-decoration: none;
+        text-decoration: underline;
       }
       .reader-body {
-        font-size: 1.08rem;
-        line-height: 1.85;
+        font-size: 1.14rem;
+        line-height: 1.72;
       }
       .reader-body h1, .reader-body h2, .reader-body h3, .reader-body h4, .reader-body h5, .reader-body h6 {
-        font-size: 1.35em;
-        line-height: 1.2;
-        margin: 1.8em 0 0.75em;
+        font-size: 1.18em;
+        line-height: 1.18;
+        margin: 1.7em 0 0.45em;
+        letter-spacing: -0.02em;
       }
       .reader-body p, .reader-body li, .reader-body blockquote, .reader-body pre {
-        margin: 0 0 1.15em;
+        margin: 0 0 1em;
       }
       .reader-body blockquote {
         margin-left: 0;
-        padding-left: 18px;
-        border-left: 3px solid var(--accent-soft);
+        padding-left: 1rem;
+        border-left: 1px solid var(--line);
         color: var(--muted);
       }
       .reader-body pre {
         white-space: pre-wrap;
-        font-family: "Courier New", monospace;
-        background: #f2eadf;
-        border-radius: 16px;
-        padding: 16px;
+        font: inherit;
+        line-height: 1.65;
       }
-      .reader-body [data-passage-id] {
+      .reader-body [data-passage-id],
+      .reader-body [data-anchor-id] {
         scroll-margin-top: 24px;
       }
-      .reader-body :target {
-        background: rgba(143, 79, 42, 0.12);
-        border-radius: 10px;
+      .reader-body [data-passage-id].is-selected,
+      .reader-body .reader-line.is-selected,
+      .reader-body [data-passage-id]:target {
+        background: var(--accent);
         outline: none;
+      }
+      .reader-body [data-passage-id].is-block-selected {
+        background:
+          linear-gradient(180deg, transparent 0%, transparent 0.18rem, var(--accent) 0.18rem, var(--accent) calc(100% - 0.18rem), transparent calc(100% - 0.18rem), transparent 100%);
+      }
+      .reader-body .reader-heading {
+        cursor: pointer;
+      }
+      .reader-body .reader-line {
+        display: inline;
+        cursor: pointer;
+      }
+      .reader-body .reader-line + br {
+        content: "";
+      }
+      .reader-body .reader-line:empty::before {
+        content: " ";
+      }
+      ::highlight(alphabook-selection) {
+        background: var(--accent-strong);
       }
       .page-nav {
         display: flex;
         justify-content: space-between;
-        gap: 14px;
-        margin-bottom: 24px;
+        align-items: baseline;
+        gap: 1rem;
+        margin: 0 0 1.2rem;
+        padding-bottom: 0.8rem;
+        border-bottom: 1px solid var(--line);
+      }
+      .page-nav-bottom {
+        margin-top: 1.6rem;
+        padding-top: 0.8rem;
+        border-top: 1px solid var(--line);
+        border-bottom: none;
+        padding-bottom: 0;
+      }
+      .page-nav-links {
+        display: flex;
+        gap: 1rem;
+        flex-wrap: wrap;
+      }
+      .toc-title {
+        margin: 1.3rem 0 0.65rem;
+        font-size: 1rem;
+        font-weight: 600;
+        letter-spacing: 0.01em;
+      }
+      .empty-state {
+        color: var(--muted);
       }
       @media (max-width: 780px) {
-        .page-shell { width: min(100vw - 24px, 100%); }
-        .surface { padding: 20px; border-radius: 22px; }
-        .page-nav { flex-direction: column; }
+        .page-shell {
+          width: min(100vw - 24px, 100%);
+          padding: 16px 0 24px;
+        }
+        .reader-body {
+          font-size: 1.06rem;
+          line-height: 1.66;
+        }
+        .page-nav {
+          flex-direction: column;
+          align-items: flex-start;
+        }
       }
   `;
+}
+
+function renderBookSelectionScript() {
+  return `
+      (() => {
+        const root = document.querySelector(".reader-body");
+        if (!root) {
+          return;
+        }
+
+        const sentenceSegmenter = typeof Intl !== "undefined" && typeof Intl.Segmenter === "function"
+          ? new Intl.Segmenter(document.documentElement.lang || undefined, { granularity: "sentence" })
+          : null;
+        let activeTarget = null;
+
+        function clearHighlight() {
+          if (activeTarget) {
+            activeTarget.classList.remove("is-selected");
+            activeTarget.classList.remove("is-block-selected");
+            activeTarget = null;
+          }
+          if (window.CSS && CSS.highlights) {
+            CSS.highlights.delete("alphabook-selection");
+          }
+        }
+
+        function sentenceRanges(text) {
+          const ranges = [];
+          if (!text || !text.trim()) {
+            return ranges;
+          }
+          if (sentenceSegmenter) {
+            let index = 0;
+            for (const part of sentenceSegmenter.segment(text)) {
+              const value = typeof part.segment === "string" ? part.segment : "";
+              const start = typeof part.index === "number" ? part.index : index;
+              const end = start + value.length;
+              if (value.trim()) {
+                ranges.push({ start, end });
+              }
+              index = end;
+            }
+          }
+          if (ranges.length > 0) {
+            return ranges;
+          }
+          const fallback = text.matchAll(/[^.!?\\n]+(?:[.!?]+|$)/g);
+          for (const match of fallback) {
+            const value = match[0] || "";
+            const start = match.index || 0;
+            const end = start + value.length;
+            if (value.trim()) {
+              ranges.push({ start, end });
+            }
+          }
+          return ranges.length > 0 ? ranges : [{ start: 0, end: text.length }];
+        }
+
+        function findTextOffset(container, targetNode, targetOffset) {
+          const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+          let total = 0;
+          while (walker.nextNode()) {
+            const node = walker.currentNode;
+            const length = node.textContent ? node.textContent.length : 0;
+            if (node === targetNode) {
+              return total + Math.min(targetOffset, length);
+            }
+            total += length;
+          }
+          return total;
+        }
+
+        function rangeForOffsets(container, start, end) {
+          const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+          let total = 0;
+          let startNode = null;
+          let startOffset = 0;
+          let endNode = null;
+          let endOffset = 0;
+          while (walker.nextNode()) {
+            const node = walker.currentNode;
+            const length = node.textContent ? node.textContent.length : 0;
+            if (!startNode && start <= total + length) {
+              startNode = node;
+              startOffset = Math.max(0, start - total);
+            }
+            if (!endNode && end <= total + length) {
+              endNode = node;
+              endOffset = Math.max(0, end - total);
+              break;
+            }
+            total += length;
+          }
+          if (!startNode || !endNode) {
+            return null;
+          }
+          const range = document.createRange();
+          range.setStart(startNode, startOffset);
+          range.setEnd(endNode, Math.max(startOffset, endOffset));
+          return range;
+        }
+
+        function highlightSentence(block, sentenceIndex, scrollIntoView) {
+          const text = block.textContent || "";
+          const ranges = sentenceRanges(text);
+          const sentence = ranges[sentenceIndex];
+          if (!sentence) {
+            highlightBlock(block, scrollIntoView);
+            return;
+          }
+          clearHighlight();
+          activeTarget = block;
+          block.classList.add("is-block-selected");
+          const range = rangeForOffsets(block, sentence.start, sentence.end);
+          if (range && window.CSS && CSS.highlights && typeof window.Highlight === "function") {
+            CSS.highlights.set("alphabook-selection", new Highlight(range));
+          }
+          if (scrollIntoView) {
+            block.scrollIntoView({ block: "center", inline: "nearest" });
+          }
+        }
+
+        function highlightBlock(block, scrollIntoView) {
+          clearHighlight();
+          activeTarget = block;
+          block.classList.add("is-selected");
+          if (scrollIntoView) {
+            block.scrollIntoView({ block: "center", inline: "nearest" });
+          }
+        }
+
+        function highlightLine(line, scrollIntoView) {
+          clearHighlight();
+          activeTarget = line;
+          line.classList.add("is-selected");
+          if (scrollIntoView) {
+            line.scrollIntoView({ block: "center", inline: "nearest" });
+          }
+        }
+
+        function applyHash(scrollIntoView) {
+          const hash = window.location.hash.replace(/^#/, "");
+          if (!hash) {
+            clearHighlight();
+            return;
+          }
+          if (hash.startsWith("sentence-")) {
+            const parts = hash.split("-");
+            const sentenceIndex = Number(parts.pop()) - 1;
+            const passageId = parts.slice(1).join("-");
+            const block = document.getElementById(passageId);
+            if (block) {
+              highlightSentence(block, Math.max(0, sentenceIndex), scrollIntoView);
+              return;
+            }
+          }
+          const line = root.querySelector('[data-anchor-id="' + CSS.escape(hash) + '"]');
+          if (line) {
+            highlightLine(line, scrollIntoView);
+            return;
+          }
+          const target = document.getElementById(hash);
+          if (target) {
+            highlightBlock(target, scrollIntoView);
+            return;
+          }
+          clearHighlight();
+        }
+
+        function sentenceIndexFromClick(block, event) {
+          let caretNode = null;
+          let caretOffset = 0;
+          if (document.caretPositionFromPoint) {
+            const position = document.caretPositionFromPoint(event.clientX, event.clientY);
+            caretNode = position ? position.offsetNode : null;
+            caretOffset = position ? position.offset : 0;
+          } else if (document.caretRangeFromPoint) {
+            const range = document.caretRangeFromPoint(event.clientX, event.clientY);
+            caretNode = range ? range.startContainer : null;
+            caretOffset = range ? range.startOffset : 0;
+          }
+          if (!caretNode || !block.contains(caretNode)) {
+            return 0;
+          }
+          const offset = findTextOffset(block, caretNode, caretOffset);
+          const ranges = sentenceRanges(block.textContent || "");
+          const index = ranges.findIndex((range) => offset >= range.start && offset <= range.end);
+          return index >= 0 ? index : 0;
+        }
+
+        root.addEventListener("click", (event) => {
+          if (window.getSelection && String(window.getSelection()).trim()) {
+            return;
+          }
+          const target = event.target;
+          if (!(target instanceof Element)) {
+            return;
+          }
+          if (target.closest("a[href]")) {
+            return;
+          }
+          const line = target.closest("[data-anchor-id]");
+          if (line instanceof HTMLElement) {
+            event.preventDefault();
+            const anchorId = line.getAttribute("data-anchor-id");
+            if (!anchorId) {
+              return;
+            }
+            history.replaceState(null, "", "#" + anchorId);
+            applyHash(false);
+            return;
+          }
+          const block = target.closest("[data-passage-id]");
+          if (!(block instanceof HTMLElement)) {
+            return;
+          }
+          event.preventDefault();
+          const passageId = block.getAttribute("data-passage-id");
+          if (!passageId) {
+            return;
+          }
+          if (/^H[1-6]$/.test(block.tagName)) {
+            history.replaceState(null, "", "#" + passageId);
+            applyHash(false);
+            return;
+          }
+          if (block.tagName === "PRE") {
+            history.replaceState(null, "", "#" + passageId);
+            applyHash(false);
+            return;
+          }
+          const sentenceIndex = sentenceIndexFromClick(block, event);
+          history.replaceState(null, "", "#sentence-" + passageId + "-" + String(sentenceIndex + 1));
+          applyHash(false);
+        });
+
+        window.addEventListener("hashchange", () => applyHash(true));
+        applyHash(true);
+      })();
+  `;
+}
+
+function renderPreformattedBlockHtml(passageId: string, content: string) {
+  const lines = normalizeReaderText(content, true).split("\n");
+  return `<pre id="${passageId}" data-passage-id="${passageId}">${lines.map((line, index) => {
+    const lineId = `line-${passageId}-${index + 1}`;
+    return `<span class="reader-line" data-anchor-id="${lineId}">${line.length > 0 ? escapeHtml(line) : ""}</span>`;
+  }).join("<br />")}</pre>`;
 }
 
 function looksLikePlaintextHeading(value: string) {
@@ -471,7 +766,7 @@ function buildPaginatedTextBlocks(content: string) {
     if (looksLikePlaintextHeading(paragraph)) {
       blocks.push({
         kind: "heading",
-        html: `<h2 id="${passageId}" data-passage-id="${passageId}">${escapeHtml(paragraph)}</h2>`,
+        html: `<h2 id="${passageId}" data-passage-id="${passageId}" class="reader-heading">${escapeHtml(paragraph)}</h2>`,
         text: paragraph,
         wordCount: countWords(paragraph),
         passageIds: [passageId],
@@ -483,7 +778,7 @@ function buildPaginatedTextBlocks(content: string) {
     if (looksLikeVerseBlock(paragraph)) {
       blocks.push({
         kind: "preformatted",
-        html: `<pre id="${passageId}" data-passage-id="${passageId}">${escapeHtml(paragraph)}</pre>`,
+        html: renderPreformattedBlockHtml(passageId, paragraph),
         text: paragraph,
         wordCount: countWords(paragraph),
         passageIds: [passageId],
@@ -531,6 +826,7 @@ function buildPaginatedHtmlBlocks(content: string) {
       passageIndex += 1;
       element.setAttribute("id", passageId);
       element.setAttribute("data-passage-id", passageId);
+      element.classList.add("reader-heading");
       blocks.push({
         kind: "heading",
         html: element.outerHTML,
@@ -569,10 +865,20 @@ function buildPaginatedHtmlBlocks(content: string) {
 
     const passageId = createReaderPassageId(passageIndex, text);
     passageIndex += 1;
+    if (tagName === "pre") {
+      blocks.push({
+        kind: "preformatted",
+        html: renderPreformattedBlockHtml(passageId, text),
+        text,
+        wordCount: countWords(text),
+        passageIds: [passageId],
+      });
+      continue;
+    }
     element.setAttribute("id", passageId);
     element.setAttribute("data-passage-id", passageId);
     blocks.push({
-      kind: tagName === "blockquote" ? "blockquote" : tagName === "pre" ? "preformatted" : "paragraph",
+      kind: tagName === "blockquote" ? "blockquote" : "paragraph",
       html: element.outerHTML,
       text,
       wordCount: countWords(text),
@@ -722,21 +1028,17 @@ function buildPaginatedBookArtifactBundle(input: {
           ${input.summary ? `<p class="summary">${escapeHtml(input.summary)}</p>` : ""}
           ${renderTagList(input.bookshelves)}
         </section>
-        ${pages[0] ? `<p><a class="page-link" href="${pages[0].href}"><strong>Start Reading</strong><span>Page 1</span></a></p>` : ""}
+        ${pages[0] ? `<p><a class="page-link" href="${withBookVersion(pages[0].href)}"><strong>Start Reading</strong></a></p>` : ""}
         <section>
-          <p class="page-kicker">Table of contents</p>
+          <p class="toc-title">Contents</p>
           <ul class="toc-list">
             ${sections.map((section) => `
               <li>
-                <a class="toc-link" href="${section.href}#${section.passageId}">
-                  <span>${escapeHtml(section.title)}</span>
-                  <span>Page ${section.pageNumber}</span>
-                </a>
+                <a class="toc-link" href="${withBookVersion(section.href, section.passageId)}">${escapeHtml(section.title)} · Page ${section.pageNumber}</a>
               </li>
             `).join("")}
           </ul>
         </section>
-      </div>
     </main>
   </body>
 </html>`;
@@ -744,8 +1046,14 @@ function buildPaginatedBookArtifactBundle(input: {
   const pageFiles = pages.map((page) => {
     const previousPage = pages[page.pageNumber - 2] ?? null;
     const nextPage = pages[page.pageNumber] ?? null;
-    const previousPageHref = previousPage ? `./page-${String(previousPage.pageNumber).padStart(4, "0")}.html` : null;
-    const nextPageHref = nextPage ? `./page-${String(nextPage.pageNumber).padStart(4, "0")}.html` : null;
+    const previousPageHref = previousPage ? withBookVersion(`./page-${String(previousPage.pageNumber).padStart(4, "0")}.html`) : null;
+    const nextPageHref = nextPage ? withBookVersion(`./page-${String(nextPage.pageNumber).padStart(4, "0")}.html`) : null;
+    const contentsHref = withBookVersion("../");
+    const navLinks = [
+      previousPageHref ? `<a class="nav-link" href="${previousPageHref}">Previous page</a>` : "",
+      `<a class="nav-link" href="${contentsHref}">Contents</a>`,
+      nextPageHref ? `<a class="nav-link" href="${nextPageHref}">Next page</a>` : "",
+    ].filter(Boolean).join("");
     return {
       pageNumber: page.pageNumber,
       html: `<!doctype html>
@@ -762,18 +1070,20 @@ function buildPaginatedBookArtifactBundle(input: {
   </head>
   <body>
     <main class="page-shell">
-      <div class="surface">
         <nav class="page-nav">
-          ${previousPageHref ? `<a class="nav-link" href="${previousPageHref}"><span>Previous</span><strong>Page ${previousPage.pageNumber}</strong></a>` : `<a class="nav-link" href="../"><span>Contents</span><strong>Title page</strong></a>`}
-          ${nextPageHref ? `<a class="nav-link" href="${nextPageHref}"><span>Next</span><strong>Page ${nextPage.pageNumber}</strong></a>` : `<a class="nav-link" href="../"><span>Contents</span><strong>Title page</strong></a>`}
+          <div class="page-nav-links">${navLinks}</div>
+          <p class="page-position">Page ${page.pageNumber} of ${pages.length}</p>
         </nav>
         <section class="hero">
-          <p class="page-kicker">Page ${page.pageNumber} of ${pages.length}</p>
           <h1>${escapeHtml(page.sectionTitle ?? input.title)}</h1>
           ${meta ? `<p class="page-meta">${escapeHtml(meta)}</p>` : ""}
         </section>
         <div class="reader-body">${page.blocks.map((block) => block.html).join("\n")}</div>
-      </div>
+        <nav class="page-nav page-nav-bottom">
+          <div class="page-nav-links">${navLinks}</div>
+          <p class="page-position">Page ${page.pageNumber} of ${pages.length}</p>
+        </nav>
+        <script>${renderBookSelectionScript()}</script>
     </main>
   </body>
 </html>`,
@@ -788,7 +1098,7 @@ function buildPaginatedBookArtifactBundle(input: {
       pageCount: pages.length,
       pages: pages.map((page) => ({
         pageNumber: page.pageNumber,
-        href: page.href,
+        href: withBookVersion(page.href),
         firstPassageId: page.firstPassageId,
         lastPassageId: page.lastPassageId,
         sectionTitle: page.sectionTitle,
@@ -860,7 +1170,7 @@ function renderTagList(values: string[] | null | undefined) {
   if (tags.length === 0) {
     return "";
   }
-  return `<div class="chip-row">${tags.map((value) => `<span>${escapeHtml(value)}</span>`).join("")}</div>`;
+  return `<p class="meta-list">${tags.map((value) => `<span>${escapeHtml(value)}</span>`).join("")}</p>`;
 }
 
 function buildBookHtmlArtifact(input: {

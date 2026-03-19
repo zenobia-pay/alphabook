@@ -71,7 +71,7 @@ async function serveStaticObject(request: Request, ctx: ExecutionContext, object
   headers.set("x-alphabook-surface", surface);
   headers.set(
     "content-security-policy",
-    "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data: https:; font-src https: data:; frame-ancestors https://alpha-book.org",
+    "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data: https:; font-src https: data:; base-uri 'none'; object-src 'none'; frame-ancestors https://alpha-book.org",
   );
   headers.delete("x-frame-options");
   if (object.httpEtag) {
