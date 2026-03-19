@@ -2072,6 +2072,22 @@ function extractRecordedRunMetrics(rawLog: Array<ToolRunRawLogEntry | Record<str
   return null;
 }
 
+async function withToolExecutionDeadline<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
 type ToolProgressBuffer = {
   toolName: ToolName;
   lines: ToolStreamCleanupLine[];
@@ -5384,12 +5400,19 @@ async function runOrchestrator(
         let backgroundResult: Record<string, unknown>;
         let backgroundStatus: "completed" | "failed" = "completed";
         try {
-          backgroundResult = await executeTool(deps, toolName, normalizedToolArgs, {
+          const executionPromise = executeTool(deps, toolName, normalizedToolArgs, {
             userId: activeSession.userId,
             sessionId: activeSession.id,
             runId: run.id,
             auditLog: recordRawLog,
           });
+          backgroundResult = await (toolName === "create_workspace"
+            ? withToolExecutionDeadline(
+                executionPromise,
+                70_000,
+                "Workspace startup exceeded the orchestrator deadline.",
+              )
+            : executionPromise);
           addRuntimeIds(runtimeIdsToCleanup, normalizedToolArgs, backgroundResult);
           if (toolName === "run_workspace_task") {
             await trackRuntimeBillingEvents(deps, activeSession, run, backgroundResult.billingEvents);
