@@ -6311,25 +6311,14 @@ export default function App() {
             width={bookAssistantWidth}
             pageRef={bookPageRef}
             leftPane={(
-              preferredAssistantRun?.id && selectedSessionId ? (
-                <ResearchArtifactPane
-                  sessionTitle={assistantSessionName(activeSession)}
-                  toolTrace={workspaceToolTrace}
-                  artifacts={runArtifacts}
-                  ending={workspaceDocumentEnding}
-                  onOpenWork={openWork}
-                  onOpenCitation={openCitation}
-                />
-              ) : (
-                <ResearchArtifactPane
-                  sessionTitle={assistantSessionName(activeSession)}
-                  toolTrace={workspaceToolTrace}
-                  artifacts={runArtifacts}
-                  ending={workspaceDocumentEnding}
-                  onOpenWork={openWork}
-                  onOpenCitation={openCitation}
-                />
-              )
+              <ResearchArtifactPane
+                sessionTitle={assistantSessionName(activeSession)}
+                toolTrace={workspaceToolTrace}
+                artifacts={runArtifacts}
+                ending={workspaceDocumentEnding}
+                onOpenWork={openWork}
+                onOpenCitation={openCitation}
+              />
             )}
             rightPane={(
               <AssistantSurface
