@@ -2708,15 +2708,17 @@ function SidebarRecents({
   activeView,
   sessions,
   selectedSessionId,
+  hide,
   onSelectSession,
 }: {
   collapsed: boolean;
   activeView: ViewMode;
   sessions: ChatSessionSummary[];
   selectedSessionId: string | null | undefined;
+  hide?: boolean;
   onSelectSession: (sessionId: string) => void;
 }) {
-  if (collapsed || sessions.length === 0) {
+  if (hide || collapsed || sessions.length === 0) {
     return null;
   }
 
@@ -6344,6 +6346,7 @@ export default function App() {
   }
 
   function renderAssistantView() {
+    const isNewAssistantChat = selectedSessionId == null;
     const assistantSessionLoading =
       selectedSessionId != null
       && (
@@ -6383,6 +6386,21 @@ export default function App() {
       <section className="assistant-page">
         {assistantSessionLoading ? (
           <AssistantWorkspaceLoadingState width={bookAssistantWidth} />
+        ) : authPending && isNewAssistantChat ? (
+          <div className="assistant-thread-shell assistant-thread-shell-landing" data-testid="thread">
+            <AssistantSurface
+              key="assistant-landing-pending"
+              messages={[]}
+              isSending={false}
+              streamingAssistantId={null}
+              artifacts={[]}
+              effortLevel={assistantEffort}
+              onEffortLevelChange={setAssistantEffort}
+              onPrompt={sendPrompt}
+              onCancel={cancelActiveRun}
+              composerDisabled
+            />
+          </div>
         ) : showRestrictedConversation ? (
           <div className="assistant-thread-shell" data-testid="thread">
             <LockedState compact title={authLocked ? "Sign in to view this conversation." : "This conversation is private."} />
@@ -7670,6 +7688,7 @@ export default function App() {
             activeView={activeView}
             sessions={sessions}
             selectedSessionId={selectedSessionId}
+            hide={activeView === "assistant" && !selectedSessionId}
             onSelectSession={openSession}
           />
         </div>

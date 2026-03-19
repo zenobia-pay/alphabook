@@ -685,6 +685,11 @@ button {
   box-shadow: var(--shadow);
 }
 
+.assistant-thread-shell-landing .aui-composer-root {
+  max-width: min(44rem, 100%);
+  margin-inline: auto;
+}
+
 .aui-composer-status {
   font-size: 0.92rem;
   color: var(--ink-soft);
@@ -2480,6 +2485,14 @@ button {
   overscroll-behavior-y: none;
 }
 
+.assistant-thread-shell-landing {
+  padding-inline: clamp(20px, 5vw, 48px);
+}
+
+.assistant-thread-shell-landing .aui-thread-viewport {
+  padding-top: 0;
+}
+
 .assistant-loading-state {
   min-height: 0;
   height: 100%;
@@ -2580,6 +2593,8 @@ button {
 
 .aui-thread-welcome-suggestions {
   gap: 0.45rem;
+  max-width: min(34rem, 100%);
+  margin-inline: auto;
 }
 
 .aui-thread-welcome-suggestion {
@@ -2602,6 +2617,18 @@ button {
 
 .aui-thread-welcome-suggestion-text-1 {
   color: rgba(36, 36, 36, 0.84);
+}
+
+.aui-thread-welcome-root {
+  padding-block: clamp(2rem, 8vh, 5rem);
+}
+
+.aui-thread-welcome-message {
+  gap: 0.85rem;
+}
+
+.aui-thread-welcome-message-inner {
+  text-wrap: balance;
 }
 
 .assistant-loading-suggestion-grid {

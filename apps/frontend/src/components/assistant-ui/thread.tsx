@@ -223,7 +223,7 @@ export const Thread: FC<{
         turnAnchor="top"
         className="aui-thread-viewport relative flex flex-1 flex-col overflow-x-auto overflow-y-auto px-4 pt-4"
       >
-        <AuiIf condition={(s) => s.thread.isEmpty && showWelcome}>
+        <AuiIf condition={(s) => s.thread.isEmpty && showWelcome && !isRunning}>
           <ThreadWelcome />
         </AuiIf>
 
@@ -397,8 +397,8 @@ const ThreadWelcome: FC = () => {
 
   return (
     <div data-testid="empty-state" className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
-      <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-center">
-        <div className="aui-thread-welcome-message flex size-full flex-col justify-center px-4">
+      <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-end">
+        <div className="aui-thread-welcome-message flex size-full flex-col justify-end px-4 pb-6">
           <h1 className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in fill-mode-both font-semibold text-2xl duration-200">
             Search for evidence and themes over 75,000 books.
           </h1>
@@ -435,7 +435,7 @@ const ThreadSuggestions: FC<{
   disabled = false,
 }) => {
   return (
-    <div className="aui-thread-welcome-suggestions flex w-full flex-col items-start gap-2 pb-4">
+    <div className="aui-thread-welcome-suggestions flex w-full flex-col items-start gap-2 pb-1">
       {suggestions.map((suggestion) => (
         <ThreadSuggestionItem
           key={suggestion.prompt}
@@ -475,7 +475,7 @@ const ThreadSuggestionItem: FC<{
   }, [aui, disabled, onSuggestionSelect, suggestion.prompt]);
 
   return (
-    <div className="aui-thread-welcome-suggestion-display fade-in slide-in-from-bottom-2 nth-[n+3]:hidden @md:nth-[n+3]:block w-full animate-in fill-mode-both duration-200 @md:w-[72%]">
+    <div className="aui-thread-welcome-suggestion-display fade-in slide-in-from-bottom-2 nth-[n+2]:hidden @md:nth-[n+3]:block w-full animate-in fill-mode-both duration-200 @md:w-[72%]">
       <Button
         type="button"
         variant="ghost"
