@@ -1320,7 +1320,7 @@ function describeMetadataSearchIntent(args: Record<string, unknown>) {
   const query = typeof args.query === "string" && args.query.trim().length > 0
     ? `for ${quoted(args.query)}`
     : "";
-  return `Checking titles, summaries, subjects, and catalog metadata ${query}`.trim();
+  return `Scanning book titles, summaries, subjects, and catalog metadata ${query}`.trim();
 }
 
 function describePassageSearchIntent(args: Record<string, unknown>) {
@@ -1329,7 +1329,7 @@ function describePassageSearchIntent(args: Record<string, unknown>) {
     : "";
   const scopedWorkCount = Array.isArray(args.workIds) ? args.workIds.length : 0;
   const scope = scopedWorkCount > 0 ? ` across ${pluralize(scopedWorkCount, "candidate book")}` : " across the corpus";
-  return `Searching passage text and semantic matches${scope} ${query}`.replace(/\s+/g, " ").trim();
+  return `Pulling quoted passages from passage text and semantic matches${scope} ${query}`.replace(/\s+/g, " ").trim();
 }
 
 function summarizeToolSentence({
@@ -1406,12 +1406,12 @@ function summarizeToolSentence({
 
     case "create_workspace":
       if (state === "running") {
-        return "Preparing the deeper research workspace.";
+        return "Booting the deeper research workspace and wiring in the corpus tools.";
       }
       if (state === "error") {
-        return `Preparing the deeper research workspace failed${errorMessage ? `: ${errorMessage}` : "."}`;
+        return `Booting the deeper research workspace failed${errorMessage ? `: ${errorMessage}` : "."}`;
       }
-      return "Prepared the deeper research workspace.";
+      return "The deeper research workspace is ready.";
 
     case "run_workspace_task":
       if (state === "running") {

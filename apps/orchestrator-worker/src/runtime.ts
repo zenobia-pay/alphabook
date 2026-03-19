@@ -75,6 +75,22 @@ function buildRuntimeAppUrl(appName: string, explicitUrl?: string): string {
   return explicitUrl && explicitUrl.length > 0 ? explicitUrl : `https://${appName}.fly.dev`;
 }
 
+function isRetryableRuntimeStartupError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const message = error.message.toLowerCase();
+  return (
+    message.includes("runtime request failed (502)") ||
+    message.includes("runtime request failed (503)") ||
+    message.includes("runtime request failed (504)") ||
+    message.includes("runtime request failed (524)") ||
+    message.includes("fetch failed") ||
+    message.includes("network connection lost") ||
+    message.includes("timed out")
+  );
+}
+
 function sanitizeMachineName(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 55);
 }
@@ -297,19 +313,17 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
 
     try {
       await this.waitForMachine(machine.id, "started");
-      await this.callRuntime(machine.id, "/prepare", {
-        method: "POST",
-        body: JSON.stringify({
-          runtimeId,
-          sessionId,
-          works: workspacePlan.manifest.works,
-          dataSchema: workspacePlan.manifest.dataSchema,
-          fileCatalog: workspacePlan.manifest.fileCatalog,
-          selectedChunkIds: workspacePlan.manifest.selectedChunkIds,
-          selectedChunks: workspacePlan.manifest.selectedChunks,
-          taskContext: workspacePlan.manifest.taskContext,
-          downloads: workspacePlan.downloads,
-        }),
+      await this.waitForRuntimeHttpReady(machine.id);
+      await this.prepareWorkspace(machine.id, {
+        runtimeId,
+        sessionId,
+        works: workspacePlan.manifest.works,
+        dataSchema: workspacePlan.manifest.dataSchema,
+        fileCatalog: workspacePlan.manifest.fileCatalog,
+        selectedChunkIds: workspacePlan.manifest.selectedChunkIds,
+        selectedChunks: workspacePlan.manifest.selectedChunks,
+        taskContext: workspacePlan.manifest.taskContext,
+        downloads: workspacePlan.downloads,
       });
       await this.store.updateRuntimeInstance(runtimeId, {
         status: "ready",
@@ -603,6 +617,46 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
       throw new Error(`Runtime request failed (${response.status}): ${text}`);
     }
     return (await response.json()) as Record<string, unknown>;
+  }
+
+  private async waitForRuntimeHttpReady(machineId: string): Promise<void> {
+    const startedAt = Date.now();
+    const maxWaitMs = 90_000;
+    let lastError: unknown = null;
+
+    while (Date.now() - startedAt < maxWaitMs) {
+      try {
+        await this.callRuntime(machineId, "/health", { method: "GET" });
+        return;
+      } catch (error) {
+        lastError = error;
+        await new Promise((resolve) => setTimeout(resolve, 2_000));
+      }
+    }
+
+    if (lastError instanceof Error) {
+      throw new Error(`Runtime became reachable too slowly: ${lastError.message}`);
+    }
+    throw new Error("Runtime became reachable too slowly.");
+  }
+
+  private async prepareWorkspace(machineId: string, payload: Record<string, unknown>) {
+    let lastError: unknown = null;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        return await this.callRuntime(machineId, "/prepare", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+      } catch (error) {
+        lastError = error;
+        if (attempt >= 3 || !isRetryableRuntimeStartupError(error)) {
+          throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, attempt * 2_000));
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error("Workspace preparation failed.");
   }
 
   private async createMachine(sessionId: string): Promise<FlyMachine> {

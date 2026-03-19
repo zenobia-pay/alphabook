@@ -629,8 +629,10 @@ const METADATA_SEARCH_QUERY_STOP_WORDS = new Set([
   "1899",
   "1900",
   "black",
+  "bitter",
   "death",
   "died",
+  "deep",
   "dress",
   "19th",
   "century",
@@ -658,6 +660,26 @@ const METADATA_SEARCH_QUERY_STOP_WORDS = new Set([
   "her",
   "his",
   "lost",
+  "after",
+  "widow",
+  "widows",
+  "widower",
+  "widowers",
+]);
+
+const GRIEF_THEME_TOKENS = new Set([
+  "bereavement",
+  "comfort",
+  "funeral",
+  "grief",
+  "lament",
+  "melancholy",
+  "mourn",
+  "mourning",
+  "sorrow",
+  "weep",
+  "weeping",
+  "wept",
 ]);
 
 function normalizeSearchQuery(query: string): string {
@@ -699,10 +721,77 @@ function expandedSearchTokens(query: string): string[] {
 }
 
 function metadataSearchTerms(query: string): string[] {
-  return expandedSearchTokens(query)
+  const expanded = expandedSearchTokens(query);
+  const hasStrongGriefSignal = expanded.some((token) => GRIEF_THEME_TOKENS.has(token));
+  return expanded
     .filter((token) => !METADATA_SEARCH_QUERY_STOP_WORDS.has(token))
+    .filter((token) => !(hasStrongGriefSignal && (token === "widow" || token === "widows")))
     .filter((token) => !/^\d{4}$/u.test(token))
     .slice(0, 16);
+}
+
+function metadataTextHaystack(row: {
+  title: string;
+  summary: string | null;
+  authors: string[];
+  subjects: string[];
+  metadata_json: Record<string, unknown>;
+}) {
+  return [
+    row.title,
+    row.summary ?? "",
+    ...(row.authors ?? []),
+    ...(row.subjects ?? []),
+    JSON.stringify(row.metadata_json ?? {}),
+  ].join(" ").toLowerCase();
+}
+
+function rerankMetadataRows<T extends {
+  title: string;
+  summary: string | null;
+  authors: string[];
+  subjects: string[];
+  metadata_json: Record<string, unknown>;
+  score: number;
+}>(rows: T[], query: string): T[] {
+  const terms = metadataSearchTerms(query);
+  const hasStrongGriefSignal = terms.some((token) => GRIEF_THEME_TOKENS.has(token));
+  return rows
+    .map((row) => {
+      const haystack = metadataTextHaystack(row);
+      let bonus = 0;
+      for (const term of terms) {
+        if (!haystack.includes(term)) {
+          continue;
+        }
+        bonus += GRIEF_THEME_TOKENS.has(term) ? 0.35 : 0.12;
+      }
+      if (hasStrongGriefSignal && /\bwidows?\b/u.test(haystack) && !/\b(grief|mourning|bereavement|funeral|sorrow|lament|weep|wept|tears?)\b/u.test(haystack)) {
+        bonus -= 0.45;
+      }
+      return {
+        row,
+        totalScore: row.score + bonus,
+      };
+    })
+    .sort((left, right) => right.totalScore - left.totalScore || left.row.title.localeCompare(right.row.title))
+    .map((entry) => ({
+      ...entry.row,
+      score: entry.totalScore,
+    }));
+}
+
+function dedupeMetadataRows<T extends { id: string }>(rows: T[]): T[] {
+  const seen = new Set<string>();
+  const deduped: T[] = [];
+  for (const row of rows) {
+    if (seen.has(row.id)) {
+      continue;
+    }
+    seen.add(row.id);
+    deduped.push(row);
+  }
+  return deduped;
 }
 
 function buildMetadataTsQuery(query: string): string {
@@ -2943,11 +3032,11 @@ export class NeonAppStore implements AppStore {
           limit,
         ],
       );
-      if (result.rows.length > 0 || tokens.length === 0) {
-        return mapRows(result.rows);
+      if (result.rows.length >= Math.min(limit, 6) || tokens.length === 0) {
+        return mapRows(rerankMetadataRows(result.rows, query).slice(0, limit));
       }
 
-      const chunkBackedResult = await this.db.query<{
+      let chunkBackedRows: Array<{
         id: string;
         gutenberg_id: number | string | null;
         title: string;
@@ -2959,9 +3048,29 @@ export class NeonAppStore implements AppStore {
         authors: string[];
         subjects: string[];
         score: number;
-      }>(
-        `
-          WITH eligible_works AS (
+      }> = [];
+      try {
+        const chunkBackedResult = await withTimeout(this.db.query<{
+          id: string;
+          gutenberg_id: number | string | null;
+          title: string;
+          metadata_json: Record<string, unknown>;
+          language: string | null;
+          release_date: string | null;
+          rights_status: string | null;
+          summary: string | null;
+          authors: string[];
+          subjects: string[];
+          score: number;
+        }>(
+          `
+          WITH query_input AS (
+            SELECT CASE
+              WHEN NULLIF($6::text, '') IS NULL THEN NULL
+              ELSE websearch_to_tsquery('english', $6::text)
+            END AS tsq
+          ),
+          eligible_works AS (
             SELECT
               w.id,
               w.gutenberg_id,
@@ -3011,16 +3120,23 @@ export class NeonAppStore implements AppStore {
           ),
           chunk_matches AS (
             SELECT
-              c.work_id,
+              candidate_chunks.work_id,
               COUNT(*)::float AS score
-            FROM chunks c
-            JOIN filtered_works fw ON fw.id = c.work_id
-            WHERE EXISTS (
-              SELECT 1
-              FROM unnest($6::text[]) AS token
-              WHERE COALESCE(c.text, '') ILIKE '%' || token || '%'
-            )
-            GROUP BY c.work_id
+            FROM (
+              SELECT c.work_id
+              FROM chunks c
+              JOIN filtered_works fw ON fw.id = c.work_id,
+              query_input
+              WHERE
+                (query_input.tsq IS NOT NULL AND c.tsv @@ query_input.tsq)
+                OR EXISTS (
+                  SELECT 1
+                  FROM unnest($7::text[]) AS token
+                  WHERE COALESCE(c.text, '') ILIKE '%' || token || '%'
+                )
+              LIMIT $8
+            ) AS candidate_chunks
+            GROUP BY candidate_chunks.work_id
           )
           SELECT
             fw.id,
@@ -3042,7 +3158,7 @@ export class NeonAppStore implements AppStore {
           LEFT JOIN subjects s ON s.id = ws.subject_id
           GROUP BY fw.id, fw.gutenberg_id, fw.title, fw.metadata_json, fw.language, fw.release_date, fw.rights_status, fw.summary, chunk_matches.score
           ORDER BY chunk_matches.score DESC, fw.title ASC
-          LIMIT $7
+          LIMIT $9
         `,
         [
           typeof filters.language === "string" ? filters.language : null,
@@ -3050,13 +3166,30 @@ export class NeonAppStore implements AppStore {
           Array.isArray(filters.yearRange) ? Number(filters.yearRange[0]) : null,
           Array.isArray(filters.yearRange) ? Number(filters.yearRange[1]) : null,
           Array.isArray(filters.genre) ? filters.genre : [],
+          normalizeSearchQuery(query),
           tokens,
+          Math.max(limit * 80, 240),
           limit,
         ],
+        ), 8_000, "Metadata search chunk expansion timed out.");
+        chunkBackedRows = chunkBackedResult.rows;
+      } catch (error) {
+        if (result.rows.length === 0) {
+          throw error;
+        }
+      }
+
+      const mergedRows = dedupeMetadataRows(
+        rerankMetadataRows(
+          [
+            ...result.rows,
+            ...chunkBackedRows,
+          ],
+          query,
+        ),
       );
-      const mappedChunkRows = mapRows(chunkBackedResult.rows);
-      if (mappedChunkRows.length > 0) {
-        return mappedChunkRows;
+      if (mergedRows.length > 0 || tokens.length === 0) {
+        return mapRows(mergedRows.slice(0, limit));
       }
 
       for (const relaxedFilters of relaxMetadataSearchFilters(filters)) {

@@ -923,6 +923,19 @@ function normalizeDateRangeFilter(value: unknown): [number, number] | undefined 
   return [Math.min(from, to), Math.max(from, to)];
 }
 
+function normalizePublicationYearFilter(value: unknown): [number, number] | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  const from = Number(record.from ?? record.start ?? record.gte ?? record.min);
+  const to = Number(record.to ?? record.end ?? record.lte ?? record.max);
+  if (!Number.isInteger(from) || !Number.isInteger(to)) {
+    return undefined;
+  }
+  return [Math.min(from, to), Math.max(from, to)];
+}
+
 function normalizeGenreFilter(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) {
     return undefined;
@@ -971,13 +984,16 @@ function normalizeToolArgs(toolName: ToolName, args: Record<string, unknown>): R
         if (typeof filters.limit === "number") {
           filters.limit = Math.max(1, Math.min(20, Math.trunc(filters.limit)));
         }
-        const yearRange = normalizeYearRangeFilter(filters.yearRange) ?? normalizeDateRangeFilter(filters.dateRange);
+        const yearRange = normalizeYearRangeFilter(filters.yearRange)
+          ?? normalizeDateRangeFilter(filters.dateRange)
+          ?? normalizePublicationYearFilter(filters.publicationYear);
         if (yearRange) {
           filters.yearRange = yearRange;
         } else {
           delete filters.yearRange;
         }
         delete filters.dateRange;
+        delete filters.publicationYear;
         const genre = normalizeGenreFilter(filters.genre) ?? inferGenreFilterFromQuery(normalized.query);
         if (genre) {
           filters.genre = genre;
@@ -1543,7 +1559,7 @@ function sanitizeUserFacingToolText(text: string | null | undefined): string | n
     .replace(/\bCodex\b/gi, "deep research")
     .replace(/\bcodex\b/gi, "deep research")
     .replace(/\bhydrat(?:e|ed|ing)\b/gi, "load")
-    .replace(/\bworkspace\b/gi, "research run")
+    .replace(/\b(?<!(?:deep|deeper) research )workspace\b/giu, "research run")
     .trim();
 }
 
@@ -1686,7 +1702,12 @@ async function normalizeToolLinesForUser(
   auditLog?: AuditLogger,
 ) {
   const fallback = fallbackNormalizeToolLines(input.lines);
-  if (!deps.ai || input.lines.length === 0) {
+  if (
+    !deps.ai
+    || input.lines.length === 0
+    || input.toolName === "create_workspace"
+    || input.toolName === "run_workspace_task"
+  ) {
     return fallback;
   }
   auditLog?.("internal.glm_cleanup.started", {
@@ -4208,6 +4229,8 @@ async function runOrchestrator(
   const toolResults: Record<string, unknown>[] = [];
   let liveToolTrace: LiveToolTraceEntry[] = [];
   let runtimeTasks = 0;
+  let workspaceStartAttempts = 0;
+  let workspaceLastFailureAt = 0;
   let initialPlanSent = false;
   let planMessageId: string | null = null;
   type PendingWorkspaceExecution = {
@@ -4328,6 +4351,9 @@ async function runOrchestrator(
       pendingWorkspaceExecution.status,
       pendingWorkspaceExecution.result ?? { ok: false, error: "The background research step did not return a result." },
     );
+    if (pendingWorkspaceExecution.toolName === "create_workspace" && pendingWorkspaceExecution.status === "failed") {
+      workspaceLastFailureAt = deps.now?.() ?? Date.now();
+    }
     const wasCompleted = pendingWorkspaceExecution.status === "completed";
     pendingWorkspaceExecution = null;
     return wasCompleted;
@@ -4461,6 +4487,17 @@ async function runOrchestrator(
     normalizedToolArgs: Record<string, unknown>,
     rationale: string,
   ) => {
+    if (pendingWorkspaceExecution) {
+      if (toolName === "create_workspace") {
+        return;
+      }
+      if (toolName === "run_workspace_task" && pendingWorkspaceExecution.toolName === "run_workspace_task") {
+        return;
+      }
+    }
+    if (toolName === "create_workspace") {
+      workspaceStartAttempts += 1;
+    }
     runtimeTasks += 1;
     const toolRecord = await deps.store.startToolCall(run.id, toolName, normalizedToolArgs);
     await ensureInitialPlanSent(routedQueryRef.current);
@@ -4726,7 +4763,7 @@ async function runOrchestrator(
     const routedQuery = routeDecision.fullQuery.trim() || input.message;
     routedQueryRef.current = routedQuery;
     await ensureInitialPlanSent(routedQuery);
-    if (!pendingWorkspaceExecution) {
+    if (!pendingWorkspaceExecution && workspaceStartAttempts === 0) {
       const prewarmToolArgs = normalizeToolArgs("create_workspace", {
         workIds: Array.isArray(input.workIds) ? input.workIds.slice(0, 12) : [],
         chunkIds: [],
@@ -4856,11 +4893,7 @@ async function runOrchestrator(
         return;
       }
 
-      let toolCall = parseToolCall(decision);
-      if (toolCall?.tool_name === "create_workspace" && pendingWorkspaceExecution) {
-        const fallbackDecision = await new FallbackPlanner().decide(plannerContext);
-        toolCall = parseToolCall(fallbackDecision);
-      }
+      const toolCall = parseToolCall(decision);
       if (!toolCall) {
         continue;
       }
@@ -4889,6 +4922,15 @@ async function runOrchestrator(
       );
       if (toolCall.tool_name === "create_workspace" && pendingWorkspaceExecution) {
         continue;
+      }
+      if (toolCall.tool_name === "create_workspace") {
+        const now = deps.now?.() ?? Date.now();
+        if (workspaceStartAttempts >= 2) {
+          continue;
+        }
+        if (workspaceLastFailureAt > 0 && now - workspaceLastFailureAt < 30_000) {
+          continue;
+        }
       }
       const pendingExecution = pendingWorkspaceExecution as PendingWorkspaceExecution | null;
       if (toolCall.tool_name === "run_workspace_task" && pendingExecution) {
