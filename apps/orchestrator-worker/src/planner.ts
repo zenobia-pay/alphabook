@@ -968,6 +968,20 @@ export class OpenAIPlanner implements Planner {
         },
       };
     }
+    if (!hasToolStarted(context, "get_relevant_chunks")) {
+      const metadataIds = context.workScope?.length ? context.workScope.slice(0, 24) : metadataWorkIds(context, 24);
+      return {
+        type: "tool_call",
+        tool_name: "get_relevant_chunks",
+        rationale: context.workScope?.length
+          ? "I’m verifying passages inside the current book scope before the Codex run so the research document can show evidence, not just titles."
+          : "I’m verifying passages from the surfaced books before the Codex run so the research document can show evidence quickly.",
+        args: {
+          query: context.userMessage,
+          ...(metadataIds.length > 0 ? { workIds: metadataIds } : {}),
+        },
+      };
+    }
     if (!hasToolStarted(context, "create_workspace")) {
       const chunks = seedChunkPayload(context);
       const metadataIds = context.workScope?.length ? context.workScope.slice(0, 12) : metadataWorkIds(context, 12);

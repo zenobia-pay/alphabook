@@ -324,6 +324,21 @@ function pruneValue(value: unknown): unknown {
   return Object.fromEntries(nextEntries);
 }
 
+function hasStructuredSearchPayload(value: unknown) {
+  const record = safeObject(value);
+  if (!record) {
+    return false;
+  }
+  return (
+    Array.isArray(record.works)
+    || Array.isArray(record.chunks)
+    || Array.isArray(record.probeWorks)
+    || Array.isArray(record.frontierWorks)
+    || Array.isArray(record.verifiedWorkIds)
+    || Array.isArray(record.verifiedChunkIds)
+  );
+}
+
 function getRationale(args: JsonRecord | null) {
   const value = args?.__rationale;
   return typeof value === "string" && value.trim() ? value.trim() : null;
@@ -707,6 +722,8 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
   const cleanedArgs = useMemo(() => pruneValue(omitInternalKeys(args)), [args]);
   const safeResultObject = useMemo(() => safeObject(result), [result]);
   const resultObject = useMemo(() => pruneValue(safeResultObject ?? result), [result, safeResultObject]);
+  const suppressStructuredArgsFallback = useMemo(() => hasStructuredSearchPayload(cleanedArgs), [cleanedArgs]);
+  const suppressStructuredResultFallback = useMemo(() => hasStructuredSearchPayload(resultObject), [resultObject]);
   const completedLogLines = useMemo(() => getDisplayLogLines(result), [result]);
   const errorText = useMemo(() => {
     if (status?.type !== "incomplete") {
@@ -724,7 +741,7 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
     const lines: ToolLogLine[] = [];
     if (startedLogLines.length > 0) {
       lines.push(...startedLogLines);
-    } else if (cleanedArgs !== undefined && cleanedArgs !== null) {
+    } else if (!suppressStructuredArgsFallback && cleanedArgs !== undefined && cleanedArgs !== null) {
       flattenRawLogLines(cleanedArgs, undefined, lines);
     }
     progress.forEach((item) => {
@@ -736,7 +753,7 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
     });
     if (completedLogLines.length > 0) {
       lines.push(...completedLogLines);
-    } else if (resultObject !== undefined && resultObject !== null) {
+    } else if (!suppressStructuredResultFallback && resultObject !== undefined && resultObject !== null) {
       flattenRawLogLines(resultObject, undefined, lines);
     }
     if (errorText) {
@@ -753,7 +770,7 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
       const previous = lines[index - 1];
       return previous.key !== line.key || previous.value !== line.value || previous.tone !== line.tone;
     });
-  }, [cleanedArgs, completedLogLines, errorText, progress, resultObject, startedLogLines]);
+  }, [cleanedArgs, completedLogLines, errorText, progress, resultObject, startedLogLines, suppressStructuredArgsFallback, suppressStructuredResultFallback]);
   const summary = useMemo(
     () => summarizeTool(toolName, args, safeResultObject, status),
     [toolName, args, safeResultObject, status],
