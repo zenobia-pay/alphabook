@@ -3285,6 +3285,55 @@ test("sql metadata search can broaden into chunk-backed work discovery when meta
   assert.match(queries[1] ?? "", /chunk_matches AS \(/);
 });
 
+test("sql metadata search relaxes sparse year and language filters after empty discovery", async () => {
+  const seenParams: unknown[][] = [];
+  let queryCount = 0;
+  const store = new NeonAppStore({
+    async query<T = Record<string, unknown>>(_sql: string, params?: unknown[]) {
+      queryCount += 1;
+      seenParams.push(params ?? []);
+      if (queryCount < 5) {
+        return { rows: [] as T[] };
+      }
+      return {
+        rows: [
+          {
+            id: "work-fiction",
+            gutenberg_id: 1342,
+            title: "Pride and Prejudice",
+            metadata_json: {},
+            language: null,
+            release_date: null,
+            rights_status: "public_domain",
+            summary: "A fiction novel of mourning and grief.",
+            authors: ["Jane Austen"],
+            subjects: ["Fiction", "Courtship"],
+            score: 2,
+          },
+        ] as T[],
+      };
+    },
+    async end() {},
+  });
+
+  const results = await store.searchWorks("grief mourning bereavement funeral widow", {
+    language: "en",
+    yearRange: [1800, 1899],
+    genre: ["fiction"],
+  });
+
+  assert.equal(results.length, 1);
+  assert.equal(results[0]?.id, "work-fiction");
+  assert.ok(
+    seenParams.some((params) => params[2] === null && params[3] === null),
+    "expected a relaxed query without yearRange",
+  );
+  assert.ok(
+    seenParams.some((params) => params[1] === null),
+    "expected a relaxed query without language",
+  );
+});
+
 test("OpenAIEmbedder requests 1536 dimensions for text-embedding-3 models", async () => {
   let requestBody: Record<string, unknown> | null = null;
   const embedder = new OpenAIEmbedder("test-key", "text-embedding-3-small", async (_input, init) => {
@@ -4050,6 +4099,102 @@ test("passage search inherits candidate work ids from the latest metadata search
   assert.ok(passageSearch);
   assert.deepEqual(passageSearch.argsJson.workIds, ["work-1", "work-2"]);
   assert.deepEqual(passageSearch.argsJson.filters, {
+    yearRange: [1800, 1899],
+    genre: ["fiction"],
+  });
+});
+
+test("search_works inherits fiction genre from the routed query when planner omits it", async () => {
+  const store = new InMemoryAppStore(
+    [
+      {
+        id: "work-1",
+        gutenbergId: 111,
+        title: "Grief Novel",
+        language: "en",
+        releaseDate: null,
+        rightsStatus: "public_domain",
+        summary: "A fiction novel about grief.",
+        authors: ["Author One"],
+        subjects: ["Fiction"],
+      },
+    ],
+    [],
+  );
+
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    router: new ScriptedRouter([
+      {
+        type: "tool_chain",
+        fullQuery: "Find grief in 19th century fiction.",
+      },
+    ]),
+    planner: new ScriptedPlanner([
+      {
+        type: "tool_call",
+        tool_name: "search_works",
+        args: {
+          query: "grief mourning bereavement widow funeral",
+          filters: {
+            yearRange: [1800, 1899],
+            language: "en",
+          },
+        },
+        rationale: "Locate fiction works about grief and mourning.",
+      },
+      {
+        type: "final_answer",
+        answer: "done",
+        citations: [],
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+      async runWorkspaceTask() {
+        return { ok: false, error: "disabled" };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: true, files: [] };
+      },
+      async destroyWorkspace() {
+        return { ok: true };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const response = await app.request("/chat", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      userId: "query-genre-user",
+      message: "Find grief in 19th century fiction.",
+    }),
+  });
+  await response.text();
+
+  const sessions = await store.listSessions("query-genre-user");
+  const runs = await store.listRuns(sessions[0]!.id);
+  const toolCalls = await store.listToolCalls(runs[0]!.id);
+  const searchCall = toolCalls.find((entry) => entry.toolName === "search_works");
+  assert.ok(searchCall);
+  assert.deepEqual(searchCall.argsJson.filters, {
+    language: "en",
     yearRange: [1800, 1899],
     genre: ["fiction"],
   });

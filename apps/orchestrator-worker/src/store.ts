@@ -628,6 +628,10 @@ const METADATA_SEARCH_QUERY_STOP_WORDS = new Set([
   "1800",
   "1899",
   "1900",
+  "black",
+  "death",
+  "died",
+  "dress",
   "19th",
   "century",
   "english",
@@ -651,6 +655,9 @@ const METADATA_SEARCH_QUERY_STOP_WORDS = new Set([
   "author",
   "authors",
   "en",
+  "her",
+  "his",
+  "lost",
 ]);
 
 function normalizeSearchQuery(query: string): string {
@@ -703,6 +710,30 @@ function buildMetadataTsQuery(query: string): string {
     .filter((term) => /^[a-z0-9]+$/iu.test(term))
     .map((term) => `${term}:*`);
   return terms.join(" | ");
+}
+
+function relaxMetadataSearchFilters(filters: Record<string, unknown>) {
+  const variants: Record<string, unknown>[] = [];
+  const push = (candidate: Record<string, unknown>) => {
+    const key = JSON.stringify(candidate, Object.keys(candidate).sort());
+    if (!variants.some((existing) => JSON.stringify(existing, Object.keys(existing).sort()) === key)) {
+      variants.push(candidate);
+    }
+  };
+
+  if ("yearRange" in filters) {
+    const { yearRange: _yearRange, ...withoutYearRange } = filters;
+    push(withoutYearRange);
+  }
+  if ("language" in filters) {
+    const { language: _language, ...withoutLanguage } = filters;
+    push(withoutLanguage);
+  }
+  if ("yearRange" in filters && "language" in filters) {
+    const { yearRange: _yearRange, language: _language, ...withoutBoth } = filters;
+    push(withoutBoth);
+  }
+  return variants;
 }
 
 export class InMemoryAppStore implements AppStore {
@@ -3023,7 +3054,18 @@ export class NeonAppStore implements AppStore {
           limit,
         ],
       );
-      return mapRows(chunkBackedResult.rows);
+      const mappedChunkRows = mapRows(chunkBackedResult.rows);
+      if (mappedChunkRows.length > 0) {
+        return mappedChunkRows;
+      }
+
+      for (const relaxedFilters of relaxMetadataSearchFilters(filters)) {
+        const relaxedResults = await this.searchWorks(query, relaxedFilters);
+        if (relaxedResults.length > 0) {
+          return relaxedResults;
+        }
+      }
+      return [];
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(`Metadata search failed: ${message}`);

@@ -946,6 +946,16 @@ function inferGenreFilterFromQuery(value: unknown): string[] | undefined {
   return undefined;
 }
 
+function inferFictionGenreFromContext(...values: Array<unknown>): string[] | undefined {
+  for (const value of values) {
+    const inferred = inferGenreFilterFromQuery(value);
+    if (inferred) {
+      return inferred;
+    }
+  }
+  return undefined;
+}
+
 function normalizeToolArgs(toolName: ToolName, args: Record<string, unknown>): Record<string, unknown> {
   const normalized = { ...args };
   switch (toolName) {
@@ -1078,6 +1088,30 @@ function normalizeToolArgs(toolName: ToolName, args: Record<string, unknown>): R
       break;
   }
   return normalized;
+}
+
+function augmentSearchWorksArgsFromContext(
+  toolName: ToolName,
+  args: Record<string, unknown>,
+  rationale: string | null | undefined,
+  routedQuery: string,
+) {
+  if (toolName !== "search_works") {
+    return args;
+  }
+  const filters = args.filters && typeof args.filters === "object"
+    ? { ...(args.filters as Record<string, unknown>) }
+    : {};
+  if (!Array.isArray(filters.genre) || filters.genre.length === 0) {
+    const inferredGenre = inferFictionGenreFromContext(args.query, rationale, routedQuery);
+    if (inferredGenre) {
+      filters.genre = inferredGenre;
+    }
+  }
+  return {
+    ...args,
+    filters,
+  };
 }
 
 function zodErrorIncludesPath(error: ZodError, path: string[]) {
@@ -4806,7 +4840,12 @@ async function runOrchestrator(
 
       const normalizedToolArgs = augmentToolArgsFromHistory(
         toolCall.tool_name,
-        normalizeToolArgs(toolCall.tool_name, toolCall.args),
+        augmentSearchWorksArgsFromContext(
+          toolCall.tool_name,
+          normalizeToolArgs(toolCall.tool_name, toolCall.args),
+          toolCall.rationale,
+          routedQueryRef.current,
+        ),
         toolHistory,
       );
       if (toolCall.tool_name === "create_workspace" && pendingWorkspaceExecution) {
