@@ -1064,12 +1064,26 @@ function summarizeRunLogPayload(payload: Record<string, unknown> | null) {
   const artifacts = Array.isArray(payload.artifacts) ? payload.artifacts.length : 0;
   const runtimeInstances = Array.isArray(payload.runtimeInstances) ? payload.runtimeInstances.length : 0;
   const liveRuntime = Array.isArray(payload.liveRuntime) ? payload.liveRuntime.length : 0;
-  return [
+  const metrics = payload.metrics && typeof payload.metrics === "object" ? payload.metrics as Record<string, unknown> : null;
+  const summary = [
     `${pluralize(toolCalls, "tool call")}`,
     `${pluralize(artifacts, "artifact")}`,
     `${pluralize(runtimeInstances, "runtime")}`,
     `${pluralize(liveRuntime, "live runtime snapshot")}`,
   ];
+  if (typeof metrics?.timeToFirstPrimarySourceMs === "number") {
+    summary.push(`first source ${Math.round(metrics.timeToFirstPrimarySourceMs / 1000)}s`);
+  }
+  if (typeof metrics?.timeToFirstCodexCliStartMs === "number") {
+    summary.push(`first Codex ${Math.round(metrics.timeToFirstCodexCliStartMs / 1000)}s`);
+  }
+  if (typeof metrics?.totalBooksMentioned === "number") {
+    summary.push(`${pluralize(metrics.totalBooksMentioned, "book")} mentioned`);
+  }
+  if (typeof metrics?.totalActiveBooksInFinalAnswer === "number") {
+    summary.push(`${pluralize(metrics.totalActiveBooksInFinalAnswer, "active book")} in final answer`);
+  }
+  return summary;
 }
 
 type AdminCombinedLogEntry = {

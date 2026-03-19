@@ -1850,6 +1850,164 @@ type ToolRunRawLogEntry = {
   payload: Record<string, unknown>;
 };
 
+type RunMetricsSnapshot = {
+  status: string;
+  startedAt: string;
+  completedAt: string;
+  timeToFirstBookMentionMs: number | null;
+  timeToFirstPrimarySourceMs: number | null;
+  timeToWorkspaceReadyMs: number | null;
+  timeToFirstCodexCliStartMs: number | null;
+  timeToCompletionMs: number | null;
+  totalBooksMentioned: number;
+  totalCandidateBooks: number;
+  totalVmTouchedBooks: number;
+  totalPassagesMentioned: number;
+  totalSelectedWorkspaceBooks: number;
+  totalActiveBooksInFinalAnswer: number;
+  booksMentioned: string[];
+  selectedWorkspaceBooks: string[];
+  activeBooksInFinalAnswer: string[];
+};
+
+type LiveRunMetricsState = {
+  startedAtMs: number;
+  startedAtIso: string;
+  firstBookMentionAtMs: number | null;
+  firstPrimarySourceAtMs: number | null;
+  workspaceReadyAtMs: number | null;
+  firstCodexCliStartAtMs: number | null;
+  completionAtMs: number | null;
+  documentBookIds: Set<string>;
+  candidateBookIds: Set<string>;
+  vmTouchedBookIds: Set<string>;
+  mentionedChunkIds: Set<string>;
+  selectedWorkspaceBookIds: Set<string>;
+  activeBookIds: Set<string>;
+  recorded: boolean;
+};
+
+function createLiveRunMetricsState(startedAtMs: number): LiveRunMetricsState {
+  return {
+    startedAtMs,
+    startedAtIso: new Date(startedAtMs).toISOString(),
+    firstBookMentionAtMs: null,
+    firstPrimarySourceAtMs: null,
+    workspaceReadyAtMs: null,
+    firstCodexCliStartAtMs: null,
+    completionAtMs: null,
+    documentBookIds: new Set<string>(),
+    candidateBookIds: new Set<string>(),
+    vmTouchedBookIds: new Set<string>(),
+    mentionedChunkIds: new Set<string>(),
+    selectedWorkspaceBookIds: new Set<string>(),
+    activeBookIds: new Set<string>(),
+    recorded: false,
+  };
+}
+
+function markMetricOnce(target: { value: number | null }, nowMs: number) {
+  if (target.value === null) {
+    target.value = nowMs;
+  }
+}
+
+function collectWorkIdsFromWorks(input: unknown) {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+  return input
+    .map((candidate) =>
+      candidate && typeof candidate === "object" && typeof (candidate as Record<string, unknown>).id === "string"
+        ? (candidate as Record<string, unknown>).id as string
+        : null)
+    .filter((value): value is string => typeof value === "string" && value.length > 0);
+}
+
+function collectWorkIdsFromManifest(input: unknown) {
+  if (!input || typeof input !== "object" || !Array.isArray((input as Record<string, unknown>).works)) {
+    return [];
+  }
+  return ((input as Record<string, unknown>).works as Array<Record<string, unknown>>)
+    .map((work) => {
+      if (typeof work.workId === "string" && work.workId.length > 0) {
+        return work.workId;
+      }
+      if (typeof work.id === "string" && work.id.length > 0) {
+        return work.id;
+      }
+      return null;
+    })
+    .filter((value): value is string => typeof value === "string" && value.length > 0);
+}
+
+function collectWorkIdsFromChunks(input: unknown) {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+  return input
+    .map((candidate) =>
+      candidate && typeof candidate === "object" && typeof (candidate as Record<string, unknown>).workId === "string"
+        ? (candidate as Record<string, unknown>).workId as string
+        : null)
+    .filter((value): value is string => typeof value === "string" && value.length > 0);
+}
+
+function collectChunkIds(input: unknown) {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+  return input
+    .map((candidate) =>
+      candidate && typeof candidate === "object" && typeof (candidate as Record<string, unknown>).id === "string"
+        ? (candidate as Record<string, unknown>).id as string
+        : null)
+    .filter((value): value is string => typeof value === "string" && value.length > 0);
+}
+
+function buildRunMetricsSnapshot(
+  state: LiveRunMetricsState,
+  status: string,
+  completedAtMs: number,
+): RunMetricsSnapshot {
+  state.completionAtMs = completedAtMs;
+  const delta = (value: number | null) => (value === null ? null : Math.max(0, value - state.startedAtMs));
+  return {
+    status,
+    startedAt: state.startedAtIso,
+    completedAt: new Date(completedAtMs).toISOString(),
+    timeToFirstBookMentionMs: delta(state.firstBookMentionAtMs),
+    timeToFirstPrimarySourceMs: delta(state.firstPrimarySourceAtMs),
+    timeToWorkspaceReadyMs: delta(state.workspaceReadyAtMs),
+    timeToFirstCodexCliStartMs: delta(state.firstCodexCliStartAtMs),
+    timeToCompletionMs: delta(completedAtMs),
+    totalBooksMentioned: state.documentBookIds.size,
+    totalCandidateBooks: state.candidateBookIds.size,
+    totalVmTouchedBooks: state.vmTouchedBookIds.size,
+    totalPassagesMentioned: state.mentionedChunkIds.size,
+    totalSelectedWorkspaceBooks: state.selectedWorkspaceBookIds.size,
+    totalActiveBooksInFinalAnswer: state.activeBookIds.size,
+    booksMentioned: [...state.documentBookIds],
+    selectedWorkspaceBooks: [...state.selectedWorkspaceBookIds],
+    activeBooksInFinalAnswer: [...state.activeBookIds],
+  };
+}
+
+function extractRecordedRunMetrics(rawLog: Array<ToolRunRawLogEntry | Record<string, unknown>>): RunMetricsSnapshot | null {
+  for (let index = rawLog.length - 1; index >= 0; index -= 1) {
+    const entry = rawLog[index];
+    if (!entry || typeof entry !== "object" || entry.event !== "run.metrics") {
+      continue;
+    }
+    const payload = "payload" in entry ? entry.payload : null;
+    if (!payload || typeof payload !== "object") {
+      continue;
+    }
+    return payload as unknown as RunMetricsSnapshot;
+  }
+  return null;
+}
+
 type ToolProgressBuffer = {
   toolName: ToolName;
   lines: ToolStreamCleanupLine[];
@@ -2076,7 +2234,7 @@ function startRuntimeTaskProgressEmitter(
   void poll();
   const timer = setInterval(() => {
     void poll();
-  }, 1500);
+  }, 750);
 
   return {
     async stop() {
@@ -2740,7 +2898,7 @@ function clientSafeToolResult(toolName: ToolName, result: Record<string, unknown
     const works = Array.isArray(result.works) ? result.works : [];
     return {
       workCount: works.length,
-      works: works.slice(0, 8).map((candidate) => {
+      works: works.slice(0, 12).map((candidate) => {
         if (!candidate || typeof candidate !== "object") {
           return candidate;
         }
@@ -2764,7 +2922,7 @@ function clientSafeToolResult(toolName: ToolName, result: Record<string, unknown
     const chunks = Array.isArray(result.chunks) ? result.chunks : [];
     return {
       chunkCount: chunks.length,
-      chunks: chunks.slice(0, 8).map((candidate) => {
+      chunks: chunks.slice(0, 12).map((candidate) => {
         if (!candidate || typeof candidate !== "object") {
           return candidate;
         }
@@ -4309,9 +4467,138 @@ async function runOrchestrator(
   activeRuns: Map<string, ActiveRunState>,
 ): Promise<void> {
   const originalSend = send;
+  const started = deps.now?.() ?? Date.now();
+  const runMetrics = createLiveRunMetricsState(started);
   send = async (event: string, data: Record<string, unknown>) => {
-    await originalSend(event, data);
-    const runId = typeof data.runId === "string" ? data.runId : null;
+    const nowMs = deps.now?.() ?? Date.now();
+    if (event === "tool.started") {
+      const toolName = typeof data.toolName === "string" ? data.toolName : "";
+      const args = data.args && typeof data.args === "object" ? data.args as Record<string, unknown> : null;
+      if (toolName === "run_workspace_task" && args?.taskSpec && typeof args.taskSpec === "object") {
+        const taskSpec = args.taskSpec as Record<string, unknown>;
+        const workIds = Array.isArray(taskSpec.workIds) ? taskSpec.workIds : [];
+        for (const workId of workIds) {
+          if (typeof workId === "string" && workId.length > 0) {
+            runMetrics.selectedWorkspaceBookIds.add(workId);
+          }
+        }
+      }
+    }
+    if (event === "tool.progress") {
+      const detail = data.detail && typeof data.detail === "object" ? data.detail as Record<string, unknown> : null;
+      const detailType = typeof detail?.type === "string" ? detail.type : "";
+      if (detailType === "research.work") {
+        const workId = typeof detail?.workId === "string" ? detail.workId : null;
+        if (workId) {
+          runMetrics.documentBookIds.add(workId);
+          runMetrics.vmTouchedBookIds.add(workId);
+          if (runMetrics.firstBookMentionAtMs === null) {
+            runMetrics.firstBookMentionAtMs = nowMs;
+          }
+        }
+      }
+      if (detailType === "research.chunk") {
+        const workId = typeof detail?.workId === "string" ? detail.workId : null;
+        const chunkId = typeof detail?.chunkId === "string"
+          ? detail.chunkId
+          : `${workId ?? "work"}:${typeof detail?.chunkIndex === "number" ? detail.chunkIndex : runMetrics.mentionedChunkIds.size}`;
+        if (workId) {
+          runMetrics.documentBookIds.add(workId);
+          runMetrics.vmTouchedBookIds.add(workId);
+          if (runMetrics.firstBookMentionAtMs === null) {
+            runMetrics.firstBookMentionAtMs = nowMs;
+          }
+        }
+        runMetrics.mentionedChunkIds.add(chunkId);
+        if (runMetrics.firstPrimarySourceAtMs === null) {
+          runMetrics.firstPrimarySourceAtMs = nowMs;
+        }
+      }
+      if (
+        detailType === "codex.step.attempt"
+        || detailType === "codex.stdout"
+        || detailType === "codex.stderr"
+      ) {
+        if (runMetrics.firstCodexCliStartAtMs === null) {
+          runMetrics.firstCodexCliStartAtMs = nowMs;
+        }
+      }
+    }
+    if (event === "tool.completed") {
+      const toolName = typeof data.toolName === "string" ? data.toolName : "";
+      const result = data.result && typeof data.result === "object" ? data.result as Record<string, unknown> : {};
+      const candidateWorkIds = collectWorkIdsFromWorks(result.works);
+      for (const workId of candidateWorkIds) {
+        runMetrics.candidateBookIds.add(workId);
+        runMetrics.documentBookIds.add(workId);
+      }
+      if (candidateWorkIds.length > 0 && runMetrics.firstBookMentionAtMs === null) {
+        runMetrics.firstBookMentionAtMs = nowMs;
+      }
+      const chunkWorkIds = collectWorkIdsFromChunks(result.chunks);
+      const chunkIds = collectChunkIds(result.chunks);
+      for (const workId of chunkWorkIds) {
+        runMetrics.documentBookIds.add(workId);
+      }
+      for (const chunkId of chunkIds) {
+        runMetrics.mentionedChunkIds.add(chunkId);
+      }
+      if (chunkIds.length > 0 && runMetrics.firstPrimarySourceAtMs === null) {
+        runMetrics.firstPrimarySourceAtMs = nowMs;
+      }
+      if (toolName === "create_workspace") {
+        for (const workId of collectWorkIdsFromManifest(result.manifest)) {
+          runMetrics.documentBookIds.add(workId);
+          runMetrics.selectedWorkspaceBookIds.add(workId);
+        }
+        if (data.status === "completed" && runMetrics.workspaceReadyAtMs === null) {
+          runMetrics.workspaceReadyAtMs = nowMs;
+        }
+      }
+    }
+    if (event === "assistant.completed" && Array.isArray(data.citations)) {
+      for (const citation of data.citations as Array<Record<string, unknown>>) {
+        const workId = typeof citation.workId === "string" ? citation.workId : null;
+        const chunkId = typeof citation.chunkId === "string" ? citation.chunkId : null;
+        if (workId) {
+          runMetrics.activeBookIds.add(workId);
+          runMetrics.documentBookIds.add(workId);
+          if (runMetrics.firstBookMentionAtMs === null) {
+            runMetrics.firstBookMentionAtMs = nowMs;
+          }
+        }
+        if (chunkId) {
+          runMetrics.mentionedChunkIds.add(chunkId);
+          if (runMetrics.firstPrimarySourceAtMs === null) {
+            runMetrics.firstPrimarySourceAtMs = nowMs;
+          }
+        }
+      }
+    }
+    let nextData = data;
+    if (event === "run.completed") {
+      const metrics = buildRunMetricsSnapshot(
+        runMetrics,
+        typeof data.status === "string" ? data.status : "completed",
+        nowMs,
+      );
+      nextData = {
+        ...data,
+        metrics,
+      };
+      if (!runMetrics.recorded) {
+        runMetrics.recorded = true;
+        recordRawLog("run.metrics", metrics as unknown as Record<string, unknown>);
+        void recordAnalyticsEvent(deps, request, "run_metrics", {
+          userId: activeSession.userId,
+          sessionId: activeSession.id,
+          runId: typeof data.runId === "string" ? data.runId : null,
+          ...metrics,
+        }).catch(() => {});
+      }
+    }
+    await originalSend(event, nextData);
+    const runId = typeof nextData.runId === "string" ? nextData.runId : null;
     if (!runId) {
       return;
     }
@@ -4322,14 +4609,12 @@ async function runOrchestrator(
     const subscribers = [...activeRun.subscribers.values()];
     await Promise.all(subscribers.map(async (subscriber) => {
       try {
-        await subscriber(event, data);
+        await subscriber(event, nextData);
       } catch {
         // Ignore subscriber disconnect races.
       }
     }));
   };
-
-  const started = deps.now?.() ?? Date.now();
   if (!input.userId) {
     throw new Error("A userId is required to start an orchestrator run.");
   }
@@ -6866,6 +7151,7 @@ export function createApp(deps: AppDeps) {
     ]);
     const artifacts = await loadRunArtifacts(deps, sessionId, runId, toolCalls);
     const rawLog = resolveRunRawLog(activeRuns, runId, artifacts);
+    const metrics = extractRecordedRunMetrics(rawLog);
 
     return c.json({
       run: reconciledRun ?? run,
@@ -6874,6 +7160,7 @@ export function createApp(deps: AppDeps) {
       runtimeInstances,
       artifacts,
       rawLog,
+      metrics,
     });
   });
 
@@ -6900,6 +7187,7 @@ export function createApp(deps: AppDeps) {
     ]);
     const artifacts = await loadRunArtifacts(deps, sessionId, runId, toolCalls);
     const rawLog = resolveRunRawLog(activeRuns, runId, artifacts);
+    const metrics = extractRecordedRunMetrics(rawLog);
 
     return c.json({
       run: reconciledRun ?? run,
@@ -6908,6 +7196,7 @@ export function createApp(deps: AppDeps) {
       runtimeInstances,
       artifacts,
       rawLog,
+      metrics,
     });
   });
 
@@ -6979,6 +7268,7 @@ export function createApp(deps: AppDeps) {
         artifact.metadata?.kind === "tool_stream_raw" && artifact.filename.includes(runId),
       ),
     );
+    const metrics = extractRecordedRunMetrics(rawLog);
 
     return c.json({
       session,
@@ -6988,6 +7278,7 @@ export function createApp(deps: AppDeps) {
       runtimeInstances,
       artifacts,
       rawLog,
+      metrics,
     });
   });
 
@@ -7015,6 +7306,7 @@ export function createApp(deps: AppDeps) {
     ]);
     const artifacts = await loadRunArtifacts(deps, sessionId, runId, toolCalls);
     const rawLog = resolveRunRawLog(activeRuns, runId, artifacts);
+    const metrics = extractRecordedRunMetrics(rawLog);
 
     return c.json({
       session,
@@ -7024,6 +7316,7 @@ export function createApp(deps: AppDeps) {
       runtimeInstances,
       artifacts,
       rawLog,
+      metrics,
     });
   });
 
@@ -7051,6 +7344,7 @@ export function createApp(deps: AppDeps) {
     ]);
     const artifacts = await loadRunArtifacts(deps, sessionId, runId, toolCalls);
     const rawLog = resolveRunRawLog(activeRuns, runId, artifacts);
+    const metrics = extractRecordedRunMetrics(rawLog);
 
     return c.json({
       session,
@@ -7060,6 +7354,7 @@ export function createApp(deps: AppDeps) {
       runtimeInstances,
       artifacts,
       rawLog,
+      metrics,
     });
   });
 

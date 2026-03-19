@@ -312,7 +312,6 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     });
 
     try {
-      await this.waitForMachine(machine.id, "started");
       await this.waitForRuntimeHttpReady(machine.id);
       await this.prepareWorkspace(machine.id, {
         runtimeId,
@@ -392,7 +391,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
         error.runtimePayload = status;
         throw error;
       }
-      await new Promise((resolve) => setTimeout(resolve, 1500));
+      await new Promise((resolve) => setTimeout(resolve, 750));
     }
 
     if (!result) {
@@ -631,11 +630,11 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
 
     while (Date.now() - startedAt < maxWaitMs) {
       try {
-        await this.callRuntime(machineId, "/health", { method: "GET" }, { timeoutMs: 8_000 });
+        await this.callRuntime(machineId, "/health", { method: "GET" }, { timeoutMs: 3_500 });
         return;
       } catch (error) {
         lastError = error;
-        await new Promise((resolve) => setTimeout(resolve, 2_000));
+        await new Promise((resolve) => setTimeout(resolve, 750));
       }
     }
 
