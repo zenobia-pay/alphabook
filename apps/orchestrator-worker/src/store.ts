@@ -924,6 +924,18 @@ function clampPercentage(value: number) {
   return Math.max(0, Math.min(100, Math.round(value)));
 }
 
+function isBroadSurveyShardQuery(query: string) {
+  return /\b(all|every|trace|theme|pattern|survey|synthesize|search|find|identify|examples|different ways|ways that|kinds of|types of)\b/iu.test(
+    query,
+  );
+}
+
+function isTemporalAnalysisQuery(query: string) {
+  return /\b(by decade|over time|through time|throughout the century|changed over time|change over time|evolution of|evolve|earlier vs later|early vs late|before and after|first half|second half)\b/iu.test(
+    query,
+  );
+}
+
 function recommendedShardAxis(query: string, estimatedWorkBreadth: number): ResearchScopeEstimate["recommendedShardAxis"] {
   if (estimatedWorkBreadth <= 24) {
     return "none";
@@ -934,7 +946,13 @@ function recommendedShardAxis(query: string, estimatedWorkBreadth: number): Rese
   if (/\b(what about|go deeper|follow up|follow-up|focus on|expand on|narrow|zoom in)\b/iu.test(query)) {
     return "retrieval_strategy";
   }
-  if (/\b(180\d|181\d|182\d|183\d|184\d|185\d|186\d|187\d|188\d|189\d|century|decade|era|period|before|after)\b/iu.test(query)) {
+  if (isBroadSurveyShardQuery(query) && !isTemporalAnalysisQuery(query)) {
+    return "work_id_hash";
+  }
+  if (
+    isTemporalAnalysisQuery(query)
+    || /\b(180\d|181\d|182\d|183\d|184\d|185\d|186\d|187\d|188\d|189\d|decade|era|period)\b/iu.test(query)
+  ) {
     return "publication_year";
   }
   if (/\b(compare|comparison|across|survey|pattern|types|different ways|kinds of)\b/iu.test(query)) {

@@ -5794,6 +5794,37 @@ test("estimateResearchScope does not collapse broad grief-style thematic queries
   assert.ok(estimate.metadataWorkEstimate >= 24);
   assert.ok(estimate.chunkWorkEstimate >= 24);
   assert.ok(estimate.recommendedFrontierWorks >= 72);
+  assert.equal(estimate.recommendedShardAxis, "work_id_hash");
+});
+
+test("estimateResearchScope uses publication-year shards only for explicit temporal-analysis prompts", async () => {
+  const store = new InMemoryAppStore(
+    Array.from({ length: 80 }, (_, index) => ({
+      id: `work-${index + 1}`,
+      gutenbergId: index + 1,
+      title: `Temporal Grief Novel ${index + 1}`,
+      language: "en",
+      releaseDate: `${1820 + (index % 70)}-01-01`,
+      rightsStatus: "public_domain",
+      summary: "A fiction work about grief, mourning, loss, and consolation.",
+      authors: [`Author ${index + 1}`],
+      subjects: ["fiction", "grief", "mourning"],
+      cleanTextKey: `gutenberg/clean/${index + 1}/clean.txt`,
+    })),
+    Array.from({ length: 240 }, (_, index) => ({
+      id: `chunk-${index + 1}`,
+      workId: `work-${(index % 80) + 1}`,
+      chunkIndex: index,
+      text: "The novel traces grief, mourning, consolation, and bereavement after a death.",
+      r2Key: `gutenberg/clean/${(index % 80) + 1}/chunks.jsonl`,
+      score: 0,
+      excerpt: "",
+    })),
+  );
+
+  const estimate = await store.estimateResearchScope("How did depictions of grief change over time in 19th century fiction, by decade?");
+
+  assert.equal(estimate.recommendedShardAxis, "publication_year");
 });
 
 test("estimateResearchScope prefers retrieval-strategy sharding for hypothesis queries", async () => {
