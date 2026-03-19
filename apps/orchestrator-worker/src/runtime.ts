@@ -625,7 +625,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
 
   private async waitForRuntimeHttpReady(machineId: string): Promise<void> {
     const startedAt = Date.now();
-    const maxWaitMs = 90_000;
+    const maxWaitMs = 45_000;
     let lastError: unknown = null;
 
     while (Date.now() - startedAt < maxWaitMs) {
@@ -646,18 +646,18 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
 
   private async prepareWorkspace(machineId: string, payload: Record<string, unknown>) {
     let lastError: unknown = null;
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
       try {
         return await this.callRuntime(machineId, "/prepare", {
           method: "POST",
           body: JSON.stringify(payload),
-        }, { timeoutMs: 20_000 });
+        }, { timeoutMs: 12_000 });
       } catch (error) {
         lastError = error;
-        if (attempt >= 3 || !isRetryableRuntimeStartupError(error)) {
+        if (attempt >= 2 || !isRetryableRuntimeStartupError(error)) {
           throw error;
         }
-        await new Promise((resolve) => setTimeout(resolve, attempt * 2_000));
+        await new Promise((resolve) => setTimeout(resolve, attempt * 1_000));
       }
     }
     throw lastError instanceof Error ? lastError : new Error("Workspace preparation failed.");

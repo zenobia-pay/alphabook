@@ -1685,6 +1685,14 @@ function normalizeRuntimeProgressLine(event: Record<string, unknown>): {
     note,
     message: note,
   });
+  const isRuntimeNoiseLine = (value: string) => (
+    /^(OpenAI Codex v|workdir:|model:|provider:|approval:|sandbox:|reasoning effort:|reasoning summaries:|session id:|user|--------)$/iu.test(value)
+    || /^(You are |You operate |Your goal is |Goal:|Constraints:|Research objective:|Task spec:|Workspace manifest summary:|Seed evidence from the orchestrator:|When finished,|Only use local files under |Start from |If the task spec already includes |Keep the search bounded:|Use the remote Postgres database |The CLI turns corpus-wide search requests |Guaranteed tools in this runtime image:|It also supports |Always copy chunk IDs exactly |Use repeated regex, keyword, metadata|Hydrate local book files only |Use shell tools like |To pull files into the workspace|Expand across more books |Create a focused local corpus |Your required deliverable is |The briefing should |Every quote should |Prefer primary-source quotations |Once you have 2 to 8 |If the evidence is thin|You may optionally write helper notes |Do not stop after searching\.)/iu.test(value)
+    || /^(node \/workspace\/context\/|node \/research run\/context\/|\/bin\/bash\b|#!\/usr\/bin\/env\b|import\s|mcp startup:)/iu.test(value)
+    || /^[\[\]{}]+,?$/u.test(value)
+    || /^".*":\s*(?:.+)?$/u.test(value)
+    || /^".*",?$/u.test(value)
+  );
   const maybeResearchNote = (value: string): Record<string, unknown> | undefined => {
     const note = sanitizeUserFacingToolText(value)?.replace(/\s+/g, " ").trim() ?? "";
     if (!note || note.length < 24 || note.length > 180) {
@@ -1694,6 +1702,7 @@ function normalizeRuntimeProgressLine(event: Record<string, unknown>): {
       /^(Touched|Reviewed|OpenAI deep research|provider:|session id:|You are |Goal:|Question:|Task spec:|Seed evidence|research run manifest summary:|exec|error:|!\/usr\/bin\/env|import |node \/research run|\/bin\/bash|mcp startup)/iu.test(note)
       || /\b(?:gutenberg\/|context\/search|context\/load|rg\b|jq\b|sed\b|awk\b|grep\b|cat\b)\b/iu.test(note)
       || /[{}[\]]/u.test(note)
+      || /^".*":\s*(?:.+)?$/u.test(note)
       || /[a-f0-9]{8}(?:[- ][a-f0-9]{4}){3}[- ][a-f0-9]{12}/iu.test(note)
     ) {
       return undefined;
@@ -1748,7 +1757,9 @@ function normalizeRuntimeProgressLine(event: Record<string, unknown>): {
       return { text: null };
     }
     if (
-      /^\/bin\/bash\b/iu.test(line)
+      isRuntimeNoiseLine(line)
+      || line === "exec"
+      || /^\/bin\/bash\b/iu.test(line)
       || /^at\s+/u.test(line)
       || /^node:internal\//u.test(line)
       || /^Error \[ERR_MODULE_NOT_FOUND\]/u.test(line)
@@ -2019,6 +2030,33 @@ function buildRunMetricsSnapshot(
   };
 }
 
+function buildRunMetricsAnalyticsSummary(
+  sessionId: string,
+  runId: string,
+  userId: string,
+  metrics: RunMetricsSnapshot,
+) {
+  return {
+    userId,
+    sessionId,
+    runId,
+    status: metrics.status,
+    startedAt: metrics.startedAt,
+    completedAt: metrics.completedAt,
+    timeToFirstBookMentionMs: metrics.timeToFirstBookMentionMs,
+    timeToFirstPrimarySourceMs: metrics.timeToFirstPrimarySourceMs,
+    timeToWorkspaceReadyMs: metrics.timeToWorkspaceReadyMs,
+    timeToFirstCodexCliStartMs: metrics.timeToFirstCodexCliStartMs,
+    timeToCompletionMs: metrics.timeToCompletionMs,
+    totalBooksMentioned: metrics.totalBooksMentioned,
+    totalCandidateBooks: metrics.totalCandidateBooks,
+    totalVmTouchedBooks: metrics.totalVmTouchedBooks,
+    totalPassagesMentioned: metrics.totalPassagesMentioned,
+    totalSelectedWorkspaceBooks: metrics.totalSelectedWorkspaceBooks,
+    totalActiveBooksInFinalAnswer: metrics.totalActiveBooksInFinalAnswer,
+  };
+}
+
 function extractRecordedRunMetrics(rawLog: Array<ToolRunRawLogEntry | Record<string, unknown>>): RunMetricsSnapshot | null {
   for (let index = rawLog.length - 1; index >= 0; index -= 1) {
     const entry = rawLog[index];
@@ -2131,6 +2169,12 @@ async function normalizeToolLinesForUser(
 ) {
   const fallback = fallbackNormalizeToolLines(input.lines);
   const fallbackSummary = fallback[0] ?? "";
+  const isEphemeralProgressBatch = input.lines.every((line) =>
+    line.key === "progress"
+    || line.key.startsWith("research.")
+    || line.key.startsWith("codex.")
+    || line.key === "workspace.local_chunks.missing",
+  );
   const cleanupLines = (() => {
     const lines = input.lines.filter((line) => line.value.trim().length > 0);
     if (input.toolName !== "run_workspace_task") {
@@ -2152,6 +2196,7 @@ async function normalizeToolLinesForUser(
     !deps.ai
     || cleanupLines.length === 0
     || input.toolName === "create_workspace"
+    || isEphemeralProgressBatch
   ) {
     return {
       summary: fallbackSummary,
@@ -4643,12 +4688,13 @@ async function runOrchestrator(
       if (!runMetrics.recorded) {
         runMetrics.recorded = true;
         recordRawLog("run.metrics", metrics as unknown as Record<string, unknown>);
-        void recordAnalyticsEvent(deps, request, "run_metrics", {
-          userId: activeSession.userId,
-          sessionId: activeSession.id,
-          runId: typeof data.runId === "string" ? data.runId : null,
-          ...metrics,
-        }).catch(() => {});
+        const analyticsSummary = buildRunMetricsAnalyticsSummary(
+          activeSession.id,
+          typeof data.runId === "string" ? data.runId : (run?.id ?? crypto.randomUUID()),
+          activeSession.userId,
+          metrics,
+        );
+        void recordAnalyticsEvent(deps, request, "run_metrics_summary", analyticsSummary).catch(() => {});
       }
     }
     await originalSend(event, nextData);

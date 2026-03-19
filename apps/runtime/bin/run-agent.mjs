@@ -977,6 +977,8 @@ function buildBriefingPrompt(runtimePrompt, manifest, task, evidence, question) 
   };
   const compactTask = compactTaskSpec(task, openBookMode);
   const researchObjective = compactTask.researchObjective || question;
+  const seededCandidateCount = Array.isArray(compactTask.candidateWorkIds) ? compactTask.candidateWorkIds.length : 0;
+  const seededChunkCount = Array.isArray(compactTask.chunkIds) ? compactTask.chunkIds.length : 0;
   return [
     runtimePrompt,
     "",
@@ -988,6 +990,9 @@ function buildBriefingPrompt(runtimePrompt, manifest, task, evidence, question) 
     "- Only use local files under /workspace.",
     "- Start from the local schema, the book metadata, the file catalog, and any seed evidence already in the workspace.",
     "- If the task spec already includes candidate books or seed chunks, start there before you widen the search.",
+    (!openBookMode && (seededCandidateCount >= 3 || seededChunkCount >= 4))
+      ? `- This run already starts with ${seededCandidateCount} candidate books and ${seededChunkCount} seed passages. Review those first, draft the strongest categories from them, and widen only if major coping strategies or book variety are still missing.`
+      : null,
     openBookMode
       ? "- Stay inside the current hydrated book unless the local evidence is clearly insufficient."
       : "- Start from the best available seed evidence, but widen across the full corpus whenever the prompt asks for a broad theme, comparison, or survey.",
@@ -1031,6 +1036,9 @@ function buildBriefingPrompt(runtimePrompt, manifest, task, evidence, question) 
     "- The briefing should mix primary-source quotes with short explanations.",
     "- Every quote should include a nearby source reference using the work title and chunk/source identifier when available.",
     "- Prefer primary-source quotations and preserve source identifiers.",
+    (!openBookMode && seededChunkCount >= 4)
+      ? "- If the seed passages already give you 2 to 8 strong quotations across multiple books, stop widening and write the briefing from that grounded evidence."
+      : null,
     "- Once you have 2 to 8 strong quotations, stop searching and write the briefing.",
     "- If the evidence is thin, still write /workspace/output/briefing.md and say that clearly.",
     "- You may optionally write helper notes under /workspace/output, but only /workspace/output/briefing.md is required.",
@@ -1048,7 +1056,7 @@ function buildBriefingPrompt(runtimePrompt, manifest, task, evidence, question) 
     JSON.stringify(evidence, null, 2),
     "",
     "When finished, return one short plain-text sentence confirming that the briefing has been written.",
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 }
 
 function normalizePhase(task) {
@@ -1135,6 +1143,28 @@ function nowIso() {
 function compactText(text, maxLength = 320) {
   const normalized = String(text || "").replace(/\s+/g, " ").trim();
   return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 1)}…` : normalized;
+}
+
+function isCodexScaffoldingLine(line) {
+  const trimmed = compactText(line, 800);
+  if (!trimmed) {
+    return true;
+  }
+  if (trimmed.startsWith("ALPHABOOK_PROGRESS ")) {
+    return false;
+  }
+  if (
+    /^(OpenAI Codex v|workdir:|model:|provider:|approval:|sandbox:|reasoning effort:|reasoning summaries:|session id:|user|--------)$/i.test(trimmed)
+    || /^(You are |You operate |Your goal is |Goal:|Constraints:|Research objective:|Task spec:|Workspace manifest summary:|Seed evidence from the orchestrator:|When finished,|Only use local files under |Start from |If the task spec already includes |Keep the search bounded:|Use the remote Postgres database |The CLI turns corpus-wide search requests |Guaranteed tools in this runtime image:|It also supports |Always copy chunk IDs exactly |Use repeated regex, keyword, metadata|Hydrate local book files only |Use shell tools like |To pull files into the workspace|Expand across more books |Create a focused local corpus |Your required deliverable is |The briefing should |Every quote should |Prefer primary-source quotations |Once you have 2 to 8 |If the evidence is thin|You may optionally write helper notes |Do not stop after searching\\.)/i.test(trimmed)
+    || /^(node \/workspace\/context\/|node \/research run\/context\/|\/bin\/bash\b|#!\/usr\/bin\/env\b|import\s)/i.test(trimmed)
+    || /^mcp startup:/i.test(trimmed)
+    || /^[\[\]{}]+,?$/u.test(trimmed)
+    || /^".*":\s*(?:.+)?$/u.test(trimmed)
+    || /^".*",?$/u.test(trimmed)
+  ) {
+    return true;
+  }
+  return false;
 }
 
 function codexStepLabel(step) {
@@ -1230,6 +1260,9 @@ async function runCodexStep({
         env: process.env,
         input: promptText,
         onStdoutLine: (line) => {
+          if (isCodexScaffoldingLine(line)) {
+            return;
+          }
           void appendProgressEvent(outputDir, {
             type: "codex.stdout",
             step,
@@ -1238,6 +1271,9 @@ async function runCodexStep({
           });
         },
         onStderrLine: (line) => {
+          if (isCodexScaffoldingLine(line)) {
+            return;
+          }
           void appendProgressEvent(outputDir, {
             type: "codex.stderr",
             step,
