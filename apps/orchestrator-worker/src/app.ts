@@ -1078,6 +1078,44 @@ function deriveScopeEstimateFromSearchResult(query: string, result: Record<strin
   } as Record<string, unknown>;
 }
 
+function latestSearchWorksResultFromHistory(
+  toolHistory: Array<{
+    toolName: ToolName;
+    args: Record<string, unknown>;
+    result: Record<string, unknown>;
+  }>,
+) {
+  for (let index = toolHistory.length - 1; index >= 0; index -= 1) {
+    const entry = toolHistory[index];
+    if (entry.toolName === "search_works") {
+      return entry.result;
+    }
+  }
+  return null;
+}
+
+function hasCompletedChunkSearch(
+  toolHistory: Array<{
+    toolName: ToolName;
+    args: Record<string, unknown>;
+    result: Record<string, unknown>;
+  }>,
+) {
+  for (let index = toolHistory.length - 1; index >= 0; index -= 1) {
+    const entry = toolHistory[index];
+    if (entry.toolName !== "get_relevant_chunks") {
+      continue;
+    }
+    if (Array.isArray(entry.result.chunks) || Array.isArray(entry.result.verifiedWorkIds)) {
+      return true;
+    }
+    if (typeof entry.result.ok === "boolean" || typeof entry.result.error === "string") {
+      return true;
+    }
+  }
+  return false;
+}
+
 function latestCandidateWorkIdsFromHistory(
   toolHistory: Array<{
     toolName: ToolName;
@@ -6922,7 +6960,8 @@ async function runOrchestrator(
     onEmit: (text: string, detail?: Record<string, unknown>) => Promise<void>,
   ) => {
     recordRawLog("tool.progress.raw", payload);
-    if (typeof payload.detail?.type === "string" && payload.detail.type.startsWith("research.")) {
+    const detailType = typeof payload.detail?.type === "string" ? payload.detail.type : null;
+    if (detailType === "research.work" || detailType === "research.chunk") {
       void onEmit(payload.text, payload.detail);
       return;
     }
@@ -7400,13 +7439,35 @@ async function runOrchestrator(
     const verifiedWorkIds = uniqueWorkIds(
       seedChunks.map((chunk) => (typeof chunk.workId === "string" ? chunk.workId : null)),
     ).slice(0, candidateLimit);
-    const candidateWorkIds = uniqueWorkIds([
-      ...verifiedWorkIds,
-      ...scopedWorkIds,
-      ...rankedMetadataWorks.map((work) => (typeof work.id === "string" ? work.id : null)),
-      ...rankedSearchWorks.map((work) => (typeof work.id === "string" ? work.id : null)),
-      ...frontierWorkIds,
-    ]).slice(0, candidateLimit);
+    const strictVerifiedFrontier = verifiedWorkIds.length >= (broadCorpusQuery ? 4 : 2);
+    const candidateWorkIds = uniqueWorkIds(
+      strictVerifiedFrontier
+        ? [
+            ...verifiedWorkIds,
+            ...scopedWorkIds,
+          ]
+        : [
+            ...verifiedWorkIds,
+            ...scopedWorkIds,
+            ...rankedMetadataWorks.map((work) => (typeof work.id === "string" ? work.id : null)),
+            ...rankedSearchWorks.map((work) => (typeof work.id === "string" ? work.id : null)),
+            ...frontierWorkIds,
+          ],
+    ).slice(0, candidateLimit);
+    const boundedFrontierWorkIds = uniqueWorkIds(
+      strictVerifiedFrontier
+        ? [
+            ...verifiedWorkIds,
+            ...scopedWorkIds,
+          ]
+        : frontierWorkIds,
+    ).slice(0, workLimit);
+    const boundedRetrievalWorks = strictVerifiedFrontier
+      ? uniqueWorkIds(candidateWorkIds)
+      : uniqueWorkIds([
+          ...rankedSearchWorks.map((work) => (typeof work.id === "string" ? work.id : null)),
+          ...rankedMetadataWorks.map((work) => (typeof work.id === "string" ? work.id : null)),
+        ]);
     const mergedTaskSpec = mergeTaskSpecWithPriorEvidence({
       kind: "briefing_search",
       phase: "collect_and_brief",
@@ -7423,7 +7484,7 @@ async function runOrchestrator(
         .filter((value): value is string => typeof value === "string")
         .slice(0, chunkLimit),
       candidateWorkIds,
-      frontierWorkIds,
+      frontierWorkIds: boundedFrontierWorkIds,
       verifiedWorkIds,
       verifiedChunkIds: seedChunks
         .map((chunk) => (typeof chunk.id === "string" ? chunk.id : null))
@@ -7432,7 +7493,9 @@ async function runOrchestrator(
       shardPlan: searchPlan.shards,
       searchHints: {
         searchWorksQuery: routedQueryRef.current,
-        passageSearchFocus: "Find the strongest directly quotable passages that best answer the research objective.",
+        passageSearchFocus: strictVerifiedFrontier
+          ? "Stay grounded in the verified books and passages already surfaced. Only widen if you find directly relevant new evidence."
+          : "Find the strongest directly quotable passages that best answer the research objective.",
       },
       searchPlan: searchPlan.estimate ?? {
         recommendedIntensity: searchPlan.intensity,
@@ -7443,10 +7506,7 @@ async function runOrchestrator(
         recommendedShards: searchPlan.shards,
       },
       retrieval: {
-        frontierWorks: uniqueWorkIds([
-          ...rankedSearchWorks.map((work) => (typeof work.id === "string" ? work.id : null)),
-          ...rankedMetadataWorks.map((work) => (typeof work.id === "string" ? work.id : null)),
-        ])
+        frontierWorks: boundedRetrievalWorks
           .map((workId) => rankedSearchWorks.find((work) => work.id === workId) ?? rankedMetadataWorks.find((work) => work.id === workId))
           .filter((work): work is Record<string, unknown> => Boolean(work && typeof work === "object"))
           .slice(0, workLimit)
@@ -7515,7 +7575,13 @@ async function runOrchestrator(
       }
     }
     if (toolName === "create_workspace") {
+      if (latestCompletedRuntimeId()) {
+        return;
+      }
       workspaceStartAttempts += 1;
+    }
+    if (toolName === "run_workspace_task" && toolHistory.some((entry) => entry.toolName === "run_workspace_task")) {
+      return;
     }
     runtimeTasks += 1;
     const toolRecord = await deps.store.startToolCall(run.id, toolName, normalizedToolArgs);
@@ -8038,10 +8104,16 @@ async function runOrchestrator(
           input.message,
         );
       }
+      if (toolCall.tool_name === "get_relevant_chunks" && hasCompletedChunkSearch(toolHistory)) {
+        continue;
+      }
       if (toolCall.tool_name === "create_workspace" && pendingWorkspaceExecution) {
         continue;
       }
       if (toolCall.tool_name === "create_workspace") {
+        if (latestCompletedRuntimeId()) {
+          continue;
+        }
         const now = deps.now?.() ?? Date.now();
         if (workspaceStartAttempts >= 2) {
           continue;
@@ -8200,8 +8272,44 @@ async function runOrchestrator(
         if (toolCall.tool_name === "estimate_research_scope" && typeof normalizedToolArgs.query === "string") {
           const estimateFilters = normalizedScopeEstimateFilters(normalizedToolArgs.filters);
           const estimateKey = scopeEstimateCacheKey(normalizedToolArgs.query, estimateFilters);
-          if (prefetchedScopeEstimate && prefetchedScopeEstimate.keys.has(estimateKey)) {
+          if (prefetchedScopeEstimate && (prefetchedScopeEstimate.keys.has(estimateKey) || toolHistory.some((entry) => entry.toolName === "search_works"))) {
             result = await prefetchedScopeEstimate.promise;
+          } else if (toolHistory.some((entry) => entry.toolName === "search_works")) {
+            const latestSearchResult = latestSearchWorksResultFromHistory(toolHistory);
+            result = latestSearchResult
+              ? deriveScopeEstimateFromSearchResult(normalizedToolArgs.query, latestSearchResult)
+              : await executeTool(deps, toolCall.tool_name, normalizedToolArgs, {
+                  userId: session.userId,
+                  sessionId: session.id,
+                  runId: run.id,
+                  auditLog: recordRawLog,
+                  progressReporter: async (text, detail) => {
+                    queueToolProgress(
+                      {
+                        runId: run.id,
+                        toolCallId: toolRecord.id,
+                        toolName: toolCall.tool_name,
+                        text,
+                        detail,
+                      },
+                      async (progressText, emittedDetail) => {
+                        liveToolTrace = liveToolTrace.map((entry) =>
+                          entry.id === toolRecord.id
+                            ? appendToolProgress(entry, progressText, emittedDetail)
+                            : entry,
+                        );
+                        await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
+                        await send("tool.progress", {
+                          runId: run.id,
+                          toolCallId: toolRecord.id,
+                          toolName: toolCall.tool_name,
+                          text: progressText,
+                          ...(emittedDetail ? { detail: emittedDetail } : {}),
+                        });
+                      },
+                    );
+                  },
+                });
           } else {
             result = await executeTool(deps, toolCall.tool_name, normalizedToolArgs, {
               userId: session.userId,
