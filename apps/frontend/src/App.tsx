@@ -594,16 +594,148 @@ function mergePersistedToolTrace(messages: UiMessage[], runId: string, trace: Ar
     return messages;
   }
 
+  const nonEmptyLogLineCount = (value: unknown) => {
+    if (!Array.isArray(value)) {
+      return 0;
+    }
+    return value.filter((line) => {
+      if (typeof line === "string") {
+        return line.trim().length > 0;
+      }
+      return Boolean(line) && typeof line === "object";
+    }).length;
+  };
+
+  const arrayLength = (value: unknown) => (Array.isArray(value) ? value.length : 0);
+
+  const payloadArrayRichness = (value: Record<string, unknown> | undefined) => {
+    if (!value) {
+      return 0;
+    }
+    const manifest = value.manifest && typeof value.manifest === "object"
+      ? value.manifest as Record<string, unknown>
+      : null;
+    return (
+      arrayLength(value.works)
+      + arrayLength(value.chunks)
+      + arrayLength(value.progressDetails)
+      + arrayLength(value.citations)
+      + arrayLength(value.artifacts)
+      + arrayLength(value.codexRuns)
+      + (manifest ? arrayLength(manifest.works) : 0)
+    );
+  };
+
   const payloadRichness = (value: Record<string, unknown> | undefined) => {
     if (!value) {
       return -1;
     }
     let score = Object.keys(value).length;
-    const logLines = value.__logLines;
-    if (Array.isArray(logLines)) {
-      score += logLines.filter((line) => typeof line === "string" && line.trim().length > 0).length * 10;
-    }
+    score += nonEmptyLogLineCount(value.__logLines) * 10;
+    score += payloadArrayRichness(value) * 5;
     return score;
+  };
+
+  const mergeLogLines = (existingValue: unknown, incomingValue: unknown) => {
+    const existing = Array.isArray(existingValue) ? existingValue : [];
+    const incoming = Array.isArray(incomingValue) ? incomingValue : [];
+    if (existing.length === 0) {
+      return incoming.length > 0 ? incoming : undefined;
+    }
+    if (incoming.length === 0) {
+      return existing;
+    }
+    const seen = new Set<string>();
+    const merged: unknown[] = [];
+    for (const line of [...existing, ...incoming]) {
+      const key = JSON.stringify(line);
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      merged.push(line);
+    }
+    return merged;
+  };
+
+  const chooseLongerArray = <T,>(existingValue: T[] | undefined, incomingValue: T[] | undefined) => {
+    if (!existingValue || existingValue.length === 0) {
+      return incomingValue;
+    }
+    if (!incomingValue || incomingValue.length === 0) {
+      return existingValue;
+    }
+    return existingValue.length >= incomingValue.length ? existingValue : incomingValue;
+  };
+
+  const mergePayload = (
+    existingValue: Record<string, unknown> | undefined,
+    incomingValue: Record<string, unknown> | undefined,
+  ) => {
+    if (!existingValue) {
+      return incomingValue;
+    }
+    if (!incomingValue) {
+      return existingValue;
+    }
+
+    const existingScore = payloadRichness(existingValue);
+    const incomingScore = payloadRichness(incomingValue);
+    const preferred = existingScore >= incomingScore ? existingValue : incomingValue;
+    const secondary = preferred === existingValue ? incomingValue : existingValue;
+    const merged: Record<string, unknown> = {
+      ...secondary,
+      ...preferred,
+    };
+
+    const mergedLogLines = mergeLogLines(existingValue.__logLines, incomingValue.__logLines);
+    if (mergedLogLines) {
+      merged.__logLines = mergedLogLines;
+    }
+
+    const preferredWorks = chooseLongerArray(
+      Array.isArray(existingValue.works) ? existingValue.works : undefined,
+      Array.isArray(incomingValue.works) ? incomingValue.works : undefined,
+    );
+    if (preferredWorks) {
+      merged.works = preferredWorks;
+    }
+
+    const preferredChunks = chooseLongerArray(
+      Array.isArray(existingValue.chunks) ? existingValue.chunks : undefined,
+      Array.isArray(incomingValue.chunks) ? incomingValue.chunks : undefined,
+    );
+    if (preferredChunks) {
+      merged.chunks = preferredChunks;
+    }
+
+    const existingManifest = existingValue.manifest && typeof existingValue.manifest === "object"
+      ? existingValue.manifest as Record<string, unknown>
+      : null;
+    const incomingManifest = incomingValue.manifest && typeof incomingValue.manifest === "object"
+      ? incomingValue.manifest as Record<string, unknown>
+      : null;
+    if (existingManifest || incomingManifest) {
+      const preferredManifest = payloadRichness(existingManifest ?? undefined) >= payloadRichness(incomingManifest ?? undefined)
+        ? existingManifest
+        : incomingManifest;
+      const secondaryManifest = preferredManifest === existingManifest ? incomingManifest : existingManifest;
+      merged.manifest = {
+        ...(secondaryManifest ?? {}),
+        ...(preferredManifest ?? {}),
+        ...(chooseLongerArray(
+          Array.isArray(existingManifest?.works) ? existingManifest.works : undefined,
+          Array.isArray(incomingManifest?.works) ? incomingManifest.works : undefined,
+        ) ? {
+          works: chooseLongerArray(
+            Array.isArray(existingManifest?.works) ? existingManifest.works : undefined,
+            Array.isArray(incomingManifest?.works) ? incomingManifest.works : undefined,
+          ),
+        } : {}),
+      };
+    }
+
+    return merged;
   };
 
   let changed = false;
@@ -624,12 +756,8 @@ function mergePersistedToolTrace(messages: UiMessage[], runId: string, trace: Ar
       const nextProgress = existing.progress.length >= entry.progress.length
         ? existing.progress
         : entry.progress;
-      const nextArgs = payloadRichness(existing.args) > payloadRichness(entry.args)
-        ? existing.args
-        : entry.args;
-      const nextResult = payloadRichness(existing.result) > payloadRichness(entry.result)
-        ? existing.result
-        : entry.result;
+      const nextArgs = mergePayload(existing.args, entry.args) ?? {};
+      const nextResult = mergePayload(existing.result, entry.result);
       const nextState =
         entry.state !== "running" || existing.state === "running"
           ? entry.state
@@ -1330,6 +1458,106 @@ function getCount(value: unknown) {
   return Array.isArray(value) ? value.length : 0;
 }
 
+function buildThreadToolArgs(entry: ToolTraceEntry) {
+  const args: Record<string, unknown> = {};
+  const query = typeof entry.args.query === "string" && entry.args.query.trim().length > 0 ? entry.args.query.trim() : null;
+  const path = typeof entry.args.path === "string" && entry.args.path.trim().length > 0 ? entry.args.path.trim() : null;
+  const workCount = getCount(entry.args.workIds);
+  const chunkCount = getCount(entry.args.chunkIds);
+  const taskSpec = entry.args.taskSpec && typeof entry.args.taskSpec === "object"
+    ? entry.args.taskSpec as Record<string, unknown>
+    : null;
+  const phase = typeof taskSpec?.phase === "string" && taskSpec.phase.trim().length > 0 ? taskSpec.phase.trim() : null;
+  const goal = typeof taskSpec?.goal === "string" && taskSpec.goal.trim().length > 0 ? taskSpec.goal.trim() : null;
+  const taskQuery = typeof taskSpec?.query === "string" && taskSpec.query.trim().length > 0 ? taskSpec.query.trim() : null;
+
+  if (query) {
+    args.query = query;
+  }
+  if (taskQuery && taskQuery !== query) {
+    args.taskQuery = taskQuery;
+  }
+  if (goal) {
+    args.goal = goal;
+  }
+  if (phase) {
+    args.phase = phase;
+  }
+  if (path) {
+    args.path = path;
+  }
+  if (workCount > 0) {
+    args.candidateBookCount = workCount;
+  }
+  if (chunkCount > 0) {
+    args.candidatePassageCount = chunkCount;
+  }
+
+  return args;
+}
+
+function buildThreadToolResult(entry: ToolTraceEntry, entryHasError: boolean) {
+  if (entry.state === "running") {
+    return undefined;
+  }
+
+  const result = entry.result;
+  if (!result) {
+    return { ok: !entryHasError };
+  }
+
+  const safe: Record<string, unknown> = {};
+  const logLines = Array.isArray(result.__logLines)
+    ? result.__logLines.filter((line) => {
+        if (typeof line === "string") {
+          return line.trim().length > 0;
+        }
+        return Boolean(line) && typeof line === "object";
+      })
+    : [];
+  if (logLines.length > 0) {
+    safe.__logLines = logLines;
+  }
+
+  const countFields = [
+    "workCount",
+    "chunkCount",
+    "bookCount",
+    "artifactCount",
+    "citationCount",
+    "codexRunCount",
+    "evidenceCount",
+    "briefingLength",
+    "exitCode",
+  ] as const;
+  for (const field of countFields) {
+    const value = result[field];
+    if (typeof value === "number") {
+      safe[field] = value;
+    }
+  }
+
+  if (typeof result.runtimeId === "string" && result.runtimeId.trim().length > 0) {
+    safe.runtimeId = result.runtimeId;
+  }
+  if (result.usedFallback === true) {
+    safe.usedFallback = true;
+  }
+  if (typeof result.error === "string" && result.error.trim().length > 0) {
+    safe.error = result.error;
+  }
+  if (Array.isArray(result.works) && result.works.length > 0) {
+    safe.workCount = typeof safe.workCount === "number" ? safe.workCount : result.works.length;
+  }
+  if (Array.isArray(result.chunks) && result.chunks.length > 0) {
+    safe.chunkCount = typeof safe.chunkCount === "number" ? safe.chunkCount : result.chunks.length;
+  }
+  if (Object.keys(safe).length === 0) {
+    safe.ok = !entryHasError;
+  }
+  return safe;
+}
+
 function describeMetadataSearchIntent(args: Record<string, unknown>) {
   const query = typeof args.query === "string" && args.query.trim().length > 0
     ? `for ${quoted(args.query)}`
@@ -1666,7 +1894,7 @@ function messageToThreadMessage(
           || (typeof entry.result?.error === "string" && entry.result.error.trim().length > 0);
         const args = toReadonlyJsonObject(
           {
-            ...entry.args,
+            ...buildThreadToolArgs(entry),
             ...(entry.rationale
               ? {
                   __rationale: entry.rationale,
@@ -1701,7 +1929,7 @@ function messageToThreadMessage(
           ...(entry.state === "running"
             ? {}
             : {
-                result: entry.result ?? { ok: !entryHasError },
+                result: buildThreadToolResult(entry, entryHasError) ?? { ok: !entryHasError },
                 isError: entryHasError,
               }),
         };
