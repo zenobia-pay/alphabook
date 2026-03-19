@@ -2583,10 +2583,8 @@ function buildWorkHref(workId: string) {
 }
 
 function buildWorkContentHref(workId: string, gutenbergId?: string | number | null) {
-  if (gutenbergId != null && String(gutenbergId).trim().length > 0) {
-    return `/book-content-static/${encodeURIComponent(String(gutenbergId))}`;
-  }
-  return `/api/works/${encodeURIComponent(workId)}/content`;
+  void gutenbergId;
+  return `https://api.alpha-book.org/works/${encodeURIComponent(workId)}/content`;
 }
 
 function formatPassageLocation(chunkIndex: number | null) {
