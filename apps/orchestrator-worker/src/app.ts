@@ -3912,97 +3912,8 @@ async function reconcilePersistentRun(
   };
 
   const toolCalls = await deps.store.listToolCalls(run.id);
-  const refreshCompletedWorkspaceTask = async () => {
-    const runningWorkspaceTool = [...toolCalls].reverse().find((toolCall) => (
-      toolCall.toolName === "run_workspace_task"
-      && (toolCall.status === "running" || toolCall.status === "queued")
-    ));
-    const runtimeId = runningWorkspaceTool ? runtimeIdFromToolCall(runningWorkspaceTool) : null;
-    if (!runningWorkspaceTool || !runtimeId || !deps.runtimeGateway.getWorkspaceTaskStatus) {
-      return false;
-    }
-    const taskStatus = await deps.runtimeGateway.getWorkspaceTaskStatus({ runtimeId });
-    if (taskStatus.status !== "completed" || !taskStatus.result || typeof taskStatus.result !== "object") {
-      return false;
-    }
-    const result: Record<string, unknown> = {
-      ...(taskStatus.result as Record<string, unknown>),
-      runtimeId,
-    };
-    await deps.store.finishToolCall(runningWorkspaceTool.id, "completed", result);
-    await trackRuntimeBillingEvents(deps, session, run, result.billingEvents);
-    const refreshedToolCalls = await deps.store.listToolCalls(run.id);
-    await persistRecoveredPlanToolTrace(deps, session.id, run.id, refreshedToolCalls);
-    const messages = await deps.store.listMessages(session.id);
-    const conversationHistory = formatConversationHistory(messages);
-    const completedBriefing = latestCompletedBriefing(
-      refreshedToolCalls
-        .filter((toolCall) => toolCall.resultJson && toolCall.status === "completed")
-        .map((toolCall) => ({
-          toolName: toolCall.toolName,
-          rationale: undefined,
-          args: toolCall.argsJson,
-          result: toolCall.resultJson as Record<string, unknown>,
-        })),
-    );
-    if (completedBriefing) {
-      await ensureRunAnswerPersisted(
-        deps,
-        request,
-        session,
-        run.id,
-        messages,
-        conversationHistory,
-        completedBriefing,
-        refreshedToolCalls
-          .filter((toolCall) => toolCall.resultJson && toolCall.status === "completed")
-          .map((toolCall) => ({
-            toolName: toolCall.toolName,
-            rationale: undefined,
-            args: toolCall.argsJson,
-            result: toolCall.resultJson as Record<string, unknown>,
-          })),
-      );
-    }
-    return true;
-  };
   if (run.status === "completed") {
-    await refreshCompletedWorkspaceTask();
-    await closeDanglingToolCalls(toolCalls, "The run completed before this step finished.");
-    const completedBriefing = latestCompletedBriefing(
-      (await deps.store.listToolCalls(run.id))
-        .filter((toolCall) => toolCall.resultJson && toolCall.status === "completed")
-        .map((toolCall) => ({
-          toolName: toolCall.toolName,
-          rationale: undefined,
-          args: toolCall.argsJson,
-          result: toolCall.resultJson as Record<string, unknown>,
-        })),
-    );
-    if (completedBriefing) {
-      await persistRecoveredPlanToolTrace(deps, session.id, run.id, toolCalls);
-      const messages = await deps.store.listMessages(session.id);
-      const conversationHistory = formatConversationHistory(messages);
-      await ensureRunAnswerPersisted(
-        deps,
-        request,
-        session,
-        run.id,
-        messages,
-        conversationHistory,
-        completedBriefing,
-        toolCalls
-          .filter((toolCall) => toolCall.resultJson && toolCall.status === "completed")
-          .map((toolCall) => ({
-            toolName: toolCall.toolName,
-            rationale: undefined,
-            args: toolCall.argsJson,
-            result: toolCall.resultJson as Record<string, unknown>,
-          })),
-      );
-    }
-    await cancelLiveExecution(await deps.store.listToolCalls(run.id));
-    return deps.store.getRun(run.id);
+    return run;
   }
   if (run.status !== "running" && run.status !== "queued") {
     await closeDanglingToolCalls(toolCalls, "The run ended before this step finished.");
@@ -7009,6 +6920,7 @@ async function runOrchestrator(
     result?: Record<string, unknown>;
   };
   let pendingWorkspaceExecution: PendingWorkspaceExecution | null = null;
+  let runFinalized = false;
   const completedForegroundRetrievalCount = () =>
     toolHistory.filter((entry) => entry.toolName !== "create_workspace" && entry.toolName !== "run_workspace_task").length;
 
@@ -7109,6 +7021,48 @@ async function runOrchestrator(
     toolResults.push(result);
   };
 
+  const completeRunFromBriefing = async (
+    completedBriefing: { answer: string; citations: Citation[] },
+    completionMode: "standard" | "retrieval_fallback" = "standard",
+  ) => {
+    if (runFinalized) {
+      return;
+    }
+    runFinalized = true;
+    await deps.store.updateRun(run.id, {
+      status: "completed",
+      completedAt: new Date().toISOString(),
+    });
+    await synthesizeAnswer(
+      deps,
+      {
+        request,
+        userId: activeSession.userId,
+        sessionId: activeSession.id,
+        runId: run.id,
+        userMessage: input.message,
+        conversationHistory,
+        plannerDraft: completedBriefing.answer,
+        plannerCitations: completedBriefing.citations,
+        toolHistory,
+        auditLog: recordRawLog,
+      },
+      send,
+    );
+    await send("run.completed", {
+      runId: run.id,
+      sessionId: activeSession.id,
+      status: "completed",
+      completionMode,
+    });
+    recordRawLog("run.completed", {
+      runId: run.id,
+      sessionId: activeSession.id,
+      status: "completed",
+      completionMode,
+    });
+  };
+
   const harvestPendingWorkspace = async (force = false) => {
     if (!pendingWorkspaceExecution) {
       return false;
@@ -7138,8 +7092,22 @@ async function runOrchestrator(
       && typeof pendingWorkspaceExecution.result?.runtimeId === "string"
         ? pendingWorkspaceExecution.result.runtimeId
         : null;
+    const completedWorkspaceBriefing =
+      pendingWorkspaceExecution.toolName === "run_workspace_task"
+      && pendingWorkspaceExecution.status === "completed"
+      && pendingWorkspaceExecution.result
+        ? extractCompletedBriefing(
+            pendingWorkspaceExecution.toolName,
+            pendingWorkspaceExecution.normalizedArgs,
+            pendingWorkspaceExecution.result,
+          )
+        : null;
     const wasCompleted = pendingWorkspaceExecution.status === "completed";
     pendingWorkspaceExecution = null;
+    if (completedWorkspaceBriefing) {
+      await completeRunFromBriefing(completedWorkspaceBriefing, "standard");
+      return true;
+    }
     if (
       completedWorkspaceRuntimeId
       && !toolHistory.some((entry) => entry.toolName === "run_workspace_task")
@@ -7700,6 +7668,9 @@ async function runOrchestrator(
     };
     for (let turn = 1; turn <= HARD_LIMITS.MAX_TURNS; turn += 1) {
       await harvestPendingWorkspace(false);
+      if (runFinalized) {
+        return;
+      }
       if (activeRuns.get(run.id)?.cancelRequested) {
         break;
       }
@@ -7868,6 +7839,9 @@ async function runOrchestrator(
       if (toolCall.tool_name === "run_workspace_task" && pendingExecution) {
         const waitingOnBackgroundRuntimeTask = pendingExecution.toolName === "run_workspace_task";
         await harvestPendingWorkspace(true);
+        if (runFinalized) {
+          return;
+        }
         if (waitingOnBackgroundRuntimeTask) {
           continue;
         }
@@ -8153,75 +8127,16 @@ async function runOrchestrator(
     }
 
     await harvestPendingWorkspace(true);
+    if (runFinalized) {
+      return;
+    }
     const completedBriefing = latestCompletedBriefing(toolHistory);
     if (completedBriefing) {
-      await deps.store.updateRun(run.id, {
-        status: "completed",
-        completedAt: new Date().toISOString(),
-      });
-      await synthesizeAnswer(
-        deps,
-        {
-          request,
-          userId: session.userId,
-          sessionId: session.id,
-          runId: run.id,
-          userMessage: input.message,
-          conversationHistory,
-          plannerDraft: completedBriefing.answer,
-          plannerCitations: completedBriefing.citations,
-          toolHistory,
-          auditLog: recordRawLog,
-        },
-        send,
-      );
-      await send("run.completed", {
-        runId: run.id,
-        sessionId: session.id,
-        status: "completed",
-        completionMode: "standard",
-      });
-      recordRawLog("run.completed", {
-        runId: run.id,
-        sessionId: session.id,
-        status: "completed",
-        completionMode: "standard",
-      });
+      await completeRunFromBriefing(completedBriefing, "standard");
     } else {
       const retrievalFallbackBriefing = buildRetrievalFallbackBriefing(input.message, toolHistory);
       if (retrievalFallbackBriefing) {
-        await deps.store.updateRun(run.id, {
-          status: "completed",
-          completedAt: new Date().toISOString(),
-        });
-        await synthesizeAnswer(
-          deps,
-          {
-            request,
-            userId: session.userId,
-            sessionId: session.id,
-            runId: run.id,
-            userMessage: input.message,
-            conversationHistory,
-            plannerDraft: retrievalFallbackBriefing.answer,
-            plannerCitations: retrievalFallbackBriefing.citations,
-            toolHistory,
-            auditLog: recordRawLog,
-          },
-          send,
-        );
-        await send("run.completed", {
-          runId: run.id,
-          sessionId: session.id,
-          status: "completed",
-          completionMode: "retrieval_fallback",
-        });
-        recordRawLog("run.completed", {
-          runId: run.id,
-          sessionId: session.id,
-          status: "completed",
-          completionMode: "retrieval_fallback",
-        });
+        await completeRunFromBriefing(retrievalFallbackBriefing, "retrieval_fallback");
         return;
       }
       await deps.store.updateRun(run.id, {
@@ -8260,6 +8175,9 @@ async function runOrchestrator(
     }
   } catch (error) {
     await harvestPendingWorkspace(true);
+    if (runFinalized) {
+      return;
+    }
     try {
       await recordUnexpectedError(deps, error, {
         request,
@@ -8324,6 +8242,9 @@ async function runOrchestrator(
     return;
   } finally {
     await harvestPendingWorkspace(true);
+    if (runFinalized) {
+      return;
+    }
     await flushAllToolProgress(async (toolCallId, toolName, text, detail) => {
       liveToolTrace = liveToolTrace.map((entry) =>
         entry.id === toolCallId
