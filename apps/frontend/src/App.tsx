@@ -55,7 +55,7 @@ type AuthState = {
   error: string | null;
 };
 
-type ViewMode = "explore" | "assistant" | "profile" | "book" | "admin";
+type ViewMode = "explore" | "assistant" | "assistant_document" | "profile" | "book" | "admin";
 type UrlWriteMode = "replace" | "push";
 type UrlState = {
   view: ViewMode;
@@ -299,7 +299,7 @@ function buildSeoState(options: {
 }
 
 function isViewMode(value: string | null): value is ViewMode {
-  return value === "explore" || value === "assistant" || value === "profile" || value === "book" || value === "admin";
+  return value === "explore" || value === "assistant" || value === "assistant_document" || value === "profile" || value === "book" || value === "admin";
 }
 
 function isRetryableReconnectError(error: unknown): boolean {
@@ -351,7 +351,13 @@ function writeUrlState(next: UrlState, mode: UrlWriteMode = "replace") {
   }
 
   const url = new URL(window.location.href);
-  if (next.view === "book" && next.workId) {
+  if (next.view === "assistant_document" && next.sessionId && next.runId) {
+    url.pathname = "/";
+    url.searchParams.set("view", "assistant_document");
+    url.searchParams.delete("work");
+    url.searchParams.delete("profile");
+    url.searchParams.delete("reader");
+  } else if (next.view === "book" && next.workId) {
     url.pathname = `/works/${encodeURIComponent(next.workId)}`;
     url.searchParams.delete("view");
     url.searchParams.delete("work");
@@ -371,7 +377,7 @@ function writeUrlState(next: UrlState, mode: UrlWriteMode = "replace") {
       url.searchParams.delete("profile");
     }
   }
-  if (next.view === "admin" && next.runId) {
+  if ((next.view === "admin" || next.view === "assistant_document") && next.runId) {
     url.searchParams.set("run", next.runId);
   } else {
     url.searchParams.delete("run");
@@ -382,7 +388,7 @@ function writeUrlState(next: UrlState, mode: UrlWriteMode = "replace") {
     url.searchParams.delete("adminSection");
   }
 
-  if ((next.view === "assistant" || next.view === "book") && next.sessionId) {
+  if ((next.view === "assistant" || next.view === "assistant_document" || next.view === "book") && next.sessionId) {
     url.searchParams.set("session", next.sessionId);
   } else {
     url.searchParams.delete("session");
@@ -3235,6 +3241,10 @@ function buildWorkHref(workId: string) {
   return `/works/${encodeURIComponent(workId)}`;
 }
 
+function buildAssistantDocumentHref(sessionId: string, runId: string) {
+  return `/?view=assistant_document&session=${encodeURIComponent(sessionId)}&run=${encodeURIComponent(runId)}`;
+}
+
 function buildWorkContentHref(workId: string, gutenbergId?: string | number | null) {
   if (gutenbergId != null && String(gutenbergId).trim().length > 0) {
     return `${BOOK_CONTENT_ORIGIN}/${encodeURIComponent(String(gutenbergId))}/?v=${BOOK_CONTENT_VERSION}`;
@@ -3283,6 +3293,24 @@ function buildWorkContentFrameHref(workId: string, gutenbergId?: string | number
   return `${baseHref}#${encodeURIComponent(passageId)}`;
 }
 
+function buildResearchDocumentLinkHref(
+  mode: "app" | "iframe",
+  workId?: string | null,
+  citation?: Citation | null,
+) {
+  if (!workId && !citation?.workId) {
+    return undefined;
+  }
+  const resolvedWorkId = citation?.workId ?? workId ?? null;
+  if (!resolvedWorkId) {
+    return undefined;
+  }
+  if (mode === "iframe") {
+    return buildWorkContentFrameHref(resolvedWorkId, undefined, citation?.chunkId ?? null);
+  }
+  return buildWorkHref(resolvedWorkId);
+}
+
 function formatPassageLocation(chunkIndex: number | null) {
   if (chunkIndex === null || !Number.isFinite(chunkIndex)) {
     return "roughly mid-book";
@@ -3313,6 +3341,7 @@ function buildResearchDocument(
   toolTrace: ToolTraceEntry[],
   artifacts: RunArtifactRecord[],
   ending: string | null,
+  linkMode: "app" | "iframe" = "app",
 ): ResearchDocumentModel {
   const entries: ResearchDocumentFlatEntry[] = [];
   const sections = new Map<string, ResearchDocumentSection>();
@@ -3339,7 +3368,7 @@ function buildResearchDocument(
             kind: "book",
             text: `${titleText}${authors.length > 0 ? ` by ${authors.join(", ")}` : ""}`.trim(),
             linkLabel: titleText,
-            linkHref: buildWorkHref(workId),
+            linkHref: buildResearchDocumentLinkHref(linkMode, workId, null),
             workId,
             prefix: "",
             suffix: authors.length > 0 ? `by ${authors.join(", ")}` : "",
@@ -3366,7 +3395,13 @@ function buildResearchDocument(
             text: excerpt,
             citationText,
             linkLabel: citationText,
-            linkHref: buildWorkHref(workId),
+            linkHref: buildResearchDocumentLinkHref(linkMode, workId, {
+              workId,
+              ...(progressDetailString(detail.chunkId) ? { chunkId: progressDetailString(detail.chunkId) } : {}),
+              label: progressDetailString(detail.workTitle) || progressDetailString(detail.title) || workId,
+              excerpt: excerpt || citationText,
+              ...(progressDetailString(detail.r2Key) ? { r2Key: progressDetailString(detail.r2Key) } : {}),
+            }),
             citation: {
               workId,
               ...(progressDetailString(detail.chunkId) ? { chunkId: progressDetailString(detail.chunkId) } : {}),
@@ -3409,7 +3444,7 @@ function buildResearchDocument(
             kind: "book",
             text: `${titleText} ${authors.length > 0 ? `by ${authors.join(", ")}` : ""}`.trim(),
             linkLabel: titleText || workId,
-            linkHref: buildWorkHref(workId),
+            linkHref: buildResearchDocumentLinkHref(linkMode, workId, null),
             workId,
             prefix: "",
             suffix: authors.length > 0 ? `by ${authors.join(", ")}` : "",
@@ -3439,7 +3474,7 @@ function buildResearchDocument(
             kind: "book",
             text: `${titleText} ${authors.length > 0 ? `by ${authors.join(", ")}` : ""}`.trim(),
             linkLabel: titleText || workId,
-            linkHref: buildWorkHref(workId),
+            linkHref: buildResearchDocumentLinkHref(linkMode, workId, null),
             workId,
             prefix: "",
             suffix: authors.length > 0 ? `by ${authors.join(", ")}` : "",
@@ -3478,7 +3513,13 @@ function buildResearchDocument(
             text: excerpt.slice(0, 440),
             citationText,
             linkLabel: citationText,
-            linkHref: buildWorkHref(workId),
+            linkHref: buildResearchDocumentLinkHref(linkMode, workId, {
+              workId,
+              chunkId: typeof chunk.id === "string" ? chunk.id : undefined,
+              label: workTitle,
+              excerpt: excerpt || workTitle,
+              r2Key: typeof chunk.r2Key === "string" ? chunk.r2Key : undefined,
+            }),
             citation: {
               workId,
               chunkId: typeof chunk.id === "string" ? chunk.id : undefined,
@@ -3540,11 +3581,12 @@ function buildResearchDocument(
   };
 }
 
-function ResearchArtifactPane({
+function ResearchArtifactDocument({
   sessionTitle,
   toolTrace,
   artifacts,
   ending,
+  linkMode,
   onOpenWork,
   onOpenCitation,
 }: {
@@ -3552,12 +3594,13 @@ function ResearchArtifactPane({
   toolTrace: ToolTraceEntry[];
   artifacts: RunArtifactRecord[];
   ending: string | null;
-  onOpenWork: (workId: string) => void;
-  onOpenCitation: (citation: Citation) => void;
+  linkMode: "app" | "iframe";
+  onOpenWork?: (workId: string) => void;
+  onOpenCitation?: (citation: Citation) => void;
 }) {
   const document = useMemo(
-    () => buildResearchDocument(sessionTitle, toolTrace, artifacts, ending),
-    [artifacts, ending, sessionTitle, toolTrace],
+    () => buildResearchDocument(sessionTitle, toolTrace, artifacts, ending, linkMode),
+    [artifacts, ending, linkMode, sessionTitle, toolTrace],
   );
 
   return (
@@ -3589,12 +3632,15 @@ function ResearchArtifactPane({
                             className="assistant-document-link"
                             href={entry.linkHref}
                             onClick={(event) => {
+                              if (linkMode === "iframe") {
+                                return;
+                              }
                               event.preventDefault();
-                              if (entry.citation) {
+                              if (entry.citation && onOpenCitation) {
                                 onOpenCitation(entry.citation);
                                 return;
                               }
-                              if (entry.workId) {
+                              if (entry.workId && onOpenWork) {
                                 onOpenWork(entry.workId);
                               }
                             }}
@@ -3613,12 +3659,15 @@ function ResearchArtifactPane({
                             className="assistant-document-link"
                             href={entry.linkHref}
                             onClick={(event) => {
+                              if (linkMode === "iframe") {
+                                return;
+                              }
                               event.preventDefault();
-                              if (entry.citation) {
+                              if (entry.citation && onOpenCitation) {
                                 onOpenCitation(entry.citation);
                                 return;
                               }
-                              if (entry.workId) {
+                              if (entry.workId && onOpenWork) {
                                 onOpenWork(entry.workId);
                               }
                             }}
@@ -3652,6 +3701,112 @@ function ResearchArtifactPane({
           ) : null}
         </div>
       </div>
+    </section>
+  );
+}
+
+function ResearchArtifactPane(props: {
+  sessionTitle: string;
+  toolTrace: ToolTraceEntry[];
+  artifacts: RunArtifactRecord[];
+  ending: string | null;
+  onOpenWork: (workId: string) => void;
+  onOpenCitation: (citation: Citation) => void;
+}) {
+  return <ResearchArtifactDocument {...props} linkMode="app" />;
+}
+
+function AssistantDocumentFramePage({
+  sessionId,
+  runId,
+}: {
+  sessionId: string;
+  runId: string;
+}) {
+  const [messages, setMessages] = useState<UiMessage[]>([]);
+  const [toolTrace, setToolTrace] = useState<ToolTraceEntry[]>([]);
+  const [artifacts, setArtifacts] = useState<RunArtifactRecord[]>([]);
+  const [runStatus, setRunStatus] = useState<SessionRunRecord["status"] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    let pollTimer: number | null = null;
+
+    const refresh = async () => {
+      try {
+        const [nextMessages, nextState] = await Promise.all([
+          fetchMessages(sessionId),
+          fetchRunState(sessionId, runId),
+        ]);
+        if (cancelled) {
+          return;
+        }
+        const hydrated = nextMessages.map(hydrateStoredMessage);
+        const merged = Array.isArray(nextState.toolTrace)
+          ? mergePersistedToolTrace(hydrated, runId, nextState.toolTrace)
+          : hydrated;
+        setMessages(merged);
+        setToolTrace(currentResearchToolTrace(merged, runId));
+        setArtifacts(Array.isArray(nextState.artifacts) ? nextState.artifacts : []);
+        setRunStatus(nextState.run?.status ?? null);
+        setLoading(false);
+        setError(null);
+        if (nextState.run?.status === "running" || nextState.run?.status === "queued") {
+          pollTimer = window.setTimeout(() => {
+            void refresh();
+          }, 1500);
+        }
+      } catch (nextError) {
+        if (cancelled) {
+          return;
+        }
+        setLoading(false);
+        setError(getErrorMessage(nextError, "We couldn't load this research document."));
+      }
+    };
+
+    void refresh();
+    return () => {
+      cancelled = true;
+      if (pollTimer !== null) {
+        window.clearTimeout(pollTimer);
+      }
+    };
+  }, [runId, sessionId]);
+
+  const ending = useMemo(() => currentResearchDocumentEnding(messages), [messages]);
+
+  if (loading) {
+    return (
+      <section className="assistant-document-pane assistant-document-standalone">
+        <div className="assistant-document-scroll">
+          <div className="session-loading">Loading research document…</div>
+        </div>
+      </section>
+    );
+  }
+
+  if (error) {
+    return (
+      <section className="assistant-document-pane assistant-document-standalone">
+        <div className="assistant-document-scroll">
+          <div className="session-loading">{error}</div>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="assistant-document-pane assistant-document-standalone" data-run-status={runStatus ?? "unknown"}>
+      <ResearchArtifactDocument
+        sessionTitle="Research log"
+        toolTrace={toolTrace}
+        artifacts={artifacts}
+        ending={ending}
+        linkMode="iframe"
+      />
     </section>
   );
 }
@@ -3966,6 +4121,9 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (activeView === "assistant_document") {
+      return;
+    }
     if (authState.loading) {
       return;
     }
@@ -4450,9 +4608,12 @@ export default function App() {
         setSessionsResolved(true);
       }
     })();
-  }, [authState.authConfigured, currentUserId]);
+  }, [activeView, authState.authConfigured, currentUserId]);
 
   useEffect(() => {
+    if (activeView === "assistant_document") {
+      return;
+    }
     if (authState.loading) {
       return;
     }
@@ -4473,9 +4634,12 @@ export default function App() {
         setMessagesLoading(false);
       }
     })();
-  }, [authState.loading, selectedSessionId]);
+  }, [activeView, authState.loading, selectedSessionId]);
 
   useEffect(() => {
+    if (activeView === "assistant_document") {
+      return;
+    }
     if (authState.loading || isSending || !selectedSessionId || !recoveredActiveRunId) {
       return;
     }
@@ -4584,9 +4748,12 @@ export default function App() {
         window.clearTimeout(pollTimer);
       }
     };
-  }, [authState.loading, isSending, recoveredActiveRunId, selectedSessionId]);
+  }, [activeView, authState.loading, isSending, recoveredActiveRunId, selectedSessionId]);
 
   useEffect(() => {
+    if (activeView === "assistant_document") {
+      return;
+    }
     if (authState.loading || !selectedSessionId) {
       setRunArtifacts([]);
       return;
@@ -4622,9 +4789,12 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [authState.loading, recoveredActiveRunId, selectedSessionId, sessionRuns]);
+  }, [activeView, authState.loading, recoveredActiveRunId, selectedSessionId, sessionRuns]);
 
   useEffect(() => {
+    if (activeView === "assistant_document") {
+      return;
+    }
     if (authState.loading) {
       return;
     }
@@ -4676,7 +4846,7 @@ export default function App() {
         window.clearTimeout(pollTimer);
       }
     };
-  }, [authState.loading, isSending, selectedSessionId]);
+  }, [activeView, authState.loading, isSending, selectedSessionId]);
 
   const visibleMessages = useMemo(
     () => dedupeAdjacentErrorMessages(reconcileMessagesWithRunState(messages, sessionRuns)),
@@ -5619,14 +5789,26 @@ export default function App() {
             width={bookAssistantWidth}
             pageRef={bookPageRef}
             leftPane={(
-              <ResearchArtifactPane
-                sessionTitle={assistantSessionName(activeSession)}
-                toolTrace={workspaceToolTrace}
-                artifacts={runArtifacts}
-                ending={workspaceDocumentEnding}
-                onOpenWork={openWork}
-                onOpenCitation={openCitation}
-              />
+              preferredAssistantRun?.id && selectedSessionId ? (
+                <section className="assistant-document-pane assistant-document-iframe-pane">
+                  <iframe
+                    key={`${selectedSessionId}-${preferredAssistantRun.id}`}
+                    className="assistant-document-frame"
+                    src={buildAssistantDocumentHref(selectedSessionId, preferredAssistantRun.id)}
+                    title="Research document"
+                    loading="eager"
+                  />
+                </section>
+              ) : (
+                <ResearchArtifactPane
+                  sessionTitle={assistantSessionName(activeSession)}
+                  toolTrace={workspaceToolTrace}
+                  artifacts={runArtifacts}
+                  ending={workspaceDocumentEnding}
+                  onOpenWork={openWork}
+                  onOpenCitation={openCitation}
+                />
+              )
             )}
             rightPane={(
               <AssistantSurface
@@ -5731,6 +5913,20 @@ export default function App() {
         </aside>
       </section>
     );
+  }
+
+  function renderAssistantDocumentView() {
+    if (!selectedSessionId || !selectedAdminRunId) {
+      return (
+        <section className="assistant-document-pane assistant-document-standalone">
+          <div className="assistant-document-scroll">
+            <div className="session-loading">Missing session or run for this research document.</div>
+          </div>
+        </section>
+      );
+    }
+
+    return <AssistantDocumentFramePage sessionId={selectedSessionId} runId={selectedAdminRunId} />;
   }
 
   function renderExploreView() {
@@ -6772,6 +6968,8 @@ export default function App() {
     switch (activeView) {
       case "explore":
         return renderExploreView();
+      case "assistant_document":
+        return renderAssistantDocumentView();
       case "book":
         return renderBookView();
       case "profile":
@@ -6782,6 +6980,10 @@ export default function App() {
       default:
         return renderAssistantView();
     }
+  }
+
+  if (activeView === "assistant_document") {
+    return renderAssistantDocumentView();
   }
 
   return (
