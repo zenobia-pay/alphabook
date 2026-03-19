@@ -33,13 +33,13 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
-    if (url.pathname.startsWith("/book-content/")) {
+    if (url.pathname.startsWith("/book-content-static/")) {
       const cached = await caches.default.match(request);
       if (cached) {
         return cached;
       }
 
-      const gutenbergId = decodeURIComponent(url.pathname.slice("/book-content/".length)).trim();
+      const gutenbergId = decodeURIComponent(url.pathname.slice("/book-content-static/".length)).trim();
       if (!/^\d+$/.test(gutenbergId)) {
         return new Response("Invalid book content id.", { status: 400 });
       }
