@@ -3524,6 +3524,84 @@ function persistedResearchDocument(
   return parseResearchDocumentArtifact(candidate, linkMode);
 }
 
+function mergeResearchDocumentModels(
+  primary: ResearchDocumentModel,
+  supplement: ResearchDocumentModel,
+): ResearchDocumentModel {
+  const mergedSections = new Map<string, ResearchDocumentSection>();
+  const sectionKeyByTitle = new Map<string, string>();
+  const itemSeen = new Set<string>();
+
+  const sectionTitleKey = (value: string) => value.trim().toLowerCase();
+  const itemFingerprint = (item: ResearchDocumentItem) =>
+    [
+      item.kind,
+      item.workId ?? "",
+      item.citation?.chunkId ?? "",
+      item.citation?.workId ?? "",
+      item.citationText ?? "",
+      item.text.trim().toLowerCase(),
+    ].join("::");
+
+  const addSection = (section: ResearchDocumentSection) => {
+    const titleKey = sectionTitleKey(section.title);
+    const existingKey = sectionTitleKey(section.title) && sectionKeyByTitle.get(titleKey);
+    if (!existingKey) {
+      const cloned: ResearchDocumentSection = {
+        ...section,
+        items: [],
+      };
+      mergedSections.set(section.key, cloned);
+      sectionKeyByTitle.set(titleKey, section.key);
+      return cloned;
+    }
+    return mergedSections.get(existingKey)!;
+  };
+
+  const mergeFrom = (document: ResearchDocumentModel) => {
+    for (const section of document.sections) {
+      const target = addSection(section);
+      if (!target.anchorId && section.anchorId) {
+        target.anchorId = section.anchorId;
+      }
+      if ((!target.summary || isLowValueSectionSummary(target.summary)) && section.summary) {
+        target.summary = section.summary;
+      }
+      if ((!target.meta || target.meta.trim().length === 0) && section.meta) {
+        target.meta = section.meta;
+      }
+      if (!target.evidenceTier && section.evidenceTier) {
+        target.evidenceTier = section.evidenceTier;
+      }
+      for (const item of section.items) {
+        const fingerprint = itemFingerprint(item);
+        const sectionScopedFingerprint = `${target.key}::${fingerprint}`;
+        if (itemSeen.has(sectionScopedFingerprint)) {
+          continue;
+        }
+        itemSeen.add(sectionScopedFingerprint);
+        target.items.push(item);
+      }
+    }
+  };
+
+  mergeFrom(primary);
+  mergeFrom(supplement);
+
+  const sections = [...mergedSections.values()]
+    .map((section) => ({
+      ...section,
+      meta: sectionMetaFromItems(section),
+    }))
+    .filter((section) => hasUsefulSectionItems(section));
+
+  return {
+    title: primary.title || supplement.title,
+    sections: sortDocumentSections(sections),
+    ending: primary.ending || supplement.ending,
+  };
+}
+
 function buildResearchDocument(
   title: string,
   toolTrace: ToolTraceEntry[],
@@ -3841,10 +3919,11 @@ function ResearchArtifactDocument({
 }) {
   const document = useMemo(() => {
     const persisted = persistedResearchDocument(artifacts, linkMode);
+    const live = buildResearchDocument(sessionTitle, toolTrace, artifacts, ending, linkMode);
     if (persisted) {
-      return persisted;
+      return mergeResearchDocumentModels(persisted, live);
     }
-    return buildResearchDocument(sessionTitle, toolTrace, artifacts, ending, linkMode);
+    return live;
   }, [artifacts, ending, linkMode, sessionTitle, toolTrace]);
 
   return (
