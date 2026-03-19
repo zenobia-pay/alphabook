@@ -1185,7 +1185,7 @@ test("orchestrator prewarms the deep research workspace before the first planner
   assert.match(body, /Searching while the .* boots\./);
 });
 
-test("orchestrator defers planner churn while background workspace startup is still pending after retrieval", async () => {
+test("orchestrator keeps planning retrieval while background workspace startup is still pending", async () => {
   const store = new InMemoryAppStore(
     [
       {
@@ -1315,7 +1315,7 @@ test("orchestrator defers planner churn while background workspace startup is st
     rawLog: Array<{ event?: string }>;
   };
   const rawEvents = logsPayload.rawLog.map((entry) => entry.event);
-  assert.ok(rawEvents.includes("planner.deferred_for_pending_workspace"));
+  assert.ok(!rawEvents.includes("planner.deferred_for_pending_workspace"));
 });
 
 test("orchestrator starts the deep research run as soon as the workspace becomes ready", async () => {
@@ -1355,6 +1355,19 @@ test("orchestrator starts the deep research run as soon as the workspace becomes
         };
       }
       plannerSawPendingRuntimeTask = (context.pendingTools ?? []).some((entry) => entry.toolName === "run_workspace_task");
+      if (!plannerSawPendingRuntimeTask && context.turns < 3) {
+        return {
+          type: "tool_call" as const,
+          tool_name: "search_works" as const,
+          args: {
+            query: context.userMessage,
+            filters: {
+              limit: 5,
+            },
+          },
+          rationale: "Keep retrieval moving while the workspace becomes ready.",
+        };
+      }
       return {
         type: "final_answer" as const,
         answer: "Done.",
@@ -1423,7 +1436,22 @@ test("orchestrator starts the deep research run as soon as the workspace becomes
 
   assert.equal(response.status, 200);
   await response.text();
-  assert.equal(plannerSawPendingRuntimeTask, true);
+
+  const sessions = await store.listSessions("11111111-1111-1111-1111-111111111111");
+  const sessionId = sessions[0]?.id;
+  assert.ok(sessionId);
+  const runs = await store.listRuns(sessionId!);
+  const runId = runs[0]?.id;
+  assert.ok(runId);
+  const logsResponse = await app.request(`/sessions/${sessionId}/runs/${runId}/logs`);
+  assert.equal(logsResponse.status, 200);
+  const logsPayload = (await logsResponse.json()) as {
+    rawLog: Array<{ event?: string; payload?: Record<string, unknown> }>;
+  };
+  const startedRuntimeTask = logsPayload.rawLog.some((entry) =>
+    entry.event === "tool.started.raw" && entry.payload?.toolName === "run_workspace_task"
+  );
+  assert.equal(startedRuntimeTask || plannerSawPendingRuntimeTask, true);
 });
 
 test("auth sign-up route redirects into WorkOS authkit with sign-up hint", async () => {
@@ -3467,6 +3495,100 @@ test("search_works normalizes planner date ranges and fiction intent before rank
   assert.deepEqual(resultWorks.map((work) => work.id), ["work-fiction"]);
 });
 
+test("search_works strips dead and death from fiction grief metadata queries before execution", async () => {
+  const store = new InMemoryAppStore([
+    {
+      id: "work-fiction",
+      gutenbergId: 1885,
+      title: "Mourning Novel",
+      language: "en",
+      releaseDate: "1885-01-01",
+      rightsStatus: "public_domain",
+      summary: "A fiction novel of mourning, grief, and consolation.",
+      authors: ["A. Writer"],
+      subjects: ["Fiction"],
+    },
+  ], []);
+
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    router: new ScriptedRouter([
+      {
+        type: "tool_chain",
+        fullQuery: "Find grief in 19th century fiction.",
+      },
+    ]),
+    planner: new ScriptedPlanner([
+      {
+        type: "tool_call",
+        tool_name: "search_works",
+        args: {
+          query: '(grief OR mourning OR bereavement OR "death" OR "dead" OR widow OR widower OR funeral OR revenge OR acceptance) AND (novel OR fiction)',
+          filters: {
+            publicationYear: { from: 1800, to: 1899 },
+            language: "en",
+          },
+        },
+      },
+      {
+        type: "final_answer",
+        answer: "done",
+        citations: [],
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+      async runWorkspaceTask() {
+        return { ok: false, error: "disabled" };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: true, files: [] };
+      },
+      async destroyWorkspace() {
+        return { ok: true };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const response = await app.request("/chat", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      userId: "search-sanitization-user",
+      message: "Find grief in 19th century fiction.",
+    }),
+  });
+  await response.text();
+
+  const sessions = await store.listSessions("search-sanitization-user");
+  const runs = await store.listRuns(sessions[0]!.id);
+  const toolCalls = await store.listToolCalls(runs[0]!.id);
+  const searchCall = toolCalls.find((entry) => entry.toolName === "search_works");
+  assert.ok(searchCall);
+  const normalizedQuery = String(searchCall.argsJson.query ?? "");
+  assert.match(normalizedQuery, /mourning/i);
+  assert.match(normalizedQuery, /bereavement/i);
+  assert.doesNotMatch(normalizedQuery, /\bdead\b/i);
+  assert.doesNotMatch(normalizedQuery, /\bdeath\b/i);
+  assert.doesNotMatch(normalizedQuery, /\brevenge\b/i);
+  assert.doesNotMatch(normalizedQuery, /\bacceptance\b/i);
+});
+
 test("sql metadata search fails loudly instead of silently falling back", async () => {
   const store = new NeonAppStore({
     async query() {
@@ -3773,6 +3895,102 @@ test("sql metadata search broadens grief queries with additional mourning terms"
   assert.match(String(firstQueryParams[0] ?? ""), /mourning/);
   assert.match(String(firstQueryParams[0] ?? ""), /sorrow/);
   assert.match(String(firstQueryParams[0] ?? ""), /funeral/);
+  assert.doesNotMatch(String(firstQueryParams[0] ?? ""), /dead/);
+  assert.doesNotMatch(String(firstQueryParams[0] ?? ""), /death/);
+});
+
+test("sql metadata search downranks death-title matches without stronger grief evidence", async () => {
+  const store = new NeonAppStore({
+    async query<T = Record<string, unknown>>() {
+      return {
+        rows: [
+          {
+            id: "dead-title",
+            gutenberg_id: 23053,
+            title: "Night of the Living Dead",
+            metadata_json: {},
+            language: "en",
+            release_date: "1968-01-01",
+            rights_status: "public_domain",
+            summary: "A horror drama about the living dead.",
+            authors: ["George A. Romero"],
+            subjects: ["Dead -- Drama", "Horror films", "Science fiction"],
+            score: 2.3,
+          },
+          {
+            id: "mourning-title",
+            gutenberg_id: 1342,
+            title: "The Mourning Bride",
+            metadata_json: {},
+            language: "en",
+            release_date: "1813-01-28",
+            rights_status: "public_domain",
+            summary: "A fiction work of grief, mourning, and sorrow.",
+            authors: ["Jane Austen"],
+            subjects: ["Fiction", "Mourning", "Grief"],
+            score: 1.1,
+          },
+        ] as T[],
+      };
+    },
+    async end() {},
+  });
+
+  const results = await store.searchWorks("grief mourning bereavement funeral 1800 1899 fiction", {
+    language: "en",
+    yearRange: [1800, 1899],
+    genre: ["fiction"],
+  });
+
+  assert.equal(results[0]?.id, "mourning-title");
+  assert.equal(results[1]?.id, "dead-title");
+});
+
+test("sql metadata search downranks nonfiction grief-adjacent books when the query asks for fiction", async () => {
+  const store = new NeonAppStore({
+    async query<T = Record<string, unknown>>() {
+      return {
+        rows: [
+          {
+            id: "nonfiction-work",
+            gutenberg_id: 71993,
+            title: "The danger of premature interment",
+            metadata_json: {},
+            language: "en",
+            release_date: "1885-01-01",
+            rights_status: "public_domain",
+            summary: "A medical and historical discussion of burial, funeral rites, and premature interment.",
+            authors: ["Joseph Taylor"],
+            subjects: ["Burial, Premature", "Funeral rites and ceremonies", "Biography"],
+            score: 2.7,
+          },
+          {
+            id: "fiction-work",
+            gutenberg_id: 76886,
+            title: "Dead-sea fruit, Vol. 2 (of 3)",
+            metadata_json: {},
+            language: "en",
+            release_date: "1860-01-01",
+            rights_status: "public_domain",
+            summary: "A 19th-century fiction novel with mourning, grief, and despair.",
+            authors: ["M. E. Braddon"],
+            subjects: ["English fiction -- 19th century", "PR"],
+            score: 1.9,
+          },
+        ] as T[],
+      };
+    },
+    async end() {},
+  });
+
+  const results = await store.searchWorks("grief mourning funeral 19th century fiction novel short fiction", {
+    language: "en",
+    yearRange: [1800, 1899],
+    genre: ["fiction"],
+  });
+
+  assert.equal(results[0]?.id, "fiction-work");
+  assert.equal(results[1]?.id, "nonfiction-work");
 });
 
 test("OpenAIEmbedder requests 1536 dimensions for text-embedding-3 models", async () => {

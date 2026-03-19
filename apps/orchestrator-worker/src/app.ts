@@ -969,6 +969,41 @@ function inferFictionGenreFromContext(...values: Array<unknown>): string[] | und
   return undefined;
 }
 
+function normalizeMetadataSearchQuery(query: unknown, filters: Record<string, unknown>): string | undefined {
+  if (typeof query !== "string") {
+    return typeof query === "undefined" ? undefined : String(query);
+  }
+  const trimmed = query.trim();
+  if (trimmed.length === 0) {
+    return trimmed;
+  }
+  const normalizedGenre = normalizeGenreFilter(filters.genre);
+  const wantsFiction = normalizedGenre?.includes("fiction")
+    || inferGenreFilterFromQuery(trimmed)?.includes("fiction")
+    || false;
+  const lower = trimmed.toLowerCase();
+  const wantsGrief = /\b(grief|mourning|bereavement|funeral|lament|sorrow|weep|wept|weeping|tears|consolation|despair)\b/u.test(lower);
+  if (!wantsFiction || !wantsGrief) {
+    return trimmed;
+  }
+
+  const sanitized = trimmed
+    .replace(/\b(?:OR\s+)?"dead"(?:\s+OR)?\b/giu, " ")
+    .replace(/\b(?:OR\s+)?"death"(?:\s+OR)?\b/giu, " ")
+    .replace(/\b(?:OR\s+)?dead\*?(?:\s+OR)?\b/giu, " ")
+    .replace(/\b(?:OR\s+)?death\*?(?:\s+OR)?\b/giu, " ")
+    .replace(/\b(?:OR\s+)?(?:revenge|travel|religion|work|denial|illness|confession|artistic|expression|remarriage|acceptance|stoicism|resignation|self-destruction|self destruction)(?:\s+OR)?\b/giu, " ")
+    .replace(/\(\s*OR\s+/giu, "(")
+    .replace(/\s+OR\s+\)/giu, ")")
+    .replace(/\(\s*\)/gu, " ")
+    .replace(/\s{2,}/gu, " ")
+    .replace(/\(\s+/gu, "(")
+    .replace(/\s+\)/gu, ")")
+    .trim();
+
+  return sanitized.length > 0 ? sanitized : trimmed;
+}
+
 function normalizeToolArgs(toolName: ToolName, args: Record<string, unknown>): Record<string, unknown> {
   const normalized = { ...args };
   switch (toolName) {
@@ -1000,6 +1035,7 @@ function normalizeToolArgs(toolName: ToolName, args: Record<string, unknown>): R
         } else {
           delete filters.genre;
         }
+        normalized.query = normalizeMetadataSearchQuery(normalized.query, filters);
         normalized.filters = filters;
       }
       break;
@@ -5058,28 +5094,6 @@ async function runOrchestrator(
       if ((deps.now?.() ?? Date.now()) - started > HARD_LIMITS.MAX_RUN_WALL_CLOCK_SECONDS * 1000) {
         break;
       }
-      const hasPendingWorkspaceBootstrap =
-        pendingWorkspaceExecution !== null
-        && (pendingWorkspaceExecution as PendingWorkspaceExecution).toolName === "create_workspace"
-        && !(pendingWorkspaceExecution as PendingWorkspaceExecution).settled
-        && completedForegroundRetrievalCount() > 0;
-      if (hasPendingWorkspaceBootstrap) {
-        recordRawLog("planner.deferred_for_pending_workspace", {
-          runId: run.id,
-          sessionId: session.id,
-          turn,
-          completedForegroundRetrievalCount: completedForegroundRetrievalCount(),
-        });
-        await waitForPendingWorkspace(2_500);
-        await harvestPendingWorkspace(false);
-        if (
-          pendingWorkspaceExecution !== null
-          && !(pendingWorkspaceExecution as PendingWorkspaceExecution).settled
-        ) {
-          continue;
-        }
-      }
-
       await deps.store.updateRun(run.id, {
         plannerTurns: turn,
       });

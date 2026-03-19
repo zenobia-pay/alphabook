@@ -640,10 +640,13 @@ const METADATA_SEARCH_QUERY_STOP_WORDS = new Set([
   "fiction",
   "novel",
   "novels",
+  "romance",
+  "romances",
   "story",
   "stories",
   "tale",
   "tales",
+  "year",
   "literature",
   "book",
   "books",
@@ -694,16 +697,20 @@ const GRIEF_BROADENING_TERMS = [
   "tears",
   "funeral",
   "buried",
-  "death",
-  "dead",
   "loss",
   "consolation",
   "despair",
 ];
 
-const GRIEF_EXPLICIT_MATCH_PATTERN = /\b(grief|mourning|bereavement|funeral|sorrow|lament|weep|wept|weeping|tears?|loss|dead|death|buried)\b/u;
+const GRIEF_EXPLICIT_MATCH_PATTERN = /\b(grief|mourning|bereavement|funeral|sorrow|lament|weep|wept|weeping|tears?|loss|dead|death|consolation|despair)\b/u;
+const GRIEF_METADATA_STRONG_MATCH_PATTERN = /\b(grief|mourning|bereavement|funeral|sorrow|lament|weep|wept|weeping|tears?|loss|consolation|despair)\b/u;
 const JUVENILE_MATCH_PATTERN = /\b(juvenile|children|child|girls|boys|school|schools|orphans?|pz)\b/u;
 const ORPHAN_MATCH_PATTERN = /\borphans?\b/u;
+const DEATH_TITLE_ONLY_PATTERN = /\b(dead|death)\b/u;
+const LOW_SIGNAL_GENRE_PATTERN = /\b(science fiction|horror|drama|satire)\b/u;
+const FICTION_SIGNAL_PATTERN = /\b(fiction|novel|novels|story|stories|tale|tales|romance|romances|short stories)\b/u;
+const NONFICTION_SIGNAL_PATTERN = /\b(biography|biographies|diary|diaries|history|registers of dead|funeral rites|ceremonies|folklore|personal narratives|memoir|memoirs)\b/u;
+const SHORT_FORM_PATTERN = /\b(short stories|short story)\b/u;
 
 function normalizeSearchQuery(query: string): string {
   const tokens = Array.from(
@@ -775,7 +782,7 @@ function metadataTextHaystack(row: {
 }
 
 function hasExplicitGriefMetadataMatch(haystack: string) {
-  return GRIEF_EXPLICIT_MATCH_PATTERN.test(haystack);
+  return GRIEF_METADATA_STRONG_MATCH_PATTERN.test(haystack);
 }
 
 function shouldAcceptMetadataRows<T extends {
@@ -807,6 +814,7 @@ function rerankMetadataRows<T extends {
   const terms = metadataSearchTerms(query);
   const hasStrongGriefSignal = terms.some((token) => GRIEF_THEME_TOKENS.has(token));
   const asksForJuvenile = /\b(children|child|juvenile|girl|girls|boy|boys|school|orphan|orphans)\b/iu.test(query);
+  const asksForFiction = /\bfiction|novel|novels|short fiction|story|stories|tale|tales|romance\b/iu.test(query);
   return rows
     .map((row) => {
       const haystack = metadataTextHaystack(row);
@@ -818,17 +826,36 @@ function rerankMetadataRows<T extends {
         bonus += GRIEF_THEME_TOKENS.has(term) ? 0.35 : 0.12;
       }
       const hasExplicitGriefMatch = GRIEF_EXPLICIT_MATCH_PATTERN.test(haystack);
+      const titleHasDeathWord = DEATH_TITLE_ONLY_PATTERN.test(row.title.toLowerCase());
+      if (hasStrongGriefSignal && !hasExplicitGriefMatch) {
+        bonus -= 0.4;
+      }
       if (hasStrongGriefSignal && /\bwidows?\b/u.test(haystack) && !hasExplicitGriefMatch) {
         bonus -= 0.45;
       }
+      if (hasStrongGriefSignal && titleHasDeathWord && !hasExplicitGriefMatch) {
+        bonus -= 1.2;
+      }
+      if (hasStrongGriefSignal && LOW_SIGNAL_GENRE_PATTERN.test(haystack) && !hasExplicitGriefMatch) {
+        bonus -= 0.9;
+      }
+      if (asksForFiction && !FICTION_SIGNAL_PATTERN.test(haystack)) {
+        bonus -= 1.1;
+      }
+      if (asksForFiction && NONFICTION_SIGNAL_PATTERN.test(haystack)) {
+        bonus -= 1.25;
+      }
       if (hasStrongGriefSignal && !asksForJuvenile) {
         if (JUVENILE_MATCH_PATTERN.test(haystack) && !hasExplicitGriefMatch) {
-          bonus -= 0.7;
+          bonus -= 1.15;
         } else if (JUVENILE_MATCH_PATTERN.test(haystack)) {
-          bonus -= 0.22;
+          bonus -= 0.55;
         }
         if (ORPHAN_MATCH_PATTERN.test(haystack) && !hasExplicitGriefMatch) {
           bonus -= 0.35;
+        }
+        if (SHORT_FORM_PATTERN.test(haystack) && !hasExplicitGriefMatch) {
+          bonus -= 0.45;
         }
       }
       if (hasStrongGriefSignal && hasExplicitGriefMatch) {
