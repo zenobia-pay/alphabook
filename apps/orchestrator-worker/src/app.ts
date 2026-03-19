@@ -2094,7 +2094,13 @@ async function executeTool(
   deps: AppDeps,
   toolName: ToolName,
   args: Record<string, unknown>,
-  context: { userId: string; sessionId: string; runId: string; auditLog?: AuditLogger },
+  context: {
+    userId: string;
+    sessionId: string;
+    runId: string;
+    auditLog?: AuditLogger;
+    progressReporter?: (text: string, detail?: Record<string, unknown>) => Promise<void>;
+  },
 ): Promise<Record<string, unknown>> {
   const normalizedArgs = normalizeToolArgs(toolName, args);
   switch (toolName) {
@@ -2384,7 +2390,13 @@ async function executeTool(
 async function executeShardedWorkspaceTask(
   deps: AppDeps,
   parsed: { runtimeId: string; taskSpec: Record<string, unknown> },
-  context: { userId: string; sessionId: string; runId: string; auditLog?: AuditLogger },
+  context: {
+    userId: string;
+    sessionId: string;
+    runId: string;
+    auditLog?: AuditLogger;
+    progressReporter?: (text: string, detail?: Record<string, unknown>) => Promise<void>;
+  },
 ) {
   const taskSpec = parsed.taskSpec;
   const shardPlan = Array.isArray(taskSpec.shardPlan)
@@ -2427,6 +2439,40 @@ async function executeShardedWorkspaceTask(
     if (!shardRuntimeId) {
       return { ok: false, shardId, label, strategy, error: typeof workspace.error === "string" ? workspace.error : "Shard workspace startup failed." };
     }
+    const shardProgressEmitter = context.progressReporter
+      ? startRuntimeTaskProgressEmitter(
+          deps.runtimeGateway,
+          async (_eventName, data) => {
+            if (typeof data.text !== "string") {
+              return;
+            }
+            const detail =
+              data.detail && typeof data.detail === "object"
+                ? {
+                    ...(data.detail as Record<string, unknown>),
+                    shardId,
+                    shardLabel: label,
+                    ...(strategy ? { shardStrategy: strategy } : {}),
+                  }
+                : {
+                    type: "research.note",
+                    shardId,
+                    shardLabel: label,
+                    ...(strategy ? { shardStrategy: strategy } : {}),
+                  };
+            await context.progressReporter?.(data.text, detail);
+          },
+          {
+            sessionId: context.sessionId,
+            runId: context.runId,
+          },
+          context.runId,
+          `${parsed.runtimeId}:${shardId}`,
+          "run_workspace_task",
+          shardRuntimeId,
+          { initialText: `Starting ${label}.` },
+        )
+      : null;
     try {
       const result = await deps.runtimeGateway.runWorkspaceTask({
         runtimeId: shardRuntimeId,
@@ -2436,6 +2482,7 @@ async function executeShardedWorkspaceTask(
       });
       return { ok: result.ok !== false, shardId, label, strategy, result };
     } finally {
+      await shardProgressEmitter?.stop();
       await deps.runtimeGateway.destroyWorkspace({
         runtimeId: shardRuntimeId,
         sessionId: context.sessionId,
@@ -3437,6 +3484,7 @@ function startRuntimeTaskProgressEmitter(
   toolCallId: string,
   toolName: ToolName,
   runtimeId: string,
+  options?: { initialText?: string | null },
 ) {
   let stopped = false;
   let inFlight = false;
@@ -3488,7 +3536,9 @@ function startRuntimeTaskProgressEmitter(
     }
   };
 
-  void emit("Starting the deeper research run.");
+  if (options?.initialText !== null) {
+    void emit(options?.initialText ?? "Starting the deeper research run.");
+  }
   void poll();
   const timer = setInterval(() => {
     void poll();
@@ -7464,6 +7514,32 @@ async function runOrchestrator(
             sessionId: activeSession.id,
             runId: run.id,
             auditLog: recordRawLog,
+            progressReporter: async (text, detail) => {
+              queueToolProgress(
+                {
+                  runId: run.id,
+                  toolCallId: toolRecord.id,
+                  toolName,
+                  text,
+                  detail,
+                },
+                async (progressText, emittedDetail) => {
+                  liveToolTrace = liveToolTrace.map((entry) =>
+                    entry.id === toolRecord.id
+                      ? appendToolProgress(entry, progressText, emittedDetail)
+                      : entry,
+                  );
+                  await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
+                  await send("tool.progress", {
+                    runId: run.id,
+                    toolCallId: toolRecord.id,
+                    toolName,
+                    text: progressText,
+                    ...(emittedDetail ? { detail: emittedDetail } : {}),
+                  });
+                },
+              );
+            },
           });
           backgroundResult = await (toolName === "create_workspace"
             ? withToolExecutionDeadline(
@@ -7998,6 +8074,32 @@ async function runOrchestrator(
           sessionId: session.id,
           runId: run.id,
           auditLog: recordRawLog,
+          progressReporter: async (text, detail) => {
+            queueToolProgress(
+              {
+                runId: run.id,
+                toolCallId: toolRecord.id,
+                toolName: toolCall.tool_name,
+                text,
+                detail,
+              },
+              async (progressText, emittedDetail) => {
+                liveToolTrace = liveToolTrace.map((entry) =>
+                  entry.id === toolRecord.id
+                    ? appendToolProgress(entry, progressText, emittedDetail)
+                    : entry,
+                );
+                await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
+                await send("tool.progress", {
+                  runId: run.id,
+                  toolCallId: toolRecord.id,
+                  toolName: toolCall.tool_name,
+                  text: progressText,
+                  ...(emittedDetail ? { detail: emittedDetail } : {}),
+                });
+              },
+            );
+          },
         });
         addRuntimeIds(runtimeIdsToCleanup, normalizedToolArgs, result);
         if (toolCall.tool_name === "run_workspace_task") {
