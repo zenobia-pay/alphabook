@@ -3084,7 +3084,11 @@ function isLowValueSectionSummary(text: string) {
   if (normalized === "running" || normalized === "done" || normalized === "failed" || normalized === "summary") {
     return true;
   }
-  if (/^\d+(?:\.\d+)?$/u.test(normalized)) {
+  if (
+    /^\d+(?:\.\d+)?$/u.test(normalized)
+    || /^\d+(?:\s+\d+)+$/u.test(normalized)
+    || /^\d+(?:\s*[-–]\s*\d+)+$/u.test(normalized)
+  ) {
     return true;
   }
   return /^\d+\s+(book|books|passage|passages|workspace book|workspace books)$/u.test(normalized);
