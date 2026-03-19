@@ -5734,6 +5734,38 @@ test("estimateResearchScope returns budget and shard recommendations for broad q
   assert.ok((estimate.recommendedShards[0]?.targetWorkCount ?? 0) > 0);
 });
 
+test("estimateResearchScope prefers retrieval-strategy sharding for hypothesis queries", async () => {
+  const store = new InMemoryAppStore(
+    Array.from({ length: 60 }, (_, index) => ({
+      id: `work-${index + 1}`,
+      gutenbergId: index + 1,
+      title: `Moral Grief Novel ${index + 1}`,
+      language: "en",
+      releaseDate: "1880-01-01",
+      rightsStatus: "public_domain",
+      summary: "A fiction work about grief, conscience, virtue, and moral transformation.",
+      authors: [`Author ${index + 1}`],
+      subjects: ["fiction", "grief", "mourning"],
+      cleanTextKey: `gutenberg/clean/${index + 1}/clean.txt`,
+    })),
+    Array.from({ length: 180 }, (_, index) => ({
+      id: `chunk-${index + 1}`,
+      workId: `work-${(index % 60) + 1}`,
+      chunkIndex: index,
+      text: "The characters speak of grief, virtue, remorse, and moral purification.",
+      r2Key: `gutenberg/clean/${(index % 60) + 1}/chunks.jsonl`,
+      score: 0,
+      excerpt: "",
+    })),
+  );
+
+  const estimate = await store.estimateResearchScope("Test the hypothesis that grief in 19th century fiction is morally purifying.");
+
+  assert.equal(estimate.recommendedShardAxis, "retrieval_strategy");
+  assert.ok(estimate.recommendedShards.some((shard) => shard.strategy === "supporting_evidence"));
+  assert.ok(estimate.recommendedShards.some((shard) => shard.strategy === "opposing_evidence"));
+});
+
 test("fallback planner carries shard planning into workspace task specs for broad queries", async () => {
   const planner = new FallbackPlanner();
   const decision = await planner.decide({
@@ -5850,6 +5882,164 @@ test("fallback planner carries shard planning into workspace task specs for broa
   assert.ok((taskSpec.candidateWorkIds as unknown[]).length < (taskSpec.frontierWorkIds as unknown[]).length);
   assert.ok(Array.isArray(taskSpec.verifiedWorkIds));
   assert.ok((taskSpec.verifiedWorkIds as unknown[]).length > 0);
+});
+
+test("fallback planner marks hypothesis-test runs with supporting and opposing evidence hints", async () => {
+  const planner = new FallbackPlanner();
+  const decision = await planner.decide({
+    userMessage: "Test the hypothesis that 19th century fiction treats grief as morally purifying.",
+    conversationHistory: [],
+    turns: 4,
+    toolHistory: [
+      {
+        toolName: "estimate_research_scope",
+        args: {
+          query: "Test the hypothesis that 19th century fiction treats grief as morally purifying.",
+        },
+        result: {
+          recommendedIntensity: "maximum",
+          recommendedWallClockMinutes: 60,
+          recommendedParallelism: 8,
+          recommendedShardAxis: "retrieval_strategy",
+          recommendedFrontierWorks: 96,
+          recommendedShards: Array.from({ length: 8 }, (_, index) => ({
+            shardId: `retrieval-strategy-${index + 1}`,
+            index,
+            totalShards: 8,
+            axis: "retrieval_strategy",
+            label: `Strategy shard ${index + 1}`,
+            targetWorkCount: 12,
+            estimatedCoveragePercent: 100,
+            strategy: index === 0 ? "supporting_evidence" : "opposing_evidence",
+          })),
+        },
+      },
+      {
+        toolName: "create_workspace",
+        args: {
+          workIds: [],
+          chunkIds: [],
+          taskContext: {},
+        },
+        result: {
+          ok: true,
+          runtimeId: "runtime-1",
+        },
+      },
+      {
+        toolName: "search_works",
+        args: {
+          query: "Test the hypothesis that 19th century fiction treats grief as morally purifying.",
+        },
+        result: {
+          works: Array.from({ length: 20 }, (_, index) => ({
+            id: `work-${index + 1}`,
+            title: `Work ${index + 1}`,
+            authors: [`Author ${index + 1}`],
+          })),
+          frontier: {
+            workCount: 40,
+            works: Array.from({ length: 40 }, (_, index) => ({
+              id: `work-${index + 1}`,
+              title: `Work ${index + 1}`,
+              authors: [`Author ${index + 1}`],
+            })),
+          },
+        },
+      },
+      {
+        toolName: "get_relevant_chunks",
+        args: {
+          query: "Test the hypothesis that 19th century fiction treats grief as morally purifying.",
+        },
+        result: {
+          chunks: Array.from({ length: 12 }, (_, index) => ({
+            id: `chunk-${index + 1}`,
+            workId: `work-${index + 1}`,
+            chunkIndex: index,
+            excerpt: "A relevant passage.",
+            r2Key: `gutenberg/clean/${index + 1}/chunks.jsonl`,
+          })),
+        },
+      },
+    ],
+  });
+
+  assert.equal(decision.type, "tool_call");
+  assert.equal(decision.tool_name, "get_work_metadata");
+
+  const nextDecision = await planner.decide({
+    userMessage: "Test the hypothesis that 19th century fiction treats grief as morally purifying.",
+    conversationHistory: [],
+    turns: 5,
+    toolHistory: [
+      {
+        toolName: "estimate_research_scope",
+        args: { query: "Test the hypothesis that 19th century fiction treats grief as morally purifying." },
+        result: {
+          recommendedIntensity: "maximum",
+          recommendedWallClockMinutes: 60,
+          recommendedParallelism: 8,
+          recommendedShardAxis: "retrieval_strategy",
+          recommendedFrontierWorks: 96,
+          recommendedShards: [],
+        },
+      },
+      { toolName: "create_workspace", args: { workIds: [], chunkIds: [], taskContext: {} }, result: { ok: true, runtimeId: "runtime-1" } },
+      { toolName: "search_works", args: { query: "Test the hypothesis that 19th century fiction treats grief as morally purifying." }, result: { works: [], frontier: { workCount: 0, works: [] } } },
+      { toolName: "get_relevant_chunks", args: { query: "Test the hypothesis that 19th century fiction treats grief as morally purifying." }, result: { chunks: Array.from({ length: 12 }, (_, index) => ({ id: `chunk-${index + 1}`, workId: `work-${index + 1}`, chunkIndex: index, excerpt: "A relevant passage." })) } },
+      { toolName: "get_work_metadata", args: { workIds: Array.from({ length: 12 }, (_, index) => `work-${index + 1}`) }, result: { works: [] } },
+    ],
+  });
+
+  assert.equal(nextDecision.type, "tool_call");
+  assert.equal(nextDecision.tool_name, "run_workspace_task");
+  const taskSpec = nextDecision.args.taskSpec as Record<string, unknown>;
+  assert.equal(taskSpec.taskIntent, "hypothesis_test");
+  const searchHints = taskSpec.searchHints as Record<string, unknown>;
+  assert.match(String(searchHints.supportingEvidenceFocus ?? ""), /support/i);
+  assert.match(String(searchHints.opposingEvidenceFocus ?? ""), /challenge|oppose/i);
+  assert.equal(searchHints.synthesisMode, "verdict");
+});
+
+test("fallback planner marks short context-dependent turns as follow-up refinements", async () => {
+  const planner = new FallbackPlanner();
+  const decision = await planner.decide({
+    userMessage: "Now just focus on religious consolation.",
+    conversationHistory: [
+      { role: "user", content: "Find grief passages across 19th century fiction." },
+      { role: "assistant", content: "I found examples across several works and categories." },
+    ],
+    turns: 4,
+    toolHistory: [
+      {
+        toolName: "estimate_research_scope",
+        args: { query: "Now just focus on religious consolation." },
+        result: {
+          recommendedIntensity: "high",
+          recommendedWallClockMinutes: 15,
+          recommendedParallelism: 2,
+          recommendedShardAxis: "retrieval_strategy",
+          recommendedFrontierWorks: 40,
+          recommendedShards: [],
+        },
+      },
+      { toolName: "create_workspace", args: { workIds: [], chunkIds: [], taskContext: {} }, result: { ok: true, runtimeId: "runtime-1" } },
+      { toolName: "search_works", args: { query: "Now just focus on religious consolation." }, result: { works: [], frontier: { workCount: 0, works: [] } } },
+      { toolName: "get_relevant_chunks", args: { query: "Now just focus on religious consolation." }, result: { chunks: Array.from({ length: 8 }, (_, index) => ({ id: `chunk-${index + 1}`, workId: `work-${index + 1}`, chunkIndex: index, excerpt: "A relevant passage." })) } },
+      { toolName: "get_work_metadata", args: { workIds: Array.from({ length: 8 }, (_, index) => `work-${index + 1}`) }, result: { works: [] } },
+    ],
+  });
+
+  assert.equal(decision.type, "tool_call");
+  assert.equal(decision.tool_name, "run_workspace_task");
+  const taskSpec = decision.args.taskSpec as Record<string, unknown>;
+  assert.equal(taskSpec.taskIntent, "follow_up_refinement");
+  const followUpContext = taskSpec.followUpContext as Record<string, unknown>;
+  assert.ok(Array.isArray(followUpContext.priorUserMessages));
+  assert.match(String(followUpContext.priorAssistantSummary ?? ""), /found examples/i);
+  const searchHints = taskSpec.searchHints as Record<string, unknown>;
+  assert.equal(searchHints.synthesisMode, "follow_up");
 });
 
 test("fallback planner verifies passages over the wide frontier before VM narrowing", async () => {

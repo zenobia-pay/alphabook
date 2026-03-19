@@ -36,6 +36,14 @@ export interface Planner {
   decide(context: PlannerContext): Promise<PlannerDecision>;
 }
 
+type ResearchIntent =
+  | "broad_evidence_survey"
+  | "hypothesis_test"
+  | "follow_up_refinement"
+  | "comparison"
+  | "verification"
+  | "counterexample_search";
+
 const VALID_TOOL_NAMES = new Set<ToolName>([
   "estimate_research_scope",
   "search_works",
@@ -244,6 +252,100 @@ function isComparisonQuery(query: string): boolean {
   return /\b(compare|contrast|versus|vs\.?|between|across)\b/i.test(query);
 }
 
+function latestAssistantContent(context: PlannerContext) {
+  for (let index = context.conversationHistory.length - 1; index >= 0; index -= 1) {
+    const entry = context.conversationHistory[index];
+    if (entry.role === "assistant" && entry.content.trim().length > 0) {
+      return entry.content.trim();
+    }
+  }
+  return null;
+}
+
+function latestUserContents(context: PlannerContext, limit = 3) {
+  const userMessages = context.conversationHistory
+    .filter((entry) => entry.role === "user" && entry.content.trim().length > 0)
+    .map((entry) => entry.content.trim());
+  return userMessages.slice(-limit);
+}
+
+function classifyResearchIntent(context: PlannerContext): ResearchIntent {
+  const query = context.userMessage.trim();
+  const lowered = query.toLowerCase();
+  const priorUserMessages = latestUserContents(context, 4);
+  const hasPriorTurns = context.conversationHistory.length > 0;
+
+  if (/\b(counterexample|counter-example|exception|exceptions|disconfirm|disprove|contradict|against the claim)\b/i.test(query)) {
+    return "counterexample_search";
+  }
+  if (
+    /\b(hypothesis|test whether|for and against|support and oppose|support or refute|prove or disprove|final verdict|verdict)\b/i.test(query)
+    || /\bis (?:it|this|that) true\b/i.test(query)
+  ) {
+    return "hypothesis_test";
+  }
+  if (/\b(verify|verification|check whether|are we sure|double-check|validate)\b/i.test(query)) {
+    return "verification";
+  }
+  if (isComparisonQuery(query)) {
+    return "comparison";
+  }
+  if (
+    hasPriorTurns
+    && (
+      /^(what about|and what about|now|next|more|go deeper|dig deeper|narrow|zoom in|follow up|follow-up|expand on|focus on|what else)\b/i.test(query)
+      || (query.length <= 120 && /\b(that|those|it|them|this|these|previous|last run|earlier answer)\b/i.test(lowered))
+      || priorUserMessages.length > 1
+    )
+  ) {
+    return "follow_up_refinement";
+  }
+  return "broad_evidence_survey";
+}
+
+function buildSearchHints(context: PlannerContext, taskIntent: ResearchIntent) {
+  const priorAssistant = latestAssistantContent(context);
+  const baseFocus = "Find the strongest directly quotable passages that best answer the research objective.";
+  switch (taskIntent) {
+    case "hypothesis_test":
+      return {
+        passageSearchFocus: `${context.userMessage} Focus on directly quotable evidence that supports or challenges the hypothesis.`,
+        supportingEvidenceFocus: `Find direct passages that support this hypothesis: ${context.userMessage}`,
+        opposingEvidenceFocus: `Find direct passages that challenge or complicate this hypothesis: ${context.userMessage}`,
+        synthesisMode: "verdict",
+      };
+    case "counterexample_search":
+      return {
+        passageSearchFocus: `${context.userMessage} Focus on exceptions, edge cases, and disconfirming evidence.`,
+        opposingEvidenceFocus: `Find direct passages that complicate or weaken the apparent pattern in: ${context.userMessage}`,
+        synthesisMode: "counterexample_scan",
+      };
+    case "verification":
+      return {
+        passageSearchFocus: `${context.userMessage} Focus on directly checking whether the prior claim is actually supported by quoted evidence.`,
+        verificationFocus: priorAssistant ? truncateForModel(priorAssistant, 220) : context.userMessage,
+        synthesisMode: "verification",
+      };
+    case "comparison":
+      return {
+        passageSearchFocus: `${context.userMessage} Focus on directly comparable passages across the strongest candidate books.`,
+        synthesisMode: "comparison",
+      };
+    case "follow_up_refinement":
+      return {
+        passageSearchFocus: `${context.userMessage} Reuse the prior strongest evidence first, then fill the most obvious gaps.`,
+        priorAnswerFocus: priorAssistant ? truncateForModel(priorAssistant, 220) : null,
+        synthesisMode: "follow_up",
+      };
+    case "broad_evidence_survey":
+    default:
+      return {
+        passageSearchFocus: baseFocus,
+        synthesisMode: "survey",
+      };
+  }
+}
+
 function needsWorkspaceSearch(query: string, workIds: string[], chunkCount: number): boolean {
   if (isComparisonQuery(query)) {
     return true;
@@ -421,7 +523,16 @@ function lastToolCall(context: PlannerContext): PlannerContext["toolHistory"][nu
 
 function buildTaskContext(context: PlannerContext, workIds: string[], chunks: ChunkSearchResult[]) {
   const broadCorpusQuery = isBroadCorpusQuery(context);
+  const taskIntent = classifyResearchIntent(context);
   const estimate = scopeEstimate(context);
+  const followUpContext = taskIntent === "follow_up_refinement" || taskIntent === "verification" || taskIntent === "counterexample_search"
+    ? {
+        priorUserMessages: latestUserContents(context, 3),
+        priorAssistantSummary: latestAssistantContent(context)
+          ? truncateForModel(latestAssistantContent(context) as string, 220)
+          : null,
+      }
+    : null;
   const recommendedFrontierWorks = estimateNumber(estimate, "recommendedFrontierWorks", broadCorpusQuery ? 24 : 12);
   const candidateLimit = broadCorpusQuery
     ? Math.max(24, Math.min(40, Math.ceil(recommendedFrontierWorks / 3)))
@@ -440,7 +551,9 @@ function buildTaskContext(context: PlannerContext, workIds: string[], chunks: Ch
   return {
     question: context.userMessage,
     researchObjective: context.userMessage,
+    taskIntent,
     mode: workspaceMode(context),
+    followUpContext,
     candidateWorkIds: narrowedCandidateIds,
     frontierWorkIds: frontierIds,
     verifiedWorkIds: verifiedIds,
@@ -466,7 +579,16 @@ function buildTaskContext(context: PlannerContext, workIds: string[], chunks: Ch
 
 function buildWorkspaceTaskSpec(context: PlannerContext, workIds: string[], chunks: ChunkSearchResult[]) {
   const broadCorpusQuery = isBroadCorpusQuery(context);
+  const taskIntent = classifyResearchIntent(context);
   const estimate = scopeEstimate(context);
+  const followUpContext = taskIntent === "follow_up_refinement" || taskIntent === "verification" || taskIntent === "counterexample_search"
+    ? {
+        priorUserMessages: latestUserContents(context, 3),
+        priorAssistantSummary: latestAssistantContent(context)
+          ? truncateForModel(latestAssistantContent(context) as string, 220)
+          : null,
+      }
+    : null;
   const recommendedFrontierWorks = estimateNumber(estimate, "recommendedFrontierWorks", broadCorpusQuery ? 32 : 12);
   const recommendedParallelism = estimateNumber(estimate, "recommendedParallelism", broadCorpusQuery ? 2 : 1);
   const workLimit = broadCorpusQuery
@@ -488,6 +610,8 @@ function buildWorkspaceTaskSpec(context: PlannerContext, workIds: string[], chun
     phase: "collect_and_brief",
     question: context.userMessage,
     researchObjective: context.userMessage,
+    taskIntent,
+    followUpContext,
     mode: workspaceMode(context),
     intensity: typeof estimate?.recommendedIntensity === "string" ? estimate.recommendedIntensity : broadCorpusQuery ? "high" : "normal",
     timeBudgetMinutes: typeof estimate?.recommendedWallClockMinutes === "number" ? estimate.recommendedWallClockMinutes : broadCorpusQuery ? 15 : 5,
@@ -502,7 +626,7 @@ function buildWorkspaceTaskSpec(context: PlannerContext, workIds: string[], chun
     shardPlan: recommendedShards,
     searchHints: {
       searchWorksQuery: context.userMessage,
-      passageSearchFocus: "Find the strongest directly quotable passages that best answer the research objective.",
+      ...buildSearchHints(context, taskIntent),
     },
     searchPlan: estimate ?? undefined,
     retrieval: {

@@ -827,6 +827,12 @@ function recommendedShardAxis(query: string, estimatedWorkBreadth: number): Rese
   if (estimatedWorkBreadth <= 24) {
     return "none";
   }
+  if (/\b(hypothesis|test whether|for and against|support and oppose|support or refute|prove or disprove|verdict|counterexample|exception|exceptions|disconfirm)\b/iu.test(query)) {
+    return "retrieval_strategy";
+  }
+  if (/\b(what about|go deeper|follow up|follow-up|focus on|expand on|narrow|zoom in)\b/iu.test(query)) {
+    return "retrieval_strategy";
+  }
   if (/\b(180\d|181\d|182\d|183\d|184\d|185\d|186\d|187\d|188\d|189\d|century|decade|era|period|before|after)\b/iu.test(query)) {
     return "publication_year";
   }
@@ -900,10 +906,11 @@ function buildPublicationYearShards(totalShards: number, targetWorkCount: number
 
 function buildRetrievalStrategyShards(totalShards: number, targetWorkCount: number, estimatedCoveragePercent: number): ResearchShardDescriptor[] {
   const strategies = [
+    "supporting_evidence",
+    "opposing_evidence",
     "metadata_expansion",
     "semantic_chunk_search",
     "lexical_regex_search",
-    "neighbor_expansion",
     "verification_rerank",
     "gap_fill",
   ];

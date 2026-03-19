@@ -879,6 +879,7 @@ function compactTaskContext(taskContext) {
   const normalized = taskContext;
   return {
     mode: typeof normalized.mode === "string" ? normalized.mode : null,
+    taskIntent: typeof normalized.taskIntent === "string" ? normalized.taskIntent : null,
     prompt: typeof normalized.prompt === "string" ? normalizeWhitespace(normalized.prompt).slice(0, 220) : null,
     question: typeof normalized.question === "string" ? normalizeWhitespace(normalized.question).slice(0, 220) : null,
     runtimeId: typeof normalized.runtimeId === "string" ? normalized.runtimeId : null,
@@ -894,6 +895,14 @@ function compactTaskContext(taskContext) {
         .map((chunk) => (chunk && typeof chunk === "object" && typeof chunk.chunkId === "string" ? chunk.chunkId : null))
         .filter(Boolean)
       : [],
+    followUpContext: normalized.followUpContext && typeof normalized.followUpContext === "object"
+      ? {
+          priorUserMessages: sampleStrings(normalized.followUpContext.priorUserMessages, 3),
+          priorAssistantSummary: typeof normalized.followUpContext.priorAssistantSummary === "string"
+            ? normalizeWhitespace(normalized.followUpContext.priorAssistantSummary).slice(0, 220)
+            : null,
+        }
+      : null,
   };
 }
 
@@ -905,6 +914,7 @@ function compactTaskSpec(task, openBookMode) {
   return {
     runtimeId: typeof task.runtimeId === "string" ? task.runtimeId : null,
     taskType: typeof task.taskType === "string" ? task.taskType : null,
+    taskIntent: typeof task.taskIntent === "string" ? task.taskIntent : null,
     mode: typeof task.mode === "string" ? task.mode : null,
     intensity: typeof task.intensity === "string" ? task.intensity : null,
     timeBudgetMinutes: typeof task.timeBudgetMinutes === "number" ? task.timeBudgetMinutes : null,
@@ -938,6 +948,36 @@ function compactTaskSpec(task, openBookMode) {
     candidateWorkIds: sampleStrings(task.candidateWorkIds, workLimit),
     frontierWorkIds: sampleStrings(task.frontierWorkIds, workLimit),
     verifiedWorkIds: sampleStrings(task.verifiedWorkIds, workLimit),
+    followUpContext: task.followUpContext && typeof task.followUpContext === "object"
+      ? {
+          priorUserMessages: sampleStrings(task.followUpContext.priorUserMessages, 3),
+          priorAssistantSummary: typeof task.followUpContext.priorAssistantSummary === "string"
+            ? normalizeWhitespace(task.followUpContext.priorAssistantSummary).slice(0, 220)
+            : null,
+        }
+      : null,
+    searchHints: task.searchHints && typeof task.searchHints === "object"
+      ? {
+          passageSearchFocus: typeof task.searchHints.passageSearchFocus === "string"
+            ? normalizeWhitespace(task.searchHints.passageSearchFocus).slice(0, 220)
+            : null,
+          supportingEvidenceFocus: typeof task.searchHints.supportingEvidenceFocus === "string"
+            ? normalizeWhitespace(task.searchHints.supportingEvidenceFocus).slice(0, 220)
+            : null,
+          opposingEvidenceFocus: typeof task.searchHints.opposingEvidenceFocus === "string"
+            ? normalizeWhitespace(task.searchHints.opposingEvidenceFocus).slice(0, 220)
+            : null,
+          verificationFocus: typeof task.searchHints.verificationFocus === "string"
+            ? normalizeWhitespace(task.searchHints.verificationFocus).slice(0, 220)
+            : null,
+          priorAnswerFocus: typeof task.searchHints.priorAnswerFocus === "string"
+            ? normalizeWhitespace(task.searchHints.priorAnswerFocus).slice(0, 220)
+            : null,
+          synthesisMode: typeof task.searchHints.synthesisMode === "string"
+            ? task.searchHints.synthesisMode
+            : null,
+        }
+      : null,
     retrieval: retrieval
       ? {
           frontierWorks: Array.isArray(retrieval.frontierWorks)
@@ -1053,6 +1093,8 @@ function buildBriefingPrompt(runtimePrompt, manifest, task, evidence, question) 
   };
   const compactTask = compactTaskSpec(task, openBookMode);
   const researchObjective = compactTask.researchObjective || question;
+  const taskIntent = compactTask.taskIntent || compactTask.taskContext?.taskIntent || "broad_evidence_survey";
+  const searchHints = compactTask.searchHints || null;
   const seededCandidateCount = Array.isArray(compactTask.frontierWorkIds) && compactTask.frontierWorkIds.length > 0
     ? compactTask.frontierWorkIds.length
     : Array.isArray(compactTask.candidateWorkIds) ? compactTask.candidateWorkIds.length : 0;
@@ -1097,6 +1139,33 @@ function buildBriefingPrompt(runtimePrompt, manifest, task, evidence, question) 
       : null,
     !openBookMode && compactTask.searchPlan?.recommendedFrontierWorks
       ? `- The orchestrator wants a frontier of about ${compactTask.searchPlan.recommendedFrontierWorks} active books before final verification narrows it.`
+      : null,
+    !openBookMode
+      ? `- This run's task intent is ${taskIntent.replaceAll("_", " ")}.`
+      : null,
+    !openBookMode && taskIntent === "hypothesis_test"
+      ? "- Separate supporting evidence from opposing or complicating evidence as you search, then finish with a clear verdict grounded in both."
+      : null,
+    !openBookMode && taskIntent === "counterexample_search"
+      ? "- Prioritize counterexamples, exceptions, and disconfirming passages over generic supporting evidence."
+      : null,
+    !openBookMode && taskIntent === "follow_up_refinement"
+      ? "- Treat this as a follow-up to earlier work: reuse the strongest prior evidence first, then fill the most obvious gaps."
+      : null,
+    !openBookMode && taskIntent === "verification"
+      ? "- Focus on checking whether the earlier conclusion is actually supported by direct quotations."
+      : null,
+    !openBookMode && searchHints?.supportingEvidenceFocus
+      ? `- Supporting-evidence focus: ${searchHints.supportingEvidenceFocus}.`
+      : null,
+    !openBookMode && searchHints?.opposingEvidenceFocus
+      ? `- Opposing-evidence focus: ${searchHints.opposingEvidenceFocus}.`
+      : null,
+    !openBookMode && searchHints?.verificationFocus
+      ? `- Verification target: ${searchHints.verificationFocus}.`
+      : null,
+    !openBookMode && (compactTask.followUpContext?.priorAssistantSummary || compactTask.taskContext?.followUpContext?.priorAssistantSummary)
+      ? `- Prior answer summary to refine: ${compactTask.followUpContext?.priorAssistantSummary || compactTask.taskContext.followUpContext.priorAssistantSummary}.`
       : null,
     "- Prefer finishing with a good briefing over exhaustively exploring every possible lead.",
     openBookMode
