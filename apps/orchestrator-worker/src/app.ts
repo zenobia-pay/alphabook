@@ -3743,7 +3743,7 @@ function runtimeIdFromToolCall(toolCall: Awaited<ReturnType<AppStore["listToolCa
   return resultRuntimeId ?? argsRuntimeId;
 }
 
-async function recoverRunCompletion(
+async function finalizeRunFromCompletedTools(
   deps: AppDeps,
   request: Request,
   session: SessionRecord,
@@ -3862,7 +3862,7 @@ async function ensureRunAnswerPersisted(
   });
 }
 
-async function reconcilePersistentRun(
+async function finalizeStaleRun(
   deps: AppDeps,
   request: Request,
   run: Awaited<ReturnType<AppStore["getRun"]>>,
@@ -3921,7 +3921,7 @@ async function reconcilePersistentRun(
     return run;
   }
 
-  if (await recoverRunCompletion(deps, request, session, run, toolCalls)) {
+  if (await finalizeRunFromCompletedTools(deps, request, session, run, toolCalls)) {
     return deps.store.getRun(run.id);
   }
 
@@ -4078,24 +4078,12 @@ async function reconcilePersistentRun(
     }
     const refreshedToolCalls = await deps.store.listToolCalls(run.id);
     await persistRecoveredPlanToolTrace(deps, session.id, run.id, refreshedToolCalls);
-    await recoverRunCompletion(deps, request, session, run, refreshedToolCalls);
+    await finalizeRunFromCompletedTools(deps, request, session, run, refreshedToolCalls);
     await cancelLiveExecution(refreshedToolCalls);
     return deps.store.getRun(run.id);
   }
 
   return run;
-}
-
-async function reconcileSessionRuns(
-  deps: AppDeps,
-  request: Request,
-  sessionId: string,
-  activeRuns?: Map<string, ActiveRunState>,
-) {
-  const runs = await deps.store.listRuns(sessionId);
-  for (const run of runs) {
-    await reconcilePersistentRun(deps, request, run, activeRuns);
-  }
 }
 
 function normalizeGeneratedSessionTitle(value: string): string | null {
@@ -4951,7 +4939,7 @@ export async function reapStaleRuns(
       continue;
     }
     try {
-      await reconcilePersistentRun(deps, janitorRequest, runRecord);
+      await finalizeStaleRun(deps, janitorRequest, runRecord);
     } catch {
       // Best-effort janitor pass; the next schedule can retry this run.
     }
