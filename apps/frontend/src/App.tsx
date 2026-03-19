@@ -2626,7 +2626,7 @@ function buildWorkContentHref(workId: string, gutenbergId?: string | number | nu
   if (gutenbergId != null && String(gutenbergId).trim().length > 0) {
     return `${BOOK_CONTENT_ORIGIN}/${encodeURIComponent(String(gutenbergId))}?v=${BOOK_CONTENT_VERSION}`;
   }
-  return `https://api.alpha-book.org/works/${encodeURIComponent(workId)}/content?v=${BOOK_CONTENT_VERSION}`;
+  return `/api/works/${encodeURIComponent(workId)}/content?v=${BOOK_CONTENT_VERSION}`;
 }
 
 function buildWorkContentFrameHref(workId: string, gutenbergId?: string | number | null, passageId?: string | null) {
