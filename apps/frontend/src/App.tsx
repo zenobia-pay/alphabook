@@ -804,6 +804,172 @@ function mergePersistedToolTrace(messages: UiMessage[], runId: string, trace: Ar
   return changed ? nextMessages : messages;
 }
 
+function toolPayloadLogLineCount(value: unknown) {
+  if (!Array.isArray(value)) {
+    return 0;
+  }
+  return value.filter((line) => {
+    if (typeof line === "string") {
+      return line.trim().length > 0;
+    }
+    return Boolean(line) && typeof line === "object";
+  }).length;
+}
+
+function toolPayloadArrayLength(value: unknown) {
+  return Array.isArray(value) ? value.length : 0;
+}
+
+function toolPayloadArrayRichness(value: Record<string, unknown> | undefined) {
+  if (!value) {
+    return 0;
+  }
+  const manifest = value.manifest && typeof value.manifest === "object"
+    ? value.manifest as Record<string, unknown>
+    : null;
+  return (
+    toolPayloadArrayLength(value.works)
+    + toolPayloadArrayLength(value.chunks)
+    + toolPayloadArrayLength(value.progressDetails)
+    + toolPayloadArrayLength(value.citations)
+    + toolPayloadArrayLength(value.artifacts)
+    + toolPayloadArrayLength(value.codexRuns)
+    + (manifest ? toolPayloadArrayLength(manifest.works) : 0)
+  );
+}
+
+function toolPayloadRichness(value: Record<string, unknown> | undefined) {
+  if (!value) {
+    return -1;
+  }
+  let score = Object.keys(value).length;
+  score += toolPayloadLogLineCount(value.__logLines) * 10;
+  score += toolPayloadArrayRichness(value) * 5;
+  return score;
+}
+
+function mergeToolLogLines(existingValue: unknown, incomingValue: unknown) {
+  const existing = Array.isArray(existingValue) ? existingValue : [];
+  const incoming = Array.isArray(incomingValue) ? incomingValue : [];
+  if (existing.length === 0) {
+    return incoming.length > 0 ? incoming : undefined;
+  }
+  if (incoming.length === 0) {
+    return existing;
+  }
+  const seen = new Set<string>();
+  const merged: unknown[] = [];
+  for (const line of [...existing, ...incoming]) {
+    const key = JSON.stringify(line);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    merged.push(line);
+  }
+  return merged;
+}
+
+function chooseLongerToolArray<T>(existingValue: T[] | undefined, incomingValue: T[] | undefined) {
+  if (!existingValue || existingValue.length === 0) {
+    return incomingValue;
+  }
+  if (!incomingValue || incomingValue.length === 0) {
+    return existingValue;
+  }
+  return existingValue.length >= incomingValue.length ? existingValue : incomingValue;
+}
+
+function mergeToolPayload(
+  existingValue: Record<string, unknown> | undefined,
+  incomingValue: Record<string, unknown> | undefined,
+) {
+  if (!existingValue) {
+    return incomingValue;
+  }
+  if (!incomingValue) {
+    return existingValue;
+  }
+
+  const existingScore = toolPayloadRichness(existingValue);
+  const incomingScore = toolPayloadRichness(incomingValue);
+  const preferred = existingScore >= incomingScore ? existingValue : incomingValue;
+  const secondary = preferred === existingValue ? incomingValue : existingValue;
+  const merged: Record<string, unknown> = {
+    ...secondary,
+    ...preferred,
+  };
+
+  const mergedLogLines = mergeToolLogLines(existingValue.__logLines, incomingValue.__logLines);
+  if (mergedLogLines) {
+    merged.__logLines = mergedLogLines;
+  }
+
+  const preferredWorks = chooseLongerToolArray(
+    Array.isArray(existingValue.works) ? existingValue.works : undefined,
+    Array.isArray(incomingValue.works) ? incomingValue.works : undefined,
+  );
+  if (preferredWorks) {
+    merged.works = preferredWorks;
+  }
+
+  const preferredChunks = chooseLongerToolArray(
+    Array.isArray(existingValue.chunks) ? existingValue.chunks : undefined,
+    Array.isArray(incomingValue.chunks) ? incomingValue.chunks : undefined,
+  );
+  if (preferredChunks) {
+    merged.chunks = preferredChunks;
+  }
+
+  const existingManifest = existingValue.manifest && typeof existingValue.manifest === "object"
+    ? existingValue.manifest as Record<string, unknown>
+    : null;
+  const incomingManifest = incomingValue.manifest && typeof incomingValue.manifest === "object"
+    ? incomingValue.manifest as Record<string, unknown>
+    : null;
+  if (existingManifest || incomingManifest) {
+    const preferredManifest = toolPayloadRichness(existingManifest ?? undefined) >= toolPayloadRichness(incomingManifest ?? undefined)
+      ? existingManifest
+      : incomingManifest;
+    const secondaryManifest = preferredManifest === existingManifest ? incomingManifest : existingManifest;
+    const mergedWorks = chooseLongerToolArray(
+      Array.isArray(existingManifest?.works) ? existingManifest.works : undefined,
+      Array.isArray(incomingManifest?.works) ? incomingManifest.works : undefined,
+    );
+    merged.manifest = {
+      ...(secondaryManifest ?? {}),
+      ...(preferredManifest ?? {}),
+      ...(mergedWorks ? { works: mergedWorks } : {}),
+    };
+  }
+
+  return merged;
+}
+
+function mergeToolTraceEntries(existing: ToolTraceEntry, incoming: ToolTraceEntry): ToolTraceEntry {
+  const nextProgress = existing.progress.length >= incoming.progress.length
+    ? existing.progress
+    : incoming.progress;
+  const nextEntry: ToolTraceEntry = {
+    ...existing,
+    label: existing.label || incoming.label,
+    rationale: existing.rationale ?? incoming.rationale,
+    progress: nextProgress,
+    progressDetails:
+      Array.isArray(existing.progressDetails) && existing.progressDetails.length >= (incoming.progressDetails?.length ?? 0)
+        ? existing.progressDetails
+        : incoming.progressDetails,
+    args: mergeToolPayload(existing.args, incoming.args) ?? {},
+    result: mergeToolPayload(existing.result, incoming.result),
+    isError: existing.isError || incoming.isError,
+    state:
+      incoming.state !== "running" || existing.state === "running"
+        ? incoming.state
+        : existing.state,
+  };
+  return nextEntry;
+}
+
 function formatRelativeTime(value: string | null | undefined) {
   if (!value) {
     return "Just now";
@@ -2528,7 +2694,7 @@ function AssistantSurface({
 }
 
 function currentResearchToolTrace(messages: UiMessage[], runId: string | null) {
-  const planMessages = [...messages].reverse().filter((message) => {
+  const planMessages = messages.filter((message) => {
     if (message.role !== "assistant" || message.toolCalls.length === 0) {
       return false;
     }
@@ -2541,7 +2707,25 @@ function currentResearchToolTrace(messages: UiMessage[], runId: string | null) {
     const messageRunId = typeof message.metadata?.runId === "string" ? message.metadata.runId : null;
     return messageRunId === runId || messageRunId === null;
   });
-  return planMessages[0]?.toolCalls ?? [];
+  if (planMessages.length === 0) {
+    return [];
+  }
+
+  const merged = new Map<string, ToolTraceEntry>();
+  const order: string[] = [];
+  for (const message of planMessages) {
+    for (const toolCall of message.toolCalls) {
+      const existing = merged.get(toolCall.id);
+      if (!existing) {
+        merged.set(toolCall.id, toolCall);
+        order.push(toolCall.id);
+        continue;
+      }
+      merged.set(toolCall.id, mergeToolTraceEntries(existing, toolCall));
+    }
+  }
+
+  return order.map((id) => merged.get(id)).filter((entry): entry is ToolTraceEntry => Boolean(entry));
 }
 
 function currentResearchDocumentEnding(messages: UiMessage[]) {
