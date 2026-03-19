@@ -5734,6 +5734,38 @@ test("estimateResearchScope returns budget and shard recommendations for broad q
   assert.ok((estimate.recommendedShards[0]?.targetWorkCount ?? 0) > 0);
 });
 
+test("estimateResearchScope does not collapse broad grief-style thematic queries to a tiny frontier", async () => {
+  const store = new InMemoryAppStore(
+    Array.from({ length: 48 }, (_, index) => ({
+      id: `work-${index + 1}`,
+      gutenbergId: index + 1,
+      title: `Novel ${index + 1}`,
+      language: "en",
+      releaseDate: "1885-01-01",
+      rightsStatus: "public_domain",
+      summary: "A fiction work about mourning, sorrow, consolation, tears, and loss after death.",
+      authors: [`Author ${index + 1}`],
+      subjects: ["fiction", "loss", "mourning"],
+      cleanTextKey: `gutenberg/clean/${index + 1}/clean.txt`,
+    })),
+    Array.from({ length: 160 }, (_, index) => ({
+      id: `chunk-${index + 1}`,
+      workId: `work-${(index % 48) + 1}`,
+      chunkIndex: index,
+      text: "The novel traces sorrow, mourning, consolation, and tears after a death in the family.",
+      r2Key: `gutenberg/clean/${(index % 48) + 1}/chunks.jsonl`,
+      score: 0,
+      excerpt: "",
+    })),
+  );
+
+  const estimate = await store.estimateResearchScope("Identify the different ways characters deal with grief in 19th century fiction.");
+
+  assert.ok(estimate.metadataWorkEstimate >= 24);
+  assert.ok(estimate.chunkWorkEstimate >= 24);
+  assert.ok(estimate.recommendedFrontierWorks >= 72);
+});
+
 test("estimateResearchScope prefers retrieval-strategy sharding for hypothesis queries", async () => {
   const store = new InMemoryAppStore(
     Array.from({ length: 60 }, (_, index) => ({

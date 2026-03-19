@@ -1033,7 +1033,7 @@ function buildResearchScopeEstimate(
     recommendedVmWorkBudget,
     recommendedFrontierWorks,
     estimatedCoveragePercent,
-    probeWorks: probeWorks.slice(0, 6).map((work) => ({
+    probeWorks: probeWorks.slice(0, breadthBand === "tiny" || breadthBand === "small" ? 6 : 12).map((work) => ({
       id: work.id,
       title: work.title,
       authors: work.authors ?? [],
@@ -1171,6 +1171,33 @@ function buildMetadataTsQuery(query: string): string {
     .filter((term) => /^[a-z0-9]+$/iu.test(term))
     .map((term) => `${term}:*`);
   return terms.join(" | ");
+}
+
+function scopeEstimateTerms(query: string) {
+  return metadataSearchTerms(query)
+    .filter((term) => /^[a-z0-9]+$/iu.test(term))
+    .slice(0, 24);
+}
+
+function scopeEstimateTsQuery(query: string) {
+  return scopeEstimateTerms(query)
+    .map((term) => `${term}:*`)
+    .join(" | ");
+}
+
+function scopeEstimateChunkQueries(query: string) {
+  const terms = scopeEstimateTerms(query);
+  if (terms.length === 0) {
+    return [query.trim()].filter((value) => value.length > 0);
+  }
+  const variants = new Set<string>();
+  variants.add(terms.join(" "));
+  if (terms.length > 6) {
+    variants.add(terms.slice(0, 6).join(" "));
+    variants.add(terms.slice(-6).join(" "));
+  }
+  variants.add(query.trim());
+  return [...variants].filter((value) => value.length > 0).slice(0, isBroadMetadataSurveyQuery(query) ? 4 : 2);
 }
 
 function relaxMetadataSearchFilters(filters: Record<string, unknown>) {
@@ -1745,18 +1772,34 @@ export class InMemoryAppStore implements AppStore {
   }
 
   async estimateResearchScope(query: string, filters: PassageSearchFilters = {}): Promise<ResearchScopeEstimate> {
+    const probeLimit = isBroadMetadataSurveyQuery(query) ? 12 : 6;
     const probeWorks = await this.searchWorks(query, {
       ...filters,
-      limit: 6,
+      limit: probeLimit,
     } as Record<string, unknown>);
+    const lexicalProbeQuery = scopeEstimateTerms(query).join(" ");
     const metadataWorkEstimate = [...this.works]
       .filter((work) => workMatchesSearchFilters(work, filters as Record<string, unknown>))
       .filter((work) => {
-        const haystack = `${work.title} ${work.summary ?? ""} ${work.authors.join(" ")} ${work.subjects.join(" ")}`;
-        return lexicalScore(expandedSearchTokens(query).join(" "), haystack) > 0;
+        const haystack = `${work.title} ${work.summary ?? ""} ${work.authors.join(" ")} ${work.subjects.join(" ")} ${JSON.stringify(work.metadata ?? {})}`;
+        return lexicalScore(lexicalProbeQuery, haystack) > 0;
       })
       .length;
-    const chunks = await this.getRelevantChunks(query, undefined, Math.min(250, this.chunks.length), undefined, filters);
+    const chunkQueries = scopeEstimateChunkQueries(query);
+    const chunkResults = await Promise.all(
+      (chunkQueries.length > 0 ? chunkQueries : [query]).map((variant: string) =>
+        this.getRelevantChunks(variant, undefined, Math.min(isBroadMetadataSurveyQuery(query) ? 500 : 250, this.chunks.length), undefined, filters),
+      ),
+    );
+    const chunkById = new Map<string, ChunkSearchResult>();
+    for (const batch of chunkResults) {
+      for (const chunk of batch) {
+        if (!chunkById.has(chunk.id)) {
+          chunkById.set(chunk.id, chunk);
+        }
+      }
+    }
+    const chunks = [...chunkById.values()];
     const chunkMatchEstimate = chunks.length;
     const chunkWorkEstimate = new Set(chunks.map((chunk) => chunk.workId)).size;
     return buildResearchScopeEstimate(query, metadataWorkEstimate, chunkMatchEstimate, chunkWorkEstimate, probeWorks);
@@ -3293,11 +3336,13 @@ export class NeonAppStore implements AppStore {
   }
 
   async estimateResearchScope(query: string, filters: PassageSearchFilters = {}): Promise<ResearchScopeEstimate> {
-    const normalizedQuery = normalizeSearchQuery(query);
-    const tsQuery = normalizedQuery || query.trim();
+    const tsQuery = scopeEstimateTsQuery(query);
+    const estimateTerms = scopeEstimateTerms(query);
+    const lexicalProbeQuery = estimateTerms.join(" ");
+    const probeLimit = isBroadMetadataSurveyQuery(query) ? 12 : 6;
     const probeWorks = await this.searchWorks(query, {
       ...filters,
-      limit: 6,
+      limit: probeLimit,
     } as Record<string, unknown>);
     const startYear = Array.isArray(filters.yearRange) ? Math.min(filters.yearRange[0], filters.yearRange[1]) : null;
     const endYear = Array.isArray(filters.yearRange) ? Math.max(filters.yearRange[0], filters.yearRange[1]) : null;
@@ -3305,7 +3350,7 @@ export class NeonAppStore implements AppStore {
       ? filters.genre.map((genre) => genre.trim()).filter((genre) => genre.length > 0).slice(0, 8)
       : [];
 
-    if (!tsQuery) {
+    if (!tsQuery && estimateTerms.length === 0) {
       return buildResearchScopeEstimate(query, 0, 0, 0, probeWorks);
     }
 
@@ -3316,7 +3361,10 @@ export class NeonAppStore implements AppStore {
     }>(
       `
         WITH query_input AS (
-          SELECT websearch_to_tsquery('english', $1::text) AS tsq
+          SELECT CASE
+            WHEN NULLIF($1::text, '') IS NULL THEN NULL
+            ELSE to_tsquery('english', $1::text)
+          END AS tsq
         ),
         eligible_works AS (
           SELECT w.id, w.title, w.summary, w.metadata_json
@@ -3353,10 +3401,23 @@ export class NeonAppStore implements AppStore {
           SELECT COUNT(*)::int AS metadata_work_estimate
           FROM eligible_works ew, query_input
           WHERE (
-            setweight(to_tsvector('english', COALESCE(ew.title, '')), 'A')
-            || setweight(to_tsvector('english', COALESCE(ew.summary, '')), 'B')
-            || setweight(to_tsvector('english', COALESCE(ew.metadata_json::text, '')), 'D')
-          ) @@ query_input.tsq
+            (
+              query_input.tsq IS NOT NULL AND
+              (
+                setweight(to_tsvector('english', COALESCE(ew.title, '')), 'A')
+                || setweight(to_tsvector('english', COALESCE(ew.summary, '')), 'B')
+                || setweight(to_tsvector('english', COALESCE(ew.metadata_json::text, '')), 'D')
+              ) @@ query_input.tsq
+            )
+            OR EXISTS (
+              SELECT 1
+              FROM unnest($7::text[]) AS token
+              WHERE
+                COALESCE(ew.title, '') ILIKE '%' || token || '%'
+                OR COALESCE(ew.summary, '') ILIKE '%' || token || '%'
+                OR COALESCE(ew.metadata_json::text, '') ILIKE '%' || token || '%'
+            )
+          )
         ),
         chunk_hits AS (
           SELECT
@@ -3365,7 +3426,14 @@ export class NeonAppStore implements AppStore {
           FROM chunks c
           JOIN eligible_works ew ON ew.id = c.work_id,
           query_input
-          WHERE c.tsv @@ query_input.tsq
+          WHERE (
+            (query_input.tsq IS NOT NULL AND c.tsv @@ query_input.tsq)
+            OR EXISTS (
+              SELECT 1
+              FROM unnest($7::text[]) AS token
+              WHERE COALESCE(c.text, '') ILIKE '%' || token || '%'
+            )
+          )
         )
         SELECT
           metadata_hits.metadata_work_estimate,
@@ -3380,6 +3448,7 @@ export class NeonAppStore implements AppStore {
         Number.isInteger(startYear) ? startYear : null,
         Number.isInteger(endYear) ? endYear : null,
         genres,
+        estimateTerms,
       ],
     ), 5_000, "Scope estimate timed out before the database returned counts.");
 
@@ -3388,11 +3457,12 @@ export class NeonAppStore implements AppStore {
       chunk_match_estimate: 0,
       chunk_work_estimate: 0,
     };
+    const probeFloor = lexicalProbeQuery.length > 0 ? probeWorks.length : 0;
     return buildResearchScopeEstimate(
       query,
-      Number(row.metadata_work_estimate ?? 0),
-      Number(row.chunk_match_estimate ?? 0),
-      Number(row.chunk_work_estimate ?? 0),
+      Math.max(Number(row.metadata_work_estimate ?? 0), probeFloor),
+      Math.max(Number(row.chunk_match_estimate ?? 0), probeFloor),
+      Math.max(Number(row.chunk_work_estimate ?? 0), probeFloor),
       probeWorks,
     );
   }
