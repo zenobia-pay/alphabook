@@ -128,7 +128,7 @@ const BOOK_ASSISTANT_MAX_WIDTH = 720;
 const SEO_SITE_NAME = "alpha book";
 const SEO_SITE_ORIGIN = "https://alpha-book.org";
 const BOOK_CONTENT_ORIGIN = "https://books.alpha-book.org";
-const BOOK_CONTENT_VERSION = "20260319b";
+const BOOK_CONTENT_VERSION = "20260319e";
 const DEFAULT_SEO_DESCRIPTION = "Search, read, and ask questions across a growing library of books with cited answers.";
 const DEFAULT_OG_IMAGE_PATH = "/social-card.svg";
 const ASSISTANT_WELCOME_SUGGESTIONS: ThreadSuggestion[] = [
@@ -4126,12 +4126,15 @@ export default function App() {
     }
 
     let cancelled = false;
+    const usesStaticBookSurface = activeWork?.gutenbergId != null && String(activeWork.gutenbergId).trim().length > 0;
     const timeoutId = window.setTimeout(() => {
       if (cancelled) {
         return;
       }
       setActiveWorkSourceLoading(false);
-      setLoadError("Loading this book's text is taking too long. Try refreshing or opening it again.");
+      if (!usesStaticBookSurface) {
+        setLoadError("Loading this book's text is taking too long. Try refreshing or opening it again.");
+      }
     }, 12000);
 
     void (async () => {
@@ -4144,7 +4147,9 @@ export default function App() {
         setActiveWorkSource(source);
       } catch (error) {
         if (!cancelled) {
-          setLoadError(getErrorMessage(error, "We couldn't load that book's text."));
+          if (!usesStaticBookSurface) {
+            setLoadError(getErrorMessage(error, "We couldn't load that book's text."));
+          }
         }
       } finally {
         window.clearTimeout(timeoutId);
@@ -4158,7 +4163,7 @@ export default function App() {
       cancelled = true;
       window.clearTimeout(timeoutId);
     };
-  }, [activeWorkId]);
+  }, [activeWorkId, activeWork]);
 
   useEffect(() => {
     if (!activeProfileUserId || (currentUserId && activeProfileUserId === currentUserId)) {
