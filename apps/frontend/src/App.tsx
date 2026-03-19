@@ -4145,6 +4145,7 @@ function AssistantDocumentFramePage({
   sessionId: string;
   runId: string;
 }) {
+  const hasServerRenderedDocument = typeof document !== "undefined" && Boolean(document.getElementById("assistant-document-ssr"));
   const bootstrap = useMemo(() => readAssistantDocumentBootstrap(sessionId, runId), [runId, sessionId]);
   const bootstrapHydratedMessages = useMemo(() => {
     const rawMessages = Array.isArray(bootstrap?.messages) ? bootstrap.messages : [];
@@ -4161,16 +4162,19 @@ function AssistantDocumentFramePage({
   ));
   const [runStatus, setRunStatus] = useState<SessionRunRecord["status"] | null>(() => bootstrap?.runState?.run?.status ?? null);
   const [sessionTitle, setSessionTitle] = useState<string>(() => deriveAssistantDocumentTitle(bootstrap?.sessionTitle, bootstrapHydratedMessages));
-  const [loading, setLoading] = useState(bootstrap ? false : true);
+  const [loading, setLoading] = useState(bootstrap ? false : !hasServerRenderedDocument);
   const [error, setError] = useState<string | null>(bootstrap?.error ?? null);
   const [errorStatus, setErrorStatus] = useState<number | null>(bootstrap?.errorStatus ?? null);
 
   useEffect(() => {
+    if (loading) {
+      return;
+    }
     const serverRendered = document.getElementById("assistant-document-ssr");
     if (serverRendered) {
       serverRendered.remove();
     }
-  }, []);
+  }, [loading]);
 
   useEffect(() => {
     setMessages(bootstrapHydratedMessages);
@@ -4178,10 +4182,10 @@ function AssistantDocumentFramePage({
     setArtifacts(Array.isArray(bootstrap?.runState?.artifacts) ? bootstrap.runState.artifacts : []);
     setRunStatus(bootstrap?.runState?.run?.status ?? null);
     setSessionTitle(deriveAssistantDocumentTitle(bootstrap?.sessionTitle, bootstrapHydratedMessages));
-    setLoading(bootstrap ? false : true);
+    setLoading(bootstrap ? false : !hasServerRenderedDocument);
     setError(bootstrap?.error ?? null);
     setErrorStatus(bootstrap?.errorStatus ?? null);
-  }, [bootstrap, bootstrapHydratedMessages, runId]);
+  }, [bootstrap, bootstrapHydratedMessages, hasServerRenderedDocument, runId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -4234,6 +4238,7 @@ function AssistantDocumentFramePage({
         }, 1500);
       }
     } else {
+      setLoading(hasServerRenderedDocument ? false : true);
       void refresh();
     }
     return () => {
@@ -4242,11 +4247,11 @@ function AssistantDocumentFramePage({
         window.clearTimeout(pollTimer);
       }
     };
-  }, [bootstrap, runId, sessionId]);
+  }, [bootstrap, hasServerRenderedDocument, runId, sessionId]);
 
   const ending = useMemo(() => currentResearchDocumentEnding(messages), [messages]);
 
-  if (loading) {
+  if (loading && !hasServerRenderedDocument) {
     return (
       <section className="assistant-document-pane assistant-document-standalone">
         <div className="assistant-document-scroll">
