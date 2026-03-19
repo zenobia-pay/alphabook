@@ -3615,6 +3615,7 @@ export default function App() {
 
     void (async () => {
       try {
+        setSessionsResolved(false);
         setSessionsLoading(true);
         const nextSessions = await fetchSessions(authState.authConfigured ? undefined : currentUserId);
         setSessions(nextSessions);
@@ -6025,7 +6026,7 @@ export default function App() {
             activeView={activeView}
             sessions={sessions}
             selectedSessionId={selectedSessionId}
-            sessionsLoading={sessionsLoading && !sessionsResolved}
+            sessionsLoading={sessionsLoading}
             onSelectSession={openSession}
           />
         </div>
