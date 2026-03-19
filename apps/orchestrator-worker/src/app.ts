@@ -4301,6 +4301,21 @@ function summarizeToolHistory(toolHistory: ToolHistoryEntry[]) {
   }));
 }
 
+function latestPriorAssistantSummaryFromConversation(
+  conversationHistory: Array<{
+    role: "user" | "assistant" | "system" | "tool";
+    content: string;
+  }>,
+) {
+  for (let index = conversationHistory.length - 1; index >= 0; index -= 1) {
+    const entry = conversationHistory[index];
+    if (entry.role === "assistant" && entry.content.trim().length > 0) {
+      return entry.content.trim().slice(0, 400);
+    }
+  }
+  return null;
+}
+
 type LiveToolTraceEntry = {
   id: string;
   toolName: ToolName;
@@ -5601,6 +5616,7 @@ async function synthesizeAnswer(
       runtimeEvidenceNotes,
       researchDocument,
       exactCitationLinks,
+      priorAnswerSummary: latestPriorAssistantSummaryFromConversation(params.conversationHistory),
       billingContext: {
         userId: params.userId,
         sessionId: params.sessionId,
@@ -5620,6 +5636,7 @@ async function synthesizeAnswer(
           userMessage: params.userMessage,
           answer: synthesis.answer,
           citations: synthesis.citations,
+          priorAnswerSummary: latestPriorAssistantSummaryFromConversation(params.conversationHistory),
           billingContext: {
             userId: params.userId,
             sessionId: params.sessionId,

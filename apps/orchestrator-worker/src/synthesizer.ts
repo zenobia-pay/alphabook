@@ -20,6 +20,8 @@ const AnswerEvaluationSchema = z.object({
   usefulness: z.number().min(1).max(10),
   uniqueness: z.number().min(1).max(10),
   supportForQuestion: z.number().min(1).max(10),
+  claimCoverage: z.number().min(1).max(10),
+  formatFit: z.number().min(1).max(10),
   openQuestionsCount: z.number().int().min(0),
   rationale: z.string(),
 });
@@ -51,6 +53,7 @@ export interface SynthesisInput {
     excerpt: string;
     url: string;
   }>;
+  priorAnswerSummary?: string | null;
   billingContext?: BillingContext;
 }
 
@@ -63,6 +66,8 @@ export interface AnswerEvaluation {
   usefulness: number;
   uniqueness: number;
   supportForQuestion: number;
+  claimCoverage: number;
+  formatFit: number;
   openQuestionsCount: number;
   rationale: string;
 }
@@ -73,6 +78,7 @@ export interface Synthesizer {
     userMessage: string;
     answer: string;
     citations: Citation[];
+    priorAnswerSummary?: string | null;
     billingContext?: BillingContext;
   }): Promise<AnswerEvaluation | null>;
 }
@@ -262,6 +268,45 @@ function synthesisInstructionsForMode(mode: SynthesisMode) {
         "Group the evidence into the clearest categories or patterns.",
       ];
   }
+}
+
+function latestPriorAssistantSummary(
+  conversationHistory: SynthesisInput["conversationHistory"],
+): string | null {
+  for (let index = conversationHistory.length - 1; index >= 0; index -= 1) {
+    const entry = conversationHistory[index];
+    if (entry.role === "assistant" && entry.content.trim().length > 0) {
+      return truncateForModel(entry.content, 320);
+    }
+  }
+  return null;
+}
+
+function hasVerdictLikeOpening(answer: string) {
+  const firstBlock = answer.trim().split(/\n\s*\n/u)[0] ?? "";
+  return /\b(verdict|overall|in sum|on balance|the evidence is|the claim is|supported|mixed|weakly supported|not supported)\b/i.test(firstBlock);
+}
+
+function mentionsFollowUpDelta(answer: string) {
+  const firstBlock = answer.trim().split(/\n\s*\n/u)[0] ?? "";
+  return /\b(follow-up|adds|changes|clarifies|compared with|relative to|building on|compared to the earlier answer)\b/i.test(firstBlock);
+}
+
+function enforceAnswerShape(answer: string, mode: SynthesisMode, priorAnswerSummary?: string | null) {
+  const trimmed = answer.trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+  if (mode === "hypothesis" && !hasVerdictLikeOpening(trimmed)) {
+    return `Verdict: the evidence is mixed and should be weighed through the supporting and opposing passages below.\n\n${trimmed}`;
+  }
+  if (mode === "follow_up" && !mentionsFollowUpDelta(trimmed)) {
+    const prefix = priorAnswerSummary
+      ? "This follow-up refines the earlier answer by tightening the strongest evidence and filling the most obvious gaps."
+      : "This follow-up adds narrower evidence and clarifies the earlier answer.";
+    return `${prefix}\n\n${trimmed}`;
+  }
+  return trimmed;
 }
 
 function canonicalizeSearchCharacter(character: string) {
@@ -518,6 +563,7 @@ function userFacingErrorSummary(toolHistory: ToolHistoryEntry[]): string | null 
 export class FallbackSynthesizer implements Synthesizer {
   async synthesize(input: SynthesisInput): Promise<SynthesisResult> {
     const mode = detectSynthesisMode(input.userMessage);
+    const priorAnswerSummary = input.priorAnswerSummary ?? latestPriorAssistantSummary(input.conversationHistory);
     const chunks = extractChunks(input.toolHistory);
     const runtimeSummary = input.runtimeBriefing ?? extractRuntimeSummary(input.toolHistory);
     const runtimeCitations = extractRuntimeCitations(input.toolHistory);
@@ -534,7 +580,7 @@ export class FallbackSynthesizer implements Synthesizer {
     const failureSummary = userFacingErrorSummary(input.toolHistory);
     if (failureSummary) {
       return {
-        answer: ensureCallToAction(failureSummary, mode),
+        answer: ensureCallToAction(enforceAnswerShape(failureSummary, mode, priorAnswerSummary), mode),
         citations,
       };
     }
@@ -550,13 +596,19 @@ export class FallbackSynthesizer implements Synthesizer {
         ? `Books and passages touched during the run included:\n${compactParagraphs(researchDocument, 4)}`
         : null;
       return {
-        answer: ensureCallToAction([opening, compactParagraphs(runtimeSummary, 6), evidenceLine].filter(Boolean).join("\n\n"), mode),
+        answer: ensureCallToAction(
+          enforceAnswerShape([opening, compactParagraphs(runtimeSummary, 6), evidenceLine].filter(Boolean).join("\n\n"), mode, priorAnswerSummary),
+          mode,
+        ),
         citations,
       };
     }
 
     return {
-      answer: ensureCallToAction("The corpus search did not produce a usable briefing for this run, so I am stopping instead of guessing from partial retrieval.", mode),
+      answer: ensureCallToAction(
+        enforceAnswerShape("The corpus search did not produce a usable briefing for this run, so I am stopping instead of guessing from partial retrieval.", mode, priorAnswerSummary),
+        mode,
+      ),
       citations: [],
     };
   }
@@ -572,6 +624,7 @@ export class OpenAISynthesizer implements Synthesizer {
 
   async synthesize(input: SynthesisInput): Promise<SynthesisResult> {
     const mode = detectSynthesisMode(input.userMessage);
+    const priorAnswerSummary = input.priorAnswerSummary ?? latestPriorAssistantSummary(input.conversationHistory);
     const runtimeSummary = input.runtimeBriefing ?? extractRuntimeSummary(input.toolHistory);
     const researchDocument = input.researchDocument ?? extractResearchDocument(input.toolHistory);
     const summarizedToolHistory = summarizeToolHistoryForModel(input.toolHistory);
@@ -606,6 +659,7 @@ Use the exact provided absolute URL as the href. Do not invent, shorten, rewrite
             researchDocument,
             toolHistory: summarizedToolHistory,
             exactCitationLinks,
+            priorAnswerSummary,
             synthesisMode: mode,
             responseStructure: synthesisInstructionsForMode(mode),
             responseInstructions: "Reply with JSON only.",
@@ -685,7 +739,7 @@ Use the exact provided absolute URL as the href. Do not invent, shorten, rewrite
       ...extractChunks(input.toolHistory).map(chunkCitation),
     ]);
     return {
-      answer: ensureCallToAction(parsed.answer, mode),
+      answer: ensureCallToAction(enforceAnswerShape(parsed.answer, mode, priorAnswerSummary), mode),
       citations: ensureSynthesisCitationBreadth(input.userMessage, reconciled, available),
     };
   }
@@ -694,8 +748,10 @@ Use the exact provided absolute URL as the href. Do not invent, shorten, rewrite
     userMessage: string;
     answer: string;
     citations: Citation[];
+    priorAnswerSummary?: string | null;
     billingContext?: BillingContext;
   }): Promise<AnswerEvaluation | null> {
+    const mode = detectSynthesisMode(input.userMessage);
     const body = {
       model: this.model,
       response_format: { type: "json_object" as const },
@@ -714,10 +770,14 @@ Use the exact provided absolute URL as the href. Do not invent, shorten, rewrite
               chunkId: citation.chunkId ?? null,
               label: citation.label,
             })),
+            priorAnswerSummary: input.priorAnswerSummary ?? null,
+            synthesisMode: mode,
             rubric: {
               usefulness: "1-10 score for practical usefulness to the user",
               uniqueness: "1-10 score for whether the answer says something non-generic and specific",
               supportForQuestion: "1-10 score for how directly the answer addresses the original question with evidence",
+              claimCoverage: "1-10 score for how well the major claims in the answer are actually covered by the cited evidence",
+              formatFit: "1-10 score for whether the answer shape fits the prompt type (for example verdict-first for hypothesis tests, delta-first for follow-ups, contrast-first for comparisons)",
               openQuestionsCount: "integer count of important unresolved questions or obvious missing follow-ups",
               rationale: "one short paragraph explaining the scores, explicitly considering evidence breadth, clarity of the takeaway, and whether the answer is generic or decisive enough for the prompt type",
             },

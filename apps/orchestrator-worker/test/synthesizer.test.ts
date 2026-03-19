@@ -108,3 +108,78 @@ test("OpenAISynthesizer sends prompt-type-specific structure instructions", asyn
   assert.ok(Array.isArray(parsed.responseStructure));
   assert.match(parsed.responseStructure.join(" "), /verdict/i);
 });
+
+test("FallbackSynthesizer marks what changed for follow-up prompts", async () => {
+  const synthesizer = new FallbackSynthesizer();
+  const result = await synthesizer.synthesize({
+    userMessage: "Follow up on that and narrow to religious consolation.",
+    conversationHistory: [
+      { role: "assistant", content: "Earlier answer summary about grief across several books." },
+    ],
+    plannerCitations: [],
+    toolHistory: [
+      {
+        toolName: "run_workspace_task",
+        args: {},
+        result: {
+          briefing: "Several passages narrow the pattern toward explicitly religious consolation.",
+          citations: [],
+        },
+      },
+    ],
+    runtimeBriefing: null,
+    runtimeEvidenceNotes: null,
+    researchDocument: null,
+  });
+
+  assert.match(result.answer, /follow-up refines the earlier answer|follow-up adds narrower evidence/i);
+});
+
+test("OpenAISynthesizer answer evaluation includes claim coverage and format fit", async () => {
+  let capturedBody: Record<string, unknown> | null = null;
+  const synthesizer = new OpenAISynthesizer(
+    "test-key",
+    "test-model",
+    async (_input, init) => {
+      capturedBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+      return new Response(JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                usefulness: 8,
+                uniqueness: 7,
+                supportForQuestion: 8,
+                claimCoverage: 7,
+                formatFit: 9,
+                openQuestionsCount: 1,
+                rationale: "Grounded and well-shaped for the prompt type.",
+              }),
+            },
+          },
+        ],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  );
+
+  const evaluation = await synthesizer.evaluateAnswer?.({
+    userMessage: "Compare these books.",
+    answer: "The main contrast is between ritual grief and private withdrawal.",
+    citations: [],
+    priorAnswerSummary: "Earlier answer summary.",
+  });
+
+  assert.ok(evaluation);
+  assert.equal(evaluation?.claimCoverage, 7);
+  assert.equal(evaluation?.formatFit, 9);
+  assert.ok(capturedBody);
+  const messages = Array.isArray((capturedBody as { messages?: unknown }).messages)
+    ? (capturedBody as { messages: Array<Record<string, unknown>> }).messages
+    : [];
+  const userMessage = messages.find((message) => message.role === "user");
+  assert.ok(userMessage && typeof userMessage.content === "string");
+  const parsed = JSON.parse(userMessage.content);
+  assert.equal(parsed.synthesisMode, "comparison");
+  assert.ok(parsed.rubric.claimCoverage);
+  assert.ok(parsed.rubric.formatFit);
+});
