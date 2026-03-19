@@ -820,7 +820,14 @@ function extractCandidateWorkIds(
     case "estimate_research_scope":
       return [];
     case "search_works": {
-      const works = Array.isArray(result.works) ? result.works as Array<Record<string, unknown>> : [];
+      const frontier = result.frontier && typeof result.frontier === "object"
+        ? result.frontier as Record<string, unknown>
+        : null;
+      const works = Array.isArray(frontier?.works)
+        ? frontier.works as Array<Record<string, unknown>>
+        : Array.isArray(result.works)
+          ? result.works as Array<Record<string, unknown>>
+          : [];
       return uniqueWorkIds(works.map((work) => (typeof work.id === "string" ? work.id : null)));
     }
     case "get_work_metadata": {
@@ -835,8 +842,12 @@ function extractCandidateWorkIds(
     }
     case "run_workspace_task": {
       const taskSpec = args.taskSpec && typeof args.taskSpec === "object" ? args.taskSpec as Record<string, unknown> : null;
-      return Array.isArray(taskSpec?.workIds)
-        ? uniqueWorkIds((taskSpec.workIds as unknown[]).filter((value): value is string => typeof value === "string"))
+      return Array.isArray(taskSpec?.frontierWorkIds)
+        ? uniqueWorkIds((taskSpec.frontierWorkIds as unknown[]).filter((value): value is string => typeof value === "string"))
+        : Array.isArray(taskSpec?.candidateWorkIds)
+          ? uniqueWorkIds((taskSpec.candidateWorkIds as unknown[]).filter((value): value is string => typeof value === "string"))
+          : Array.isArray(taskSpec?.workIds)
+            ? uniqueWorkIds((taskSpec.workIds as unknown[]).filter((value): value is string => typeof value === "string"))
         : [];
     }
     default:
@@ -919,7 +930,32 @@ function latestCandidateWorkIdsFromHistory(
     }
     const workIds = extractCandidateWorkIds(entry.toolName, entry.args, entry.result);
     if (workIds.length > 0) {
-      return workIds.slice(0, 48);
+      return workIds.slice(0, 80);
+    }
+  }
+  return [];
+}
+
+function searchFrontierWorksFromHistory(
+  toolHistory: Array<{
+    toolName: ToolName;
+    args: Record<string, unknown>;
+    result: Record<string, unknown>;
+  }>,
+) {
+  for (let index = toolHistory.length - 1; index >= 0; index -= 1) {
+    const entry = toolHistory[index];
+    if (entry.toolName !== "search_works") {
+      continue;
+    }
+    const frontier = entry.result.frontier && typeof entry.result.frontier === "object"
+      ? entry.result.frontier as Record<string, unknown>
+      : null;
+    if (Array.isArray(frontier?.works)) {
+      return frontier.works as Array<Record<string, unknown>>;
+    }
+    if (Array.isArray(entry.result.works)) {
+      return entry.result.works as Array<Record<string, unknown>>;
     }
   }
   return [];
@@ -947,7 +983,7 @@ function augmentToolArgsFromHistory(
       workIds: uniqueWorkIds([
         ...args.workIds.filter((value): value is string => typeof value === "string"),
         ...candidateWorkIds,
-      ]).slice(0, 24),
+      ]).slice(0, 80),
     };
   }
   return {
@@ -1168,7 +1204,7 @@ function normalizeToolArgs(toolName: ToolName, args: Record<string, unknown>): R
           delete filters.language;
         }
         if (toolName === "search_works" && typeof filters.limit === "number") {
-          filters.limit = Math.max(1, Math.min(20, Math.trunc(filters.limit)));
+          filters.limit = Math.max(1, Math.min(80, Math.trunc(filters.limit)));
         } else if (toolName !== "search_works") {
           delete filters.limit;
         }
@@ -1222,7 +1258,7 @@ function normalizeToolArgs(toolName: ToolName, args: Record<string, unknown>): R
           delete filters.limit;
         }
         if (typeof filters.limit === "number") {
-          filters.limit = Math.max(1, Math.min(20, Math.trunc(filters.limit)));
+          filters.limit = Math.max(1, Math.min(80, Math.trunc(filters.limit)));
         }
         const yearRange = normalizeYearRangeFilter(filters.yearRange);
         if (yearRange) {
@@ -1530,8 +1566,19 @@ async function executeTool(
     }
     case "search_works": {
       const parsed = ToolArgsSchemas.search_works.parse(normalizedArgs);
-      const works = await deps.store.searchWorks(parsed.query, parsed.filters);
-      return { works };
+      const requestedLimit = typeof parsed.filters?.limit === "number" ? parsed.filters.limit : 8;
+      const frontierLimit = Math.max(requestedLimit, Math.min(80, requestedLimit * 2));
+      const frontierWorks = await deps.store.searchWorks(parsed.query, {
+        ...(parsed.filters ?? {}),
+        limit: frontierLimit,
+      });
+      return {
+        works: frontierWorks.slice(0, Math.min(20, requestedLimit)),
+        frontier: {
+          workCount: frontierWorks.length,
+          works: frontierWorks,
+        },
+      };
     }
     case "get_work_metadata": {
       const parsed = ToolArgsSchemas.get_work_metadata.parse(normalizedArgs);
@@ -1571,7 +1618,13 @@ async function executeTool(
         embedding,
         parsed.filters,
       );
-      return { chunks };
+      return {
+        chunks,
+        frontierWorkIds: Array.isArray(parsed.workIds) ? parsed.workIds : [],
+        verifiedWorkIds: uniqueWorkIds(
+          chunks.map((chunk) => (typeof chunk.workId === "string" ? chunk.workId : null)),
+        ),
+      };
     }
     case "get_work_text": {
       const parsed = ToolArgsSchemas.get_work_text.parse(normalizedArgs);
@@ -1602,10 +1655,13 @@ async function executeTool(
         const workIds = Array.isArray(taskSpec.workIds)
           ? taskSpec.workIds.filter((value): value is string => typeof value === "string")
           : [];
+        const frontierWorkIds = Array.isArray(taskSpec.frontierWorkIds)
+          ? taskSpec.frontierWorkIds.filter((value): value is string => typeof value === "string")
+          : workIds;
         const existingChunkIds = Array.isArray(taskSpec.chunkIds)
           ? taskSpec.chunkIds.filter((value): value is string => typeof value === "string")
           : [];
-        if (workIds.length > 0 && existingChunkIds.length === 0) {
+        if (frontierWorkIds.length > 0 && existingChunkIds.length === 0) {
           const seedQuery = buildWorkspaceSeedPassageQuery(taskSpec);
           if (seedQuery.length > 0) {
             let embedding: number[] | undefined;
@@ -1613,7 +1669,7 @@ async function executeTool(
               context.auditLog?.("internal.workspace_seed_embedding.started", {
                 toolName,
                 query: seedQuery,
-                scopedWorkCount: workIds.length,
+                scopedWorkCount: frontierWorkIds.length,
               });
               embedding = await deps.embedder.embedQuery(seedQuery, {
                 userId: context.userId,
@@ -1626,18 +1682,45 @@ async function executeTool(
             }
             const seedChunks = await deps.store.getRelevantChunks(
               seedQuery,
-              workIds,
+              frontierWorkIds.slice(0, 80),
               chunkSeedLimitForTaskMode(taskSpec.mode),
               embedding,
             );
             if (seedChunks.length > 0) {
+              const verifiedWorkIds = uniqueWorkIds(
+                seedChunks.map((chunk) => (typeof chunk.workId === "string" ? chunk.workId : null)),
+              );
+              const workLimit = taskSpec.mode === "exhaustive_corpus_search" ? 32 : 12;
               taskSpec.chunkIds = seedChunks
                 .map((chunk) => chunk.id)
                 .filter((value): value is string => typeof value === "string")
                 .slice(0, chunkSeedLimitForTaskMode(taskSpec.mode));
+              taskSpec.frontierWorkIds = frontierWorkIds.slice(0, 80);
+              taskSpec.verifiedWorkIds = verifiedWorkIds;
+              taskSpec.verifiedChunkIds = seedChunks
+                .map((chunk) => chunk.id)
+                .filter((value): value is string => typeof value === "string")
+                .slice(0, chunkSeedLimitForTaskMode(taskSpec.mode));
+              taskSpec.workIds = uniqueWorkIds([
+                ...verifiedWorkIds,
+                ...workIds,
+              ]).slice(0, workLimit);
+              taskSpec.candidateWorkIds = Array.isArray(taskSpec.candidateWorkIds)
+                ? uniqueWorkIds([
+                    ...verifiedWorkIds,
+                    ...(taskSpec.candidateWorkIds as unknown[]).filter((value): value is string => typeof value === "string"),
+                  ]).slice(0, workLimit)
+                : taskSpec.workIds;
               const retrieval = taskSpec.retrieval && typeof taskSpec.retrieval === "object"
                 ? { ...(taskSpec.retrieval as Record<string, unknown>) }
                 : {};
+              retrieval.verifiedChunks = seedChunks.slice(0, chunkSeedLimitForTaskMode(taskSpec.mode)).map((chunk) => ({
+                id: chunk.id,
+                workId: chunk.workId,
+                chunkIndex: chunk.chunkIndex,
+                excerpt: chunk.excerpt,
+                r2Key: chunk.r2Key ?? null,
+              }));
               retrieval.seedChunks = seedChunks.slice(0, chunkSeedLimitForTaskMode(taskSpec.mode)).map((chunk) => ({
                 id: chunk.id,
                 workId: chunk.workId,
@@ -3279,10 +3362,15 @@ function clientSafeToolResult(toolName: ToolName, result: Record<string, unknown
   }
 
   if (toolName === "search_works" || toolName === "get_work_metadata") {
+    const frontier = result.frontier && typeof result.frontier === "object"
+      ? result.frontier as Record<string, unknown>
+      : null;
     const works = Array.isArray(result.works) ? result.works : [];
+    const frontierWorks = Array.isArray(frontier?.works) ? frontier.works : works;
     return {
-      workCount: works.length,
-      works: works.slice(0, 12).map((candidate) => {
+      workCount: frontierWorks.length,
+      frontierWorkCount: frontierWorks.length,
+      works: frontierWorks.slice(0, 12).map((candidate) => {
         if (!candidate || typeof candidate !== "object") {
           return candidate;
         }
@@ -3304,8 +3392,10 @@ function clientSafeToolResult(toolName: ToolName, result: Record<string, unknown
 
   if (toolName === "get_relevant_chunks") {
     const chunks = Array.isArray(result.chunks) ? result.chunks : [];
+    const verifiedWorkIds = Array.isArray(result.verifiedWorkIds) ? result.verifiedWorkIds : [];
     return {
       chunkCount: chunks.length,
+      verifiedWorkCount: verifiedWorkIds.length,
       chunks: chunks.slice(0, 12).map((candidate) => {
         if (!candidate || typeof candidate !== "object") {
           return candidate;
@@ -4892,7 +4982,9 @@ async function runOrchestrator(
           runMetrics.plannedParallelShards = Math.max(runMetrics.plannedParallelShards, taskSpec.parallelism);
         }
         const plannedFrontierWorks =
-          typeof taskSpec.searchPlan === "object" && taskSpec.searchPlan && typeof (taskSpec.searchPlan as Record<string, unknown>).recommendedFrontierWorks === "number"
+          Array.isArray(taskSpec.frontierWorkIds)
+            ? taskSpec.frontierWorkIds.length
+            : typeof taskSpec.searchPlan === "object" && taskSpec.searchPlan && typeof (taskSpec.searchPlan as Record<string, unknown>).recommendedFrontierWorks === "number"
             ? (taskSpec.searchPlan as Record<string, unknown>).recommendedFrontierWorks as number
             : Array.isArray(taskSpec.candidateWorkIds)
               ? taskSpec.candidateWorkIds.length
@@ -5492,8 +5584,7 @@ async function runOrchestrator(
       : [];
 
   const searchWorksFromHistory = () => {
-    const latest = [...toolHistory].reverse().find((entry) => entry.toolName === "search_works");
-    return Array.isArray(latest?.result.works) ? latest.result.works as Array<Record<string, unknown>> : [];
+    return searchFrontierWorksFromHistory(toolHistory);
   };
 
   const metadataWorksFromHistory = () => {
@@ -5522,7 +5613,9 @@ async function runOrchestrator(
     const estimate = latestScopeEstimateFromHistory(toolHistory);
     const searchPlan = searchPlanFromEstimate(estimate, broadCorpusQuery);
     const workLimit = Math.max(broadCorpusQuery ? 40 : 12, Math.min(64, searchPlan.frontierWorks));
-    const candidateLimit = Math.max(broadCorpusQuery ? 32 : 8, Math.min(48, searchPlan.frontierWorks));
+    const candidateLimit = broadCorpusQuery
+      ? Math.max(16, Math.min(24, Math.ceil(searchPlan.frontierWorks / 4)))
+      : Math.max(8, Math.min(16, searchPlan.frontierWorks));
     const chunkLimit = Math.max(broadCorpusQuery ? 64 : 24, Math.min(128, searchPlan.frontierWorks * 2));
     const seedChunkLimit = Math.max(broadCorpusQuery ? 40 : 16, Math.min(80, searchPlan.frontierWorks));
     const scopedWorkIds = Array.isArray(input.workIds) ? input.workIds.slice(0, workLimit) : [];
@@ -5542,11 +5635,21 @@ async function runOrchestrator(
       .filter(({ work, totalScore }, index) => shouldSeedWorkspaceWork(work, routedQueryRef.current, seededWorkIds, totalScore, index))
       .slice(0, candidateLimit)
       .map(({ work }) => work);
-    const candidateWorkIds = uniqueWorkIds([
+    const frontierWorkIds = uniqueWorkIds([
       ...scopedWorkIds,
       ...rankedSearchWorks.map((work) => (typeof work.id === "string" ? work.id : null)),
       ...rankedMetadataWorks.map((work) => (typeof work.id === "string" ? work.id : null)),
       ...seedChunks.map((chunk) => (typeof chunk.workId === "string" ? chunk.workId : null)),
+    ]).slice(0, workLimit);
+    const verifiedWorkIds = uniqueWorkIds(
+      seedChunks.map((chunk) => (typeof chunk.workId === "string" ? chunk.workId : null)),
+    ).slice(0, candidateLimit);
+    const candidateWorkIds = uniqueWorkIds([
+      ...verifiedWorkIds,
+      ...scopedWorkIds,
+      ...rankedMetadataWorks.map((work) => (typeof work.id === "string" ? work.id : null)),
+      ...rankedSearchWorks.map((work) => (typeof work.id === "string" ? work.id : null)),
+      ...frontierWorkIds,
     ]).slice(0, candidateLimit);
     return normalizeToolArgs("run_workspace_task", {
       runtimeId,
@@ -5566,6 +5669,12 @@ async function runOrchestrator(
           .filter((value): value is string => typeof value === "string")
           .slice(0, chunkLimit),
         candidateWorkIds,
+        frontierWorkIds,
+        verifiedWorkIds,
+        verifiedChunkIds: seedChunks
+          .map((chunk) => (typeof chunk.id === "string" ? chunk.id : null))
+          .filter((value): value is string => typeof value === "string")
+          .slice(0, chunkLimit),
         shardPlan: searchPlan.shards,
         searchHints: {
           searchWorksQuery: routedQueryRef.current,
@@ -5580,6 +5689,21 @@ async function runOrchestrator(
           recommendedShards: searchPlan.shards,
         },
         retrieval: {
+          frontierWorks: uniqueWorkIds([
+            ...rankedSearchWorks.map((work) => (typeof work.id === "string" ? work.id : null)),
+            ...rankedMetadataWorks.map((work) => (typeof work.id === "string" ? work.id : null)),
+          ])
+            .map((workId) => rankedSearchWorks.find((work) => work.id === workId) ?? rankedMetadataWorks.find((work) => work.id === workId))
+            .filter((work): work is Record<string, unknown> => Boolean(work && typeof work === "object"))
+            .slice(0, workLimit)
+            .map((work) => ({
+              id: typeof work.id === "string" ? work.id : null,
+              title: typeof work.title === "string" ? work.title : "",
+              authors: Array.isArray(work.authors) ? work.authors : [],
+              summary: typeof work.summary === "string" ? work.summary : null,
+              subjects: Array.isArray(work.subjects) ? work.subjects : [],
+              gutenbergId: typeof work.gutenbergId === "number" ? work.gutenbergId : null,
+            })),
           searchWorks: rankedSearchWorks.slice(0, workLimit).map((work) => ({
             id: typeof work.id === "string" ? work.id : null,
             title: typeof work.title === "string" ? work.title : "",
@@ -5597,6 +5721,13 @@ async function runOrchestrator(
             gutenbergId: typeof work.gutenbergId === "number" ? work.gutenbergId : null,
           })),
           seedChunks: seedChunks.slice(0, seedChunkLimit).map((chunk) => ({
+            id: typeof chunk.id === "string" ? chunk.id : null,
+            workId: typeof chunk.workId === "string" ? chunk.workId : null,
+            chunkIndex: typeof chunk.chunkIndex === "number" ? chunk.chunkIndex : null,
+            excerpt: typeof chunk.excerpt === "string" ? chunk.excerpt : "",
+            r2Key: typeof chunk.r2Key === "string" ? chunk.r2Key : null,
+          })),
+          verifiedChunks: seedChunks.slice(0, chunkLimit).map((chunk) => ({
             id: typeof chunk.id === "string" ? chunk.id : null,
             workId: typeof chunk.workId === "string" ? chunk.workId : null,
             chunkIndex: typeof chunk.chunkIndex === "number" ? chunk.chunkIndex : null,

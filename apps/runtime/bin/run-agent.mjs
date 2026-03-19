@@ -885,6 +885,8 @@ function compactTaskContext(taskContext) {
     corpusWorkCount: typeof normalized.corpusWorkCount === "number" ? normalized.corpusWorkCount : null,
     hydratedWorkCount: typeof normalized.hydratedWorkCount === "number" ? normalized.hydratedWorkCount : null,
     candidateWorkIds: sampleStrings(normalized.candidateWorkIds, 8),
+    frontierWorkIds: sampleStrings(normalized.frontierWorkIds, 8),
+    verifiedWorkIds: sampleStrings(normalized.verifiedWorkIds, 8),
     selectedChunkIds: sampleStrings(normalized.selectedChunkIds, 8),
     topChunkIds: Array.isArray(normalized.topChunks)
       ? normalized.topChunks
@@ -934,8 +936,18 @@ function compactTaskSpec(task, openBookMode) {
     workIds: sampleStrings(task.workIds, workLimit),
     chunkIds: sampleStrings(task.chunkIds, chunkLimit),
     candidateWorkIds: sampleStrings(task.candidateWorkIds, workLimit),
+    frontierWorkIds: sampleStrings(task.frontierWorkIds, workLimit),
+    verifiedWorkIds: sampleStrings(task.verifiedWorkIds, workLimit),
     retrieval: retrieval
       ? {
+          frontierWorks: Array.isArray(retrieval.frontierWorks)
+            ? retrieval.frontierWorks.slice(0, workLimit).map((work) => ({
+                id: typeof work?.id === "string" ? work.id : null,
+                title: typeof work?.title === "string" ? work.title : null,
+                authors: Array.isArray(work?.authors) ? work.authors.slice(0, 3) : [],
+                summary: typeof work?.summary === "string" ? normalizeWhitespace(work.summary).slice(0, 220) : null,
+              }))
+            : [],
           searchWorks: Array.isArray(retrieval.searchWorks)
             ? retrieval.searchWorks.slice(0, workLimit).map((work) => ({
                 id: typeof work?.id === "string" ? work.id : null,
@@ -954,6 +966,15 @@ function compactTaskSpec(task, openBookMode) {
             : [],
           seedChunks: Array.isArray(retrieval.seedChunks)
             ? retrieval.seedChunks.slice(0, chunkLimit).map((chunk) => ({
+                id: typeof chunk?.id === "string" ? chunk.id : null,
+                workId: typeof chunk?.workId === "string" ? chunk.workId : null,
+                title: typeof chunk?.title === "string" ? chunk.title : null,
+                chunkIndex: typeof chunk?.chunkIndex === "number" ? chunk.chunkIndex : null,
+                excerpt: typeof chunk?.excerpt === "string" ? normalizeWhitespace(chunk.excerpt).slice(0, 180) : null,
+              }))
+            : [],
+          verifiedChunks: Array.isArray(retrieval.verifiedChunks)
+            ? retrieval.verifiedChunks.slice(0, chunkLimit).map((chunk) => ({
                 id: typeof chunk?.id === "string" ? chunk.id : null,
                 workId: typeof chunk?.workId === "string" ? chunk.workId : null,
                 title: typeof chunk?.title === "string" ? chunk.title : null,
@@ -1032,7 +1053,9 @@ function buildBriefingPrompt(runtimePrompt, manifest, task, evidence, question) 
   };
   const compactTask = compactTaskSpec(task, openBookMode);
   const researchObjective = compactTask.researchObjective || question;
-  const seededCandidateCount = Array.isArray(compactTask.candidateWorkIds) ? compactTask.candidateWorkIds.length : 0;
+  const seededCandidateCount = Array.isArray(compactTask.frontierWorkIds) && compactTask.frontierWorkIds.length > 0
+    ? compactTask.frontierWorkIds.length
+    : Array.isArray(compactTask.candidateWorkIds) ? compactTask.candidateWorkIds.length : 0;
   const seededChunkCount = Array.isArray(compactTask.chunkIds) ? compactTask.chunkIds.length : 0;
   const broadCorpusTask = isBroadCorpusTask(task, openBookMode);
   const intensity = compactTask.intensity || (broadCorpusTask ? "high" : "normal");
@@ -1621,6 +1644,7 @@ async function main() {
         phraseBoosts: searchPhrases,
         candidateWorkIds: Array.from(new Set([
           ...topRuntimeHits.map((chunk) => String(chunk.work_id || "")),
+          ...(Array.isArray(task.frontierWorkIds) ? task.frontierWorkIds.map((value) => String(value || "")) : []),
           ...(Array.isArray(task.candidateWorkIds) ? task.candidateWorkIds.map((value) => String(value || "")) : []),
         ])).filter(Boolean),
       },

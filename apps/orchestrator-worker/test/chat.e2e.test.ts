@@ -5517,7 +5517,7 @@ test("fallback planner carries shard planning into workspace task specs for broa
           query: "Find broad grief patterns across 19th century fiction.",
         },
         result: {
-          works: Array.from({ length: 32 }, (_, index) => ({
+          works: Array.from({ length: 20 }, (_, index) => ({
             id: `work-${index + 1}`,
             title: `Work ${index + 1}`,
             authors: [`Author ${index + 1}`],
@@ -5525,6 +5525,17 @@ test("fallback planner carries shard planning into workspace task specs for broa
             subjects: ["grief", "mourning"],
             gutenbergId: index + 1,
           })),
+          frontier: {
+            workCount: 40,
+            works: Array.from({ length: 40 }, (_, index) => ({
+              id: `work-${index + 1}`,
+              title: `Work ${index + 1}`,
+              authors: [`Author ${index + 1}`],
+              summary: "A work about grief and mourning.",
+              subjects: ["grief", "mourning"],
+              gutenbergId: index + 1,
+            })),
+          },
         },
       },
       {
@@ -5568,6 +5579,90 @@ test("fallback planner carries shard planning into workspace task specs for broa
   assert.equal(taskSpec.shardAxis, "work_id_hash");
   assert.ok(Array.isArray(taskSpec.shardPlan));
   assert.equal((taskSpec.shardPlan as unknown[]).length, 8);
+  assert.ok(Array.isArray(taskSpec.frontierWorkIds));
+  assert.equal((taskSpec.frontierWorkIds as unknown[]).length, 40);
   assert.ok(Array.isArray(taskSpec.candidateWorkIds));
   assert.ok((taskSpec.candidateWorkIds as unknown[]).length >= 16);
+  assert.ok((taskSpec.candidateWorkIds as unknown[]).length < (taskSpec.frontierWorkIds as unknown[]).length);
+  assert.ok(Array.isArray(taskSpec.verifiedWorkIds));
+  assert.ok((taskSpec.verifiedWorkIds as unknown[]).length > 0);
+});
+
+test("fallback planner verifies passages over the wide frontier before VM narrowing", async () => {
+  const planner = new FallbackPlanner();
+  const decision = await planner.decide({
+    userMessage: "Find broad grief patterns across 19th century fiction.",
+    conversationHistory: [],
+    turns: 4,
+    toolHistory: [
+      {
+        toolName: "estimate_research_scope",
+        args: {
+          query: "Find broad grief patterns across 19th century fiction.",
+        },
+        result: {
+          recommendedIntensity: "maximum",
+          recommendedWallClockMinutes: 60,
+          recommendedParallelism: 8,
+          recommendedShardAxis: "work_id_hash",
+          recommendedFrontierWorks: 64,
+          recommendedShards: [],
+        },
+      },
+      {
+        toolName: "create_workspace",
+        args: {
+          workIds: [],
+          chunkIds: [],
+          taskContext: {},
+        },
+        result: {
+          ok: true,
+          runtimeId: "runtime-1",
+        },
+      },
+      {
+        toolName: "search_works",
+        args: {
+          query: "Find broad grief patterns across 19th century fiction.",
+        },
+        result: {
+          works: Array.from({ length: 20 }, (_, index) => ({
+            id: `visible-work-${index + 1}`,
+            title: `Visible Work ${index + 1}`,
+            authors: [`Author ${index + 1}`],
+          })),
+          frontier: {
+            workCount: 64,
+            works: Array.from({ length: 64 }, (_, index) => ({
+              id: `frontier-work-${index + 1}`,
+              title: `Frontier Work ${index + 1}`,
+              authors: [`Author ${index + 1}`],
+            })),
+          },
+        },
+      },
+      {
+        toolName: "get_work_metadata",
+        args: {
+          workIds: Array.from({ length: 20 }, (_, index) => `frontier-work-${index + 1}`),
+        },
+        result: {
+          works: Array.from({ length: 20 }, (_, index) => ({
+            id: `frontier-work-${index + 1}`,
+            title: `Frontier Work ${index + 1}`,
+            authors: [`Author ${index + 1}`],
+            summary: "A work about grief and mourning.",
+            subjects: ["grief", "mourning"],
+          })),
+        },
+      },
+    ],
+  });
+
+  assert.equal(decision.type, "tool_call");
+  assert.equal(decision.tool_name, "get_relevant_chunks");
+  assert.match(decision.rationale ?? "", /wider ranked frontier/i);
+  assert.ok(Array.isArray(decision.args.workIds));
+  assert.equal((decision.args.workIds as unknown[]).length, 64);
 });

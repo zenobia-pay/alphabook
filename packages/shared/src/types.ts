@@ -45,21 +45,21 @@ export const SearchWorksArgsSchema = z.object({
       yearRange: z.tuple([z.number().int(), z.number().int()]).optional(),
       genre: z.array(z.string().min(1)).max(8).optional(),
       subjects: z.array(z.string()).optional(),
-      limit: z.number().int().positive().max(20).optional(),
+      limit: z.number().int().positive().max(80).optional(),
     })
     .optional(),
 });
 
 export const GetWorkMetadataArgsSchema = z.object({
-  workIds: z.array(z.string()).min(1).max(20),
+  workIds: z.array(z.string()).min(1).max(80),
 });
 
 export const GetRelevantChunksArgsSchema = z.object({
   query: z.string().min(1),
-  workIds: z.array(z.string()).max(20).optional(),
+  workIds: z.array(z.string()).max(80).optional(),
   filters: z
     .object({
-      limit: z.number().int().positive().max(20).optional(),
+      limit: z.number().int().positive().max(80).optional(),
       language: z.string().optional(),
       rightsStatus: z.string().optional(),
       yearRange: z.tuple([z.number().int(), z.number().int()]).optional(),
