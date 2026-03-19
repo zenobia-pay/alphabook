@@ -4041,8 +4041,11 @@ function ResearchArtifactDocument({
   const document = useMemo(() => {
     const persisted = persistedResearchDocument(artifacts, linkMode);
     const live = buildResearchDocument(sessionTitle, toolTrace, artifacts, ending, linkMode);
+    if (live.sections.length > 0) {
+      return live;
+    }
     if (persisted) {
-      return mergeResearchDocumentModels(persisted, live);
+      return persisted;
     }
     return live;
   }, [artifacts, ending, linkMode, sessionTitle, toolTrace]);
@@ -4480,6 +4483,7 @@ export default function App() {
   const [selectedAdminRunId, setSelectedAdminRunId] = useState<string | null | undefined>(initialUrlState.runId);
   const [adminSection, setAdminSection] = useState<"runs" | "users" | "analytics" | "incidents" | "logs">(initialUrlState.adminSection);
   const [messages, setMessages] = useState<UiMessage[]>([]);
+  const messagesRef = useRef<UiMessage[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [sessionsResolved, setSessionsResolved] = useState(false);
   const [messagesLoading, setMessagesLoading] = useState(false);
@@ -5134,6 +5138,10 @@ export default function App() {
   }, [isDraggingBookAssistant]);
 
   useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  useEffect(() => {
     if (authState.loading) {
       return;
     }
@@ -5325,7 +5333,10 @@ export default function App() {
         const nextState = await fetchRunState(selectedSessionId, preferredRun.id);
         if (!cancelled) {
           setRunArtifacts(Array.isArray(nextState.artifacts) ? nextState.artifacts : []);
-          if (Array.isArray(nextState.toolTrace)) {
+          if (
+            Array.isArray(nextState.toolTrace)
+            && !hasCanonicalPlanToolTrace(messagesRef.current, preferredRun.id)
+          ) {
             setMessages((current) => mergePersistedToolTrace(current, preferredRun.id, nextState.toolTrace ?? []));
           }
         }
