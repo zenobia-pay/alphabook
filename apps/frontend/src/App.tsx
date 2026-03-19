@@ -2073,22 +2073,6 @@ function BookLoadingState() {
   );
 }
 
-function BookMetaLoadingState() {
-  return (
-    <div className="book-reader-pane book-reader-pane-loading" aria-hidden="true">
-      <header className="book-reader-header book-reader-header-loading">
-        <div className="book-loading-copy">
-          <Skeleton className="book-loading-meta" />
-          <Skeleton className="book-loading-title" />
-          <Skeleton className="book-loading-authors" />
-        </div>
-      </header>
-
-      <BookLoadingState />
-    </div>
-  );
-}
-
 function BookAssistantPaneSkeleton() {
   return (
     <div className="book-loading-thread" aria-hidden="true">
@@ -2597,7 +2581,10 @@ function buildWorkHref(workId: string) {
   return `/works/${encodeURIComponent(workId)}`;
 }
 
-function buildWorkContentHref(workId: string) {
+function buildWorkContentHref(workId: string, gutenbergId?: string | number | null) {
+  if (gutenbergId != null && String(gutenbergId).trim().length > 0) {
+    return `/book-content/${encodeURIComponent(String(gutenbergId))}`;
+  }
   return `/api/works/${encodeURIComponent(workId)}/content`;
 }
 
@@ -4716,37 +4703,21 @@ export default function App() {
         style={{ ["--book-assistant-width" as string]: `${bookAssistantWidth}px` }}
       >
         <div className="book-reader-pane">
-          {activeWork ? (
-            <header className="book-reader-header">
-              <div>
-                <p className="book-reader-meta">
-                  {[activeWork.gutenbergId ? `Gutenberg ${activeWork.gutenbergId}` : null, activeWork.language?.toUpperCase()].filter(Boolean).join(" · ")}
-                </p>
-                <h1>{activeWork.title}</h1>
-                {activeWork.authors.length > 0 ? <p className="book-reader-authors">{activeWork.authors.join(" · ")}</p> : null}
-              </div>
-            </header>
-          ) : activeWorkLoading ? (
-            <header className="book-reader-header book-reader-header-skeleton" aria-hidden="true">
-              <div className="book-loading-copy">
-                <div className="book-loading-meta" />
-                <div className="book-loading-title" />
-                <div className="book-loading-authors" />
-              </div>
-            </header>
-          ) : (
-            <div className="book-loading">Book not found.</div>
-          )}
-
           {activeWorkId ? (
             <div className="book-reader-surface">
-              <iframe
-                key={activeWorkId}
-                className="book-reader-frame"
-                src={buildWorkContentHref(activeWorkId)}
-                title={activeWork?.title ? `${activeWork.title} text` : "Book text"}
-                loading="eager"
-              />
+              {activeWorkLoading ? (
+                <BookLoadingState />
+              ) : activeWork ? (
+                <iframe
+                  key={activeWorkId}
+                  className="book-reader-frame"
+                  src={buildWorkContentHref(activeWorkId, activeWork.gutenbergId)}
+                  title={activeWork.title ? `${activeWork.title} text` : "Book text"}
+                  loading="eager"
+                />
+              ) : (
+                <div className="book-loading">Book not found.</div>
+              )}
             </div>
           ) : null}
         </div>

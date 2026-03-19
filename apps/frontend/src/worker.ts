@@ -2,6 +2,7 @@ export interface Env {
   ASSETS: {
     fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
   };
+  BOOK_CONTENT_BUCKET: R2Bucket;
   API_ORIGIN?: string;
 }
 
@@ -15,6 +16,11 @@ declare class HTMLRewriter {
 }
 
 const SITE_ORIGIN = "https://alpha-book.org";
+const BOOK_CONTENT_CACHE_TTL_SECONDS = 60 * 60 * 4;
+
+function buildBookHtmlKey(gutenbergId: string) {
+  return `gutenberg/clean/${gutenbergId}/book.html`;
+}
 
 function resolveCanonicalUrl(requestUrl: URL) {
   if (requestUrl.pathname.startsWith("/works/") || requestUrl.pathname.startsWith("/u/")) {
@@ -24,8 +30,41 @@ function resolveCanonicalUrl(requestUrl: URL) {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+
+    if (url.pathname.startsWith("/book-content/")) {
+      const cached = await caches.default.match(request);
+      if (cached) {
+        return cached;
+      }
+
+      const gutenbergId = decodeURIComponent(url.pathname.slice("/book-content/".length)).trim();
+      if (!/^\d+$/.test(gutenbergId)) {
+        return new Response("Invalid book content id.", { status: 400 });
+      }
+
+      const object = await env.BOOK_CONTENT_BUCKET.get(buildBookHtmlKey(gutenbergId));
+      if (!object) {
+        return new Response("Book content not found.", { status: 404 });
+      }
+
+      const headers = new Headers();
+      object.writeHttpMetadata(headers);
+      headers.set("content-type", headers.get("content-type") ?? "text/html; charset=utf-8");
+      headers.set("cache-control", `public, max-age=${BOOK_CONTENT_CACHE_TTL_SECONDS}`);
+      headers.set("x-alphabook-surface", "frontend-worker-static-book-content");
+      if (object.httpEtag) {
+        headers.set("etag", object.httpEtag);
+      }
+
+      const response = new Response(object.body, {
+        status: 200,
+        headers,
+      });
+      ctx.waitUntil(caches.default.put(request, response.clone()));
+      return response;
+    }
 
     if (url.pathname === "/api" || url.pathname.startsWith("/api/")) {
       const upstreamOrigin = env.API_ORIGIN ?? "https://api.alpha-book.org";
