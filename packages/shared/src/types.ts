@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 export const ToolNameSchema = z.enum([
+  "estimate_research_scope",
   "search_works",
   "get_work_metadata",
   "get_relevant_chunks",
@@ -22,6 +23,18 @@ export const CitationSchema = z.object({
 });
 
 export type Citation = z.infer<typeof CitationSchema>;
+
+export const EstimateResearchScopeArgsSchema = z.object({
+  query: z.string().min(1),
+  filters: z
+    .object({
+      language: z.string().optional(),
+      rightsStatus: z.string().optional(),
+      yearRange: z.tuple([z.number().int(), z.number().int()]).optional(),
+      genre: z.array(z.string().min(1)).max(8).optional(),
+    })
+    .optional(),
+});
 
 export const SearchWorksArgsSchema = z.object({
   query: z.string().min(1),
@@ -80,6 +93,7 @@ export const DestroyWorkspaceArgsSchema = z.object({
 });
 
 export const ToolArgsSchemas = {
+  estimate_research_scope: EstimateResearchScopeArgsSchema,
   search_works: SearchWorksArgsSchema,
   get_work_metadata: GetWorkMetadataArgsSchema,
   get_relevant_chunks: GetRelevantChunksArgsSchema,

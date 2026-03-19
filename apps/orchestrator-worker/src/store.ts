@@ -10,6 +10,31 @@ export interface PassageSearchFilters {
   genre?: string[];
 }
 
+export interface ResearchScopeEstimate {
+  query: string;
+  metadataWorkEstimate: number;
+  chunkMatchEstimate: number;
+  chunkWorkEstimate: number;
+  breadthBand: "tiny" | "small" | "medium" | "large" | "huge";
+  recommendedIntensity: "normal" | "high" | "maximum";
+  recommendedWallClockMinutes: 5 | 15 | 60;
+  recommendedParallelism: number;
+  recommendedShardAxis: "none" | "work_id_hash" | "author_initial" | "publication_year" | "retrieval_strategy";
+  recommendedVmWorkBudget: number;
+  recommendedFrontierWorks: number;
+  estimatedCoveragePercent: {
+    normal: number;
+    high: number;
+    maximum: number;
+  };
+  probeWorks: Array<{
+    id: string;
+    title: string;
+    authors: string[];
+  }>;
+  rationale: string;
+}
+
 export interface SessionRecord {
   id: string;
   userId: string;
@@ -243,6 +268,7 @@ export interface AppStore {
   listWorks(offset?: number, limit?: number): Promise<WorkSummary[]>;
   countWorks(): Promise<number>;
   getWorkById(workId: string): Promise<WorkDetailRecord | null>;
+  estimateResearchScope(query: string, filters?: PassageSearchFilters): Promise<ResearchScopeEstimate>;
   searchWorks(query: string, filters?: Record<string, unknown>): Promise<WorkSummary[]>;
   getWorkMetadata(workIds: string[]): Promise<WorkSummary[]>;
   getRelevantChunks(
@@ -770,6 +796,112 @@ function metadataSearchTerms(query: string): string[] {
     .filter((token) => !(hasStrongGriefSignal && (token === "child" || token === "children" || token === "juvenile")))
     .filter((token) => !/^\d{4}$/u.test(token))
     .slice(0, broadSurveyQuery ? 24 : 16);
+}
+
+function clampPercentage(value: number) {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function recommendedShardAxis(query: string, estimatedWorkBreadth: number): ResearchScopeEstimate["recommendedShardAxis"] {
+  if (estimatedWorkBreadth <= 24) {
+    return "none";
+  }
+  if (/\b(180\d|181\d|182\d|183\d|184\d|185\d|186\d|187\d|188\d|189\d|century|decade|era|period|before|after)\b/iu.test(query)) {
+    return "publication_year";
+  }
+  if (/\b(compare|comparison|across|survey|pattern|types|different ways|kinds of)\b/iu.test(query)) {
+    return "work_id_hash";
+  }
+  if (/\b(author|authors|writer|writers|novelist|novelists)\b/iu.test(query)) {
+    return "author_initial";
+  }
+  return "retrieval_strategy";
+}
+
+function buildResearchScopeEstimate(
+  query: string,
+  metadataWorkEstimate: number,
+  chunkMatchEstimate: number,
+  chunkWorkEstimate: number,
+  probeWorks: WorkSummary[],
+): ResearchScopeEstimate {
+  const effectiveWorkBreadth = Math.max(metadataWorkEstimate, chunkWorkEstimate, probeWorks.length);
+  let breadthBand: ResearchScopeEstimate["breadthBand"] = "tiny";
+  let recommendedIntensity: ResearchScopeEstimate["recommendedIntensity"] = "normal";
+  let recommendedWallClockMinutes: ResearchScopeEstimate["recommendedWallClockMinutes"] = 5;
+  let recommendedParallelism = 1;
+  let recommendedVmWorkBudget = 40;
+  let recommendedFrontierWorks = 24;
+
+  if (effectiveWorkBreadth > 160 || chunkMatchEstimate > 12_000) {
+    breadthBand = "huge";
+    recommendedIntensity = "maximum";
+    recommendedWallClockMinutes = 60;
+    recommendedParallelism = 12;
+    recommendedVmWorkBudget = 36;
+    recommendedFrontierWorks = 192;
+  } else if (effectiveWorkBreadth > 80 || chunkMatchEstimate > 4_000) {
+    breadthBand = "large";
+    recommendedIntensity = "maximum";
+    recommendedWallClockMinutes = 60;
+    recommendedParallelism = 8;
+    recommendedVmWorkBudget = 40;
+    recommendedFrontierWorks = 128;
+  } else if (effectiveWorkBreadth > 30 || chunkMatchEstimate > 1_000) {
+    breadthBand = "medium";
+    recommendedIntensity = "high";
+    recommendedWallClockMinutes = 15;
+    recommendedParallelism = 4;
+    recommendedVmWorkBudget = 32;
+    recommendedFrontierWorks = 72;
+  } else if (effectiveWorkBreadth > 12 || chunkMatchEstimate > 200) {
+    breadthBand = "small";
+    recommendedIntensity = "high";
+    recommendedWallClockMinutes = 15;
+    recommendedParallelism = 2;
+    recommendedVmWorkBudget = 24;
+    recommendedFrontierWorks = 40;
+  }
+
+  const breadthDenominator = Math.max(effectiveWorkBreadth, 1);
+  const estimatedCoveragePercent = {
+    normal: clampPercentage((40 / breadthDenominator) * 100),
+    high: clampPercentage((120 / breadthDenominator) * 100),
+    maximum: clampPercentage((320 / breadthDenominator) * 100),
+  };
+
+  const shardAxis = recommendedShardAxis(query, effectiveWorkBreadth);
+  const rationale = [
+    `The cheap probes suggest roughly ${effectiveWorkBreadth} books are in play`,
+    chunkMatchEstimate > 0 ? `with about ${chunkMatchEstimate} matching passages` : "with sparse direct passage matches so far",
+    `so the recommended intensity is ${recommendedIntensity} (${recommendedWallClockMinutes} minutes)`,
+    recommendedParallelism > 1 ? `using ${recommendedParallelism} parallel shards on ${shardAxis.replaceAll("_", " ")}` : "without parallel sharding yet",
+    `and a frontier of about ${recommendedFrontierWorks} active books before verification narrows it.`,
+  ].join(", ");
+
+  return {
+    query,
+    metadataWorkEstimate,
+    chunkMatchEstimate,
+    chunkWorkEstimate,
+    breadthBand,
+    recommendedIntensity,
+    recommendedWallClockMinutes,
+    recommendedParallelism,
+    recommendedShardAxis: shardAxis,
+    recommendedVmWorkBudget,
+    recommendedFrontierWorks,
+    estimatedCoveragePercent,
+    probeWorks: probeWorks.slice(0, 6).map((work) => ({
+      id: work.id,
+      title: work.title,
+      authors: work.authors ?? [],
+    })),
+    rationale,
+  };
 }
 
 function metadataTextHaystack(row: {
@@ -1412,6 +1544,24 @@ export class InMemoryAppStore implements AppStore {
 
   async countWorks(): Promise<number> {
     return this.works.length;
+  }
+
+  async estimateResearchScope(query: string, filters: PassageSearchFilters = {}): Promise<ResearchScopeEstimate> {
+    const probeWorks = await this.searchWorks(query, {
+      ...filters,
+      limit: 6,
+    } as Record<string, unknown>);
+    const metadataWorkEstimate = [...this.works]
+      .filter((work) => workMatchesSearchFilters(work, filters as Record<string, unknown>))
+      .filter((work) => {
+        const haystack = `${work.title} ${work.summary ?? ""} ${work.authors.join(" ")} ${work.subjects.join(" ")}`;
+        return lexicalScore(expandedSearchTokens(query).join(" "), haystack) > 0;
+      })
+      .length;
+    const chunks = await this.getRelevantChunks(query, undefined, Math.min(250, this.chunks.length), undefined, filters);
+    const chunkMatchEstimate = chunks.length;
+    const chunkWorkEstimate = new Set(chunks.map((chunk) => chunk.workId)).size;
+    return buildResearchScopeEstimate(query, metadataWorkEstimate, chunkMatchEstimate, chunkWorkEstimate, probeWorks);
   }
 
   async getWorkById(workId: string): Promise<WorkDetailRecord | null> {
@@ -2942,6 +3092,111 @@ export class NeonAppStore implements AppStore {
     const result = await this.db.query<{ count: string }>("SELECT COUNT(*)::text AS count FROM works");
     const value = result.rows[0]?.count ?? "0";
     return Number.parseInt(value, 10) || 0;
+  }
+
+  async estimateResearchScope(query: string, filters: PassageSearchFilters = {}): Promise<ResearchScopeEstimate> {
+    const normalizedQuery = normalizeSearchQuery(query);
+    const tsQuery = normalizedQuery || query.trim();
+    const probeWorks = await this.searchWorks(query, {
+      ...filters,
+      limit: 6,
+    } as Record<string, unknown>);
+    const startYear = Array.isArray(filters.yearRange) ? Math.min(filters.yearRange[0], filters.yearRange[1]) : null;
+    const endYear = Array.isArray(filters.yearRange) ? Math.max(filters.yearRange[0], filters.yearRange[1]) : null;
+    const genres = Array.isArray(filters.genre)
+      ? filters.genre.map((genre) => genre.trim()).filter((genre) => genre.length > 0).slice(0, 8)
+      : [];
+
+    if (!tsQuery) {
+      return buildResearchScopeEstimate(query, 0, 0, 0, probeWorks);
+    }
+
+    const estimateResult = await withTimeout(this.db.query<{
+      metadata_work_estimate: number;
+      chunk_match_estimate: number;
+      chunk_work_estimate: number;
+    }>(
+      `
+        WITH query_input AS (
+          SELECT websearch_to_tsquery('english', $1::text) AS tsq
+        ),
+        eligible_works AS (
+          SELECT w.id, w.title, w.summary, w.metadata_json
+          FROM works w
+          WHERE ($2::text IS NULL OR w.language = $2::text)
+            AND ($3::text IS NULL OR w.rights_status = $3::text)
+            AND (
+              $4::int IS NULL
+              OR (
+                NULLIF(SUBSTRING(COALESCE(w.release_date::text, '') FROM '([0-9]{4})'), '') IS NOT NULL
+                AND NULLIF(SUBSTRING(COALESCE(w.release_date::text, '') FROM '([0-9]{4})'), '')::int >= $4::int
+              )
+            )
+            AND (
+              $5::int IS NULL
+              OR (
+                NULLIF(SUBSTRING(COALESCE(w.release_date::text, '') FROM '([0-9]{4})'), '') IS NOT NULL
+                AND NULLIF(SUBSTRING(COALESCE(w.release_date::text, '') FROM '([0-9]{4})'), '')::int <= $5::int
+              )
+            )
+            AND (
+              COALESCE(array_length($6::text[], 1), 0) = 0
+              OR EXISTS (
+                SELECT 1
+                FROM UNNEST($6::text[]) AS genre
+                WHERE
+                  COALESCE(w.title, '') ILIKE '%' || genre || '%'
+                  OR COALESCE(w.summary, '') ILIKE '%' || genre || '%'
+                  OR COALESCE(w.metadata_json::text, '') ILIKE '%' || genre || '%'
+              )
+            )
+        ),
+        metadata_hits AS (
+          SELECT COUNT(*)::int AS metadata_work_estimate
+          FROM eligible_works ew, query_input
+          WHERE (
+            setweight(to_tsvector('english', COALESCE(ew.title, '')), 'A')
+            || setweight(to_tsvector('english', COALESCE(ew.summary, '')), 'B')
+            || setweight(to_tsvector('english', COALESCE(ew.metadata_json::text, '')), 'D')
+          ) @@ query_input.tsq
+        ),
+        chunk_hits AS (
+          SELECT
+            COUNT(*)::int AS chunk_match_estimate,
+            COUNT(DISTINCT c.work_id)::int AS chunk_work_estimate
+          FROM chunks c
+          JOIN eligible_works ew ON ew.id = c.work_id,
+          query_input
+          WHERE c.tsv @@ query_input.tsq
+        )
+        SELECT
+          metadata_hits.metadata_work_estimate,
+          chunk_hits.chunk_match_estimate,
+          chunk_hits.chunk_work_estimate
+        FROM metadata_hits, chunk_hits
+      `,
+      [
+        tsQuery,
+        typeof filters.language === "string" ? filters.language : null,
+        typeof filters.rightsStatus === "string" ? filters.rightsStatus : null,
+        Number.isInteger(startYear) ? startYear : null,
+        Number.isInteger(endYear) ? endYear : null,
+        genres,
+      ],
+    ), 5_000, "Scope estimate timed out before the database returned counts.");
+
+    const row = estimateResult.rows[0] ?? {
+      metadata_work_estimate: 0,
+      chunk_match_estimate: 0,
+      chunk_work_estimate: 0,
+    };
+    return buildResearchScopeEstimate(
+      query,
+      Number(row.metadata_work_estimate ?? 0),
+      Number(row.chunk_match_estimate ?? 0),
+      Number(row.chunk_work_estimate ?? 0),
+      probeWorks,
+    );
   }
 
   async getWorkById(workId: string): Promise<WorkDetailRecord | null> {

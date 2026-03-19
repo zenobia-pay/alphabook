@@ -5417,3 +5417,52 @@ test("search_works inherits fiction genre from the routed query when planner omi
     genre: ["fiction"],
   });
 });
+
+test("fallback planner estimates scope before starting retrieval or workspace setup", async () => {
+  const planner = new FallbackPlanner();
+  const decision = await planner.decide({
+    userMessage: "Find broad grief patterns across 19th century fiction.",
+    conversationHistory: [],
+    turns: 1,
+    toolHistory: [],
+  });
+
+  assert.equal(decision.type, "tool_call");
+  assert.equal(decision.tool_name, "estimate_research_scope");
+  assert.equal(decision.args.query, "Find broad grief patterns across 19th century fiction.");
+});
+
+test("estimateResearchScope returns budget and shard recommendations for broad queries", async () => {
+  const store = new InMemoryAppStore(
+    Array.from({ length: 90 }, (_, index) => ({
+      id: `work-${index + 1}`,
+      gutenbergId: index + 1,
+      title: `Grief Story ${index + 1}`,
+      language: "en",
+      releaseDate: "1880-01-01",
+      rightsStatus: "public_domain",
+      summary: "A fiction work about grief, mourning, sorrow, loss, and consolation.",
+      authors: [`Author ${index + 1}`],
+      subjects: ["fiction", "grief", "mourning"],
+      cleanTextKey: `gutenberg/clean/${index + 1}/clean.txt`,
+    })),
+    Array.from({ length: 240 }, (_, index) => ({
+      id: `chunk-${index + 1}`,
+      workId: `work-${(index % 90) + 1}`,
+      chunkIndex: index,
+      text: "The characters speak of grief, mourning, sorrow, and consolation after a death.",
+      r2Key: `gutenberg/clean/${(index % 90) + 1}/chunks.jsonl`,
+      score: 0,
+      excerpt: "",
+    })),
+  );
+
+  const estimate = await store.estimateResearchScope("Find broad grief patterns across 19th century fiction.");
+
+  assert.equal(estimate.recommendedIntensity, "maximum");
+  assert.equal(estimate.recommendedWallClockMinutes, 60);
+  assert.ok(estimate.recommendedParallelism >= 4);
+  assert.ok(estimate.recommendedFrontierWorks >= 72);
+  assert.ok(estimate.chunkMatchEstimate > 0);
+  assert.ok(estimate.metadataWorkEstimate > 0);
+});

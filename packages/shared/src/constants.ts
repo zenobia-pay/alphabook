@@ -10,6 +10,7 @@ export const R2_PREFIXES = {
 } as const;
 
 export const TOOL_LABELS = {
+  estimate_research_scope: "Scope Estimate",
   search_works: "Metadata Search",
   get_work_metadata: "Book Context",
   get_relevant_chunks: "Passage Search",

@@ -904,6 +904,10 @@ function compactTaskSpec(task, openBookMode) {
     runtimeId: typeof task.runtimeId === "string" ? task.runtimeId : null,
     taskType: typeof task.taskType === "string" ? task.taskType : null,
     mode: typeof task.mode === "string" ? task.mode : null,
+    intensity: typeof task.intensity === "string" ? task.intensity : null,
+    timeBudgetMinutes: typeof task.timeBudgetMinutes === "number" ? task.timeBudgetMinutes : null,
+    parallelism: typeof task.parallelism === "number" ? task.parallelism : null,
+    shardAxis: typeof task.shardAxis === "string" ? task.shardAxis : null,
     researchObjective:
       typeof task.researchObjective === "string"
         ? normalizeWhitespace(task.researchObjective).slice(0, 320)
@@ -948,6 +952,19 @@ function compactTaskSpec(task, openBookMode) {
                 excerpt: typeof chunk?.excerpt === "string" ? normalizeWhitespace(chunk.excerpt).slice(0, 180) : null,
               }))
             : [],
+        }
+      : null,
+    searchPlan: task.searchPlan && typeof task.searchPlan === "object"
+      ? {
+          recommendedIntensity: typeof task.searchPlan.recommendedIntensity === "string" ? task.searchPlan.recommendedIntensity : null,
+          recommendedWallClockMinutes: typeof task.searchPlan.recommendedWallClockMinutes === "number" ? task.searchPlan.recommendedWallClockMinutes : null,
+          recommendedParallelism: typeof task.searchPlan.recommendedParallelism === "number" ? task.searchPlan.recommendedParallelism : null,
+          recommendedShardAxis: typeof task.searchPlan.recommendedShardAxis === "string" ? task.searchPlan.recommendedShardAxis : null,
+          recommendedFrontierWorks: typeof task.searchPlan.recommendedFrontierWorks === "number" ? task.searchPlan.recommendedFrontierWorks : null,
+          breadthBand: typeof task.searchPlan.breadthBand === "string" ? task.searchPlan.breadthBand : null,
+          metadataWorkEstimate: typeof task.searchPlan.metadataWorkEstimate === "number" ? task.searchPlan.metadataWorkEstimate : null,
+          chunkMatchEstimate: typeof task.searchPlan.chunkMatchEstimate === "number" ? task.searchPlan.chunkMatchEstimate : null,
+          chunkWorkEstimate: typeof task.searchPlan.chunkWorkEstimate === "number" ? task.searchPlan.chunkWorkEstimate : null,
         }
       : null,
     taskContext: compactTaskContext(task.taskContext),
@@ -1002,6 +1019,14 @@ function buildBriefingPrompt(runtimePrompt, manifest, task, evidence, question) 
   const seededCandidateCount = Array.isArray(compactTask.candidateWorkIds) ? compactTask.candidateWorkIds.length : 0;
   const seededChunkCount = Array.isArray(compactTask.chunkIds) ? compactTask.chunkIds.length : 0;
   const broadCorpusTask = isBroadCorpusTask(task, openBookMode);
+  const intensity = compactTask.intensity || (broadCorpusTask ? "high" : "normal");
+  const commandBudget = openBookMode
+    ? 5
+    : intensity === "maximum"
+      ? 48
+      : intensity === "high"
+        ? 28
+        : 14;
   return [
     runtimePrompt,
     "",
@@ -1021,9 +1046,16 @@ function buildBriefingPrompt(runtimePrompt, manifest, task, evidence, question) 
       : "- Start from the best available seed evidence, but widen across the full corpus whenever the prompt asks for a broad theme, comparison, or survey.",
     openBookMode
       ? "- Use at most 5 shell commands total before you return your answer."
-      : broadCorpusTask
-        ? "- Keep the search bounded but wide: use at most 28 shell commands total before you return your answer."
-        : "- Keep the search bounded: use at most 14 shell commands total before you return your answer.",
+      : `- Keep the search bounded but wide: use at most ${commandBudget} shell commands total before you return your answer.`,
+    !openBookMode && compactTask.timeBudgetMinutes
+      ? `- This run has a target wall-clock budget of about ${compactTask.timeBudgetMinutes} minutes at ${intensity} intensity.`
+      : null,
+    !openBookMode && compactTask.parallelism
+      ? `- Plan your sweep as one shard of a larger search plan that expects about ${compactTask.parallelism} parallel shard(s) over ${compactTask.shardAxis || "work_id_hash"}.`
+      : null,
+    !openBookMode && compactTask.searchPlan?.recommendedFrontierWorks
+      ? `- The orchestrator wants a frontier of about ${compactTask.searchPlan.recommendedFrontierWorks} active books before final verification narrows it.`
+      : null,
     "- Prefer finishing with a good briefing over exhaustively exploring every possible lead.",
     openBookMode
       ? "- Search the local clean text and local chunks first with rg and sed. Use the remote Postgres corpus CLI only as a fallback."

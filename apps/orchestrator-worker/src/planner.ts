@@ -37,6 +37,7 @@ export interface Planner {
 }
 
 const VALID_TOOL_NAMES = new Set<ToolName>([
+  "estimate_research_scope",
   "search_works",
   "get_work_metadata",
   "get_relevant_chunks",
@@ -77,6 +78,18 @@ function summarizePlannerValue(value: unknown, depth = 0): unknown {
 
 function summarizePlannerToolResult(toolName: ToolName, result: Record<string, unknown>) {
   switch (toolName) {
+    case "estimate_research_scope":
+      return {
+        metadataWorkEstimate: typeof result.metadataWorkEstimate === "number" ? result.metadataWorkEstimate : null,
+        chunkMatchEstimate: typeof result.chunkMatchEstimate === "number" ? result.chunkMatchEstimate : null,
+        chunkWorkEstimate: typeof result.chunkWorkEstimate === "number" ? result.chunkWorkEstimate : null,
+        breadthBand: typeof result.breadthBand === "string" ? result.breadthBand : null,
+        recommendedIntensity: typeof result.recommendedIntensity === "string" ? result.recommendedIntensity : null,
+        recommendedWallClockMinutes: typeof result.recommendedWallClockMinutes === "number" ? result.recommendedWallClockMinutes : null,
+        recommendedParallelism: typeof result.recommendedParallelism === "number" ? result.recommendedParallelism : null,
+        recommendedShardAxis: typeof result.recommendedShardAxis === "string" ? result.recommendedShardAxis : null,
+        rationale: typeof result.rationale === "string" ? truncateForModel(result.rationale, 220) : null,
+      };
     case "search_works": {
       const works = Array.isArray(result.works) ? result.works as Array<Record<string, unknown>> : [];
       return {
@@ -265,6 +278,20 @@ function seedChunkPayload(context: PlannerContext): ChunkSearchResult[] {
   return (chunkResult?.chunks as ChunkSearchResult[] | undefined) ?? [];
 }
 
+function scopeEstimate(context: PlannerContext): Record<string, unknown> | null {
+  for (let index = context.toolHistory.length - 1; index >= 0; index -= 1) {
+    const entry = context.toolHistory[index];
+    if (entry.toolName === "estimate_research_scope") {
+      return entry.result;
+    }
+  }
+  return null;
+}
+
+function estimateNumber(result: Record<string, unknown> | null, key: string, fallback: number) {
+  return typeof result?.[key] === "number" ? Number(result[key]) : fallback;
+}
+
 function phaseResult(context: PlannerContext, phase: string): Record<string, unknown> | null {
   for (let index = context.toolHistory.length - 1; index >= 0; index -= 1) {
     const entry = context.toolHistory[index];
@@ -331,11 +358,22 @@ function lastToolCall(context: PlannerContext): PlannerContext["toolHistory"][nu
 
 function buildTaskContext(context: PlannerContext, workIds: string[], chunks: ChunkSearchResult[]) {
   const broadCorpusQuery = isBroadCorpusQuery(context);
+  const estimate = scopeEstimate(context);
   return {
     question: context.userMessage,
     researchObjective: context.userMessage,
     mode: workspaceMode(context),
     candidateWorkIds: workIds,
+    searchPlan: estimate
+      ? {
+          intensity: typeof estimate.recommendedIntensity === "string" ? estimate.recommendedIntensity : null,
+          wallClockMinutes: typeof estimate.recommendedWallClockMinutes === "number" ? estimate.recommendedWallClockMinutes : null,
+          parallelism: typeof estimate.recommendedParallelism === "number" ? estimate.recommendedParallelism : null,
+          shardAxis: typeof estimate.recommendedShardAxis === "string" ? estimate.recommendedShardAxis : null,
+          breadthBand: typeof estimate.breadthBand === "string" ? estimate.breadthBand : null,
+          frontierWorks: typeof estimate.recommendedFrontierWorks === "number" ? estimate.recommendedFrontierWorks : null,
+        }
+      : null,
     topChunks: chunks.slice(0, broadCorpusQuery ? 24 : 12).map((chunk) => ({
       chunkId: chunk.id,
       workId: chunk.workId,
@@ -346,9 +384,12 @@ function buildTaskContext(context: PlannerContext, workIds: string[], chunks: Ch
 
 function buildWorkspaceTaskSpec(context: PlannerContext, workIds: string[], chunks: ChunkSearchResult[]) {
   const broadCorpusQuery = isBroadCorpusQuery(context);
-  const workLimit = broadCorpusQuery ? 24 : 12;
-  const chunkLimit = broadCorpusQuery ? 48 : 24;
-  const seedChunkLimit = broadCorpusQuery ? 32 : 16;
+  const estimate = scopeEstimate(context);
+  const recommendedFrontierWorks = estimateNumber(estimate, "recommendedFrontierWorks", broadCorpusQuery ? 24 : 12);
+  const recommendedParallelism = estimateNumber(estimate, "recommendedParallelism", broadCorpusQuery ? 2 : 1);
+  const workLimit = Math.max(broadCorpusQuery ? 24 : 12, Math.min(48, recommendedFrontierWorks));
+  const chunkLimit = Math.max(broadCorpusQuery ? 48 : 24, Math.min(96, recommendedFrontierWorks * 2));
+  const seedChunkLimit = Math.max(broadCorpusQuery ? 32 : 16, Math.min(64, recommendedFrontierWorks));
   const metadata = metadataWorks(context);
   const search = searchWorks(context);
   return {
@@ -357,6 +398,10 @@ function buildWorkspaceTaskSpec(context: PlannerContext, workIds: string[], chun
     question: context.userMessage,
     researchObjective: context.userMessage,
     mode: workspaceMode(context),
+    intensity: typeof estimate?.recommendedIntensity === "string" ? estimate.recommendedIntensity : broadCorpusQuery ? "high" : "normal",
+    timeBudgetMinutes: typeof estimate?.recommendedWallClockMinutes === "number" ? estimate.recommendedWallClockMinutes : broadCorpusQuery ? 15 : 5,
+    parallelism: recommendedParallelism,
+    shardAxis: typeof estimate?.recommendedShardAxis === "string" ? estimate.recommendedShardAxis : broadCorpusQuery ? "work_id_hash" : "none",
     workIds,
     chunkIds: chunks.slice(0, chunkLimit).map((chunk) => chunk.id),
     candidateWorkIds: workIds,
@@ -364,6 +409,7 @@ function buildWorkspaceTaskSpec(context: PlannerContext, workIds: string[], chun
       searchWorksQuery: context.userMessage,
       passageSearchFocus: "Find the strongest directly quotable passages that best answer the research objective.",
     },
+    searchPlan: estimate ?? undefined,
     retrieval: {
       searchWorks: search.slice(0, workLimit).map((work) => ({
         id: work.id,
@@ -399,9 +445,10 @@ function buildWorkspaceTaskSpec(context: PlannerContext, workIds: string[], chun
 export class FallbackPlanner implements Planner {
   async decide(context: PlannerContext): Promise<PlannerDecision> {
     const broadCorpusQuery = isBroadCorpusQuery(context);
-    const metadataLimit = broadCorpusQuery ? 40 : 12;
-    const workLimit = broadCorpusQuery ? 32 : 12;
-    const chunkLimit = broadCorpusQuery ? 64 : 20;
+    const estimate = scopeEstimate(context);
+    const metadataLimit = Math.max(broadCorpusQuery ? 40 : 12, Math.min(60, estimateNumber(estimate, "recommendedFrontierWorks", broadCorpusQuery ? 40 : 12)));
+    const workLimit = Math.max(broadCorpusQuery ? 32 : 12, Math.min(48, estimateNumber(estimate, "recommendedFrontierWorks", broadCorpusQuery ? 32 : 12)));
+    const chunkLimit = Math.max(broadCorpusQuery ? 64 : 20, Math.min(96, estimateNumber(estimate, "recommendedFrontierWorks", broadCorpusQuery ? 64 : 20)));
     const toolNames = [
       ...context.toolHistory.map((item) => item.toolName),
       ...(context.pendingTools ?? []).map((item) => item.toolName),
@@ -414,13 +461,24 @@ export class FallbackPlanner implements Planner {
       ...chunks.map((chunk) => chunk.workId),
     ])).slice(0, workLimit);
 
+    if (!toolNames.includes("estimate_research_scope")) {
+      return {
+        type: "tool_call",
+        tool_name: "estimate_research_scope",
+        rationale: "Sizing the breadth of the search first so I can choose the right time budget and shard plan.",
+        args: {
+          query: context.userMessage,
+        },
+      };
+    }
+
     if (!toolNames.includes("create_workspace")) {
       return {
         type: "tool_call",
         tool_name: "create_workspace",
         rationale: scopedWorkIds.length > 0
-          ? "Starting the Codex workspace for this book first, then I’ll seed it with passages before running the deeper search."
-          : "Starting the Codex workspace first, then I’ll seed it with corpus retrieval before running the deeper search.",
+          ? "Starting the Codex workspace for this book with the estimated search budget, then I’ll seed it with passages before running the deeper search."
+          : "Starting the Codex workspace with the estimated search budget, then I’ll seed it with corpus retrieval before running the deeper search.",
         args: {
           workIds: scopedWorkIds.length > 0 ? scopedWorkIds.slice(0, 12) : [],
           chunkIds: [],
@@ -565,6 +623,7 @@ export class OpenAIPlanner implements Planner {
             responseInstructions: "Reply with JSON only.",
             hardLimits: HARD_LIMITS,
             availableTools: [
+              "estimate_research_scope(query, filters?)",
               "search_works(query, filters?)",
               "get_work_metadata(work_ids)",
               "get_relevant_chunks(query, work_ids?, filters?)",
@@ -654,6 +713,16 @@ export class OpenAIPlanner implements Planner {
       return fallbackPlanner.decide(context);
     }
     const parsed = parsedResult.data;
+    if (!hasToolStarted(context, "estimate_research_scope")) {
+      return {
+        type: "tool_call",
+        tool_name: "estimate_research_scope",
+        rationale: "Sizing the breadth of the search first so I can choose the right time budget and shard plan.",
+        args: {
+          query: context.userMessage,
+        },
+      };
+    }
     if (!hasToolStarted(context, "create_workspace")) {
       const chunks = seedChunkPayload(context);
       const metadataIds = context.workScope?.length ? context.workScope.slice(0, 12) : metadataWorkIds(context, 12);

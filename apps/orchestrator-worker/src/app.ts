@@ -817,6 +817,8 @@ function extractCandidateWorkIds(
   result: Record<string, unknown>,
 ) {
   switch (toolName) {
+    case "estimate_research_scope":
+      return [];
     case "search_works": {
       const works = Array.isArray(result.works) ? result.works as Array<Record<string, unknown>> : [];
       return uniqueWorkIds(works.map((work) => (typeof work.id === "string" ? work.id : null)));
@@ -840,6 +842,61 @@ function extractCandidateWorkIds(
     default:
       return [];
   }
+}
+
+function latestScopeEstimateFromHistory(
+  toolHistory: Array<{
+    toolName: ToolName;
+    args: Record<string, unknown>;
+    result: Record<string, unknown>;
+  }>,
+) {
+  for (let index = toolHistory.length - 1; index >= 0; index -= 1) {
+    const entry = toolHistory[index];
+    if (entry.toolName === "estimate_research_scope") {
+      return entry.result;
+    }
+  }
+  return null;
+}
+
+function searchPlanFromEstimate(
+  estimate: Record<string, unknown> | null,
+  fallbackBroadCorpusQuery: boolean,
+) {
+  const intensity = typeof estimate?.recommendedIntensity === "string"
+    ? estimate.recommendedIntensity
+    : fallbackBroadCorpusQuery
+      ? "high"
+      : "normal";
+  const wallClockMinutes = typeof estimate?.recommendedWallClockMinutes === "number"
+    ? estimate.recommendedWallClockMinutes
+    : fallbackBroadCorpusQuery
+      ? 15
+      : 5;
+  const parallelism = typeof estimate?.recommendedParallelism === "number"
+    ? estimate.recommendedParallelism
+    : fallbackBroadCorpusQuery
+      ? 3
+      : 1;
+  const shardAxis = typeof estimate?.recommendedShardAxis === "string"
+    ? estimate.recommendedShardAxis
+    : fallbackBroadCorpusQuery
+      ? "work_id_hash"
+      : "none";
+  const frontierWorks = typeof estimate?.recommendedFrontierWorks === "number"
+    ? estimate.recommendedFrontierWorks
+    : fallbackBroadCorpusQuery
+      ? 72
+      : 24;
+  return {
+    intensity,
+    wallClockMinutes,
+    parallelism,
+    shardAxis,
+    frontierWorks,
+    estimate,
+  };
 }
 
 function latestCandidateWorkIdsFromHistory(
@@ -1094,6 +1151,7 @@ function normalizeMetadataSearchQuery(query: unknown, filters: Record<string, un
 function normalizeToolArgs(toolName: ToolName, args: Record<string, unknown>): Record<string, unknown> {
   const normalized = { ...args };
   switch (toolName) {
+    case "estimate_research_scope":
     case "search_works":
       if (normalized.filters && typeof normalized.filters === "object") {
         const filters = { ...(normalized.filters as Record<string, unknown>) };
@@ -1103,8 +1161,10 @@ function normalizeToolArgs(toolName: ToolName, args: Record<string, unknown>): R
         } else {
           delete filters.language;
         }
-        if (typeof filters.limit === "number") {
+        if (toolName === "search_works" && typeof filters.limit === "number") {
           filters.limit = Math.max(1, Math.min(20, Math.trunc(filters.limit)));
+        } else if (toolName !== "search_works") {
+          delete filters.limit;
         }
         const yearRange = normalizeYearRangeFilter(filters.yearRange)
           ?? normalizeDateRangeFilter(filters.dateRange)
@@ -1457,6 +1517,11 @@ async function executeTool(
 ): Promise<Record<string, unknown>> {
   const normalizedArgs = normalizeToolArgs(toolName, args);
   switch (toolName) {
+    case "estimate_research_scope": {
+      const parsed = ToolArgsSchemas.estimate_research_scope.parse(normalizedArgs);
+      const estimate = await deps.store.estimateResearchScope(parsed.query, parsed.filters);
+      return structuredClone(estimate) as unknown as Record<string, unknown>;
+    }
     case "search_works": {
       const parsed = ToolArgsSchemas.search_works.parse(normalizedArgs);
       const works = await deps.store.searchWorks(parsed.query, parsed.filters);
@@ -3182,6 +3247,21 @@ function labelForToolCall(toolName: ToolName, args: Record<string, unknown>) {
 }
 
 function clientSafeToolResult(toolName: ToolName, result: Record<string, unknown>): Record<string, unknown> {
+  if (toolName === "estimate_research_scope") {
+    return {
+      metadataWorkEstimate: typeof result.metadataWorkEstimate === "number" ? result.metadataWorkEstimate : undefined,
+      chunkMatchEstimate: typeof result.chunkMatchEstimate === "number" ? result.chunkMatchEstimate : undefined,
+      chunkWorkEstimate: typeof result.chunkWorkEstimate === "number" ? result.chunkWorkEstimate : undefined,
+      breadthBand: typeof result.breadthBand === "string" ? result.breadthBand : undefined,
+      recommendedIntensity: typeof result.recommendedIntensity === "string" ? result.recommendedIntensity : undefined,
+      recommendedWallClockMinutes: typeof result.recommendedWallClockMinutes === "number" ? result.recommendedWallClockMinutes : undefined,
+      recommendedParallelism: typeof result.recommendedParallelism === "number" ? result.recommendedParallelism : undefined,
+      recommendedShardAxis: typeof result.recommendedShardAxis === "string" ? result.recommendedShardAxis : undefined,
+      recommendedFrontierWorks: typeof result.recommendedFrontierWorks === "number" ? result.recommendedFrontierWorks : undefined,
+      rationale: typeof result.rationale === "string" ? result.rationale : undefined,
+    };
+  }
+
   if (toolName === "search_works" || toolName === "get_work_metadata") {
     const works = Array.isArray(result.works) ? result.works : [];
     return {
@@ -3458,6 +3538,10 @@ function describePlannerAction(
 ) {
   const normalizedMessage = userMessage.trim();
   switch (toolName) {
+    case "estimate_research_scope":
+      return normalizedMessage
+        ? `I’m estimating how broad “${normalizedMessage}” is so I can choose the right time budget and search intensity.`
+        : "I’m estimating the search breadth so I can choose the right time budget and search intensity.";
     case "search_works":
       return normalizedMessage
         ? `I’m going to search the corpus for “${normalizedMessage},” pull the strongest passages, and then run a deeper research pass if the quick evidence is thin.`
@@ -5401,10 +5485,12 @@ async function runOrchestrator(
 
   const buildBackgroundWorkspaceTaskSpec = (runtimeId: string) => {
     const broadCorpusQuery = isBroadCorpusResearchQuery(routedQueryRef.current, Array.isArray(input.workIds) ? input.workIds.length : 0);
-    const workLimit = broadCorpusQuery ? 40 : 12;
-    const candidateLimit = broadCorpusQuery ? 32 : 8;
-    const chunkLimit = broadCorpusQuery ? 64 : 24;
-    const seedChunkLimit = broadCorpusQuery ? 40 : 16;
+    const estimate = latestScopeEstimateFromHistory(toolHistory);
+    const searchPlan = searchPlanFromEstimate(estimate, broadCorpusQuery);
+    const workLimit = Math.max(broadCorpusQuery ? 40 : 12, Math.min(64, searchPlan.frontierWorks));
+    const candidateLimit = Math.max(broadCorpusQuery ? 32 : 8, Math.min(48, searchPlan.frontierWorks));
+    const chunkLimit = Math.max(broadCorpusQuery ? 64 : 24, Math.min(128, searchPlan.frontierWorks * 2));
+    const seedChunkLimit = Math.max(broadCorpusQuery ? 40 : 16, Math.min(80, searchPlan.frontierWorks));
     const scopedWorkIds = Array.isArray(input.workIds) ? input.workIds.slice(0, workLimit) : [];
     const searchWorks = searchWorksFromHistory();
     const metadataWorks = metadataWorksFromHistory();
@@ -5436,6 +5522,10 @@ async function runOrchestrator(
         question: routedQueryRef.current,
         researchObjective: routedQueryRef.current,
         mode: scopedWorkIds.length > 0 ? "open_book_analysis" : "exhaustive_corpus_search",
+        intensity: searchPlan.intensity,
+        timeBudgetMinutes: searchPlan.wallClockMinutes,
+        parallelism: searchPlan.parallelism,
+        shardAxis: searchPlan.shardAxis,
         workIds: candidateWorkIds,
         chunkIds: seedChunks
           .map((chunk) => (typeof chunk.id === "string" ? chunk.id : null))
@@ -5445,6 +5535,13 @@ async function runOrchestrator(
         searchHints: {
           searchWorksQuery: routedQueryRef.current,
           passageSearchFocus: "Find the strongest directly quotable passages that best answer the research objective.",
+        },
+        searchPlan: searchPlan.estimate ?? {
+          recommendedIntensity: searchPlan.intensity,
+          recommendedWallClockMinutes: searchPlan.wallClockMinutes,
+          recommendedParallelism: searchPlan.parallelism,
+          recommendedShardAxis: searchPlan.shardAxis,
+          recommendedFrontierWorks: searchPlan.frontierWorks,
         },
         retrieval: {
           searchWorks: rankedSearchWorks.slice(0, workLimit).map((work) => ({
@@ -5770,8 +5867,10 @@ async function runOrchestrator(
     const routedQuery = routeDecision.fullQuery.trim() || input.message;
     routedQueryRef.current = routedQuery;
     await ensureInitialPlanSent(routedQuery);
-    if (!pendingWorkspaceExecution && workspaceStartAttempts === 0) {
+    if (!pendingWorkspaceExecution && workspaceStartAttempts === 0 && latestScopeEstimateFromHistory(toolHistory)) {
       const broadCorpusQuery = isBroadCorpusResearchQuery(routedQuery, Array.isArray(input.workIds) ? input.workIds.length : 0);
+      const estimate = latestScopeEstimateFromHistory(toolHistory);
+      const searchPlan = searchPlanFromEstimate(estimate, broadCorpusQuery);
       const prewarmWorkLimit = broadCorpusQuery ? 24 : 12;
       const prewarmToolArgs = normalizeToolArgs("create_workspace", {
         workIds: Array.isArray(input.workIds) ? input.workIds.slice(0, prewarmWorkLimit) : [],
@@ -5782,6 +5881,13 @@ async function runOrchestrator(
           mode: Array.isArray(input.workIds) && input.workIds.length > 0 ? "open_book_analysis" : "exhaustive_corpus_search",
           candidateWorkIds: Array.isArray(input.workIds) ? input.workIds.slice(0, prewarmWorkLimit) : [],
           topChunks: [],
+          searchPlan: estimate ?? {
+            recommendedIntensity: searchPlan.intensity,
+            recommendedWallClockMinutes: searchPlan.wallClockMinutes,
+            recommendedParallelism: searchPlan.parallelism,
+            recommendedShardAxis: searchPlan.shardAxis,
+            recommendedFrontierWorks: searchPlan.frontierWorks,
+          },
           prewarmed: true,
         },
       });
