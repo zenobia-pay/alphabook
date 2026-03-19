@@ -249,7 +249,7 @@ function workspaceMode(context: PlannerContext): "open_book_analysis" | "exhaust
 }
 
 function isComparisonQuery(query: string): boolean {
-  return /\b(compare|contrast|versus|vs\.?|between|across)\b/i.test(query);
+  return /\b(compare|comparison|contrast|versus|vs\.?|between)\b/i.test(query);
 }
 
 function latestAssistantContent(context: PlannerContext) {
@@ -286,6 +286,12 @@ function classifyResearchIntent(context: PlannerContext): ResearchIntent {
   }
   if (/\b(verify|verification|check whether|are we sure|double-check|validate)\b/i.test(query)) {
     return "verification";
+  }
+  if (
+    /\b(all the ways|different ways|ways that|kinds of|types of|examples of|forms of|patterns of)\b/i.test(query)
+    || /\b(find|identify|survey|trace|catalog|collect)\b/i.test(query)
+  ) {
+    return "broad_evidence_survey";
   }
   if (isComparisonQuery(query)) {
     return "comparison";

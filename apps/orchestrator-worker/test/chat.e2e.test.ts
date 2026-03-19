@@ -4723,6 +4723,35 @@ test("sql metadata search overfetches and forces chunk expansion for broad surve
   assert.ok(queries.some((query) => /chunk_matches AS \(/.test(query.sql)), "expected broad survey query to force chunk expansion");
 });
 
+test("sql metadata search strips imperative scaffolding terms from broad survey grief queries", async () => {
+  const queries: Array<{ sql: string; params?: unknown[] }> = [];
+  const store = new NeonAppStore({
+    async query<T = Record<string, unknown>>(sql: string, params?: unknown[]) {
+      queries.push({ sql, params });
+      return { rows: [] as T[] };
+    },
+    async end() {},
+  });
+
+  await store.searchWorks(
+    "Identify and extract from 19th-century fiction the different ways characters deal with grief. Return a categorized taxonomy with supporting passages and citations.",
+    {
+      language: "en",
+      yearRange: [1800, 1899],
+      genre: ["fiction"],
+      limit: 12,
+    },
+  );
+
+  const firstQueryTerms = String(queries[0]?.params?.[0] ?? "");
+  assert.match(firstQueryTerms, /grief/);
+  assert.match(firstQueryTerms, /mourning|sorrow|bereavement/);
+  assert.doesNotMatch(firstQueryTerms, /\bextracts?\b/i);
+  assert.doesNotMatch(firstQueryTerms, /\bcitations?\b/i);
+  assert.doesNotMatch(firstQueryTerms, /\btaxonomy\b/i);
+  assert.doesNotMatch(firstQueryTerms, /\bways\b/i);
+});
+
 test("sql metadata search downranks death-title matches without stronger grief evidence", async () => {
   const store = new NeonAppStore({
     async query<T = Record<string, unknown>>() {
@@ -6073,6 +6102,52 @@ test("fallback planner marks short context-dependent turns as follow-up refineme
   assert.match(String(followUpContext.priorAssistantSummary ?? ""), /found examples/i);
   const searchHints = taskSpec.searchHints as Record<string, unknown>;
   assert.equal(searchHints.synthesisMode, "follow_up");
+});
+
+test("fallback planner treats broad grief survey prompts as broad evidence surveys, not comparisons", async () => {
+  const planner = new FallbackPlanner();
+  const decision = await planner.decide({
+    userMessage: "Find me all the ways that characters deal with grief in 19th century fiction.",
+    conversationHistory: [],
+    turns: 4,
+    toolHistory: [
+      {
+        toolName: "estimate_research_scope",
+        args: { query: "Find me all the ways that characters deal with grief in 19th century fiction." },
+        result: {
+          recommendedIntensity: "high",
+          recommendedWallClockMinutes: 15,
+          recommendedParallelism: 3,
+          recommendedShardAxis: "work_id_hash",
+          recommendedFrontierWorks: 48,
+          recommendedShards: [],
+        },
+      },
+      { toolName: "create_workspace", args: { workIds: [], chunkIds: [], taskContext: {} }, result: { ok: true, runtimeId: "runtime-1" } },
+      {
+        toolName: "search_works",
+        args: { query: "Find me all the ways that characters deal with grief in 19th century fiction." },
+        result: {
+          works: Array.from({ length: 6 }, (_, index) => ({ id: `work-${index + 1}`, title: `Work ${index + 1}`, authors: ["Author"] })),
+          frontier: { workCount: 6, works: Array.from({ length: 6 }, (_, index) => ({ id: `work-${index + 1}`, title: `Work ${index + 1}`, authors: ["Author"] })) },
+        },
+      },
+      {
+        toolName: "get_relevant_chunks",
+        args: { query: "Find me all the ways that characters deal with grief in 19th century fiction." },
+        result: { chunks: Array.from({ length: 8 }, (_, index) => ({ id: `chunk-${index + 1}`, workId: `work-${(index % 3) + 1}`, chunkIndex: index, excerpt: "A relevant grief passage." })) },
+      },
+      { toolName: "get_work_metadata", args: { workIds: ["work-1", "work-2", "work-3"] }, result: { works: [] } },
+    ],
+  });
+
+  assert.equal(decision.type, "tool_call");
+  assert.equal(decision.tool_name, "run_workspace_task");
+  const taskSpec = decision.args.taskSpec as Record<string, unknown>;
+  assert.equal(taskSpec.taskIntent, "broad_evidence_survey");
+  const searchHints = taskSpec.searchHints as Record<string, unknown>;
+  assert.equal(searchHints.synthesisMode, "survey");
+  assert.doesNotMatch(String(searchHints.passageSearchFocus ?? ""), /comparable passages/i);
 });
 
 test("fallback planner verifies passages over the wide frontier before VM narrowing", async () => {
