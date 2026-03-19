@@ -926,15 +926,99 @@ function searchPlanFromEstimate(
       frontierWorks = Math.max(128, estimatedFrontierWorks || 128);
       break;
   }
+  const estimatedWorkBreadth =
+    typeof estimate?.metadataWorkEstimate === "number" && estimate.metadataWorkEstimate > 0
+      ? estimate.metadataWorkEstimate
+      : typeof estimate?.chunkWorkEstimate === "number" && estimate.chunkWorkEstimate > 0
+        ? estimate.chunkWorkEstimate
+        : frontierWorks;
   const estimatedShards = Array.isArray(estimate?.recommendedShards)
     ? estimate.recommendedShards
       .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object")
       .slice(0, 24)
     : [];
+  const fallbackShards = (() => {
+    if (parallelism <= 1 || shardAxis === "none") {
+      return [];
+    }
+    const totalBuckets = 256;
+    const targetWorkCount = Math.max(8, Math.ceil(frontierWorks / parallelism));
+    const estimatedCoveragePercent = Math.max(0, Math.min(100, Math.round((frontierWorks / Math.max(estimatedWorkBreadth, 1)) * 100)));
+    return Array.from({ length: parallelism }, (_, index) => {
+      if (shardAxis === "publication_year") {
+        const yearStart = 1800;
+        const yearEnd = 1899;
+        const span = yearEnd - yearStart + 1;
+        const sliceStart = yearStart + Math.floor((index * span) / parallelism);
+        const sliceEnd = yearStart + Math.floor((((index + 1) * span)) / parallelism) - 1;
+        return {
+          shardId: `publication-year-${index + 1}`,
+          index,
+          totalShards: parallelism,
+          axis: "publication_year",
+          label: `Years ${sliceStart}-${Math.max(sliceStart, sliceEnd)}`,
+          targetWorkCount,
+          estimatedCoveragePercent,
+          yearStart: sliceStart,
+          yearEnd: Math.max(sliceStart, sliceEnd),
+        };
+      }
+      if (shardAxis === "author_initial") {
+        const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+        const startIndex = Math.floor((index * letters.length) / parallelism);
+        const endIndex = Math.min(letters.length - 1, Math.floor(((index + 1) * letters.length) / parallelism) - 1);
+        return {
+          shardId: `author-initial-${index + 1}`,
+          index,
+          totalShards: parallelism,
+          axis: "author_initial",
+          label: `Authors ${letters[startIndex]}-${letters[endIndex]}`,
+          targetWorkCount,
+          estimatedCoveragePercent,
+          authorInitialStart: letters[startIndex],
+          authorInitialEnd: letters[endIndex],
+        };
+      }
+      if (shardAxis === "retrieval_strategy") {
+        const strategies = [
+          "metadata_expansion",
+          "semantic_chunk_search",
+          "lexical_regex_search",
+          "neighbor_expansion",
+          "verification_rerank",
+          "gap_fill",
+        ];
+        const strategy = strategies[index] ?? `strategy_${index + 1}`;
+        return {
+          shardId: `retrieval-strategy-${index + 1}`,
+          index,
+          totalShards: parallelism,
+          axis: "retrieval_strategy",
+          label: strategy.replaceAll("_", " "),
+          targetWorkCount,
+          estimatedCoveragePercent,
+          strategy,
+        };
+      }
+      const hashBucketStart = Math.floor((index * totalBuckets) / parallelism);
+      const hashBucketEnd = Math.floor(((index + 1) * totalBuckets) / parallelism) - 1;
+      return {
+        shardId: `work-hash-${index + 1}`,
+        index,
+        totalShards: parallelism,
+        axis: "work_id_hash",
+        label: `Work hash ${hashBucketStart}-${hashBucketEnd}`,
+        targetWorkCount,
+        estimatedCoveragePercent,
+        hashBucketStart,
+        hashBucketEnd,
+      };
+    });
+  })();
   const shards =
     intensity === "normal"
       ? []
-      : estimatedShards
+      : (estimatedShards.length > 0 ? estimatedShards : fallbackShards)
         .slice(0, parallelism)
         .map((entry, index) => ({
           ...entry,
@@ -1653,8 +1737,11 @@ async function executeTool(
         ...(parsed.filters ?? {}),
         limit: frontierLimit,
       });
+      const visibleLimit = broadSurveyQuery
+        ? Math.min(frontierLimit, Math.max(requestedLimit, 24))
+        : Math.min(20, frontierLimit);
       return {
-        works: frontierWorks.slice(0, Math.min(broadSurveyQuery ? 24 : 20, frontierLimit)),
+        works: frontierWorks.slice(0, visibleLimit),
         frontier: {
           workCount: frontierWorks.length,
           works: frontierWorks,
@@ -1752,11 +1839,24 @@ async function executeTool(
         const existingChunkIds = Array.isArray(taskSpec.chunkIds)
           ? taskSpec.chunkIds.filter((value): value is string => typeof value === "string")
           : [];
-        const desiredSeedChunkCount = chunkSeedLimitForTaskMode(taskSpec.mode);
+        const taskIntensity = taskSpec.intensity === "maximum" || taskSpec.intensity === "high" || taskSpec.intensity === "normal"
+          ? taskSpec.intensity
+          : "normal";
+        const desiredSeedChunkCount = (() => {
+          const base = chunkSeedLimitForTaskMode(taskSpec.mode);
+          if (taskIntensity === "maximum") {
+            return Math.max(base, Math.min(base * 2, 96));
+          }
+          if (taskIntensity === "high") {
+            return Math.max(base, Math.min(Math.round(base * 1.5), 72));
+          }
+          return base;
+        })();
         if (frontierWorkIds.length > 0 && existingChunkIds.length < Math.max(8, Math.floor(desiredSeedChunkCount / 2))) {
           const seedQuery = buildWorkspaceSeedPassageQuery(taskSpec);
           if (seedQuery.length > 0) {
-            const seedQueries = buildPassageQueryVariants(seedQuery, frontierWorkIds.length, 3);
+            const variantCount = taskIntensity === "maximum" ? 5 : taskIntensity === "high" ? 4 : 3;
+            const seedQueries = buildPassageQueryVariants(seedQuery, frontierWorkIds.length, variantCount);
             const seedChunkBatches: ChunkSearchResult[][] = [];
             for (const variant of seedQueries.length > 0 ? seedQueries : [seedQuery]) {
               let embedding: number[] | undefined;
@@ -1783,19 +1883,46 @@ async function executeTool(
               );
               seedChunkBatches.push(seedChunks);
             }
+            if (taskIntensity === "maximum" && seedChunkBatches.flat().length < Math.max(8, Math.floor(desiredSeedChunkCount / 3))) {
+              for (const variant of seedQueries.slice(0, Math.max(2, Math.ceil(seedQueries.length / 2)))) {
+                let embedding: number[] | undefined;
+                try {
+                  embedding = await deps.embedder.embedQuery(variant, {
+                    userId: context.userId,
+                    sessionId: context.sessionId,
+                    runId: context.runId,
+                    source: "embedder",
+                  });
+                } catch {
+                  embedding = undefined;
+                }
+                const broadSeedChunks = await deps.store.getRelevantChunks(
+                  variant,
+                  undefined,
+                  Math.min(Math.max(desiredSeedChunkCount, 24), Math.max(desiredSeedChunkCount * 2, 48)),
+                  embedding,
+                );
+                seedChunkBatches.push(broadSeedChunks);
+              }
+            }
             const seedChunks = mergeChunkSearchResults(seedChunkBatches, desiredSeedChunkCount);
             if (seedChunks.length > 0) {
               const verifiedWorkIds = uniqueWorkIds(
                 seedChunks.map((chunk) => (typeof chunk.workId === "string" ? chunk.workId : null)),
               );
-              const workLimit = taskSpec.mode === "exhaustive_corpus_search" ? 32 : 12;
+              const workLimit = taskSpec.mode === "exhaustive_corpus_search"
+                ? (taskIntensity === "maximum" ? 64 : taskIntensity === "high" ? 48 : 32)
+                : 12;
               taskSpec.chunkIds = uniqueWorkIds([
                 ...existingChunkIds,
                 ...seedChunks
                   .map((chunk) => chunk.id)
                   .filter((value): value is string => typeof value === "string"),
               ]).slice(0, desiredSeedChunkCount);
-              taskSpec.frontierWorkIds = frontierWorkIds.slice(0, 120);
+              taskSpec.frontierWorkIds = uniqueWorkIds([
+                ...frontierWorkIds,
+                ...verifiedWorkIds,
+              ]).slice(0, 160);
               taskSpec.verifiedWorkIds = verifiedWorkIds;
               taskSpec.verifiedChunkIds = seedChunks
                 .map((chunk) => chunk.id)

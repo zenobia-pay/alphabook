@@ -3807,6 +3807,134 @@ test("run_workspace_task auto-seeds scoped chunks when the planner provides book
   assert.equal(seedChunks[0]?.id, "chunk-1");
 });
 
+test("run_workspace_task at maximum intensity widens passage seeding when scoped books produce no chunks", async () => {
+  const store = new InMemoryAppStore(
+    [
+      {
+        id: "work-1",
+        gutenbergId: 111,
+        title: "Irrelevant Seed Work",
+        language: "en",
+        releaseDate: "1880-01-01",
+        rightsStatus: "public_domain",
+        summary: "A work that does not contain the target passage.",
+        authors: ["Author One"],
+        subjects: ["Fiction"],
+      },
+      {
+        id: "work-2",
+        gutenbergId: 222,
+        title: "Broader Corpus Match",
+        language: "en",
+        releaseDate: "1885-01-01",
+        rightsStatus: "public_domain",
+        summary: "A broader match with grief consolation passages.",
+        authors: ["Author Two"],
+        subjects: ["Fiction", "Grief -- Fiction"],
+      },
+    ],
+    [
+      {
+        id: "chunk-2",
+        workId: "work-2",
+        chunkIndex: 9,
+        text: "Her grief found consolation in work and prayer after the funeral.",
+        r2Key: "gutenberg/clean/222/chunks.jsonl",
+        score: 0,
+        excerpt: "",
+      },
+    ],
+  );
+
+  let receivedTaskSpec: Record<string, unknown> | null = null;
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    router: new ScriptedRouter([
+      {
+        type: "tool_chain",
+        fullQuery: "Find grief consolation passages.",
+      },
+    ]),
+    planner: new ScriptedPlanner([
+      {
+        type: "tool_call",
+        tool_name: "run_workspace_task",
+        args: {
+          runtimeId: "runtime-1",
+          taskSpec: {
+            mode: "exhaustive_corpus_search",
+            intensity: "maximum",
+            question: "Find grief consolation passages.",
+            researchObjective: "Find grief consolation passages.",
+            searchHints: {
+              passageSearchFocus: "grief consolation funeral prayer work",
+            },
+            workIds: ["work-1"],
+            frontierWorkIds: ["work-1"],
+            chunkIds: [],
+            retrieval: {
+              seedChunks: [],
+            },
+          },
+        },
+      },
+      {
+        type: "final_answer",
+        answer: "Done.",
+        citations: [],
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+      async runWorkspaceTask(input) {
+        receivedTaskSpec = input.taskSpec as Record<string, unknown>;
+        return { ok: true, briefing: "Briefing written." };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: false, error: "disabled" };
+      },
+      async destroyWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const response = await app.request("/chat", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      userId: "maximum-seed-runtime-user",
+      message: "Find grief consolation passages.",
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  await response.text();
+  assert.ok(receivedTaskSpec);
+  const taskSpecRecord = receivedTaskSpec as Record<string, unknown>;
+  const chunkIds = Array.isArray(taskSpecRecord.chunkIds) ? taskSpecRecord.chunkIds : [];
+  assert.ok(chunkIds.includes("chunk-2"));
+  const frontierWorkIds = Array.isArray(taskSpecRecord.frontierWorkIds) ? taskSpecRecord.frontierWorkIds : [];
+  assert.ok(frontierWorkIds.includes("work-2"));
+  const verifiedWorkIds = Array.isArray(taskSpecRecord.verifiedWorkIds) ? taskSpecRecord.verifiedWorkIds : [];
+  assert.ok(verifiedWorkIds.includes("work-2"));
+});
+
 test("search_works ignores unsupported human-readable language filters from planner output", async () => {
   const store = new InMemoryAppStore([
     {
