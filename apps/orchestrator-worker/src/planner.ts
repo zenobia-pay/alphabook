@@ -399,9 +399,9 @@ function buildWorkspaceTaskSpec(context: PlannerContext, workIds: string[], chun
 export class FallbackPlanner implements Planner {
   async decide(context: PlannerContext): Promise<PlannerDecision> {
     const broadCorpusQuery = isBroadCorpusQuery(context);
-    const metadataLimit = broadCorpusQuery ? 24 : 12;
-    const workLimit = broadCorpusQuery ? 24 : 12;
-    const chunkLimit = broadCorpusQuery ? 36 : 20;
+    const metadataLimit = broadCorpusQuery ? 40 : 12;
+    const workLimit = broadCorpusQuery ? 32 : 12;
+    const chunkLimit = broadCorpusQuery ? 64 : 20;
     const toolNames = [
       ...context.toolHistory.map((item) => item.toolName),
       ...(context.pendingTools ?? []).map((item) => item.toolName),

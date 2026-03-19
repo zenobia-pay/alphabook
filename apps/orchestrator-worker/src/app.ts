@@ -851,12 +851,12 @@ function latestCandidateWorkIdsFromHistory(
 ) {
   for (let index = toolHistory.length - 1; index >= 0; index -= 1) {
     const entry = toolHistory[index];
-    if (entry.toolName !== "search_works" && entry.toolName !== "get_work_metadata") {
+    if (entry.toolName !== "search_works" && entry.toolName !== "get_work_metadata" && entry.toolName !== "get_relevant_chunks") {
       continue;
     }
     const workIds = extractCandidateWorkIds(entry.toolName, entry.args, entry.result);
     if (workIds.length > 0) {
-      return workIds.slice(0, 20);
+      return workIds.slice(0, 48);
     }
   }
   return [];
@@ -1556,6 +1556,7 @@ function rankWorkspaceCandidateWorks(
 ) {
   const asksForJuvenile = /\b(children|child|juvenile|girl|girls|boy|boys|school|orphan|orphans)\b/iu.test(query);
   const griefQuery = /\b(grief|mourning|bereavement|funeral|sorrow|lament|weep|wept|tears?|loss|dead|death)\b/iu.test(query);
+  const broadCorpusQuery = isBroadCorpusResearchQuery(query, 0);
   return [...works]
     .map((work, index) => {
       const haystack = candidateWorkHaystack(work);
@@ -1575,6 +1576,9 @@ function rankWorkspaceCandidateWorks(
             bonus -= 0.45;
           }
         }
+      }
+      if (broadCorpusQuery) {
+        bonus += Math.max(0, 0.45 - index * 0.03);
       }
       const baseScore = typeof work.score === "number" && Number.isFinite(work.score) ? work.score : 0;
       return {
@@ -1597,6 +1601,7 @@ function shouldSeedWorkspaceWork(
   query: string,
   seededWorkIds: Set<string>,
   totalScore: number,
+  index = 0,
 ) {
   const workId = typeof work.id === "string" ? work.id : "";
   if (seededWorkIds.has(workId)) {
@@ -1605,6 +1610,7 @@ function shouldSeedWorkspaceWork(
   const haystack = candidateWorkHaystack(work);
   const griefQuery = /\b(grief|mourning|bereavement|funeral|sorrow|lament|weep|wept|tears?|loss|dead|death)\b/iu.test(query);
   const asksForJuvenile = /\b(children|child|juvenile|girl|girls|boy|boys|school|orphan|orphans)\b/iu.test(query);
+  const broadCorpusQuery = isBroadCorpusResearchQuery(query, 0);
   if (
     griefQuery
     && !asksForJuvenile
@@ -1612,6 +1618,9 @@ function shouldSeedWorkspaceWork(
     && !/\b(grief|mourning|bereavement|funeral|sorrow|lament|weep|wept|tears?|loss|dead|death)\b/iu.test(haystack.replace(/\bjuvenile fiction\b/giu, ""))
   ) {
     return false;
+  }
+  if (broadCorpusQuery && index < 24) {
+    return true;
   }
   return totalScore > 0;
 }
@@ -5242,10 +5251,10 @@ async function runOrchestrator(
 
   const buildBackgroundWorkspaceTaskSpec = (runtimeId: string) => {
     const broadCorpusQuery = isBroadCorpusResearchQuery(routedQueryRef.current, Array.isArray(input.workIds) ? input.workIds.length : 0);
-    const workLimit = broadCorpusQuery ? 24 : 12;
-    const candidateLimit = broadCorpusQuery ? 24 : 8;
-    const chunkLimit = broadCorpusQuery ? 48 : 24;
-    const seedChunkLimit = broadCorpusQuery ? 32 : 16;
+    const workLimit = broadCorpusQuery ? 40 : 12;
+    const candidateLimit = broadCorpusQuery ? 32 : 8;
+    const chunkLimit = broadCorpusQuery ? 64 : 24;
+    const seedChunkLimit = broadCorpusQuery ? 40 : 16;
     const scopedWorkIds = Array.isArray(input.workIds) ? input.workIds.slice(0, workLimit) : [];
     const searchWorks = searchWorksFromHistory();
     const metadataWorks = metadataWorksFromHistory();
@@ -5256,11 +5265,11 @@ async function runOrchestrator(
         .filter((value): value is string => typeof value === "string"),
     );
     const rankedSearchWorks = rankWorkspaceCandidateWorks(searchWorks, routedQueryRef.current, seededWorkIds)
-      .filter(({ work, totalScore }) => shouldSeedWorkspaceWork(work, routedQueryRef.current, seededWorkIds, totalScore))
+      .filter(({ work, totalScore }, index) => shouldSeedWorkspaceWork(work, routedQueryRef.current, seededWorkIds, totalScore, index))
       .slice(0, candidateLimit)
       .map(({ work }) => work);
     const rankedMetadataWorks = rankWorkspaceCandidateWorks(metadataWorks, routedQueryRef.current, seededWorkIds)
-      .filter(({ work, totalScore }) => shouldSeedWorkspaceWork(work, routedQueryRef.current, seededWorkIds, totalScore))
+      .filter(({ work, totalScore }, index) => shouldSeedWorkspaceWork(work, routedQueryRef.current, seededWorkIds, totalScore, index))
       .slice(0, candidateLimit)
       .map(({ work }) => work);
     const candidateWorkIds = uniqueWorkIds([

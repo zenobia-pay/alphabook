@@ -3370,7 +3370,7 @@ export class NeonAppStore implements AppStore {
     const normalizedQuery = normalizeSearchQuery(query);
     const tsQuery = normalizedQuery || query.trim();
     const tokens = expandedSearchTokens(query);
-    const semanticCandidateLimit = Math.max(limit * 12, 96);
+    const semanticCandidateLimit = Math.max(limit * 20, 192);
     const startYear = Array.isArray(filters.yearRange) ? Math.min(filters.yearRange[0], filters.yearRange[1]) : null;
     const endYear = Array.isArray(filters.yearRange) ? Math.max(filters.yearRange[0], filters.yearRange[1]) : null;
     const genres = Array.isArray(filters.genre)
