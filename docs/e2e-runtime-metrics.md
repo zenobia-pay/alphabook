@@ -46,6 +46,28 @@ PY
 )}"
 ```
 
+To force the same prompt through different intensity plans for an apples-to-apples comparison, include `intensityOverride`:
+
+```bash
+curl -sS https://api.alpha-book.org/chat \
+  -H "Cookie: $COOKIE" \
+  -H 'Origin: https://alpha-book.org' \
+  -H 'Referer: https://alpha-book.org/?view=assistant' \
+  -H 'Sec-Fetch-Site: same-site' \
+  -H 'Content-Type: application/json' \
+  -d "{\"message\": $(python3 - <<'PY'
+import json, os
+print(json.dumps(os.environ[\"PROMPT\"]))
+PY
+), \"intensityOverride\": \"normal\"}"
+```
+
+Valid overrides today are:
+
+- `normal`
+- `high`
+- `maximum`
+
 Capture:
 
 - `session.created.session.id`

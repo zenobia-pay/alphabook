@@ -874,37 +874,73 @@ function latestScopeEstimateFromHistory(
 function searchPlanFromEstimate(
   estimate: Record<string, unknown> | null,
   fallbackBroadCorpusQuery: boolean,
+  intensityOverride?: "normal" | "high" | "maximum",
 ) {
-  const intensity = typeof estimate?.recommendedIntensity === "string"
+  const estimatedIntensity = typeof estimate?.recommendedIntensity === "string"
     ? estimate.recommendedIntensity
     : fallbackBroadCorpusQuery
       ? "high"
       : "normal";
-  const wallClockMinutes = typeof estimate?.recommendedWallClockMinutes === "number"
+  const estimatedWallClockMinutes = typeof estimate?.recommendedWallClockMinutes === "number"
     ? estimate.recommendedWallClockMinutes
     : fallbackBroadCorpusQuery
       ? 15
       : 5;
-  const parallelism = typeof estimate?.recommendedParallelism === "number"
+  const estimatedParallelism = typeof estimate?.recommendedParallelism === "number"
     ? estimate.recommendedParallelism
     : fallbackBroadCorpusQuery
       ? 3
       : 1;
-  const shardAxis = typeof estimate?.recommendedShardAxis === "string"
+  const estimatedShardAxis = typeof estimate?.recommendedShardAxis === "string"
     ? estimate.recommendedShardAxis
     : fallbackBroadCorpusQuery
       ? "work_id_hash"
       : "none";
-  const frontierWorks = typeof estimate?.recommendedFrontierWorks === "number"
+  const estimatedFrontierWorks = typeof estimate?.recommendedFrontierWorks === "number"
     ? estimate.recommendedFrontierWorks
     : fallbackBroadCorpusQuery
       ? 72
       : 24;
-  const shards = Array.isArray(estimate?.recommendedShards)
+  const intensity = intensityOverride ?? estimatedIntensity;
+  let wallClockMinutes = estimatedWallClockMinutes;
+  let parallelism = estimatedParallelism;
+  let shardAxis = estimatedShardAxis;
+  let frontierWorks = estimatedFrontierWorks;
+  switch (intensity) {
+    case "normal":
+      wallClockMinutes = 5;
+      parallelism = 1;
+      shardAxis = "none";
+      frontierWorks = 24;
+      break;
+    case "high":
+      wallClockMinutes = 15;
+      parallelism = Math.max(2, Math.min(4, estimatedParallelism || 4));
+      shardAxis = estimatedShardAxis === "none" ? "work_id_hash" : estimatedShardAxis;
+      frontierWorks = Math.max(72, Math.min(96, estimatedFrontierWorks || 72));
+      break;
+    case "maximum":
+      wallClockMinutes = 60;
+      parallelism = Math.max(8, estimatedParallelism || 8);
+      shardAxis = estimatedShardAxis === "none" ? "work_id_hash" : estimatedShardAxis;
+      frontierWorks = Math.max(128, estimatedFrontierWorks || 128);
+      break;
+  }
+  const estimatedShards = Array.isArray(estimate?.recommendedShards)
     ? estimate.recommendedShards
       .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object")
       .slice(0, 24)
     : [];
+  const shards =
+    intensity === "normal"
+      ? []
+      : estimatedShards
+        .slice(0, parallelism)
+        .map((entry, index) => ({
+          ...entry,
+          index,
+          total: parallelism,
+        }));
   return {
     intensity,
     wallClockMinutes,
@@ -6117,7 +6153,7 @@ async function runOrchestrator(
   const buildBackgroundWorkspaceTaskSpec = (runtimeId: string) => {
     const broadCorpusQuery = isBroadCorpusResearchQuery(routedQueryRef.current, Array.isArray(input.workIds) ? input.workIds.length : 0);
     const estimate = latestScopeEstimateFromHistory(toolHistory);
-    const searchPlan = searchPlanFromEstimate(estimate, broadCorpusQuery);
+    const searchPlan = searchPlanFromEstimate(estimate, broadCorpusQuery, input.intensityOverride);
     const workLimit = Math.max(broadCorpusQuery ? 40 : 12, Math.min(64, searchPlan.frontierWorks));
     const candidateLimit = broadCorpusQuery
       ? Math.max(16, Math.min(24, Math.ceil(searchPlan.frontierWorks / 4)))
@@ -6549,7 +6585,7 @@ async function runOrchestrator(
     if (!pendingWorkspaceExecution && workspaceStartAttempts === 0 && latestScopeEstimateFromHistory(toolHistory)) {
       const broadCorpusQuery = isBroadCorpusResearchQuery(routedQuery, Array.isArray(input.workIds) ? input.workIds.length : 0);
       const estimate = latestScopeEstimateFromHistory(toolHistory);
-      const searchPlan = searchPlanFromEstimate(estimate, broadCorpusQuery);
+      const searchPlan = searchPlanFromEstimate(estimate, broadCorpusQuery, input.intensityOverride);
       const prewarmWorkLimit = broadCorpusQuery ? 24 : 12;
       const prewarmToolArgs = normalizeToolArgs("create_workspace", {
         workIds: Array.isArray(input.workIds) ? input.workIds.slice(0, prewarmWorkLimit) : [],

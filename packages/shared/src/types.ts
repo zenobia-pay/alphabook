@@ -129,6 +129,7 @@ export const ChatRequestSchema = z.object({
   message: z.string().min(1),
   workIds: z.array(z.string()).optional(),
   stream: z.boolean().optional(),
+  intensityOverride: z.enum(["normal", "high", "maximum"]).optional(),
 });
 
 export type ChatRequest = z.infer<typeof ChatRequestSchema>;
