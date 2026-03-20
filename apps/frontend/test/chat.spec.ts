@@ -317,6 +317,145 @@ test("restricted assistant session keeps the session URL and shows a coherent lo
   await expect(thread.getByTestId("empty-state")).toHaveCount(0);
 });
 
+test("switching sessions replaces the transcript instead of mixing messages from both chats", async ({ page }) => {
+  const firstSessionId = "11111111-1111-4111-8111-111111111201";
+  const secondSessionId = "11111111-1111-4111-8111-111111111202";
+
+  await page.route("**/api/me", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        authConfigured: false,
+        authenticated: false,
+        user: null,
+      }),
+    });
+  });
+
+  await page.route("**/api/admin/access", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        allowed: false,
+        authenticated: false,
+        authConfigured: false,
+        user: null,
+      }),
+    });
+  });
+
+  await page.route(/\/api\/sessions(?:\?.*)?$/, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        sessions: [
+          {
+            id: firstSessionId,
+            userId: "local-user",
+            title: "First thread",
+            createdAt: "2026-03-16T12:00:00.000Z",
+            lastMessageAt: "2026-03-16T12:01:00.000Z",
+            lastMessagePreview: "First thread preview",
+          },
+          {
+            id: secondSessionId,
+            userId: "local-user",
+            title: "Second thread",
+            createdAt: "2026-03-16T12:02:00.000Z",
+            lastMessageAt: "2026-03-16T12:03:00.000Z",
+            lastMessagePreview: "Second thread preview",
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.route(`**/api/sessions/${firstSessionId}/messages`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        messages: [
+          {
+            id: "21111111-1111-4111-8111-111111111201",
+            sessionId: firstSessionId,
+            role: "user",
+            content: "FIRST THREAD QUESTION",
+            metadata: {},
+            createdAt: "2026-03-16T12:00:00.000Z",
+          },
+          {
+            id: "21111111-1111-4111-8111-111111111202",
+            sessionId: firstSessionId,
+            role: "assistant",
+            content: "FIRST THREAD ANSWER",
+            metadata: {},
+            createdAt: "2026-03-16T12:00:05.000Z",
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.route(`**/api/sessions/${secondSessionId}/messages`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        messages: [
+          {
+            id: "22222222-1111-4111-8111-111111111201",
+            sessionId: secondSessionId,
+            role: "user",
+            content: "SECOND THREAD QUESTION",
+            metadata: {},
+            createdAt: "2026-03-16T12:02:00.000Z",
+          },
+          {
+            id: "22222222-1111-4111-8111-111111111202",
+            sessionId: secondSessionId,
+            role: "assistant",
+            content: "SECOND THREAD ANSWER",
+            metadata: {},
+            createdAt: "2026-03-16T12:02:05.000Z",
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.route(`**/api/sessions/${firstSessionId}/runs`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ runs: [] }),
+    });
+  });
+
+  await page.route(`**/api/sessions/${secondSessionId}/runs`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ runs: [] }),
+    });
+  });
+
+  await page.goto(`/?view=assistant&session=${firstSessionId}`);
+  await expect(page.getByText("FIRST THREAD QUESTION")).toBeVisible();
+  await expect(page.getByText("FIRST THREAD ANSWER")).toBeVisible();
+
+  await page.getByRole("button", { name: "Second thread" }).click();
+
+  await expect(page).toHaveURL(new RegExp(`session=${secondSessionId}`));
+  await expect(page.getByText("SECOND THREAD QUESTION")).toBeVisible();
+  await expect(page.getByText("SECOND THREAD ANSWER")).toBeVisible();
+  await expect(page.getByText("FIRST THREAD QUESTION")).toHaveCount(0);
+  await expect(page.getByText("FIRST THREAD ANSWER")).toHaveCount(0);
+});
+
 test("assistant session thread stays scrollable with long history", async ({ page }) => {
   const sessionId = "11111111-1111-4111-8111-111111111114";
   const longMessages = Array.from({ length: 18 }, (_, index) => ({

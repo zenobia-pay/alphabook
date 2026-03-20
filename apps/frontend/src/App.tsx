@@ -1030,8 +1030,11 @@ function mergeToolTraceEntries(existing: ToolTraceEntry, incoming: ToolTraceEntr
   return nextEntry;
 }
 
-function mergeFetchedMessages(existingMessages: UiMessage[], incomingMessages: UiMessage[]) {
-  const existingById = new Map(existingMessages.map((message) => [message.id, message]));
+function mergeFetchedMessages(existingMessages: UiMessage[], incomingMessages: UiMessage[], sessionId: string | null) {
+  const scopedExistingMessages = sessionId
+    ? existingMessages.filter((message) => message.sessionId === sessionId)
+    : existingMessages;
+  const existingById = new Map(scopedExistingMessages.map((message) => [message.id, message]));
   const consumedOptimisticIds = new Set<string>();
   const findOptimisticMatch = (incoming: UiMessage) => {
     if (incoming.role !== "user") {
@@ -1042,7 +1045,7 @@ function mergeFetchedMessages(existingMessages: UiMessage[], incomingMessages: U
       return null;
     }
     const incomingCreatedAt = Date.parse(incoming.createdAt);
-    for (const candidate of existingMessages) {
+    for (const candidate of scopedExistingMessages) {
       if (consumedOptimisticIds.has(candidate.id)) {
         continue;
       }
@@ -1124,7 +1127,7 @@ function mergeFetchedMessages(existingMessages: UiMessage[], incomingMessages: U
   });
 
   const seenIds = new Set(merged.map((message) => message.id));
-  for (const existing of existingMessages) {
+  for (const existing of scopedExistingMessages) {
     if (!seenIds.has(existing.id) && !consumedOptimisticIds.has(existing.id)) {
       merged.push(existing);
     }
@@ -5216,7 +5219,7 @@ export default function App() {
         setMessagesLoading(true);
         const nextMessages = await fetchMessages(selectedSessionId);
         const hydrated = nextMessages.map(hydrateStoredMessage);
-        setMessages((current) => mergeFetchedMessages(current, hydrated));
+        setMessages((current) => mergeFetchedMessages(current, hydrated, selectedSessionId));
       } catch (error) {
         setLoadError(getErrorMessage(error, "We couldn't load this conversation."));
       } finally {
@@ -5250,7 +5253,7 @@ export default function App() {
         }
         consecutivePollFailures = 0;
         const hydrated = nextMessages.map(hydrateStoredMessage);
-        setMessages((current) => mergeFetchedMessages(current, hydrated));
+        setMessages((current) => mergeFetchedMessages(current, hydrated, selectedSessionId));
         pollTimer = window.setTimeout(() => {
           void pollMessages();
         }, 2000);
@@ -5277,7 +5280,7 @@ export default function App() {
         return;
       }
       const hydrated = nextMessages.map(hydrateStoredMessage);
-      setMessages((current) => mergeFetchedMessages(current, hydrated));
+      setMessages((current) => mergeFetchedMessages(current, hydrated, selectedSessionId));
     };
 
     void streamRun(
@@ -6225,6 +6228,12 @@ export default function App() {
     }
     pendingUrlWriteModeRef.current = "push";
     setMobileNavOpen(false);
+    setMessages([]);
+    setSessionRuns([]);
+    setRunArtifacts([]);
+    setRecoveredActiveRunId(null);
+    setStreamingAssistantId(null);
+    setLoadError(null);
     setSelectedSessionId(sessionId);
     setActiveWorkId(null);
     setActiveProfileUserId(null);
@@ -6336,10 +6345,14 @@ export default function App() {
 
   function openBookSession(sessionId: string | null) {
     pendingUrlWriteModeRef.current = "push";
+    setMessages([]);
+    setSessionRuns([]);
+    setRunArtifacts([]);
+    setRecoveredActiveRunId(null);
+    setStreamingAssistantId(null);
     setSelectedSessionId(sessionId);
     setLoadError(null);
     setIsSending(false);
-    setStreamingAssistantId(null);
     setActiveView("book");
   }
 
