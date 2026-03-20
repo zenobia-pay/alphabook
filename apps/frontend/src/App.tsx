@@ -4519,6 +4519,7 @@ export default function App() {
   const [isSending, setIsSending] = useState(false);
   const [recoveredActiveRunId, setRecoveredActiveRunId] = useState<string | null>(null);
   const [streamConnected, setStreamConnected] = useState(false);
+  const [recentRunningSessionIds, setRecentRunningSessionIds] = useState<Set<string>>(new Set());
   const [assistantEffort, setAssistantEffort] = useState<AssistantEffortLevel>(() => {
     if (typeof window === "undefined") {
       return "high";
@@ -4670,13 +4671,14 @@ export default function App() {
       ?? null,
     [recoveredActiveRunId, sessionRuns],
   );
+  const recentSessionIds = useMemo(() => sessions.map((session) => session.id), [sessions]);
   const runningSessionIds = useMemo(() => {
-    const next = new Set<string>();
+    const next = new Set(recentRunningSessionIds);
     if (selectedSessionId && (isSending || sessionRuns.some((run) => run.status === "running" || run.status === "queued"))) {
       next.add(selectedSessionId);
     }
     return next;
-  }, [isSending, selectedSessionId, sessionRuns]);
+  }, [isSending, recentRunningSessionIds, selectedSessionId, sessionRuns]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -5404,6 +5406,59 @@ export default function App() {
       cancelled = true;
     };
   }, [activeView, authState.loading, recoveredActiveRunId, selectedSessionId, sessionRuns]);
+
+  useEffect(() => {
+    if (authState.loading) {
+      return;
+    }
+    if (recentSessionIds.length === 0) {
+      setRecentRunningSessionIds(new Set());
+      return;
+    }
+
+    let cancelled = false;
+    let pollTimer: number | null = null;
+
+    const loadRecentRunningSessions = async () => {
+      const runLists = await Promise.all(
+        recentSessionIds.map(async (sessionId) => {
+          try {
+            return {
+              sessionId,
+              runs: await fetchRuns(sessionId),
+            };
+          } catch {
+            return {
+              sessionId,
+              runs: [] as SessionRunRecord[],
+            };
+          }
+        }),
+      );
+      if (cancelled) {
+        return;
+      }
+
+      const next = new Set(
+        runLists
+          .filter(({ runs }) => runs.some((run) => run.status === "running" || run.status === "queued"))
+          .map(({ sessionId }) => sessionId),
+      );
+      setRecentRunningSessionIds(next);
+      pollTimer = window.setTimeout(() => {
+        void loadRecentRunningSessions();
+      }, next.size > 0 ? 4000 : 15000);
+    };
+
+    void loadRecentRunningSessions();
+
+    return () => {
+      cancelled = true;
+      if (pollTimer !== null) {
+        window.clearTimeout(pollTimer);
+      }
+    };
+  }, [authState.loading, recentSessionIds]);
 
   useEffect(() => {
     if (activeView === "assistant_document") {

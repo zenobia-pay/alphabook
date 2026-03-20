@@ -555,7 +555,7 @@ test("sidebar recents shows a spinner for a session with an active run", async (
     });
   });
 
-  await page.goto(`/?view=assistant&session=${firstSessionId}`);
+  await page.goto(`/?view=assistant&session=${secondSessionId}`);
 
   await expect(page.getByTestId(`recent-session-spinner-${firstSessionId}`)).toBeVisible();
   await expect(page.getByTestId(`recent-session-spinner-${secondSessionId}`)).toHaveCount(0);
