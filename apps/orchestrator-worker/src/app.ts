@@ -4232,11 +4232,12 @@ async function finalizeStaleRun(
         completedAt: new Date().toISOString(),
       });
       await persistRecoveredPlanToolTrace(deps, session.id, run.id, toolCalls);
+      const persistedPlanState = readPersistedPlanMessageState(await deps.store.listMessages(session.id), run.id);
       await appendRunErrorMessageOnce(deps, session.id, run.id, failureMessage, {
         runId: run.id,
         phase: "error",
-        toolCalls: buildRecoveredToolTrace(toolCalls),
-        researchLog: buildRecoveredToolTrace(toolCalls),
+        toolCalls: persistedPlanState.toolTrace,
+        researchLog: persistedPlanState.toolTrace,
         recoveredFromStalledRun: true,
       });
       await cancelLiveExecution(toolCalls);
@@ -4276,11 +4277,12 @@ async function finalizeStaleRun(
         completedAt: new Date().toISOString(),
       });
       await persistRecoveredPlanToolTrace(deps, session.id, run.id, toolCalls);
+      const persistedPlanState = readPersistedPlanMessageState(await deps.store.listMessages(session.id), run.id);
       await appendRunErrorMessageOnce(deps, session.id, run.id, failureMessage, {
         runId: run.id,
         phase: "error",
-        toolCalls: buildRecoveredToolTrace(toolCalls),
-        researchLog: buildRecoveredToolTrace(toolCalls),
+        toolCalls: persistedPlanState.toolTrace,
+        researchLog: persistedPlanState.toolTrace,
       });
       await cancelLiveExecution(toolCalls);
       return deps.store.getRun(run.id);
@@ -4341,11 +4343,12 @@ async function finalizeStaleRun(
             status: "failed",
             completedAt: new Date().toISOString(),
           });
+          const persistedPlanState = readPersistedPlanMessageState(await deps.store.listMessages(session.id), run.id);
           await appendRunErrorMessageOnce(deps, session.id, run.id, failedResult.error, {
             runId: run.id,
             phase: "error",
-            toolCalls: buildRecoveredToolTrace(refreshedToolCalls),
-            researchLog: buildRecoveredToolTrace(refreshedToolCalls),
+            toolCalls: persistedPlanState.toolTrace,
+            researchLog: persistedPlanState.toolTrace,
           });
           await cancelLiveExecution(refreshedToolCalls);
           return deps.store.getRun(run.id);
@@ -4372,11 +4375,12 @@ async function finalizeStaleRun(
       status: "failed",
       completedAt: new Date().toISOString(),
     });
+    const persistedPlanState = readPersistedPlanMessageState(await deps.store.listMessages(session.id), run.id);
     await appendRunErrorMessageOnce(deps, session.id, run.id, failedResult.error, {
       runId: run.id,
       phase: "error",
-      toolCalls: buildRecoveredToolTrace(refreshedToolCalls),
-      researchLog: buildRecoveredToolTrace(refreshedToolCalls),
+      toolCalls: persistedPlanState.toolTrace,
+      researchLog: persistedPlanState.toolTrace,
     });
     await cancelLiveExecution(refreshedToolCalls);
     return deps.store.getRun(run.id);
@@ -4972,6 +4976,34 @@ function buildRecoveredToolTrace(
   });
 }
 
+function findPlanMessageForRun(messages: MessageRecord[], runId: string) {
+  return [...messages].reverse().find((message) => (
+    message.role === "assistant"
+    && message.metadata?.phase === "plan"
+    && message.metadata?.runId === runId
+  )) ?? null;
+}
+
+function readPersistedPlanMessageState(messages: MessageRecord[], runId: string) {
+  const planMessage = findPlanMessageForRun(messages, runId);
+  if (!planMessage || !planMessage.metadata || typeof planMessage.metadata !== "object") {
+    return {
+      planMessage: null,
+      toolTrace: [] as LiveToolTraceEntry[],
+      researchDocumentHtml: null as string | null,
+    };
+  }
+  const metadata = planMessage.metadata as Record<string, unknown>;
+  return {
+    planMessage,
+    toolTrace: readPersistedPlanToolTrace(metadata),
+    researchDocumentHtml:
+      typeof metadata.researchDocumentHtml === "string" && metadata.researchDocumentHtml.trim().length > 0
+        ? metadata.researchDocumentHtml
+        : null,
+  };
+}
+
 async function persistRecoveredPlanToolTrace(
   deps: AppDeps,
   sessionId: string,
@@ -4979,11 +5011,7 @@ async function persistRecoveredPlanToolTrace(
   toolCalls: Awaited<ReturnType<AppStore["listToolCalls"]>>,
 ) {
   const messages = await deps.store.listMessages(sessionId);
-  const planMessage = [...messages].reverse().find((message) => (
-    message.role === "assistant"
-    && message.metadata?.phase === "plan"
-    && message.metadata?.runId === runId
-  ));
+  const { planMessage } = readPersistedPlanMessageState(messages, runId);
   if (!planMessage) {
     return;
   }
@@ -10428,18 +10456,20 @@ export function createApp(deps: AppDeps) {
     if (!run || run.sessionId !== sessionId) {
       return c.json({ error: "Run not found." }, 404);
     }
-    const [toolCalls, runtimeInstances] = await Promise.all([
+    const [messages, toolCalls, runtimeInstances] = await Promise.all([
+      deps.store.listMessages(sessionId),
       deps.store.listToolCalls(runId),
       deps.store.listRuntimeInstances(sessionId),
     ]);
     const artifacts = await loadRunArtifacts(deps, sessionId, runId, toolCalls);
     const rawLog = resolveRunRawLog(activeRuns, runId, artifacts);
     const metrics = extractRecordedRunMetrics(rawLog);
+    const persistedPlanState = readPersistedPlanMessageState(messages, runId);
 
     return c.json({
       run,
       toolCalls,
-      toolTrace: buildRecoveredToolTrace(toolCalls),
+      toolTrace: persistedPlanState.toolTrace,
       runtimeInstances,
       artifacts,
       rawLog,
@@ -10462,12 +10492,17 @@ export function createApp(deps: AppDeps) {
     if (!run || run.sessionId !== sessionId) {
       return c.json({ error: "Run not found." }, 404);
     }
-    const toolCalls = await deps.store.listToolCalls(runId);
+    const [messages, toolCalls] = await Promise.all([
+      deps.store.listMessages(sessionId),
+      deps.store.listToolCalls(runId),
+    ]);
     const artifacts = await loadRunArtifacts(deps, sessionId, runId, toolCalls);
+    const persistedPlanState = readPersistedPlanMessageState(messages, runId);
 
     return c.json({
       run,
-      toolTrace: buildRecoveredToolTrace(toolCalls),
+      toolTrace: persistedPlanState.toolTrace,
+      researchDocumentHtml: persistedPlanState.researchDocumentHtml,
       artifacts,
     });
   });
@@ -10487,18 +10522,20 @@ export function createApp(deps: AppDeps) {
     if (!run || run.sessionId !== sessionId) {
       return c.json({ error: "Run not found." }, 404);
     }
-    const [toolCalls, runtimeInstances] = await Promise.all([
+    const [messages, toolCalls, runtimeInstances] = await Promise.all([
+      deps.store.listMessages(sessionId),
       deps.store.listToolCalls(runId),
       deps.store.listRuntimeInstances(sessionId),
     ]);
     const artifacts = await loadRunArtifacts(deps, sessionId, runId, toolCalls);
     const rawLog = resolveRunRawLog(activeRuns, runId, artifacts);
     const metrics = extractRecordedRunMetrics(rawLog);
+    const persistedPlanState = readPersistedPlanMessageState(messages, runId);
 
     return c.json({
       run,
       toolCalls,
-      toolTrace: buildRecoveredToolTrace(toolCalls),
+      toolTrace: persistedPlanState.toolTrace,
       runtimeInstances,
       artifacts,
       rawLog,
@@ -10521,12 +10558,17 @@ export function createApp(deps: AppDeps) {
     if (!run || run.sessionId !== sessionId) {
       return c.json({ error: "Run not found." }, 404);
     }
-    const toolCalls = await deps.store.listToolCalls(runId);
+    const [messages, toolCalls] = await Promise.all([
+      deps.store.listMessages(sessionId),
+      deps.store.listToolCalls(runId),
+    ]);
     const artifacts = await loadRunArtifacts(deps, sessionId, runId, toolCalls);
+    const persistedPlanState = readPersistedPlanMessageState(messages, runId);
 
     return c.json({
       run,
-      toolTrace: buildRecoveredToolTrace(toolCalls),
+      toolTrace: persistedPlanState.toolTrace,
+      researchDocumentHtml: persistedPlanState.researchDocumentHtml,
       artifacts,
     });
   });
