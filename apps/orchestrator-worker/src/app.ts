@@ -7289,12 +7289,12 @@ async function runOrchestrator(
         void recordAnalyticsEvent(deps, request, "run_metrics_summary", analyticsSummary).catch(() => {});
       }
     }
-    await originalSend(event, nextData);
     const persistedRunId = typeof nextData.runId === "string" ? nextData.runId : null;
     const persistedSessionId = typeof nextData.sessionId === "string" ? nextData.sessionId : session?.id ?? null;
     if (persistedRunId && persistedSessionId && persistableRunEventNames.has(event)) {
       await deps.store.appendRunEvent(persistedRunId, persistedSessionId, event, nextData);
     }
+    await originalSend(event, nextData);
     await fanOutNotifications(event, nextData);
     const runId = typeof nextData.runId === "string" ? nextData.runId : null;
     if (!runId) {
