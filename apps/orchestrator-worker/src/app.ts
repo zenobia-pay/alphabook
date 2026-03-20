@@ -839,6 +839,16 @@ function extractCandidateWorkIds(
       const chunks = Array.isArray(result.chunks) ? result.chunks as Array<Record<string, unknown>> : [];
       return uniqueWorkIds(chunks.map((chunk) => (typeof chunk.workId === "string" ? chunk.workId : null)));
     }
+    case "classify_candidate_chunks": {
+      const workIds = Array.isArray(result.relevantWorkIds)
+        ? result.relevantWorkIds.filter((value): value is string => typeof value === "string")
+        : [];
+      const chunks = Array.isArray(result.chunks) ? result.chunks as Array<Record<string, unknown>> : [];
+      return uniqueWorkIds([
+        ...workIds,
+        ...chunks.map((chunk) => (typeof chunk.workId === "string" ? chunk.workId : null)),
+      ]);
+    }
     case "create_workspace": {
       return Array.isArray(args.workIds) ? uniqueWorkIds(args.workIds.filter((value): value is string => typeof value === "string")) : [];
     }
@@ -1188,7 +1198,7 @@ function latestCandidateWorkIdsFromHistory(
 ) {
   for (let index = toolHistory.length - 1; index >= 0; index -= 1) {
     const entry = toolHistory[index];
-    if (entry.toolName !== "search_works" && entry.toolName !== "get_work_metadata" && entry.toolName !== "get_relevant_chunks") {
+    if (entry.toolName !== "search_works" && entry.toolName !== "get_work_metadata" && entry.toolName !== "get_relevant_chunks" && entry.toolName !== "classify_candidate_chunks") {
       continue;
     }
     const workIds = extractCandidateWorkIds(entry.toolName, entry.args, entry.result);
@@ -1922,6 +1932,14 @@ function normalizeToolArgs(toolName: ToolName, args: Record<string, unknown>): R
   switch (toolName) {
     case "estimate_research_scope":
     case "search_works":
+      if (toolName === "estimate_research_scope") {
+        if (normalized.workIds === undefined && normalized.work_ids !== undefined) {
+          normalized.workIds = normalized.work_ids;
+        }
+        if (normalized.chunkIds === undefined && normalized.chunk_ids !== undefined) {
+          normalized.chunkIds = normalized.chunk_ids;
+        }
+      }
       if (normalized.filters && typeof normalized.filters === "object") {
         const filters = { ...(normalized.filters as Record<string, unknown>) };
         const language = normalizeSearchLanguageFilter(filters.language);
@@ -1953,6 +1971,17 @@ function normalizeToolArgs(toolName: ToolName, args: Record<string, unknown>): R
         }
         normalized.query = normalizeMetadataSearchQuery(normalized.query, filters);
         normalized.filters = filters;
+      }
+      break;
+    case "classify_candidate_chunks":
+      if (normalized.chunkIds === undefined && normalized.chunk_ids !== undefined) {
+        normalized.chunkIds = normalized.chunk_ids;
+      }
+      if (normalized.maxRelevantChunks === undefined && normalized.max_relevant_chunks !== undefined) {
+        normalized.maxRelevantChunks = normalized.max_relevant_chunks;
+      }
+      if (normalized.maxRelevantWorks === undefined && normalized.max_relevant_works !== undefined) {
+        normalized.maxRelevantWorks = normalized.max_relevant_works;
       }
       break;
     case "get_work_metadata":
@@ -2315,6 +2344,64 @@ async function executeTool(
   switch (toolName) {
     case "estimate_research_scope": {
       const parsed = ToolArgsSchemas.estimate_research_scope.parse(normalizedArgs);
+      if ((Array.isArray(parsed.workIds) && parsed.workIds.length > 0) || (Array.isArray(parsed.chunkIds) && parsed.chunkIds.length > 0)) {
+        const sizedChunks = Array.isArray(parsed.chunkIds) && parsed.chunkIds.length > 0
+          ? await deps.store.getChunksByIds(parsed.chunkIds)
+          : [];
+        const sizedWorkIds = uniqueWorkIds([
+          ...(Array.isArray(parsed.workIds) ? parsed.workIds : []),
+          ...sizedChunks.map((chunk) => chunk.workId),
+        ]);
+        const workload = await deps.store.estimateWorkSetSize(sizedWorkIds, parsed.filters);
+        const estimate = {
+          query: parsed.query,
+          scopeMode: sizedWorkIds.length <= 12 ? "focused" : isBroadCorpusResearchQuery(parsed.query, sizedWorkIds.length) ? "corpus_wide" : "subset_wide",
+          metadataWorkEstimate: sizedWorkIds.length,
+          chunkMatchEstimate: sizedChunks.length,
+          chunkWorkEstimate: new Set(sizedChunks.map((chunk) => chunk.workId)).size,
+          totalWorkEstimate: workload.workCount,
+          totalChunkEstimate: workload.totalChunkCount,
+          totalTextBytesEstimate: workload.totalTextBytes,
+          breadthBand:
+            workload.workCount >= 320 || workload.totalChunkCount >= 48_000 ? "huge"
+              : workload.workCount >= 128 || workload.totalChunkCount >= 18_000 ? "large"
+                : workload.workCount >= 48 || workload.totalChunkCount >= 6_000 ? "medium"
+                  : workload.workCount >= 12 || workload.totalChunkCount >= 1_500 ? "small"
+                    : "tiny",
+          recommendedIntensity:
+            workload.totalChunkCount >= 18_000 || workload.workCount >= 128 ? "maximum"
+              : workload.totalChunkCount >= 6_000 || workload.workCount >= 48 ? "high"
+                : sizedWorkIds.length <= 12 ? "normal" : "high",
+          recommendedWallClockMinutes:
+            workload.totalChunkCount >= 18_000 || workload.workCount >= 128 ? 60
+              : workload.totalChunkCount >= 6_000 || workload.workCount >= 48 ? 15
+                : 5,
+          recommendedParallelism:
+            workload.totalChunkCount >= 48_000 || workload.workCount >= 320 ? 12
+              : workload.totalChunkCount >= 18_000 || workload.workCount >= 128 ? 8
+                : workload.totalChunkCount >= 6_000 || workload.workCount >= 48 ? 4
+                  : sizedWorkIds.length <= 12 ? 1 : 2,
+          recommendedShardAxis:
+            workload.totalChunkCount >= 1_500 || workload.workCount >= 12 ? "work_id_hash" : "none",
+          recommendedVmWorkBudget:
+            workload.totalChunkCount >= 18_000 || workload.workCount >= 128 ? 48
+              : workload.totalChunkCount >= 6_000 || workload.workCount >= 48 ? 32
+                : 20,
+          recommendedFrontierWorks:
+            workload.workCount >= 128 ? Math.min(workload.workCount, 128)
+              : workload.workCount >= 48 ? Math.min(workload.workCount, 72)
+                : Math.max(8, Math.min(workload.workCount, 24)),
+          estimatedCoveragePercent: {
+            normal: Math.max(15, Math.min(55, Math.round((24 / Math.max(workload.workCount, 1)) * 100))),
+            high: Math.max(35, Math.min(80, Math.round((72 / Math.max(workload.workCount, 1)) * 100))),
+            maximum: Math.max(60, Math.min(100, Math.round((128 / Math.max(workload.workCount, 1)) * 100))),
+          },
+          probeWorks: [],
+          recommendedShards: [],
+          rationale: `Sized from ${sizedChunks.length} vetted relevant chunks across ${sizedWorkIds.length} works, covering ${(workload.totalTextBytes / 1_000_000).toFixed(1)} MB of source text.`,
+        };
+        return structuredClone(estimate) as Record<string, unknown>;
+      }
       const estimate = await deps.store.estimateResearchScope(parsed.query, parsed.filters);
       return structuredClone(estimate) as unknown as Record<string, unknown>;
     }
@@ -2397,6 +2484,68 @@ async function executeTool(
         verifiedWorkIds: uniqueWorkIds(
           chunks.map((chunk) => (typeof chunk.workId === "string" ? chunk.workId : null)),
         ),
+      };
+    }
+    case "classify_candidate_chunks": {
+      const parsed = ToolArgsSchemas.classify_candidate_chunks.parse(normalizedArgs);
+      if (!deps.ai) {
+        throw new Error("Workers AI is required for candidate chunk classification.");
+      }
+      const candidates = await deps.store.getChunksByIds(parsed.chunkIds);
+      const orderedCandidates = parsed.chunkIds
+        .map((chunkId) => candidates.find((chunk) => chunk.id === chunkId))
+        .filter((chunk): chunk is ChunkSearchResult => Boolean(chunk));
+      const maxRelevantChunks = parsed.maxRelevantChunks ?? 96;
+      const maxRelevantWorks = parsed.maxRelevantWorks ?? 24;
+      const batchSize = 24;
+      const scored = new Map<string, { score: number; reason?: string }>();
+      for (let index = 0; index < orderedCandidates.length; index += batchSize) {
+        const batch = orderedCandidates.slice(index, index + batchSize);
+        await context.progressReporter?.(
+          `Classifying candidate passages ${index + 1}-${Math.min(index + batch.length, orderedCandidates.length)} of ${orderedCandidates.length}.`,
+        );
+        const prompt = [
+          "You are classifying literary passages for research relevance.",
+          "Return strict JSON: {\"items\":[{\"id\":\"...\",\"score\":0-1,\"reason\":\"...\"}]}",
+          "Score for whether the passage is directly useful for answering the user query.",
+          "High scores require clear topical relevance, not just loose keyword overlap.",
+          "Down-rank incidental mentions and generic emotional language.",
+          `Query: ${parsed.query}`,
+          "Passages:",
+          ...batch.map((chunk, batchIndex) => `${batchIndex + 1}. id=${chunk.id}\nworkId=${chunk.workId}\nchunkIndex=${chunk.chunkIndex}\nexcerpt=${(chunk.excerpt ?? chunk.text).replace(/\s+/gu, " ").slice(0, 700)}`),
+        ].join("\n\n");
+        const payload = await deps.ai.run<{ prompt: string }, unknown>(
+          deps.toolStreamCleanupModel ?? DEFAULT_SESSION_TITLE_MODEL,
+          { prompt },
+        );
+        const text = normalizeWorkersAiText(payload);
+        if (!text) {
+          throw new Error("Candidate chunk classifier returned an empty response.");
+        }
+        const parsedPayload = JSON.parse(text) as { items?: Array<{ id?: string; score?: number; reason?: string }> };
+        const items = Array.isArray(parsedPayload.items) ? parsedPayload.items : [];
+        for (const item of items) {
+          if (typeof item?.id !== "string" || typeof item?.score !== "number") {
+            continue;
+          }
+          scored.set(item.id, { score: Math.max(0, Math.min(1, item.score)), reason: typeof item.reason === "string" ? item.reason : undefined });
+        }
+      }
+      const relevantChunks = orderedCandidates
+        .map((chunk) => ({
+          ...chunk,
+          relevanceScore: scored.get(chunk.id)?.score ?? 0,
+          relevanceReason: scored.get(chunk.id)?.reason,
+        }))
+        .filter((chunk) => chunk.relevanceScore >= 0.45)
+        .sort((left, right) => right.relevanceScore - left.relevanceScore)
+        .slice(0, maxRelevantChunks);
+      const relevantWorkIds = uniqueWorkIds(relevantChunks.map((chunk) => chunk.workId)).slice(0, maxRelevantWorks);
+      return {
+        chunks: relevantChunks.filter((chunk) => relevantWorkIds.includes(chunk.workId)),
+        relevantChunkIds: relevantChunks.map((chunk) => chunk.id),
+        relevantWorkIds,
+        candidateChunkCount: orderedCandidates.length,
       };
     }
     case "get_work_text": {
@@ -4648,9 +4797,13 @@ function clientSafeToolResult(toolName: ToolName, result: Record<string, unknown
         ? Math.max(metadataWorkEstimate ?? 0, chunkWorkEstimate ?? 0, probeWorks.length)
         : undefined;
     return {
+      scopeMode: typeof result.scopeMode === "string" ? result.scopeMode : undefined,
       metadataWorkEstimate,
       chunkMatchEstimate: typeof result.chunkMatchEstimate === "number" ? result.chunkMatchEstimate : undefined,
       chunkWorkEstimate,
+      totalWorkEstimate: typeof result.totalWorkEstimate === "number" ? result.totalWorkEstimate : undefined,
+      totalChunkEstimate: typeof result.totalChunkEstimate === "number" ? result.totalChunkEstimate : undefined,
+      totalTextBytesEstimate: typeof result.totalTextBytesEstimate === "number" ? result.totalTextBytesEstimate : undefined,
       trueBreadthEstimate,
       probeWorkCount: probeWorks.length,
       probeWorks: probeWorks.slice(0, 12).map((candidate) => {
@@ -4720,6 +4873,36 @@ function clientSafeToolResult(toolName: ToolName, result: Record<string, unknown
           workId: typeof chunk.workId === "string" ? chunk.workId : undefined,
           chunkIndex: typeof chunk.chunkIndex === "number" ? chunk.chunkIndex : undefined,
           score: typeof chunk.score === "number" ? chunk.score : undefined,
+          excerpt:
+            typeof chunk.excerpt === "string"
+              ? chunk.excerpt
+              : typeof chunk.text === "string"
+                ? chunk.text.slice(0, 280)
+                : undefined,
+          r2Key: typeof chunk.r2Key === "string" ? chunk.r2Key : undefined,
+        };
+      }),
+      error: typeof result.error === "string" ? result.error : undefined,
+    };
+  }
+
+  if (toolName === "classify_candidate_chunks") {
+    const chunks = Array.isArray(result.chunks) ? result.chunks : [];
+    const relevantWorkIds = Array.isArray(result.relevantWorkIds) ? result.relevantWorkIds : [];
+    return {
+      relevantChunkCount: chunks.length,
+      relevantWorkCount: relevantWorkIds.length,
+      candidateChunkCount: typeof result.candidateChunkCount === "number" ? result.candidateChunkCount : undefined,
+      chunks: chunks.slice(0, 12).map((candidate) => {
+        if (!candidate || typeof candidate !== "object") {
+          return candidate;
+        }
+        const chunk = candidate as Record<string, unknown>;
+        return {
+          id: typeof chunk.id === "string" ? chunk.id : undefined,
+          workId: typeof chunk.workId === "string" ? chunk.workId : undefined,
+          chunkIndex: typeof chunk.chunkIndex === "number" ? chunk.chunkIndex : undefined,
+          relevanceScore: typeof chunk.relevanceScore === "number" ? chunk.relevanceScore : undefined,
           excerpt:
             typeof chunk.excerpt === "string"
               ? chunk.excerpt
@@ -5100,6 +5283,10 @@ function describePlannerAction(
       return normalizedMessage
         ? `I found some likely matches for “${normalizedMessage}.” Now I’m pulling the strongest passages before I write the answer.`
         : "I found some likely matches. Now I’m pulling the strongest passages before I write the answer.";
+    case "classify_candidate_chunks":
+      return normalizedMessage
+        ? `I’ve got a broad passage pool for “${normalizedMessage}.” Now I’m filtering it down to the passages that are actually relevant.`
+        : "I’ve got a broad passage pool. Now I’m filtering it down to the passages that are actually relevant.";
     case "get_work_metadata":
       return "I found a few likely books. Let me pull in their context before I go further.";
     case "get_work_text":
@@ -8476,12 +8663,9 @@ async function runOrchestrator(
       routedQueryRef.current,
       Array.isArray(input.workIds) ? input.workIds.length : 0,
     );
-    const latestSearchResult = latestSearchWorksResultFromHistory(toolHistory);
-    const estimate =
-      latestScopeEstimateFromHistory(toolHistory)
-      ?? (latestSearchResult ? await deriveScopeEstimateFromSearchResult(deps, routedQueryRef.current, latestSearchResult) : null);
+    const estimate = latestScopeEstimateFromHistory(toolHistory);
     const candidateWorkIds = latestCandidateWorkIdsFromHistory(toolHistory);
-    if (!estimate && candidateWorkIds.length === 0 && (!Array.isArray(input.workIds) || input.workIds.length === 0)) {
+    if (!estimate) {
       return;
     }
     const searchPlan = searchPlanFromEstimate(estimate, broadCorpusQuery, input.intensityOverride);

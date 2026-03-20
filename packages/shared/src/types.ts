@@ -5,6 +5,7 @@ export const ToolNameSchema = z.enum([
   "search_works",
   "get_work_metadata",
   "get_relevant_chunks",
+  "classify_candidate_chunks",
   "get_work_text",
   "create_workspace",
   "run_workspace_task",
@@ -26,6 +27,8 @@ export type Citation = z.infer<typeof CitationSchema>;
 
 export const EstimateResearchScopeArgsSchema = z.object({
   query: z.string().min(1),
+  workIds: z.array(z.string()).max(128).optional(),
+  chunkIds: z.array(z.string()).max(512).optional(),
   filters: z
     .object({
       language: z.string().optional(),
@@ -59,13 +62,20 @@ export const GetRelevantChunksArgsSchema = z.object({
   workIds: z.array(z.string()).max(80).optional(),
   filters: z
     .object({
-      limit: z.number().int().positive().max(80).optional(),
+      limit: z.number().int().positive().max(3000).optional(),
       language: z.string().optional(),
       rightsStatus: z.string().optional(),
       yearRange: z.tuple([z.number().int(), z.number().int()]).optional(),
       genre: z.array(z.string().min(1)).max(8).optional(),
     })
     .optional(),
+});
+
+export const ClassifyCandidateChunksArgsSchema = z.object({
+  query: z.string().min(1),
+  chunkIds: z.array(z.string()).min(1).max(3000),
+  maxRelevantChunks: z.number().int().positive().max(512).optional(),
+  maxRelevantWorks: z.number().int().positive().max(128).optional(),
 });
 
 export const GetWorkTextArgsSchema = z.object({
@@ -97,6 +107,7 @@ export const ToolArgsSchemas = {
   search_works: SearchWorksArgsSchema,
   get_work_metadata: GetWorkMetadataArgsSchema,
   get_relevant_chunks: GetRelevantChunksArgsSchema,
+  classify_candidate_chunks: ClassifyCandidateChunksArgsSchema,
   get_work_text: GetWorkTextArgsSchema,
   create_workspace: CreateWorkspaceArgsSchema,
   run_workspace_task: RunWorkspaceTaskArgsSchema,

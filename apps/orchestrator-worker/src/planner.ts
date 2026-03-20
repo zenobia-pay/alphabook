@@ -49,6 +49,7 @@ const VALID_TOOL_NAMES = new Set<ToolName>([
   "search_works",
   "get_work_metadata",
   "get_relevant_chunks",
+  "classify_candidate_chunks",
   "get_work_text",
   "create_workspace",
   "run_workspace_task",
@@ -88,9 +89,13 @@ function summarizePlannerToolResult(toolName: ToolName, result: Record<string, u
   switch (toolName) {
     case "estimate_research_scope":
       return {
+        scopeMode: typeof result.scopeMode === "string" ? result.scopeMode : null,
         metadataWorkEstimate: typeof result.metadataWorkEstimate === "number" ? result.metadataWorkEstimate : null,
         chunkMatchEstimate: typeof result.chunkMatchEstimate === "number" ? result.chunkMatchEstimate : null,
         chunkWorkEstimate: typeof result.chunkWorkEstimate === "number" ? result.chunkWorkEstimate : null,
+        totalWorkEstimate: typeof result.totalWorkEstimate === "number" ? result.totalWorkEstimate : null,
+        totalChunkEstimate: typeof result.totalChunkEstimate === "number" ? result.totalChunkEstimate : null,
+        totalTextBytesEstimate: typeof result.totalTextBytesEstimate === "number" ? result.totalTextBytesEstimate : null,
         breadthBand: typeof result.breadthBand === "string" ? result.breadthBand : null,
         recommendedIntensity: typeof result.recommendedIntensity === "string" ? result.recommendedIntensity : null,
         recommendedWallClockMinutes: typeof result.recommendedWallClockMinutes === "number" ? result.recommendedWallClockMinutes : null,
@@ -133,6 +138,21 @@ function summarizePlannerToolResult(toolName: ToolName, result: Record<string, u
           id: typeof chunk.id === "string" ? chunk.id : null,
           workId: typeof chunk.workId === "string" ? chunk.workId : null,
           chunkIndex: typeof chunk.chunkIndex === "number" ? chunk.chunkIndex : null,
+          excerpt: typeof chunk.excerpt === "string" ? truncateForModel(chunk.excerpt, 180) : null,
+        })),
+      };
+    }
+    case "classify_candidate_chunks": {
+      const chunks = Array.isArray(result.chunks) ? result.chunks as Array<Record<string, unknown>> : [];
+      const relevantWorkIds = Array.isArray(result.relevantWorkIds) ? result.relevantWorkIds : [];
+      return {
+        relevantChunkCount: chunks.length,
+        relevantWorkCount: relevantWorkIds.length,
+        chunks: chunks.slice(0, 6).map((chunk) => ({
+          id: typeof chunk.id === "string" ? chunk.id : null,
+          workId: typeof chunk.workId === "string" ? chunk.workId : null,
+          chunkIndex: typeof chunk.chunkIndex === "number" ? chunk.chunkIndex : null,
+          relevanceScore: typeof chunk.relevanceScore === "number" ? chunk.relevanceScore : null,
           excerpt: typeof chunk.excerpt === "string" ? truncateForModel(chunk.excerpt, 180) : null,
         })),
       };
@@ -422,6 +442,11 @@ function frontierWorkIds(context: PlannerContext, seedWorkIds: string[], chunks:
   ], limit);
 }
 
+function classifiedChunkPayload(context: PlannerContext): ChunkSearchResult[] {
+  const classifyResult = context.toolHistory.find((item) => item.toolName === "classify_candidate_chunks")?.result;
+  return (classifyResult?.chunks as ChunkSearchResult[] | undefined) ?? [];
+}
+
 function verifiedWorkIds(chunks: ChunkSearchResult[], limit = 256): string[] {
   return uniqueWorkIds(chunks.map((chunk) => chunk.workId), limit);
 }
@@ -443,6 +468,10 @@ function candidateWorkIds(
 }
 
 function seedChunkPayload(context: PlannerContext): ChunkSearchResult[] {
+  const classified = classifiedChunkPayload(context);
+  if (classified.length > 0) {
+    return classified;
+  }
   const chunkResult = context.toolHistory.find((item) => item.toolName === "get_relevant_chunks")?.result;
   return (chunkResult?.chunks as ChunkSearchResult[] | undefined) ?? [];
 }
@@ -688,7 +717,6 @@ export class FallbackPlanner implements Planner {
     const workLimit = broadCorpusQuery
       ? Math.max(16, Math.min(24, Math.ceil(estimateNumber(estimate, "recommendedFrontierWorks", 64) / 4)))
       : Math.max(12, Math.min(16, estimateNumber(estimate, "recommendedFrontierWorks", 12)));
-    const chunkLimit = Math.max(broadCorpusQuery ? 64 : 20, Math.min(96, estimateNumber(estimate, "recommendedFrontierWorks", broadCorpusQuery ? 64 : 20)));
     const toolNames = [
       ...context.toolHistory.map((item) => item.toolName),
       ...(context.pendingTools ?? []).map((item) => item.toolName),
@@ -713,13 +741,54 @@ export class FallbackPlanner implements Planner {
       };
     }
 
+    if (!toolNames.includes("get_relevant_chunks")) {
+      return {
+        type: "tool_call",
+        tool_name: "get_relevant_chunks",
+        rationale: scopedWorkIds.length > 0
+          ? "Pulling a broad candidate passage set inside the current book scope before I filter down to the truly relevant evidence."
+          : "Pulling a broad candidate passage set from the surfaced books before I filter down to the truly relevant evidence.",
+        args: {
+          query: context.userMessage,
+          ...(frontierIds.length > 0 ? { workIds: frontierIds } : {}),
+          filters: {
+            limit: broadCorpusQuery ? 768 : 160,
+          },
+        },
+      };
+    }
+
+    if (!toolNames.includes("classify_candidate_chunks")) {
+      const candidateChunks = seedChunkPayload(context);
+      if (candidateChunks.length > 0) {
+        return {
+          type: "tool_call",
+          tool_name: "classify_candidate_chunks",
+          rationale: "Filtering the broad candidate passage pool down to the chunks that are actually relevant before I size the job and start the heavy research run.",
+          args: {
+            query: context.userMessage,
+            chunkIds: candidateChunks.map((chunk) => chunk.id).slice(0, broadCorpusQuery ? 3000 : 1000),
+            maxRelevantChunks: broadCorpusQuery ? 240 : 96,
+            maxRelevantWorks: broadCorpusQuery ? 80 : 24,
+          },
+        };
+      }
+    }
+
     if (!toolNames.includes("estimate_research_scope")) {
+      const candidateChunks = seedChunkPayload(context);
       return {
         type: "tool_call",
         tool_name: "estimate_research_scope",
-        rationale: "Sizing the breadth of the search after the first visible metadata pass so I can choose the right time budget and shard plan without delaying the first books.",
+        rationale: "Sizing the vetted evidence set so I can choose the right shard count, wall-clock budget, and workspace plan from relevant chunks instead of metadata alone.",
         args: {
           query: context.userMessage,
+          ...(candidateChunks.length > 0
+            ? {
+                chunkIds: candidateChunks.map((chunk) => chunk.id).slice(0, broadCorpusQuery ? 240 : 96),
+                workIds: verifiedWorkIds(candidateChunks, broadCorpusQuery ? 80 : 24),
+              }
+            : {}),
         },
       };
     }
@@ -735,23 +804,6 @@ export class FallbackPlanner implements Planner {
           workIds: scopedWorkIds.length > 0 ? scopedWorkIds.slice(0, 12) : [],
           chunkIds: [],
           taskContext: buildTaskContext(context, workIds, chunks),
-        },
-      };
-    }
-
-    if (!toolNames.includes("get_relevant_chunks")) {
-      return {
-        type: "tool_call",
-        tool_name: "get_relevant_chunks",
-        rationale: scopedWorkIds.length > 0
-          ? "Verifying the wider book frontier by pulling direct passages from the open-book search space before narrowing."
-          : "Verifying the wider ranked frontier by pulling direct passages before narrowing to the final books.",
-        args: {
-          query: context.userMessage,
-          ...(frontierIds.length > 0 ? { workIds: frontierIds } : {}),
-          filters: {
-            limit: chunkLimit,
-          },
         },
       };
     }
@@ -865,6 +917,7 @@ export class OpenAIPlanner implements Planner {
               "search_works(query, filters?)",
               "get_work_metadata(work_ids)",
               "get_relevant_chunks(query, work_ids?, filters?)",
+              "classify_candidate_chunks(query, chunk_ids, max_relevant_chunks?, max_relevant_works?)",
               "get_work_text(work_id)",
               "create_workspace(work_ids, chunk_ids, task_context)",
               "run_workspace_task(runtime_id, task_spec)",
@@ -964,27 +1017,53 @@ export class OpenAIPlanner implements Planner {
         },
       };
     }
-    if (!hasToolStarted(context, "estimate_research_scope")) {
-      return {
-        type: "tool_call",
-        tool_name: "estimate_research_scope",
-        rationale: "I’m sizing the breadth of the search after the first visible metadata pass so I can choose the right time budget and shard plan without delaying the first books.",
-        args: {
-          query: context.userMessage,
-        },
-      };
-    }
     if (!hasToolStarted(context, "get_relevant_chunks")) {
       const metadataIds = context.workScope?.length ? context.workScope.slice(0, 24) : metadataWorkIds(context, 24);
       return {
         type: "tool_call",
         tool_name: "get_relevant_chunks",
         rationale: context.workScope?.length
-          ? "I’m verifying passages inside the current book scope before the Codex run so the research document can show evidence, not just titles."
-          : "I’m verifying passages from the surfaced books before the Codex run so the research document can show evidence quickly.",
+          ? "I’m pulling a broad candidate passage set inside the current book scope before I filter down to the truly relevant evidence."
+          : "I’m pulling a broad candidate passage set from the surfaced books before I filter down to the truly relevant evidence.",
         args: {
           query: context.userMessage,
           ...(metadataIds.length > 0 ? { workIds: metadataIds } : {}),
+          filters: {
+            limit: isBroadCorpusQuery(context) ? 768 : 160,
+          },
+        },
+      };
+    }
+    if (!hasToolStarted(context, "classify_candidate_chunks")) {
+      const candidateChunks = seedChunkPayload(context);
+      if (candidateChunks.length > 0) {
+        return {
+          type: "tool_call",
+          tool_name: "classify_candidate_chunks",
+          rationale: "I’m filtering the broad candidate passage pool down to the chunks that are actually relevant before I size the heavy research run.",
+          args: {
+            query: context.userMessage,
+            chunkIds: candidateChunks.map((chunk) => chunk.id).slice(0, 1000),
+            maxRelevantChunks: 96,
+            maxRelevantWorks: 24,
+          },
+        };
+      }
+    }
+    if (!hasToolStarted(context, "estimate_research_scope")) {
+      const chunks = seedChunkPayload(context);
+      return {
+        type: "tool_call",
+        tool_name: "estimate_research_scope",
+        rationale: "I’m sizing the vetted evidence set so I can choose the right time budget and shard plan from relevant chunks instead of metadata alone.",
+        args: {
+          query: context.userMessage,
+          ...(chunks.length > 0
+            ? {
+                chunkIds: chunks.map((chunk) => chunk.id).slice(0, 240),
+                workIds: verifiedWorkIds(chunks, 80),
+              }
+            : {}),
         },
       };
     }

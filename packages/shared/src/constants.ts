@@ -13,6 +13,7 @@ export const TOOL_LABELS = {
   search_works: "Metadata Search",
   get_work_metadata: "Book Context",
   get_relevant_chunks: "Passage Search",
+  classify_candidate_chunks: "Relevance Filter",
   get_work_text: "Text Lookup",
   create_workspace: "Research Setup",
   run_workspace_task: "Deep Research",
