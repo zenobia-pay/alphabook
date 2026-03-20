@@ -7518,6 +7518,18 @@ async function runOrchestrator(
           ...rankedSearchWorks.map((work) => (typeof work.id === "string" ? work.id : null)),
           ...rankedMetadataWorks.map((work) => (typeof work.id === "string" ? work.id : null)),
         ]);
+    const effectiveParallelism = (() => {
+      const verifiedBound = strictVerifiedFrontier
+        ? Math.max(1, Math.floor(verifiedWorkIds.length / 3))
+        : 0;
+      const candidateBound = Math.max(1, Math.floor(candidateWorkIds.length / 4));
+      const maxUsefulParallelism = Math.max(verifiedBound, candidateBound);
+      return Math.max(1, Math.min(searchPlan.parallelism, maxUsefulParallelism));
+    })();
+    const effectiveShardAxis = effectiveParallelism > 1 ? searchPlan.shardAxis : "none";
+    const effectiveShardPlan = effectiveParallelism > 1
+      ? searchPlan.shards.slice(0, effectiveParallelism)
+      : [];
     const mergedTaskSpec = mergeTaskSpecWithPriorEvidence({
       kind: "briefing_search",
       phase: "collect_and_brief",
@@ -7526,8 +7538,8 @@ async function runOrchestrator(
       mode: scopedWorkIds.length > 0 ? "open_book_analysis" : "exhaustive_corpus_search",
       intensity: searchPlan.intensity,
       timeBudgetMinutes: searchPlan.wallClockMinutes,
-      parallelism: searchPlan.parallelism,
-      shardAxis: searchPlan.shardAxis,
+      parallelism: effectiveParallelism,
+      shardAxis: effectiveShardAxis,
       workIds: candidateWorkIds,
       chunkIds: seedChunks
         .map((chunk) => (typeof chunk.id === "string" ? chunk.id : null))
@@ -7540,7 +7552,7 @@ async function runOrchestrator(
         .map((chunk) => (typeof chunk.id === "string" ? chunk.id : null))
         .filter((value): value is string => typeof value === "string")
         .slice(0, chunkLimit),
-      shardPlan: searchPlan.shards,
+      shardPlan: effectiveShardPlan,
       searchHints: {
         searchWorksQuery: routedQueryRef.current,
         passageSearchFocus: strictVerifiedFrontier
@@ -7550,10 +7562,10 @@ async function runOrchestrator(
       searchPlan: searchPlan.estimate ?? {
         recommendedIntensity: searchPlan.intensity,
         recommendedWallClockMinutes: searchPlan.wallClockMinutes,
-        recommendedParallelism: searchPlan.parallelism,
-        recommendedShardAxis: searchPlan.shardAxis,
+        recommendedParallelism: effectiveParallelism,
+        recommendedShardAxis: effectiveShardAxis,
         recommendedFrontierWorks: searchPlan.frontierWorks,
-        recommendedShards: searchPlan.shards,
+        recommendedShards: effectiveShardPlan,
       },
       retrieval: {
         frontierWorks: boundedRetrievalWorks
