@@ -5,11 +5,11 @@ import {
 } from "@assistant-ui/react";
 import type { ReadonlyJSONObject, ReadonlyJSONValue } from "assistant-stream/utils";
 import type { AgentationProps } from "agentation";
-import { Bell, ChevronsLeft, ChevronsRight, Link2, LoaderCircle, MessageSquarePlus } from "lucide-react";
+import { ChevronsLeft, ChevronsRight, Link2, LoaderCircle, MessageSquarePlus, X } from "lucide-react";
 
 import { getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type NotificationRecord, type ProfileBookStat, type ProfileFacetStat, type ProfileQueryStat, type PublicProfileResponse, type UserProfile, type UserProfileStats, type WorkDetail, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
-import { ApiError, buildSignInUrl, buildSignOutUrl, cancelRun, claimGuestProfile, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchAssistantDocumentState, fetchCurrentUser, fetchMessages, fetchNotifications, fetchProfile, fetchProfileStats, fetchRunState, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, getErrorMessage, markAllNotificationsRead, markNotificationRead, queryAdminAnalytics, sendAnalyticsEvent, streamChat, streamRun, unfollowProfile, type RunArtifactRecord, type SessionRunRecord } from "./api";
+import { ApiError, buildSignInUrl, buildSignOutUrl, cancelRun, claimGuestProfile, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchAssistantDocumentState, fetchCurrentUser, fetchMessages, fetchNotifications, fetchProfile, fetchProfileStats, fetchRunState, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, getErrorMessage, markNotificationRead, queryAdminAnalytics, sendAnalyticsEvent, streamChat, streamRun, unfollowProfile, type RunArtifactRecord, type SessionRunRecord } from "./api";
 import { Thread } from "./components/assistant-ui/thread";
 import { Avatar, AvatarFallback, AvatarImage } from "./components/ui/avatar";
 import { Button } from "./components/ui/button";
@@ -70,7 +70,6 @@ type AuthState = {
 };
 
 type ViewMode = "explore" | "assistant" | "assistant_document" | "profile" | "book" | "admin";
-type SidebarNavId = ViewMode | "notifications";
 type UrlWriteMode = "replace" | "push";
 type UrlState = {
   view: ViewMode;
@@ -2389,10 +2388,9 @@ function ProfileIcon() {
   );
 }
 
-const NAV_ITEMS: Array<{ id: SidebarNavId; label: string; icon: ComponentType }> = [
+const NAV_ITEMS: Array<{ id: ViewMode; label: string; icon: ComponentType }> = [
   { id: "assistant", label: "New chat", icon: MessageSquarePlus },
   { id: "explore", label: "Explore", icon: CompassIcon },
-  { id: "notifications", label: "Notifications", icon: Bell },
   { id: "profile", label: "Profile", icon: ProfileIcon },
 ];
 
@@ -2732,11 +2730,44 @@ function assistantSessionName(session: ChatSessionSummary | null) {
   return sessionDisplayTitle(session);
 }
 
+type SessionNotificationState = {
+  type: "completed" | "error";
+  notificationIds: string[];
+};
+
+function buildSessionNotificationMap(notifications: NotificationRecord[]) {
+  const next = new Map<string, SessionNotificationState>();
+  for (const notification of notifications) {
+    if (notification.readAt || !notification.sessionId) {
+      continue;
+    }
+    if (
+      notification.type !== "run_completed"
+      && notification.type !== "run_failed"
+      && notification.type !== "run_timed_out"
+    ) {
+      continue;
+    }
+    const type = notification.type === "run_completed" ? "completed" : "error";
+    const current = next.get(notification.sessionId);
+    if (!current) {
+      next.set(notification.sessionId, { type, notificationIds: [notification.id] });
+      continue;
+    }
+    current.notificationIds.push(notification.id);
+    if (type === "error") {
+      current.type = "error";
+    }
+  }
+  return next;
+}
+
 function SidebarRecents({
   collapsed,
   activeView,
   sessions,
   runningSessionIds,
+  sessionNotifications,
   selectedSessionId,
   onSelectSession,
 }: {
@@ -2744,6 +2775,7 @@ function SidebarRecents({
   activeView: ViewMode;
   sessions: ChatSessionSummary[];
   runningSessionIds: ReadonlySet<string>;
+  sessionNotifications: ReadonlyMap<string, SessionNotificationState>;
   selectedSessionId: string | null | undefined;
   onSelectSession: (sessionId: string) => void;
 }) {
@@ -2762,6 +2794,7 @@ function SidebarRecents({
         {sessions.map((session) => {
           const isActive = activeView === "assistant" && selectedSessionId === session.id;
           const isRunning = runningSessionIds.has(session.id);
+          const notificationState = sessionNotifications.get(session.id);
           return (
             <button
               key={session.id}
@@ -2775,6 +2808,22 @@ function SidebarRecents({
                   aria-hidden="true"
                   className="sidebar-recent-row-spinner animate-spin"
                   data-testid={`recent-session-spinner-${session.id}`}
+                />
+              ) : notificationState?.type === "error" ? (
+                <span
+                  className="sidebar-recent-row-indicator is-error"
+                  aria-label="Run failed"
+                  title="Run failed"
+                  data-testid={`recent-session-notification-error-${session.id}`}
+                >
+                  <X aria-hidden="true" />
+                </span>
+              ) : notificationState?.type === "completed" ? (
+                <span
+                  className="sidebar-recent-row-indicator is-completed"
+                  aria-label="Run completed"
+                  title="Run completed"
+                  data-testid={`recent-session-notification-completed-${session.id}`}
                 />
               ) : null}
             </button>
@@ -4739,7 +4788,6 @@ export default function App() {
     notifications: [],
     unreadCount: 0,
   });
-  const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [adminAccess, setAdminAccess] = useState<AdminAccessState>({
     loading: true,
     allowed: false,
@@ -4792,8 +4840,6 @@ export default function App() {
   const bookAssistantResizeStartRef = useRef<{ pointerX: number; width: number } | null>(null);
   const bookAssistantRafRef = useRef<number | null>(null);
   const pendingUrlWriteModeRef = useRef<UrlWriteMode>("replace");
-  const notificationsDropdownRef = useRef<HTMLDivElement | null>(null);
-  const notificationsTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   const currentUser = useMemo(
     () => {
@@ -4863,6 +4909,17 @@ export default function App() {
     }
     return next;
   }, [isSending, selectedSessionId, sessionRuns, sessions]);
+  const sessionNotifications = useMemo(
+    () => buildSessionNotificationMap(notificationsState.notifications),
+    [notificationsState.notifications],
+  );
+
+  useEffect(() => {
+    if (activeView !== "assistant" || !selectedSessionId || !sessionNotifications.has(selectedSessionId)) {
+      return;
+    }
+    void handleMarkSessionNotificationsRead(selectedSessionId);
+  }, [activeView, selectedSessionId, sessionNotifications]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -5021,7 +5078,6 @@ export default function App() {
       setAdminRunInput(next.runId ?? "");
       setDebugEnabled(next.debugEnabled);
       setMobileNavOpen(false);
-      setNotificationsOpen(false);
     };
 
     window.addEventListener("popstate", handlePopState);
@@ -5041,36 +5097,6 @@ export default function App() {
     }, pendingUrlWriteModeRef.current);
     pendingUrlWriteModeRef.current = "replace";
   }, [activeView, selectedSessionId, activeWorkId, activeReaderPath, activeProfileUserId, selectedAdminRunId, adminSection, debugEnabled]);
-
-  useEffect(() => {
-    if (!notificationsOpen) {
-      return;
-    }
-
-    const handlePointerDown = (event: MouseEvent) => {
-      const target = event.target;
-      if (!(target instanceof Node)) {
-        return;
-      }
-      if (notificationsDropdownRef.current?.contains(target) || notificationsTriggerRef.current?.contains(target)) {
-        return;
-      }
-      setNotificationsOpen(false);
-    };
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setNotificationsOpen(false);
-      }
-    };
-
-    window.addEventListener("mousedown", handlePointerDown);
-    window.addEventListener("keydown", handleKeyDown);
-    return () => {
-      window.removeEventListener("mousedown", handlePointerDown);
-      window.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [notificationsOpen]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -5836,46 +5862,32 @@ export default function App() {
     }
   }
 
-  async function handleMarkNotificationRead(notificationId: string) {
-    try {
-      await markNotificationRead(notificationId);
-      setNotificationsState((current) => ({
-        ...current,
-        notifications: current.notifications.map((notification) =>
-          notification.id === notificationId && !notification.readAt
-            ? { ...notification, readAt: new Date().toISOString() }
-            : notification,
-        ),
-        unreadCount: Math.max(
-          0,
-          current.unreadCount - (current.notifications.some((notification) => notification.id === notificationId && !notification.readAt) ? 1 : 0),
-        ),
-      }));
-    } catch (error) {
-      setNotificationsState((current) => ({
-        ...current,
-        error: getErrorMessage(error, "We couldn't update that notification."),
-      }));
+  async function handleMarkSessionNotificationsRead(sessionId: string) {
+    const unreadNotificationIds = notificationsState.notifications
+      .filter((notification) => notification.sessionId === sessionId && !notification.readAt)
+      .map((notification) => notification.id);
+    if (unreadNotificationIds.length === 0) {
+      return;
     }
-  }
 
-  async function handleMarkAllNotificationsRead() {
-    try {
-      await markAllNotificationsRead();
-      const readAt = new Date().toISOString();
+    const readAt = new Date().toISOString();
+    setNotificationsState((current) => ({
+      ...current,
+      notifications: current.notifications.map((notification) =>
+        notification.sessionId === sessionId && !notification.readAt
+          ? { ...notification, readAt }
+          : notification,
+      ),
+      unreadCount: Math.max(0, current.unreadCount - unreadNotificationIds.length),
+    }));
+
+    const results = await Promise.allSettled(unreadNotificationIds.map((notificationId) => markNotificationRead(notificationId)));
+    if (results.some((result) => result.status === "rejected")) {
       setNotificationsState((current) => ({
         ...current,
-        error: null,
-        notifications: current.notifications.map((notification) =>
-          notification.readAt ? notification : { ...notification, readAt }
-        ),
-        unreadCount: 0,
+        error: "We couldn't clear that session notification.",
       }));
-    } catch (error) {
-      setNotificationsState((current) => ({
-        ...current,
-        error: getErrorMessage(error, "We couldn't update your notifications."),
-      }));
+      void loadNotifications({ silent: true });
     }
   }
 
@@ -6602,7 +6614,6 @@ export default function App() {
     pendingUrlWriteModeRef.current = "push";
     activeRunTokenRef.current += 1;
     setMobileNavOpen(false);
-    setNotificationsOpen(false);
     setSelectedSessionId(null);
     setMessages([]);
     setLoadError(null);
@@ -6614,7 +6625,6 @@ export default function App() {
   function startNewBookChat() {
     pendingUrlWriteModeRef.current = "push";
     activeRunTokenRef.current += 1;
-    setNotificationsOpen(false);
     setSelectedSessionId(null);
     setMessages([]);
     setLoadError(null);
@@ -6658,7 +6668,6 @@ export default function App() {
   function handleNavSelection(view: ViewMode) {
     pendingUrlWriteModeRef.current = "push";
     setMobileNavOpen(false);
-    setNotificationsOpen(false);
     if (view !== "book") {
       setActiveWorkId(null);
       setPendingCitation(null);
@@ -6688,7 +6697,7 @@ export default function App() {
     }
     pendingUrlWriteModeRef.current = "push";
     setMobileNavOpen(false);
-    setNotificationsOpen(false);
+    void handleMarkSessionNotificationsRead(sessionId);
     setMessages([]);
     setSessionRuns([]);
     setRunArtifacts([]);
@@ -6714,7 +6723,6 @@ export default function App() {
       source: activeView,
     });
     setMobileNavOpen(false);
-    setNotificationsOpen(false);
     setPendingCitation(null);
     setActiveReaderPath(null);
     setActiveProfileUserId(null);
@@ -6734,7 +6742,6 @@ export default function App() {
       source: "citation",
     });
     setMobileNavOpen(false);
-    setNotificationsOpen(false);
     setPendingCitation(citation);
     setActiveReaderPath(null);
     setActiveProfileUserId(null);
@@ -6745,19 +6752,10 @@ export default function App() {
   function openProfile(userId?: string | null) {
     pendingUrlWriteModeRef.current = "push";
     setMobileNavOpen(false);
-    setNotificationsOpen(false);
     setActiveWorkId(null);
     setPendingCitation(null);
     setActiveProfileUserId(userId ?? currentUserId ?? null);
     setActiveView("profile");
-  }
-
-  async function toggleNotificationsDropdown() {
-    if (!notificationsOpen && authState.user) {
-      await loadNotifications({ silent: notificationsState.notifications.length > 0 });
-    }
-    setMobileNavOpen(false);
-    setNotificationsOpen((current) => !current);
   }
 
   async function toggleFollowProfile() {
@@ -7475,113 +7473,6 @@ export default function App() {
               sessions.map((session) => <SessionListCard key={session.id} session={session} onOpen={() => openSession(session.id)} />)
             )}
           </div>
-        </section>
-      </div>
-    );
-  }
-
-  function openNotificationTarget(notification: NotificationRecord) {
-    if (!notification.readAt) {
-      void handleMarkNotificationRead(notification.id);
-    }
-    setNotificationsOpen(false);
-    if (notification.sessionId && notification.runId) {
-      pendingUrlWriteModeRef.current = "push";
-      setMobileNavOpen(false);
-      setSelectedSessionId(notification.sessionId);
-      setSelectedAdminRunId(notification.runId);
-      setActiveView("assistant_document");
-      return;
-    }
-    if (notification.sessionId) {
-      openSession(notification.sessionId);
-    }
-  }
-
-  function renderNotificationsPanel() {
-    return (
-      <div className="notifications-dropdown-panel" ref={notificationsDropdownRef} role="dialog" aria-label="Notifications">
-        <section className="notifications-shell">
-          <div className="notifications-header">
-            <div>
-              <h2>Notifications</h2>
-              <p>{notificationsState.unreadCount > 0 ? `${notificationsState.unreadCount} new updates` : "All caught up"}</p>
-            </div>
-            <div className="notifications-actions">
-              <Button
-                type="button"
-                variant="ghost"
-                className="notifications-action-button"
-                disabled={notificationsState.unreadCount === 0}
-                onClick={() => void handleMarkAllNotificationsRead()}
-              >
-                Mark all read
-              </Button>
-            </div>
-          </div>
-
-          {authPending ? <div className="notifications-empty-state">Checking your account…</div> : null}
-          {!authPending && authLocked ? <div className="notifications-empty-state">Sign in to see your notifications.</div> : null}
-          {notificationsState.error ? <ErrorNotice message={notificationsState.error} /> : null}
-
-          {!authPending && !authLocked && notificationsState.loading ? (
-            <div className="notifications-empty-state">Loading notifications…</div>
-          ) : !authPending && !authLocked && notificationsState.notifications.length === 0 ? (
-            <div className="notifications-empty-state">No notifications yet.</div>
-          ) : !authPending && !authLocked ? (
-            <div className="notifications-list">
-              {notificationsState.notifications.map((notification) => {
-                const label =
-                  typeof notification.metadata.label === "string"
-                    ? notification.metadata.label
-                    : notification.title;
-                const canOpen = Boolean(notification.sessionId);
-                return (
-                  <article
-                    key={notification.id}
-                    className={cn("notification-card", !notification.readAt && "is-unread")}
-                  >
-                    <div className="notification-card-copy">
-                      <div className="notification-card-meta">
-                        {!notification.readAt ? <span className="notification-card-dot" aria-hidden="true" /> : null}
-                        <span className="notification-card-title">{notification.title}</span>
-                        <span>{formatRelativeTime(notification.createdAt)}</span>
-                      </div>
-                      <p className="notification-card-body">{notification.body}</p>
-                      <div className="notification-card-tags" aria-label="Notification details">
-                        <span>{label}</span>
-                        {notification.runId ? <span>Run</span> : null}
-                        {notification.emailedAt ? <span>Emailed</span> : null}
-                        {notification.readAt ? <span>Read</span> : <span>Unread</span>}
-                      </div>
-                    </div>
-                    <div className="notification-card-actions">
-                      {canOpen ? (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          className="notifications-link-button"
-                          onClick={() => openNotificationTarget(notification)}
-                        >
-                          {notification.runId ? "Open run" : "Open session"}
-                        </Button>
-                      ) : null}
-                      {!notification.readAt ? (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          className="notifications-link-button"
-                          onClick={() => void handleMarkNotificationRead(notification.id)}
-                        >
-                          Mark read
-                        </Button>
-                      ) : null}
-                    </div>
-                  </article>
-                );
-              })}
-            </div>
-          ) : null}
         </section>
       </div>
     );
@@ -8345,7 +8236,7 @@ export default function App() {
   }
 
   return (
-    <div className={cn("app-shell", mobileNavOpen && "is-nav-open", sidebarCollapsed && "is-sidebar-collapsed", notificationsOpen && "is-notifications-open")}>
+    <div className={cn("app-shell", mobileNavOpen && "is-nav-open", sidebarCollapsed && "is-sidebar-collapsed")}>
       <button
         type="button"
         className={`shell-backdrop ${mobileNavOpen ? "is-open" : ""}`}
@@ -8394,12 +8285,11 @@ export default function App() {
                 && !selectedSessionId;
               const isActive =
                 isAssistantNewChatActive
-                || (item.id === "notifications" ? notificationsOpen : activeView === item.id && item.id !== "assistant")
+                || (activeView === item.id && item.id !== "assistant")
                 || (activeView === "book" && item.id === "explore");
               return (
                 <Button
                   key={item.id}
-                  ref={item.id === "notifications" ? notificationsTriggerRef : undefined}
                   type="button"
                   variant="ghost"
                   className={cn(
@@ -8408,23 +8298,10 @@ export default function App() {
                     isActive && "font-medium",
                     sidebarCollapsed && "w-11 justify-center px-0",
                   )}
-                  aria-expanded={item.id === "notifications" ? notificationsOpen : undefined}
-                  aria-haspopup={item.id === "notifications" ? "dialog" : undefined}
-                  onClick={() => {
-                    if (item.id === "notifications") {
-                      void toggleNotificationsDropdown();
-                      return;
-                    }
-                    handleNavSelection(item.id);
-                  }}
+                  onClick={() => handleNavSelection(item.id)}
                 >
                   <Icon />
                   {!sidebarCollapsed ? <span>{item.label}</span> : null}
-                  {item.id === "notifications" && notificationsState.unreadCount > 0 ? (
-                    <span className={cn("sidebar-nav-badge", sidebarCollapsed && "is-collapsed")}>
-                      {notificationsState.unreadCount > 99 ? "99+" : notificationsState.unreadCount}
-                    </span>
-                  ) : null}
                 </Button>
               );
             })}
@@ -8435,6 +8312,7 @@ export default function App() {
             activeView={activeView}
             sessions={sessions}
             runningSessionIds={runningSessionIds}
+            sessionNotifications={sessionNotifications}
             selectedSessionId={selectedSessionId}
             onSelectSession={openSession}
           />
@@ -8497,18 +8375,6 @@ export default function App() {
           </Button>
         )}
       </aside>
-
-      {notificationsOpen ? (
-        <>
-          <button
-            type="button"
-            className="notifications-dropdown-backdrop"
-            aria-label="Close notifications"
-            onClick={() => setNotificationsOpen(false)}
-          />
-          {renderNotificationsPanel()}
-        </>
-      ) : null}
 
       <main className={`main-panel is-${activeView}`}>
         <div className="mobile-shell-bar items-center">

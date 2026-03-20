@@ -1477,7 +1477,10 @@ test.describe("mobile shell", () => {
     expect(composerBox!.y + composerBox!.height).toBeLessThanOrEqual(page.viewportSize()!.height);
   });
 
-  test("notifications nav opens the inbox and mark read updates the badge", async ({ page }) => {
+  test("recent sessions show run completion state and clear it after opening", async ({ page }) => {
+    const sessionId = "11111111-1111-4111-8111-111111111112";
+    const failedSessionId = "22222222-1111-4111-8111-111111111112";
+
     await page.route(/\/(?:api\/)?me$/, async (route) => {
       await route.fulfill({
         status: 200,
@@ -1525,7 +1528,44 @@ test.describe("mobile shell", () => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ sessions: [] }),
+        body: JSON.stringify({
+          sessions: [
+            {
+              id: sessionId,
+              userId: "local-user",
+              title: "Melville notes",
+              createdAt: "2026-03-20T11:00:00.000Z",
+              lastMessageAt: "2026-03-20T12:00:00.000Z",
+              lastMessagePreview: "Summarize the symbolism of the sea.",
+              activeRunStatus: null,
+            },
+            {
+              id: failedSessionId,
+              userId: "local-user",
+              title: "Whitman draft",
+              createdAt: "2026-03-20T10:00:00.000Z",
+              lastMessageAt: "2026-03-20T11:00:00.000Z",
+              lastMessagePreview: "Compare Whitman's catalog structure.",
+              activeRunStatus: null,
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.route(new RegExp(`/((?:api/)?)sessions/${sessionId}/messages$`), async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ messages: [] }),
+      });
+    });
+
+    await page.route(new RegExp(`/((?:api/)?)sessions/${sessionId}/runs$`), async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ runs: [] }),
       });
     });
 
@@ -1539,7 +1579,7 @@ test.describe("mobile shell", () => {
             {
               id: "11111111-1111-4111-8111-111111111111",
               userId: "local-user",
-              sessionId: "11111111-1111-4111-8111-111111111112",
+              sessionId,
               runId: "11111111-1111-4111-8111-111111111113",
               toolCallId: null,
               type: "run_completed",
@@ -1551,6 +1591,22 @@ test.describe("mobile shell", () => {
               readAt: null,
               emailedAt: "2026-03-20T12:00:00.000Z",
               createdAt: "2026-03-20T12:00:00.000Z",
+            },
+            {
+              id: "22222222-2222-4222-8222-222222222222",
+              userId: "local-user",
+              sessionId: failedSessionId,
+              runId: "22222222-1111-4111-8111-111111111113",
+              toolCallId: null,
+              type: "run_failed",
+              title: "Research failed",
+              body: "A different run failed.",
+              metadata: {
+                label: "Run",
+              },
+              readAt: null,
+              emailedAt: null,
+              createdAt: "2026-03-20T11:00:00.000Z",
             },
           ],
         }),
@@ -1569,17 +1625,11 @@ test.describe("mobile shell", () => {
 
     await page.getByLabel("Open navigation").click();
     await expect(page.getByTestId("sidebar")).toHaveClass(/is-open/);
-    await expect(page.getByRole("button", { name: /Notifications/ })).toBeVisible();
-    await expect(page.locator(".sidebar-nav-badge")).toContainText("1");
+    await expect(page.getByRole("button", { name: /Melville notes/ })).toBeVisible();
+    await expect(page.getByTestId(`recent-session-notification-completed-${sessionId}`)).toBeVisible();
+    await expect(page.getByTestId(`recent-session-notification-error-${failedSessionId}`)).toBeVisible();
 
-    await page.getByRole("button", { name: /Notifications/ }).click();
-    await expect(page).not.toHaveURL(/view=notifications/);
-    await expect(page.getByRole("dialog", { name: "Notifications" })).toBeVisible();
-    await expect(page.getByText("1 new updates")).toBeVisible();
-    await expect(page.getByText("Your research run is ready.")).toBeVisible();
-
-    await page.getByRole("button", { name: "Mark read" }).click();
-    await expect(page.locator(".sidebar-nav-badge")).toHaveCount(0);
-    await expect(page.getByText("All caught up")).toBeVisible();
+    await page.getByRole("button", { name: /Melville notes/ }).click();
+    await expect(page.getByTestId(`recent-session-notification-completed-${sessionId}`)).toHaveCount(0);
   });
 });
