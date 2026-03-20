@@ -27,6 +27,7 @@ The architecture overview lives in [docs/architecture.md](/Users/ryanprendergast
 The internal adapter seam for non-book corpora is documented in [docs/adapter-architecture.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/adapter-architecture.md).
 The developer quickstart for adding another corpus is in [docs/bring-your-own-corpus.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/bring-your-own-corpus.md).
 The open-source release checklist is in [docs/oss-release-checklist.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/oss-release-checklist.md).
+The retrieval benchmark scaffold for the CLI-first research paper lives in [docs/benchmarking-cli-retrieval.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/benchmarking-cli-retrieval.md).
 
 ## Current Status
 

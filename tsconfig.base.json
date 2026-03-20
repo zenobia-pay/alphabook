@@ -13,6 +13,7 @@
     "verbatimModuleSyntax": true,
     "baseUrl": ".",
     "paths": {
+      "@alphabook/benchmark-core": ["packages/benchmark-core/src/index.ts"],
       "@alphabook/corpus-core": ["packages/corpus-core/src/index.ts"],
       "@alphabook/corpus-text": ["packages/corpus-text/src/index.ts"],
       "@alphabook/platform": ["packages/platform/src/index.ts"],

@@ -8,6 +8,7 @@
     "packages/*"
   ],
   "scripts": {
+    "benchmark:fixture": "node --import tsx packages/tooling/scripts/run-benchmark-fixture.ts",
     "migrate": "tsx packages/tooling/scripts/migrate.ts",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
@@ -21,6 +22,7 @@
     "test:ui": "npm run test:e2e -w @alphabook/frontend"
   },
   "dependencies": {
+    "@alphabook/benchmark-core": "0.1.0",
     "@alphabook/corpus-core": "0.1.0",
     "@alphabook/corpus-text": "0.1.0",
     "@alphabook/db": "0.1.0",
