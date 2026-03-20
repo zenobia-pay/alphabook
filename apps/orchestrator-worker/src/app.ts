@@ -7294,7 +7294,16 @@ async function runOrchestrator(
     if (persistedRunId && persistedSessionId && persistableRunEventNames.has(event)) {
       await deps.store.appendRunEvent(persistedRunId, persistedSessionId, event, nextData);
     }
-    await originalSend(event, nextData);
+    try {
+      await originalSend(event, nextData);
+    } catch (error) {
+      recordRawLog("stream.send_failed", {
+        event,
+        runId: persistedRunId,
+        sessionId: persistedSessionId,
+        error: error instanceof Error ? error.message : "Unknown stream send error",
+      });
+    }
     await fanOutNotifications(event, nextData);
     const runId = typeof nextData.runId === "string" ? nextData.runId : null;
     if (!runId) {
@@ -7538,6 +7547,40 @@ async function runOrchestrator(
     }
   };
 
+  const appendResearchDocumentCompletedResultDetails = async (
+    toolCallId: string,
+    result: Record<string, unknown>,
+  ) => {
+    const works = Array.isArray(result.works) ? result.works : [];
+    for (const work of works) {
+      if (!work || typeof work !== "object") {
+        continue;
+      }
+      await appendResearchDocumentDetailOnce(toolCallId, {
+        type: "research.work",
+        ...(work as Record<string, unknown>),
+        workTitle:
+          typeof (work as Record<string, unknown>).workTitle === "string"
+            ? (work as Record<string, unknown>).workTitle
+            : (work as Record<string, unknown>).title,
+      });
+    }
+    const chunks = Array.isArray(result.chunks) ? result.chunks : [];
+    for (const chunk of chunks) {
+      if (!chunk || typeof chunk !== "object") {
+        continue;
+      }
+      await appendResearchDocumentDetailOnce(toolCallId, {
+        type: "research.chunk",
+        ...(chunk as Record<string, unknown>),
+        workTitle:
+          typeof (chunk as Record<string, unknown>).workTitle === "string"
+            ? (chunk as Record<string, unknown>).workTitle
+            : (chunk as Record<string, unknown>).title,
+      });
+    }
+  };
+
   if (session && session.userId !== input.userId) {
     throw new Error("Not authorized for this session.");
   }
@@ -7716,6 +7759,7 @@ async function runOrchestrator(
     if (completedEntry) {
       appendResearchDocumentSectionOnce(completedEntry);
     }
+    await appendResearchDocumentCompletedResultDetails(toolCallId, result);
     if (toolName === "run_workspace_task") {
       const briefing = typeof result.briefing === "string" ? result.briefing.trim() : "";
       if (briefing) {
