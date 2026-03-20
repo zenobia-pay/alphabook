@@ -1428,7 +1428,7 @@ test.describe("mobile shell", () => {
   });
 
   test("notifications nav opens the inbox and mark read updates the badge", async ({ page }) => {
-    await page.route("**/api/me", async (route) => {
+    await page.route(/\/(?:api\/)?me$/, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -1438,13 +1438,18 @@ test.describe("mobile shell", () => {
           user: {
             id: "local-user",
             email: "local@example.com",
+            handle: "local-user",
             name: "Local User",
+            avatarUrl: null,
+            createdAt: "2026-03-20T12:00:00.000Z",
+            followersCount: 0,
+            followingCount: 0,
           },
         }),
       });
     });
 
-    await page.route("**/api/admin/access", async (route) => {
+    await page.route(/\/(?:api\/)?admin\/access$/, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -1455,13 +1460,18 @@ test.describe("mobile shell", () => {
           user: {
             id: "local-user",
             email: "local@example.com",
+            handle: "local-user",
             name: "Local User",
+            avatarUrl: null,
+            createdAt: "2026-03-20T12:00:00.000Z",
+            followersCount: 0,
+            followingCount: 0,
           },
         }),
       });
     });
 
-    await page.route("**/api/sessions", async (route) => {
+    await page.route(/\/(?:api\/)?sessions$/, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -1469,7 +1479,7 @@ test.describe("mobile shell", () => {
       });
     });
 
-    await page.route("**/api/notifications", async (route) => {
+    await page.route(/\/(?:api\/)?notifications$/, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -1497,7 +1507,7 @@ test.describe("mobile shell", () => {
       });
     });
 
-    await page.route("**/api/notifications/*/read", async (route) => {
+    await page.route(/\/(?:api\/)?notifications\/.+\/read$/, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -1507,6 +1517,8 @@ test.describe("mobile shell", () => {
 
     await page.goto("/");
 
+    await page.getByLabel("Open navigation").click();
+    await expect(page.getByTestId("sidebar")).toHaveClass(/is-open/);
     await expect(page.getByRole("button", { name: /Notifications/ })).toBeVisible();
     await expect(page.locator(".sidebar-nav-badge")).toContainText("1");
 
