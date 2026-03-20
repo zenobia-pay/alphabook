@@ -77,13 +77,19 @@ button {
   grid-template-columns: 84px minmax(0, 1fr);
 }
 
+.app-shell > aside,
+.app-shell > main {
+  transition:
+    filter 180ms ease,
+    opacity 180ms ease,
+    transform 180ms ease;
+}
+
 .app-shell.is-notifications-open > aside,
 .app-shell.is-notifications-open > main {
-  filter: blur(10px);
-  opacity: 0.28;
-  transition:
-    filter 140ms ease,
-    opacity 140ms ease;
+  filter: blur(12px) saturate(0.85);
+  opacity: 0.18;
+  transform: scale(0.995);
 }
 
 .shell-backdrop,
@@ -1325,8 +1331,9 @@ button {
   position: fixed;
   inset: 0;
   border: 0;
-  background: transparent;
-  z-index: 24;
+  background: rgba(250, 250, 250, 0.42);
+  backdrop-filter: blur(2px);
+  z-index: 44;
 }
 
 .notifications-dropdown-panel {
@@ -1335,7 +1342,7 @@ button {
   left: 266px;
   width: min(460px, calc(100vw - 298px));
   max-height: calc(100vh - 36px);
-  z-index: 25;
+  z-index: 45;
   pointer-events: auto;
 }
 
