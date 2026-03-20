@@ -4693,6 +4693,7 @@ function clientSafeToolResult(toolName: ToolName, result: Record<string, unknown
       citationCount: citations.length,
       codexRunCount: codexRuns.length,
       evidenceCount: typeof evidenceCount === "number" ? evidenceCount : undefined,
+      briefing: typeof result.briefing === "string" ? result.briefing : undefined,
       briefingLength: typeof result.briefing === "string" ? result.briefing.length : undefined,
       usedFallback: artifacts.some((artifact) =>
         artifact && typeof artifact === "object" && typeof (artifact as Record<string, unknown>).path === "string"
