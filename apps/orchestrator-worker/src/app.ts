@@ -4988,17 +4988,24 @@ async function persistRecoveredPlanToolTrace(
     return;
   }
 
+  const existingMetadata = planMessage.metadata && typeof planMessage.metadata === "object"
+    ? planMessage.metadata as Record<string, unknown>
+    : {};
   const existingTrace = readPersistedPlanToolTrace(
-    planMessage.metadata && typeof planMessage.metadata === "object" ? planMessage.metadata as Record<string, unknown> : null,
+    existingMetadata,
   );
   const recoveredTrace = mergeRecoveredTraceWithExisting(existingTrace, buildRecoveredToolTrace(toolCalls));
+  const existingResearchDocumentHtml =
+    typeof existingMetadata.researchDocumentHtml === "string" && existingMetadata.researchDocumentHtml.trim().length > 0
+      ? existingMetadata.researchDocumentHtml
+      : null;
   await deps.store.updateMessageMetadata(planMessage.id, {
-    ...planMessage.metadata,
+    ...existingMetadata,
     phase: "plan",
     runId,
     toolCalls: recoveredTrace,
     researchLog: recoveredTrace,
-    researchDocumentHtml: await buildResearchDocumentHtmlFromToolHistory(
+    researchDocumentHtml: existingResearchDocumentHtml ?? await buildResearchDocumentHtmlFromToolHistory(
       deps,
       sessionId,
       recoveredTrace.map((entry) => ({
