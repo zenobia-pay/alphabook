@@ -4812,8 +4812,9 @@ export default function App() {
   const reconnectRunStreamAbortControllerRef = useRef<AbortController | null>(null);
   const activeRunIdRef = useRef<string | null>(null);
   const bookPageRef = useRef<HTMLElement | null>(null);
-  const bookAssistantResizeStartRef = useRef<{ pointerX: number; width: number } | null>(null);
+  const bookAssistantResizeStartRef = useRef<{ pointerX: number; width: number; maxWidth: number } | null>(null);
   const bookAssistantRafRef = useRef<number | null>(null);
+  const bookAssistantPendingWidthRef = useRef<number | null>(null);
   const pendingUrlWriteModeRef = useRef<UrlWriteMode>("replace");
 
   const currentUser = useMemo(
@@ -5509,26 +5510,34 @@ export default function App() {
 
     const handlePointerMove = (event: PointerEvent) => {
       const start = bookAssistantResizeStartRef.current;
-      const rect = bookPageRef.current?.getBoundingClientRect();
-      if (!start || !rect) {
+      const page = bookPageRef.current;
+      if (!start || !page) {
         return;
       }
       const delta = start.pointerX - event.clientX;
-      const maxWidth = Math.min(BOOK_ASSISTANT_MAX_WIDTH, Math.max(BOOK_ASSISTANT_MIN_WIDTH, rect.width - 360));
-      const nextWidth = Math.min(maxWidth, Math.max(BOOK_ASSISTANT_MIN_WIDTH, start.width + delta));
-      if (bookAssistantRafRef.current !== null) {
-        cancelAnimationFrame(bookAssistantRafRef.current);
+      const nextWidth = Math.min(start.maxWidth, Math.max(BOOK_ASSISTANT_MIN_WIDTH, start.width + delta));
+      bookAssistantPendingWidthRef.current = nextWidth;
+      if (bookAssistantRafRef.current === null) {
+        bookAssistantRafRef.current = window.requestAnimationFrame(() => {
+          const pendingWidth = bookAssistantPendingWidthRef.current;
+          if (pendingWidth != null) {
+            page.style.setProperty("--book-assistant-width", `${pendingWidth}px`);
+          }
+          bookAssistantRafRef.current = null;
+        });
       }
-      bookAssistantRafRef.current = window.requestAnimationFrame(() => {
-        setBookAssistantWidth(nextWidth);
-      });
     };
     const stopDragging = () => {
+      const pendingWidth = bookAssistantPendingWidthRef.current;
       setIsDraggingBookAssistant(false);
       bookAssistantResizeStartRef.current = null;
       if (bookAssistantRafRef.current !== null) {
         cancelAnimationFrame(bookAssistantRafRef.current);
         bookAssistantRafRef.current = null;
+      }
+      bookAssistantPendingWidthRef.current = null;
+      if (pendingWidth != null) {
+        setBookAssistantWidth(pendingWidth);
       }
     };
 
@@ -6823,10 +6832,16 @@ export default function App() {
       return;
     }
     event.preventDefault();
+    const rect = bookPageRef.current?.getBoundingClientRect();
+    const maxWidth = rect
+      ? Math.min(BOOK_ASSISTANT_MAX_WIDTH, Math.max(BOOK_ASSISTANT_MIN_WIDTH, rect.width - 360))
+      : BOOK_ASSISTANT_MAX_WIDTH;
     bookAssistantResizeStartRef.current = {
       pointerX: event.clientX,
       width: bookAssistantWidth,
+      maxWidth,
     };
+    bookAssistantPendingWidthRef.current = bookAssistantWidth;
     setIsDraggingBookAssistant(true);
   }
 
