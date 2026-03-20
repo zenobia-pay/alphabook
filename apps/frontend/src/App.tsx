@@ -7241,7 +7241,6 @@ export default function App() {
               <Button type="button" variant="ghost" onClick={retryInitialWorksLoad}>Retry</Button>
             </div>
           ) : null}
-          {!feedLoading && feedWorks.length === 0 && feedInitialLoadState !== "error" ? <p className="feed-status">No works yet.</p> : null}
         </section>
       </div>
     );
