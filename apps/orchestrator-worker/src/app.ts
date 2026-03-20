@@ -6647,6 +6647,46 @@ function appendResearchDocumentHtmlSection(htmlSections: string[], title: string
   ].join(""));
 }
 
+function renderBriefingHtml(briefing: string) {
+  const lines = briefing
+    .split(/\r?\n/u)
+    .map((line) => line.trimEnd())
+    .filter((line, index, all) => !(line === "" && all[index - 1] === ""));
+  const html: string[] = [];
+  let listItems: string[] = [];
+  const emphasize = (value: string) =>
+    escapeResearchHtml(value).replace(/\*\*(.+?)\*\*/gu, "<strong>$1</strong>");
+  const flushList = () => {
+    if (listItems.length === 0) {
+      return;
+    }
+    html.push(`<ul class="assistant-document-briefing-list">${listItems.join("")}</ul>`);
+    listItems = [];
+  };
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      flushList();
+      continue;
+    }
+    const headingMatch = trimmed.match(/^\*\*(.+)\*\*$/u);
+    if (headingMatch) {
+      flushList();
+      html.push(`<h3>${escapeResearchHtml(headingMatch[1].trim())}</h3>`);
+      continue;
+    }
+    if (trimmed.startsWith("- ")) {
+      listItems.push(`<li>${emphasize(trimmed.slice(2))}</li>`);
+      continue;
+    }
+    flushList();
+    html.push(`<p class="assistant-document-entry is-log">${emphasize(trimmed)}</p>`);
+  }
+  flushList();
+  return html.join("");
+}
+
 async function buildResearchDocumentHtmlFromToolHistory(
   deps: AppDeps,
   sessionId: string,
@@ -6770,6 +6810,13 @@ async function buildResearchDocumentHtmlFromToolHistory(
             : null;
         const sourceLabel = `Source: ${workTitle}${authors.length > 0 ? `, by ${authors.join(", ")}` : ""}, ${persistedPassageLocation(chunkIndex)}`;
         body.push(`<blockquote class="assistant-document-entry is-chunk"><p class="assistant-document-quote">${escapeResearchHtml(excerpt)}</p><footer class="assistant-document-citation">${href ? buildResearchDocumentLink(sourceLabel, href) : escapeResearchHtml(sourceLabel)}</footer></blockquote>`);
+      }
+    }
+
+    if (entry.toolName === "run_workspace_task") {
+      const briefing = typeof entry.result.briefing === "string" ? entry.result.briefing.trim() : "";
+      if (briefing) {
+        body.push(renderBriefingHtml(briefing));
       }
     }
 
