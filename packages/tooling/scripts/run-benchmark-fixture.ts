@@ -4,8 +4,10 @@ import {
   createBm25LiteRetriever,
   createCliExactRetriever,
   createCliExpandedRetriever,
+  createComprehensiveLLMRetriever,
   createDistributedCliRetriever,
   createHybridLiteRetriever,
+  createOpenAIExhaustiveJudge,
   createSemanticLiteRetriever,
   fixtureBenchmarkCorpus,
   fixtureQuerySet,
@@ -14,6 +16,8 @@ import {
 } from "@alphabook/benchmark-core";
 
 async function main() {
+  const exhaustiveApiKey = process.env.OPENAI_API_KEY;
+  const exhaustiveModel = process.env.OPENAI_MODEL ?? "gpt-5.2";
   const run = await runBenchmark({
     corpus: fixtureBenchmarkCorpus,
     querySet: fixtureQuerySet,
@@ -24,6 +28,14 @@ async function main() {
       createBm25LiteRetriever(),
       createSemanticLiteRetriever(),
       createHybridLiteRetriever(),
+      ...(exhaustiveApiKey
+        ? [createComprehensiveLLMRetriever({
+          judge: createOpenAIExhaustiveJudge({
+            apiKey: exhaustiveApiKey,
+            model: exhaustiveModel,
+          }),
+        })]
+        : []),
     ],
   });
 

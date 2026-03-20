@@ -1,6 +1,7 @@
 export * from "./expansion";
 export * from "./fixtures";
 export * from "./harness";
+export * from "./llm";
 export * from "./metrics";
 export * from "./persistence";
 export * from "./retrievers";

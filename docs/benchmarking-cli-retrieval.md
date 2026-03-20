@@ -27,8 +27,29 @@ This repo now includes a first-pass benchmark harness for the paper thesis: CLI-
 - `bm25-lite`: sparse baseline scaffold
 - `semantic-lite`: dense-like baseline scaffold
 - `hybrid-lite`: mixed sparse/expanded scaffold
+- `comprehensive-<judge>`: exhaustive LLM judge over every passage batch in the corpus
 
 The CLI runners try to use `rg` and fall back to an in-memory lexical scan when `rg` is unavailable. This keeps local development deterministic while preserving the bare-CLI execution model.
+
+## Comprehensive Baseline
+
+The benchmark package now supports a "comprehensive" retriever that scores every passage in the corpus with an LLM judge.
+
+This is intended as an exhaustive silver baseline:
+- it evaluates all passages rather than retrieving a candidate subset first
+- it batches passages to fit within the model context window
+- it ranks passages by the model's explicit relevance score
+
+Important caveat:
+- this is not ground truth
+- it is an expensive, model-dependent reference ranking
+- human labels still define the benchmark truth set
+
+The provided OpenAI-backed judge uses chat completions with JSON-schema output and expects:
+- `OPENAI_API_KEY`
+- optional `OPENAI_MODEL`
+
+When those env vars are present, `npm run benchmark:fixture` automatically includes the comprehensive baseline.
 
 ## Included Fixture Benchmark
 

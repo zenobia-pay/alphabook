@@ -83,7 +83,7 @@ export interface RetrieverContext {
 export interface Retriever {
   id: string;
   displayName: string;
-  kind: "cli" | "distributed-cli" | "sparse" | "dense" | "hybrid";
+  kind: "cli" | "distributed-cli" | "sparse" | "dense" | "hybrid" | "llm-exhaustive";
   prepare?(context: RetrieverContext): Promise<{ setupTimeMs?: number; trace?: string[] } | void>;
   retrieve(query: BenchmarkQuery, context: RetrieverContext): Promise<RetrieverResult>;
 }

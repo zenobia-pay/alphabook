@@ -14,6 +14,7 @@ import type {
   RetrieverResult,
 } from "./types";
 import { expandQueryTerms } from "./expansion";
+import type { PassageJudge } from "./llm";
 import { tokenize, uniqueTokens } from "./tokenize";
 
 const execFileAsync = promisify(execFile);
@@ -244,4 +245,66 @@ export function createHybridLiteRetriever(): Retriever {
     const expanded = scorePassage(passage, expandQueryTerms(query.text));
     return (lexical * 0.6) + (expanded * 0.4);
   });
+}
+
+export function createComprehensiveLLMRetriever(input: {
+  judge: PassageJudge;
+  batchSize?: number;
+  minScore?: number;
+}): Retriever {
+  const { judge, batchSize = 8, minScore = 0.05 } = input;
+
+  return {
+    id: `comprehensive-${judge.id}`,
+    displayName: `Comprehensive LLM (${judge.id})`,
+    kind: "llm-exhaustive",
+    async retrieve(query, context) {
+      const filtered = context.corpus.passages.filter((passage) => matchesFilters(passage, context.corpus, query.filters));
+      const traces = [
+        `engine=llm-exhaustive judge=${judge.id}`,
+        `batchSize=${batchSize}`,
+      ];
+      const scoreMap = new Map<string, number>();
+      const rationales = new Map<string, string>();
+
+      for (let index = 0; index < filtered.length; index += batchSize) {
+        const batch = filtered.slice(index, index + batchSize);
+        const judged = await judge.judgeBatch({ query, passages: batch });
+        traces.push(`batch=${(index / batchSize) + 1} size=${batch.length}`);
+        for (const item of judged) {
+          scoreMap.set(item.passageId, item.score);
+          if (item.rationale) {
+            rationales.set(item.passageId, item.rationale);
+          }
+        }
+      }
+
+      const hits = filtered
+        .map((passage) => ({
+          passage,
+          score: scoreMap.get(passage.id) ?? 0,
+        }))
+        .filter((entry) => entry.score >= minScore)
+        .map((entry) => toHit(entry.passage, entry.score));
+
+      for (const hit of hits) {
+        const rationale = rationales.get(hit.passageId);
+        if (rationale) {
+          hit.metadata = {
+            ...(hit.metadata ?? {}),
+            rationale,
+          };
+        }
+      }
+
+      return {
+        hits: sortHits(hits),
+        resourceUsage: {
+          scannedPassages: filtered.length,
+          bytesReadApprox: filtered.reduce((total, passage) => total + passage.text.length, 0),
+        },
+        trace: traces,
+      };
+    },
+  };
 }
