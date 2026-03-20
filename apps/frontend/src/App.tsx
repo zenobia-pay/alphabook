@@ -183,7 +183,7 @@ const BOOK_ASSISTANT_MAX_WIDTH = 720;
 const SEO_SITE_NAME = "alpha book";
 const SEO_SITE_ORIGIN = "https://alpha-book.org";
 const BOOK_CONTENT_ORIGIN = "https://books.alpha-book.org";
-const BOOK_CONTENT_VERSION = "20260319k";
+const BOOK_CONTENT_VERSION = "20260320a";
 const DEFAULT_SEO_DESCRIPTION = "Search, read, and ask questions across a growing library of books with cited answers.";
 const DEFAULT_OG_IMAGE_PATH = "/social-card.svg";
 let hasAttemptedInitialFeedLoad = false;
@@ -7186,7 +7186,6 @@ export default function App() {
             );
           })}
 
-          {feedLoading ? <p className="feed-status">Loading more works…</p> : null}
           {!feedLoading && feedWorks.length === 0 && feedInitialLoadState === "error" ? (
             <div className="feed-status">
               <p>We couldn't load the corpus feed.</p>
