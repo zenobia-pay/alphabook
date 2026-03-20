@@ -5212,11 +5212,11 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (feedInitialLoadState !== "idle") {
+    if (activeView !== "explore" || feedInitialLoadState !== "idle") {
       return;
     }
     void loadInitialWorks();
-  }, [feedInitialLoadState]);
+  }, [activeView, feedInitialLoadState]);
 
   useEffect(() => {
     if (!activeWorkId) {

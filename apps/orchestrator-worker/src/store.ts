@@ -2741,8 +2741,11 @@ export class InMemoryAppStore implements AppStore {
 
 export class NeonAppStore implements AppStore {
   private analyticsSchemaReady: Promise<void> | null = null;
+  private workCountCache: { value: number; expiresAt: number } | null = null;
 
   constructor(private readonly db: DbClient) {}
+
+  private static readonly WORK_COUNT_CACHE_TTL_MS = 1000 * 60 * 60 * 24;
 
   private ensureAnalyticsSchema() {
     if (!this.analyticsSchemaReady) {
@@ -2767,6 +2770,9 @@ export class NeonAppStore implements AppStore {
         );
         await this.db.query(
           "CREATE INDEX IF NOT EXISTS idx_analytics_events_session_id ON analytics_events(session_id)",
+        );
+        await this.db.query(
+          "CREATE INDEX IF NOT EXISTS idx_analytics_events_book_open_work_id_created_at ON analytics_events(event, (properties_json->>'workId'), created_at DESC) WHERE properties_json ? 'workId'",
         );
       })();
     }
@@ -4147,83 +4153,107 @@ export class NeonAppStore implements AppStore {
       subjects: string[];
       score: number;
       feed_label: string | null;
+      opens_3d_sort: number;
     }>(
       `
         WITH engagement AS (
           SELECT
             properties_json->>'workId' AS work_id,
             COUNT(*) FILTER (WHERE created_at >= now() - interval '3 days')::int AS opens_3d,
-            COUNT(*) FILTER (WHERE created_at >= now() - interval '14 days')::int AS opens_14d,
+            COUNT(*)::int AS opens_14d,
             MAX(created_at) AS last_opened_at
           FROM analytics_events
-          WHERE event = 'book_open' AND properties_json ? 'workId'
+          WHERE event = 'book_open'
+            AND properties_json ? 'workId'
+            AND created_at >= now() - interval '14 days'
           GROUP BY properties_json->>'workId'
+        ),
+        ranked_works AS (
+          SELECT
+            w.id,
+            w.gutenberg_id,
+            w.title,
+            w.metadata_json,
+            w.language,
+            w.release_date::text,
+            w.rights_status,
+            w.summary,
+            COALESCE(e.opens_3d, 0) AS opens_3d_sort,
+            (
+              COALESCE(e.opens_3d, 0) * 5.0
+              + COALESCE(e.opens_14d, 0) * 1.8
+              + CASE
+                  WHEN e.last_opened_at >= now() - interval '1 day' THEN 2.4
+                  WHEN e.last_opened_at >= now() - interval '7 days' THEN 1.2
+                  ELSE 0
+                END
+              + CASE
+                  WHEN COALESCE(w.summary, '') <> '' THEN 0.9
+                  ELSE 0
+                END
+              + CASE
+                  WHEN COALESCE(w.metadata_json->>'coverImageKey', w.metadata_json->>'coverImageUrl', w.metadata_json->>'coverUrl', w.metadata_json->>'imageUrl', w.metadata_json->>'thumbnailUrl') IS NOT NULL THEN 0.85
+                  ELSE 0
+                END
+              + CASE
+                  WHEN COALESCE(jsonb_typeof(w.metadata_json->'bookshelves'), '') = 'array' THEN LEAST(jsonb_array_length(w.metadata_json->'bookshelves'), 3) * 0.2
+                  ELSE 0
+                END
+              + CASE
+                  WHEN EXISTS (SELECT 1 FROM work_authors wa_check WHERE wa_check.work_id = w.id) THEN 0.3
+                  ELSE 0
+                END
+            ) AS score,
+            CASE
+              WHEN COALESCE(e.opens_3d, 0) >= 4 THEN 'Trending now'
+              WHEN COALESCE(e.opens_14d, 0) >= 2 THEN 'Readers are revisiting this'
+              WHEN e.last_opened_at >= now() - interval '14 days' THEN 'Circulating this week'
+              WHEN COALESCE(w.metadata_json->>'coverImageKey', w.metadata_json->>'coverImageUrl', w.metadata_json->>'coverUrl', w.metadata_json->>'imageUrl', w.metadata_json->>'thumbnailUrl') IS NOT NULL
+                AND COALESCE(w.summary, '') <> '' THEN 'Worth opening'
+              ELSE 'From the stack'
+            END AS feed_label
+          FROM works w
+          LEFT JOIN engagement e ON e.work_id = w.id::text
+          ORDER BY
+            score DESC,
+            COALESCE(e.opens_3d, 0) DESC,
+            w.release_date DESC NULLS LAST,
+            w.title ASC
+          OFFSET $1
+          LIMIT $2
         )
         SELECT
-          w.id,
-          w.gutenberg_id,
-          w.title,
-          w.metadata_json,
-          w.language,
-          w.release_date::text,
-          w.rights_status,
-          w.summary,
+          rw.id,
+          rw.gutenberg_id,
+          rw.title,
+          rw.metadata_json,
+          rw.language,
+          rw.release_date,
+          rw.rights_status,
+          rw.summary,
           ARRAY_REMOVE(ARRAY_AGG(DISTINCT a.name), NULL) AS authors,
           ARRAY_REMOVE(ARRAY_AGG(DISTINCT s.label), NULL) AS subjects,
-          (
-            COALESCE(e.opens_3d, 0) * 5.0
-            + COALESCE(e.opens_14d, 0) * 1.8
-            + CASE
-                WHEN e.last_opened_at >= now() - interval '1 day' THEN 2.4
-                WHEN e.last_opened_at >= now() - interval '7 days' THEN 1.2
-                ELSE 0
-              END
-            + CASE
-                WHEN COALESCE(w.summary, '') <> '' THEN 0.9
-                ELSE 0
-              END
-            + CASE
-                WHEN COALESCE(w.metadata_json->>'coverImageKey', w.metadata_json->>'coverImageUrl', w.metadata_json->>'coverUrl', w.metadata_json->>'imageUrl', w.metadata_json->>'thumbnailUrl') IS NOT NULL THEN 0.85
-                ELSE 0
-              END
-            + CASE
-                WHEN COALESCE(jsonb_typeof(w.metadata_json->'bookshelves'), '') = 'array' THEN LEAST(jsonb_array_length(w.metadata_json->'bookshelves'), 3) * 0.2
-                ELSE 0
-              END
-            + CASE
-                WHEN EXISTS (SELECT 1 FROM work_authors wa_check WHERE wa_check.work_id = w.id) THEN 0.3
-                ELSE 0
-              END
-          ) AS score,
-          CASE
-            WHEN COALESCE(e.opens_3d, 0) >= 4 THEN 'Trending now'
-            WHEN COALESCE(e.opens_14d, 0) >= 2 THEN 'Readers are revisiting this'
-            WHEN e.last_opened_at >= now() - interval '14 days' THEN 'Circulating this week'
-            WHEN COALESCE(w.metadata_json->>'coverImageKey', w.metadata_json->>'coverImageUrl', w.metadata_json->>'coverUrl', w.metadata_json->>'imageUrl', w.metadata_json->>'thumbnailUrl') IS NOT NULL
-              AND COALESCE(w.summary, '') <> '' THEN 'Worth opening'
-            ELSE 'From the stack'
-          END AS feed_label
-        FROM works w
-        LEFT JOIN engagement e ON e.work_id = w.id::text
-        LEFT JOIN work_authors wa ON wa.work_id = w.id
+          rw.score,
+          rw.feed_label,
+          rw.opens_3d_sort
+        FROM ranked_works rw
+        LEFT JOIN work_authors wa ON wa.work_id = rw.id
         LEFT JOIN authors a ON a.id = wa.author_id
-        LEFT JOIN work_subjects ws ON ws.work_id = w.id
+        LEFT JOIN work_subjects ws ON ws.work_id = rw.id
         LEFT JOIN subjects s ON s.id = ws.subject_id
         GROUP BY
-          w.id,
-          w.gutenberg_id,
-          w.title,
-          w.metadata_json,
-          w.language,
-          w.release_date,
-          w.rights_status,
-          w.summary,
-          e.opens_3d,
-          e.opens_14d,
-          e.last_opened_at
-        ORDER BY score DESC, COALESCE(e.opens_3d, 0) DESC, w.release_date DESC NULLS LAST, w.title ASC
-        OFFSET $1
-        LIMIT $2
+          rw.id,
+          rw.gutenberg_id,
+          rw.title,
+          rw.metadata_json,
+          rw.language,
+          rw.release_date,
+          rw.rights_status,
+          rw.summary,
+          rw.score,
+          rw.feed_label,
+          rw.opens_3d_sort
+        ORDER BY rw.score DESC, rw.opens_3d_sort DESC, rw.release_date DESC NULLS LAST, rw.title ASC
       `,
       [offset, limit],
     );
@@ -4247,9 +4277,17 @@ export class NeonAppStore implements AppStore {
   }
 
   async countWorks(): Promise<number> {
+    if (this.workCountCache && this.workCountCache.expiresAt > Date.now()) {
+      return this.workCountCache.value;
+    }
     const result = await this.db.query<{ count: string }>("SELECT COUNT(*)::text AS count FROM works");
     const value = result.rows[0]?.count ?? "0";
-    return Number.parseInt(value, 10) || 0;
+    const parsed = Number.parseInt(value, 10) || 0;
+    this.workCountCache = {
+      value: parsed,
+      expiresAt: Date.now() + NeonAppStore.WORK_COUNT_CACHE_TTL_MS,
+    };
+    return parsed;
   }
 
   async estimateResearchScope(query: string, filters: PassageSearchFilters = {}): Promise<ResearchScopeEstimate> {

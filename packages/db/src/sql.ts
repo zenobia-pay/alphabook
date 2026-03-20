@@ -247,6 +247,9 @@ CREATE TABLE IF NOT EXISTS analytics_events (
 CREATE INDEX IF NOT EXISTS idx_analytics_events_created_at ON analytics_events(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_analytics_events_event_created_at ON analytics_events(event, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_analytics_events_session_id ON analytics_events(session_id);
+CREATE INDEX IF NOT EXISTS idx_analytics_events_book_open_work_id_created_at
+  ON analytics_events(event, (properties_json->>'workId'), created_at DESC)
+  WHERE properties_json ? 'workId';
 `,
   },
   {
@@ -316,6 +319,14 @@ CREATE TABLE IF NOT EXISTS notifications (
 
 CREATE INDEX IF NOT EXISTS idx_notifications_user_created_at ON notifications(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_notifications_user_read_created_at ON notifications(user_id, read_at, created_at DESC);
+`,
+  },
+  {
+    id: "0008_feed_performance",
+    sql: `
+CREATE INDEX IF NOT EXISTS idx_analytics_events_book_open_work_id_created_at
+  ON analytics_events(event, (properties_json->>'workId'), created_at DESC)
+  WHERE properties_json ? 'workId';
 `,
   },
 ] as const;
