@@ -29,9 +29,13 @@ export interface ResearchShardDescriptor {
 
 export interface ResearchScopeEstimate {
   query: string;
+  scopeMode: "focused" | "subset_wide" | "corpus_wide";
   metadataWorkEstimate: number;
   chunkMatchEstimate: number;
   chunkWorkEstimate: number;
+  totalWorkEstimate: number;
+  totalChunkEstimate: number;
+  totalTextBytesEstimate: number;
   breadthBand: "tiny" | "small" | "medium" | "large" | "huge";
   recommendedIntensity: "normal" | "high" | "maximum";
   recommendedWallClockMinutes: 5 | 15 | 60;
@@ -51,6 +55,12 @@ export interface ResearchScopeEstimate {
   }>;
   recommendedShards: ResearchShardDescriptor[];
   rationale: string;
+}
+
+export interface WorkSetSizeEstimate {
+  workCount: number;
+  totalChunkCount: number;
+  totalTextBytes: number;
 }
 
 export interface SessionRecord {
@@ -375,6 +385,7 @@ export interface AppStore {
   countWorks(): Promise<number>;
   refreshExploreFeedSnapshot(limit?: number): Promise<void>;
   getWorkById(workId: string): Promise<WorkDetailRecord | null>;
+  estimateWorkSetSize(workIds?: string[], filters?: PassageSearchFilters): Promise<WorkSetSizeEstimate>;
   estimateResearchScope(query: string, filters?: PassageSearchFilters): Promise<ResearchScopeEstimate>;
   searchWorks(query: string, filters?: Record<string, unknown>): Promise<WorkSummary[]>;
   getWorkMetadata(workIds: string[]): Promise<WorkSummary[]>;
@@ -1278,43 +1289,80 @@ function buildResearchScopeEstimate(
   chunkMatchEstimate: number,
   chunkWorkEstimate: number,
   probeWorks: WorkSummary[],
+  workload: {
+    scopeMode?: ResearchScopeEstimate["scopeMode"];
+    workCount?: number;
+    totalChunkCount?: number;
+    totalTextBytes?: number;
+  } = {},
 ): ResearchScopeEstimate {
-  const effectiveWorkBreadth = Math.max(metadataWorkEstimate, chunkWorkEstimate, probeWorks.length);
+  const totalWorkEstimate = Math.max(workload.workCount ?? 0, metadataWorkEstimate, chunkWorkEstimate, probeWorks.length);
+  const totalChunkEstimate = Math.max(workload.totalChunkCount ?? 0, chunkMatchEstimate);
+  const totalTextBytesEstimate = Math.max(0, workload.totalTextBytes ?? 0);
+  const scopeMode = workload.scopeMode
+    ?? (isBroadMetadataSurveyQuery(query) ? "corpus_wide" : totalWorkEstimate <= 12 ? "focused" : "subset_wide");
+  const effectiveWorkBreadth = totalWorkEstimate;
+  const effectiveChunkBreadth = totalChunkEstimate;
+  const effectiveTextMegabytes = totalTextBytesEstimate / 1_000_000;
   let breadthBand: ResearchScopeEstimate["breadthBand"] = "tiny";
   let recommendedIntensity: ResearchScopeEstimate["recommendedIntensity"] = "normal";
   let recommendedWallClockMinutes: ResearchScopeEstimate["recommendedWallClockMinutes"] = 5;
   let recommendedParallelism = 1;
   let recommendedVmWorkBudget = 40;
-  let recommendedFrontierWorks = 24;
+  let recommendedFrontierWorks = scopeMode === "focused" ? Math.max(12, effectiveWorkBreadth) : 24;
 
-  if (effectiveWorkBreadth > 160 || chunkMatchEstimate > 12_000) {
+  if (
+    effectiveWorkBreadth > 320
+    || effectiveChunkBreadth > 48_000
+    || effectiveTextMegabytes > 180
+  ) {
     breadthBand = "huge";
     recommendedIntensity = "maximum";
     recommendedWallClockMinutes = 60;
     recommendedParallelism = 12;
     recommendedVmWorkBudget = 36;
-    recommendedFrontierWorks = 192;
-  } else if (effectiveWorkBreadth > 80 || chunkMatchEstimate > 4_000) {
+    recommendedFrontierWorks = scopeMode === "corpus_wide" ? 224 : 192;
+  } else if (
+    effectiveWorkBreadth > 128
+    || effectiveChunkBreadth > 18_000
+    || effectiveTextMegabytes > 64
+  ) {
     breadthBand = "large";
     recommendedIntensity = "maximum";
     recommendedWallClockMinutes = 60;
     recommendedParallelism = 8;
     recommendedVmWorkBudget = 40;
-    recommendedFrontierWorks = 128;
-  } else if (effectiveWorkBreadth > 30 || chunkMatchEstimate > 1_000) {
+    recommendedFrontierWorks = scopeMode === "corpus_wide" ? 160 : 128;
+  } else if (
+    effectiveWorkBreadth > 48
+    || effectiveChunkBreadth > 6_000
+    || effectiveTextMegabytes > 24
+  ) {
     breadthBand = "medium";
     recommendedIntensity = "high";
     recommendedWallClockMinutes = 15;
     recommendedParallelism = 4;
     recommendedVmWorkBudget = 32;
-    recommendedFrontierWorks = 72;
-  } else if (effectiveWorkBreadth > 12 || chunkMatchEstimate > 200) {
+    recommendedFrontierWorks = scopeMode === "focused" ? Math.max(24, effectiveWorkBreadth) : 72;
+  } else if (
+    effectiveWorkBreadth > 12
+    || effectiveChunkBreadth > 1_500
+    || effectiveTextMegabytes > 8
+  ) {
     breadthBand = "small";
     recommendedIntensity = "high";
     recommendedWallClockMinutes = 15;
     recommendedParallelism = 2;
     recommendedVmWorkBudget = 24;
-    recommendedFrontierWorks = 40;
+    recommendedFrontierWorks = scopeMode === "focused" ? Math.max(16, effectiveWorkBreadth) : 40;
+  }
+
+  if (scopeMode === "focused" && effectiveWorkBreadth <= 8 && effectiveChunkBreadth <= 2_500) {
+    recommendedIntensity = "normal";
+    recommendedWallClockMinutes = 5;
+    recommendedParallelism = 1;
+    recommendedVmWorkBudget = 20;
+    recommendedFrontierWorks = Math.max(8, effectiveWorkBreadth);
   }
 
   const breadthDenominator = Math.max(effectiveWorkBreadth, 1);
@@ -1332,8 +1380,9 @@ function buildResearchScopeEstimate(
     effectiveWorkBreadth,
   );
   const rationale = [
-    `The cheap probes suggest roughly ${effectiveWorkBreadth} books are in play`,
-    chunkMatchEstimate > 0 ? `with about ${chunkMatchEstimate} matching passages` : "with sparse direct passage matches so far",
+    `The run is sized as ${scopeMode.replaceAll("_", " ")} over roughly ${effectiveWorkBreadth} books`,
+    effectiveChunkBreadth > 0 ? `covering about ${effectiveChunkBreadth} indexed passages` : "with sparse indexed passage coverage so far",
+    totalTextBytesEstimate > 0 ? `and about ${(totalTextBytesEstimate / 1_000_000).toFixed(1)} MB of source text` : "and limited source-text size information",
     `so the recommended intensity is ${recommendedIntensity} (${recommendedWallClockMinutes} minutes)`,
     recommendedParallelism > 1 ? `using ${recommendedParallelism} parallel shards on ${shardAxis.replaceAll("_", " ")}` : "without parallel sharding yet",
     `and a frontier of about ${recommendedFrontierWorks} active books before verification narrows it.`,
@@ -1341,9 +1390,13 @@ function buildResearchScopeEstimate(
 
   return {
     query,
+    scopeMode,
     metadataWorkEstimate,
     chunkMatchEstimate,
     chunkWorkEstimate,
+    totalWorkEstimate,
+    totalChunkEstimate,
+    totalTextBytesEstimate,
     breadthBand,
     recommendedIntensity,
     recommendedWallClockMinutes,
@@ -2311,6 +2364,22 @@ export class InMemoryAppStore implements AppStore {
 
   async refreshExploreFeedSnapshot(_limit = 512): Promise<void> {}
 
+  async estimateWorkSetSize(workIds?: string[], filters: PassageSearchFilters = {}): Promise<WorkSetSizeEstimate> {
+    const restrictedIds = Array.isArray(workIds)
+      ? new Set(workIds)
+      : null;
+    const eligibleWorks = this.works.filter((work) =>
+      (!restrictedIds || restrictedIds.has(work.id))
+      && workMatchesSearchFilters(work, filters as Record<string, unknown>),
+    );
+    const eligibleWorkIds = new Set(eligibleWorks.map((work) => work.id));
+    return {
+      workCount: eligibleWorks.length,
+      totalChunkCount: this.chunks.filter((chunk) => eligibleWorkIds.has(chunk.workId)).length,
+      totalTextBytes: eligibleWorks.reduce((sum, work) => sum + (work.text?.length ?? 0), 0),
+    };
+  }
+
   async estimateResearchScope(query: string, filters: PassageSearchFilters = {}): Promise<ResearchScopeEstimate> {
     const probeLimit = isBroadMetadataSurveyQuery(query) ? 12 : 6;
     const probeWorks = await this.searchWorks(query, {
@@ -2342,7 +2411,16 @@ export class InMemoryAppStore implements AppStore {
     const chunks = [...chunkById.values()];
     const chunkMatchEstimate = chunks.length;
     const chunkWorkEstimate = new Set(chunks.map((chunk) => chunk.workId)).size;
-    return buildResearchScopeEstimate(query, metadataWorkEstimate, chunkMatchEstimate, chunkWorkEstimate, probeWorks);
+    const probeWorkIds = probeWorks.map((work) => work.id);
+    const workload = isBroadMetadataSurveyQuery(query)
+      ? await this.estimateWorkSetSize(undefined, filters)
+      : await this.estimateWorkSetSize(probeWorkIds, filters);
+    return buildResearchScopeEstimate(query, metadataWorkEstimate, chunkMatchEstimate, chunkWorkEstimate, probeWorks, {
+      scopeMode: isBroadMetadataSurveyQuery(query) ? "corpus_wide" : probeWorkIds.length <= 12 ? "focused" : "subset_wide",
+      workCount: workload.workCount,
+      totalChunkCount: workload.totalChunkCount,
+      totalTextBytes: workload.totalTextBytes,
+    });
   }
 
   async getWorkById(workId: string): Promise<WorkDetailRecord | null> {
@@ -4647,7 +4725,11 @@ export class NeonAppStore implements AppStore {
   async estimateResearchScope(query: string, filters: PassageSearchFilters = {}): Promise<ResearchScopeEstimate> {
     const tsQuery = scopeEstimateTsQuery(query);
     const estimateTerms = scopeEstimateTerms(query);
-    const probeWorks: WorkSummary[] = [];
+    const probeLimit = isBroadMetadataSurveyQuery(query) ? 12 : 6;
+    const probeWorks = await this.searchWorks(query, {
+      ...filters,
+      limit: probeLimit,
+    } as Record<string, unknown>);
     const startYear = Array.isArray(filters.yearRange) ? Math.min(filters.yearRange[0], filters.yearRange[1]) : null;
     const endYear = Array.isArray(filters.yearRange) ? Math.max(filters.yearRange[0], filters.yearRange[1]) : null;
     const genres = Array.isArray(filters.genre)
@@ -4749,13 +4831,106 @@ export class NeonAppStore implements AppStore {
       0,
       chunkWorkEstimate * (broadSurvey ? 4 : 3),
     );
+    const probeWorkIds = probeWorks.map((work) => work.id);
+    const workload = broadSurvey
+      ? await this.estimateWorkSetSize(undefined, filters)
+      : await this.estimateWorkSetSize(probeWorkIds, filters);
     return buildResearchScopeEstimate(
       query,
       metadataEstimate,
       chunkMatchEstimate,
       chunkWorkEstimate,
       probeWorks,
+      {
+        scopeMode: broadSurvey ? "corpus_wide" : probeWorkIds.length <= 12 ? "focused" : "subset_wide",
+        workCount: workload.workCount,
+        totalChunkCount: workload.totalChunkCount,
+        totalTextBytes: workload.totalTextBytes,
+      },
     );
+  }
+
+  async estimateWorkSetSize(workIds?: string[], filters: PassageSearchFilters = {}): Promise<WorkSetSizeEstimate> {
+    const startYear = Array.isArray(filters.yearRange) ? Math.min(filters.yearRange[0], filters.yearRange[1]) : null;
+    const endYear = Array.isArray(filters.yearRange) ? Math.max(filters.yearRange[0], filters.yearRange[1]) : null;
+    const genres = Array.isArray(filters.genre)
+      ? filters.genre.map((genre) => genre.trim()).filter((genre) => genre.length > 0).slice(0, 8)
+      : [];
+    const workIdFilter = Array.isArray(workIds) ? workIds : null;
+    const result = await withTimeout(this.db.query<{
+      work_count: number;
+      total_chunk_count: number;
+      total_text_bytes: number | string;
+    }>(
+      `
+        WITH eligible_works AS (
+          SELECT w.id
+          FROM works w
+          WHERE ($1::uuid[] IS NULL OR w.id = ANY($1::uuid[]))
+            AND ($2::text IS NULL OR w.language = $2::text)
+            AND ($3::text IS NULL OR w.rights_status = $3::text)
+            AND (
+              $4::int IS NULL
+              OR (
+                NULLIF(SUBSTRING(COALESCE(w.release_date::text, '') FROM '([0-9]{4})'), '') IS NOT NULL
+                AND NULLIF(SUBSTRING(COALESCE(w.release_date::text, '') FROM '([0-9]{4})'), '')::int >= $4::int
+              )
+            )
+            AND (
+              $5::int IS NULL
+              OR (
+                NULLIF(SUBSTRING(COALESCE(w.release_date::text, '') FROM '([0-9]{4})'), '') IS NOT NULL
+                AND NULLIF(SUBSTRING(COALESCE(w.release_date::text, '') FROM '([0-9]{4})'), '')::int <= $5::int
+              )
+            )
+            AND (
+              COALESCE(array_length($6::text[], 1), 0) = 0
+              OR EXISTS (
+                SELECT 1
+                FROM UNNEST($6::text[]) AS genre
+                WHERE
+                  COALESCE(w.title, '') ILIKE '%' || genre || '%'
+                  OR COALESCE(w.summary, '') ILIKE '%' || genre || '%'
+                  OR COALESCE(w.metadata_json::text, '') ILIKE '%' || genre || '%'
+              )
+            )
+        ),
+        chunk_counts AS (
+          SELECT c.work_id, COUNT(*)::int AS chunk_count
+          FROM chunks c
+          INNER JOIN eligible_works ew ON ew.id = c.work_id
+          GROUP BY c.work_id
+        ),
+        clean_files AS (
+          SELECT DISTINCT ON (wf.work_id) wf.work_id, COALESCE(wf.byte_size, 0)::bigint AS byte_size
+          FROM work_files wf
+          INNER JOIN eligible_works ew ON ew.id = wf.work_id
+          WHERE wf.kind = 'clean'
+          ORDER BY wf.work_id ASC, wf.created_at DESC
+        )
+        SELECT
+          COUNT(*)::int AS work_count,
+          COALESCE(SUM(chunk_counts.chunk_count), 0)::int AS total_chunk_count,
+          COALESCE(SUM(clean_files.byte_size), 0)::bigint AS total_text_bytes
+        FROM eligible_works ew
+        LEFT JOIN chunk_counts ON chunk_counts.work_id = ew.id
+        LEFT JOIN clean_files ON clean_files.work_id = ew.id
+      `,
+      [
+        workIdFilter,
+        typeof filters.language === "string" ? filters.language : null,
+        typeof filters.rightsStatus === "string" ? filters.rightsStatus : null,
+        Number.isInteger(startYear) ? startYear : null,
+        Number.isInteger(endYear) ? endYear : null,
+        genres,
+      ],
+    ), 5_000, "Scope estimate timed out before the database returned workload stats.");
+    const row = result.rows[0];
+    return {
+      workCount: Math.max(0, Number(row?.work_count ?? 0)),
+      totalChunkCount: Math.max(0, Number(row?.total_chunk_count ?? 0)),
+      totalTextBytes: Math.max(0, Number(row?.total_text_bytes ?? 0)),
+    };
   }
 
   async getWorkById(workId: string): Promise<WorkDetailRecord | null> {

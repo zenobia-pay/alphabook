@@ -1038,37 +1038,86 @@ function searchPlanFromEstimate(
   };
 }
 
-function deriveScopeEstimateFromSearchResult(query: string, result: Record<string, unknown>) {
+async function deriveScopeEstimateFromSearchResult(
+  deps: AppDeps,
+  query: string,
+  result: Record<string, unknown>,
+  filters: PassageSearchFilters = {},
+) {
   const visibleWorks = Array.isArray(result.works)
     ? result.works.filter((value): value is Record<string, unknown> => Boolean(value) && typeof value === "object")
     : [];
-  const frontierCount = typeof result.frontier === "object" && result.frontier && typeof (result.frontier as Record<string, unknown>).workCount === "number"
-    ? Math.max(visibleWorks.length, (result.frontier as Record<string, unknown>).workCount as number)
-    : visibleWorks.length;
-  const broad = isBroadCorpusResearchQuery(query, frontierCount);
-  const recommendedIntensity = frontierCount >= 128 ? "maximum" : broad || frontierCount >= 24 ? "high" : "normal";
+  const frontier = result.frontier && typeof result.frontier === "object"
+    ? result.frontier as Record<string, unknown>
+    : null;
+  const frontierWorks = Array.isArray(frontier?.works)
+    ? frontier.works.filter((value): value is Record<string, unknown> => Boolean(value) && typeof value === "object")
+    : visibleWorks;
+  const frontierWorkIds = uniqueWorkIds(frontierWorks.map((work) => (typeof work.id === "string" ? work.id : null)));
+  const metadataWorkEstimate = typeof frontier?.workCount === "number"
+    ? Math.max(frontierWorkIds.length, frontier.workCount as number)
+    : frontierWorkIds.length;
+  const broad = isBroadCorpusResearchQuery(query, frontierWorkIds.length);
+  const workload = broad
+    ? await deps.store.estimateWorkSetSize(undefined, filters)
+    : await deps.store.estimateWorkSetSize(frontierWorkIds, filters);
+  const totalWorkEstimate = Math.max(workload.workCount, frontierWorkIds.length, visibleWorks.length);
+  const totalChunkEstimate = Math.max(
+    workload.totalChunkCount,
+    totalWorkEstimate * (broad ? 6 : 3),
+  );
+  const scopeMode = broad ? "corpus_wide" : frontierWorkIds.length <= 12 ? "focused" : "subset_wide";
+  const recommendedIntensity =
+    totalChunkEstimate > 18_000 || workload.totalTextBytes > 64_000_000 || totalWorkEstimate > 128
+      ? "maximum"
+      : totalChunkEstimate > 6_000 || workload.totalTextBytes > 24_000_000 || totalWorkEstimate > 48
+        ? "high"
+        : scopeMode === "focused"
+          ? "normal"
+          : totalWorkEstimate > 12
+            ? "high"
+            : "normal";
   const recommendedWallClockMinutes = recommendedIntensity === "maximum" ? 60 : recommendedIntensity === "high" ? 15 : 5;
-  const recommendedParallelism = recommendedIntensity === "maximum" ? 8 : recommendedIntensity === "high" ? 3 : 1;
-  const recommendedShardAxis = frontierCount > 24 ? "work_id_hash" : "none";
-  const chunkWorkEstimate = Math.max(visibleWorks.length, Math.round(frontierCount * (broad ? 0.7 : 0.5)));
-  const chunkMatchEstimate = Math.max(visibleWorks.length, chunkWorkEstimate * (broad ? 4 : 3));
+  const recommendedParallelism =
+    recommendedIntensity === "maximum"
+      ? totalChunkEstimate > 48_000 || totalWorkEstimate > 320 ? 12 : 8
+      : recommendedIntensity === "high"
+        ? totalChunkEstimate > 10_000 || totalWorkEstimate > 72 ? 4 : 2
+        : 1;
+  const recommendedShardAxis = recommendedParallelism > 1 ? "work_id_hash" : "none";
+  const chunkWorkEstimate = Math.max(visibleWorks.length, Math.min(totalWorkEstimate, Math.round(totalWorkEstimate * (broad ? 0.7 : 0.5))));
+  const chunkMatchEstimate = Math.max(visibleWorks.length, Math.min(totalChunkEstimate, chunkWorkEstimate * (broad ? 4 : 3)));
+  const recommendedFrontierWorks =
+    recommendedIntensity === "maximum"
+      ? Math.min(Math.max(scopeMode === "corpus_wide" ? 160 : 128, frontierWorkIds.length), Math.max(totalWorkEstimate, 1))
+      : recommendedIntensity === "high"
+        ? Math.min(Math.max(scopeMode === "focused" ? 24 : 72, frontierWorkIds.length), Math.max(totalWorkEstimate, 1))
+        : Math.min(Math.max(scopeMode === "focused" ? 12 : 24, frontierWorkIds.length), Math.max(totalWorkEstimate, 1));
   return {
     query,
-    metadataWorkEstimate: frontierCount,
+    scopeMode,
+    metadataWorkEstimate,
     chunkMatchEstimate,
     chunkWorkEstimate,
+    totalWorkEstimate,
+    totalChunkEstimate,
+    totalTextBytesEstimate: workload.totalTextBytes,
     breadthBand:
-      frontierCount >= 160 ? "huge" : frontierCount >= 72 ? "large" : frontierCount >= 24 ? "medium" : frontierCount >= 8 ? "small" : "tiny",
+      totalWorkEstimate >= 320 || totalChunkEstimate >= 48_000 ? "huge"
+        : totalWorkEstimate >= 128 || totalChunkEstimate >= 18_000 ? "large"
+          : totalWorkEstimate >= 48 || totalChunkEstimate >= 6_000 ? "medium"
+            : totalWorkEstimate >= 12 || totalChunkEstimate >= 1_500 ? "small"
+              : "tiny",
     recommendedIntensity,
     recommendedWallClockMinutes,
     recommendedParallelism,
     recommendedShardAxis,
     recommendedVmWorkBudget: recommendedIntensity === "maximum" ? 48 : recommendedIntensity === "high" ? 24 : 12,
-    recommendedFrontierWorks: recommendedIntensity === "maximum" ? Math.max(128, frontierCount) : recommendedIntensity === "high" ? Math.max(72, frontierCount) : Math.max(24, frontierCount),
+    recommendedFrontierWorks,
     estimatedCoveragePercent: {
-      normal: Math.max(15, Math.min(55, Math.round((24 / Math.max(frontierCount, 1)) * 100))),
-      high: Math.max(35, Math.min(80, Math.round((72 / Math.max(frontierCount, 1)) * 100))),
-      maximum: Math.max(60, Math.min(100, Math.round((128 / Math.max(frontierCount, 1)) * 100))),
+      normal: Math.max(15, Math.min(55, Math.round((24 / Math.max(totalWorkEstimate, 1)) * 100))),
+      high: Math.max(35, Math.min(80, Math.round((72 / Math.max(totalWorkEstimate, 1)) * 100))),
+      maximum: Math.max(60, Math.min(100, Math.round((128 / Math.max(totalWorkEstimate, 1)) * 100))),
     },
     probeWorks: visibleWorks.slice(0, 12).map((work) => ({
       id: typeof work.id === "string" ? work.id : "",
@@ -1076,7 +1125,7 @@ function deriveScopeEstimateFromSearchResult(query: string, result: Record<strin
       authors: Array.isArray(work.authors) ? work.authors.filter((value): value is string => typeof value === "string") : [],
     })),
     recommendedShards: [],
-    rationale: "Derived from the live metadata frontier surfaced by Metadata Search.",
+    rationale: `Sized from the ${scopeMode === "corpus_wide" ? "filtered corpus" : "metadata frontier subset"} using ${totalWorkEstimate} books, ${totalChunkEstimate} indexed passages, and ${(workload.totalTextBytes / 1_000_000).toFixed(1)} MB of text.`,
   } as Record<string, unknown>;
 }
 
@@ -8430,7 +8479,7 @@ async function runOrchestrator(
     const latestSearchResult = latestSearchWorksResultFromHistory(toolHistory);
     const estimate =
       latestScopeEstimateFromHistory(toolHistory)
-      ?? (latestSearchResult ? deriveScopeEstimateFromSearchResult(routedQueryRef.current, latestSearchResult) : null);
+      ?? (latestSearchResult ? await deriveScopeEstimateFromSearchResult(deps, routedQueryRef.current, latestSearchResult) : null);
     const candidateWorkIds = latestCandidateWorkIdsFromHistory(toolHistory);
     if (!estimate && candidateWorkIds.length === 0 && (!Array.isArray(input.workIds) || input.workIds.length === 0)) {
       return;
@@ -8887,7 +8936,7 @@ async function runOrchestrator(
           } else if (toolHistory.some((entry) => entry.toolName === "search_works")) {
             const latestSearchResult = latestSearchWorksResultFromHistory(toolHistory);
             result = latestSearchResult
-              ? deriveScopeEstimateFromSearchResult(normalizedToolArgs.query, latestSearchResult)
+              ? await deriveScopeEstimateFromSearchResult(deps, normalizedToolArgs.query, latestSearchResult, estimateFilters)
               : await executeTool(deps, toolCall.tool_name, normalizedToolArgs, {
                   userId: session.userId,
                   sessionId: session.id,
@@ -9002,7 +9051,7 @@ async function runOrchestrator(
           }
           prefetchedScopeEstimate = {
             keys: estimateKeys,
-            promise: Promise.resolve(deriveScopeEstimateFromSearchResult(normalizedToolArgs.query, result)),
+            promise: deriveScopeEstimateFromSearchResult(deps, normalizedToolArgs.query, result, estimateFilters),
           };
         }
         if (toolCall.tool_name === "run_workspace_task") {
