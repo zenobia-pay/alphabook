@@ -69,7 +69,8 @@ type AuthState = {
   error: string | null;
 };
 
-type ViewMode = "explore" | "assistant" | "assistant_document" | "profile" | "book" | "notifications" | "admin";
+type ViewMode = "explore" | "assistant" | "assistant_document" | "profile" | "book" | "admin";
+type SidebarNavId = ViewMode | "notifications";
 type UrlWriteMode = "replace" | "push";
 type UrlState = {
   view: ViewMode;
@@ -162,6 +163,7 @@ const BOOK_CONTENT_ORIGIN = "https://books.alpha-book.org";
 const BOOK_CONTENT_VERSION = "20260319k";
 const DEFAULT_SEO_DESCRIPTION = "Search, read, and ask questions across a growing library of books with cited answers.";
 const DEFAULT_OG_IMAGE_PATH = "/social-card.svg";
+let hasAttemptedInitialFeedLoad = false;
 const ASSISTANT_WELCOME_SUGGESTIONS: ThreadSuggestion[] = [
   {
     icon: "search",
@@ -329,7 +331,7 @@ function buildSeoState(options: {
 }
 
 function isViewMode(value: string | null): value is ViewMode {
-  return value === "explore" || value === "assistant" || value === "assistant_document" || value === "profile" || value === "book" || value === "notifications" || value === "admin";
+  return value === "explore" || value === "assistant" || value === "assistant_document" || value === "profile" || value === "book" || value === "admin";
 }
 
 function isRetryableReconnectError(error: unknown): boolean {
@@ -2371,7 +2373,7 @@ function ProfileIcon() {
   );
 }
 
-const NAV_ITEMS: Array<{ id: ViewMode; label: string; icon: ComponentType }> = [
+const NAV_ITEMS: Array<{ id: SidebarNavId; label: string; icon: ComponentType }> = [
   { id: "assistant", label: "New chat", icon: MessageSquarePlus },
   { id: "explore", label: "Explore", icon: CompassIcon },
   { id: "notifications", label: "Notifications", icon: Bell },
@@ -4694,6 +4696,7 @@ export default function App() {
   const [feedNextOffset, setFeedNextOffset] = useState<number | null>(0);
   const [feedTotalCount, setFeedTotalCount] = useState<number | null>(null);
   const [feedLoading, setFeedLoading] = useState(false);
+  const [feedInitialLoadState, setFeedInitialLoadState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [selectedWorkIds, setSelectedWorkIds] = useState<string[]>([]);
   const [activeWorkId, setActiveWorkId] = useState<string | null | undefined>(initialUrlState.workId);
   const [activeProfileUserId, setActiveProfileUserId] = useState<string | null | undefined>(initialUrlState.profileUserId);
@@ -4723,6 +4726,7 @@ export default function App() {
     notifications: [],
     unreadCount: 0,
   });
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [adminAccess, setAdminAccess] = useState<AdminAccessState>({
     loading: true,
     allowed: false,
@@ -4775,6 +4779,8 @@ export default function App() {
   const bookAssistantResizeStartRef = useRef<{ pointerX: number; width: number } | null>(null);
   const bookAssistantRafRef = useRef<number | null>(null);
   const pendingUrlWriteModeRef = useRef<UrlWriteMode>("replace");
+  const notificationsDropdownRef = useRef<HTMLDivElement | null>(null);
+  const notificationsTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   const currentUser = useMemo(
     () => {
@@ -4809,11 +4815,9 @@ export default function App() {
       ? assistantSessionName(activeSession)
       : activeView === "book"
         ? activeWork?.title ?? "Book"
-        : activeView === "notifications"
-          ? "Notifications"
         : activeView === "admin"
           ? "Admin"
-        : NAV_ITEMS.find((item) => item.id === activeView)?.label ?? "AlphaBook";
+          : NAV_ITEMS.find((item) => item.id === activeView)?.label ?? "AlphaBook";
   const authLocked = authState.authConfigured && !authState.user;
   const hasAuthenticatedUser = Boolean(authState.user);
   const authPending = authState.loading;
@@ -4940,8 +4944,8 @@ export default function App() {
       });
       return;
     }
-    void loadNotifications({ silent: activeView !== "notifications" });
-  }, [activeView, authState.loading, authState.user?.id]);
+    void loadNotifications({ silent: true });
+  }, [authState.loading, authState.user?.id]);
 
   useEffect(() => {
     const handlePopState = () => {
@@ -4957,6 +4961,7 @@ export default function App() {
       setAdminRunInput(next.runId ?? "");
       setDebugEnabled(next.debugEnabled);
       setMobileNavOpen(false);
+      setNotificationsOpen(false);
     };
 
     window.addEventListener("popstate", handlePopState);
@@ -4976,6 +4981,36 @@ export default function App() {
     }, pendingUrlWriteModeRef.current);
     pendingUrlWriteModeRef.current = "replace";
   }, [activeView, selectedSessionId, activeWorkId, activeReaderPath, activeProfileUserId, selectedAdminRunId, adminSection, debugEnabled]);
+
+  useEffect(() => {
+    if (!notificationsOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) {
+        return;
+      }
+      if (notificationsDropdownRef.current?.contains(target) || notificationsTriggerRef.current?.contains(target)) {
+        return;
+      }
+      setNotificationsOpen(false);
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setNotificationsOpen(false);
+      }
+    };
+
+    window.addEventListener("mousedown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("mousedown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [notificationsOpen]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -5076,25 +5111,41 @@ export default function App() {
     };
   }, [currentUserId]);
 
-  useEffect(() => {
-    if (feedLoading || feedNextOffset === null || feedWorks.length > 0) {
+  async function loadInitialWorks() {
+    if (
+      hasAttemptedInitialFeedLoad
+      || feedLoading
+      || feedInitialLoadState === "loading"
+      || feedInitialLoadState === "ready"
+      || feedWorks.length > 0
+      || feedNextOffset === null
+    ) {
       return;
     }
 
-    void (async () => {
-      try {
-        setFeedLoading(true);
-        const next = await fetchWorks({ offset: 0, limit: 12 });
-        setFeedWorks(next.works);
-        setFeedNextOffset(next.nextOffset);
-        setFeedTotalCount(next.totalCount);
-      } catch (error) {
-        setLoadError(getErrorMessage(error, "We couldn't load the corpus feed."));
-      } finally {
-        setFeedLoading(false);
-      }
-    })();
-  }, [feedLoading, feedNextOffset, feedWorks.length]);
+    try {
+      hasAttemptedInitialFeedLoad = true;
+      setFeedInitialLoadState("loading");
+      setFeedLoading(true);
+      const next = await fetchWorks({ offset: 0, limit: 12 });
+      setFeedWorks(next.works);
+      setFeedNextOffset(next.nextOffset);
+      setFeedTotalCount(next.totalCount);
+      setFeedInitialLoadState("ready");
+    } catch (error) {
+      setFeedInitialLoadState("error");
+      setLoadError(getErrorMessage(error, "We couldn't load the corpus feed."));
+    } finally {
+      setFeedLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (feedInitialLoadState !== "idle") {
+      return;
+    }
+    void loadInitialWorks();
+  }, [feedInitialLoadState]);
 
   useEffect(() => {
     if (!activeWorkId) {
@@ -6477,10 +6528,19 @@ export default function App() {
     }
   }
 
+  function retryInitialWorksLoad() {
+    if (feedLoading) {
+      return;
+    }
+    hasAttemptedInitialFeedLoad = false;
+    setFeedInitialLoadState("idle");
+  }
+
   function startNewChat() {
     pendingUrlWriteModeRef.current = "push";
     activeRunTokenRef.current += 1;
     setMobileNavOpen(false);
+    setNotificationsOpen(false);
     setSelectedSessionId(null);
     setMessages([]);
     setLoadError(null);
@@ -6492,6 +6552,7 @@ export default function App() {
   function startNewBookChat() {
     pendingUrlWriteModeRef.current = "push";
     activeRunTokenRef.current += 1;
+    setNotificationsOpen(false);
     setSelectedSessionId(null);
     setMessages([]);
     setLoadError(null);
@@ -6535,6 +6596,7 @@ export default function App() {
   function handleNavSelection(view: ViewMode) {
     pendingUrlWriteModeRef.current = "push";
     setMobileNavOpen(false);
+    setNotificationsOpen(false);
     if (view !== "book") {
       setActiveWorkId(null);
       setPendingCitation(null);
@@ -6564,6 +6626,7 @@ export default function App() {
     }
     pendingUrlWriteModeRef.current = "push";
     setMobileNavOpen(false);
+    setNotificationsOpen(false);
     setMessages([]);
     setSessionRuns([]);
     setRunArtifacts([]);
@@ -6589,6 +6652,7 @@ export default function App() {
       source: activeView,
     });
     setMobileNavOpen(false);
+    setNotificationsOpen(false);
     setPendingCitation(null);
     setActiveReaderPath(null);
     setActiveProfileUserId(null);
@@ -6608,6 +6672,7 @@ export default function App() {
       source: "citation",
     });
     setMobileNavOpen(false);
+    setNotificationsOpen(false);
     setPendingCitation(citation);
     setActiveReaderPath(null);
     setActiveProfileUserId(null);
@@ -6618,10 +6683,19 @@ export default function App() {
   function openProfile(userId?: string | null) {
     pendingUrlWriteModeRef.current = "push";
     setMobileNavOpen(false);
+    setNotificationsOpen(false);
     setActiveWorkId(null);
     setPendingCitation(null);
     setActiveProfileUserId(userId ?? currentUserId ?? null);
     setActiveView("profile");
+  }
+
+  async function toggleNotificationsDropdown() {
+    if (!notificationsOpen && authState.user) {
+      await loadNotifications({ silent: notificationsState.notifications.length > 0 });
+    }
+    setMobileNavOpen(false);
+    setNotificationsOpen((current) => !current);
   }
 
   async function toggleFollowProfile() {
@@ -6994,7 +7068,13 @@ export default function App() {
           })}
 
           {feedLoading ? <p className="feed-status">Loading more works…</p> : null}
-          {!feedLoading && feedWorks.length === 0 ? <p className="feed-status">No works yet.</p> : null}
+          {!feedLoading && feedWorks.length === 0 && feedInitialLoadState === "error" ? (
+            <div className="feed-status">
+              <p>We couldn't load the corpus feed.</p>
+              <Button type="button" variant="ghost" onClick={retryInitialWorksLoad}>Retry</Button>
+            </div>
+          ) : null}
+          {!feedLoading && feedWorks.length === 0 && feedInitialLoadState !== "error" ? <p className="feed-status">No works yet.</p> : null}
         </section>
       </div>
     );
@@ -7260,15 +7340,12 @@ export default function App() {
                 <ProfileQueryCard key={item.sessionId} item={item} onOpen={openSession} />
               ))
             ) : sessions.length === 0 ? (
-              <ProfileEmptyState
-                title="No searches yet"
-                copy="Start a conversation with the assistant and your recent research will show up here."
-                action={(
-                  <Button type="button" className="signin-pill-button" onClick={() => handleNavSelection("assistant")}>
-                    Start searching
-                  </Button>
-                )}
-              />
+              <div className="profile-inline-empty">
+                <p>No searches yet. Start a conversation with the assistant and your recent research will show up here.</p>
+                <Button type="button" className="signin-pill-button" onClick={() => handleNavSelection("assistant")}>
+                  Start searching
+                </Button>
+              </div>
             ) : (
               sessions.map((session) => <SessionListCard key={session.id} session={session} onOpen={() => openSession(session.id)} />)
             )}
@@ -7282,6 +7359,7 @@ export default function App() {
     if (!notification.readAt) {
       void handleMarkNotificationRead(notification.id);
     }
+    setNotificationsOpen(false);
     if (notification.sessionId && notification.runId) {
       pendingUrlWriteModeRef.current = "push";
       setMobileNavOpen(false);
@@ -7295,34 +7373,14 @@ export default function App() {
     }
   }
 
-  function renderNotificationsView() {
-    if (authPending) {
-      return (
-        <section className="assistant-page">
-          <div className="assistant-thread-shell">
-            <AuthLoadingState compact />
-          </div>
-        </section>
-      );
-    }
-
-    if (authLocked) {
-      return (
-        <section className="assistant-page">
-          <div className="assistant-thread-shell">
-            <LockedState compact title="Sign in to see your notifications." />
-          </div>
-        </section>
-      );
-    }
-
+  function renderNotificationsPanel() {
     return (
-      <div className="view-shell notifications-view">
+      <div className="notifications-dropdown-panel" ref={notificationsDropdownRef} role="dialog" aria-label="Notifications">
         <section className="notifications-shell">
           <div className="notifications-header">
             <div>
-              <h1>Notifications</h1>
-              <p>Track research steps, finished runs, and email-delivery outcomes in one place.</p>
+              <h2>Notifications</h2>
+              <p>Track queued jobs, finished runs, and email delivery in one place.</p>
             </div>
             <div className="notifications-actions">
               <span className="notifications-unread-summary">
@@ -7339,13 +7397,15 @@ export default function App() {
             </div>
           </div>
 
+          {authPending ? <div className="notifications-empty-state">Checking your account…</div> : null}
+          {!authPending && authLocked ? <div className="notifications-empty-state">Sign in to see your notifications.</div> : null}
           {notificationsState.error ? <ErrorNotice message={notificationsState.error} /> : null}
 
-          {notificationsState.loading ? (
+          {!authPending && !authLocked && notificationsState.loading ? (
             <div className="notifications-empty-state">Loading notifications…</div>
-          ) : notificationsState.notifications.length === 0 ? (
+          ) : !authPending && !authLocked && notificationsState.notifications.length === 0 ? (
             <div className="notifications-empty-state">No notifications yet.</div>
-          ) : (
+          ) : !authPending && !authLocked ? (
             <div className="notifications-list">
               {notificationsState.notifications.map((notification) => {
                 const label =
@@ -7394,7 +7454,7 @@ export default function App() {
                 );
               })}
             </div>
-          )}
+          ) : null}
         </section>
       </div>
     );
@@ -8143,8 +8203,6 @@ export default function App() {
         return renderAssistantDocumentView();
       case "book":
         return renderBookView();
-      case "notifications":
-        return renderNotificationsView();
       case "profile":
         return renderProfileView();
       case "admin":
@@ -8209,11 +8267,12 @@ export default function App() {
                 && !selectedSessionId;
               const isActive =
                 isAssistantNewChatActive
-                || (activeView === item.id && item.id !== "assistant")
+                || (item.id === "notifications" ? notificationsOpen : activeView === item.id && item.id !== "assistant")
                 || (activeView === "book" && item.id === "explore");
               return (
                 <Button
                   key={item.id}
+                  ref={item.id === "notifications" ? notificationsTriggerRef : undefined}
                   type="button"
                   variant="ghost"
                   className={cn(
@@ -8222,7 +8281,15 @@ export default function App() {
                     isActive && "font-medium",
                     sidebarCollapsed && "w-11 justify-center px-0",
                   )}
-                  onClick={() => handleNavSelection(item.id)}
+                  aria-expanded={item.id === "notifications" ? notificationsOpen : undefined}
+                  aria-haspopup={item.id === "notifications" ? "dialog" : undefined}
+                  onClick={() => {
+                    if (item.id === "notifications") {
+                      void toggleNotificationsDropdown();
+                      return;
+                    }
+                    handleNavSelection(item.id);
+                  }}
                 >
                   <Icon />
                   {!sidebarCollapsed ? <span>{item.label}</span> : null}
@@ -8303,6 +8370,18 @@ export default function App() {
           </Button>
         )}
       </aside>
+
+      {notificationsOpen ? (
+        <>
+          <button
+            type="button"
+            className="notifications-dropdown-backdrop"
+            aria-label="Close notifications"
+            onClick={() => setNotificationsOpen(false)}
+          />
+          {renderNotificationsPanel()}
+        </>
+      ) : null}
 
       <main className={`main-panel is-${activeView}`}>
         <div className="mobile-shell-bar items-center">

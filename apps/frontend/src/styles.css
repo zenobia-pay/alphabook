@@ -1454,78 +1454,68 @@ button {
 .profile-section-card {
   width: min(980px, 100%);
   margin: 0 auto;
-  padding: 24px 24px 22px;
-  border: 1px solid rgba(26, 33, 52, 0.08);
-  border-radius: 28px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 244, 236, 0.9)),
-    radial-gradient(circle at top left, rgba(161, 98, 7, 0.08), transparent 34%);
-  box-shadow: 0 18px 40px rgba(33, 24, 12, 0.06);
+  padding: 22px 0 14px;
+  border-top: 1px solid rgba(26, 33, 52, 0.08);
+  background: transparent;
 }
 
 .profile-section-card-hero {
-  background:
-    linear-gradient(135deg, rgba(255, 249, 240, 0.98), rgba(249, 243, 233, 0.9)),
-    radial-gradient(circle at top left, rgba(161, 98, 7, 0.12), transparent 38%);
+  padding-top: 26px;
 }
 
 .profile-section-header {
   display: flex;
   align-items: flex-start;
-  gap: 14px;
-  margin-bottom: 18px;
+  gap: 10px;
+  margin-bottom: 14px;
 }
 
 .profile-section-header-inline {
   width: min(980px, 100%);
-  margin: 0 auto 14px;
+  margin: 0 auto 10px;
 }
 
 .profile-section-mark {
-  width: 42px;
-  height: 42px;
-  border-radius: 14px;
-  display: grid;
-  place-items: center;
-  background: rgba(161, 98, 7, 0.1);
-  color: #7c480f;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
   flex: 0 0 auto;
+  margin-top: 5px;
 }
 
 .profile-section-mark svg {
-  width: 18px;
-  height: 18px;
+  width: 15px;
+  height: 15px;
 }
 
 .profile-section-header h2 {
   margin: 0;
   font-family: "Newsreader", serif;
-  font-size: clamp(1.4rem, 2.1vw, 1.95rem);
+  font-size: clamp(1.45rem, 2vw, 1.9rem);
   line-height: 0.98;
   letter-spacing: -0.04em;
 }
 
 .profile-section-header p,
 .profile-section-empty {
-  margin: 6px 0 0;
+  margin: 5px 0 0;
   color: var(--text-muted);
-  font-size: 0.96rem;
+  font-size: 0.92rem;
   line-height: 1.55;
 }
 
 .profile-metric-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
+  gap: 18px;
+  padding: 8px 0 0;
 }
 
 .profile-metric-card {
   display: grid;
-  gap: 6px;
-  padding: 16px 16px 14px;
-  border-radius: 20px;
-  background: rgba(255, 255, 255, 0.72);
-  border: 1px solid rgba(26, 33, 52, 0.06);
+  gap: 4px;
+  padding: 0;
 }
 
 .profile-metric-card span {
@@ -1536,7 +1526,7 @@ button {
 }
 
 .profile-metric-card strong {
-  font-size: 1.55rem;
+  font-size: 1.4rem;
   line-height: 1;
   color: var(--ink);
   font-weight: 700;
@@ -1545,79 +1535,74 @@ button {
 .profile-metric-card p {
   margin: 0;
   color: var(--text-muted);
-  font-size: 0.88rem;
+  font-size: 0.84rem;
   line-height: 1.45;
 }
 
 .profile-fingerprint-grid {
   display: grid;
   gap: 14px;
-  margin-top: 18px;
+  margin-top: 20px;
 }
 
 .profile-facet-rail {
   display: grid;
-  gap: 10px;
+  gap: 6px;
 }
 
 .profile-facet-label {
   color: var(--ink);
-  font-size: 0.9rem;
+  font-size: 0.76rem;
   font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
 }
 
 .profile-facet-pills {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 12px;
 }
 
 .profile-facet-pill {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.72);
-  border: 1px solid rgba(26, 33, 52, 0.08);
+  gap: 6px;
   color: var(--ink);
-  font-size: 0.88rem;
+  font-size: 0.95rem;
 }
 
 .profile-facet-pill small {
   color: var(--text-muted);
-  font-size: 0.78rem;
+  font-size: 0.8rem;
 }
 
 .profile-book-shelves {
   display: grid;
   width: min(980px, 100%);
   margin: 0 auto;
-  gap: 18px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 28px;
 }
 
 .profile-book-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
+  grid-template-columns: 1fr;
+  gap: 0;
 }
 
 .profile-book-card {
   display: grid;
-  gap: 10px;
-  padding: 16px;
-  border-radius: 22px;
-  border: 1px solid rgba(26, 33, 52, 0.08);
-  background: rgba(255, 255, 255, 0.76);
+  gap: 8px;
+  padding: 16px 0 14px;
+  border-top: 1px solid rgba(26, 33, 52, 0.08);
   text-align: left;
-  transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease;
+  transition: opacity 160ms ease;
 }
 
 .profile-book-card:hover,
 .profile-book-card:focus-visible {
-  transform: translateY(-1px);
-  border-color: rgba(124, 72, 15, 0.2);
-  box-shadow: 0 16px 32px rgba(33, 24, 12, 0.08);
+  opacity: 0.78;
   outline: none;
 }
 
@@ -1650,12 +1635,9 @@ button {
 .profile-history-chip-row span {
   display: inline-flex;
   align-items: center;
-  padding: 6px 10px;
-  border-radius: 999px;
-  background: rgba(124, 72, 15, 0.08);
-  color: #7c480f;
-  font-size: 0.8rem;
-  font-weight: 600;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  font-weight: 500;
 }
 
 .profile-view-public .profile-history {
@@ -1800,6 +1782,22 @@ button {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.profile-inline-empty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 0 6px;
+  border-top: 1px solid rgba(26, 33, 52, 0.08);
+}
+
+.profile-inline-empty p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.94rem;
+  line-height: 1.55;
 }
 
 .profile-history-row-skeleton {
@@ -3543,12 +3541,12 @@ button {
   }
 
   .profile-section-card {
-    padding: 20px 18px 18px;
-    border-radius: 24px;
+    padding: 20px 0 18px;
   }
 
   .profile-metric-grid,
-  .profile-book-grid {
+  .profile-book-grid,
+  .profile-book-shelves {
     grid-template-columns: 1fr;
   }
 
@@ -3557,9 +3555,13 @@ button {
   }
 
   .profile-section-mark {
-    width: 38px;
-    height: 38px;
-    border-radius: 12px;
+    width: auto;
+    height: auto;
+  }
+
+  .profile-inline-empty {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .locked-panel {
