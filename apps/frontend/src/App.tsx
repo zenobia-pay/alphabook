@@ -69,6 +69,14 @@ type AssistantSessionBootstrapPayload = {
   errorStatus?: number;
 };
 
+type WorkPageBootstrapPayload = {
+  workId: string;
+  work?: WorkDetail;
+  source?: WorkSource | null;
+  error?: string;
+  errorStatus?: number;
+};
+
 type ResearchDocumentEntryKind = "title" | "log" | "book" | "chunk";
 
 type CitationNavigationContextValue = {
@@ -163,6 +171,7 @@ declare global {
   interface Window {
     __ALPHABOOK_ASSISTANT_DOCUMENT_BOOTSTRAP__?: AssistantDocumentBootstrapPayload;
     __ALPHABOOK_ASSISTANT_SESSION_BOOTSTRAP__?: AssistantSessionBootstrapPayload;
+    __ALPHABOOK_WORK_PAGE_BOOTSTRAP__?: WorkPageBootstrapPayload;
   }
 }
 
@@ -3608,6 +3617,17 @@ function readAssistantSessionBootstrap(sessionId: string | null | undefined) {
   return payload;
 }
 
+function readWorkPageBootstrap(workId: string | null | undefined) {
+  if (typeof window === "undefined" || !workId) {
+    return null;
+  }
+  const payload = window.__ALPHABOOK_WORK_PAGE_BOOTSTRAP__;
+  if (!payload || payload.workId !== workId) {
+    return null;
+  }
+  return payload;
+}
+
 function buildWorkContentHref(workId: string, gutenbergId?: string | number | null) {
   if (gutenbergId != null && String(gutenbergId).trim().length > 0) {
     return `${BOOK_CONTENT_ORIGIN}/${encodeURIComponent(String(gutenbergId))}/?v=${BOOK_CONTENT_VERSION}`;
@@ -4654,6 +4674,7 @@ function ProfileQueryCard({
 export default function App() {
   const initialUrlState = readUrlState();
   const initialAssistantSessionBootstrap = readAssistantSessionBootstrap(initialUrlState.sessionId);
+  const initialWorkPageBootstrap = readWorkPageBootstrap(initialUrlState.workId);
   const initialBootstrapHydratedMessages = (
     Array.isArray(initialAssistantSessionBootstrap?.messages)
       ? initialAssistantSessionBootstrap.messages
@@ -4716,8 +4737,8 @@ export default function App() {
   const [selectedWorkIds, setSelectedWorkIds] = useState<string[]>([]);
   const [activeWorkId, setActiveWorkId] = useState<string | null | undefined>(initialUrlState.workId);
   const [activeProfileUserId, setActiveProfileUserId] = useState<string | null | undefined>(initialUrlState.profileUserId);
-  const [activeWork, setActiveWork] = useState<WorkDetail | null>(null);
-  const [activeWorkSource, setActiveWorkSource] = useState<WorkSource | null>(null);
+  const [activeWork, setActiveWork] = useState<WorkDetail | null>(() => initialWorkPageBootstrap?.work ?? null);
+  const [activeWorkSource, setActiveWorkSource] = useState<WorkSource | null>(() => initialWorkPageBootstrap?.source ?? null);
   const [activeWorkLoading, setActiveWorkLoading] = useState(false);
   const [activeWorkSourceLoading, setActiveWorkSourceLoading] = useState(false);
   const [activeReaderPath, setActiveReaderPath] = useState<string | null | undefined>(initialUrlState.readerPath);
@@ -4838,6 +4859,11 @@ export default function App() {
     activeView === "assistant"
     && Boolean(selectedSessionId)
     && initialAssistantSessionBootstrap?.sessionId === selectedSessionId;
+  const hasWorkPageBootstrap =
+    activeView === "book"
+    && Boolean(activeWorkId)
+    && initialWorkPageBootstrap?.workId === activeWorkId
+    && Boolean(initialWorkPageBootstrap?.work);
   const bookComposerDisabled = authPending || authLocked;
   const bookComposerDisabledNotice = authLocked ? (
     <>
@@ -5213,12 +5239,15 @@ export default function App() {
 
     void (async () => {
       try {
-        setActiveWorkLoading(true);
+        if (!hasWorkPageBootstrap) {
+          setActiveWorkLoading(true);
+        }
         const detail = await fetchWorkDetail(activeWorkId);
         if (cancelled) {
           return;
         }
         setActiveWork(detail.work);
+        setActiveWorkSource(detail.source ?? null);
         setActivePassageId(null);
         setHighlightedPassageExcerpt(null);
       } catch (error) {
@@ -5237,12 +5266,16 @@ export default function App() {
       cancelled = true;
       window.clearTimeout(timeoutId);
     };
-  }, [activeWorkId]);
+  }, [activeWorkId, hasWorkPageBootstrap]);
 
   useEffect(() => {
     if (!activeWorkId) {
       setActiveWorkSourceLoading(false);
       setActiveWorkSource(null);
+      return;
+    }
+    if (hasWorkPageBootstrap) {
+      setActiveWorkSourceLoading(false);
       return;
     }
 
@@ -5284,7 +5317,7 @@ export default function App() {
       cancelled = true;
       window.clearTimeout(timeoutId);
     };
-  }, [activeWorkId, activeWork]);
+  }, [activeWorkId, activeWork, hasWorkPageBootstrap]);
 
   useEffect(() => {
     if (!activeProfileUserId || (currentUserId && activeProfileUserId === currentUserId)) {
@@ -5520,6 +5553,16 @@ export default function App() {
       serverRendered.remove();
     }
   }, [activeView, selectedSessionId]);
+
+  useEffect(() => {
+    if (activeView !== "book" || !activeWorkId) {
+      return;
+    }
+    const serverRendered = document.getElementById("work-page-ssr");
+    if (serverRendered) {
+      serverRendered.remove();
+    }
+  }, [activeView, activeWorkId]);
 
   useEffect(() => {
     if (authState.loading) {

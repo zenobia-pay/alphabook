@@ -422,6 +422,65 @@ test("session route bootstraps transcript content immediately when session data 
   await expect(page.getByText("Bootstrap research document.")).toBeVisible();
 });
 
+test("work route bootstraps the reader iframe immediately on load", async ({ page }) => {
+  const workId = "591240be-ecf2-4c48-966a-57531a341da0";
+
+  await page.addInitScript((bootstrap) => {
+    (window as Window & {
+      __ALPHABOOK_WORK_PAGE_BOOTSTRAP__?: unknown;
+    }).__ALPHABOOK_WORK_PAGE_BOOTSTRAP__ = bootstrap;
+  }, {
+    workId,
+    work: {
+      id: workId,
+      title: "Bootstrap Work",
+      authors: ["Author"],
+      gutenbergId: "12345",
+      hasCoverImage: false,
+      coverImageUrl: null,
+      firstPublishedYear: null,
+      language: "en",
+      rightsStatus: "public_domain",
+      subjects: [],
+      summaries: [],
+      metadata: {},
+    },
+    source: null,
+  });
+
+  await page.route("**/api/me", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        authConfigured: true,
+        authenticated: false,
+        user: null,
+      }),
+    });
+  });
+
+  await page.route("**/api/admin/access", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        allowed: false,
+        authenticated: false,
+        authConfigured: true,
+        user: null,
+      }),
+    });
+  });
+
+  await page.goto(`/works/${workId}`, { waitUntil: "domcontentloaded" });
+
+  await expect(page.locator(".book-reader-frame-empty")).toHaveCount(0);
+  await expect(page.locator(".book-reader-frame")).toBeVisible();
+  await expect(page.locator(".book-reader-frame")).toHaveAttribute("src", /12345/);
+});
+
 test("restricted assistant session keeps the session URL and shows a coherent locked state", async ({ page }) => {
   const sessionId = "ba4020e7-f283-4976-853f-27146997bf6f";
 

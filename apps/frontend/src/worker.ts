@@ -40,6 +40,17 @@ type AssistantSessionBootstrapPayload = {
   errorStatus?: number;
 };
 
+type WorkPageBootstrapPayload = {
+  workId: string;
+  work?: unknown;
+  source?: unknown;
+  error?: string;
+  errorStatus?: number;
+};
+
+const BOOK_CONTENT_ORIGIN = "https://books.alpha-book.org";
+const BOOK_CONTENT_VERSION = "20260319k";
+
 function buildBookHtmlKey(gutenbergId: string) {
   return `gutenberg/clean/${gutenbergId}/book.html`;
 }
@@ -268,6 +279,34 @@ function renderAssistantSessionMarkup(bootstrap: AssistantSessionBootstrapPayloa
   ].join("");
 }
 
+function buildWorkContentHref(workId: string, gutenbergId?: string | number | null) {
+  if (gutenbergId != null && String(gutenbergId).trim().length > 0) {
+    return `${BOOK_CONTENT_ORIGIN}/${encodeURIComponent(String(gutenbergId))}/?v=${BOOK_CONTENT_VERSION}`;
+  }
+  return `/api/works/${encodeURIComponent(workId)}/content?v=${BOOK_CONTENT_VERSION}`;
+}
+
+function renderWorkPageMarkup(bootstrap: WorkPageBootstrapPayload | null) {
+  if (!bootstrap || bootstrap.error || !bootstrap.work || typeof bootstrap.work !== "object") {
+    return null;
+  }
+  const work = bootstrap.work as { id?: unknown; title?: unknown; gutenbergId?: unknown };
+  const workId = typeof work.id === "string" ? work.id : bootstrap.workId;
+  const title = typeof work.title === "string" && work.title.trim().length > 0 ? work.title.trim() : "Book text";
+  const frameHref = buildWorkContentHref(workId, typeof work.gutenbergId === "string" || typeof work.gutenbergId === "number" ? work.gutenbergId : null);
+  return [
+    `<section class="book-page" style="--book-assistant-width:420px" data-ssr="work-page">`,
+    `<div class="book-reader-pane">`,
+    `<div class="book-reader-surface">`,
+    `<iframe class="book-reader-frame" src="${escapeHtml(frameHref)}" title="${escapeHtml(title)} text" loading="eager"></iframe>`,
+    `</div>`,
+    `</div>`,
+    `<div class="book-assistant-divider" role="presentation"></div>`,
+    `<aside class="book-assistant-pane"><div class="book-assistant-shell"></div></aside>`,
+    `</section>`,
+  ].join("");
+}
+
 async function fetchApiJson(request: Request, env: Env, path: string) {
   const upstreamOrigin = env.API_ORIGIN ?? "https://api.alpha-book.org";
   const upstreamUrl = new URL(path, upstreamOrigin);
@@ -414,6 +453,37 @@ async function loadAssistantSessionBootstrap(request: Request, env: Env, url: UR
   };
 }
 
+async function loadWorkPageBootstrap(request: Request, env: Env, url: URL): Promise<WorkPageBootstrapPayload | null> {
+  const pathnameMatch = url.pathname.match(/^\/works\/([^/]+)$/);
+  if (!pathnameMatch) {
+    return null;
+  }
+  const workId = decodeURIComponent(pathnameMatch[1]).trim();
+  if (!workId) {
+    return null;
+  }
+  const workResponse = await fetchApiJson(request, env, `/works/${encodeURIComponent(workId)}`);
+  if (!workResponse.ok) {
+    const errorText =
+      workResponse.json && typeof workResponse.json === "object" && typeof (workResponse.json as { error?: unknown }).error === "string"
+        ? (workResponse.json as { error: string }).error
+        : "We couldn't load that book.";
+    return {
+      workId,
+      error: errorText,
+      errorStatus: workResponse.status,
+    };
+  }
+  const payload = workResponse.json && typeof workResponse.json === "object"
+    ? workResponse.json as { work?: unknown; source?: unknown }
+    : {};
+  return {
+    workId,
+    work: payload.work,
+    source: payload.source ?? null,
+  };
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -465,10 +535,11 @@ export default {
       });
     }
 
-    const [response, assistantDocumentBootstrap, assistantSessionBootstrap] = await Promise.all([
+    const [response, assistantDocumentBootstrap, assistantSessionBootstrap, workPageBootstrap] = await Promise.all([
       env.ASSETS.fetch(request),
       loadAssistantDocumentBootstrap(request, env, url).catch(() => null),
       loadAssistantSessionBootstrap(request, env, url).catch(() => null),
+      loadWorkPageBootstrap(request, env, url).catch(() => null),
     ]);
     const headers = new Headers(response.headers);
     headers.set("x-alphabook-surface", "frontend-worker");
@@ -479,8 +550,10 @@ export default {
     const contentType = headers.get("content-type") ?? "";
     let injectedAssistantDocumentBootstrap = false;
     let injectedAssistantSessionBootstrap = false;
+    let injectedWorkPageBootstrap = false;
     const assistantDocumentMarkup = renderAssistantDocumentMarkup(assistantDocumentBootstrap);
     const assistantSessionMarkup = renderAssistantSessionMarkup(assistantSessionBootstrap);
+    const workPageMarkup = renderWorkPageMarkup(workPageBootstrap);
     const body = contentType.includes("text/html")
       ? new HTMLRewriter()
         .on("link[rel='canonical']", {
@@ -509,6 +582,10 @@ export default {
               scripts.push(`<script>window.__ALPHABOOK_ASSISTANT_SESSION_BOOTSTRAP__=${escapeInlineJson(assistantSessionBootstrap)};</script>`);
               injectedAssistantSessionBootstrap = true;
             }
+            if (workPageBootstrap && !injectedWorkPageBootstrap) {
+              scripts.push(`<script>window.__ALPHABOOK_WORK_PAGE_BOOTSTRAP__=${escapeInlineJson(workPageBootstrap)};</script>`);
+              injectedWorkPageBootstrap = true;
+            }
             if (scripts.length === 0) {
               return;
             }
@@ -526,6 +603,10 @@ export default {
               scripts.push(`<script>window.__ALPHABOOK_ASSISTANT_SESSION_BOOTSTRAP__=${escapeInlineJson(assistantSessionBootstrap)};</script>`);
               injectedAssistantSessionBootstrap = true;
             }
+            if (workPageBootstrap && !injectedWorkPageBootstrap) {
+              scripts.push(`<script>window.__ALPHABOOK_WORK_PAGE_BOOTSTRAP__=${escapeInlineJson(workPageBootstrap)};</script>`);
+              injectedWorkPageBootstrap = true;
+            }
             if (scripts.length === 0) {
               return;
             }
@@ -540,6 +621,9 @@ export default {
             }
             if (assistantSessionMarkup) {
               markup.push(`<div id="assistant-session-ssr">${assistantSessionMarkup}</div>`);
+            }
+            if (workPageMarkup) {
+              markup.push(`<div id="work-page-ssr">${workPageMarkup}</div>`);
             }
             if (markup.length === 0) {
               return;
