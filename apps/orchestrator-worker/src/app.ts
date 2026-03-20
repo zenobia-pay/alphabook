@@ -4840,6 +4840,92 @@ function cloneLiveToolTraceEntries(toolCalls: LiveToolTraceEntry[]): LiveToolTra
   }));
 }
 
+function readPersistedPlanToolTrace(metadata: Record<string, unknown> | null | undefined): LiveToolTraceEntry[] {
+  const rawEntries = Array.isArray(metadata?.toolCalls)
+    ? metadata.toolCalls
+    : Array.isArray(metadata?.researchLog)
+      ? metadata.researchLog
+      : [];
+  return rawEntries.flatMap((entry, index) => {
+    if (!entry || typeof entry !== "object") {
+      return [];
+    }
+    const record = entry as Record<string, unknown>;
+    const rawToolName = typeof record.toolName === "string" ? record.toolName : null;
+    if (!rawToolName) {
+      return [];
+    }
+    const args = record.args && typeof record.args === "object" ? structuredClone(record.args as Record<string, unknown>) : {};
+    const result = record.result && typeof record.result === "object"
+      ? structuredClone(record.result as Record<string, unknown>)
+      : undefined;
+    const progress = Array.isArray(record.progress)
+      ? record.progress.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      : [];
+    const progressDetails = Array.isArray(record.progressDetails)
+      ? record.progressDetails.filter((value): value is Record<string, unknown> => Boolean(value) && typeof value === "object")
+        .map((value) => structuredClone(value))
+      : [];
+    const rawState = record.state;
+    const state: LiveToolTraceEntry["state"] =
+      rawState === "running" || rawState === "completed" || rawState === "error"
+        ? rawState
+        : result?.ok === false
+          ? "error"
+          : "completed";
+    return [{
+      id: typeof record.id === "string" && record.id.trim().length > 0 ? record.id : `${rawToolName}-${index}`,
+      toolName: rawToolName as ToolName,
+      label: typeof record.label === "string" && record.label.trim().length > 0 ? record.label : labelForToolCall(rawToolName as ToolName, args),
+      rationale: typeof record.rationale === "string" && record.rationale.trim().length > 0 ? record.rationale : undefined,
+      progress,
+      ...(progressDetails.length > 0 ? { progressDetails } : {}),
+      args,
+      ...(result ? { result } : {}),
+      state,
+      ...(typeof record.isError === "boolean" ? { isError: record.isError } : state === "error" ? { isError: true } : {}),
+    }];
+  });
+}
+
+function mergeRecoveredTraceWithExisting(
+  existingTrace: LiveToolTraceEntry[],
+  recoveredTrace: LiveToolTraceEntry[],
+): LiveToolTraceEntry[] {
+  if (existingTrace.length === 0) {
+    return recoveredTrace;
+  }
+  const existingById = new Map(existingTrace.map((entry) => [entry.id, entry]));
+  const merged = recoveredTrace.map((entry) => {
+    const existing = existingById.get(entry.id);
+    if (!existing) {
+      return entry;
+    }
+    return {
+      ...existing,
+      label: existing.label || entry.label,
+      rationale: existing.rationale ?? entry.rationale,
+      progress: existing.progress.length > 0 ? existing.progress : entry.progress,
+      ...(Array.isArray(existing.progressDetails) && existing.progressDetails.length > 0
+        ? { progressDetails: existing.progressDetails }
+        : Array.isArray(entry.progressDetails) && entry.progressDetails.length > 0
+          ? { progressDetails: entry.progressDetails }
+          : {}),
+      args: Object.keys(existing.args).length > 0 ? existing.args : entry.args,
+      ...(entry.result ? { result: entry.result } : existing.result ? { result: existing.result } : {}),
+      state: entry.state,
+      isError: entry.isError ?? existing.isError,
+    } satisfies LiveToolTraceEntry;
+  });
+  const mergedIds = new Set(merged.map((entry) => entry.id));
+  for (const existing of existingTrace) {
+    if (!mergedIds.has(existing.id)) {
+      merged.push(existing);
+    }
+  }
+  return merged;
+}
+
 function buildRecoveredToolTrace(
   toolCalls: Awaited<ReturnType<AppStore["listToolCalls"]>>,
 ): LiveToolTraceEntry[] {
@@ -4902,7 +4988,10 @@ async function persistRecoveredPlanToolTrace(
     return;
   }
 
-  const recoveredTrace = buildRecoveredToolTrace(toolCalls);
+  const existingTrace = readPersistedPlanToolTrace(
+    planMessage.metadata && typeof planMessage.metadata === "object" ? planMessage.metadata as Record<string, unknown> : null,
+  );
+  const recoveredTrace = mergeRecoveredTraceWithExisting(existingTrace, buildRecoveredToolTrace(toolCalls));
   await deps.store.updateMessageMetadata(planMessage.id, {
     ...planMessage.metadata,
     phase: "plan",
