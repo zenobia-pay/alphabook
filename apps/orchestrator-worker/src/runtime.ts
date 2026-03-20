@@ -312,6 +312,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     });
 
     try {
+      await this.waitForMachine(machine.id, "started");
       await this.waitForRuntimeHttpReady(machine.id);
       await this.prepareWorkspace(machine.id, {
         runtimeId,
