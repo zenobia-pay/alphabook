@@ -7,7 +7,7 @@ import type { ReadonlyJSONObject, ReadonlyJSONValue } from "assistant-stream/uti
 import type { AgentationProps } from "agentation";
 import { ChevronsLeft, ChevronsRight, Link2, LoaderCircle, MessageSquarePlus, X } from "lucide-react";
 
-import { getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type NotificationRecord, type ProfileBookStat, type ProfileFacetStat, type ProfileQueryStat, type PublicProfileResponse, type UserProfile, type UserProfileStats, type WorkDetail, type WorkSource, type WorkSummary } from "@alphabook/shared";
+import { ChatSessionSummarySchema, getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type NotificationRecord, type ProfileBookStat, type ProfileFacetStat, type ProfileQueryStat, type PublicProfileResponse, type UserProfile, type UserProfileStats, type WorkDetail, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
 import { ApiError, buildSignInUrl, buildSignOutUrl, cancelRun, claimGuestProfile, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchAssistantDocumentState, fetchCurrentUser, fetchMessages, fetchNotifications, fetchProfile, fetchProfileStats, fetchRunState, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, getErrorMessage, markNotificationRead, queryAdminAnalytics, sendAnalyticsEvent, streamChat, streamRun, unfollowProfile, type RunArtifactRecord, type SessionRunRecord } from "./api";
 import { Thread } from "./components/assistant-ui/thread";
@@ -178,6 +178,7 @@ declare global {
 const USER_STORAGE_KEY = "alphabook.localUserId";
 const BOOK_ASSISTANT_WIDTH_STORAGE_KEY = "alphabook.bookAssistantWidth";
 const ASSISTANT_EFFORT_STORAGE_KEY = "alphabook.assistantEffort";
+const RECENT_SESSIONS_STORAGE_KEY = "alphabook.recentSessions";
 const BOOK_ASSISTANT_MIN_WIDTH = 320;
 const BOOK_ASSISTANT_MAX_WIDTH = 720;
 const SEO_SITE_NAME = "alpha book";
@@ -478,6 +479,40 @@ function ensureLocalUserId(): string {
   const created = crypto.randomUUID();
   window.localStorage.setItem(USER_STORAGE_KEY, created);
   return created;
+}
+
+function readCachedSessions(): ChatSessionSummary[] {
+  if (typeof window === "undefined") {
+    return [];
+  }
+  const raw = window.localStorage.getItem(RECENT_SESSIONS_STORAGE_KEY);
+  if (!raw) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(raw) as { sessions?: unknown };
+    return ChatSessionSummarySchema.array().parse(parsed.sessions ?? []);
+  } catch {
+    window.localStorage.removeItem(RECENT_SESSIONS_STORAGE_KEY);
+    return [];
+  }
+}
+
+function writeCachedSessions(userId: string | null, sessions: ChatSessionSummary[]) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.localStorage.setItem(RECENT_SESSIONS_STORAGE_KEY, JSON.stringify({
+    userId,
+    sessions,
+  }));
+}
+
+function clearCachedSessions() {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.localStorage.removeItem(RECENT_SESSIONS_STORAGE_KEY);
 }
 
 function createGuestProfile(id: string): UserProfile {
@@ -4695,8 +4730,11 @@ export default function App() {
     error: null,
   });
   const [activeView, setActiveView] = useState<ViewMode>(initialUrlState.view);
+  const [cachedSessions] = useState<ChatSessionSummary[]>(() => readCachedSessions());
   const [sessions, setSessions] = useState<ChatSessionSummary[]>(() => (
-    Array.isArray(initialAssistantSessionBootstrap?.sessions) ? initialAssistantSessionBootstrap.sessions : []
+    Array.isArray(initialAssistantSessionBootstrap?.sessions)
+      ? initialAssistantSessionBootstrap.sessions
+      : cachedSessions
   ));
   const [selectedSessionId, setSelectedSessionId] = useState<string | null | undefined>(initialUrlState.sessionId);
   const [selectedAdminRunId, setSelectedAdminRunId] = useState<string | null | undefined>(initialUrlState.runId);
@@ -5572,6 +5610,17 @@ export default function App() {
       serverRendered.remove();
     }
   }, [activeView, activeWorkId]);
+
+  useEffect(() => {
+    if (authState.loading) {
+      return;
+    }
+    if (!currentUserId) {
+      clearCachedSessions();
+      return;
+    }
+    writeCachedSessions(currentUserId, sessions);
+  }, [authState.loading, currentUserId, sessions]);
 
   useEffect(() => {
     if (authState.loading) {
