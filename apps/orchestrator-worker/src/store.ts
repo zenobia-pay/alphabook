@@ -307,6 +307,7 @@ export interface AppStore {
   ensureUser(userId: string): Promise<void>;
   upsertUserProfile(input: { id: string; email?: string | null; name?: string | null; avatarUrl?: string | null }): Promise<UserRecord>;
   getUserProfile(userId: string): Promise<UserRecord | null>;
+  claimGuestUserData(guestUserId: string, userId: string): Promise<void>;
   createAgentIdentity(input: {
     name: string;
     description?: string | null;
@@ -1671,6 +1672,33 @@ export class InMemoryAppStore implements AppStore {
     };
   }
 
+  async claimGuestUserData(guestUserId: string, userId: string): Promise<void> {
+    if (!guestUserId || !userId || guestUserId === userId) {
+      return;
+    }
+    await this.ensureUser(userId);
+    const guestProfile = this.userProfiles.get(guestUserId);
+    for (const [sessionId, session] of this.sessions.entries()) {
+      if (session.userId === guestUserId) {
+        this.sessions.set(sessionId, { ...session, userId });
+      }
+    }
+    for (const event of this.billingEvents.values()) {
+      if (event.userId === guestUserId) {
+        event.userId = userId;
+      }
+    }
+    for (const event of this.analyticsEvents.values()) {
+      if (event.userId === guestUserId) {
+        event.userId = userId;
+      }
+    }
+    if (guestProfile) {
+      this.userProfiles.delete(guestUserId);
+    }
+    this.users.delete(guestUserId);
+  }
+
   async createAgentIdentity(input: {
     name: string;
     description?: string | null;
@@ -2882,6 +2910,45 @@ export class NeonAppStore implements AppStore {
       followersCount: Number(row.followers_count ?? 0),
       followingCount: Number(row.following_count ?? 0),
     };
+  }
+
+  async claimGuestUserData(guestUserId: string, userId: string): Promise<void> {
+    if (!guestUserId || !userId || guestUserId === userId) {
+      return;
+    }
+    await this.ensureUser(userId);
+    await this.db.query(
+      `
+        UPDATE chat_sessions
+        SET user_id = $2
+        WHERE user_id = $1
+      `,
+      [guestUserId, userId],
+    );
+    await this.db.query(
+      `
+        UPDATE billing_events
+        SET user_id = $2
+        WHERE user_id = $1
+      `,
+      [guestUserId, userId],
+    );
+    await this.db.query(
+      `
+        UPDATE analytics_events
+        SET user_id = $2
+        WHERE user_id = $1
+      `,
+      [guestUserId, userId],
+    );
+    await this.db.query(
+      `
+        DELETE FROM users
+        WHERE id = $1
+          AND id <> $2
+      `,
+      [guestUserId, userId],
+    );
   }
 
   async createAgentIdentity(input: {

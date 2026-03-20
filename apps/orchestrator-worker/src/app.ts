@@ -9610,19 +9610,12 @@ export function createApp(deps: AppDeps) {
   app.get("/profiles/:userId/stats", async (c) => {
     const targetUserId = c.req.param("userId");
     const viewer = await resolveUser(c);
-    const requestedUserId = c.req.query("userId");
-    const isSelf = Boolean(
-      (viewer && viewer.id === targetUserId)
-      || (!viewer && requestedUserId && requestedUserId === targetUserId),
-    );
-    if (!isSelf) {
-      return c.json({ error: "Not authorized." }, 403);
-    }
     const profile = await deps.store.getUserProfile(targetUserId);
     if (!profile) {
       return c.json({ error: "Profile not found." }, 404);
     }
     const stats = await deps.store.getUserProfileStats(targetUserId);
+    const isSelf = Boolean(viewer && viewer.id === targetUserId);
     return c.json({ stats });
   });
 
@@ -9649,6 +9642,28 @@ export function createApp(deps: AppDeps) {
       profile: viewer.id === targetUserId ? (refreshed ?? profile) : toPublicProfile(refreshed ?? profile),
       isFollowing: viewer.id !== targetUserId,
     });
+  });
+
+  app.post("/profiles/:userId/claim-guest", async (c) => {
+    const trustedRequest = requireTrustedBrowserRequest(c);
+    if (trustedRequest) {
+      return trustedRequest;
+    }
+    const viewer = await resolveUser(c);
+    if (!viewer) {
+      return c.json({ error: "Authentication required." }, deps.auth?.isConfigured() ? 401 : 400);
+    }
+    const targetUserId = c.req.param("userId");
+    if (viewer.id !== targetUserId) {
+      return c.json({ error: "Not authorized." }, 403);
+    }
+    const payload = await c.req.json().catch(() => null) as { guestUserId?: unknown } | null;
+    const guestUserId = typeof payload?.guestUserId === "string" ? payload.guestUserId.trim() : "";
+    if (!guestUserId) {
+      return c.json({ error: "guestUserId is required." }, 400);
+    }
+    await deps.store.claimGuestUserData(guestUserId, targetUserId);
+    return c.json({ ok: true });
   });
 
   app.delete("/profiles/:userId/follow", async (c) => {

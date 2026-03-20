@@ -5,11 +5,11 @@ import {
 } from "@assistant-ui/react";
 import type { ReadonlyJSONObject, ReadonlyJSONValue } from "assistant-stream/utils";
 import type { AgentationProps } from "agentation";
-import { Bell, BookOpen, ChevronsLeft, ChevronsRight, Clock3, Link2, LoaderCircle, MessageSquarePlus, Quote, Search, Sparkles } from "lucide-react";
+import { Bell, ChevronsLeft, ChevronsRight, Link2, LoaderCircle, MessageSquarePlus } from "lucide-react";
 
 import { getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type NotificationRecord, type ProfileBookStat, type ProfileFacetStat, type ProfileQueryStat, type PublicProfileResponse, type UserProfile, type UserProfileStats, type WorkDetail, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
-import { ApiError, buildSignInUrl, buildSignOutUrl, cancelRun, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchAssistantDocumentState, fetchCurrentUser, fetchMessages, fetchNotifications, fetchProfile, fetchProfileStats, fetchRunState, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, getErrorMessage, markAllNotificationsRead, markNotificationRead, queryAdminAnalytics, sendAnalyticsEvent, streamChat, streamRun, unfollowProfile, type RunArtifactRecord, type SessionRunRecord } from "./api";
+import { ApiError, buildSignInUrl, buildSignOutUrl, cancelRun, claimGuestProfile, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchAssistantDocumentState, fetchCurrentUser, fetchMessages, fetchNotifications, fetchProfile, fetchProfileStats, fetchRunState, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, getErrorMessage, markAllNotificationsRead, markNotificationRead, queryAdminAnalytics, sendAnalyticsEvent, streamChat, streamRun, unfollowProfile, type RunArtifactRecord, type SessionRunRecord } from "./api";
 import { Thread } from "./components/assistant-ui/thread";
 import { Avatar, AvatarFallback, AvatarImage } from "./components/ui/avatar";
 import { Button } from "./components/ui/button";
@@ -164,6 +164,7 @@ const BOOK_CONTENT_VERSION = "20260319k";
 const DEFAULT_SEO_DESCRIPTION = "Search, read, and ask questions across a growing library of books with cited answers.";
 const DEFAULT_OG_IMAGE_PATH = "/social-card.svg";
 let hasAttemptedInitialFeedLoad = false;
+const GUEST_CLAIM_STORAGE_PREFIX = "alphabook:guest-claimed:";
 const ASSISTANT_WELCOME_SUGGESTIONS: ThreadSuggestion[] = [
   {
     icon: "search",
@@ -4594,13 +4595,11 @@ function ProfileBookCard({
 
 function ProfileBookShelf({
   title,
-  icon,
   items,
   emptyCopy,
   onOpenWork,
 }: {
   title: string;
-  icon: ReactNode;
   items: ProfileBookStat[];
   emptyCopy: string;
   onOpenWork: (workId: string) => void;
@@ -4608,7 +4607,6 @@ function ProfileBookShelf({
   return (
     <section className="profile-section-card">
       <div className="profile-section-header">
-        <div className="profile-section-mark">{icon}</div>
         <div>
           <h2>{title}</h2>
         </div>
@@ -4948,6 +4946,53 @@ export default function App() {
   }, [authState.loading, authState.user?.id]);
 
   useEffect(() => {
+    if (typeof window === "undefined" || !authState.user || authState.loading || authState.authConfigured === false) {
+      return;
+    }
+    if (!guestUserId || guestUserId === authState.user.id) {
+      return;
+    }
+    const storageKey = `${GUEST_CLAIM_STORAGE_PREFIX}${authState.user.id}:${guestUserId}`;
+    if (window.localStorage.getItem(storageKey) === "done") {
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        await claimGuestProfile(authState.user!.id, guestUserId);
+        if (cancelled) {
+          return;
+        }
+        window.localStorage.setItem(storageKey, "done");
+        if (activeView === "profile") {
+          const nextStats = await fetchProfileStats(activeProfileUserId ?? authState.user!.id);
+          if (!cancelled) {
+            setProfileStats(nextStats);
+          }
+        }
+        if (!cancelled) {
+          await refreshSessions(selectedSessionId);
+        }
+      } catch {
+        // The claim path is best-effort and should not block the UI.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeProfileUserId,
+    activeView,
+    authState.authConfigured,
+    authState.loading,
+    authState.user,
+    guestUserId,
+    selectedSessionId,
+  ]);
+
+  useEffect(() => {
     const handlePopState = () => {
       pendingUrlWriteModeRef.current = "replace";
       const next = readUrlState();
@@ -5275,8 +5320,10 @@ export default function App() {
   }, [activeProfileUserId, currentUserId]);
 
   useEffect(() => {
-    const isSelfProfile = activeView === "profile" && currentUserId && (!activeProfileUserId || activeProfileUserId === currentUserId);
-    if (!isSelfProfile) {
+    const targetProfileId = activeView === "profile"
+      ? (activeProfileUserId ?? currentUserId)
+      : null;
+    if (!targetProfileId) {
       setProfileStats(null);
       setProfileStatsLoading(false);
       return;
@@ -5286,8 +5333,8 @@ export default function App() {
     void (async () => {
       try {
         setProfileStatsLoading(true);
-        const next = await fetchProfileStats(currentUserId, {
-          fallbackUserId: authState.authConfigured ? null : currentUserId,
+        const next = await fetchProfileStats(targetProfileId, {
+          fallbackUserId: !authState.authConfigured && currentUserId === targetProfileId ? currentUserId : null,
         });
         if (!cancelled) {
           setProfileStats(next);
@@ -5296,7 +5343,7 @@ export default function App() {
         if (!cancelled) {
           reportClientIncident(error, {
             source: "profile_stats_load",
-            userId: currentUserId,
+            userId: targetProfileId,
           });
           setProfileStats(null);
         }
@@ -7140,6 +7187,31 @@ export default function App() {
       const publicHue = hueFromSeed(profile.email ?? profile.id);
       const publicJoined = formatMonthYear(profile.createdAt);
       const publicMeta = [publicTag, publicJoined ? `joined ${publicJoined}` : null].filter(Boolean).join(" • ");
+      const stats = profileStats;
+      const metrics = stats
+        ? [
+          {
+            label: "Questions asked",
+            value: formatStatNumber(stats.counts.queryCount),
+            detail: `${formatStatNumber(stats.averages.queriesPerSession)} per session`,
+          },
+          {
+            label: "Books touched",
+            value: formatStatNumber(stats.counts.booksTouchedCount),
+            detail: `${formatStatNumber(stats.counts.uniqueBooksCitedCount)} cited`,
+          },
+          {
+            label: "Citations surfaced",
+            value: formatStatNumber(stats.counts.citationCount),
+            detail: `${formatStatNumber(stats.counts.booksOpenedCount)} opens tracked`,
+          },
+          {
+            label: "Active days",
+            value: formatStatNumber(stats.counts.activeDayCount),
+            detail: `${formatStatNumber(stats.counts.runCount)} runs`,
+          },
+        ]
+        : [];
 
       return (
         <div className="profile-view profile-view-public">
@@ -7187,14 +7259,57 @@ export default function App() {
             </div>
           </section>
 
-          <section className="profile-history">
-            <div className="profile-history-list">
-              <ProfileEmptyState
-                title="No public reading history yet"
-                copy="This reader has not shared any visible activity here."
-              />
+          <section className="profile-section-card profile-section-card-hero">
+            <div className="profile-section-header">
+              <div>
+                <h2>Reading fingerprint</h2>
+                <p>
+                  {stats
+                    ? `${pluralize(stats.counts.booksTouchedCount, "book")} touched across ${pluralize(stats.counts.sessionCount, "session")}.`
+                    : "Loading reading activity."}
+                </p>
+              </div>
             </div>
+            {profileStatsLoading && !stats ? (
+              <p className="profile-section-empty">Loading reading activity...</p>
+            ) : stats ? (
+              <>
+                <div className="profile-metric-grid">
+                  {metrics.map((item) => (
+                    <ProfileMetricCard key={item.label} label={item.label} value={item.value} detail={item.detail} />
+                  ))}
+                </div>
+                <div className="profile-fingerprint-grid">
+                  <ProfileFacetRail label="Authors" items={stats.fingerprint.authors} />
+                  <ProfileFacetRail label="Subjects" items={stats.fingerprint.subjects} />
+                  <ProfileFacetRail label="Languages" items={stats.fingerprint.languages} />
+                </div>
+              </>
+            ) : (
+              <p className="profile-section-empty">No public reading activity yet.</p>
+            )}
           </section>
+
+          <div className="profile-book-shelves">
+            <ProfileBookShelf
+              title="Recently touched"
+              items={stats?.books.recent ?? []}
+              emptyCopy="No recent book activity yet."
+              onOpenWork={openWork}
+            />
+            <ProfileBookShelf
+              title="Most opened"
+              items={stats?.books.topOpened ?? []}
+              emptyCopy="No tracked book opens yet."
+              onOpenWork={openWork}
+            />
+            <ProfileBookShelf
+              title="Most cited"
+              items={stats?.books.topCited ?? []}
+              emptyCopy="No cited books yet."
+              onOpenWork={openWork}
+            />
+          </div>
         </div>
       );
     }
@@ -7271,7 +7386,6 @@ export default function App() {
 
         <section className="profile-section-card profile-section-card-hero">
           <div className="profile-section-header">
-            <div className="profile-section-mark"><Sparkles /></div>
             <div>
               <h2>Your reading fingerprint</h2>
               <p>
@@ -7305,21 +7419,18 @@ export default function App() {
         <div className="profile-book-shelves">
           <ProfileBookShelf
             title="Recently touched"
-            icon={<Clock3 />}
             items={stats?.books.recent ?? []}
             emptyCopy="Recent books you open or cite will appear here."
             onOpenWork={openWork}
           />
           <ProfileBookShelf
             title="Most opened"
-            icon={<BookOpen />}
             items={stats?.books.topOpened ?? []}
             emptyCopy="Your most revisited books will show up here."
             onOpenWork={openWork}
           />
           <ProfileBookShelf
             title="Most cited"
-            icon={<Quote />}
             items={stats?.books.topCited ?? []}
             emptyCopy="Once answers start citing books, your anchor texts will show up here."
             onOpenWork={openWork}
@@ -7328,7 +7439,6 @@ export default function App() {
 
         <section className="profile-history">
           <div className="profile-section-header profile-section-header-inline">
-            <div className="profile-section-mark"><Search /></div>
             <div>
               <h2>Query history</h2>
               <p>Recent prompts, follow-up depth, and citation breadth by session.</p>

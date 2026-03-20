@@ -374,6 +374,19 @@ export async function fetchProfileStats(userId: string, options: { fallbackUserI
   return UserProfileStatsResponseSchema.parse(await response.json()).stats;
 }
 
+export async function claimGuestProfile(userId: string, guestUserId: string): Promise<void> {
+  await ensureOk(
+    await fetch(`${API_BASE}/profiles/${userId}/claim-guest`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      credentials: "include",
+      body: JSON.stringify({ guestUserId }),
+    }),
+  );
+}
+
 export async function followProfile(userId: string): Promise<FollowProfileResponse> {
   const response = await ensureOk(
     await fetch(`${API_BASE}/profiles/${userId}/follow`, {
