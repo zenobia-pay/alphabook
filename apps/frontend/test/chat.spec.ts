@@ -1575,7 +1575,7 @@ test.describe("mobile shell", () => {
     await page.getByRole("button", { name: /Notifications/ }).click();
     await expect(page).not.toHaveURL(/view=notifications/);
     await expect(page.getByRole("dialog", { name: "Notifications" })).toBeVisible();
-    await expect(page.getByText("Track queued jobs, finished runs, and email delivery in one place.")).toBeVisible();
+    await expect(page.getByText("1 new updates")).toBeVisible();
     await expect(page.getByText("Your research run is ready.")).toBeVisible();
 
     await page.getByRole("button", { name: "Mark read" }).click();

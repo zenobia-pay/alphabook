@@ -7490,15 +7490,13 @@ export default function App() {
           <div className="notifications-header">
             <div>
               <h2>Notifications</h2>
-              <p>Track queued jobs, finished runs, and email delivery in one place.</p>
+              <p>{notificationsState.unreadCount > 0 ? `${notificationsState.unreadCount} new updates` : "All caught up"}</p>
             </div>
             <div className="notifications-actions">
-              <span className="notifications-unread-summary">
-                {notificationsState.unreadCount > 0 ? `${notificationsState.unreadCount} unread` : "All caught up"}
-              </span>
               <Button
                 type="button"
-                variant="outline"
+                variant="ghost"
+                className="notifications-action-button"
                 disabled={notificationsState.unreadCount === 0}
                 onClick={() => void handleMarkAllNotificationsRead()}
               >
@@ -7530,13 +7528,15 @@ export default function App() {
                   >
                     <div className="notification-card-copy">
                       <div className="notification-card-meta">
+                        {!notification.readAt ? <span className="notification-card-dot" aria-hidden="true" /> : null}
                         <span className="notification-card-title">{notification.title}</span>
                         <span>{formatRelativeTime(notification.createdAt)}</span>
                       </div>
                       <p className="notification-card-body">{notification.body}</p>
-                      <div className="notification-card-tags">
+                      <div className="notification-card-tags" aria-label="Notification details">
                         <span>{label}</span>
                         {notification.runId ? <span>Run</span> : null}
+                        {notification.emailedAt ? <span>Emailed</span> : null}
                         {notification.readAt ? <span>Read</span> : <span>Unread</span>}
                       </div>
                     </div>
@@ -7545,6 +7545,7 @@ export default function App() {
                         <Button
                           type="button"
                           variant="ghost"
+                          className="notifications-link-button"
                           onClick={() => openNotificationTarget(notification)}
                         >
                           {notification.runId ? "Open run" : "Open session"}
@@ -7553,7 +7554,8 @@ export default function App() {
                       {!notification.readAt ? (
                         <Button
                           type="button"
-                          variant="outline"
+                          variant="ghost"
+                          className="notifications-link-button"
                           onClick={() => void handleMarkNotificationRead(notification.id)}
                         >
                           Mark read
@@ -8328,7 +8330,7 @@ export default function App() {
   }
 
   return (
-    <div className={cn("app-shell", mobileNavOpen && "is-nav-open", sidebarCollapsed && "is-sidebar-collapsed")}>
+    <div className={cn("app-shell", mobileNavOpen && "is-nav-open", sidebarCollapsed && "is-sidebar-collapsed", notificationsOpen && "is-notifications-open")}>
       <button
         type="button"
         className={`shell-backdrop ${mobileNavOpen ? "is-open" : ""}`}
