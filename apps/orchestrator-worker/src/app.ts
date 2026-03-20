@@ -4798,9 +4798,9 @@ function appendToolProgress(
 async function persistPlanToolTrace(
   deps: AppDeps,
   messageId: string | null,
-  sessionId: string,
   runId: string,
   toolCalls: LiveToolTraceEntry[],
+  researchDocumentHtml: string,
 ) {
   if (!messageId) {
     return;
@@ -4810,19 +4810,7 @@ async function persistPlanToolTrace(
     runId,
     toolCalls,
     researchLog: toolCalls,
-    researchDocumentHtml: await buildResearchDocumentHtmlFromToolHistory(
-      deps,
-      sessionId,
-      toolCalls.map((entry) => ({
-        toolName: entry.toolName as ToolName,
-        rationale: typeof entry.rationale === "string" ? entry.rationale : undefined,
-        args: entry.args,
-        result: entry.result ?? {},
-        ...(Array.isArray(entry.progressDetails) ? { progressDetails: entry.progressDetails } : {}),
-      })),
-      [],
-      "",
-    ),
+    researchDocumentHtml,
   });
 }
 
@@ -5029,19 +5017,7 @@ async function persistRecoveredPlanToolTrace(
     runId,
     toolCalls: recoveredTrace,
     researchLog: recoveredTrace,
-    researchDocumentHtml: existingResearchDocumentHtml ?? await buildResearchDocumentHtmlFromToolHistory(
-      deps,
-      sessionId,
-      recoveredTrace.map((entry) => ({
-        toolName: entry.toolName as ToolName,
-        rationale: typeof entry.rationale === "string" ? entry.rationale : undefined,
-        args: entry.args,
-        result: entry.result ?? {},
-        ...(Array.isArray(entry.progressDetails) ? { progressDetails: entry.progressDetails } : {}),
-      })),
-      [],
-      "",
-    ),
+    researchDocumentHtml: existingResearchDocumentHtml ?? "",
   });
 }
 
@@ -6748,6 +6724,28 @@ function buildResearchDocumentLink(label: string, href: string) {
   return `<a class="assistant-document-link" href="${escapeResearchHtml(href)}">${escapeResearchHtml(label)}</a>`;
 }
 
+function appendResearchDocumentFragment(currentHtml: string, fragment: string) {
+  return fragment.trim().length > 0 ? `${currentHtml}${fragment}` : currentHtml;
+}
+
+function buildResearchDocumentSectionHeader(title: string, summary: string) {
+  const normalizedSummary = normalizeDocumentText(summary);
+  const summaryHtml =
+    normalizedSummary && !isLowValueDocumentSummary(normalizedSummary)
+      ? `<p class="assistant-document-section-kicker">${escapeResearchHtml(normalizedSummary)}</p>`
+      : "";
+  return [
+    `<section class="assistant-document-stream-section">`,
+    `<h2 class="assistant-document-stream-title">${escapeResearchHtml(title)}</h2>`,
+    summaryHtml,
+    `</section>`,
+  ].join("");
+}
+
+function buildResearchDocumentLogEntry(text: string) {
+  return `<p class="assistant-document-entry is-log">${escapeResearchHtml(text)}</p>`;
+}
+
 function persistedSectionLabel(entry: ToolHistoryEntry) {
   return labelForToolCall(entry.toolName, entry.args);
 }
@@ -6865,169 +6863,6 @@ function renderBriefingHtml(briefing: string) {
   }
   flushList();
   return html.join("");
-}
-
-async function buildResearchDocumentHtmlFromToolHistory(
-  deps: AppDeps,
-  sessionId: string,
-  toolHistory: ToolHistoryEntry[],
-  citations: Citation[],
-  ending: string,
-): Promise<string> {
-  const sections: string[] = [];
-  for (const entry of toolHistory) {
-    const body: string[] = [];
-    const summary = persistedSectionSummary(entry);
-
-    if (Array.isArray(entry.progressDetails)) {
-      for (const detail of entry.progressDetails) {
-        if (!detail || typeof detail !== "object") {
-          continue;
-        }
-        const detailType = typeof detail.type === "string" ? detail.type : "";
-        if (detailType === "research.work") {
-          const titleText = normalizeDocumentText(detail.workTitle ?? detail.title);
-          if (!titleText) {
-            continue;
-          }
-          const authors = Array.isArray(detail.authors)
-            ? detail.authors.filter((value: unknown): value is string => typeof value === "string" && value.trim().length > 0)
-            : [];
-          const workId = typeof detail.workId === "string" ? detail.workId : null;
-          const line = formatResearchDocumentBookLine(titleText, authors);
-          body.push(
-            `<p class="assistant-document-entry is-book">${
-              workId
-                ? buildResearchDocumentLink(line, buildResearchDocumentWorkUrl(sessionId, workId))
-                : escapeResearchHtml(line)
-            }</p>`,
-          );
-          continue;
-        }
-        if (detailType === "research.chunk") {
-          const excerpt = normalizeDocumentText(detail.excerpt).slice(0, 440);
-          if (!isUsefulPersistedExcerpt(excerpt)) {
-            continue;
-          }
-          const workTitle = normalizeDocumentText(detail.workTitle ?? detail.title) || "Source";
-          const chunkIndex = typeof detail.chunkIndex === "number" ? detail.chunkIndex : null;
-          const workId = typeof detail.workId === "string" ? detail.workId : null;
-          const href = workId && chunkIndex !== null
-            ? await buildChunkIndexPassageUrl(deps, sessionId, workId, chunkIndex)
-            : workId
-              ? buildResearchDocumentWorkUrl(sessionId, workId)
-              : null;
-          const sourceLabel = `Source: ${workTitle}, ${persistedPassageLocation(chunkIndex)}`;
-          body.push(`<blockquote class="assistant-document-entry is-chunk"><p class="assistant-document-quote">${escapeResearchHtml(excerpt)}</p><footer class="assistant-document-citation">${href ? buildResearchDocumentLink(sourceLabel, href) : escapeResearchHtml(sourceLabel)}</footer></blockquote>`);
-        }
-      }
-    }
-
-    if (entry.toolName === "search_works" || entry.toolName === "get_work_metadata") {
-      const works = Array.isArray(entry.result.works) ? entry.result.works as Array<Record<string, unknown>> : [];
-      for (const work of works) {
-        const titleText = normalizeDocumentText(work.title);
-        if (!titleText) {
-          continue;
-        }
-        const authors = Array.isArray(work.authors)
-          ? work.authors.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-          : [];
-        const workId = typeof work.id === "string" ? work.id : null;
-        const line = formatResearchDocumentBookLine(titleText, authors);
-        body.push(
-          `<p class="assistant-document-entry is-book">${
-            workId
-              ? buildResearchDocumentLink(line, buildResearchDocumentWorkUrl(sessionId, workId))
-              : escapeResearchHtml(line)
-          }</p>`,
-        );
-      }
-    }
-
-    if (entry.toolName === "create_workspace") {
-      const manifest = entry.result.manifest && typeof entry.result.manifest === "object"
-        ? entry.result.manifest as Record<string, unknown>
-        : null;
-      const works = Array.isArray(manifest?.works) ? manifest.works as Array<Record<string, unknown>> : [];
-      for (const work of works) {
-        const titleText = normalizeDocumentText(work.title);
-        if (!titleText) {
-          continue;
-        }
-        const authors = Array.isArray(work.authors)
-          ? work.authors.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-          : [];
-        const workId = typeof work.id === "string" ? work.id : null;
-        const line = formatResearchDocumentBookLine(titleText, authors);
-        body.push(
-          `<p class="assistant-document-entry is-book">${
-            workId
-              ? buildResearchDocumentLink(line, buildResearchDocumentWorkUrl(sessionId, workId))
-              : escapeResearchHtml(line)
-          }</p>`,
-        );
-      }
-    }
-
-    if (entry.toolName === "get_relevant_chunks") {
-      const chunks = Array.isArray(entry.result.chunks) ? entry.result.chunks as Array<Record<string, unknown>> : [];
-      for (const chunk of chunks) {
-        const excerpt = normalizeDocumentText(chunk.excerpt ?? chunk.text).slice(0, 440);
-        if (!isUsefulPersistedExcerpt(excerpt)) {
-          continue;
-        }
-        const workTitle = normalizeDocumentText(chunk.workTitle) || "Source";
-        const authors = Array.isArray(chunk.authors)
-          ? chunk.authors.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-          : [];
-        const chunkIndex = typeof chunk.chunkIndex === "number" ? chunk.chunkIndex : null;
-        const workId = typeof chunk.workId === "string" ? chunk.workId : null;
-        const href = workId && chunkIndex !== null
-          ? await buildChunkIndexPassageUrl(deps, sessionId, workId, chunkIndex)
-          : workId
-            ? buildResearchDocumentWorkUrl(sessionId, workId)
-            : null;
-        const sourceLabel = `Source: ${workTitle}${authors.length > 0 ? `, by ${authors.join(", ")}` : ""}, ${persistedPassageLocation(chunkIndex)}`;
-        body.push(`<blockquote class="assistant-document-entry is-chunk"><p class="assistant-document-quote">${escapeResearchHtml(excerpt)}</p><footer class="assistant-document-citation">${href ? buildResearchDocumentLink(sourceLabel, href) : escapeResearchHtml(sourceLabel)}</footer></blockquote>`);
-      }
-    }
-
-    if (entry.toolName === "run_workspace_task") {
-      const briefing = typeof entry.result.briefing === "string" ? entry.result.briefing.trim() : "";
-      if (briefing) {
-        body.push(renderBriefingHtml(briefing));
-      }
-    }
-
-    appendResearchDocumentHtmlSection(sections, persistedSectionLabel(entry), summary, body);
-  }
-
-  if (citations.length > 0) {
-    const quoted: string[] = [];
-    for (const citation of citations) {
-      const excerpt = normalizeDocumentText(citation.excerpt).slice(0, 440);
-      if (!isUsefulPersistedExcerpt(excerpt)) {
-        continue;
-      }
-      const href = await buildCitationPassageUrl(deps, sessionId, citation);
-      const sourceLabel = `Source: ${citation.label}`;
-      quoted.push(`<blockquote class="assistant-document-entry is-chunk"><p class="assistant-document-quote">${escapeResearchHtml(excerpt)}</p><footer class="assistant-document-citation">${href ? buildResearchDocumentLink(sourceLabel, href) : escapeResearchHtml(sourceLabel)}</footer></blockquote>`);
-    }
-    appendResearchDocumentHtmlSection(sections, "Quoted Evidence", "Primary-source passages cited in the final answer.", quoted);
-  }
-
-  const normalizedEnding = normalizeDocumentEnding(ending);
-  if (normalizedEnding) {
-    appendResearchDocumentHtmlSection(
-      sections,
-      "Final Takeaway",
-      "What the run found and how it came together.",
-      [`<p class="assistant-document-entry is-log">${escapeResearchHtml(normalizedEnding)}</p>`],
-    );
-  }
-
-  return sections.join("");
 }
 
 async function appendFinalAnswerResearchDocumentHtml(
@@ -7478,6 +7313,8 @@ async function runOrchestrator(
   }
   await deps.store.ensureUser(input.userId);
   const progressBuffers = new Map<string, ToolProgressBuffer>();
+  let liveResearchDocumentHtml = "";
+  const appendedResearchDocumentKeys = new Set<string>();
   let latestPlanTraceVersion = 0;
   let persistedPlanTraceVersion = 0;
   let planTracePersistChain = Promise.resolve();
@@ -7623,27 +7460,78 @@ async function runOrchestrator(
       if (version <= persistedPlanTraceVersion || version !== latestPlanTraceVersion) {
         return;
       }
-      await persistPlanToolTrace(deps, messageId, session!.id, run!.id, snapshot);
+      await persistPlanToolTrace(deps, messageId, run!.id, snapshot, liveResearchDocumentHtml);
       persistedPlanTraceVersion = version;
     });
     planTracePersistChain = queuedWrite.catch(() => {});
     await queuedWrite;
   };
 
-  const currentResearchDocumentHtml = async () =>
-    buildResearchDocumentHtmlFromToolHistory(
-      deps,
-      session!.id,
-      liveToolTrace.map((entry) => ({
-        toolName: entry.toolName as ToolName,
-        rationale: typeof entry.rationale === "string" ? entry.rationale : undefined,
-        args: entry.args,
-        result: entry.result ?? {},
-        ...(Array.isArray(entry.progressDetails) ? { progressDetails: entry.progressDetails } : {}),
-      })),
-      [],
-      "",
-    );
+  const appendResearchDocumentOnce = (key: string, fragment: string) => {
+    if (!fragment.trim() || appendedResearchDocumentKeys.has(key)) {
+      return;
+    }
+    appendedResearchDocumentKeys.add(key);
+    liveResearchDocumentHtml = appendResearchDocumentFragment(liveResearchDocumentHtml, fragment);
+  };
+
+  const appendResearchDocumentSectionOnce = (entry: LiveToolTraceEntry) => {
+    appendResearchDocumentOnce(`section:${entry.id}`, buildResearchDocumentSectionHeader(entry.label, entry.rationale ?? ""));
+  };
+
+  const appendResearchDocumentLogOnce = (toolCallId: string, text: string, suffix = "") => {
+    const normalized = normalizeDocumentText(text);
+    if (!normalized || isLowValueDocumentSummary(normalized)) {
+      return;
+    }
+    appendResearchDocumentOnce(`log:${toolCallId}:${suffix || normalized}`, buildResearchDocumentLogEntry(normalized));
+  };
+
+  const appendResearchDocumentDetailOnce = async (
+    toolCallId: string,
+    detail: Record<string, unknown>,
+  ) => {
+    const detailType = typeof detail.type === "string" ? detail.type : "";
+    if (detailType === "research.work") {
+      const titleText = normalizeDocumentText(detail.workTitle ?? detail.title);
+      if (!titleText) {
+        return;
+      }
+      const authors = Array.isArray(detail.authors)
+        ? detail.authors.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+        : [];
+      const workId = typeof detail.workId === "string" ? detail.workId : null;
+      const line = formatResearchDocumentBookLine(titleText, authors);
+      appendResearchDocumentOnce(
+        `detail:${toolCallId}:work:${workId ?? titleText}`,
+        `<p class="assistant-document-entry is-book">${
+          workId
+            ? buildResearchDocumentLink(line, buildResearchDocumentWorkUrl(session!.id, workId))
+            : escapeResearchHtml(line)
+        }</p>`,
+      );
+      return;
+    }
+    if (detailType === "research.chunk") {
+      const excerpt = normalizeDocumentText(detail.excerpt).slice(0, 440);
+      if (!isUsefulPersistedExcerpt(excerpt)) {
+        return;
+      }
+      const workTitle = normalizeDocumentText(detail.workTitle ?? detail.title) || "Source";
+      const chunkIndex = typeof detail.chunkIndex === "number" ? detail.chunkIndex : null;
+      const workId = typeof detail.workId === "string" ? detail.workId : null;
+      const href = workId && chunkIndex !== null
+        ? await buildChunkIndexPassageUrl(deps, session!.id, workId, chunkIndex)
+        : workId
+          ? buildResearchDocumentWorkUrl(session!.id, workId)
+          : null;
+      const sourceLabel = `Source: ${workTitle}, ${persistedPassageLocation(chunkIndex)}`;
+      appendResearchDocumentOnce(
+        `detail:${toolCallId}:chunk:${workId ?? "unknown"}:${String(chunkIndex ?? "mid")}:${excerpt.slice(0, 60)}`,
+        `<blockquote class="assistant-document-entry is-chunk"><p class="assistant-document-quote">${escapeResearchHtml(excerpt)}</p><footer class="assistant-document-citation">${href ? buildResearchDocumentLink(sourceLabel, href) : escapeResearchHtml(sourceLabel)}</footer></blockquote>`,
+      );
+    }
+  };
 
   if (session && session.userId !== input.userId) {
     throw new Error("Not authorized for this session.");
@@ -7819,6 +7707,16 @@ async function runOrchestrator(
           }
         : entry,
     );
+    const completedEntry = liveToolTrace.find((entry) => entry.id === toolCallId) ?? null;
+    if (completedEntry) {
+      appendResearchDocumentSectionOnce(completedEntry);
+    }
+    if (toolName === "run_workspace_task") {
+      const briefing = typeof result.briefing === "string" ? result.briefing.trim() : "";
+      if (briefing) {
+        appendResearchDocumentOnce(`briefing:${toolCallId}`, renderBriefingHtml(briefing));
+      }
+    }
     await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
     await send("tool.completed", {
       runId: run.id,
@@ -7827,7 +7725,7 @@ async function runOrchestrator(
       label: labelForToolCall(toolName, normalizedArgs),
       rationale: sanitizeUserFacingToolText(rationale) ?? null,
       status,
-      researchDocumentHtml: await currentResearchDocumentHtml(),
+      researchDocumentHtml: liveResearchDocumentHtml,
       result: {
         ...streamedResult,
         __logLines: completedToolLines.normalizedLines,
@@ -7962,7 +7860,7 @@ async function runOrchestrator(
       sessionId: activeSession.id,
       messageId: planMessage.id,
       text: planText,
-      researchDocumentHtml: await currentResearchDocumentHtml(),
+      researchDocumentHtml: liveResearchDocumentHtml,
     });
     recordRawLog("assistant.plan", {
       runId: run.id,
@@ -8245,6 +8143,11 @@ async function runOrchestrator(
         state: "running",
       },
     ];
+    const startedEntry = liveToolTrace[liveToolTrace.length - 1]!;
+    appendResearchDocumentSectionOnce(startedEntry);
+    if (sanitizeUserFacingToolText(rationale)) {
+      appendResearchDocumentLogOnce(toolRecord.id, sanitizeUserFacingToolText(rationale)!, "start");
+    }
     await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
     await send("tool.started", {
       runId: run.id,
@@ -8252,7 +8155,7 @@ async function runOrchestrator(
       toolName,
       label: labelForToolCall(toolName, normalizedToolArgs),
       rationale: sanitizeUserFacingToolText(rationale) ?? null,
-      researchDocumentHtml: await currentResearchDocumentHtml(),
+      researchDocumentHtml: liveResearchDocumentHtml,
       args: {
         __logLines: startedToolLines.normalizedLines,
         __summary: startedToolLines.summary || undefined,
@@ -8279,13 +8182,18 @@ async function runOrchestrator(
                 ? appendToolProgress(entry, progressText, detail)
                 : entry,
             );
+            if (detail) {
+              await appendResearchDocumentDetailOnce(data.toolCallId, detail);
+            } else {
+              appendResearchDocumentLogOnce(data.toolCallId, progressText);
+            }
             await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
             await send("tool.progress", {
               runId: run.id,
               toolCallId: data.toolCallId,
               toolName,
               text: progressText,
-              researchDocumentHtml: await currentResearchDocumentHtml(),
+              researchDocumentHtml: liveResearchDocumentHtml,
               ...(detail ? { detail } : {}),
             });
           },
@@ -8333,13 +8241,18 @@ async function runOrchestrator(
                       ? appendToolProgress(entry, progressText, emittedDetail)
                       : entry,
                   );
+                  if (emittedDetail) {
+                    await appendResearchDocumentDetailOnce(toolRecord.id, emittedDetail);
+                  } else {
+                    appendResearchDocumentLogOnce(toolRecord.id, progressText);
+                  }
                   await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
                   await send("tool.progress", {
                     runId: run.id,
                     toolCallId: toolRecord.id,
                     toolName,
                     text: progressText,
-                    researchDocumentHtml: await currentResearchDocumentHtml(),
+                    researchDocumentHtml: liveResearchDocumentHtml,
                     ...(emittedDetail ? { detail: emittedDetail } : {}),
                   });
                 },
@@ -8407,13 +8320,18 @@ async function runOrchestrator(
                   ? appendToolProgress(entry, progressText, detail)
                   : entry,
               );
+              if (detail) {
+                await appendResearchDocumentDetailOnce(toolRecord.id, detail);
+              } else {
+                appendResearchDocumentLogOnce(toolRecord.id, progressText);
+              }
               await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
               await send("tool.progress", {
                 runId: run.id,
                 toolCallId: toolRecord.id,
                 toolName,
                 text: progressText,
-                researchDocumentHtml: await currentResearchDocumentHtml(),
+                researchDocumentHtml: liveResearchDocumentHtml,
                 ...(detail ? { detail } : {}),
               });
             },
@@ -8533,7 +8451,13 @@ async function runOrchestrator(
 
     if (routeDecision.type === "direct_response") {
       const artifactKey = await persistFinalArtifact(deps, session.id, run.id, routeDecision.answer, []);
-      const directResearchDocumentHtml = await buildResearchDocumentHtmlFromToolHistory(deps, session.id, [], [], routeDecision.answer);
+      const directResearchDocumentHtml = await appendFinalAnswerResearchDocumentHtml(
+        deps,
+        session.id,
+        "",
+        [],
+        routeDecision.answer,
+      );
       await persistResearchDocumentArtifact(
         deps,
         session.id,
@@ -9185,7 +9109,13 @@ async function runOrchestrator(
         completedAt: new Date().toISOString(),
       });
       const timeoutMessage = "The run hit its hard limits before it produced a valid answer.";
-      const timeoutResearchDocumentHtml = await buildResearchDocumentHtmlFromToolHistory(deps, session.id, [], [], timeoutMessage);
+      const timeoutResearchDocumentHtml = await appendFinalAnswerResearchDocumentHtml(
+        deps,
+        session.id,
+        liveResearchDocumentHtml,
+        [],
+        timeoutMessage,
+      );
       await appendRunErrorMessageOnce(deps, session.id, run.id, timeoutMessage, {
         runId: run.id,
         phase: "error",
@@ -9253,7 +9183,13 @@ async function runOrchestrator(
     });
 
     const failureMessage = userFacingRunFailureMessage(error);
-    const failureResearchDocumentHtml = await buildResearchDocumentHtmlFromToolHistory(deps, session.id, [], [], failureMessage);
+    const failureResearchDocumentHtml = await appendFinalAnswerResearchDocumentHtml(
+      deps,
+      session.id,
+      liveResearchDocumentHtml,
+      [],
+      failureMessage,
+    );
     await appendRunErrorMessageOnce(deps, session.id, run.id, failureMessage, {
       runId: run.id,
       phase: "error",
