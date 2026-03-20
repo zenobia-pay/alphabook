@@ -10,7 +10,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("empty chat state renders with the ChatGPT-style layout", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/?view=explore");
 
   await expect(page.getByTestId("sidebar")).toBeVisible();
   await expect(page.getByTestId("empty-state")).toBeVisible();
@@ -36,6 +36,56 @@ test("explore centers the composer above the corpus feed", async ({ page }) => {
     caret: "hide",
     maxDiffPixelRatio: 0.02,
   });
+});
+
+test("failed works bootstrap does not retry in a loop and only retries on demand", async ({ page }) => {
+  let worksHits = 0;
+
+  await page.route("**/api/me", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        authConfigured: false,
+        authenticated: false,
+        user: null,
+      }),
+    });
+  });
+
+  await page.route("**/api/admin/access", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        allowed: false,
+        authenticated: false,
+        authConfigured: false,
+        user: null,
+      }),
+    });
+  });
+
+  await page.route("**/api/works?offset=0&limit=12", async (route) => {
+    worksHits += 1;
+    await route.fulfill({
+      status: 500,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: "forced failure",
+      }),
+    });
+  });
+
+  await page.goto("/?view=explore");
+
+  await expect(page.getByText("We couldn't load the corpus feed.")).toBeVisible();
+  await page.waitForTimeout(1200);
+  expect(worksHits).toBe(1);
+
+  await page.getByRole("button", { name: "Retry" }).click();
+  await page.waitForTimeout(200);
+  expect(worksHits).toBe(2);
 });
 
 test("assistant run shows retrieval, runtime, and synthesized answer in one thread", async ({ page }) => {
@@ -1523,8 +1573,9 @@ test.describe("mobile shell", () => {
     await expect(page.locator(".sidebar-nav-badge")).toContainText("1");
 
     await page.getByRole("button", { name: /Notifications/ }).click();
-    await expect(page).toHaveURL(/view=notifications/);
-    await expect(page.getByRole("heading", { name: "Notifications" })).toBeVisible();
+    await expect(page).not.toHaveURL(/view=notifications/);
+    await expect(page.getByRole("dialog", { name: "Notifications" })).toBeVisible();
+    await expect(page.getByText("Track queued jobs, finished runs, and email delivery in one place.")).toBeVisible();
     await expect(page.getByText("Your research run is ready.")).toBeVisible();
 
     await page.getByRole("button", { name: "Mark read" }).click();
