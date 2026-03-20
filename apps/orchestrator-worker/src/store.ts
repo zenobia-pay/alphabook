@@ -1,5 +1,5 @@
 import type { DbClient } from "@alphabook/db";
-import type { ChunkSearchResult, ToolName, WorkDetail, WorkSummary } from "@alphabook/shared";
+import type { ChunkSearchResult, NotificationType, ToolName, WorkDetail, WorkSummary } from "@alphabook/shared";
 
 const PASSAGE_SEARCH_TIMEOUT_MS = 45_000;
 
@@ -78,6 +78,63 @@ export interface AdminUserRecord extends UserRecord {
   monthlySpendUsd: number;
   totalSpendUsd: number;
   billingEventCount: number;
+}
+
+export interface ProfileFacetStatRecord {
+  label: string;
+  count: number;
+}
+
+export interface ProfileBookStatRecord {
+  work: WorkSummary;
+  openCount: number;
+  citationCount: number;
+  sessionCount: number;
+  lastTouchedAt: string | null;
+}
+
+export interface ProfileQueryStatRecord {
+  sessionId: string;
+  sessionTitle: string | null;
+  firstUserQuery: string | null;
+  latestUserQuery: string | null;
+  lastActivityAt: string | null;
+  userMessageCount: number;
+  citationCount: number;
+  distinctCitedWorks: number;
+}
+
+export interface UserProfileStatsRecord {
+  userId: string;
+  generatedAt: string;
+  counts: {
+    sessionCount: number;
+    queryCount: number;
+    runCount: number;
+    activeDayCount: number;
+    booksOpenedCount: number;
+    uniqueBooksOpenedCount: number;
+    uniqueBooksCitedCount: number;
+    booksTouchedCount: number;
+    citationCount: number;
+  };
+  averages: {
+    queriesPerSession: number;
+    citationsPerQuery: number;
+    booksOpenedPerSession: number;
+    booksTouchedPerQuery: number;
+  };
+  books: {
+    recent: ProfileBookStatRecord[];
+    topOpened: ProfileBookStatRecord[];
+    topCited: ProfileBookStatRecord[];
+  };
+  fingerprint: {
+    authors: ProfileFacetStatRecord[];
+    subjects: ProfileFacetStatRecord[];
+    languages: ProfileFacetStatRecord[];
+  };
+  recentQueries: ProfileQueryStatRecord[];
 }
 
 export interface AgentIdentityRecord {
@@ -229,6 +286,22 @@ export interface ArtifactRecord {
   createdAt: string;
 }
 
+export interface NotificationRecord {
+  id: string;
+  userId: string;
+  sessionId: string | null;
+  runId: string | null;
+  toolCallId: string | null;
+  type: NotificationType;
+  title: string;
+  body: string;
+  dedupeKey: string;
+  metadata: Record<string, unknown>;
+  readAt: string | null;
+  emailedAt: string | null;
+  createdAt: string;
+}
+
 export interface AppStore {
   ensureUser(userId: string): Promise<void>;
   upsertUserProfile(input: { id: string; email?: string | null; name?: string | null; avatarUrl?: string | null }): Promise<UserRecord>;
@@ -256,6 +329,7 @@ export interface AppStore {
   updateSessionTitle(sessionId: string, title: string | null): Promise<void>;
   getSession(sessionId: string): Promise<SessionRecord | null>;
   listSessions(userId: string): Promise<SessionSummaryRecord[]>;
+  getUserProfileStats(userId: string): Promise<UserProfileStatsRecord>;
   listAdminSessions(): Promise<AdminSessionRecord[]>;
   listMessages(sessionId: string): Promise<MessageRecord[]>;
   appendMessage(sessionId: string, role: MessageRecord["role"], content: string, metadata?: Record<string, unknown>): Promise<MessageRecord>;
@@ -314,6 +388,29 @@ export interface AppStore {
     input: Omit<ArtifactRecord, "id" | "createdAt"> & { id?: string; createdAt?: string },
   ): Promise<ArtifactRecord>;
   listArtifacts(sessionId: string, runtimeId?: string | null): Promise<ArtifactRecord[]>;
+  createNotification(input: {
+    userId: string;
+    sessionId?: string | null;
+    runId?: string | null;
+    toolCallId?: string | null;
+    type: NotificationType;
+    title: string;
+    body: string;
+    dedupeKey: string;
+    metadata?: Record<string, unknown>;
+    readAt?: string | null;
+    emailedAt?: string | null;
+    createdAt?: string;
+  }): Promise<NotificationRecord>;
+  listNotifications(userId: string, options?: { limit?: number }): Promise<NotificationRecord[]>;
+  countUnreadNotifications(userId: string): Promise<number>;
+  markNotificationRead(notificationId: string, userId: string, readAt?: string): Promise<boolean>;
+  markAllNotificationsRead(userId: string, readAt?: string): Promise<number>;
+  updateNotification(
+    notificationId: string,
+    userId: string,
+    updates: Partial<Pick<NotificationRecord, "metadata" | "emailedAt" | "readAt">>,
+  ): Promise<void>;
   createBillingEvent(
     input: Omit<BillingEventRecord, "id" | "createdAt"> & { id?: string; createdAt?: string },
   ): Promise<BillingEventRecord>;
@@ -366,6 +463,22 @@ type AgentIdentityRow = {
   metadata_json: Record<string, unknown>;
 };
 
+type NotificationRow = {
+  id: string;
+  user_id: string;
+  session_id: string | null;
+  run_id: string | null;
+  tool_call_id: string | null;
+  type: NotificationType;
+  title: string;
+  body: string;
+  dedupe_key: string;
+  metadata_json: Record<string, unknown>;
+  read_at: string | null;
+  emailed_at: string | null;
+  created_at: string;
+};
+
 function mapAgentIdentityRow(row: AgentIdentityRow): AgentIdentityRecord {
   return {
     id: row.id,
@@ -381,6 +494,24 @@ function mapAgentIdentityRow(row: AgentIdentityRow): AgentIdentityRecord {
     createdAt: row.created_at,
     claimedAt: row.claimed_at,
     metadata: row.metadata_json ?? {},
+  };
+}
+
+function mapNotificationRow(row: NotificationRow): NotificationRecord {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    sessionId: row.session_id,
+    runId: row.run_id,
+    toolCallId: row.tool_call_id,
+    type: row.type,
+    title: row.title,
+    body: row.body,
+    dedupeKey: row.dedupe_key,
+    metadata: row.metadata_json ?? {},
+    readAt: row.read_at,
+    emailedAt: row.emailed_at,
+    createdAt: row.created_at,
   };
 }
 
@@ -507,6 +638,60 @@ function toWorkSummary(
     score: work.score,
     feedLabel: work.feedLabel ?? null,
   };
+}
+
+function roundProfileAverage(value: number) {
+  return Math.round(value * 10) / 10;
+}
+
+function isoDay(value: string | null | undefined) {
+  return typeof value === "string" && value.length >= 10 ? value.slice(0, 10) : null;
+}
+
+function extractMessageCitations(metadata: Record<string, unknown> | undefined): Array<{ workId: string }> {
+  const raw = metadata?.citations;
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw
+    .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object")
+    .map((entry) => ({ workId: typeof entry.workId === "string" ? entry.workId : "" }))
+    .filter((entry) => entry.workId.length > 0);
+}
+
+function topFacetStats(values: Map<string, number>, limit = 5): ProfileFacetStatRecord[] {
+  return [...values.entries()]
+    .map(([label, count]) => ({ label, count }))
+    .sort((left, right) => right.count - left.count || left.label.localeCompare(right.label))
+    .slice(0, limit);
+}
+
+function buildProfileBookStats(
+  worksById: Map<string, WorkSummary>,
+  openCounts: Map<string, number>,
+  citationCounts: Map<string, number>,
+  sessionSetsByWork: Map<string, Set<string>>,
+  lastTouchedAt: Map<string, string>,
+): ProfileBookStatRecord[] {
+  return [...new Set([
+    ...openCounts.keys(),
+    ...citationCounts.keys(),
+    ...sessionSetsByWork.keys(),
+  ])]
+    .map((workId) => {
+      const work = worksById.get(workId);
+      if (!work) {
+        return null;
+      }
+      return {
+        work,
+        openCount: openCounts.get(workId) ?? 0,
+        citationCount: citationCounts.get(workId) ?? 0,
+        sessionCount: sessionSetsByWork.get(workId)?.size ?? 0,
+        lastTouchedAt: lastTouchedAt.get(workId) ?? null,
+      };
+    })
+    .filter((entry): entry is ProfileBookStatRecord => Boolean(entry));
 }
 
 function parseReleaseYear(releaseDate: string | null | undefined) {
@@ -1422,6 +1607,8 @@ export class InMemoryAppStore implements AppStore {
   private readonly toolCalls = new Map<string, ToolCallRecord>();
   private readonly runtimeInstances = new Map<string, RuntimeInstanceRecord>();
   private readonly artifacts = new Map<string, ArtifactRecord>();
+  private readonly notifications = new Map<string, NotificationRecord>();
+  private readonly notificationsByDedupeKey = new Map<string, string>();
   private readonly billingEvents = new Map<string, BillingEventRecord>();
   private readonly analyticsEvents = new Map<string, AnalyticsEventRecord>();
 
@@ -1659,6 +1846,157 @@ export class InMemoryAppStore implements AppStore {
         };
       })
       .sort((left, right) => (right.lastMessageAt ?? right.createdAt).localeCompare(left.lastMessageAt ?? left.createdAt));
+  }
+
+  async getUserProfileStats(userId: string): Promise<UserProfileStatsRecord> {
+    const sessions = [...this.sessions.values()].filter((session) => session.userId === userId);
+    const sessionIds = new Set(sessions.map((session) => session.id));
+    const messages = [...this.messages.values()].flat().filter((message) => sessionIds.has(message.sessionId));
+    const runs = [...this.runs.values()].filter((run) => sessionIds.has(run.sessionId));
+    const bookOpens = [...this.analyticsEvents.values()].filter((event) =>
+      event.userId === userId
+      && event.event === "book_open"
+      && typeof event.properties.workId === "string"
+      && event.properties.workId.trim().length > 0
+    );
+
+    const queryStats = sessions.map((session) => {
+      const sessionMessages = messages
+        .filter((message) => message.sessionId === session.id)
+        .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+      const userMessages = sessionMessages.filter((message) => message.role === "user");
+      const assistantMessages = sessionMessages.filter((message) => message.role === "assistant");
+      const citedWorkIds = new Set<string>();
+      let citationCount = 0;
+      for (const message of assistantMessages) {
+        for (const citation of extractMessageCitations(message.metadata)) {
+          citationCount += 1;
+          citedWorkIds.add(citation.workId);
+        }
+      }
+      const lastActivityAt = [...sessionMessages].sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0]?.createdAt ?? session.createdAt;
+      return {
+        sessionId: session.id,
+        sessionTitle: session.title,
+        firstUserQuery: userMessages[0]?.content ?? null,
+        latestUserQuery: userMessages[userMessages.length - 1]?.content ?? null,
+        lastActivityAt,
+        userMessageCount: userMessages.length,
+        citationCount,
+        distinctCitedWorks: citedWorkIds.size,
+      };
+    }).sort((left, right) => (right.lastActivityAt ?? "").localeCompare(left.lastActivityAt ?? ""));
+
+    const openCounts = new Map<string, number>();
+    const citationCounts = new Map<string, number>();
+    const sessionSetsByWork = new Map<string, Set<string>>();
+    const lastTouchedAt = new Map<string, string>();
+    const activeDays = new Set<string>();
+
+    for (const event of bookOpens) {
+      const workId = String(event.properties.workId);
+      openCounts.set(workId, (openCounts.get(workId) ?? 0) + 1);
+      const sessionId = typeof event.sessionId === "string" ? event.sessionId : `analytics:${event.id}`;
+      if (!sessionSetsByWork.has(workId)) {
+        sessionSetsByWork.set(workId, new Set());
+      }
+      sessionSetsByWork.get(workId)!.add(sessionId);
+      const currentLastTouched = lastTouchedAt.get(workId);
+      if (!currentLastTouched || event.createdAt > currentLastTouched) {
+        lastTouchedAt.set(workId, event.createdAt);
+      }
+      const day = isoDay(event.createdAt);
+      if (day) {
+        activeDays.add(day);
+      }
+    }
+
+    for (const message of messages) {
+      const day = isoDay(message.createdAt);
+      if (day) {
+        activeDays.add(day);
+      }
+      if (message.role !== "assistant") {
+        continue;
+      }
+      for (const citation of extractMessageCitations(message.metadata)) {
+        citationCounts.set(citation.workId, (citationCounts.get(citation.workId) ?? 0) + 1);
+        if (!sessionSetsByWork.has(citation.workId)) {
+          sessionSetsByWork.set(citation.workId, new Set());
+        }
+        sessionSetsByWork.get(citation.workId)!.add(message.sessionId);
+        const currentLastTouched = lastTouchedAt.get(citation.workId);
+        if (!currentLastTouched || message.createdAt > currentLastTouched) {
+          lastTouchedAt.set(citation.workId, message.createdAt);
+        }
+      }
+    }
+
+    const workIds = [...new Set([
+      ...openCounts.keys(),
+      ...citationCounts.keys(),
+    ])];
+    const works = workIds.length > 0 ? await this.getWorkMetadata(workIds) : [];
+    const worksById = new Map(works.map((work) => [work.id, work]));
+    const allBookStats = buildProfileBookStats(worksById, openCounts, citationCounts, sessionSetsByWork, lastTouchedAt);
+
+    const authorWeights = new Map<string, number>();
+    const subjectWeights = new Map<string, number>();
+    const languageWeights = new Map<string, number>();
+    for (const book of allBookStats) {
+      const weight = Math.max(1, book.openCount + book.citationCount + book.sessionCount);
+      for (const author of book.work.authors) {
+        authorWeights.set(author, (authorWeights.get(author) ?? 0) + weight);
+      }
+      for (const subject of book.work.subjects) {
+        subjectWeights.set(subject, (subjectWeights.get(subject) ?? 0) + weight);
+      }
+      if (book.work.language) {
+        languageWeights.set(book.work.language, (languageWeights.get(book.work.language) ?? 0) + weight);
+      }
+    }
+
+    const queryCount = queryStats.reduce((total, entry) => total + entry.userMessageCount, 0);
+    const citationCount = [...citationCounts.values()].reduce((total, count) => total + count, 0);
+
+    return {
+      userId,
+      generatedAt: nowIso(),
+      counts: {
+        sessionCount: sessions.length,
+        queryCount,
+        runCount: runs.length,
+        activeDayCount: activeDays.size,
+        booksOpenedCount: bookOpens.length,
+        uniqueBooksOpenedCount: openCounts.size,
+        uniqueBooksCitedCount: citationCounts.size,
+        booksTouchedCount: allBookStats.length,
+        citationCount,
+      },
+      averages: {
+        queriesPerSession: sessions.length > 0 ? roundProfileAverage(queryCount / sessions.length) : 0,
+        citationsPerQuery: queryCount > 0 ? roundProfileAverage(citationCount / queryCount) : 0,
+        booksOpenedPerSession: sessions.length > 0 ? roundProfileAverage(bookOpens.length / sessions.length) : 0,
+        booksTouchedPerQuery: queryCount > 0 ? roundProfileAverage(allBookStats.length / queryCount) : 0,
+      },
+      books: {
+        recent: [...allBookStats]
+          .sort((left, right) => (right.lastTouchedAt ?? "").localeCompare(left.lastTouchedAt ?? ""))
+          .slice(0, 6),
+        topOpened: [...allBookStats]
+          .sort((left, right) => right.openCount - left.openCount || (right.lastTouchedAt ?? "").localeCompare(left.lastTouchedAt ?? ""))
+          .slice(0, 6),
+        topCited: [...allBookStats]
+          .sort((left, right) => right.citationCount - left.citationCount || (right.lastTouchedAt ?? "").localeCompare(left.lastTouchedAt ?? ""))
+          .slice(0, 6),
+      },
+      fingerprint: {
+        authors: topFacetStats(authorWeights),
+        subjects: topFacetStats(subjectWeights),
+        languages: topFacetStats(languageWeights, 3),
+      },
+      recentQueries: queryStats.slice(0, 12),
+    };
   }
 
   async listAdminSessions(): Promise<AdminSessionRecord[]> {
@@ -2189,6 +2527,100 @@ export class InMemoryAppStore implements AppStore {
     return [...this.artifacts.values()]
       .filter((artifact) => artifact.sessionId === sessionId && (runtimeId === undefined || artifact.runtimeId === runtimeId))
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  }
+
+  async createNotification(input: {
+    userId: string;
+    sessionId?: string | null;
+    runId?: string | null;
+    toolCallId?: string | null;
+    type: NotificationType;
+    title: string;
+    body: string;
+    dedupeKey: string;
+    metadata?: Record<string, unknown>;
+    readAt?: string | null;
+    emailedAt?: string | null;
+    createdAt?: string;
+  }): Promise<NotificationRecord> {
+    const existingId = this.notificationsByDedupeKey.get(input.dedupeKey);
+    if (existingId) {
+      return this.notifications.get(existingId)!;
+    }
+    const record: NotificationRecord = {
+      id: crypto.randomUUID(),
+      userId: input.userId,
+      sessionId: input.sessionId ?? null,
+      runId: input.runId ?? null,
+      toolCallId: input.toolCallId ?? null,
+      type: input.type,
+      title: input.title,
+      body: input.body,
+      dedupeKey: input.dedupeKey,
+      metadata: input.metadata ?? {},
+      readAt: input.readAt ?? null,
+      emailedAt: input.emailedAt ?? null,
+      createdAt: input.createdAt ?? nowIso(),
+    };
+    this.notifications.set(record.id, record);
+    this.notificationsByDedupeKey.set(record.dedupeKey, record.id);
+    return record;
+  }
+
+  async listNotifications(userId: string, options: { limit?: number } = {}): Promise<NotificationRecord[]> {
+    const limit = options.limit ?? 100;
+    return [...this.notifications.values()]
+      .filter((notification) => notification.userId === userId)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .slice(0, limit);
+  }
+
+  async countUnreadNotifications(userId: string): Promise<number> {
+    return [...this.notifications.values()].filter((notification) => notification.userId === userId && !notification.readAt).length;
+  }
+
+  async markNotificationRead(notificationId: string, userId: string, readAt = nowIso()): Promise<boolean> {
+    const record = this.notifications.get(notificationId);
+    if (!record || record.userId !== userId) {
+      return false;
+    }
+    this.notifications.set(notificationId, {
+      ...record,
+      readAt: record.readAt ?? readAt,
+    });
+    return true;
+  }
+
+  async markAllNotificationsRead(userId: string, readAt = nowIso()): Promise<number> {
+    let updatedCount = 0;
+    for (const [id, record] of this.notifications.entries()) {
+      if (record.userId !== userId || record.readAt) {
+        continue;
+      }
+      this.notifications.set(id, {
+        ...record,
+        readAt,
+      });
+      updatedCount += 1;
+    }
+    return updatedCount;
+  }
+
+  async updateNotification(
+    notificationId: string,
+    userId: string,
+    updates: Partial<Pick<NotificationRecord, "metadata" | "emailedAt" | "readAt">>,
+  ): Promise<void> {
+    const record = this.notifications.get(notificationId);
+    if (!record || record.userId !== userId) {
+      return;
+    }
+    this.notifications.set(notificationId, {
+      ...record,
+      metadata: updates.metadata ?? record.metadata,
+      emailedAt: updates.emailedAt ?? record.emailedAt,
+      readAt: updates.readAt ?? record.readAt,
+    });
   }
 
   async createBillingEvent(
@@ -2885,6 +3317,274 @@ export class NeonAppStore implements AppStore {
       lastMessageAt: row.last_message_at,
       lastMessagePreview: row.last_message_preview?.slice(0, 120) ?? null,
     }));
+  }
+
+  async getUserProfileStats(userId: string): Promise<UserProfileStatsRecord> {
+    await this.ensureAnalyticsSchema();
+
+    const [summaryResult, queryResult, openResult, citationResult] = await Promise.all([
+      this.db.query<{
+        session_count: number;
+        query_count: number;
+        run_count: number;
+        active_day_count: number;
+      }>(
+        `
+          WITH active_days AS (
+            SELECT DISTINCT created_at::date AS day
+            FROM messages m
+            JOIN chat_sessions cs ON cs.id = m.session_id
+            WHERE cs.user_id = $1
+            UNION
+            SELECT DISTINCT created_at::date AS day
+            FROM analytics_events
+            WHERE user_id = $1 AND event = 'book_open'
+          )
+          SELECT
+            COALESCE((SELECT COUNT(*)::int FROM chat_sessions WHERE user_id = $1), 0) AS session_count,
+            COALESCE((
+              SELECT COUNT(*)::int
+              FROM messages m
+              JOIN chat_sessions cs ON cs.id = m.session_id
+              WHERE cs.user_id = $1 AND m.role = 'user'
+            ), 0) AS query_count,
+            COALESCE((
+              SELECT COUNT(r.id)::int
+              FROM runs r
+              JOIN chat_sessions cs ON cs.id = r.session_id
+              WHERE cs.user_id = $1
+            ), 0) AS run_count,
+            COALESCE((SELECT COUNT(*)::int FROM active_days), 0) AS active_day_count
+        `,
+        [userId],
+      ),
+      this.db.query<{
+        session_id: string;
+        session_title: string | null;
+        first_user_query: string | null;
+        latest_user_query: string | null;
+        last_activity_at: string | null;
+        user_message_count: number;
+        citation_count: number;
+        distinct_cited_works: number;
+      }>(
+        `
+          WITH user_sessions AS (
+            SELECT id, title, created_at
+            FROM chat_sessions
+            WHERE user_id = $1
+          ),
+          message_rollup AS (
+            SELECT
+              us.id AS session_id,
+              us.title AS session_title,
+              COALESCE(
+                (ARRAY_AGG(m.content ORDER BY m.created_at ASC) FILTER (WHERE m.role = 'user' AND m.id IS NOT NULL))[1],
+                NULL
+              ) AS first_user_query,
+              COALESCE(
+                (ARRAY_AGG(m.content ORDER BY m.created_at DESC) FILTER (WHERE m.role = 'user' AND m.id IS NOT NULL))[1],
+                NULL
+              ) AS latest_user_query,
+              COALESCE(MAX(m.created_at)::text, us.created_at::text) AS last_activity_at,
+              COUNT(*) FILTER (WHERE m.role = 'user')::int AS user_message_count
+            FROM user_sessions us
+            LEFT JOIN messages m ON m.session_id = us.id
+            GROUP BY us.id, us.title, us.created_at
+          ),
+          citation_rollup AS (
+            SELECT
+              m.session_id,
+              COUNT(*)::int AS citation_count,
+              COUNT(DISTINCT citation.value->>'workId')::int AS distinct_cited_works
+            FROM messages m
+            JOIN user_sessions us ON us.id = m.session_id
+            CROSS JOIN LATERAL jsonb_array_elements(
+              CASE
+                WHEN jsonb_typeof(m.metadata_json->'citations') = 'array' THEN m.metadata_json->'citations'
+                ELSE '[]'::jsonb
+              END
+            ) AS citation(value)
+            WHERE m.role = 'assistant'
+              AND COALESCE(citation.value->>'workId', '') <> ''
+            GROUP BY m.session_id
+          )
+          SELECT
+            mr.session_id,
+            mr.session_title,
+            mr.first_user_query,
+            mr.latest_user_query,
+            mr.last_activity_at,
+            mr.user_message_count,
+            COALESCE(cr.citation_count, 0) AS citation_count,
+            COALESCE(cr.distinct_cited_works, 0) AS distinct_cited_works
+          FROM message_rollup mr
+          LEFT JOIN citation_rollup cr ON cr.session_id = mr.session_id
+          ORDER BY mr.last_activity_at DESC NULLS LAST
+          LIMIT 12
+        `,
+        [userId],
+      ),
+      this.db.query<{
+        work_id: string;
+        open_count: number;
+        last_touched_at: string;
+        session_ids: string[];
+      }>(
+        `
+          SELECT
+            properties_json->>'workId' AS work_id,
+            COUNT(*)::int AS open_count,
+            MAX(created_at)::text AS last_touched_at,
+            ARRAY_REMOVE(ARRAY_AGG(DISTINCT COALESCE(session_id::text, 'analytics:' || id::text)), NULL) AS session_ids
+          FROM analytics_events
+          WHERE user_id = $1
+            AND event = 'book_open'
+            AND properties_json ? 'workId'
+            AND COALESCE(properties_json->>'workId', '') <> ''
+          GROUP BY properties_json->>'workId'
+        `,
+        [userId],
+      ),
+      this.db.query<{
+        work_id: string;
+        citation_count: number;
+        last_touched_at: string;
+        session_ids: string[];
+      }>(
+        `
+          WITH user_sessions AS (
+            SELECT id
+            FROM chat_sessions
+            WHERE user_id = $1
+          )
+          SELECT
+            citation.value->>'workId' AS work_id,
+            COUNT(*)::int AS citation_count,
+            MAX(m.created_at)::text AS last_touched_at,
+            ARRAY_REMOVE(ARRAY_AGG(DISTINCT m.session_id::text), NULL) AS session_ids
+          FROM messages m
+          JOIN user_sessions us ON us.id = m.session_id
+          CROSS JOIN LATERAL jsonb_array_elements(
+            CASE
+              WHEN jsonb_typeof(m.metadata_json->'citations') = 'array' THEN m.metadata_json->'citations'
+              ELSE '[]'::jsonb
+            END
+          ) AS citation(value)
+          WHERE m.role = 'assistant'
+            AND COALESCE(citation.value->>'workId', '') <> ''
+          GROUP BY citation.value->>'workId'
+        `,
+        [userId],
+      ),
+    ]);
+
+    const summary = summaryResult.rows[0] ?? {
+      session_count: 0,
+      query_count: 0,
+      run_count: 0,
+      active_day_count: 0,
+    };
+
+    const openCounts = new Map<string, number>();
+    const citationCounts = new Map<string, number>();
+    const sessionSetsByWork = new Map<string, Set<string>>();
+    const lastTouchedAt = new Map<string, string>();
+
+    for (const row of openResult.rows) {
+      openCounts.set(row.work_id, Number(row.open_count ?? 0));
+      sessionSetsByWork.set(row.work_id, new Set((row.session_ids ?? []).filter((value): value is string => typeof value === "string" && value.length > 0)));
+      lastTouchedAt.set(row.work_id, row.last_touched_at);
+    }
+
+    for (const row of citationResult.rows) {
+      citationCounts.set(row.work_id, Number(row.citation_count ?? 0));
+      const existing = sessionSetsByWork.get(row.work_id) ?? new Set<string>();
+      for (const sessionId of row.session_ids ?? []) {
+        if (typeof sessionId === "string" && sessionId.length > 0) {
+          existing.add(sessionId);
+        }
+      }
+      sessionSetsByWork.set(row.work_id, existing);
+      const currentLastTouched = lastTouchedAt.get(row.work_id);
+      if (!currentLastTouched || row.last_touched_at > currentLastTouched) {
+        lastTouchedAt.set(row.work_id, row.last_touched_at);
+      }
+    }
+
+    const workIds = [...new Set([...openCounts.keys(), ...citationCounts.keys()])];
+    const works = workIds.length > 0 ? await this.getWorkMetadata(workIds) : [];
+    const worksById = new Map(works.map((work) => [work.id, work]));
+    const allBookStats = buildProfileBookStats(worksById, openCounts, citationCounts, sessionSetsByWork, lastTouchedAt);
+
+    const authorWeights = new Map<string, number>();
+    const subjectWeights = new Map<string, number>();
+    const languageWeights = new Map<string, number>();
+    for (const book of allBookStats) {
+      const weight = Math.max(1, book.openCount + book.citationCount + book.sessionCount);
+      for (const author of book.work.authors) {
+        authorWeights.set(author, (authorWeights.get(author) ?? 0) + weight);
+      }
+      for (const subject of book.work.subjects) {
+        subjectWeights.set(subject, (subjectWeights.get(subject) ?? 0) + weight);
+      }
+      if (book.work.language) {
+        languageWeights.set(book.work.language, (languageWeights.get(book.work.language) ?? 0) + weight);
+      }
+    }
+
+    const queryCount = Number(summary.query_count ?? 0);
+    const sessionCount = Number(summary.session_count ?? 0);
+    const totalOpenCount = [...openCounts.values()].reduce((total, count) => total + count, 0);
+    const totalCitationCount = [...citationCounts.values()].reduce((total, count) => total + count, 0);
+
+    return {
+      userId,
+      generatedAt: nowIso(),
+      counts: {
+        sessionCount,
+        queryCount,
+        runCount: Number(summary.run_count ?? 0),
+        activeDayCount: Number(summary.active_day_count ?? 0),
+        booksOpenedCount: totalOpenCount,
+        uniqueBooksOpenedCount: openCounts.size,
+        uniqueBooksCitedCount: citationCounts.size,
+        booksTouchedCount: allBookStats.length,
+        citationCount: totalCitationCount,
+      },
+      averages: {
+        queriesPerSession: sessionCount > 0 ? roundProfileAverage(queryCount / sessionCount) : 0,
+        citationsPerQuery: queryCount > 0 ? roundProfileAverage(totalCitationCount / queryCount) : 0,
+        booksOpenedPerSession: sessionCount > 0 ? roundProfileAverage(totalOpenCount / sessionCount) : 0,
+        booksTouchedPerQuery: queryCount > 0 ? roundProfileAverage(allBookStats.length / queryCount) : 0,
+      },
+      books: {
+        recent: [...allBookStats]
+          .sort((left, right) => (right.lastTouchedAt ?? "").localeCompare(left.lastTouchedAt ?? ""))
+          .slice(0, 6),
+        topOpened: [...allBookStats]
+          .sort((left, right) => right.openCount - left.openCount || (right.lastTouchedAt ?? "").localeCompare(left.lastTouchedAt ?? ""))
+          .slice(0, 6),
+        topCited: [...allBookStats]
+          .sort((left, right) => right.citationCount - left.citationCount || (right.lastTouchedAt ?? "").localeCompare(left.lastTouchedAt ?? ""))
+          .slice(0, 6),
+      },
+      fingerprint: {
+        authors: topFacetStats(authorWeights),
+        subjects: topFacetStats(subjectWeights),
+        languages: topFacetStats(languageWeights, 3),
+      },
+      recentQueries: queryResult.rows.map((row) => ({
+        sessionId: row.session_id,
+        sessionTitle: row.session_title,
+        firstUserQuery: row.first_user_query,
+        latestUserQuery: row.latest_user_query,
+        lastActivityAt: row.last_activity_at,
+        userMessageCount: Number(row.user_message_count ?? 0),
+        citationCount: Number(row.citation_count ?? 0),
+        distinctCitedWorks: Number(row.distinct_cited_works ?? 0),
+      })),
+    };
   }
 
   async listAdminSessions(): Promise<AdminSessionRecord[]> {
@@ -4657,6 +5357,183 @@ export class NeonAppStore implements AppStore {
       metadata: row.metadata_json,
       createdAt: row.created_at,
     }));
+  }
+
+  async createNotification(input: {
+    userId: string;
+    sessionId?: string | null;
+    runId?: string | null;
+    toolCallId?: string | null;
+    type: NotificationType;
+    title: string;
+    body: string;
+    dedupeKey: string;
+    metadata?: Record<string, unknown>;
+    readAt?: string | null;
+    emailedAt?: string | null;
+    createdAt?: string;
+  }): Promise<NotificationRecord> {
+    const notificationId = crypto.randomUUID();
+    const createdAt = input.createdAt ?? nowIso();
+    const result = await this.db.query<NotificationRow>(
+      `
+        INSERT INTO notifications (
+          id,
+          user_id,
+          session_id,
+          run_id,
+          tool_call_id,
+          type,
+          title,
+          body,
+          dedupe_key,
+          metadata_json,
+          read_at,
+          emailed_at,
+          created_at
+        )
+        VALUES (
+          $1::uuid,
+          $2,
+          $3::uuid,
+          $4::uuid,
+          $5::uuid,
+          $6,
+          $7,
+          $8,
+          $9,
+          $10::jsonb,
+          $11::timestamptz,
+          $12::timestamptz,
+          $13::timestamptz
+        )
+        ON CONFLICT (dedupe_key) DO UPDATE
+        SET dedupe_key = EXCLUDED.dedupe_key
+        RETURNING
+          id,
+          user_id,
+          session_id,
+          run_id,
+          tool_call_id,
+          type,
+          title,
+          body,
+          dedupe_key,
+          metadata_json,
+          read_at,
+          emailed_at,
+          created_at
+      `,
+      [
+        notificationId,
+        input.userId,
+        input.sessionId ?? null,
+        input.runId ?? null,
+        input.toolCallId ?? null,
+        input.type,
+        input.title,
+        input.body,
+        input.dedupeKey,
+        JSON.stringify(input.metadata ?? {}),
+        input.readAt ?? null,
+        input.emailedAt ?? null,
+        createdAt,
+      ],
+    );
+    return mapNotificationRow(result.rows[0]);
+  }
+
+  async listNotifications(userId: string, options: { limit?: number } = {}): Promise<NotificationRecord[]> {
+    const result = await this.db.query<NotificationRow>(
+      `
+        SELECT
+          id,
+          user_id,
+          session_id,
+          run_id,
+          tool_call_id,
+          type,
+          title,
+          body,
+          dedupe_key,
+          metadata_json,
+          read_at,
+          emailed_at,
+          created_at
+        FROM notifications
+        WHERE user_id = $1
+        ORDER BY created_at DESC
+        LIMIT $2
+      `,
+      [userId, options.limit ?? 100],
+    );
+    return result.rows.map((row) => mapNotificationRow(row));
+  }
+
+  async countUnreadNotifications(userId: string): Promise<number> {
+    const result = await this.db.query<{ unread_count: number }>(
+      `
+        SELECT COUNT(*)::int AS unread_count
+        FROM notifications
+        WHERE user_id = $1
+          AND read_at IS NULL
+      `,
+      [userId],
+    );
+    return Number(result.rows[0]?.unread_count ?? 0);
+  }
+
+  async markNotificationRead(notificationId: string, userId: string, readAt = nowIso()): Promise<boolean> {
+    const result = await this.db.query<{ id: string }>(
+      `
+        UPDATE notifications
+        SET read_at = COALESCE(read_at, $3::timestamptz)
+        WHERE id = $1::uuid
+          AND user_id = $2
+        RETURNING id
+      `,
+      [notificationId, userId, readAt],
+    );
+    return result.rows.length > 0;
+  }
+
+  async markAllNotificationsRead(userId: string, readAt = nowIso()): Promise<number> {
+    const result = await this.db.query<{ id: string }>(
+      `
+        UPDATE notifications
+        SET read_at = COALESCE(read_at, $2::timestamptz)
+        WHERE user_id = $1
+          AND read_at IS NULL
+        RETURNING id
+      `,
+      [userId, readAt],
+    );
+    return result.rows.length;
+  }
+
+  async updateNotification(
+    notificationId: string,
+    userId: string,
+    updates: Partial<Pick<NotificationRecord, "metadata" | "emailedAt" | "readAt">>,
+  ): Promise<void> {
+    await this.db.query(
+      `
+        UPDATE notifications
+        SET
+          metadata_json = COALESCE($3::jsonb, metadata_json),
+          emailed_at = COALESCE($4::timestamptz, emailed_at),
+          read_at = COALESCE($5::timestamptz, read_at)
+        WHERE id = $1::uuid
+          AND user_id = $2
+      `,
+      [
+        notificationId,
+        userId,
+        updates.metadata ? JSON.stringify(updates.metadata) : null,
+        updates.emailedAt ?? null,
+        updates.readAt ?? null,
+      ],
+    );
   }
 
   async createBillingEvent(

@@ -1,7 +1,7 @@
 import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import { artifactKeys, HARD_LIMITS } from "@alphabook/corpus-core";
-import { ChatRequestSchema, ToolArgsSchemas, getToolLabel, type ChatRequest, type ChunkSearchResult, type Citation, type PlannerDecision, type ToolName, type WorkSummary } from "@alphabook/shared";
+import { ChatRequestSchema, ToolArgsSchemas, getToolLabel, type ChatRequest, type ChunkSearchResult, type Citation, type NotificationType, type PlannerDecision, type ToolName, type WorkSummary } from "@alphabook/shared";
 import { createFacilitatorConfig } from "@coinbase/x402";
 import { decodePaymentSignatureHeader, encodePaymentRequiredHeader, encodePaymentResponseHeader } from "@x402/core/http";
 import { HTTPFacilitatorClient, x402ResourceServer } from "@x402/core/server";
@@ -18,7 +18,7 @@ import { FallbackPlanner, parseToolCall } from "./planner";
 import type { Router } from "./router";
 import { cleanupToolStreamWithWorkersAi, type ToolStreamCleanupLine } from "./tool-stream-cleanup";
 import type { Synthesizer, ToolHistoryEntry } from "./synthesizer";
-import type { AgentIdentityRecord, AnalyticsEventRecord, AppStore, MessageRecord, PassageSearchFilters, SessionRecord, UserRecord, WorkDetailRecord } from "./store";
+import type { AgentIdentityRecord, AnalyticsEventRecord, AppStore, MessageRecord, NotificationRecord, PassageSearchFilters, SessionRecord, UserRecord, WorkDetailRecord } from "./store";
 import type { WorkersAiBinding } from "./index";
 
 export interface WorkerQueues {
@@ -54,6 +54,8 @@ export interface AppDeps {
   ai?: WorkersAiBinding;
   toolStreamCleanupModel?: string;
   errorAlertWebhookUrl?: string;
+  resendApiKey?: string;
+  resendFromEmail?: string;
   x402?: {
     enabled: boolean;
     payTo: string;
@@ -5052,6 +5054,186 @@ function isAdminUser(user: Awaited<ReturnType<AppStore["getUserProfile"]>>, allo
   return user.email.trim().toLowerCase() === allowedEmail.trim().toLowerCase();
 }
 
+function toolStatusToNotificationType(status: string): NotificationType {
+  if (status === "failed") {
+    return "tool_failed";
+  }
+  if (status === "timed_out") {
+    return "tool_timed_out";
+  }
+  return "tool_completed";
+}
+
+function runStatusToNotificationType(status: string): NotificationType {
+  if (status === "failed") {
+    return "run_failed";
+  }
+  if (status === "timed_out") {
+    return "run_timed_out";
+  }
+  return "run_completed";
+}
+
+function describeRunTarget(session: SessionRecord, sessionTitle?: string | null) {
+  const title = sessionTitle?.trim();
+  return title ? `"${title}"` : "your research thread";
+}
+
+function buildToolNotification(input: {
+  session: SessionRecord;
+  sessionTitle?: string | null;
+  runId: string;
+  toolCallId: string;
+  toolName: ToolName;
+  label?: string | null;
+  status: "started" | "completed" | "failed" | "timed_out";
+}): Omit<NotificationRecord, "id" | "metadata" | "readAt" | "emailedAt" | "createdAt"> & {
+  dedupeKey: string;
+  metadata: Record<string, unknown>;
+} {
+  const label = input.label?.trim() || getToolLabel(input.toolName);
+  const target = describeRunTarget(input.session, input.sessionTitle);
+  const type =
+    input.status === "started"
+      ? "tool_started"
+      : toolStatusToNotificationType(input.status);
+  const title =
+    input.status === "started"
+      ? "Research step started"
+      : input.status === "failed"
+        ? "Research step failed"
+        : input.status === "timed_out"
+          ? "Research step timed out"
+          : "Research step completed";
+  const body =
+    input.status === "started"
+      ? `${label} started for ${target}.`
+      : input.status === "failed"
+        ? `${label} failed while working on ${target}.`
+        : input.status === "timed_out"
+          ? `${label} timed out while working on ${target}.`
+          : `${label} finished for ${target}.`;
+  return {
+    userId: input.session.userId,
+    sessionId: input.session.id,
+    runId: input.runId,
+    toolCallId: input.toolCallId,
+    type,
+    title,
+    body,
+    dedupeKey:
+      input.status === "started"
+        ? `tool-start:${input.toolCallId}`
+        : `tool-end:${input.toolCallId}:${input.status}`,
+    metadata: {
+      toolName: input.toolName,
+      label,
+      status: input.status,
+    },
+  };
+}
+
+function buildRunNotification(input: {
+  session: SessionRecord;
+  sessionTitle?: string | null;
+  runId: string;
+  status: "completed" | "failed" | "timed_out";
+  completionMode?: string | null;
+}): Omit<NotificationRecord, "id" | "metadata" | "readAt" | "emailedAt" | "createdAt"> & {
+  dedupeKey: string;
+  metadata: Record<string, unknown>;
+} {
+  const target = describeRunTarget(input.session, input.sessionTitle);
+  const type = runStatusToNotificationType(input.status);
+  const title =
+    input.status === "completed"
+      ? "Research complete"
+      : input.status === "failed"
+        ? "Research failed"
+        : "Research timed out";
+  const body =
+    input.status === "completed"
+      ? `Your research run for ${target} is ready.`
+      : input.status === "failed"
+        ? `Your research run for ${target} ended with an error.`
+        : `Your research run for ${target} timed out before it finished.`;
+  return {
+    userId: input.session.userId,
+    sessionId: input.session.id,
+    runId: input.runId,
+    toolCallId: null,
+    type,
+    title,
+    body,
+    dedupeKey: `run-end:${input.runId}:${input.status}`,
+    metadata: {
+      status: input.status,
+      completionMode: input.completionMode ?? null,
+    },
+  };
+}
+
+async function sendRunCompletionEmail(
+  deps: AppDeps,
+  input: {
+    email: string;
+    runId: string;
+    session: SessionRecord;
+    sessionTitle?: string | null;
+    status: "completed" | "failed" | "timed_out";
+  },
+): Promise<{ emailedAt?: string; metadata: Record<string, unknown> }> {
+  if (!deps.resendApiKey || !deps.resendFromEmail) {
+    return {
+      metadata: {
+        emailStatus: "skipped",
+        emailReason: "resend_not_configured",
+      },
+    };
+  }
+
+  const target = describeRunTarget(input.session, input.sessionTitle);
+  const subject =
+    input.status === "completed"
+      ? `AlphaBook research complete: ${input.sessionTitle?.trim() || "your thread"}`
+      : input.status === "failed"
+        ? `AlphaBook research failed: ${input.sessionTitle?.trim() || "your thread"}`
+        : `AlphaBook research timed out: ${input.sessionTitle?.trim() || "your thread"}`;
+  const text =
+    input.status === "completed"
+      ? `Your AlphaBook research run for ${target} has completed.\n\nRun ID: ${input.runId}\n\nOpen AlphaBook to review the result.`
+      : input.status === "failed"
+        ? `Your AlphaBook research run for ${target} failed.\n\nRun ID: ${input.runId}\n\nOpen AlphaBook to inspect the session and retry if needed.`
+        : `Your AlphaBook research run for ${target} timed out.\n\nRun ID: ${input.runId}\n\nOpen AlphaBook to inspect the session and retry if needed.`;
+
+  const response = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${deps.resendApiKey}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      from: deps.resendFromEmail,
+      to: [input.email],
+      subject,
+      text,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Resend email failed: ${response.status} ${errorText}`.trim());
+  }
+
+  const emailedAt = new Date().toISOString();
+  return {
+    emailedAt,
+    metadata: {
+      emailStatus: "sent",
+    },
+  };
+}
+
 type RunArtifactLike = {
   filename: string;
   mimeType: string;
@@ -6652,6 +6834,129 @@ async function runOrchestrator(
   activeRuns: Map<string, ActiveRunState>,
 ): Promise<void> {
   const originalSend = send;
+  let rawLogSequence = 0;
+  const rawRunLog: ToolRunRawLogEntry[] = [];
+  let session: SessionRecord | null = input.sessionId ? await deps.store.getSession(input.sessionId) : null;
+  let run: Awaited<ReturnType<AppStore["createRun"]>> | null = null;
+  const recordRawLog = (event: string, payload: Record<string, unknown>) => {
+    rawRunLog.push({
+      seq: rawLogSequence,
+      timestamp: new Date().toISOString(),
+      event,
+      payload,
+    });
+    rawLogSequence += 1;
+    scheduleRawLogPersist(false);
+  };
+  async function maybeCreateToolLifecycleNotification(event: string, data: Record<string, unknown>) {
+    if (!session || !run) {
+      return;
+    }
+    if (event !== "tool.started" && event !== "tool.completed") {
+      return;
+    }
+    const toolCallId = typeof data.toolCallId === "string" ? data.toolCallId : null;
+    const toolName = typeof data.toolName === "string" ? data.toolName as ToolName : null;
+    if (!toolCallId || !toolName) {
+      return;
+    }
+    const status =
+      event === "tool.started"
+        ? "started"
+        : typeof data.status === "string" && (data.status === "completed" || data.status === "failed" || data.status === "timed_out")
+          ? data.status
+          : "completed";
+    await deps.store.createNotification(
+      buildToolNotification({
+        session,
+        sessionTitle: session.title,
+        runId: run.id,
+        toolCallId,
+        toolName,
+        label: typeof data.label === "string" ? data.label : null,
+        status,
+      }),
+    );
+  }
+  async function maybeCreateRunCompletionNotification(data: Record<string, unknown>) {
+    if (!session || !run) {
+      return;
+    }
+    const status =
+      typeof data.status === "string" && (data.status === "completed" || data.status === "failed" || data.status === "timed_out")
+        ? data.status
+        : null;
+    if (!status) {
+      return;
+    }
+    const notification = await deps.store.createNotification(
+      buildRunNotification({
+        session,
+        sessionTitle: session.title,
+        runId: run.id,
+        status,
+        completionMode: typeof data.completionMode === "string" ? data.completionMode : null,
+      }),
+    );
+    if (notification.emailedAt || notification.metadata.emailStatus === "sent" || notification.metadata.emailStatus === "skipped") {
+      return;
+    }
+    const user = await deps.store.getUserProfile(session.userId);
+    if (!user?.email) {
+      await deps.store.updateNotification(notification.id, notification.userId, {
+        metadata: {
+          ...notification.metadata,
+          emailStatus: "skipped",
+          emailReason: "missing_email",
+        },
+      });
+      return;
+    }
+    try {
+      const emailResult = await sendRunCompletionEmail(deps, {
+        email: user.email,
+        runId: run.id,
+        session,
+        sessionTitle: session.title,
+        status,
+      });
+      await deps.store.updateNotification(notification.id, notification.userId, {
+        metadata: {
+          ...notification.metadata,
+          ...emailResult.metadata,
+        },
+        emailedAt: emailResult.emailedAt ?? null,
+      });
+    } catch (error) {
+      recordRawLog("notification.email_failed", {
+        notificationId: notification.id,
+        runId: run.id,
+        userId: notification.userId,
+        error: error instanceof Error ? error.message : "Unknown notification email error",
+      });
+      await deps.store.updateNotification(notification.id, notification.userId, {
+        metadata: {
+          ...notification.metadata,
+          emailStatus: "failed",
+          emailError: error instanceof Error ? error.message : "Unknown notification email error",
+        },
+      });
+    }
+  }
+  async function fanOutNotifications(event: string, data: Record<string, unknown>) {
+    try {
+      await maybeCreateToolLifecycleNotification(event, data);
+      if (event === "run.completed") {
+        await maybeCreateRunCompletionNotification(data);
+      }
+    } catch (error) {
+      recordRawLog("notification.dispatch_failed", {
+        event,
+        runId: run?.id ?? null,
+        error: error instanceof Error ? error.message : "Unknown notification dispatch error",
+      });
+    }
+  }
   const started = deps.now?.() ?? Date.now();
   const runMetrics = createLiveRunMetricsState(started);
   const captureTaskSpecRunMetrics = (taskSpec: Record<string, unknown>) => {
@@ -6882,6 +7187,7 @@ async function runOrchestrator(
       }
     }
     await originalSend(event, nextData);
+    await fanOutNotifications(event, nextData);
     const runId = typeof nextData.runId === "string" ? nextData.runId : null;
     if (!runId) {
       return;
@@ -6903,8 +7209,6 @@ async function runOrchestrator(
     throw new Error("A userId is required to start an orchestrator run.");
   }
   await deps.store.ensureUser(input.userId);
-  let rawLogSequence = 0;
-  const rawRunLog: ToolRunRawLogEntry[] = [];
   const progressBuffers = new Map<string, ToolProgressBuffer>();
   let latestPlanTraceVersion = 0;
   let persistedPlanTraceVersion = 0;
@@ -6914,9 +7218,6 @@ async function runOrchestrator(
   let rawLogPersistScheduled = false;
   let rawLogPersistedLength = 0;
   let pendingSessionTitleUpdate: Promise<void> | null = null;
-
-  let session: SessionRecord | null = input.sessionId ? await deps.store.getSession(input.sessionId) : null;
-  let run: Awaited<ReturnType<AppStore["createRun"]>> | null = null;
 
   const persistRawLogSnapshot = async () => {
     if (!session || !run || rawRunLog.length === rawLogPersistedLength) {
@@ -6948,17 +7249,6 @@ async function runOrchestrator(
       rawLogPersistScheduled = false;
       rawLogPersistChain = rawLogPersistChain.then(persistRawLogSnapshot).catch(() => {});
     }, 300);
-  };
-
-  const recordRawLog = (event: string, payload: Record<string, unknown>) => {
-    rawRunLog.push({
-      seq: rawLogSequence,
-      timestamp: new Date().toISOString(),
-      event,
-      payload,
-    });
-    rawLogSequence += 1;
-    scheduleRawLogPersist(false);
   };
 
   const flushToolProgress = async (
@@ -9010,6 +9300,57 @@ export function createApp(deps: AppDeps) {
     });
   });
 
+  app.get("/notifications", async (c) => {
+    const principal = await resolvePrincipal(c);
+    if (!principal || principal.kind !== "user") {
+      return c.json({ error: "Authentication required." }, deps.auth?.isConfigured() ? 401 : 400);
+    }
+    try {
+      const [notifications, unreadCount] = await Promise.all([
+        deps.store.listNotifications(principal.user.id, { limit: 100 }),
+        deps.store.countUnreadNotifications(principal.user.id),
+      ]);
+      return c.json({ notifications, unreadCount });
+    } catch (error) {
+      return respondWithLoggedError(c, error, "Failed to load notifications.", {
+        source: "notifications_list",
+      });
+    }
+  });
+
+  app.post("/notifications/read-all", async (c) => {
+    const principal = await resolvePrincipal(c);
+    if (!principal || principal.kind !== "user") {
+      return c.json({ error: "Authentication required." }, deps.auth?.isConfigured() ? 401 : 400);
+    }
+    try {
+      const updatedCount = await deps.store.markAllNotificationsRead(principal.user.id);
+      return c.json({ ok: true, updatedCount });
+    } catch (error) {
+      return respondWithLoggedError(c, error, "Failed to update notifications.", {
+        source: "notifications_read_all",
+      });
+    }
+  });
+
+  app.post("/notifications/:notificationId/read", async (c) => {
+    const principal = await resolvePrincipal(c);
+    if (!principal || principal.kind !== "user") {
+      return c.json({ error: "Authentication required." }, deps.auth?.isConfigured() ? 401 : 400);
+    }
+    try {
+      const updated = await deps.store.markNotificationRead(c.req.param("notificationId"), principal.user.id);
+      if (!updated) {
+        return c.json({ error: "Notification not found." }, 404);
+      }
+      return c.json({ ok: true });
+    } catch (error) {
+      return respondWithLoggedError(c, error, "Failed to update the notification.", {
+        source: "notification_read",
+      });
+    }
+  });
+
   app.post("/api/v1/agents/register", async (c) => {
     const payload = AgentRegistrationRequestSchema.parse(await c.req.json());
     const registration = await registerAgentIdentity(deps, c.req.raw, payload);
@@ -9264,6 +9605,25 @@ export function createApp(deps: AppDeps) {
       isFollowing,
       isSelf,
     });
+  });
+
+  app.get("/profiles/:userId/stats", async (c) => {
+    const targetUserId = c.req.param("userId");
+    const viewer = await resolveUser(c);
+    const requestedUserId = c.req.query("userId");
+    const isSelf = Boolean(
+      (viewer && viewer.id === targetUserId)
+      || (!viewer && requestedUserId && requestedUserId === targetUserId),
+    );
+    if (!isSelf) {
+      return c.json({ error: "Not authorized." }, 403);
+    }
+    const profile = await deps.store.getUserProfile(targetUserId);
+    if (!profile) {
+      return c.json({ error: "Profile not found." }, 404);
+    }
+    const stats = await deps.store.getUserProfileStats(targetUserId);
+    return c.json({ stats });
   });
 
   app.post("/profiles/:userId/follow", async (c) => {

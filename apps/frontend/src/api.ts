@@ -1,9 +1,13 @@
 import {
   CurrentUserResponseSchema,
   FollowProfileResponseSchema,
+  MarkAllNotificationsReadResponseSchema,
+  MarkNotificationReadResponseSchema,
   MessageListResponseSchema,
+  NotificationListResponseSchema,
   PublicProfileResponseSchema,
   SessionListResponseSchema,
+  UserProfileStatsResponseSchema,
   WorkDetailResponseSchema,
   WorkListResponseSchema,
   WorkSourceResponseSchema,
@@ -11,8 +15,10 @@ import {
   type CurrentUserResponse,
   type FollowProfileResponse,
   type MessageRecord,
+  type NotificationListResponse,
   type PublicProfileResponse,
   type StreamEvent,
+  type UserProfileStats,
   type WorkDetailResponse,
   type WorkSource,
   type WorkSummary,
@@ -195,6 +201,35 @@ export async function fetchCurrentUser(): Promise<CurrentUserResponse> {
   return CurrentUserResponseSchema.parse(await response.json());
 }
 
+export async function fetchNotifications(): Promise<NotificationListResponse> {
+  const response = await ensureOk(
+    await fetch(`${API_BASE}/notifications`, {
+      credentials: "include",
+    }),
+  );
+  return NotificationListResponseSchema.parse(await response.json());
+}
+
+export async function markNotificationRead(notificationId: string) {
+  const response = await ensureOk(
+    await fetch(`${API_BASE}/notifications/${encodeURIComponent(notificationId)}/read`, {
+      method: "POST",
+      credentials: "include",
+    }),
+  );
+  return MarkNotificationReadResponseSchema.parse(await response.json());
+}
+
+export async function markAllNotificationsRead() {
+  const response = await ensureOk(
+    await fetch(`${API_BASE}/notifications/read-all`, {
+      method: "POST",
+      credentials: "include",
+    }),
+  );
+  return MarkAllNotificationsReadResponseSchema.parse(await response.json());
+}
+
 export async function fetchAdminAccess(): Promise<{
   allowed: boolean;
   authenticated: boolean;
@@ -326,6 +361,19 @@ export async function fetchProfile(userId: string): Promise<PublicProfileRespons
   return PublicProfileResponseSchema.parse(await response.json());
 }
 
+export async function fetchProfileStats(userId: string, options: { fallbackUserId?: string | null } = {}): Promise<UserProfileStats> {
+  const params = new URLSearchParams();
+  if (options.fallbackUserId) {
+    params.set("userId", options.fallbackUserId);
+  }
+  const response = await ensureOk(
+    await fetch(`${API_BASE}/profiles/${userId}/stats${params.size ? `?${params.toString()}` : ""}`, {
+      credentials: "include",
+    }),
+  );
+  return UserProfileStatsResponseSchema.parse(await response.json()).stats;
+}
+
 export async function followProfile(userId: string): Promise<FollowProfileResponse> {
   const response = await ensureOk(
     await fetch(`${API_BASE}/profiles/${userId}/follow`, {
@@ -425,6 +473,7 @@ export async function streamChat(
     sessionId?: string;
     message: string;
     workIds?: string[];
+    intensityOverride?: "normal" | "high" | "maximum";
   },
   handlers: ChatStreamHandlers,
   options: {

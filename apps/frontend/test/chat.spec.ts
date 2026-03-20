@@ -1434,4 +1434,97 @@ test.describe("mobile shell", () => {
     expect(composerBox!.y).toBeGreaterThan(heroHeadingBox!.y);
     expect(composerBox!.y + composerBox!.height).toBeLessThanOrEqual(page.viewportSize()!.height);
   });
+
+  test("notifications nav opens the inbox and mark read updates the badge", async ({ page }) => {
+    await page.route("**/api/me", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          authConfigured: true,
+          authenticated: true,
+          user: {
+            id: "local-user",
+            email: "local@example.com",
+            name: "Local User",
+          },
+        }),
+      });
+    });
+
+    await page.route("**/api/admin/access", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          allowed: false,
+          authenticated: true,
+          authConfigured: true,
+          user: {
+            id: "local-user",
+            email: "local@example.com",
+            name: "Local User",
+          },
+        }),
+      });
+    });
+
+    await page.route("**/api/sessions", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ sessions: [] }),
+      });
+    });
+
+    await page.route("**/api/notifications", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          unreadCount: 1,
+          notifications: [
+            {
+              id: "11111111-1111-4111-8111-111111111111",
+              userId: "local-user",
+              sessionId: "11111111-1111-4111-8111-111111111112",
+              runId: "11111111-1111-4111-8111-111111111113",
+              toolCallId: null,
+              type: "run_completed",
+              title: "Research complete",
+              body: "Your research run is ready.",
+              metadata: {
+                label: "Run",
+              },
+              readAt: null,
+              emailedAt: "2026-03-20T12:00:00.000Z",
+              createdAt: "2026-03-20T12:00:00.000Z",
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.route("**/api/notifications/*/read", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true }),
+      });
+    });
+
+    await page.goto("/");
+
+    await expect(page.getByRole("button", { name: /Notifications/ })).toBeVisible();
+    await expect(page.locator(".sidebar-nav-badge")).toContainText("1");
+
+    await page.getByRole("button", { name: /Notifications/ }).click();
+    await expect(page).toHaveURL(/view=notifications/);
+    await expect(page.getByRole("heading", { name: "Notifications" })).toBeVisible();
+    await expect(page.getByText("Your research run is ready.")).toBeVisible();
+
+    await page.getByRole("button", { name: "Mark read" }).click();
+    await expect(page.locator(".sidebar-nav-badge")).toHaveCount(0);
+    await expect(page.getByText("All caught up")).toBeVisible();
+  });
 });

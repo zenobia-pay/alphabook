@@ -5330,6 +5330,133 @@ test("public profile endpoints expose follow state", async () => {
   assert.equal(unfollowPayload.profile.followersCount, 0);
 });
 
+test("profile stats endpoint summarizes sessions, books, and queries for the signed-in user", async () => {
+  const store = new InMemoryAppStore(
+    [
+      {
+        id: "work-1",
+        gutenbergId: 1342,
+        title: "Pride and Prejudice",
+        language: "en",
+        releaseDate: "2001-01-01",
+        rightsStatus: "public_domain",
+        summary: "A novel of courtship, separation, and eventual marriage.",
+        authors: ["Jane Austen"],
+        subjects: ["courtship", "marriage"],
+      },
+      {
+        id: "work-2",
+        gutenbergId: 2701,
+        title: "Moby-Dick",
+        language: "en",
+        releaseDate: "2001-01-01",
+        rightsStatus: "public_domain",
+        summary: "A novel about obsession at sea.",
+        authors: ["Herman Melville"],
+        subjects: ["obsession", "sea stories"],
+      },
+    ],
+    [],
+  );
+  await store.upsertUserProfile({
+    id: "reader",
+    email: "reader@example.com",
+    name: "Reader",
+  });
+  const session = await store.createSession("reader", "Romantic grief");
+  await store.appendMessage(session.id, "user", "Show me novels about courtship and grief.");
+  await store.appendMessage(session.id, "assistant", "Here are two strong matches.", {
+    citations: [
+      { workId: "work-1", label: "work-1#12", excerpt: "A courtship scene." },
+      { workId: "work-2", label: "work-2#4", excerpt: "An obsessive scene." },
+    ],
+  });
+  await store.appendMessage(session.id, "user", "Which one has the sharper emotional contrast?");
+  await store.createRun(session.id);
+  await store.saveAnalyticsEvent({
+    event: "book_open",
+    userId: "reader",
+    sessionId: session.id,
+    properties: { workId: "work-1", source: "profile_test" },
+  });
+  await store.saveAnalyticsEvent({
+    event: "book_open",
+    userId: "reader",
+    sessionId: session.id,
+    properties: { workId: "work-1", source: "profile_test" },
+  });
+
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    planner: new ScriptedPlanner([
+      {
+        type: "final_answer",
+        answer: "ok",
+        citations: [],
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false };
+      },
+      async runWorkspaceTask() {
+        return { ok: false };
+      },
+      async readWorkspaceFile() {
+        return { ok: false };
+      },
+      async listWorkspaceFiles() {
+        return { ok: true, files: [] };
+      },
+      async destroyWorkspace() {
+        return { ok: true };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const response = await app.request("/profiles/reader/stats?userId=reader");
+  assert.equal(response.status, 200);
+  const payload = (await response.json()) as {
+    stats: {
+      counts: {
+        sessionCount: number;
+        queryCount: number;
+        booksOpenedCount: number;
+        uniqueBooksOpenedCount: number;
+        uniqueBooksCitedCount: number;
+        booksTouchedCount: number;
+        citationCount: number;
+      };
+      fingerprint: {
+        authors: Array<{ label: string; count: number }>;
+      };
+      books: {
+        topOpened: Array<{ work: { id: string } }>;
+      };
+      recentQueries: Array<{ latestUserQuery: string | null; distinctCitedWorks: number }>;
+    };
+  };
+  assert.equal(payload.stats.counts.sessionCount, 1);
+  assert.equal(payload.stats.counts.queryCount, 2);
+  assert.equal(payload.stats.counts.booksOpenedCount, 2);
+  assert.equal(payload.stats.counts.uniqueBooksOpenedCount, 1);
+  assert.equal(payload.stats.counts.uniqueBooksCitedCount, 2);
+  assert.equal(payload.stats.counts.booksTouchedCount, 2);
+  assert.equal(payload.stats.counts.citationCount, 2);
+  assert.equal(payload.stats.books.topOpened[0]?.work.id, "work-1");
+  assert.equal(payload.stats.recentQueries[0]?.latestUserQuery, "Which one has the sharper emotional contrast?");
+  assert.equal(payload.stats.recentQueries[0]?.distinctCitedWorks, 2);
+  assert.equal(payload.stats.fingerprint.authors[0]?.label, "Jane Austen");
+});
+
 test("in-memory retrieval expands conversational relationship queries into seed passages", async () => {
   const store = new InMemoryAppStore(
     [
@@ -6802,4 +6929,216 @@ test("synthesis preserves citation breadth across multiple verified works on bro
   assert.ok(finalAssistant);
   const citations = Array.isArray(finalAssistant?.metadata?.citations) ? finalAssistant?.metadata?.citations as Array<Record<string, unknown>> : [];
   assert.ok(new Set(citations.map((citation) => citation.workId)).size >= 3);
+});
+
+test("orchestrator creates tool and run notifications and emails completed runs", async () => {
+  const store = new InMemoryAppStore(
+    [
+      {
+        id: "work-1",
+        gutenbergId: 101,
+        title: "Don Quixote",
+        language: "en",
+        releaseDate: "2000-01-01",
+        rightsStatus: "public_domain",
+        summary: "A novel about grief and endurance.",
+        authors: ["Miguel de Cervantes"],
+        subjects: ["fiction"],
+      },
+    ],
+    [
+      {
+        id: "chunk-1",
+        workId: "work-1",
+        chunkIndex: 0,
+        text: "Grief appeared in the old knight's speech.",
+        r2Key: "chunks.jsonl",
+        score: 0,
+        excerpt: "",
+      },
+    ],
+  );
+  await store.upsertUserProfile({
+    id: "notify-user",
+    email: "reader@example.com",
+    name: "Notify User",
+  });
+
+  const originalFetch = globalThis.fetch;
+  const resendCalls: Array<Record<string, unknown>> = [];
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    if (url === "https://api.resend.com/emails") {
+      resendCalls.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
+      return new Response(JSON.stringify({ id: "email_123" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return originalFetch(input as RequestInfo | URL, init);
+  };
+
+  try {
+    const app = createApp({
+      store,
+      billing: createBillingService(store),
+      router: new ScriptedRouter([
+        {
+          type: "tool_chain",
+          fullQuery: "find grief evidence",
+        },
+      ]),
+      planner: new ScriptedPlanner([
+        {
+          type: "tool_call",
+          tool_name: "search_works",
+          args: {
+            query: "find grief evidence",
+          },
+        },
+        {
+          type: "final_answer",
+          answer: "Don Quixote is a strong grief match.",
+          citations: [
+            {
+              workId: "work-1",
+              chunkId: "chunk-1",
+              label: "Don Quixote#0",
+              excerpt: "Grief appeared in the old knight's speech.",
+            },
+          ],
+        },
+      ]),
+      embedder: new HashEmbedder(),
+      synthesizer: new EchoSynthesizer(),
+      blobStore: new MemoryBlobStore(),
+      runtimeGateway: {
+        async createWorkspace() {
+          return { ok: false, error: "disabled" };
+        },
+        async runWorkspaceTask() {
+          return { ok: false, error: "disabled" };
+        },
+        async readWorkspaceFile() {
+          return { ok: false, error: "disabled" };
+        },
+        async listWorkspaceFiles() {
+          return { ok: false, files: [] };
+        },
+        async destroyWorkspace() {
+          return { ok: false };
+        },
+      },
+      queues: {
+        ingestName: "alphabook-ingest",
+        jobsName: "alphabook-jobs",
+      },
+      resendApiKey: "test-resend-key",
+      resendFromEmail: "alerts@alpha-book.org",
+    });
+
+    const response = await app.request("/chat", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        userId: "notify-user",
+        message: "Find grief evidence.",
+      }),
+    });
+
+    assert.equal(response.status, 200);
+    await response.text();
+
+    const notifications = await store.listNotifications("notify-user");
+    assert.equal(notifications.length, 3);
+    assert.ok(notifications.some((notification) => notification.type === "tool_started"));
+    assert.ok(notifications.some((notification) => notification.type === "tool_completed"));
+    const runNotification = notifications.find((notification) => notification.type === "run_completed");
+    assert.ok(runNotification);
+    assert.ok(runNotification?.emailedAt);
+    assert.equal(runNotification?.metadata.emailStatus, "sent");
+    assert.equal(resendCalls.length, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("notification endpoints list and mark notifications for the signed-in user", async () => {
+  const store = new InMemoryAppStore();
+  await store.upsertUserProfile({
+    id: "reader-user",
+    email: "reader@example.com",
+    name: "Reader User",
+  });
+  await store.createNotification({
+    userId: "reader-user",
+    type: "tool_started",
+    title: "Research step started",
+    body: "Search started.",
+    dedupeKey: "tool-start:reader-1",
+  });
+  await store.createNotification({
+    userId: "reader-user",
+    type: "run_completed",
+    title: "Research complete",
+    body: "Your run is ready.",
+    dedupeKey: "run-end:reader-1:completed",
+  });
+
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    planner: new ScriptedPlanner([
+      {
+        type: "final_answer",
+        answer: "unused",
+        citations: [],
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+      async runWorkspaceTask() {
+        return { ok: false, error: "disabled" };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: false, files: [] };
+      },
+      async destroyWorkspace() {
+        return { ok: false };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const listResponse = await app.request("/notifications?userId=reader-user");
+  assert.equal(listResponse.status, 200);
+  const listPayload = await listResponse.json() as { notifications: Array<{ id: string }>; unreadCount: number };
+  assert.equal(listPayload.unreadCount, 2);
+  assert.equal(listPayload.notifications.length, 2);
+
+  const readResponse = await app.request(`/notifications/${listPayload.notifications[0]!.id}/read?userId=reader-user`, {
+    method: "POST",
+  });
+  assert.equal(readResponse.status, 200);
+
+  const readAllResponse = await app.request("/notifications/read-all?userId=reader-user", {
+    method: "POST",
+  });
+  assert.equal(readAllResponse.status, 200);
+  const readAllPayload = await readAllResponse.json() as { updatedCount: number };
+  assert.equal(readAllPayload.updatedCount, 1);
+  assert.equal(await store.countUnreadNotifications("reader-user"), 0);
 });

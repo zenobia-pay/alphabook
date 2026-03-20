@@ -56,6 +56,8 @@ export interface Env {
   AUTH_COOKIE_PASSWORD?: string;
   ADMIN_ALLOWED_EMAIL?: string;
   ERROR_ALERT_WEBHOOK_URL?: string;
+  RESEND_API_KEY?: string;
+  RESEND_FROM_EMAIL?: string;
   X402_ENABLED?: string;
   X402_PAY_TO?: string;
   X402_NETWORK?: string;
@@ -172,6 +174,8 @@ function buildFetchHandler(env: Env) {
     ai: env.AI,
     toolStreamCleanupModel: env.TOOL_STREAM_CLEANUP_MODEL,
     errorAlertWebhookUrl: env.ERROR_ALERT_WEBHOOK_URL,
+    resendApiKey: env.RESEND_API_KEY,
+    resendFromEmail: env.RESEND_FROM_EMAIL,
     x402:
       env.X402_ENABLED === "true"
       && env.X402_PAY_TO
@@ -245,6 +249,8 @@ async function runScheduledJanitor(env: Env) {
       ai: env.AI,
       toolStreamCleanupModel: env.TOOL_STREAM_CLEANUP_MODEL,
       errorAlertWebhookUrl: env.ERROR_ALERT_WEBHOOK_URL,
+      resendApiKey: env.RESEND_API_KEY,
+      resendFromEmail: env.RESEND_FROM_EMAIL,
     },
     {
       runId: `scheduled-janitor-${new Date().toISOString()}`,
@@ -268,6 +274,8 @@ async function runScheduledJanitor(env: Env) {
       ai: env.AI,
       toolStreamCleanupModel: env.TOOL_STREAM_CLEANUP_MODEL,
       errorAlertWebhookUrl: env.ERROR_ALERT_WEBHOOK_URL,
+      resendApiKey: env.RESEND_API_KEY,
+      resendFromEmail: env.RESEND_FROM_EMAIL,
     },
     {
       runId: `scheduled-janitor-${new Date().toISOString()}`,

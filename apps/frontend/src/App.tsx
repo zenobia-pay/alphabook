@@ -5,11 +5,11 @@ import {
 } from "@assistant-ui/react";
 import type { ReadonlyJSONObject, ReadonlyJSONValue } from "assistant-stream/utils";
 import type { AgentationProps } from "agentation";
-import { ChevronsLeft, ChevronsRight, Link2, LoaderCircle, MessageSquarePlus } from "lucide-react";
+import { Bell, BookOpen, ChevronsLeft, ChevronsRight, Clock3, Link2, LoaderCircle, MessageSquarePlus, Quote, Search, Sparkles } from "lucide-react";
 
-import { getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type PublicProfileResponse, type UserProfile, type WorkDetail, type WorkSource, type WorkSummary } from "@alphabook/shared";
+import { getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type NotificationRecord, type ProfileBookStat, type ProfileFacetStat, type ProfileQueryStat, type PublicProfileResponse, type UserProfile, type UserProfileStats, type WorkDetail, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
-import { ApiError, buildSignInUrl, buildSignOutUrl, cancelRun, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchAssistantDocumentState, fetchCurrentUser, fetchMessages, fetchProfile, fetchRunState, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, getErrorMessage, queryAdminAnalytics, sendAnalyticsEvent, streamChat, streamRun, unfollowProfile, type RunArtifactRecord, type SessionRunRecord } from "./api";
+import { ApiError, buildSignInUrl, buildSignOutUrl, cancelRun, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchAssistantDocumentState, fetchCurrentUser, fetchMessages, fetchNotifications, fetchProfile, fetchProfileStats, fetchRunState, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, getErrorMessage, markAllNotificationsRead, markNotificationRead, queryAdminAnalytics, sendAnalyticsEvent, streamChat, streamRun, unfollowProfile, type RunArtifactRecord, type SessionRunRecord } from "./api";
 import { Thread } from "./components/assistant-ui/thread";
 import { Avatar, AvatarFallback, AvatarImage } from "./components/ui/avatar";
 import { Button } from "./components/ui/button";
@@ -69,7 +69,7 @@ type AuthState = {
   error: string | null;
 };
 
-type ViewMode = "explore" | "assistant" | "assistant_document" | "profile" | "book" | "admin";
+type ViewMode = "explore" | "assistant" | "assistant_document" | "profile" | "book" | "notifications" | "admin";
 type UrlWriteMode = "replace" | "push";
 type UrlState = {
   view: ViewMode;
@@ -118,6 +118,13 @@ type AdminIncidentsState = {
   days: number;
   selectedFingerprint: string | null;
   payload: Record<string, unknown> | null;
+};
+
+type NotificationsState = {
+  loading: boolean;
+  error: string | null;
+  notifications: NotificationRecord[];
+  unreadCount: number;
 };
 
 type ThreadSuggestion = {
@@ -322,7 +329,7 @@ function buildSeoState(options: {
 }
 
 function isViewMode(value: string | null): value is ViewMode {
-  return value === "explore" || value === "assistant" || value === "assistant_document" || value === "profile" || value === "book" || value === "admin";
+  return value === "explore" || value === "assistant" || value === "assistant_document" || value === "profile" || value === "book" || value === "notifications" || value === "admin";
 }
 
 function isRetryableReconnectError(error: unknown): boolean {
@@ -2367,6 +2374,7 @@ function ProfileIcon() {
 const NAV_ITEMS: Array<{ id: ViewMode; label: string; icon: ComponentType }> = [
   { id: "assistant", label: "New chat", icon: MessageSquarePlus },
   { id: "explore", label: "Explore", icon: CompassIcon },
+  { id: "notifications", label: "Notifications", icon: Bell },
   { id: "profile", label: "Profile", icon: ProfileIcon },
 ];
 
@@ -4497,6 +4505,153 @@ function SessionListCard({
   );
 }
 
+function trimSentence(value: string | null | undefined, maxLength = 180) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim().replace(/\s+/g, " ");
+  if (!normalized) {
+    return null;
+  }
+  return normalized.length <= maxLength ? normalized : `${normalized.slice(0, maxLength - 1).trimEnd()}...`;
+}
+
+function formatStatNumber(value: number) {
+  return new Intl.NumberFormat("en-US", { maximumFractionDigits: value % 1 === 0 ? 0 : 1 }).format(value);
+}
+
+function ProfileMetricCard({
+  label,
+  value,
+  detail,
+}: {
+  label: string;
+  value: string;
+  detail: string;
+}) {
+  return (
+    <article className="profile-metric-card">
+      <span>{label}</span>
+      <strong>{value}</strong>
+      <p>{detail}</p>
+    </article>
+  );
+}
+
+function ProfileFacetRail({
+  label,
+  items,
+}: {
+  label: string;
+  items: ProfileFacetStat[];
+}) {
+  if (items.length === 0) {
+    return null;
+  }
+  return (
+    <div className="profile-facet-rail">
+      <span className="profile-facet-label">{label}</span>
+      <div className="profile-facet-pills">
+        {items.map((item) => (
+          <span key={`${label}-${item.label}`} className="profile-facet-pill">
+            {item.label}
+            <small>{item.count}</small>
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ProfileBookCard({
+  item,
+  onOpen,
+}: {
+  item: ProfileBookStat;
+  onOpen: (workId: string) => void;
+}) {
+  const subtitle = [
+    item.work.authors[0] ?? item.work.language?.toUpperCase() ?? null,
+    item.lastTouchedAt ? formatRelativeTime(item.lastTouchedAt) : null,
+  ].filter(Boolean).join(" | ");
+  return (
+    <button type="button" className="profile-book-card" onClick={() => onOpen(item.work.id)}>
+      <div className="profile-book-card-head">
+        <strong>{item.work.title}</strong>
+        {subtitle ? <span>{subtitle}</span> : null}
+      </div>
+      {item.work.summary ? <p>{trimSentence(item.work.summary, 130)}</p> : null}
+      <div className="profile-book-card-stats">
+        <span>{pluralize(item.openCount, "open")}</span>
+        <span>{pluralize(item.citationCount, "citation")}</span>
+        <span>{pluralize(item.sessionCount, "session")}</span>
+      </div>
+    </button>
+  );
+}
+
+function ProfileBookShelf({
+  title,
+  icon,
+  items,
+  emptyCopy,
+  onOpenWork,
+}: {
+  title: string;
+  icon: ReactNode;
+  items: ProfileBookStat[];
+  emptyCopy: string;
+  onOpenWork: (workId: string) => void;
+}) {
+  return (
+    <section className="profile-section-card">
+      <div className="profile-section-header">
+        <div className="profile-section-mark">{icon}</div>
+        <div>
+          <h2>{title}</h2>
+        </div>
+      </div>
+      {items.length === 0 ? (
+        <p className="profile-section-empty">{emptyCopy}</p>
+      ) : (
+        <div className="profile-book-grid">
+          {items.map((item) => <ProfileBookCard key={`${title}-${item.work.id}`} item={item} onOpen={onOpenWork} />)}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ProfileQueryCard({
+  item,
+  onOpen,
+}: {
+  item: ProfileQueryStat;
+  onOpen: (sessionId: string) => void;
+}) {
+  const summary = trimSentence(item.latestUserQuery ?? item.firstUserQuery ?? item.sessionTitle, 220);
+  const startedWith = trimSentence(item.firstUserQuery, 110);
+  return (
+    <button type="button" onClick={() => onOpen(item.sessionId)} className="profile-history-row profile-history-row-rich w-full text-left">
+      <div className="profile-history-row-head">
+        <div className="profile-history-row-copy-block">
+          <strong className="profile-history-row-title">{summary ?? "Untitled query"}</strong>
+          <span className="profile-history-row-session">{item.sessionTitle ?? "Untitled session"}</span>
+        </div>
+        <span className="profile-history-row-time">{formatRelativeTime(item.lastActivityAt)}</span>
+      </div>
+      <div className="profile-history-chip-row">
+        <span>{pluralize(item.userMessageCount, "query")}</span>
+        <span>{pluralize(item.distinctCitedWorks, "book")} cited</span>
+        <span>{pluralize(item.citationCount, "citation")}</span>
+      </div>
+      {startedWith && item.latestUserQuery && item.firstUserQuery !== item.latestUserQuery ? (
+        <p className="profile-history-row-preview">Started with "{startedWith}"</p>
+      ) : null}
+    </button>
+  );
+}
+
 export default function App() {
   const initialUrlState = readUrlState();
   const [guestUserId] = useState(() => ensureLocalUserId());
@@ -4561,6 +4716,14 @@ export default function App() {
   const [isDraggingBookAssistant, setIsDraggingBookAssistant] = useState(false);
   const [publicProfile, setPublicProfile] = useState<PublicProfileResponse | null>(null);
   const [publicProfileLoading, setPublicProfileLoading] = useState(false);
+  const [profileStats, setProfileStats] = useState<UserProfileStats | null>(null);
+  const [profileStatsLoading, setProfileStatsLoading] = useState(false);
+  const [notificationsState, setNotificationsState] = useState<NotificationsState>({
+    loading: false,
+    error: null,
+    notifications: [],
+    unreadCount: 0,
+  });
   const [adminAccess, setAdminAccess] = useState<AdminAccessState>({
     loading: true,
     allowed: false,
@@ -4647,6 +4810,8 @@ export default function App() {
       ? assistantSessionName(activeSession)
       : activeView === "book"
         ? activeWork?.title ?? "Book"
+        : activeView === "notifications"
+          ? "Notifications"
         : activeView === "admin"
           ? "Admin"
         : NAV_ITEMS.find((item) => item.id === activeView)?.label ?? "AlphaBook";
@@ -4759,6 +4924,22 @@ export default function App() {
       cancelled = true;
     };
   }, [authState.authConfigured, authState.loading, authState.user?.email, authState.user?.id]);
+
+  useEffect(() => {
+    if (authState.loading) {
+      return;
+    }
+    if (!authState.user) {
+      setNotificationsState({
+        loading: false,
+        error: null,
+        notifications: [],
+        unreadCount: 0,
+      });
+      return;
+    }
+    void loadNotifications({ silent: activeView !== "notifications" });
+  }, [activeView, authState.loading, authState.user?.id]);
 
   useEffect(() => {
     const handlePopState = () => {
@@ -5039,6 +5220,44 @@ export default function App() {
       cancelled = true;
     };
   }, [activeProfileUserId, currentUserId]);
+
+  useEffect(() => {
+    const isSelfProfile = activeView === "profile" && currentUserId && (!activeProfileUserId || activeProfileUserId === currentUserId);
+    if (!isSelfProfile) {
+      setProfileStats(null);
+      setProfileStatsLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        setProfileStatsLoading(true);
+        const next = await fetchProfileStats(currentUserId, {
+          fallbackUserId: authState.authConfigured ? null : currentUserId,
+        });
+        if (!cancelled) {
+          setProfileStats(next);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          reportClientIncident(error, {
+            source: "profile_stats_load",
+            userId: currentUserId,
+          });
+          setProfileStats(null);
+        }
+      } finally {
+        if (!cancelled) {
+          setProfileStatsLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeProfileUserId, activeView, authState.authConfigured, currentUserId]);
 
   useEffect(() => {
     if (!pendingCitation || !activeWork || activeWork.id !== pendingCitation.workId || readerPassages.length === 0) {
@@ -5521,6 +5740,82 @@ export default function App() {
     () => dedupeAdjacentErrorMessages(reconcileMessagesWithRunState(messages, sessionRuns)),
     [messages, sessionRuns],
   );
+
+  async function loadNotifications(options: { silent?: boolean } = {}) {
+    if (!authState.user) {
+      setNotificationsState({
+        loading: false,
+        error: null,
+        notifications: [],
+        unreadCount: 0,
+      });
+      return;
+    }
+    if (!options.silent) {
+      setNotificationsState((current) => ({ ...current, loading: true, error: null }));
+    }
+    try {
+      const next = await fetchNotifications();
+      setNotificationsState({
+        loading: false,
+        error: null,
+        notifications: next.notifications,
+        unreadCount: next.unreadCount,
+      });
+    } catch (error) {
+      if (options.silent) {
+        return;
+      }
+      setNotificationsState((current) => ({
+        ...current,
+        loading: false,
+        error: getErrorMessage(error, "We couldn't load notifications."),
+      }));
+    }
+  }
+
+  async function handleMarkNotificationRead(notificationId: string) {
+    try {
+      await markNotificationRead(notificationId);
+      setNotificationsState((current) => ({
+        ...current,
+        notifications: current.notifications.map((notification) =>
+          notification.id === notificationId && !notification.readAt
+            ? { ...notification, readAt: new Date().toISOString() }
+            : notification,
+        ),
+        unreadCount: Math.max(
+          0,
+          current.unreadCount - (current.notifications.some((notification) => notification.id === notificationId && !notification.readAt) ? 1 : 0),
+        ),
+      }));
+    } catch (error) {
+      setNotificationsState((current) => ({
+        ...current,
+        error: getErrorMessage(error, "We couldn't update that notification."),
+      }));
+    }
+  }
+
+  async function handleMarkAllNotificationsRead() {
+    try {
+      await markAllNotificationsRead();
+      const readAt = new Date().toISOString();
+      setNotificationsState((current) => ({
+        ...current,
+        error: null,
+        notifications: current.notifications.map((notification) =>
+          notification.readAt ? notification : { ...notification, readAt }
+        ),
+        unreadCount: 0,
+      }));
+    } catch (error) {
+      setNotificationsState((current) => ({
+        ...current,
+        error: getErrorMessage(error, "We couldn't update your notifications."),
+      }));
+    }
+  }
 
   async function refreshSessions(preferredSessionId?: string | null) {
     if (!currentUserId) {
@@ -6184,6 +6479,9 @@ export default function App() {
         setStreamConnected(false);
         settleRunUi();
         await refreshSessions(workingSessionId ?? null);
+        if (authState.user) {
+          await loadNotifications({ silent: true });
+        }
       }
     }
   }
@@ -6857,6 +7155,31 @@ export default function App() {
 
     const joinedLabel = formatMonthYear(currentUser?.createdAt);
     const currentMeta = [profileTag, joinedLabel ? `joined ${joinedLabel}` : null].filter(Boolean).join(" • ");
+    const stats = profileStats;
+    const metrics = stats
+      ? [
+        {
+          label: "Questions asked",
+          value: formatStatNumber(stats.counts.queryCount),
+          detail: `${formatStatNumber(stats.averages.queriesPerSession)} per session on average`,
+        },
+        {
+          label: "Books touched",
+          value: formatStatNumber(stats.counts.booksTouchedCount),
+          detail: `${formatStatNumber(stats.counts.uniqueBooksCitedCount)} cited and ${formatStatNumber(stats.counts.uniqueBooksOpenedCount)} opened`,
+        },
+        {
+          label: "Citations surfaced",
+          value: formatStatNumber(stats.counts.citationCount),
+          detail: `${formatStatNumber(stats.averages.citationsPerQuery)} per query`,
+        },
+        {
+          label: "Active days",
+          value: formatStatNumber(stats.counts.activeDayCount),
+          detail: `${formatStatNumber(stats.counts.runCount)} research runs completed`,
+        },
+      ]
+      : [];
 
     return (
       <div className="profile-view">
@@ -6900,9 +7223,77 @@ export default function App() {
           </div>
         </section>
 
+        <section className="profile-section-card profile-section-card-hero">
+          <div className="profile-section-header">
+            <div className="profile-section-mark"><Sparkles /></div>
+            <div>
+              <h2>Your reading fingerprint</h2>
+              <p>
+                {stats
+                  ? `${pluralize(stats.counts.sessionCount, "session")}, ${pluralize(stats.counts.queryCount, "question")}, and ${pluralize(stats.counts.booksTouchedCount, "book")} shaped this profile.`
+                  : "We are assembling your corpus trail from sessions, citations, and books you have opened."}
+              </p>
+            </div>
+          </div>
+
+          {profileStatsLoading && !stats ? (
+            <p className="profile-section-empty">Loading your reader stats…</p>
+          ) : stats ? (
+            <>
+              <div className="profile-metric-grid">
+                {metrics.map((item) => (
+                  <ProfileMetricCard key={item.label} label={item.label} value={item.value} detail={item.detail} />
+                ))}
+              </div>
+              <div className="profile-fingerprint-grid">
+                <ProfileFacetRail label="Authors" items={stats.fingerprint.authors} />
+                <ProfileFacetRail label="Subjects" items={stats.fingerprint.subjects} />
+                <ProfileFacetRail label="Languages" items={stats.fingerprint.languages} />
+              </div>
+            </>
+          ) : (
+            <p className="profile-section-empty">Start opening books and asking grounded questions to build your stats.</p>
+          )}
+        </section>
+
+        <div className="profile-book-shelves">
+          <ProfileBookShelf
+            title="Recently touched"
+            icon={<Clock3 />}
+            items={stats?.books.recent ?? []}
+            emptyCopy="Recent books you open or cite will appear here."
+            onOpenWork={openWork}
+          />
+          <ProfileBookShelf
+            title="Most opened"
+            icon={<BookOpen />}
+            items={stats?.books.topOpened ?? []}
+            emptyCopy="Your most revisited books will show up here."
+            onOpenWork={openWork}
+          />
+          <ProfileBookShelf
+            title="Most cited"
+            icon={<Quote />}
+            items={stats?.books.topCited ?? []}
+            emptyCopy="Once answers start citing books, your anchor texts will show up here."
+            onOpenWork={openWork}
+          />
+        </div>
+
         <section className="profile-history">
+          <div className="profile-section-header profile-section-header-inline">
+            <div className="profile-section-mark"><Search /></div>
+            <div>
+              <h2>Query history</h2>
+              <p>Recent prompts, follow-up depth, and citation breadth by session.</p>
+            </div>
+          </div>
           <div className="profile-history-list">
-            {sessions.length === 0 ? (
+            {stats && stats.recentQueries.length > 0 ? (
+              stats.recentQueries.map((item) => (
+                <ProfileQueryCard key={item.sessionId} item={item} onOpen={openSession} />
+              ))
+            ) : sessions.length === 0 ? (
               <ProfileEmptyState
                 title="No searches yet"
                 copy="Start a conversation with the assistant and your recent research will show up here."
@@ -6916,6 +7307,128 @@ export default function App() {
               sessions.map((session) => <SessionListCard key={session.id} session={session} onOpen={() => openSession(session.id)} />)
             )}
           </div>
+        </section>
+      </div>
+    );
+  }
+
+  function openNotificationTarget(notification: NotificationRecord) {
+    if (!notification.readAt) {
+      void handleMarkNotificationRead(notification.id);
+    }
+    if (notification.sessionId && notification.runId) {
+      pendingUrlWriteModeRef.current = "push";
+      setMobileNavOpen(false);
+      setSelectedSessionId(notification.sessionId);
+      setSelectedAdminRunId(notification.runId);
+      setActiveView("assistant_document");
+      return;
+    }
+    if (notification.sessionId) {
+      openSession(notification.sessionId);
+    }
+  }
+
+  function renderNotificationsView() {
+    if (authPending) {
+      return (
+        <section className="assistant-page">
+          <div className="assistant-thread-shell">
+            <AuthLoadingState compact />
+          </div>
+        </section>
+      );
+    }
+
+    if (authLocked) {
+      return (
+        <section className="assistant-page">
+          <div className="assistant-thread-shell">
+            <LockedState compact title="Sign in to see your notifications." />
+          </div>
+        </section>
+      );
+    }
+
+    return (
+      <div className="view-shell notifications-view">
+        <section className="notifications-shell">
+          <div className="notifications-header">
+            <div>
+              <h1>Notifications</h1>
+              <p>Track research steps, finished runs, and email-delivery outcomes in one place.</p>
+            </div>
+            <div className="notifications-actions">
+              <span className="notifications-unread-summary">
+                {notificationsState.unreadCount > 0 ? `${notificationsState.unreadCount} unread` : "All caught up"}
+              </span>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={notificationsState.unreadCount === 0}
+                onClick={() => void handleMarkAllNotificationsRead()}
+              >
+                Mark all read
+              </Button>
+            </div>
+          </div>
+
+          {notificationsState.error ? <ErrorNotice message={notificationsState.error} /> : null}
+
+          {notificationsState.loading ? (
+            <div className="notifications-empty-state">Loading notifications…</div>
+          ) : notificationsState.notifications.length === 0 ? (
+            <div className="notifications-empty-state">No notifications yet.</div>
+          ) : (
+            <div className="notifications-list">
+              {notificationsState.notifications.map((notification) => {
+                const label =
+                  typeof notification.metadata.label === "string"
+                    ? notification.metadata.label
+                    : notification.title;
+                const canOpen = Boolean(notification.sessionId);
+                return (
+                  <article
+                    key={notification.id}
+                    className={cn("notification-card", !notification.readAt && "is-unread")}
+                  >
+                    <div className="notification-card-copy">
+                      <div className="notification-card-meta">
+                        <span className="notification-card-title">{notification.title}</span>
+                        <span>{formatRelativeTime(notification.createdAt)}</span>
+                      </div>
+                      <p className="notification-card-body">{notification.body}</p>
+                      <div className="notification-card-tags">
+                        <span>{label}</span>
+                        {notification.runId ? <span>Run</span> : null}
+                        {notification.readAt ? <span>Read</span> : <span>Unread</span>}
+                      </div>
+                    </div>
+                    <div className="notification-card-actions">
+                      {canOpen ? (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          onClick={() => openNotificationTarget(notification)}
+                        >
+                          {notification.runId ? "Open run" : "Open session"}
+                        </Button>
+                      ) : null}
+                      {!notification.readAt ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => void handleMarkNotificationRead(notification.id)}
+                        >
+                          Mark read
+                        </Button>
+                      ) : null}
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          )}
         </section>
       </div>
     );
@@ -7664,6 +8177,8 @@ export default function App() {
         return renderAssistantDocumentView();
       case "book":
         return renderBookView();
+      case "notifications":
+        return renderNotificationsView();
       case "profile":
         return renderProfileView();
       case "admin":
@@ -7745,6 +8260,11 @@ export default function App() {
                 >
                   <Icon />
                   {!sidebarCollapsed ? <span>{item.label}</span> : null}
+                  {item.id === "notifications" && notificationsState.unreadCount > 0 ? (
+                    <span className={cn("sidebar-nav-badge", sidebarCollapsed && "is-collapsed")}>
+                      {notificationsState.unreadCount > 99 ? "99+" : notificationsState.unreadCount}
+                    </span>
+                  ) : null}
                 </Button>
               );
             })}

@@ -230,6 +230,55 @@ export const FollowProfileResponseSchema = z.object({
 
 export type FollowProfileResponse = z.infer<typeof FollowProfileResponseSchema>;
 
+export const NotificationTypeSchema = z.enum([
+  "tool_started",
+  "tool_completed",
+  "tool_failed",
+  "tool_timed_out",
+  "run_completed",
+  "run_failed",
+  "run_timed_out",
+]);
+
+export type NotificationType = z.infer<typeof NotificationTypeSchema>;
+
+export const NotificationRecordSchema = z.object({
+  id: z.string().uuid(),
+  userId: z.string(),
+  sessionId: z.string().uuid().nullable(),
+  runId: z.string().uuid().nullable(),
+  toolCallId: z.string().uuid().nullable(),
+  type: NotificationTypeSchema,
+  title: z.string(),
+  body: z.string(),
+  metadata: z.record(z.string(), z.unknown()).default({}),
+  readAt: z.string().nullable(),
+  emailedAt: z.string().nullable(),
+  createdAt: z.string(),
+});
+
+export type NotificationRecord = z.infer<typeof NotificationRecordSchema>;
+
+export const NotificationListResponseSchema = z.object({
+  notifications: z.array(NotificationRecordSchema),
+  unreadCount: z.number().int().nonnegative(),
+});
+
+export type NotificationListResponse = z.infer<typeof NotificationListResponseSchema>;
+
+export const MarkNotificationReadResponseSchema = z.object({
+  ok: z.literal(true),
+});
+
+export type MarkNotificationReadResponse = z.infer<typeof MarkNotificationReadResponseSchema>;
+
+export const MarkAllNotificationsReadResponseSchema = z.object({
+  ok: z.literal(true),
+  updatedCount: z.number().int().nonnegative(),
+});
+
+export type MarkAllNotificationsReadResponse = z.infer<typeof MarkAllNotificationsReadResponseSchema>;
+
 export const WorkSummarySchema = z.object({
   id: z.string(),
   gutenbergId: z.number().nullable(),
@@ -259,6 +308,77 @@ export const WorkDetailSchema = WorkSummarySchema.extend({
 });
 
 export type WorkDetail = z.infer<typeof WorkDetailSchema>;
+
+export const ProfileFacetStatSchema = z.object({
+  label: z.string(),
+  count: z.number().int().nonnegative(),
+});
+
+export type ProfileFacetStat = z.infer<typeof ProfileFacetStatSchema>;
+
+export const ProfileBookStatSchema = z.object({
+  work: WorkSummarySchema,
+  openCount: z.number().int().nonnegative(),
+  citationCount: z.number().int().nonnegative(),
+  sessionCount: z.number().int().nonnegative(),
+  lastTouchedAt: z.string().nullable(),
+});
+
+export type ProfileBookStat = z.infer<typeof ProfileBookStatSchema>;
+
+export const ProfileQueryStatSchema = z.object({
+  sessionId: z.string(),
+  sessionTitle: z.string().nullable(),
+  firstUserQuery: z.string().nullable(),
+  latestUserQuery: z.string().nullable(),
+  lastActivityAt: z.string().nullable(),
+  userMessageCount: z.number().int().nonnegative(),
+  citationCount: z.number().int().nonnegative(),
+  distinctCitedWorks: z.number().int().nonnegative(),
+});
+
+export type ProfileQueryStat = z.infer<typeof ProfileQueryStatSchema>;
+
+export const UserProfileStatsSchema = z.object({
+  userId: z.string(),
+  generatedAt: z.string(),
+  counts: z.object({
+    sessionCount: z.number().int().nonnegative(),
+    queryCount: z.number().int().nonnegative(),
+    runCount: z.number().int().nonnegative(),
+    activeDayCount: z.number().int().nonnegative(),
+    booksOpenedCount: z.number().int().nonnegative(),
+    uniqueBooksOpenedCount: z.number().int().nonnegative(),
+    uniqueBooksCitedCount: z.number().int().nonnegative(),
+    booksTouchedCount: z.number().int().nonnegative(),
+    citationCount: z.number().int().nonnegative(),
+  }),
+  averages: z.object({
+    queriesPerSession: z.number().nonnegative(),
+    citationsPerQuery: z.number().nonnegative(),
+    booksOpenedPerSession: z.number().nonnegative(),
+    booksTouchedPerQuery: z.number().nonnegative(),
+  }),
+  books: z.object({
+    recent: z.array(ProfileBookStatSchema),
+    topOpened: z.array(ProfileBookStatSchema),
+    topCited: z.array(ProfileBookStatSchema),
+  }),
+  fingerprint: z.object({
+    authors: z.array(ProfileFacetStatSchema),
+    subjects: z.array(ProfileFacetStatSchema),
+    languages: z.array(ProfileFacetStatSchema),
+  }),
+  recentQueries: z.array(ProfileQueryStatSchema),
+});
+
+export type UserProfileStats = z.infer<typeof UserProfileStatsSchema>;
+
+export const UserProfileStatsResponseSchema = z.object({
+  stats: UserProfileStatsSchema,
+});
+
+export type UserProfileStatsResponse = z.infer<typeof UserProfileStatsResponseSchema>;
 
 export const WorkListResponseSchema = z.object({
   works: z.array(WorkSummarySchema),

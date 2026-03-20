@@ -147,6 +147,32 @@ CREATE TABLE IF NOT EXISTS jobs (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS notifications (
+  id uuid PRIMARY KEY,
+  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  session_id uuid REFERENCES chat_sessions(id) ON DELETE CASCADE,
+  run_id uuid REFERENCES runs(id) ON DELETE CASCADE,
+  tool_call_id uuid REFERENCES tool_calls(id) ON DELETE CASCADE,
+  type text NOT NULL CHECK (
+    type IN (
+      'tool_started',
+      'tool_completed',
+      'tool_failed',
+      'tool_timed_out',
+      'run_completed',
+      'run_failed',
+      'run_timed_out'
+    )
+  ),
+  title text NOT NULL,
+  body text NOT NULL,
+  dedupe_key text NOT NULL UNIQUE,
+  metadata_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  read_at timestamptz,
+  emailed_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id);
 CREATE INDEX IF NOT EXISTS idx_runs_session_id ON runs(session_id);
 CREATE INDEX IF NOT EXISTS idx_tool_calls_run_id ON tool_calls(run_id);
@@ -157,6 +183,8 @@ CREATE INDEX IF NOT EXISTS idx_chunks_work_id ON chunks(work_id);
 CREATE INDEX IF NOT EXISTS idx_runtime_instances_session_id ON runtime_instances(session_id);
 CREATE INDEX IF NOT EXISTS idx_artifacts_session_id ON artifacts(session_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_status_run_after ON jobs(status, run_after);
+CREATE INDEX IF NOT EXISTS idx_notifications_user_created_at ON notifications(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notifications_user_read_created_at ON notifications(user_id, read_at, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_chunks_tsv ON chunks USING gin(tsv);
 CREATE INDEX IF NOT EXISTS idx_chunks_embedding ON chunks USING hnsw (embedding vector_cosine_ops);
 `,
@@ -255,6 +283,39 @@ ALTER TABLE work_files
 ALTER TABLE work_files
   ADD CONSTRAINT work_files_kind_check
   CHECK (kind IN ('raw', 'metadata', 'clean', 'chunks', 'book_html'));
+`,
+  },
+  {
+    id: "0007_notifications",
+    sql: `
+CREATE TABLE IF NOT EXISTS notifications (
+  id uuid PRIMARY KEY,
+  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  session_id uuid REFERENCES chat_sessions(id) ON DELETE CASCADE,
+  run_id uuid REFERENCES runs(id) ON DELETE CASCADE,
+  tool_call_id uuid REFERENCES tool_calls(id) ON DELETE CASCADE,
+  type text NOT NULL CHECK (
+    type IN (
+      'tool_started',
+      'tool_completed',
+      'tool_failed',
+      'tool_timed_out',
+      'run_completed',
+      'run_failed',
+      'run_timed_out'
+    )
+  ),
+  title text NOT NULL,
+  body text NOT NULL,
+  dedupe_key text NOT NULL UNIQUE,
+  metadata_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  read_at timestamptz,
+  emailed_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_user_created_at ON notifications(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notifications_user_read_created_at ON notifications(user_id, read_at, created_at DESC);
 `,
   },
 ] as const;
