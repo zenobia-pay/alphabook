@@ -4093,6 +4093,14 @@ async function ensureRunAnswerPersisted(
     recoveredSynthesis.answer,
     recoveredSynthesis.citations,
   );
+  const persistedPlanState = readPersistedPlanMessageState(messages, runId);
+  const researchDocumentHtml = await appendFinalAnswerResearchDocumentHtml(
+    deps,
+    session.id,
+    persistedPlanState.researchDocumentHtml,
+    recoveredSynthesis.citations,
+    recoveredAnswer,
+  );
   const artifactKey = await persistFinalArtifact(
     deps,
     session.id,
@@ -4100,19 +4108,7 @@ async function ensureRunAnswerPersisted(
     recoveredAnswer,
     recoveredSynthesis.citations,
   );
-  await persistResearchDocumentArtifact(
-    deps,
-    session.id,
-    runId,
-    await buildResearchDocumentHtmlFromToolHistory(deps, session.id, toolHistory, recoveredSynthesis.citations, recoveredAnswer),
-  );
-  const researchDocumentHtml = await buildResearchDocumentHtmlFromToolHistory(
-    deps,
-    session.id,
-    toolHistory,
-    recoveredSynthesis.citations,
-    recoveredAnswer,
-  );
+  await persistResearchDocumentArtifact(deps, session.id, runId, researchDocumentHtml);
   await deps.store.appendMessage(session.id, "assistant", recoveredAnswer, {
     runId,
     phase: "answer",
@@ -6506,21 +6502,20 @@ async function synthesizeAnswer(
       answerLength: synthesis.answer.length,
     });
 
-    const artifactKey = await persistFinalArtifact(deps, params.sessionId, params.runId, synthesis.answer, synthesis.citations);
-    await persistResearchDocumentArtifact(
-      deps,
-      params.sessionId,
+    const persistedPlanState = readPersistedPlanMessageState(
+      await deps.store.listMessages(params.sessionId),
       params.runId,
-      await buildResearchDocumentHtmlFromToolHistory(deps, params.sessionId, params.toolHistory, synthesis.citations, synthesis.answer),
     );
-    const summarizedToolHistory = summarizeToolHistory(params.toolHistory);
-    const researchDocumentHtml = await buildResearchDocumentHtmlFromToolHistory(
+    const researchDocumentHtml = await appendFinalAnswerResearchDocumentHtml(
       deps,
       params.sessionId,
-      params.toolHistory,
+      persistedPlanState.researchDocumentHtml,
       synthesis.citations,
       synthesis.answer,
     );
+    const artifactKey = await persistFinalArtifact(deps, params.sessionId, params.runId, synthesis.answer, synthesis.citations);
+    await persistResearchDocumentArtifact(deps, params.sessionId, params.runId, researchDocumentHtml);
+    const summarizedToolHistory = summarizeToolHistory(params.toolHistory);
     await deps.store.appendMessage(params.sessionId, "assistant", synthesis.answer, {
       runId: params.runId,
       phase: "answer",
@@ -6818,6 +6813,20 @@ function appendResearchDocumentHtmlSection(htmlSections: string[], title: string
   ].join(""));
 }
 
+function appendResearchDocumentHtml(
+  existingHtml: string | null | undefined,
+  title: string,
+  summary: string,
+  bodyHtml: string[],
+) {
+  const nextSections: string[] = [];
+  appendResearchDocumentHtmlSection(nextSections, title, summary, bodyHtml);
+  if (nextSections.length === 0) {
+    return existingHtml ?? "";
+  }
+  return `${existingHtml ?? ""}${nextSections.join("")}`;
+}
+
 function renderBriefingHtml(briefing: string) {
   const lines = briefing
     .split(/\r?\n/u)
@@ -7019,6 +7028,46 @@ async function buildResearchDocumentHtmlFromToolHistory(
   }
 
   return sections.join("");
+}
+
+async function appendFinalAnswerResearchDocumentHtml(
+  deps: AppDeps,
+  sessionId: string,
+  existingHtml: string | null | undefined,
+  citations: Citation[],
+  ending: string,
+) {
+  let html = existingHtml ?? "";
+  if (citations.length > 0) {
+    const quoted: string[] = [];
+    for (const citation of citations) {
+      const excerpt = normalizeDocumentText(citation.excerpt).slice(0, 440);
+      if (!isUsefulPersistedExcerpt(excerpt)) {
+        continue;
+      }
+      const href = await buildCitationPassageUrl(deps, sessionId, citation);
+      const sourceLabel = `Source: ${citation.label}`;
+      quoted.push(`<blockquote class="assistant-document-entry is-chunk"><p class="assistant-document-quote">${escapeResearchHtml(excerpt)}</p><footer class="assistant-document-citation">${href ? buildResearchDocumentLink(sourceLabel, href) : escapeResearchHtml(sourceLabel)}</footer></blockquote>`);
+    }
+    html = appendResearchDocumentHtml(
+      html,
+      "Quoted Evidence",
+      "Primary-source passages cited in the final answer.",
+      quoted,
+    );
+  }
+
+  const normalizedEnding = normalizeDocumentEnding(ending);
+  if (normalizedEnding) {
+    html = appendResearchDocumentHtml(
+      html,
+      "Final Takeaway",
+      "What the run found and how it came together.",
+      [`<p class="assistant-document-entry is-log">${escapeResearchHtml(normalizedEnding)}</p>`],
+    );
+  }
+
+  return html;
 }
 
 async function persistResearchDocumentArtifact(
