@@ -361,6 +361,7 @@ export interface AppStore {
   finishToolCall(toolCallId: string, status: ToolCallRecord["status"], resultJson: Record<string, unknown>): Promise<void>;
   listWorks(offset?: number, limit?: number): Promise<WorkSummary[]>;
   countWorks(): Promise<number>;
+  refreshExploreFeedSnapshot(limit?: number): Promise<void>;
   getWorkById(workId: string): Promise<WorkDetailRecord | null>;
   estimateResearchScope(query: string, filters?: PassageSearchFilters): Promise<ResearchScopeEstimate>;
   searchWorks(query: string, filters?: Record<string, unknown>): Promise<WorkSummary[]>;
@@ -2272,6 +2273,8 @@ export class InMemoryAppStore implements AppStore {
     return this.works.length;
   }
 
+  async refreshExploreFeedSnapshot(_limit = 512): Promise<void> {}
+
   async estimateResearchScope(query: string, filters: PassageSearchFilters = {}): Promise<ResearchScopeEstimate> {
     const probeLimit = isBroadMetadataSurveyQuery(query) ? 12 : 6;
     const probeWorks = await this.searchWorks(query, {
@@ -2741,11 +2744,13 @@ export class InMemoryAppStore implements AppStore {
 
 export class NeonAppStore implements AppStore {
   private analyticsSchemaReady: Promise<void> | null = null;
+  private exploreFeedSchemaReady: Promise<void> | null = null;
   private workCountCache: { value: number; expiresAt: number } | null = null;
 
   constructor(private readonly db: DbClient) {}
 
   private static readonly WORK_COUNT_CACHE_TTL_MS = 1000 * 60 * 60 * 24;
+  private static readonly EXPLORE_FEED_DEFAULT_LIMIT = 512;
 
   private ensureAnalyticsSchema() {
     if (!this.analyticsSchemaReady) {
@@ -2777,6 +2782,46 @@ export class NeonAppStore implements AppStore {
       })();
     }
     return this.analyticsSchemaReady;
+  }
+
+  private ensureExploreFeedSchema() {
+    if (!this.exploreFeedSchemaReady) {
+      this.exploreFeedSchemaReady = (async () => {
+        await this.db.query(
+          `
+            CREATE TABLE IF NOT EXISTS feed_works (
+              work_id uuid PRIMARY KEY REFERENCES works(id) ON DELETE CASCADE,
+              rank integer NOT NULL,
+              score double precision NOT NULL,
+              feed_label text,
+              title text NOT NULL,
+              gutenberg_id bigint,
+              language text,
+              release_date date,
+              rights_status text,
+              summary text,
+              metadata_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+              authors text[] NOT NULL DEFAULT ARRAY[]::text[],
+              subjects text[] NOT NULL DEFAULT ARRAY[]::text[],
+              updated_at timestamptz NOT NULL DEFAULT now()
+            )
+          `,
+        );
+        await this.db.query(
+          `
+            CREATE TABLE IF NOT EXISTS site_stats (
+              key text PRIMARY KEY,
+              value_json jsonb NOT NULL,
+              updated_at timestamptz NOT NULL DEFAULT now()
+            )
+          `,
+        );
+        await this.db.query(
+          "CREATE INDEX IF NOT EXISTS idx_feed_works_rank ON feed_works(rank)",
+        );
+      })();
+    }
+    return this.exploreFeedSchemaReady;
   }
 
   async ensureUser(userId: string): Promise<void> {
@@ -4140,6 +4185,7 @@ export class NeonAppStore implements AppStore {
 
   async listWorks(offset = 0, limit = 12): Promise<WorkSummary[]> {
     await this.ensureAnalyticsSchema();
+    await this.ensureExploreFeedSchema();
     const result = await this.db.query<{
       id: string;
       gutenberg_id: number | string | null;
@@ -4153,8 +4199,146 @@ export class NeonAppStore implements AppStore {
       subjects: string[];
       score: number;
       feed_label: string | null;
-      opens_3d_sort: number;
     }>(
+      `
+        SELECT
+          fw.work_id AS id,
+          fw.gutenberg_id,
+          fw.title,
+          fw.metadata_json,
+          fw.language,
+          fw.release_date::text,
+          fw.rights_status,
+          fw.summary,
+          fw.authors,
+          fw.subjects,
+          fw.score,
+          fw.feed_label
+        FROM feed_works fw
+        ORDER BY fw.rank ASC
+        OFFSET $1
+        LIMIT $2
+      `,
+      [offset, limit],
+    );
+
+    if (result.rows.length === 0) {
+      const fallback = await this.db.query<{
+        id: string;
+        gutenberg_id: number | string | null;
+        title: string;
+        metadata_json: Record<string, unknown>;
+        language: string | null;
+        release_date: string | null;
+        rights_status: string | null;
+        summary: string | null;
+        authors: string[];
+        subjects: string[];
+        score: number;
+        feed_label: string | null;
+      }>(
+        `
+          SELECT
+            w.id,
+            w.gutenberg_id,
+            w.title,
+            w.metadata_json,
+            w.language,
+            w.release_date::text,
+            w.rights_status,
+            w.summary,
+            ARRAY_REMOVE(ARRAY_AGG(DISTINCT a.name), NULL) AS authors,
+            ARRAY_REMOVE(ARRAY_AGG(DISTINCT s.label), NULL) AS subjects,
+            0::float AS score,
+            NULL::text AS feed_label
+          FROM works w
+          LEFT JOIN work_authors wa ON wa.work_id = w.id
+          LEFT JOIN authors a ON a.id = wa.author_id
+          LEFT JOIN work_subjects ws ON ws.work_id = w.id
+          LEFT JOIN subjects s ON s.id = ws.subject_id
+          GROUP BY
+            w.id,
+            w.gutenberg_id,
+            w.title,
+            w.metadata_json,
+            w.language,
+            w.release_date,
+            w.rights_status,
+            w.summary
+          ORDER BY
+            w.release_date DESC NULLS LAST,
+            w.title ASC
+          OFFSET $1
+          LIMIT $2
+        `,
+        [offset, limit],
+      );
+
+      return fallback.rows.map((row) =>
+        toWorkSummary({
+          id: row.id,
+          gutenbergId: normalizeGutenbergId(row.gutenberg_id),
+          title: row.title,
+          language: row.language,
+          releaseDate: row.release_date,
+          rightsStatus: row.rights_status,
+          summary: row.summary,
+          authors: row.authors ?? [],
+          subjects: row.subjects ?? [],
+          score: Number(row.score ?? 0),
+          feedLabel: row.feed_label ?? null,
+          metadata: row.metadata_json ?? {},
+        }),
+      );
+    }
+
+    return result.rows.map((row) =>
+      toWorkSummary({
+        id: row.id,
+        gutenbergId: normalizeGutenbergId(row.gutenberg_id),
+        title: row.title,
+        language: row.language,
+        releaseDate: row.release_date,
+        rightsStatus: row.rights_status,
+        summary: row.summary,
+        authors: row.authors ?? [],
+        subjects: row.subjects ?? [],
+        score: Number(row.score ?? 0),
+        feedLabel: row.feed_label ?? null,
+        metadata: row.metadata_json ?? {},
+      }),
+    );
+  }
+
+  async countWorks(): Promise<number> {
+    await this.ensureExploreFeedSchema();
+    if (this.workCountCache && this.workCountCache.expiresAt > Date.now()) {
+      return this.workCountCache.value;
+    }
+    const result = await this.db.query<{ value: number | string | null }>(
+      `
+        SELECT value_json->>'value' AS value
+        FROM site_stats
+        WHERE key = 'work_count'
+      `,
+    );
+    let parsed = Number.parseInt(String(result.rows[0]?.value ?? ""), 10);
+    if (!Number.isFinite(parsed)) {
+      const fallback = await this.db.query<{ count: string }>("SELECT COUNT(*)::text AS count FROM works");
+      parsed = Number.parseInt(fallback.rows[0]?.count ?? "0", 10) || 0;
+    }
+    this.workCountCache = {
+      value: parsed,
+      expiresAt: Date.now() + NeonAppStore.WORK_COUNT_CACHE_TTL_MS,
+    };
+    return parsed;
+  }
+
+  async refreshExploreFeedSnapshot(limit = NeonAppStore.EXPLORE_FEED_DEFAULT_LIMIT): Promise<void> {
+    await this.ensureAnalyticsSchema();
+    await this.ensureExploreFeedSchema();
+    const safeLimit = Math.max(24, Math.min(5000, Math.trunc(limit) || NeonAppStore.EXPLORE_FEED_DEFAULT_LIMIT));
+    await this.db.query(
       `
         WITH engagement AS (
           SELECT
@@ -4168,17 +4352,40 @@ export class NeonAppStore implements AppStore {
             AND created_at >= now() - interval '14 days'
           GROUP BY properties_json->>'workId'
         ),
-        ranked_works AS (
+        ranked AS (
           SELECT
-            w.id,
-            w.gutenberg_id,
-            w.title,
-            w.metadata_json,
-            w.language,
-            w.release_date::text,
-            w.rights_status,
-            w.summary,
-            COALESCE(e.opens_3d, 0) AS opens_3d_sort,
+            w.id AS work_id,
+            ROW_NUMBER() OVER (
+              ORDER BY
+                (
+                  COALESCE(e.opens_3d, 0) * 5.0
+                  + COALESCE(e.opens_14d, 0) * 1.8
+                  + CASE
+                      WHEN e.last_opened_at >= now() - interval '1 day' THEN 2.4
+                      WHEN e.last_opened_at >= now() - interval '7 days' THEN 1.2
+                      ELSE 0
+                    END
+                  + CASE
+                      WHEN COALESCE(w.summary, '') <> '' THEN 0.9
+                      ELSE 0
+                    END
+                  + CASE
+                      WHEN COALESCE(w.metadata_json->>'coverImageKey', w.metadata_json->>'coverImageUrl', w.metadata_json->>'coverUrl', w.metadata_json->>'imageUrl', w.metadata_json->>'thumbnailUrl') IS NOT NULL THEN 0.85
+                      ELSE 0
+                    END
+                  + CASE
+                      WHEN COALESCE(jsonb_typeof(w.metadata_json->'bookshelves'), '') = 'array' THEN LEAST(jsonb_array_length(w.metadata_json->'bookshelves'), 3) * 0.2
+                      ELSE 0
+                    END
+                  + CASE
+                      WHEN EXISTS (SELECT 1 FROM work_authors wa_check WHERE wa_check.work_id = w.id) THEN 0.3
+                      ELSE 0
+                    END
+                ) DESC,
+                COALESCE(e.opens_3d, 0) DESC,
+                w.release_date DESC NULLS LAST,
+                w.title ASC
+            ) AS rank,
             (
               COALESCE(e.opens_3d, 0) * 5.0
               + COALESCE(e.opens_14d, 0) * 1.8
@@ -4211,83 +4418,105 @@ export class NeonAppStore implements AppStore {
               WHEN COALESCE(w.metadata_json->>'coverImageKey', w.metadata_json->>'coverImageUrl', w.metadata_json->>'coverUrl', w.metadata_json->>'imageUrl', w.metadata_json->>'thumbnailUrl') IS NOT NULL
                 AND COALESCE(w.summary, '') <> '' THEN 'Worth opening'
               ELSE 'From the stack'
-            END AS feed_label
+            END AS feed_label,
+            w.title,
+            w.gutenberg_id,
+            w.language,
+            w.release_date,
+            w.rights_status,
+            w.summary,
+            w.metadata_json
           FROM works w
           LEFT JOIN engagement e ON e.work_id = w.id::text
-          ORDER BY
-            score DESC,
-            COALESCE(e.opens_3d, 0) DESC,
-            w.release_date DESC NULLS LAST,
-            w.title ASC
-          OFFSET $1
-          LIMIT $2
+        ),
+        limited AS (
+          SELECT *
+          FROM ranked
+          WHERE rank <= $1
+        ),
+        aggregated AS (
+          SELECT
+            l.work_id,
+            l.rank,
+            l.score,
+            l.feed_label,
+            l.title,
+            l.gutenberg_id,
+            l.language,
+            l.release_date,
+            l.rights_status,
+            l.summary,
+            l.metadata_json,
+            ARRAY_REMOVE(ARRAY_AGG(DISTINCT a.name), NULL) AS authors,
+            ARRAY_REMOVE(ARRAY_AGG(DISTINCT s.label), NULL) AS subjects
+          FROM limited l
+          LEFT JOIN work_authors wa ON wa.work_id = l.work_id
+          LEFT JOIN authors a ON a.id = wa.author_id
+          LEFT JOIN work_subjects ws ON ws.work_id = l.work_id
+          LEFT JOIN subjects s ON s.id = ws.subject_id
+          GROUP BY
+            l.work_id,
+            l.rank,
+            l.score,
+            l.feed_label,
+            l.title,
+            l.gutenberg_id,
+            l.language,
+            l.release_date,
+            l.rights_status,
+            l.summary,
+            l.metadata_json
+        ),
+        replaced AS (
+          DELETE FROM feed_works
+          WHERE TRUE
+        )
+        INSERT INTO feed_works (
+          work_id,
+          rank,
+          score,
+          feed_label,
+          title,
+          gutenberg_id,
+          language,
+          release_date,
+          rights_status,
+          summary,
+          metadata_json,
+          authors,
+          subjects,
+          updated_at
         )
         SELECT
-          rw.id,
-          rw.gutenberg_id,
-          rw.title,
-          rw.metadata_json,
-          rw.language,
-          rw.release_date,
-          rw.rights_status,
-          rw.summary,
-          ARRAY_REMOVE(ARRAY_AGG(DISTINCT a.name), NULL) AS authors,
-          ARRAY_REMOVE(ARRAY_AGG(DISTINCT s.label), NULL) AS subjects,
-          rw.score,
-          rw.feed_label,
-          rw.opens_3d_sort
-        FROM ranked_works rw
-        LEFT JOIN work_authors wa ON wa.work_id = rw.id
-        LEFT JOIN authors a ON a.id = wa.author_id
-        LEFT JOIN work_subjects ws ON ws.work_id = rw.id
-        LEFT JOIN subjects s ON s.id = ws.subject_id
-        GROUP BY
-          rw.id,
-          rw.gutenberg_id,
-          rw.title,
-          rw.metadata_json,
-          rw.language,
-          rw.release_date,
-          rw.rights_status,
-          rw.summary,
-          rw.score,
-          rw.feed_label,
-          rw.opens_3d_sort
-        ORDER BY rw.score DESC, rw.opens_3d_sort DESC, rw.release_date DESC NULLS LAST, rw.title ASC
+          aggregated.work_id,
+          aggregated.rank,
+          aggregated.score,
+          aggregated.feed_label,
+          aggregated.title,
+          aggregated.gutenberg_id,
+          aggregated.language,
+          aggregated.release_date,
+          aggregated.rights_status,
+          aggregated.summary,
+          aggregated.metadata_json,
+          aggregated.authors,
+          aggregated.subjects,
+          now()
+        FROM aggregated
+        ORDER BY aggregated.rank ASC
       `,
-      [offset, limit],
+      [safeLimit],
     );
-
-    return result.rows.map((row) =>
-      toWorkSummary({
-        id: row.id,
-        gutenbergId: normalizeGutenbergId(row.gutenberg_id),
-        title: row.title,
-        language: row.language,
-        releaseDate: row.release_date,
-        rightsStatus: row.rights_status,
-        summary: row.summary,
-        authors: row.authors ?? [],
-        subjects: row.subjects ?? [],
-        score: Number(row.score ?? 0),
-        feedLabel: row.feed_label ?? null,
-        metadata: row.metadata_json ?? {},
-      }),
+    await this.db.query(
+      `
+        INSERT INTO site_stats (key, value_json, updated_at)
+        VALUES ('work_count', jsonb_build_object('value', (SELECT COUNT(*)::int FROM works)), now())
+        ON CONFLICT (key) DO UPDATE
+          SET value_json = EXCLUDED.value_json,
+              updated_at = EXCLUDED.updated_at
+      `,
     );
-  }
-
-  async countWorks(): Promise<number> {
-    if (this.workCountCache && this.workCountCache.expiresAt > Date.now()) {
-      return this.workCountCache.value;
-    }
-    const result = await this.db.query<{ count: string }>("SELECT COUNT(*)::text AS count FROM works");
-    const value = result.rows[0]?.count ?? "0";
-    const parsed = Number.parseInt(value, 10) || 0;
-    this.workCountCache = {
-      value: parsed,
-      expiresAt: Date.now() + NeonAppStore.WORK_COUNT_CACHE_TTL_MS,
-    };
-    return parsed;
+    this.workCountCache = null;
   }
 
   async estimateResearchScope(query: string, filters: PassageSearchFilters = {}): Promise<ResearchScopeEstimate> {

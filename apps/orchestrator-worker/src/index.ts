@@ -231,6 +231,8 @@ async function runScheduledJanitor(env: Env) {
     billing,
   );
 
+  await store.refreshExploreFeedSnapshot();
+
   await reapExpiredRuntimeInstances(
     {
       store,
