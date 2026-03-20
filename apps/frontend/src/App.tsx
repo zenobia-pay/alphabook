@@ -2142,7 +2142,16 @@ function ErrorNotice({
   className?: string;
   onDismiss?: () => void;
 }) {
+  const [dismissed, setDismissed] = useState(false);
+
+  useEffect(() => {
+    setDismissed(false);
+  }, [message]);
+
   const { title, body } = describeError(message);
+  if (dismissed) {
+    return null;
+  }
   return (
     <div className={cn("app-error-notice", className)} role="alert" aria-live="polite">
       <div className="app-error-notice-mark" aria-hidden="true">!</div>
@@ -2150,11 +2159,17 @@ function ErrorNotice({
         <strong>{title}</strong>
         <p>{body}</p>
       </div>
-      {onDismiss ? (
-        <button type="button" className="app-error-notice-dismiss" aria-label="Dismiss error" onClick={onDismiss}>
-          <CloseIcon />
-        </button>
-      ) : null}
+      <button
+        type="button"
+        className="app-error-notice-dismiss"
+        aria-label="Dismiss error"
+        onClick={() => {
+          setDismissed(true);
+          onDismiss?.();
+        }}
+      >
+        <CloseIcon />
+      </button>
     </div>
   );
 }

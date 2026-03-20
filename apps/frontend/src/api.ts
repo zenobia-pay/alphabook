@@ -51,6 +51,11 @@ function extractApiErrorText(raw: string): string | null {
     return null;
   }
 
+  const looksLikeHtmlDocument = /<!doctype html|<html\b|<head\b|<body\b|<title\b/i.test(trimmed);
+  if (looksLikeHtmlDocument) {
+    return null;
+  }
+
   try {
     const parsed = JSON.parse(trimmed) as { error?: unknown; message?: unknown };
     if (typeof parsed.error === "string" && parsed.error.trim()) {
@@ -63,7 +68,8 @@ function extractApiErrorText(raw: string): string | null {
     // Fall back to the original text when the response is not JSON.
   }
 
-  return trimmed;
+  const normalized = trimmed.replace(/\s+/g, " ").trim();
+  return normalized.length > 280 ? `${normalized.slice(0, 277)}...` : normalized;
 }
 
 function humanizeApiErrorText(message: string, fallback: string): string {
@@ -77,6 +83,14 @@ function humanizeApiErrorText(message: string, fallback: string): string {
   }
   if (normalized === "not authorized." || normalized.includes("not authorized")) {
     return "You do not have access to that view.";
+  }
+  if (
+    normalized.includes("worker threw exception")
+    || normalized.includes("error 1101")
+    || normalized.includes("cloudflare")
+    || normalized.includes("please enable cookies")
+  ) {
+    return "Something went wrong on our side. Please refresh and try again.";
   }
 
   return message || fallback;
