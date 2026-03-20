@@ -51,6 +51,20 @@ The provided OpenAI-backed judge uses chat completions with JSON-schema output a
 
 When those env vars are present, `npm run benchmark:fixture` automatically includes the comprehensive baseline.
 
+For a dedicated exhaustive-truth run on one query, use:
+
+```bash
+npm run benchmark:comprehensive -- --corpus ./data/books-corpus.json --query "dealing with grief" --output ./output/grief-truth.json
+```
+
+The script also supports:
+- `--fixture` for local smoke tests
+- `--query-set <path> --query-id <id>` to replay a frozen benchmark query
+- `--filters '<json>'` for constrained searches
+- `--top-k`, `--batch-size`, and `--min-score` to control output shape and judge batching
+
+The input corpus file should be a JSON export in `BenchmarkCorpus` shape.
+
 ## Included Fixture Benchmark
 
 The fixture corpus is intentionally small and only proves the harness shape.

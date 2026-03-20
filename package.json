@@ -9,6 +9,7 @@
   ],
   "scripts": {
     "benchmark:fixture": "node --import tsx packages/tooling/scripts/run-benchmark-fixture.ts",
+    "benchmark:comprehensive": "node --import tsx packages/tooling/scripts/run-comprehensive-baseline.ts",
     "migrate": "tsx packages/tooling/scripts/migrate.ts",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
