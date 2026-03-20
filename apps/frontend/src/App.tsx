@@ -4674,7 +4674,6 @@ export default function App() {
   const [isSending, setIsSending] = useState(false);
   const [recoveredActiveRunId, setRecoveredActiveRunId] = useState<string | null>(null);
   const [streamConnected, setStreamConnected] = useState(false);
-  const [recentRunningSessionIds, setRecentRunningSessionIds] = useState<Set<string>>(new Set());
   const [assistantEffort, setAssistantEffort] = useState<AssistantEffortLevel>(() => {
     if (typeof window === "undefined") {
       return "high";
@@ -4836,14 +4835,17 @@ export default function App() {
       ?? null,
     [recoveredActiveRunId, sessionRuns],
   );
-  const recentSessionIds = useMemo(() => sessions.map((session) => session.id), [sessions]);
   const runningSessionIds = useMemo(() => {
-    const next = new Set(recentRunningSessionIds);
+    const next = new Set(
+      sessions
+        .filter((session) => session.activeRunStatus === "queued" || session.activeRunStatus === "running")
+        .map((session) => session.id),
+    );
     if (selectedSessionId && (isSending || sessionRuns.some((run) => run.status === "running" || run.status === "queued"))) {
       next.add(selectedSessionId);
     }
     return next;
-  }, [isSending, recentRunningSessionIds, selectedSessionId, sessionRuns]);
+  }, [isSending, selectedSessionId, sessionRuns, sessions]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -5627,59 +5629,6 @@ export default function App() {
   }, [activeView, authState.loading, recoveredActiveRunId, selectedSessionId, sessionRuns]);
 
   useEffect(() => {
-    if (authState.loading) {
-      return;
-    }
-    if (recentSessionIds.length === 0) {
-      setRecentRunningSessionIds(new Set());
-      return;
-    }
-
-    let cancelled = false;
-    let pollTimer: number | null = null;
-
-    const loadRecentRunningSessions = async () => {
-      const runLists = await Promise.all(
-        recentSessionIds.map(async (sessionId) => {
-          try {
-            return {
-              sessionId,
-              runs: await fetchRuns(sessionId),
-            };
-          } catch {
-            return {
-              sessionId,
-              runs: [] as SessionRunRecord[],
-            };
-          }
-        }),
-      );
-      if (cancelled) {
-        return;
-      }
-
-      const next = new Set(
-        runLists
-          .filter(({ runs }) => runs.some((run) => run.status === "running" || run.status === "queued"))
-          .map(({ sessionId }) => sessionId),
-      );
-      setRecentRunningSessionIds(next);
-      pollTimer = window.setTimeout(() => {
-        void loadRecentRunningSessions();
-      }, next.size > 0 ? 4000 : 15000);
-    };
-
-    void loadRecentRunningSessions();
-
-    return () => {
-      cancelled = true;
-      if (pollTimer !== null) {
-        window.clearTimeout(pollTimer);
-      }
-    };
-  }, [authState.loading, recentSessionIds]);
-
-  useEffect(() => {
     if (activeView === "assistant_document") {
       return;
     }
@@ -6189,6 +6138,7 @@ export default function App() {
                   createdAt: new Date().toISOString(),
                   lastMessageAt: new Date().toISOString(),
                   lastMessagePreview: normalizedQuestion,
+                  activeRunStatus: null,
                 },
                 ...current.filter((session) => session.id !== createdSessionId),
               ]);
@@ -6219,6 +6169,14 @@ export default function App() {
             if (event.event === "run.started" && typeof event.data.runId === "string") {
               activeRunIdRef.current = event.data.runId;
               setStreamConnected(true);
+              if (workingSessionId) {
+                setSessions((current) => current.map((session) =>
+                  session.id === workingSessionId
+                    ? { ...session, activeRunStatus: "running" }
+                    : session,
+                ));
+              }
+              void refreshSessions(workingSessionId ?? null);
               return;
             }
 
@@ -6444,6 +6402,14 @@ export default function App() {
             if (event.event === "run.completed") {
               settleRunUi();
               setStreamConnected(false);
+              if (workingSessionId) {
+                setSessions((current) => current.map((session) =>
+                  session.id === workingSessionId
+                    ? { ...session, activeRunStatus: null }
+                    : session,
+                ));
+              }
+              void refreshSessions(workingSessionId ?? null);
               return;
             }
 

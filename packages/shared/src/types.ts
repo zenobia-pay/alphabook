@@ -166,6 +166,7 @@ export const ChatSessionSummarySchema = z.object({
   createdAt: z.string(),
   lastMessageAt: z.string().nullable(),
   lastMessagePreview: z.string().nullable(),
+  activeRunStatus: z.enum(["queued", "running"]).nullable().default(null),
 });
 
 export type ChatSessionSummary = z.infer<typeof ChatSessionSummarySchema>;

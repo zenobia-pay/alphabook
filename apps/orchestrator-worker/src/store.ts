@@ -156,6 +156,7 @@ export interface AgentIdentityRecord {
 export interface SessionSummaryRecord extends SessionRecord {
   lastMessageAt: string | null;
   lastMessagePreview: string | null;
+  activeRunStatus: "queued" | "running" | null;
 }
 
 export interface MessageRecord {
@@ -1839,10 +1840,16 @@ export class InMemoryAppStore implements AppStore {
       .map((session) => {
         const messages = this.messages.get(session.id) ?? [];
         const lastMessage = messages[messages.length - 1] ?? null;
+        const activeRun =
+          [...this.runs.values()]
+            .filter((run) => run.sessionId === session.id && (run.status === "queued" || run.status === "running"))
+            .sort((left, right) => right.startedAt.localeCompare(left.startedAt))[0]
+          ?? null;
         return {
           ...session,
           lastMessageAt: lastMessage?.createdAt ?? null,
           lastMessagePreview: lastMessage?.content.slice(0, 120) ?? null,
+          activeRunStatus: activeRun?.status ?? null,
         };
       })
       .sort((left, right) => (right.lastMessageAt ?? right.createdAt).localeCompare(left.lastMessageAt ?? left.createdAt));
@@ -3289,6 +3296,7 @@ export class NeonAppStore implements AppStore {
       created_at: string;
       last_message_at: string | null;
       last_message_preview: string | null;
+      active_run_status: "queued" | "running" | null;
     }>(
       `
         SELECT
@@ -3300,9 +3308,14 @@ export class NeonAppStore implements AppStore {
           (
             ARRAY_AGG(m.content ORDER BY m.created_at DESC)
             FILTER (WHERE m.id IS NOT NULL)
-          )[1] AS last_message_preview
+          )[1] AS last_message_preview,
+          (
+            ARRAY_AGG(r.status ORDER BY CASE WHEN r.status = 'running' THEN 0 ELSE 1 END, r.started_at DESC)
+            FILTER (WHERE r.status IN ('queued', 'running'))
+          )[1]::text AS active_run_status
         FROM chat_sessions cs
         LEFT JOIN messages m ON m.session_id = cs.id
+        LEFT JOIN runs r ON r.session_id = cs.id
         WHERE cs.user_id = $1
         GROUP BY cs.id
         ORDER BY COALESCE(MAX(m.created_at), cs.created_at) DESC
@@ -3316,6 +3329,7 @@ export class NeonAppStore implements AppStore {
       createdAt: row.created_at,
       lastMessageAt: row.last_message_at,
       lastMessagePreview: row.last_message_preview?.slice(0, 120) ?? null,
+      activeRunStatus: row.active_run_status ?? null,
     }));
   }
 

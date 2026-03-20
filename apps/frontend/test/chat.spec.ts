@@ -498,6 +498,7 @@ test("sidebar recents shows a spinner for a session with an active run", async (
             createdAt: "2026-03-16T12:00:00.000Z",
             lastMessageAt: "2026-03-16T12:01:00.000Z",
             lastMessagePreview: "Running thread preview",
+            activeRunStatus: "running",
           },
           {
             id: secondSessionId,
@@ -506,6 +507,7 @@ test("sidebar recents shows a spinner for a session with an active run", async (
             createdAt: "2026-03-16T12:02:00.000Z",
             lastMessageAt: "2026-03-16T12:03:00.000Z",
             lastMessagePreview: "Idle thread preview",
+            activeRunStatus: null,
           },
         ],
       }),
@@ -532,18 +534,7 @@ test("sidebar recents shows a spinner for a session with an active run", async (
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
-        runs: [
-          {
-            id: "run-active-1",
-            sessionId: firstSessionId,
-            status: "running",
-            plannerTurns: 1,
-            startedAt: "2026-03-16T12:00:03.000Z",
-            completedAt: null,
-          },
-        ],
-      }),
+      body: JSON.stringify({ runs: [] }),
     });
   });
 
@@ -718,6 +709,7 @@ test("assistant.completed replaces a partial streamed answer with the final answ
             createdAt: "2026-03-16T12:00:00.000Z",
             lastMessageAt: "2026-03-16T12:00:00.000Z",
             lastMessagePreview: "Existing thread",
+            activeRunStatus: null,
           },
         ],
       }),
