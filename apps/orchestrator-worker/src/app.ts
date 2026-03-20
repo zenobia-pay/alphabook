@@ -6048,19 +6048,11 @@ async function buildCitationPassageUrl(
   citation: Citation,
 ): Promise<string> {
   const work = await deps.store.getWorkById(citation.workId);
-  const directChunkUrl =
-    typeof citation.chunkId === "string" && citation.chunkId.trim().length > 0
-      ? buildResearchDocumentChunkUrl(
-          sessionId,
-          citation.workId,
-          citation.chunkId,
-          typeof work?.gutenbergId === "number" || typeof work?.gutenbergId === "string"
-            ? work.gutenbergId
-            : null,
-        )
-      : null;
-  if (directChunkUrl) {
-    return directChunkUrl;
+  if (typeof citation.chunkId === "string" && citation.chunkId.trim().length > 0) {
+    const [chunk] = await deps.store.getChunksByIds([citation.chunkId]);
+    if (chunk) {
+      return await buildChunkPassageUrlFromChunk(deps, sessionId, chunk);
+    }
   }
   const baseUrl = buildResearchDocumentWorkUrl(sessionId, citation.workId);
   const files = await deps.store.getWorkFiles([citation.workId], ["raw", "clean"]);
@@ -6084,7 +6076,14 @@ async function buildCitationPassageUrl(
   const passages = buildSourceWorkPassages(sourceFormat, content);
   const candidates = buildExcerptCandidates(citation.excerpt).map((candidate) => buildNormalizedSearchIndex(candidate));
   const match = passages.find((passage) => candidates.some((candidate) => candidate && passage.searchText.includes(candidate)));
-  return match ? `${baseUrl}#${match.id}` : baseUrl;
+  return match
+    ? buildResearchDocumentPassageUrl(
+        sessionId,
+        citation.workId,
+        match.id,
+        typeof work?.gutenbergId === "number" || typeof work?.gutenbergId === "string" ? work.gutenbergId : null,
+      ) ?? `${baseUrl}#${match.id}`
+    : baseUrl;
 }
 
 async function buildChunkIndexPassageUrl(
@@ -6097,15 +6096,7 @@ async function buildChunkIndexPassageUrl(
   if (!chunk) {
     return null;
   }
-  const work = await deps.store.getWorkById(workId);
-  return buildResearchDocumentChunkUrl(
-    sessionId,
-    workId,
-    chunk.id,
-    typeof work?.gutenbergId === "number" || typeof work?.gutenbergId === "string"
-      ? work.gutenbergId
-      : null,
-  ) ?? buildResearchDocumentWorkUrl(sessionId, workId);
+  return await buildChunkPassageUrlFromChunk(deps, sessionId, chunk);
 }
 
 async function buildChunkIdPassageUrl(
@@ -6117,15 +6108,50 @@ async function buildChunkIdPassageUrl(
   if (!chunk) {
     return null;
   }
+  return await buildChunkPassageUrlFromChunk(deps, sessionId, chunk);
+}
+
+async function buildChunkPassageUrlFromChunk(
+  deps: AppDeps,
+  sessionId: string,
+  chunk: Pick<ChunkSearchResult, "id" | "workId" | "text" | "excerpt">,
+): Promise<string> {
   const work = await deps.store.getWorkById(chunk.workId);
-  return buildResearchDocumentChunkUrl(
-    sessionId,
-    chunk.workId,
-    chunk.id,
+  const baseUrl = buildResearchDocumentWorkUrl(sessionId, chunk.workId);
+  const gutenbergId =
     typeof work?.gutenbergId === "number" || typeof work?.gutenbergId === "string"
       ? work.gutenbergId
-      : null,
-  ) ?? buildResearchDocumentWorkUrl(sessionId, chunk.workId);
+      : null;
+  if (gutenbergId == null || String(gutenbergId).trim().length === 0) {
+    return baseUrl;
+  }
+
+  const files = await deps.store.getWorkFiles([chunk.workId], ["raw", "clean"]);
+  const rawFile = files.find((file) => file.kind === "raw") ?? null;
+  const cleanFile = files.find((file) => file.kind === "clean") ?? null;
+  const preferredFile = rawFile ?? cleanFile;
+  if (!preferredFile?.r2Key) {
+    return baseUrl;
+  }
+  const content = await deps.blobStore.getText(preferredFile.r2Key);
+  if (!content) {
+    return baseUrl;
+  }
+
+  const metadata = work?.metadata ?? {};
+  const sourceFormat =
+    typeof metadata.sourceFormat === "string" && (metadata.sourceFormat === "html" || metadata.sourceFormat === "text")
+      ? metadata.sourceFormat
+      : rawFile?.r2Key?.endsWith(".html") || content.trimStart().startsWith("<!DOCTYPE html") || content.trimStart().startsWith("<html")
+        ? "html"
+        : "text";
+  const passages = buildSourceWorkPassages(sourceFormat, content);
+  const candidates = [...buildExcerptCandidates(chunk.excerpt), ...buildExcerptCandidates(chunk.text)]
+    .map((candidate) => buildNormalizedSearchIndex(candidate));
+  const match = passages.find((passage) => candidates.some((candidate) => candidate && passage.searchText.includes(candidate)));
+  return match
+    ? buildResearchDocumentPassageUrl(sessionId, chunk.workId, match.id, gutenbergId) ?? `${baseUrl}#${match.id}`
+    : baseUrl;
 }
 
 async function rewriteAnswerWithCitationLinks(
@@ -6563,18 +6589,18 @@ function buildResearchDocumentWorkUrl(sessionId: string, workId: string) {
   return url.toString();
 }
 
-function buildResearchDocumentChunkUrl(
+function buildResearchDocumentPassageUrl(
   sessionId: string,
   workId: string,
-  chunkId: string,
+  passageId: string,
   gutenbergId: string | number | null | undefined,
 ) {
-  if (!chunkId || gutenbergId == null || String(gutenbergId).trim().length === 0) {
+  if (!passageId || gutenbergId == null || String(gutenbergId).trim().length === 0) {
     return null;
   }
   const url = new URL(`https://alpha-book.org/works/${encodeURIComponent(workId)}`);
   url.searchParams.set("session", sessionId);
-  url.searchParams.set("reader", `/${encodeURIComponent(String(gutenbergId))}/passages/${encodeURIComponent(chunkId)}`);
+  url.searchParams.set("reader", `/${encodeURIComponent(String(gutenbergId))}/passages/${encodeURIComponent(passageId)}`);
   return url.toString();
 }
 
