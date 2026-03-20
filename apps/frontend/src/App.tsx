@@ -2480,7 +2480,7 @@ function messageToThreadMessage(
       content,
       metadata,
       status:
-        (isSending && message.id === streamingAssistantId) || hasRunningTool || (runActive && phase === "plan")
+        (isSending && message.id === streamingAssistantId) || hasRunningTool
           ? ({ type: "running" } as const)
           : ({ type: "complete", reason: "stop" } as const),
     };
