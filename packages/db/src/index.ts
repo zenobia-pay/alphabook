@@ -26,7 +26,7 @@ const TRANSIENT_DB_ERROR_PATTERNS = [
 ];
 
 function createPool(connectionString: string): PoolLike {
-  neonConfig.fetchConnectionCache = true;
+  neonConfig.poolQueryViaFetch = true;
   return new Pool({ connectionString });
 }
 

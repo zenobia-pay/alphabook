@@ -2746,21 +2746,29 @@ export class NeonAppStore implements AppStore {
 
   private ensureAnalyticsSchema() {
     if (!this.analyticsSchemaReady) {
-      this.analyticsSchemaReady = this.db.query(
-        `
-          CREATE TABLE IF NOT EXISTS analytics_events (
-            id uuid PRIMARY KEY,
-            event text NOT NULL,
-            user_id text REFERENCES users(id) ON DELETE SET NULL,
-            session_id uuid REFERENCES chat_sessions(id) ON DELETE SET NULL,
-            properties_json jsonb NOT NULL DEFAULT '{}'::jsonb,
-            created_at timestamptz NOT NULL DEFAULT now()
-          );
-          CREATE INDEX IF NOT EXISTS idx_analytics_events_created_at ON analytics_events(created_at DESC);
-          CREATE INDEX IF NOT EXISTS idx_analytics_events_event_created_at ON analytics_events(event, created_at DESC);
-          CREATE INDEX IF NOT EXISTS idx_analytics_events_session_id ON analytics_events(session_id);
-        `,
-      ).then(() => {});
+      this.analyticsSchemaReady = (async () => {
+        await this.db.query(
+          `
+            CREATE TABLE IF NOT EXISTS analytics_events (
+              id uuid PRIMARY KEY,
+              event text NOT NULL,
+              user_id text REFERENCES users(id) ON DELETE SET NULL,
+              session_id uuid REFERENCES chat_sessions(id) ON DELETE SET NULL,
+              properties_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+              created_at timestamptz NOT NULL DEFAULT now()
+            )
+          `,
+        );
+        await this.db.query(
+          "CREATE INDEX IF NOT EXISTS idx_analytics_events_created_at ON analytics_events(created_at DESC)",
+        );
+        await this.db.query(
+          "CREATE INDEX IF NOT EXISTS idx_analytics_events_event_created_at ON analytics_events(event, created_at DESC)",
+        );
+        await this.db.query(
+          "CREATE INDEX IF NOT EXISTS idx_analytics_events_session_id ON analytics_events(session_id)",
+        );
+      })();
     }
     return this.analyticsSchemaReady;
   }
