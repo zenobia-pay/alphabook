@@ -8161,6 +8161,59 @@ async function runOrchestrator(
     };
   };
 
+  const maybeStartWorkspacePrewarm = async () => {
+    if (pendingWorkspaceExecution || workspaceStartAttempts > 0 || latestCompletedRuntimeId()) {
+      return;
+    }
+    const broadCorpusQuery = isBroadCorpusResearchQuery(
+      routedQueryRef.current,
+      Array.isArray(input.workIds) ? input.workIds.length : 0,
+    );
+    const latestSearchResult = latestSearchWorksResultFromHistory(toolHistory);
+    const estimate =
+      latestScopeEstimateFromHistory(toolHistory)
+      ?? (latestSearchResult ? deriveScopeEstimateFromSearchResult(routedQueryRef.current, latestSearchResult) : null);
+    const candidateWorkIds = latestCandidateWorkIdsFromHistory(toolHistory);
+    if (!estimate && candidateWorkIds.length === 0 && (!Array.isArray(input.workIds) || input.workIds.length === 0)) {
+      return;
+    }
+    const searchPlan = searchPlanFromEstimate(estimate, broadCorpusQuery, input.intensityOverride);
+    const prewarmWorkLimit = broadCorpusQuery ? 24 : 12;
+    const prewarmCandidateWorkIds = (
+      candidateWorkIds.length > 0
+        ? candidateWorkIds
+        : Array.isArray(input.workIds)
+          ? input.workIds
+          : []
+    ).slice(0, prewarmWorkLimit);
+    const prewarmToolArgs = normalizeToolArgs("create_workspace", {
+      workIds: Array.isArray(input.workIds) ? input.workIds.slice(0, prewarmWorkLimit) : [],
+      chunkIds: [],
+      taskContext: {
+        question: routedQueryRef.current,
+        researchObjective: routedQueryRef.current,
+        mode: Array.isArray(input.workIds) && input.workIds.length > 0 ? "open_book_analysis" : "exhaustive_corpus_search",
+        candidateWorkIds: prewarmCandidateWorkIds,
+        topChunks: [],
+        searchPlan: estimate ?? {
+          recommendedIntensity: searchPlan.intensity,
+          recommendedWallClockMinutes: searchPlan.wallClockMinutes,
+          recommendedParallelism: searchPlan.parallelism,
+          recommendedShardAxis: searchPlan.shardAxis,
+          recommendedFrontierWorks: searchPlan.frontierWorks,
+        },
+        prewarmed: true,
+      },
+    });
+    await startBackgroundTool(
+      "create_workspace",
+      prewarmToolArgs,
+      Array.isArray(input.workIds) && input.workIds.length > 0
+        ? "I’m spinning up the deeper research workspace for this book now so retrieval can feed into it immediately."
+        : "I’m spinning up the deeper research workspace now so retrieval can feed into it immediately.",
+    );
+  };
+
   const routedQueryRef = { current: input.message };
   let prefetchedScopeEstimate:
     | {
@@ -8259,38 +8312,7 @@ async function runOrchestrator(
     const routedQuery = routeDecision.fullQuery.trim() || input.message;
     routedQueryRef.current = routedQuery;
     await ensureInitialPlanSent(routedQuery);
-    if (!pendingWorkspaceExecution && workspaceStartAttempts === 0 && latestScopeEstimateFromHistory(toolHistory)) {
-      const broadCorpusQuery = isBroadCorpusResearchQuery(routedQuery, Array.isArray(input.workIds) ? input.workIds.length : 0);
-      const estimate = latestScopeEstimateFromHistory(toolHistory);
-      const searchPlan = searchPlanFromEstimate(estimate, broadCorpusQuery, input.intensityOverride);
-      const prewarmWorkLimit = broadCorpusQuery ? 24 : 12;
-      const prewarmToolArgs = normalizeToolArgs("create_workspace", {
-        workIds: Array.isArray(input.workIds) ? input.workIds.slice(0, prewarmWorkLimit) : [],
-        chunkIds: [],
-        taskContext: {
-          question: routedQuery,
-          researchObjective: routedQuery,
-          mode: Array.isArray(input.workIds) && input.workIds.length > 0 ? "open_book_analysis" : "exhaustive_corpus_search",
-          candidateWorkIds: Array.isArray(input.workIds) ? input.workIds.slice(0, prewarmWorkLimit) : [],
-          topChunks: [],
-          searchPlan: estimate ?? {
-            recommendedIntensity: searchPlan.intensity,
-            recommendedWallClockMinutes: searchPlan.wallClockMinutes,
-            recommendedParallelism: searchPlan.parallelism,
-            recommendedShardAxis: searchPlan.shardAxis,
-            recommendedFrontierWorks: searchPlan.frontierWorks,
-          },
-          prewarmed: true,
-        },
-      });
-      await startBackgroundTool(
-        "create_workspace",
-        prewarmToolArgs,
-        Array.isArray(input.workIds) && input.workIds.length > 0
-          ? "I’m spinning up the deeper research workspace for this book now so retrieval can feed into it immediately."
-          : "I’m spinning up the deeper research workspace now so retrieval can feed into it immediately.",
-      );
-    }
+    await maybeStartWorkspacePrewarm();
     const currentTimeBudgetMs = () => {
       const estimate = latestScopeEstimateFromHistory(toolHistory);
       const broadCorpusQuery = isBroadCorpusResearchQuery(routedQueryRef.current, Array.isArray(input.workIds) ? input.workIds.length : 0);
@@ -8305,6 +8327,7 @@ async function runOrchestrator(
       if (runFinalized) {
         return;
       }
+      await maybeStartWorkspacePrewarm();
       if (activeRuns.get(run.id)?.cancelRequested) {
         break;
       }
