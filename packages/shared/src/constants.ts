@@ -1,11 +1,10 @@
 import { artifactKeys, HARD_LIMITS } from "@alphabook/corpus-core";
-import { GUTENBERG_WORKSPACE_POSTGRES_SCHEMA } from "@alphabook/source-gutenberg/schema";
-import { gutenbergCorpusKeys } from "@alphabook/source-gutenberg/storage";
+import { gutenbergCorpusAdapter } from "@alphabook/source-gutenberg/adapter";
 
 export { HARD_LIMITS };
 
 export const R2_PREFIXES = {
-  ...gutenbergCorpusKeys,
+  ...gutenbergCorpusAdapter.artifactKeys,
   ...artifactKeys,
 } as const;
 
@@ -25,4 +24,4 @@ export function getToolLabel(toolName: string) {
   return TOOL_LABELS[toolName as keyof typeof TOOL_LABELS] ?? "Research step";
 }
 
-export const WORKSPACE_POSTGRES_SCHEMA = GUTENBERG_WORKSPACE_POSTGRES_SCHEMA;
+export const WORKSPACE_POSTGRES_SCHEMA = gutenbergCorpusAdapter.workspaceSchema;

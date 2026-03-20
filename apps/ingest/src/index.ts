@@ -8,9 +8,8 @@ import { DeleteObjectsCommand, GetObjectCommand, S3Client, PutObjectCommand } fr
 import { NodeHttpHandler } from "@smithy/node-http-handler";
 import { parseHTML } from "linkedom";
 import { createNeonDb } from "@alphabook/db";
+import { gutenbergCorpusAdapter } from "@alphabook/source-gutenberg/adapter";
 import { listMirrorIds, resolveMirrorSource } from "@alphabook/source-gutenberg/mirror";
-import { gutenbergCorpusKeys } from "@alphabook/source-gutenberg/storage";
-import { chunkCorpusText, normalizeCorpusText, stripGutenbergBoilerplate } from "@alphabook/source-gutenberg/text";
 
 interface IngestContext {
   db: ReturnType<typeof createNeonDb>;
@@ -777,7 +776,7 @@ function looksLikeVerseBlock(value: string) {
 }
 
 function buildPaginatedTextBlocks(content: string) {
-  const paragraphs = stripGutenbergBoilerplate(content)
+  const paragraphs = gutenbergCorpusAdapter.text.stripSourceBoilerplate(content)
     .replace(/\r\n/g, "\n")
     .split(/\n{2,}/)
     .map((paragraph) => normalizeReaderText(paragraph, true))
@@ -1137,7 +1136,7 @@ function buildPaginatedBookArtifactBundle(input: {
 }
 
 function renderTextSource(content: string) {
-  const paragraphs = stripGutenbergBoilerplate(content)
+  const paragraphs = gutenbergCorpusAdapter.text.stripSourceBoilerplate(content)
     .replace(/\r\n/g, "\n")
     .split(/\n{2,}/)
     .map((paragraph) => normalizeReaderText(paragraph, true))
@@ -1364,19 +1363,23 @@ async function persistIngestedWork(context: IngestContext, source: IngestSourceI
     }
   }
 
-  const cleanText = normalizeCorpusText(stripGutenbergBoilerplate(source.rawText));
-  const chunks = chunkCorpusText(cleanText);
+  const cleanText = gutenbergCorpusAdapter.text.normalizeText(
+    gutenbergCorpusAdapter.text.stripSourceBoilerplate(source.rawText),
+  );
+  const chunks = gutenbergCorpusAdapter.text.chunkText(cleanText);
   const chunkEmbeddings = await embedChunks(chunks);
   const authors = uniqueStrings(source.authors ?? []);
   const subjects = uniqueStrings(source.subjects ?? []);
 
-  const rawKey = gutenbergCorpusKeys.rawText(source.gutenbergId);
-  const metadataKey = gutenbergCorpusKeys.rawMetadata(source.gutenbergId);
-  const cleanKey = gutenbergCorpusKeys.cleanText(source.gutenbergId);
-  const chunksKey = gutenbergCorpusKeys.chunks(source.gutenbergId);
-  const bookHtmlKey = gutenbergCorpusKeys.bookHtml(source.gutenbergId);
+  const rawKey = gutenbergCorpusAdapter.artifactKeys.rawText(source.gutenbergId);
+  const metadataKey = gutenbergCorpusAdapter.artifactKeys.rawMetadata(source.gutenbergId);
+  const cleanKey = gutenbergCorpusAdapter.artifactKeys.cleanText(source.gutenbergId);
+  const chunksKey = gutenbergCorpusAdapter.artifactKeys.chunks(source.gutenbergId);
+  const bookHtmlKey = gutenbergCorpusAdapter.artifactKeys.renderedDocument?.(source.gutenbergId) ?? "";
   const coverImagePath = typeof source.metadata?.coverImagePath === "string" ? source.metadata.coverImagePath : null;
-  const coverImageKey = coverImagePath ? gutenbergCorpusKeys.coverImage(source.gutenbergId, coverExtension(coverImagePath)) : null;
+  const coverImageKey = coverImagePath
+    ? gutenbergCorpusAdapter.artifactKeys.coverImage?.(source.gutenbergId, coverExtension(coverImagePath)) ?? null
+    : null;
   const proposedWorkId = crypto.randomUUID();
   const metadataPayload = {
     gutenbergId: source.gutenbergId,
@@ -1452,7 +1455,7 @@ async function persistIngestedWork(context: IngestContext, source: IngestSourceI
     rawSource: source.rawSource,
     sourceFormat: source.sourceFormat ?? "text",
   });
-  const bookManifestKey = gutenbergCorpusKeys.bookManifest(source.gutenbergId);
+  const bookManifestKey = gutenbergCorpusAdapter.artifactKeys.renderedManifest?.(source.gutenbergId) ?? "";
 
   await Promise.all([
     putText(
@@ -1477,7 +1480,7 @@ async function persistIngestedWork(context: IngestContext, source: IngestSourceI
       putText(
         context.r2,
         context.r2Bucket,
-        gutenbergCorpusKeys.bookPage(source.gutenbergId, page.pageNumber),
+        gutenbergCorpusAdapter.artifactKeys.renderedPage?.(source.gutenbergId, page.pageNumber) ?? "",
         page.html,
         "text/html; charset=utf-8",
       )),
@@ -1649,11 +1652,11 @@ async function deleteGutenbergWorks(context: IngestContext, gutenbergIds: string
   const r2Keys = uniqueStrings([
     ...rows.rows.map((row) => (row.r2_key ? String(row.r2_key) : null)),
     ...ids.flatMap((id) => [
-      gutenbergCorpusKeys.rawText(id),
-      gutenbergCorpusKeys.rawMetadata(id),
-      gutenbergCorpusKeys.cleanText(id),
-      gutenbergCorpusKeys.chunks(id),
-      gutenbergCorpusKeys.bookHtml(id),
+      gutenbergCorpusAdapter.artifactKeys.rawText(id),
+      gutenbergCorpusAdapter.artifactKeys.rawMetadata(id),
+      gutenbergCorpusAdapter.artifactKeys.cleanText(id),
+      gutenbergCorpusAdapter.artifactKeys.chunks(id),
+      gutenbergCorpusAdapter.artifactKeys.renderedDocument?.(id) ?? "",
     ]),
   ]);
 
@@ -1758,8 +1761,8 @@ async function persistBookHtmlArtifact(
 ): Promise<BookHtmlPersistResult> {
   const candidateKeys = uniqueStrings([
     rawKey,
-    gutenbergCorpusKeys.rawText(work.gutenbergId),
-    gutenbergCorpusKeys.cleanText(work.gutenbergId),
+    gutenbergCorpusAdapter.artifactKeys.rawText(work.gutenbergId),
+    gutenbergCorpusAdapter.artifactKeys.cleanText(work.gutenbergId),
   ]);
   let rawSource: string | null = null;
   let resolvedSourceKey: string | null = null;
@@ -1791,8 +1794,8 @@ async function persistBookHtmlArtifact(
     rawSource,
     sourceFormat: resolvedSourceKey.endsWith("/raw.txt") && metadata.sourceFormat === "html" ? "html" : "text",
   });
-  const bookHtmlKey = gutenbergCorpusKeys.bookHtml(work.gutenbergId);
-  const bookManifestKey = gutenbergCorpusKeys.bookManifest(work.gutenbergId);
+  const bookHtmlKey = gutenbergCorpusAdapter.artifactKeys.renderedDocument?.(work.gutenbergId) ?? "";
+  const bookManifestKey = gutenbergCorpusAdapter.artifactKeys.renderedManifest?.(work.gutenbergId) ?? "";
 
   await Promise.all([
     putText(context.r2, context.r2Bucket, bookHtmlKey, bookBundle.landingHtml, "text/html; charset=utf-8"),
@@ -1801,7 +1804,7 @@ async function persistBookHtmlArtifact(
       putText(
         context.r2,
         context.r2Bucket,
-        gutenbergCorpusKeys.bookPage(work.gutenbergId, page.pageNumber),
+        gutenbergCorpusAdapter.artifactKeys.renderedPage?.(work.gutenbergId, page.pageNumber) ?? "",
         page.html,
         "text/html; charset=utf-8",
       )),

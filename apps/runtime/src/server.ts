@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
 import process from "node:process";
 
 import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
-import { HARD_LIMITS } from "@alphabook/corpus-core";
+import { HARD_LIMITS, normalizeWorkspaceChunks, normalizeWorkspaceDocuments } from "@alphabook/corpus-core";
 import { RUNTIME_AGENT_PROMPT, type RuntimeTaskResult, type WorkspaceManifest } from "@alphabook/shared";
 
 export interface RuntimeServerOptions {
@@ -683,9 +683,11 @@ async function listFiles(root: string, workspaceRoot: string): Promise<string[]>
 async function runStubAgent(paths: ReturnType<typeof createPaths>, workspaceRoot: string, taskSpec: Record<string, unknown>): Promise<RuntimeTaskResult> {
   const manifestText = await readFile(join(paths.context, "manifest.json"), "utf8");
   const manifest = JSON.parse(manifestText) as WorkspaceManifest;
+  const documents = normalizeWorkspaceDocuments(manifest);
+  const selectedChunks = normalizeWorkspaceChunks(manifest);
   const workFiles = await listFiles(paths.books, workspaceRoot);
   const chunkFiles = await listFiles(paths.chunks, workspaceRoot);
-  const comparisonLines = manifest.works.map((work) => `- ${work.workId}: ${work.cleanTextKey ?? "no-clean-text"} | ${work.chunksKey ?? "no-chunks"}`);
+  const comparisonLines = documents.map((document) => `- ${document.documentId}: ${document.cleanTextKey ?? "no-clean-text"} | ${document.chunksKey ?? "no-chunks"}`);
   const phase = typeof taskSpec.phase === "string" ? taskSpec.phase : "collect_and_brief";
 
   const summary = [
@@ -717,16 +719,16 @@ async function runStubAgent(paths: ReturnType<typeof createPaths>, workspaceRoot
     join(paths.output, "evidence.json"),
     JSON.stringify({
       question: taskSpec.question ?? null,
-      evidence: manifest.selectedChunks?.slice(0, 6).map((chunk) => ({
-        workId: chunk.workId,
+      evidence: selectedChunks.slice(0, 6).map((chunk) => ({
+        workId: chunk.documentId,
         chunkId: chunk.id,
         chunkIndex: chunk.chunkIndex,
-        sourcePath: `chunks/${chunk.workId}/chunks.jsonl`,
-        label: `${chunk.workId}#${chunk.chunkIndex}`,
+        sourcePath: `chunks/${chunk.documentId}/chunks.jsonl`,
+        label: `${chunk.documentId}#${chunk.chunkIndex}`,
         excerpt: chunk.excerpt,
         rationale: "Stub runtime evidence item.",
         r2Key: chunk.r2Key ?? undefined,
-      })) ?? [],
+      })),
     }, null, 2),
     "utf8",
   );
@@ -736,22 +738,22 @@ async function runStubAgent(paths: ReturnType<typeof createPaths>, workspaceRoot
       generatedAt: nowIso(),
       summary: {
         uniqueChunkCount: manifest.selectedChunks?.length ?? 0,
-        selectedChunkCount: manifest.selectedChunks?.length ?? 0,
+        selectedChunkCount: selectedChunks.length,
         topRuntimeHitCount: 0,
         iterationCount: 0,
       },
-      chunks: manifest.selectedChunks?.map((chunk) => ({
+      chunks: selectedChunks.map((chunk) => ({
         chunkId: chunk.id,
-        workId: chunk.workId,
-        workTitle: manifest.works.find((work) => work.workId === chunk.workId)?.title ?? null,
-        authors: manifest.works.find((work) => work.workId === chunk.workId)?.authors ?? [],
+        workId: chunk.documentId,
+        workTitle: documents.find((document) => document.documentId === chunk.documentId)?.title ?? null,
+        authors: documents.find((document) => document.documentId === chunk.documentId)?.contributors ?? [],
         chunkIndex: chunk.chunkIndex,
         excerpt: chunk.excerpt ?? chunk.text ?? "",
         r2Key: chunk.r2Key ?? null,
         viewedIn: ["workspace_selected_chunks"],
         matchedIterations: [],
         maxScore: null,
-      })) ?? [],
+      })),
     }, null, 2),
     "utf8",
   );
@@ -762,20 +764,20 @@ async function runStubAgent(paths: ReturnType<typeof createPaths>, workspaceRoot
       "",
       `Generated: ${nowIso()}`,
       "",
-      ...(manifest.selectedChunks?.map((chunk) => {
-        const work = manifest.works.find((item) => item.workId === chunk.workId);
+      ...selectedChunks.map((chunk) => {
+        const work = documents.find((item) => item.documentId === chunk.documentId);
         return [
-          `## ${work?.title ?? chunk.workId}`,
+          `## ${work?.title ?? chunk.documentId}`,
           "",
-          `- Work ID: ${chunk.workId}`,
+          `- Work ID: ${chunk.documentId}`,
           `- Chunk: ${chunk.id}#${chunk.chunkIndex}`,
-          ...(Array.isArray(work?.authors) && work.authors.length > 0 ? [`- Authors: ${work.authors.join(", ")}`] : []),
+          ...(Array.isArray(work?.contributors) && work.contributors.length > 0 ? [`- Authors: ${work.contributors.join(", ")}`] : []),
           "- Seen in: workspace_selected_chunks",
           "",
           `> ${chunk.excerpt ?? chunk.text ?? ""}`,
           "",
         ].join("\n");
-      }) ?? []),
+      }),
     ].join("\n"),
     "utf8",
   );
@@ -820,13 +822,13 @@ async function runStubAgent(paths: ReturnType<typeof createPaths>, workspaceRoot
       JSON.stringify({
         question: taskSpec.question ?? null,
         briefing: summary,
-        citations: manifest.selectedChunks?.slice(0, 6).map((chunk) => ({
-          workId: chunk.workId,
+        citations: selectedChunks.slice(0, 6).map((chunk) => ({
+          workId: chunk.documentId,
           chunkId: chunk.id,
-          label: `${chunk.workId}#${chunk.chunkIndex}`,
+          label: `${chunk.documentId}#${chunk.chunkIndex}`,
           excerpt: chunk.excerpt,
           r2Key: chunk.r2Key ?? undefined,
-        })) ?? [],
+        })),
       }, null, 2),
       "utf8",
     );
@@ -850,13 +852,13 @@ async function runStubAgent(paths: ReturnType<typeof createPaths>, workspaceRoot
     evidenceNotes: summary,
     briefing: phase === "write_briefing" || phase === "collect_and_brief" ? summary : undefined,
     citations: phase === "write_briefing" || phase === "collect_and_brief"
-      ? manifest.selectedChunks?.slice(0, 6).map((chunk) => ({
-        workId: chunk.workId,
+      ? selectedChunks.slice(0, 6).map((chunk) => ({
+        workId: chunk.documentId,
         chunkId: chunk.id,
-        label: `${chunk.workId}#${chunk.chunkIndex}`,
+        label: `${chunk.documentId}#${chunk.chunkIndex}`,
         excerpt: chunk.excerpt,
         r2Key: chunk.r2Key ?? undefined,
-      })) ?? []
+      }))
       : [],
     codexRuns: [],
     artifacts,

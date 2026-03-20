@@ -1,6 +1,6 @@
-import { artifactKeys, HARD_LIMITS } from "@alphabook/corpus-core";
-import { GUTENBERG_WORKSPACE_POSTGRES_SCHEMA } from "@alphabook/source-gutenberg/schema";
+import { artifactKeys, HARD_LIMITS, withLegacyWorkAliases, type CorpusWorkspaceDocument } from "@alphabook/corpus-core";
 import { ToolArgsSchemas, type WorkSummary } from "@alphabook/shared";
+import { gutenbergCorpusAdapter } from "@alphabook/source-gutenberg/adapter";
 
 import type { RuntimeToolGateway } from "./app";
 import type { BlobStore } from "./r2";
@@ -96,15 +96,15 @@ function sanitizeMachineName(value: string): string {
 }
 
 function groupWorkFiles(workIds: string[], files: WorkFileRecord[], metadata: WorkSummary[]) {
-  return workIds.map((workId) => {
+  return workIds.map((workId): CorpusWorkspaceDocument => {
     const workFiles = files.filter((file) => file.workId === workId);
     const work = metadata.find((candidate) => candidate.id === workId);
     return {
-      workId,
+      documentId: workId,
       title: work?.title,
-      authors: work?.authors,
+      contributors: work?.authors,
       language: work?.language ?? null,
-      releaseDate: work?.releaseDate ?? null,
+      publishedAt: work?.releaseDate ?? null,
       rightsStatus: work?.rightsStatus ?? null,
       summary: work?.summary ?? null,
       subjects: work?.subjects,
@@ -815,7 +815,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     ]);
     let totalBytes = 0;
     const fileCatalog = dedupeByKey(workFiles).map((file) => ({
-      workId: file.workId,
+      documentId: file.workId,
       kind: file.kind,
       r2Key: file.r2Key,
       destinationPath:
@@ -827,16 +827,16 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
 
     const { hydratedWorkIds: _ignoredHydratedWorkIds, ...restTaskContext } = taskContext;
 
-    const manifest = {
+    const manifest = withLegacyWorkAliases({
       runtimeId,
       sessionId,
-      works: groupWorkFiles(resolvedWorkIds, workFiles, workMetadata),
-      dataSchema: GUTENBERG_WORKSPACE_POSTGRES_SCHEMA,
+      documents: groupWorkFiles(resolvedWorkIds, workFiles, workMetadata),
+      dataSchema: gutenbergCorpusAdapter.workspaceSchema,
       fileCatalog,
       selectedChunkIds: chunkIds,
       selectedChunks: selectedChunks.map((chunk) => ({
         id: chunk.id,
-        workId: chunk.workId,
+        documentId: chunk.workId,
         chunkIndex: chunk.chunkIndex,
         text: chunk.text,
         excerpt: chunk.excerpt,
@@ -847,7 +847,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
         corpusWorkCount,
         hydratedWorkCount: resolvedWorkIds.length,
       },
-    };
+    });
 
     const manifestKey = artifactKeys.runtimeArtifact(runtimeId, "manifest.json");
     const manifestText = JSON.stringify(manifest, null, 2);

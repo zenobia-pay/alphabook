@@ -436,6 +436,19 @@ export type ToolResult = z.infer<typeof ToolResultSchema>;
 export interface WorkspaceManifest {
   runtimeId: string;
   sessionId: string;
+  documents?: Array<{
+    documentId: string;
+    title?: string;
+    contributors?: string[];
+    language?: string | null;
+    publishedAt?: string | null;
+    rightsStatus?: string | null;
+    summary?: string | null;
+    subjects?: string[];
+    cleanTextKey?: string;
+    chunksKey?: string;
+    metadata?: Record<string, unknown>;
+  }>;
   works: Array<{
     workId: string;
     title?: string;
@@ -450,20 +463,24 @@ export interface WorkspaceManifest {
   }>;
   dataSchema?: Record<string, unknown>;
   fileCatalog?: Array<{
+    documentId?: string;
     workId: string;
     kind: string;
     r2Key: string;
     destinationPath: string;
     byteSize?: number | null;
+    metadata?: Record<string, unknown>;
   }>;
   selectedChunkIds: string[];
   selectedChunks?: Array<{
     id: string;
+    documentId?: string;
     workId: string;
     chunkIndex: number;
     text: string;
     excerpt: string;
     r2Key?: string | null;
+    metadata?: Record<string, unknown>;
   }>;
   taskContext: Record<string, unknown>;
 }

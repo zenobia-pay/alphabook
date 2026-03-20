@@ -24,6 +24,7 @@ AlphaBook itself is still book-centric today. The reusable parts are being extra
 - AlphaBook is the flagship reference app built on top of that substrate.
 
 The architecture overview lives in [docs/architecture.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/architecture.md).
+The internal adapter seam for non-book corpora is documented in [docs/adapter-architecture.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/adapter-architecture.md).
 
 ## Current Status
 

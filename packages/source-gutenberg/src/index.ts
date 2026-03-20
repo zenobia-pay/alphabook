@@ -1,3 +1,4 @@
+export * from "./adapter";
 export * from "./mirror";
 export * from "./schema";
 export * from "./storage";
