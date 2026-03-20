@@ -5,7 +5,7 @@ import {
 } from "@assistant-ui/react";
 import type { ReadonlyJSONObject, ReadonlyJSONValue } from "assistant-stream/utils";
 import type { AgentationProps } from "agentation";
-import { ChevronsLeft, ChevronsRight, Link2, MessageSquarePlus } from "lucide-react";
+import { ChevronsLeft, ChevronsRight, Link2, LoaderCircle, MessageSquarePlus } from "lucide-react";
 
 import { getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type PublicProfileResponse, type UserProfile, type WorkDetail, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
@@ -2710,12 +2710,14 @@ function SidebarRecents({
   collapsed,
   activeView,
   sessions,
+  runningSessionIds,
   selectedSessionId,
   onSelectSession,
 }: {
   collapsed: boolean;
   activeView: ViewMode;
   sessions: ChatSessionSummary[];
+  runningSessionIds: ReadonlySet<string>;
   selectedSessionId: string | null | undefined;
   onSelectSession: (sessionId: string) => void;
 }) {
@@ -2733,6 +2735,7 @@ function SidebarRecents({
       <div className="sidebar-recents-list">
         {sessions.map((session) => {
           const isActive = activeView === "assistant" && selectedSessionId === session.id;
+          const isRunning = runningSessionIds.has(session.id);
           return (
             <button
               key={session.id}
@@ -2740,7 +2743,14 @@ function SidebarRecents({
               className={cn("sidebar-recent-row", isActive && "is-active")}
               onClick={() => onSelectSession(session.id)}
             >
-              <span>{sessionDisplayTitle(session)}</span>
+              <span className="sidebar-recent-row-label">{sessionDisplayTitle(session)}</span>
+              {isRunning ? (
+                <LoaderCircle
+                  aria-hidden="true"
+                  className="sidebar-recent-row-spinner animate-spin"
+                  data-testid={`recent-session-spinner-${session.id}`}
+                />
+              ) : null}
             </button>
           );
         })}
@@ -4660,6 +4670,13 @@ export default function App() {
       ?? null,
     [recoveredActiveRunId, sessionRuns],
   );
+  const runningSessionIds = useMemo(() => {
+    const next = new Set<string>();
+    if (selectedSessionId && (isSending || sessionRuns.some((run) => run.status === "running" || run.status === "queued"))) {
+      next.add(selectedSessionId);
+    }
+    return next;
+  }, [isSending, selectedSessionId, sessionRuns]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -7682,6 +7699,7 @@ export default function App() {
             collapsed={sidebarCollapsed}
             activeView={activeView}
             sessions={sessions}
+            runningSessionIds={runningSessionIds}
             selectedSessionId={selectedSessionId}
             onSelectSession={openSession}
           />

@@ -242,7 +242,9 @@ button {
 }
 
 .sidebar-recent-row {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 10px;
   min-width: 0;
   max-width: 100%;
   width: 100%;
@@ -262,13 +264,28 @@ button {
   color: var(--ink);
 }
 
-.sidebar-recent-row span {
+.sidebar-recent-row-label {
   display: block;
+  min-width: 0;
+  flex: 1 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 0.94rem;
   line-height: 1.3;
+}
+
+.sidebar-recent-row-spinner {
+  width: 0.9rem;
+  height: 0.9rem;
+  flex: 0 0 auto;
+  color: currentColor;
+  opacity: 0.6;
+}
+
+.sidebar-recent-row:hover .sidebar-recent-row-spinner,
+.sidebar-recent-row.is-active .sidebar-recent-row-spinner {
+  opacity: 0.9;
 }
 
 .sidebar-recents-empty {

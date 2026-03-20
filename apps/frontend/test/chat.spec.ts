@@ -456,6 +456,111 @@ test("switching sessions replaces the transcript instead of mixing messages from
   await expect(page.getByText("FIRST THREAD ANSWER")).toHaveCount(0);
 });
 
+test("sidebar recents shows a spinner for a session with an active run", async ({ page }) => {
+  const firstSessionId = "11111111-1111-4111-8111-111111111211";
+  const secondSessionId = "11111111-1111-4111-8111-111111111212";
+
+  await page.route("**/api/me", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        authConfigured: false,
+        authenticated: false,
+        user: null,
+      }),
+    });
+  });
+
+  await page.route("**/api/admin/access", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        allowed: false,
+        authenticated: false,
+        authConfigured: false,
+        user: null,
+      }),
+    });
+  });
+
+  await page.route(/\/api\/sessions(?:\?.*)?$/, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        sessions: [
+          {
+            id: firstSessionId,
+            userId: "local-user",
+            title: "Running thread",
+            createdAt: "2026-03-16T12:00:00.000Z",
+            lastMessageAt: "2026-03-16T12:01:00.000Z",
+            lastMessagePreview: "Running thread preview",
+          },
+          {
+            id: secondSessionId,
+            userId: "local-user",
+            title: "Idle thread",
+            createdAt: "2026-03-16T12:02:00.000Z",
+            lastMessageAt: "2026-03-16T12:03:00.000Z",
+            lastMessagePreview: "Idle thread preview",
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.route(`**/api/sessions/${firstSessionId}/messages`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ messages: [] }),
+    });
+  });
+
+  await page.route(`**/api/sessions/${secondSessionId}/messages`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ messages: [] }),
+    });
+  });
+
+  await page.route(`**/api/sessions/${firstSessionId}/runs`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        runs: [
+          {
+            id: "run-active-1",
+            sessionId: firstSessionId,
+            status: "running",
+            plannerTurns: 1,
+            startedAt: "2026-03-16T12:00:03.000Z",
+            completedAt: null,
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.route(`**/api/sessions/${secondSessionId}/runs`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ runs: [] }),
+    });
+  });
+
+  await page.goto(`/?view=assistant&session=${firstSessionId}`);
+
+  await expect(page.getByTestId(`recent-session-spinner-${firstSessionId}`)).toBeVisible();
+  await expect(page.getByTestId(`recent-session-spinner-${secondSessionId}`)).toHaveCount(0);
+});
+
 test("assistant session thread stays scrollable with long history", async ({ page }) => {
   const sessionId = "11111111-1111-4111-8111-111111111114";
   const longMessages = Array.from({ length: 18 }, (_, index) => ({
@@ -600,7 +705,7 @@ test("assistant.completed replaces a partial streamed answer with the final answ
     });
   });
 
-  await page.route("**/api/sessions", async (route) => {
+  await page.route(/\/api\/sessions(?:\?.*)?$/, async (route) => {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -665,6 +770,102 @@ test("assistant.completed replaces a partial streamed answer with the final answ
   await expect(page.locator(".aui-assistant-message-root").last()).not.toContainText(/^Partial opening\.\s*$/);
   await expect(page.locator(".aui-user-message-root").last()).toContainText("Finish this answer.");
   await expect(page.locator(".aui-assistant-message-root").first()).toContainText("Search quote references.");
+});
+
+test("sidebar recents shows and clears the spinner during an optimistic send lifecycle", async ({ page }) => {
+  const sessionId = "11111111-1111-4111-8111-111111111213";
+  const planMessageId = "33333333-3333-4333-8333-333333333335";
+  let releaseChatResponse!: () => void;
+  const chatResponseReady = new Promise<void>((resolve) => {
+    releaseChatResponse = resolve;
+  });
+
+  await page.route("**/api/me", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        authConfigured: false,
+        authenticated: false,
+        user: null,
+      }),
+    });
+  });
+
+  await page.route("**/api/admin/access", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        allowed: false,
+        authenticated: false,
+        authConfigured: false,
+        user: null,
+      }),
+    });
+  });
+
+  await page.route(/\/api\/sessions(?:\?.*)?$/, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        sessions: [
+          {
+            id: sessionId,
+            userId: "local-user",
+            title: "Existing thread",
+            createdAt: "2026-03-16T12:00:00.000Z",
+            lastMessageAt: "2026-03-16T12:00:00.000Z",
+            lastMessagePreview: "Existing thread",
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.route(`**/api/sessions/${sessionId}/messages`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ messages: [] }),
+    });
+  });
+
+  await page.route(`**/api/sessions/${sessionId}/runs`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ runs: [] }),
+    });
+  });
+
+  await page.route("**/api/chat", async (route) => {
+    await chatResponseReady;
+    await route.fulfill({
+      status: 200,
+      contentType: "text/event-stream",
+      headers: {
+        "cache-control": "no-cache",
+      },
+      body: [
+        'event: run.started\ndata: {"runId":"run-optimistic-1"}\n\n',
+        `event: assistant.plan\ndata: {"messageId":"${planMessageId}","text":"Search quote references."}\n\n`,
+        'event: assistant.completed\ndata: {"answer":"Done.","citations":[],"phase":"answer"}\n\n',
+        'event: run.completed\ndata: {"runId":"run-optimistic-1","status":"completed"}\n\n',
+      ].join(""),
+    });
+  });
+
+  await page.goto(`/?view=assistant&session=${sessionId}`);
+
+  await page.locator(".aui-composer-input").fill("Start the run.");
+  await page.locator(".aui-composer-send").click();
+
+  await expect(page.getByTestId(`recent-session-spinner-${sessionId}`)).toBeVisible();
+  releaseChatResponse();
+  await expect(page.locator(".aui-assistant-message-root").last()).toContainText("Done.");
+  await expect(page.getByTestId(`recent-session-spinner-${sessionId}`)).toHaveCount(0);
 });
 
 test("reloading a session keeps streamed tool progress instead of replacing it with sparse run state", async ({ page }) => {
