@@ -7514,7 +7514,12 @@ async function runOrchestrator(
       const authors = Array.isArray(detail.authors)
         ? detail.authors.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
         : [];
-      const workId = typeof detail.workId === "string" ? detail.workId : null;
+      const workId =
+        typeof detail.workId === "string"
+          ? detail.workId
+          : typeof detail.id === "string"
+            ? detail.id
+            : null;
       const line = formatResearchDocumentBookLine(titleText, authors);
       appendResearchDocumentOnce(
         `detail:${toolCallId}:work:${workId ?? titleText}`,
@@ -7551,7 +7556,14 @@ async function runOrchestrator(
     toolCallId: string,
     result: Record<string, unknown>,
   ) => {
-    const works = Array.isArray(result.works) ? result.works : [];
+    const frontier = result.frontier && typeof result.frontier === "object"
+      ? result.frontier as Record<string, unknown>
+      : null;
+    const works = Array.isArray(frontier?.works)
+      ? frontier.works
+      : Array.isArray(result.works)
+        ? result.works
+        : [];
     for (const work of works) {
       if (!work || typeof work !== "object") {
         continue;
@@ -7758,6 +7770,24 @@ async function runOrchestrator(
     const completedEntry = liveToolTrace.find((entry) => entry.id === toolCallId) ?? null;
     if (completedEntry) {
       appendResearchDocumentSectionOnce(completedEntry);
+    }
+    if (toolName === "search_works" || toolName === "get_work_metadata") {
+      const visibleWorks = Array.isArray(streamedResult.works) ? streamedResult.works : [];
+      for (const work of visibleWorks) {
+        if (!work || typeof work !== "object") {
+          continue;
+        }
+        await appendResearchDocumentDetailOnce(toolCallId, {
+          type: "research.work",
+          ...(work as Record<string, unknown>),
+          workId:
+            typeof (work as Record<string, unknown>).workId === "string"
+              ? (work as Record<string, unknown>).workId
+              : typeof (work as Record<string, unknown>).id === "string"
+                ? (work as Record<string, unknown>).id
+                : undefined,
+        });
+      }
     }
     await appendResearchDocumentCompletedResultDetails(toolCallId, result);
     if (toolName === "run_workspace_task") {
@@ -8153,20 +8183,6 @@ async function runOrchestrator(
     runtimeTasks += 1;
     const toolRecord = await deps.store.startToolCall(run.id, toolName, normalizedToolArgs);
     await ensureInitialPlanSent(routedQueryRef.current);
-    const startedToolLines = await normalizeToolLinesForUser(deps, {
-      toolName,
-      lines: [
-        {
-          toolName,
-          key: "rationale",
-          value: rationale,
-        },
-          ...flattenValueForCleanup(normalizedToolArgs).map((line) => ({
-            ...line,
-            toolName,
-          })),
-      ],
-    });
     recordRawLog("tool.started.raw", {
       runId: run.id,
       toolCallId: toolRecord.id,
@@ -8185,10 +8201,7 @@ async function runOrchestrator(
         label: labelForToolCall(toolName, normalizedToolArgs),
         rationale: sanitizeUserFacingToolText(rationale) ?? undefined,
         progress: sanitizeUserFacingToolText(rationale) ? [sanitizeUserFacingToolText(rationale)!] : [],
-        args: {
-          __logLines: startedToolLines.normalizedLines,
-          __summary: startedToolLines.summary || undefined,
-        },
+        args: {},
         state: "running",
       },
     ];
@@ -8205,10 +8218,7 @@ async function runOrchestrator(
       label: labelForToolCall(toolName, normalizedToolArgs),
       rationale: sanitizeUserFacingToolText(rationale) ?? null,
       researchDocumentHtml: liveResearchDocumentHtml,
-      args: {
-        __logLines: startedToolLines.normalizedLines,
-        __summary: startedToolLines.summary || undefined,
-      },
+      args: {},
     });
     const progressEmitter = startToolProgressEmitter(
       deps.runtimeGateway,
@@ -8776,22 +8786,6 @@ async function runOrchestrator(
       }
       const toolRecord = await deps.store.startToolCall(run.id, toolCall.tool_name, normalizedToolArgs);
       await ensureInitialPlanSent(routedQuery);
-      const startedToolLines = await normalizeToolLinesForUser(deps, {
-        toolName: toolCall.tool_name,
-        lines: [
-          ...(toolCall.rationale
-            ? [{
-                toolName: toolCall.tool_name,
-                key: "rationale",
-                value: toolCall.rationale,
-              }]
-            : []),
-          ...flattenValueForCleanup(normalizedToolArgs).map((line) => ({
-            ...line,
-            toolName: toolCall.tool_name,
-          })),
-        ],
-      });
       recordRawLog("tool.started.raw", {
         runId: run.id,
         toolCallId: toolRecord.id,
@@ -8814,10 +8808,7 @@ async function runOrchestrator(
           label: labelForToolCall(toolCall.tool_name, normalizedToolArgs),
           rationale: sanitizeUserFacingToolText(toolCall.rationale) ?? undefined,
           progress: sanitizeUserFacingToolText(toolCall.rationale) ? [sanitizeUserFacingToolText(toolCall.rationale)!] : [],
-          args: {
-            __logLines: startedToolLines.normalizedLines,
-            __summary: startedToolLines.summary || undefined,
-          },
+          args: {},
           state: "running",
         },
       ];
@@ -8828,10 +8819,7 @@ async function runOrchestrator(
         toolName: toolCall.tool_name,
         label: labelForToolCall(toolCall.tool_name, normalizedToolArgs),
         rationale: sanitizeUserFacingToolText(toolCall.rationale) ?? null,
-        args: {
-          __logLines: startedToolLines.normalizedLines,
-          __summary: startedToolLines.summary || undefined,
-        },
+        args: {},
       });
       const progressEmitter = startToolProgressEmitter(
         deps.runtimeGateway,
