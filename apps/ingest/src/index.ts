@@ -1,6 +1,7 @@
 import process from "node:process";
 import crypto from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { Agent as HttpsAgent } from "node:https";
 import { dirname } from "node:path";
 
 import { DeleteObjectsCommand, GetObjectCommand, S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
@@ -60,6 +61,14 @@ interface ExistingBookHtmlWork {
   language: string | null;
   releaseDate: string | null;
   metadata: Record<string, unknown>;
+}
+
+interface BookHtmlPersistResult {
+  workId: string;
+  gutenbergId: string;
+  bookHtmlKey?: string;
+  skipped?: boolean;
+  error?: string;
 }
 
 type BookBlockKind = "heading" | "paragraph" | "blockquote" | "preformatted" | "list";
@@ -313,7 +322,7 @@ function createBookSectionId(title: string, index: number) {
   return `section-${slugify(title)}-${index + 1}`;
 }
 
-const STATIC_BOOK_CONTENT_VERSION = "20260319k";
+const STATIC_BOOK_CONTENT_VERSION = "20260320b";
 
 function withBookVersion(href: string, fragment?: string | null) {
   const separator = href.includes("?") ? "&" : "?";
@@ -1178,155 +1187,12 @@ function renderAnchoredHtmlSource(content: string) {
   return document.body.innerHTML;
 }
 
-function renderSourceMarkup(rawSource: string, sourceFormat: "text" | "html") {
-  return sourceFormat === "html" ? renderAnchoredHtmlSource(rawSource) : renderTextSource(rawSource);
-}
-
 function renderTagList(values: string[] | null | undefined) {
   const tags = (values ?? []).filter((value) => value.trim().length > 0).slice(0, 12);
   if (tags.length === 0) {
     return "";
   }
   return `<p class="meta-list">${tags.map((value) => `<span>${escapeHtml(value)}</span>`).join("")}</p>`;
-}
-
-function buildBookHtmlArtifact(input: {
-  gutenbergId: string;
-  title: string;
-  subtitle?: string | null;
-  authors: string[];
-  bookshelves?: string[];
-  summary?: string | null;
-  language?: string | null;
-  releaseDate?: string | null;
-  rawSource: string;
-  sourceFormat: "text" | "html";
-}) {
-  const meta = [
-    input.gutenbergId ? `Project Gutenberg #${input.gutenbergId}` : null,
-    input.language ? input.language.toUpperCase() : null,
-    input.releaseDate ? input.releaseDate.slice(0, 4) : null,
-  ].filter((value): value is string => Boolean(value)).join(" · ");
-  const byline = input.authors.filter((author) => author.trim().length > 0).join(" · ");
-  const description = createExcerpt(input.summary ?? input.rawSource ?? input.title);
-  const sourceMarkup = renderSourceMarkup(input.rawSource, input.sourceFormat);
-
-  return `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>${escapeHtml(input.title)} | alpha book</title>
-    <meta name="description" content="${escapeHtml(description)}" />
-    <meta name="robots" content="noindex,nofollow" />
-    <style>
-      :root {
-        color-scheme: light;
-        --bg: #f8f4ee;
-        --ink: #1f1b16;
-        --muted: #635848;
-        --line: rgba(73, 58, 41, 0.14);
-        --accent-soft: rgba(143, 79, 42, 0.12);
-      }
-      * { box-sizing: border-box; }
-      html { scroll-behavior: smooth; }
-      body {
-        margin: 0;
-        font-family: Georgia, "Times New Roman", serif;
-        color: var(--ink);
-        background: var(--bg);
-      }
-      .page {
-        width: min(880px, calc(100vw - 40px));
-        margin: 0 auto;
-        padding: 28px 0 40px;
-      }
-      .hero {
-        display: grid;
-        gap: 10px;
-        padding-bottom: 22px;
-      }
-      .eyebrow, .byline, .summary {
-        margin: 0;
-        color: var(--muted);
-        font-size: 1rem;
-        line-height: 1.7;
-      }
-      h1 {
-        margin: 0;
-        font-size: clamp(2rem, 4vw, 3.5rem);
-        line-height: 0.98;
-      }
-      .chip-row {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 10px;
-      }
-      .chip-row span {
-        display: inline-flex;
-        align-items: center;
-        border-radius: 999px;
-        padding: 8px 12px;
-        background: var(--accent-soft);
-        color: var(--muted);
-        font-size: 0.88rem;
-      }
-      .reader-body {
-        padding: 0 0 32px;
-        font-size: 1.1rem;
-        line-height: 1.85;
-      }
-      .reader-body h1, .reader-body h2, .reader-body h3, .reader-body h4, .reader-body h5, .reader-body h6 {
-        font-size: 1.4em;
-        line-height: 1.2;
-        margin: 1.8em 0 0.75em;
-      }
-      .reader-body p, .reader-body li, .reader-body blockquote, .reader-body pre {
-        margin: 0 0 1.15em;
-      }
-      .reader-body [data-passage-id] {
-        scroll-margin-top: 24px;
-      }
-      .reader-body :target {
-        background: rgba(143, 79, 42, 0.12);
-        border-radius: 10px;
-        outline: none;
-      }
-      .reader-body blockquote {
-        margin-left: 0;
-        padding-left: 18px;
-        border-left: 3px solid var(--accent-soft);
-        color: var(--muted);
-      }
-      .reader-body pre {
-        white-space: pre-wrap;
-        font-family: "Courier New", monospace;
-        background: #f2eadf;
-        border-radius: 16px;
-        padding: 16px;
-      }
-      .empty-state {
-        color: var(--muted);
-      }
-      @media (max-width: 780px) {
-        .page { width: min(100vw - 24px, 100%); }
-      }
-    </style>
-  </head>
-  <body>
-    <main class="page">
-      <section class="hero">
-        ${meta ? `<p class="eyebrow">${escapeHtml(meta)}</p>` : ""}
-        <h1>${escapeHtml(input.title)}</h1>
-        ${input.subtitle ? `<p class="summary">${escapeHtml(input.subtitle)}</p>` : ""}
-        ${byline ? `<p class="byline">${escapeHtml(byline)}</p>` : ""}
-        ${input.summary ? `<p class="summary">${escapeHtml(input.summary)}</p>` : ""}
-        ${renderTagList(input.bookshelves)}
-      </section>
-      <div class="reader-body">${sourceMarkup}</div>
-    </main>
-  </body>
-</html>`;
 }
 
 async function getText(r2: S3Client, bucket: string, key: string): Promise<string | null> {
@@ -1889,11 +1755,28 @@ async function persistBookHtmlArtifact(
   context: IngestContext,
   work: ExistingBookHtmlWork,
   rawKey?: string | null,
-): Promise<{ workId: string; gutenbergId: string; bookHtmlKey: string }> {
-  const resolvedRawKey = rawKey ?? gutenbergCorpusKeys.rawText(work.gutenbergId);
-  const rawSource = await getText(context.r2, context.r2Bucket, resolvedRawKey);
-  if (!rawSource) {
-    throw new Error(`Raw source missing for Gutenberg ${work.gutenbergId} (${resolvedRawKey}).`);
+): Promise<BookHtmlPersistResult> {
+  const candidateKeys = uniqueStrings([
+    rawKey,
+    gutenbergCorpusKeys.rawText(work.gutenbergId),
+    gutenbergCorpusKeys.cleanText(work.gutenbergId),
+  ]);
+  let rawSource: string | null = null;
+  let resolvedSourceKey: string | null = null;
+  for (const candidateKey of candidateKeys) {
+    rawSource = await getText(context.r2, context.r2Bucket, candidateKey);
+    if (rawSource) {
+      resolvedSourceKey = candidateKey;
+      break;
+    }
+  }
+  if (!rawSource || !resolvedSourceKey) {
+    return {
+      workId: work.workId,
+      gutenbergId: work.gutenbergId,
+      skipped: true,
+      error: `Missing source artifact for Gutenberg ${work.gutenbergId}. Tried: ${candidateKeys.join(", ")}`,
+    };
   }
   const metadata = work.metadata ?? {};
   const bookBundle = buildPaginatedBookArtifactBundle({
@@ -1906,7 +1789,7 @@ async function persistBookHtmlArtifact(
     language: work.language ?? null,
     releaseDate: work.releaseDate ?? null,
     rawSource,
-    sourceFormat: metadata.sourceFormat === "html" ? "html" : "text",
+    sourceFormat: resolvedSourceKey.endsWith("/raw.txt") && metadata.sourceFormat === "html" ? "html" : "text",
   });
   const bookHtmlKey = gutenbergCorpusKeys.bookHtml(work.gutenbergId);
   const bookManifestKey = gutenbergCorpusKeys.bookManifest(work.gutenbergId);
@@ -1944,7 +1827,8 @@ async function backfillBookHtml(
   options: { startAfterId?: string | null; limit: number; concurrency?: number },
 ) {
   const works = await listWorksMissingBookHtml(context, options.limit, options.startAfterId ?? null);
-  const results: Array<Record<string, unknown>> = [];
+  const results: BookHtmlPersistResult[] = [];
+  const errors: Array<Record<string, unknown>> = [];
 
   const concurrency = Math.max(1, Number(options.concurrency ?? process.env.BOOK_HTML_BACKFILL_CONCURRENCY ?? "8"));
   let cursor = 0;
@@ -1952,15 +1836,42 @@ async function backfillBookHtml(
   async function worker() {
     while (cursor < works.length) {
       const work = works[cursor++];
-      const result = await persistBookHtmlArtifact(context, work);
-      results.push(result);
+      try {
+        const result = await persistBookHtmlArtifact(context, work);
+        if (result.error) {
+          errors.push({
+            gutenbergId: work.gutenbergId,
+            error: result.error,
+          });
+          console.error(JSON.stringify({
+            phase: "book-html-backfill-error",
+            gutenbergId: work.gutenbergId,
+            error: result.error,
+          }));
+          continue;
+        }
+        results.push(result);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        errors.push({
+          gutenbergId: work.gutenbergId,
+          error: message,
+        });
+        console.error(JSON.stringify({
+          phase: "book-html-backfill-error",
+          gutenbergId: work.gutenbergId,
+          error: message,
+        }));
+      }
     }
   }
 
   await Promise.all(Array.from({ length: Math.min(concurrency, works.length || 1) }, () => worker()));
 
   return {
-    processed: results.length,
+    processed: results.length + errors.length,
+    inserted: results.length,
+    errors,
     nextStartAfterId: works.length > 0 ? works[works.length - 1].gutenbergId : options.startAfterId ?? null,
     results,
   };
@@ -1971,7 +1882,8 @@ async function rebuildBookHtml(
   options: { startAfterId?: string | null; limit: number; concurrency?: number },
 ) {
   const works = await listBookHtmlWorks(context, options.limit, options.startAfterId ?? null);
-  const results: Array<Record<string, unknown>> = [];
+  const results: BookHtmlPersistResult[] = [];
+  const errors: Array<Record<string, unknown>> = [];
 
   const concurrency = Math.max(1, Number(options.concurrency ?? process.env.BOOK_HTML_REBUILD_CONCURRENCY ?? "8"));
   let cursor = 0;
@@ -1979,15 +1891,42 @@ async function rebuildBookHtml(
   async function worker() {
     while (cursor < works.length) {
       const work = works[cursor++];
-      const result = await persistBookHtmlArtifact(context, work);
-      results.push(result);
+      try {
+        const result = await persistBookHtmlArtifact(context, work);
+        if (result.error) {
+          errors.push({
+            gutenbergId: work.gutenbergId,
+            error: result.error,
+          });
+          console.error(JSON.stringify({
+            phase: "book-html-rebuild-error",
+            gutenbergId: work.gutenbergId,
+            error: result.error,
+          }));
+          continue;
+        }
+        results.push(result);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        errors.push({
+          gutenbergId: work.gutenbergId,
+          error: message,
+        });
+        console.error(JSON.stringify({
+          phase: "book-html-rebuild-error",
+          gutenbergId: work.gutenbergId,
+          error: message,
+        }));
+      }
     }
   }
 
   await Promise.all(Array.from({ length: Math.min(concurrency, works.length || 1) }, () => worker()));
 
   return {
-    processed: results.length,
+    processed: results.length + errors.length,
+    inserted: results.length,
+    errors,
     nextStartAfterId: works.length > 0 ? works[works.length - 1].gutenbergId : options.startAfterId ?? null,
     results,
   };
@@ -2066,12 +2005,25 @@ async function backfillMirrorParallel(context: IngestContext, options: MirrorBac
   let cursor = 0;
   let processed = 0;
   let inserted = 0;
+  let reservedInsertSlots = 0;
   let skipped = 0;
   let lastProcessedId = startAfterId;
 
+  function claimNextCandidateId() {
+    if (inserted + reservedInsertSlots >= options.limit || cursor >= candidateIds.length) {
+      return null;
+    }
+    const gutenbergId = candidateIds[cursor++];
+    reservedInsertSlots += 1;
+    return gutenbergId;
+  }
+
   async function worker() {
-    while (inserted < options.limit && cursor < candidateIds.length) {
-      const gutenbergId = candidateIds[cursor++];
+    while (true) {
+      const gutenbergId = claimNextCandidateId();
+      if (!gutenbergId) {
+        break;
+      }
       try {
         let result: Awaited<ReturnType<typeof ingestFromMirror>> | null = null;
         let lastError: unknown = null;
@@ -2095,6 +2047,7 @@ async function backfillMirrorParallel(context: IngestContext, options: MirrorBac
         processed += 1;
         lastProcessedId = gutenbergId;
         results.push(result);
+        reservedInsertSlots -= 1;
         if ((result as { skipped?: boolean }).skipped) {
           skipped += 1;
         } else {
@@ -2122,6 +2075,7 @@ async function backfillMirrorParallel(context: IngestContext, options: MirrorBac
       } catch (error) {
         processed += 1;
         lastProcessedId = gutenbergId;
+        reservedInsertSlots -= 1;
         errors.push({
           gutenbergId,
           error: error instanceof Error ? error.message : String(error),
@@ -2172,10 +2126,10 @@ async function buildContext(): Promise<IngestContext> {
       endpoint: r2Endpoint,
       requestHandler: new NodeHttpHandler({
         socketAcquisitionWarningTimeout: 15_000,
-        httpsAgent: {
+        httpsAgent: new HttpsAgent({
           keepAlive: true,
-          maxSockets: 256,
-        },
+          maxSockets: Number(process.env.R2_MAX_SOCKETS ?? "256"),
+        }),
       }),
       credentials: {
         accessKeyId: r2AccessKeyId,

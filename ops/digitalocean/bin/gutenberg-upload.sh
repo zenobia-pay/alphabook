@@ -17,6 +17,7 @@ DOCKER_BIN="${DOCKER_BIN:-docker}"
 LOCAL_RUNNER="${LOCAL_RUNNER:-npx}"
 FULL_REBUILD_SCRIPT="${FULL_REBUILD_SCRIPT:-$ALPHABOOK_ROOT/bin/rebuild-book-html-all.sh}"
 FULL_REBUILD_LOG_PATH="${FULL_REBUILD_LOG_PATH:-$ALPHABOOK_ROOT/logs/book-html-rebuild-all.nohup.log}"
+UPLOAD_LOCK_PATH="${UPLOAD_LOCK_PATH:-$ALPHABOOK_ROOT/.locks/gutenberg-upload.lock}"
 
 if [[ ! -d "$GUTENBERG_MIRROR_ROOT" ]]; then
   echo "[$(date -Is)] Mirror root not found: $GUTENBERG_MIRROR_ROOT" >&2
@@ -30,6 +31,13 @@ if [[ ! -f "$INGEST_ENV_FILE" ]]; then
 fi
 
 mkdir -p "$(dirname "$MIRROR_CHECKPOINT_PATH")"
+mkdir -p "$(dirname "$UPLOAD_LOCK_PATH")"
+
+exec 9>"$UPLOAD_LOCK_PATH"
+if ! flock -n 9; then
+  echo "[$(date -Is)] Gutenberg upload already running; exiting." >&2
+  exit 0
+fi
 
 if command -v "$DOCKER_BIN" >/dev/null 2>&1; then
   echo "[$(date -Is)] Uploading mirrored Gutenberg metadata and text via $INGEST_IMAGE"

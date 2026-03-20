@@ -2196,21 +2196,42 @@ function buildFallbackBookHtml(work: WorkDetailRecord, content: string, format: 
     <title>${escapeBookHtml(work.title)} | alpha book</title>
     <meta name="robots" content="noindex,nofollow" />
     <style>
-      :root { color-scheme: light; --bg:#f8f4ee; --ink:#1f1b16; --muted:#635848; --accent-soft:rgba(143,79,42,0.12); }
+      :root {
+        color-scheme: light;
+        --bg:#f6f3ee;
+        --ink:#171717;
+        --muted:rgba(23,23,23,0.62);
+        --accent:rgba(37,99,235,0.16);
+        --accent-strong:rgba(37,99,235,0.24);
+      }
       * { box-sizing:border-box; }
-      body { margin:0; font-family:Georgia, "Times New Roman", serif; color:var(--ink); background:var(--bg); }
-      .page { width:min(880px, calc(100vw - 40px)); margin:0 auto; padding:28px 0 40px; }
-      .hero { display:grid; gap:10px; padding-bottom:22px; }
-      .eyebrow,.byline,.summary { margin:0; color:var(--muted); font-size:1rem; line-height:1.7; }
-      h1 { margin:0; font-size:clamp(2rem, 4vw, 3.5rem); line-height:0.98; }
-      .chip-row { display:flex; flex-wrap:wrap; gap:10px; }
-      .chip-row span { display:inline-flex; align-items:center; border-radius:999px; padding:8px 12px; background:var(--accent-soft); color:var(--muted); font-size:0.88rem; }
-      .reader-body { padding:0 0 32px; font-size:1.1rem; line-height:1.85; }
-      .reader-body h1,.reader-body h2,.reader-body h3,.reader-body h4,.reader-body h5,.reader-body h6 { font-size:1.4em; line-height:1.2; margin:1.8em 0 0.75em; }
-      .reader-body p,.reader-body li,.reader-body blockquote,.reader-body pre { margin:0 0 1.15em; }
-      .reader-body blockquote { margin-left:0; padding-left:18px; border-left:3px solid var(--accent-soft); color:var(--muted); }
-      .reader-body pre { white-space:pre-wrap; font-family:"Courier New", monospace; background:#f2eadf; border-radius:16px; padding:16px; }
-      @media (max-width:780px) { .page { width:min(100vw - 24px, 100%); } }
+      html { scroll-behavior:smooth; }
+      body {
+        margin:0;
+        font-family:"Newsreader", Georgia, serif;
+        color:var(--ink);
+        background:transparent;
+        text-rendering:optimizeLegibility;
+        -webkit-font-smoothing:antialiased;
+        -moz-osx-font-smoothing:grayscale;
+      }
+      a { color:inherit; text-decoration-thickness:0.06em; text-underline-offset:0.14em; }
+      .page { width:min(84ch, calc(100vw - 12px)); margin:0 auto; padding:4px 0 14px; }
+      .hero { display:grid; gap:6px; margin-bottom:1.2rem; }
+      .eyebrow,.byline,.summary,.meta-list { margin:0; color:var(--muted); font-size:0.96rem; line-height:1.5; }
+      h1 { margin:0; font-size:clamp(2rem, 4vw, 3.25rem); line-height:0.96; letter-spacing:-0.04em; font-weight:600; }
+      .meta-list span + span::before { content:" · "; }
+      .reader-body { font-size:1.14rem; line-height:1.72; }
+      .reader-body h1,.reader-body h2,.reader-body h3,.reader-body h4,.reader-body h5,.reader-body h6 { font-size:1.18em; line-height:1.18; margin:1.7em 0 0.45em; letter-spacing:-0.02em; }
+      .reader-body p,.reader-body li,.reader-body blockquote,.reader-body pre { margin:0 0 1em; }
+      .reader-body blockquote { margin-left:0; padding-left:0; color:var(--muted); font-style:italic; }
+      .reader-body pre { white-space:pre-wrap; font:inherit; line-height:1.65; }
+      .reader-body [data-passage-id],.reader-body [data-anchor-id] { scroll-margin-top:24px; }
+      .reader-body [data-passage-id]:target { text-decoration-line:underline; text-decoration-color:var(--accent-strong); text-decoration-thickness:0.14em; text-underline-offset:0.14em; outline:none; }
+      @media (max-width:780px) {
+        .page { width:min(100vw - 8px, 100%); padding:2px 0 12px; }
+        .reader-body { font-size:1.06rem; line-height:1.66; }
+      }
     </style>
   </head>
   <body>
@@ -2221,7 +2242,7 @@ function buildFallbackBookHtml(work: WorkDetailRecord, content: string, format: 
         ${subtitle ? `<p class="summary">${escapeBookHtml(subtitle)}</p>` : ""}
         ${byline ? `<p class="byline">${escapeBookHtml(byline)}</p>` : ""}
         ${work.summary ? `<p class="summary">${escapeBookHtml(work.summary)}</p>` : ""}
-        ${bookshelves.length > 0 ? `<div class="chip-row">${bookshelves.map((value) => `<span>${escapeBookHtml(value)}</span>`).join("")}</div>` : ""}
+        ${bookshelves.length > 0 ? `<p class="meta-list">${bookshelves.map((value) => `<span>${escapeBookHtml(value)}</span>`).join("")}</p>` : ""}
       </section>
       <div class="reader-body">${sourceMarkup || "<p>No stored source content yet.</p>"}</div>
     </main>

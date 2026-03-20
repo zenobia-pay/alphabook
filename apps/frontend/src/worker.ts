@@ -49,7 +49,7 @@ type WorkPageBootstrapPayload = {
 };
 
 const BOOK_CONTENT_ORIGIN = "https://books.alpha-book.org";
-const BOOK_CONTENT_VERSION = "20260319k";
+const BOOK_CONTENT_VERSION = "20260320b";
 
 function buildBookHtmlKey(gutenbergId: string) {
   return `gutenberg/clean/${gutenbergId}/book.html`;
