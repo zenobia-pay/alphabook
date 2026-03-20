@@ -55,6 +55,20 @@ type AssistantDocumentBootstrapPayload = {
   errorStatus?: number;
 };
 
+type AssistantSessionBootstrapPayload = {
+  sessionId: string;
+  sessions?: ChatSessionSummary[];
+  messages?: RawUiMessage[];
+  runs?: SessionRunRecord[];
+  runState?: {
+    run?: SessionRunRecord;
+    toolTrace?: Array<Record<string, unknown>>;
+    artifacts?: RunArtifactRecord[];
+  };
+  error?: string;
+  errorStatus?: number;
+};
+
 type ResearchDocumentEntryKind = "title" | "log" | "book" | "chunk";
 
 type CitationNavigationContextValue = {
@@ -148,6 +162,7 @@ type ReaderPassage = {
 declare global {
   interface Window {
     __ALPHABOOK_ASSISTANT_DOCUMENT_BOOTSTRAP__?: AssistantDocumentBootstrapPayload;
+    __ALPHABOOK_ASSISTANT_SESSION_BOOTSTRAP__?: AssistantSessionBootstrapPayload;
   }
 }
 
@@ -3582,6 +3597,17 @@ function readAssistantDocumentBootstrap(sessionId: string, runId: string) {
   return payload;
 }
 
+function readAssistantSessionBootstrap(sessionId: string | null | undefined) {
+  if (typeof window === "undefined" || !sessionId) {
+    return null;
+  }
+  const payload = window.__ALPHABOOK_ASSISTANT_SESSION_BOOTSTRAP__;
+  if (!payload || payload.sessionId !== sessionId) {
+    return null;
+  }
+  return payload;
+}
+
 function buildWorkContentHref(workId: string, gutenbergId?: string | number | null) {
   if (gutenbergId != null && String(gutenbergId).trim().length > 0) {
     return `${BOOK_CONTENT_ORIGIN}/${encodeURIComponent(String(gutenbergId))}/?v=${BOOK_CONTENT_VERSION}`;
@@ -4627,6 +4653,19 @@ function ProfileQueryCard({
 
 export default function App() {
   const initialUrlState = readUrlState();
+  const initialAssistantSessionBootstrap = readAssistantSessionBootstrap(initialUrlState.sessionId);
+  const initialBootstrapHydratedMessages = (
+    Array.isArray(initialAssistantSessionBootstrap?.messages)
+      ? initialAssistantSessionBootstrap.messages
+      : []
+  ).map(hydrateStoredMessage);
+  const initialBootstrapRuns = Array.isArray(initialAssistantSessionBootstrap?.runs)
+    ? initialAssistantSessionBootstrap.runs
+    : [];
+  const initialBootstrapPreferredRun =
+    initialBootstrapRuns.find((run) => run.status === "running" || run.status === "queued")
+    ?? [...initialBootstrapRuns].sort((left, right) => right.startedAt.localeCompare(left.startedAt))[0]
+    ?? null;
   const [guestUserId] = useState(() => ensureLocalUserId());
   const [authState, setAuthState] = useState<AuthState>({
     loading: true,
@@ -4635,17 +4674,19 @@ export default function App() {
     error: null,
   });
   const [activeView, setActiveView] = useState<ViewMode>(initialUrlState.view);
-  const [sessions, setSessions] = useState<ChatSessionSummary[]>([]);
+  const [sessions, setSessions] = useState<ChatSessionSummary[]>(() => (
+    Array.isArray(initialAssistantSessionBootstrap?.sessions) ? initialAssistantSessionBootstrap.sessions : []
+  ));
   const [selectedSessionId, setSelectedSessionId] = useState<string | null | undefined>(initialUrlState.sessionId);
   const [selectedAdminRunId, setSelectedAdminRunId] = useState<string | null | undefined>(initialUrlState.runId);
   const [adminSection, setAdminSection] = useState<"runs" | "users" | "analytics" | "incidents" | "logs">(initialUrlState.adminSection);
-  const [messages, setMessages] = useState<UiMessage[]>([]);
+  const [messages, setMessages] = useState<UiMessage[]>(initialBootstrapHydratedMessages);
   const messagesRef = useRef<UiMessage[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
-  const [sessionsResolved, setSessionsResolved] = useState(false);
+  const [sessionsResolved, setSessionsResolved] = useState(Boolean(initialAssistantSessionBootstrap?.sessions));
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [isSending, setIsSending] = useState(false);
-  const [recoveredActiveRunId, setRecoveredActiveRunId] = useState<string | null>(null);
+  const [recoveredActiveRunId, setRecoveredActiveRunId] = useState<string | null>(initialBootstrapPreferredRun?.id ?? null);
   const [streamConnected, setStreamConnected] = useState(false);
   const [assistantEffort, setAssistantEffort] = useState<AssistantEffortLevel>(() => {
     if (typeof window === "undefined") {
@@ -4654,9 +4695,13 @@ export default function App() {
     const saved = window.localStorage.getItem(ASSISTANT_EFFORT_STORAGE_KEY);
     return saved === "normal" || saved === "high" || saved === "maximum" ? saved : "high";
   });
-  const [sessionRuns, setSessionRuns] = useState<SessionRunRecord[]>([]);
-  const [runArtifacts, setRunArtifacts] = useState<RunArtifactRecord[]>([]);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [sessionRuns, setSessionRuns] = useState<SessionRunRecord[]>(initialBootstrapRuns);
+  const [runArtifacts, setRunArtifacts] = useState<RunArtifactRecord[]>(() => (
+    Array.isArray(initialAssistantSessionBootstrap?.runState?.artifacts)
+      ? initialAssistantSessionBootstrap.runState.artifacts
+      : []
+  ));
+  const [loadError, setLoadError] = useState<string | null>(initialAssistantSessionBootstrap?.error ?? null);
   const [streamingAssistantId, setStreamingAssistantId] = useState<string | null>(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -4789,6 +4834,10 @@ export default function App() {
   const authLocked = authState.authConfigured && !authState.user;
   const hasAuthenticatedUser = Boolean(authState.user);
   const authPending = authState.loading;
+  const hasAssistantSessionBootstrap =
+    activeView === "assistant"
+    && Boolean(selectedSessionId)
+    && initialAssistantSessionBootstrap?.sessionId === selectedSessionId;
   const bookComposerDisabled = authPending || authLocked;
   const bookComposerDisabledNotice = authLocked ? (
     <>
@@ -5463,6 +5512,16 @@ export default function App() {
   }, [messages]);
 
   useEffect(() => {
+    if (activeView !== "assistant" || !selectedSessionId) {
+      return;
+    }
+    const serverRendered = document.getElementById("assistant-session-ssr");
+    if (serverRendered) {
+      serverRendered.remove();
+    }
+  }, [activeView, selectedSessionId]);
+
+  useEffect(() => {
     if (authState.loading) {
       return;
     }
@@ -5636,8 +5695,14 @@ export default function App() {
     if (activeView === "assistant_document") {
       return;
     }
-    if (authState.loading || !selectedSessionId) {
+    if (!selectedSessionId) {
       setRunArtifacts([]);
+      return;
+    }
+    if (authState.loading) {
+      if (!hasAssistantSessionBootstrap) {
+        setRunArtifacts([]);
+      }
       return;
     }
 
@@ -5674,7 +5739,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [activeView, authState.loading, recoveredActiveRunId, selectedSessionId, sessionRuns]);
+  }, [activeView, authState.loading, hasAssistantSessionBootstrap, recoveredActiveRunId, selectedSessionId, sessionRuns]);
 
   useEffect(() => {
     if (activeView === "assistant_document") {
@@ -6739,7 +6804,7 @@ export default function App() {
     const assistantSessionLoading =
       selectedSessionId != null
       && (
-        authPending
+        (!hasAssistantSessionBootstrap && authPending)
         || (!authLocked && (
           (hasAuthenticatedUser && !sessionsResolved)
           || sessionsLoading
@@ -6780,11 +6845,9 @@ export default function App() {
             width={bookAssistantWidth}
             pageRef={bookPageRef}
             leftPane={(
-              <ResearchArtifactPane
-                sessionTitle={assistantSessionName(activeSession)}
-                documentHtml=""
-                emptyState={null}
-              />
+              <section className="assistant-document-pane" aria-hidden="true">
+                <div className="assistant-document-scroll" />
+              </section>
             )}
             rightPane={(
               <AssistantSurface

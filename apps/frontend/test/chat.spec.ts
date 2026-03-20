@@ -306,9 +306,120 @@ test("session route keeps the real assistant composer visible while conversation
   await page.goto(`/?view=assistant&session=${sessionId}`, { waitUntil: "domcontentloaded" });
 
   await expect(page.locator(".assistant-workspace-loading")).toHaveCount(0);
+  await expect(page.locator(".assistant-document-entry.is-title")).toHaveCount(0);
   await expect(page.locator(".assistant-document-body")).toHaveCount(0);
   await expect(page.locator(".aui-composer-input")).toBeVisible();
   await expect(page.getByTestId("assistant-workspace-thread")).toBeVisible({ timeout: 5000 });
+});
+
+test("session route bootstraps transcript content immediately when session data is present on load", async ({ page }) => {
+  const sessionId = "11111111-1111-4111-8111-111111111114";
+  const runId = "22222222-2222-4222-8222-222222222222";
+
+  await page.addInitScript((bootstrap) => {
+    (window as Window & {
+      __ALPHABOOK_ASSISTANT_SESSION_BOOTSTRAP__?: unknown;
+    }).__ALPHABOOK_ASSISTANT_SESSION_BOOTSTRAP__ = bootstrap;
+  }, {
+    sessionId,
+    sessions: [
+      {
+        id: sessionId,
+        userId: "local-user",
+        title: "Bootstrap session",
+        createdAt: "2026-03-16T12:00:00.000Z",
+        lastMessageAt: "2026-03-16T12:00:00.000Z",
+        lastMessagePreview: "Bootstrap session",
+      },
+    ],
+    messages: [
+      {
+        id: "user-msg",
+        sessionId,
+        role: "user",
+        content: "What does this session already know?",
+        createdAt: "2026-03-16T12:00:00.000Z",
+        citations: [],
+        toolCalls: [],
+      },
+      {
+        id: "assistant-msg",
+        sessionId,
+        role: "assistant",
+        content: "It already has transcript content at page load.",
+        createdAt: "2026-03-16T12:00:01.000Z",
+        citations: [],
+        toolCalls: [],
+      },
+    ],
+    runs: [
+      {
+        id: runId,
+        sessionId,
+        startedAt: "2026-03-16T12:00:01.000Z",
+        status: "completed",
+      },
+    ],
+    runState: {
+      run: {
+        id: runId,
+        sessionId,
+        startedAt: "2026-03-16T12:00:01.000Z",
+        status: "completed",
+      },
+      artifacts: [
+        {
+          id: "artifact-1",
+          runId,
+          filename: "research-document.html",
+          content: "<p>Bootstrap research document.</p>",
+          createdAt: "2026-03-16T12:00:02.000Z",
+          metadata: {
+            kind: "research_document",
+          },
+        },
+      ],
+    },
+  });
+
+  await page.route("**/api/me", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        authConfigured: true,
+        authenticated: true,
+        user: {
+          id: "local-user",
+          email: "local@example.com",
+          name: "Local User",
+        },
+      }),
+    });
+  });
+
+  await page.route("**/api/admin/access", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        allowed: false,
+        authenticated: true,
+        authConfigured: true,
+        user: {
+          id: "local-user",
+          email: "local@example.com",
+          name: "Local User",
+        },
+      }),
+    });
+  });
+
+  await page.goto(`/?view=assistant&session=${sessionId}`, { waitUntil: "domcontentloaded" });
+
+  await expect(page.getByText("It already has transcript content at page load.")).toBeVisible();
+  await expect(page.getByText("Bootstrap research document.")).toBeVisible();
 });
 
 test("restricted assistant session keeps the session URL and shows a coherent locked state", async ({ page }) => {

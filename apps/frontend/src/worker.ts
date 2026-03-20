@@ -30,6 +30,16 @@ type AssistantDocumentBootstrapPayload = {
   errorStatus?: number;
 };
 
+type AssistantSessionBootstrapPayload = {
+  sessionId: string;
+  sessions?: unknown[];
+  messages?: unknown[];
+  runs?: unknown[];
+  runState?: unknown;
+  error?: string;
+  errorStatus?: number;
+};
+
 function buildBookHtmlKey(gutenbergId: string) {
   return `gutenberg/clean/${gutenbergId}/book.html`;
 }
@@ -88,6 +98,40 @@ function deriveDocumentTitle(bootstrap: AssistantDocumentBootstrapPayload) {
     }
   }
   return explicitTitle || "Research log";
+}
+
+function deriveSessionTitle(bootstrap: AssistantSessionBootstrapPayload) {
+  const sessions = Array.isArray(bootstrap.sessions) ? bootstrap.sessions : [];
+  for (const session of sessions) {
+    if (!session || typeof session !== "object") {
+      continue;
+    }
+    const record = session as { id?: unknown; title?: unknown; lastMessagePreview?: unknown };
+    if (record.id !== bootstrap.sessionId) {
+      continue;
+    }
+    if (typeof record.title === "string" && record.title.trim().length > 0) {
+      return record.title.trim();
+    }
+    if (typeof record.lastMessagePreview === "string" && record.lastMessagePreview.trim().length > 0) {
+      return record.lastMessagePreview.trim().split(/\s+/).slice(0, 8).join(" ");
+    }
+  }
+  const messages = Array.isArray(bootstrap.messages) ? bootstrap.messages : [];
+  for (const message of messages) {
+    if (!message || typeof message !== "object") {
+      continue;
+    }
+    const record = message as { role?: unknown; content?: unknown };
+    if (record.role !== "user" || typeof record.content !== "string") {
+      continue;
+    }
+    const normalized = record.content.trim().replace(/\s+/g, " ");
+    if (normalized) {
+      return normalized.split(" ").slice(0, 8).join(" ");
+    }
+  }
+  return "Research log";
 }
 
 function renderAssistantDocumentHtml(bootstrap: AssistantDocumentBootstrapPayload, html: string) {
@@ -154,6 +198,76 @@ function renderAssistantDocumentMarkup(bootstrap: AssistantDocumentBootstrapPayl
   return null;
 }
 
+function renderMessageParagraphs(content: string) {
+  return content
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean)
+    .map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`)
+    .join("");
+}
+
+function renderAssistantSessionMarkup(bootstrap: AssistantSessionBootstrapPayload | null) {
+  if (!bootstrap || bootstrap.error) {
+    return null;
+  }
+  const documentBootstrap: AssistantDocumentBootstrapPayload = {
+    sessionId: bootstrap.sessionId,
+    runId: "",
+    sessionTitle: deriveSessionTitle(bootstrap),
+    messages: Array.isArray(bootstrap.messages) ? bootstrap.messages : [],
+    runState: bootstrap.runState,
+  };
+  const documentMarkup = renderAssistantDocumentMarkup(documentBootstrap)
+    ?? [
+      `<section class="assistant-document-pane">`,
+      `<div class="assistant-document-scroll"></div>`,
+      `</section>`,
+    ].join("");
+
+  const messages = Array.isArray(bootstrap.messages) ? bootstrap.messages : [];
+  const transcript = messages
+    .filter((message) => {
+      if (!message || typeof message !== "object") {
+        return false;
+      }
+      const role = (message as { role?: unknown }).role;
+      return role === "user" || role === "assistant";
+    })
+    .map((message, index) => {
+      const record = message as { role?: unknown; content?: unknown };
+      const role = record.role === "user" ? "user" : "assistant";
+      const content = typeof record.content === "string" ? record.content.trim() : "";
+      if (!content) {
+        return "";
+      }
+      return [
+        `<div class="message-row ${role === "user" ? "is-user" : "is-assistant"}" data-ssr-message="${index}">`,
+        `<div class="message-card ${role === "user" ? "user-card" : "assistant-card"}">`,
+        role === "assistant" ? `<div class="message-label">Assistant</div>` : "",
+        `<div class="message-content">${renderMessageParagraphs(content)}</div>`,
+        `</div>`,
+        `</div>`,
+      ].join("");
+    })
+    .filter(Boolean)
+    .join("");
+
+  return [
+    `<section class="assistant-page" data-ssr="assistant-session">`,
+    `<section class="assistant-workspace-page" style="--book-assistant-width:420px">`,
+    `<div class="assistant-workspace-main">${documentMarkup}</div>`,
+    `<div class="book-assistant-divider" role="presentation"></div>`,
+    `<aside class="book-assistant-pane">`,
+    `<div class="book-assistant-shell">`,
+    `<div class="assistant-session-thread" data-testid="assistant-workspace-thread">${transcript}</div>`,
+    `</div>`,
+    `</aside>`,
+    `</section>`,
+    `</section>`,
+  ].join("");
+}
+
 async function fetchApiJson(request: Request, env: Env, path: string) {
   const upstreamOrigin = env.API_ORIGIN ?? "https://api.alpha-book.org";
   const upstreamUrl = new URL(path, upstreamOrigin);
@@ -217,6 +331,89 @@ async function loadAssistantDocumentBootstrap(request: Request, env: Env, url: U
   };
 }
 
+function pickPreferredRun(runs: unknown[]) {
+  const normalized = runs.filter((run): run is Record<string, unknown> => Boolean(run) && typeof run === "object");
+  const active = normalized.find((run) => run.status === "running" || run.status === "queued");
+  if (active) {
+    return active;
+  }
+  return [...normalized].sort((left, right) => {
+    const leftStartedAt = typeof left.startedAt === "string" ? left.startedAt : "";
+    const rightStartedAt = typeof right.startedAt === "string" ? right.startedAt : "";
+    return rightStartedAt.localeCompare(leftStartedAt);
+  })[0] ?? null;
+}
+
+async function loadAssistantSessionBootstrap(request: Request, env: Env, url: URL): Promise<AssistantSessionBootstrapPayload | null> {
+  if (url.searchParams.get("view") !== "assistant") {
+    return null;
+  }
+  const sessionId = url.searchParams.get("session")?.trim();
+  if (!sessionId) {
+    return null;
+  }
+
+  const [sessionsResponse, messagesResponse, runsResponse] = await Promise.all([
+    fetchApiJson(request, env, "/sessions"),
+    fetchApiJson(request, env, `/sessions/${encodeURIComponent(sessionId)}/messages`),
+    fetchApiJson(request, env, `/sessions/${encodeURIComponent(sessionId)}/runs`),
+  ]);
+
+  const firstError = !messagesResponse.ok
+    ? messagesResponse
+    : !runsResponse.ok
+      ? runsResponse
+      : !sessionsResponse.ok
+        ? sessionsResponse
+        : null;
+  if (firstError) {
+    const errorText =
+      firstError.json && typeof firstError.json === "object" && typeof (firstError.json as { error?: unknown }).error === "string"
+        ? (firstError.json as { error: string }).error
+        : "We couldn't load this conversation.";
+    return {
+      sessionId,
+      error: errorText,
+      errorStatus: firstError.status,
+    };
+  }
+
+  const runs =
+    runsResponse.json && typeof runsResponse.json === "object" && Array.isArray((runsResponse.json as { runs?: unknown[] }).runs)
+      ? (runsResponse.json as { runs: unknown[] }).runs
+      : [];
+  const preferredRun = pickPreferredRun(runs);
+  const preferredRunId = preferredRun && typeof preferredRun.id === "string" ? preferredRun.id : null;
+  const runStateResponse = preferredRunId
+    ? await fetchApiJson(request, env, `/sessions/${encodeURIComponent(sessionId)}/runs/${encodeURIComponent(preferredRunId)}`)
+    : null;
+  if (runStateResponse && !runStateResponse.ok) {
+    const errorText =
+      runStateResponse.json && typeof runStateResponse.json === "object" && typeof (runStateResponse.json as { error?: unknown }).error === "string"
+        ? (runStateResponse.json as { error: string }).error
+        : "We couldn't load this conversation.";
+    return {
+      sessionId,
+      error: errorText,
+      errorStatus: runStateResponse.status,
+    };
+  }
+
+  return {
+    sessionId,
+    sessions:
+      sessionsResponse.json && typeof sessionsResponse.json === "object" && Array.isArray((sessionsResponse.json as { sessions?: unknown[] }).sessions)
+        ? (sessionsResponse.json as { sessions: unknown[] }).sessions
+        : [],
+    messages:
+      messagesResponse.json && typeof messagesResponse.json === "object" && Array.isArray((messagesResponse.json as { messages?: unknown[] }).messages)
+        ? (messagesResponse.json as { messages: unknown[] }).messages
+        : [],
+    runs,
+    runState: runStateResponse?.json ?? undefined,
+  };
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -268,9 +465,10 @@ export default {
       });
     }
 
-    const [response, assistantDocumentBootstrap] = await Promise.all([
+    const [response, assistantDocumentBootstrap, assistantSessionBootstrap] = await Promise.all([
       env.ASSETS.fetch(request),
       loadAssistantDocumentBootstrap(request, env, url).catch(() => null),
+      loadAssistantSessionBootstrap(request, env, url).catch(() => null),
     ]);
     const headers = new Headers(response.headers);
     headers.set("x-alphabook-surface", "frontend-worker");
@@ -280,7 +478,9 @@ export default {
 
     const contentType = headers.get("content-type") ?? "";
     let injectedAssistantDocumentBootstrap = false;
+    let injectedAssistantSessionBootstrap = false;
     const assistantDocumentMarkup = renderAssistantDocumentMarkup(assistantDocumentBootstrap);
+    const assistantSessionMarkup = renderAssistantSessionMarkup(assistantSessionBootstrap);
     const body = contentType.includes("text/html")
       ? new HTMLRewriter()
         .on("link[rel='canonical']", {
@@ -300,34 +500,51 @@ export default {
         })
         .on("script[type='module'][src]", {
           element(element) {
-            if (!assistantDocumentBootstrap || injectedAssistantDocumentBootstrap) {
+            const scripts: string[] = [];
+            if (assistantDocumentBootstrap && !injectedAssistantDocumentBootstrap) {
+              scripts.push(`<script>window.__ALPHABOOK_ASSISTANT_DOCUMENT_BOOTSTRAP__=${escapeInlineJson(assistantDocumentBootstrap)};</script>`);
+              injectedAssistantDocumentBootstrap = true;
+            }
+            if (assistantSessionBootstrap && !injectedAssistantSessionBootstrap) {
+              scripts.push(`<script>window.__ALPHABOOK_ASSISTANT_SESSION_BOOTSTRAP__=${escapeInlineJson(assistantSessionBootstrap)};</script>`);
+              injectedAssistantSessionBootstrap = true;
+            }
+            if (scripts.length === 0) {
               return;
             }
-            element.before(
-              `<script>window.__ALPHABOOK_ASSISTANT_DOCUMENT_BOOTSTRAP__=${escapeInlineJson(assistantDocumentBootstrap)};</script>`,
-              { html: true },
-            );
-            injectedAssistantDocumentBootstrap = true;
+            element.before(scripts.join(""), { html: true });
           },
         })
         .on("head", {
           element(element) {
-            if (!assistantDocumentBootstrap || injectedAssistantDocumentBootstrap) {
+            const scripts: string[] = [];
+            if (assistantDocumentBootstrap && !injectedAssistantDocumentBootstrap) {
+              scripts.push(`<script>window.__ALPHABOOK_ASSISTANT_DOCUMENT_BOOTSTRAP__=${escapeInlineJson(assistantDocumentBootstrap)};</script>`);
+              injectedAssistantDocumentBootstrap = true;
+            }
+            if (assistantSessionBootstrap && !injectedAssistantSessionBootstrap) {
+              scripts.push(`<script>window.__ALPHABOOK_ASSISTANT_SESSION_BOOTSTRAP__=${escapeInlineJson(assistantSessionBootstrap)};</script>`);
+              injectedAssistantSessionBootstrap = true;
+            }
+            if (scripts.length === 0) {
               return;
             }
-            element.append(
-              `<script>window.__ALPHABOOK_ASSISTANT_DOCUMENT_BOOTSTRAP__=${escapeInlineJson(assistantDocumentBootstrap)};</script>`,
-              { html: true },
-            );
-            injectedAssistantDocumentBootstrap = true;
+            element.append(scripts.join(""), { html: true });
           },
         })
         .on("div#root", {
           element(element) {
-            if (!assistantDocumentMarkup) {
+            const markup: string[] = [];
+            if (assistantDocumentMarkup) {
+              markup.push(`<div id="assistant-document-ssr">${assistantDocumentMarkup}</div>`);
+            }
+            if (assistantSessionMarkup) {
+              markup.push(`<div id="assistant-session-ssr">${assistantSessionMarkup}</div>`);
+            }
+            if (markup.length === 0) {
               return;
             }
-            element.before(`<div id="assistant-document-ssr">${assistantDocumentMarkup}</div>`, { html: true });
+            element.before(markup.join(""), { html: true });
           },
         })
         .transform(response).body
