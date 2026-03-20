@@ -226,7 +226,7 @@ test("new chat renders immediately instead of showing a loading skeleton during 
   await expect(page.locator(".assistant-workspace-page")).toHaveCount(0);
 });
 
-test("session route keeps the workspace skeleton while conversation data is loading", async ({ page }) => {
+test("session route keeps the real assistant composer visible while conversation data is loading", async ({ page }) => {
   const sessionId = "11111111-1111-4111-8111-111111111113";
 
   await page.route("**/api/me", async (route) => {
@@ -305,8 +305,9 @@ test("session route keeps the workspace skeleton while conversation data is load
 
   await page.goto(`/?view=assistant&session=${sessionId}`, { waitUntil: "domcontentloaded" });
 
-  await expect(page.locator(".assistant-workspace-loading")).toBeVisible();
-  await expect(page.locator(".assistant-loading-state-welcome")).toHaveCount(0);
+  await expect(page.locator(".assistant-workspace-loading")).toHaveCount(0);
+  await expect(page.locator(".assistant-document-body")).toHaveCount(0);
+  await expect(page.locator(".aui-composer-input")).toBeVisible();
   await expect(page.getByTestId("assistant-workspace-thread")).toBeVisible({ timeout: 5000 });
 });
 

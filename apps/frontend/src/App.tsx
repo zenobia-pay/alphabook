@@ -2529,98 +2529,6 @@ function AuthLoadingState({ compact = false }: { compact?: boolean }) {
   );
 }
 
-function AssistantThreadLoadingState({ welcome = false }: { welcome?: boolean }) {
-  return (
-    <div className={cn("assistant-loading-state", welcome && "assistant-loading-state-welcome")} aria-hidden="true">
-      <div className={cn("assistant-loading-thread", welcome && "assistant-loading-thread-welcome")}>
-        {welcome ? (
-          <>
-            <div className="assistant-loading-hero">
-              <Skeleton className="assistant-loading-hero-title" />
-              <Skeleton className="assistant-loading-hero-title is-short" />
-              <Skeleton className="assistant-loading-hero-copy" />
-            </div>
-            <div className="assistant-loading-suggestion-grid">
-              {[0, 1].map((item) => (
-                <div key={item} className="assistant-loading-suggestion-card">
-                  <Skeleton className="assistant-loading-suggestion-title" />
-                  <Skeleton className="assistant-loading-suggestion-line is-wide" />
-                  <Skeleton className="assistant-loading-suggestion-line" />
-                </div>
-              ))}
-            </div>
-          </>
-        ) : (
-          <div className="assistant-loading-transcript">
-            {[
-              { side: "user", lines: ["is-user-wide", "is-user-short"] },
-              { side: "assistant", lines: ["is-assistant-wide", "is-assistant-mid", "is-assistant-short"] },
-              { side: "assistant", lines: ["is-assistant-mid", "is-assistant-wide"] },
-            ].map((item, index) => (
-              <div key={index} className={cn("assistant-loading-message-row", item.side === "user" && "is-user")}>
-                <div className={cn("assistant-loading-message", item.side === "user" && "is-user")}>
-                  {item.lines.map((line, lineIndex) => (
-                    <Skeleton
-                      key={`${index}-${lineIndex}`}
-                      className={cn("assistant-loading-message-line", line)}
-                    />
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-        <div className="assistant-loading-composer">
-          <Skeleton className="assistant-loading-composer-line is-long" />
-          <Skeleton className="assistant-loading-composer-line" />
-          <div className="assistant-loading-composer-footer">
-            <Skeleton className="assistant-loading-dot" />
-            <Skeleton className="assistant-loading-send" />
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function AssistantWorkspaceLoadingState({ width }: { width: number }) {
-  return (
-    <section
-      className="assistant-workspace-page assistant-workspace-loading"
-      style={{ ["--book-assistant-width" as string]: `${width}px` }}
-      aria-hidden="true"
-    >
-      <div className="assistant-workspace-main">
-        <section className="assistant-document-pane assistant-loading-document">
-          <div className="assistant-loading-document-scroll">
-            {Array.from({ length: 12 }).map((_, index) => (
-              <Skeleton
-                key={index}
-                className={cn(
-                  "assistant-loading-document-line",
-                  index === 0 && "is-title",
-                  index === 1 && "is-wide",
-                  index > 1 && index % 3 === 0 && "is-short",
-                )}
-              />
-            ))}
-          </div>
-        </section>
-      </div>
-
-      <div className="book-assistant-divider" role="presentation" />
-
-      <aside className="book-assistant-pane">
-        <div className="book-assistant-shell">
-          <div className="assistant-session-thread">
-            <AssistantThreadLoadingState />
-          </div>
-        </div>
-      </aside>
-    </section>
-  );
-}
-
 function ProfileLoadingState({ publicView = false }: { publicView?: boolean }) {
   return (
     <div className={cn("profile-view", publicView && "profile-view-public")} aria-hidden="true">
@@ -4239,9 +4147,11 @@ class ResearchDocumentErrorBoundary extends Component<
 function ResearchArtifactDocument({
   sessionTitle,
   documentHtml,
+  emptyState = "No research has been written yet.",
 }: {
   sessionTitle: string;
   documentHtml: string;
+  emptyState?: ReactNode;
 }) {
   return (
     <ResearchDocumentErrorBoundary>
@@ -4256,9 +4166,9 @@ function ResearchArtifactDocument({
                 className="assistant-document-body"
                 dangerouslySetInnerHTML={{ __html: documentHtml }}
               />
-            ) : (
-              <div className="assistant-document-body">No research has been written yet.</div>
-            )}
+            ) : emptyState ? (
+              <div className="assistant-document-body">{emptyState}</div>
+            ) : null}
           </div>
         </div>
       </section>
@@ -4269,6 +4179,7 @@ function ResearchArtifactDocument({
 function ResearchArtifactPane(props: {
   sessionTitle: string;
   documentHtml: string;
+  emptyState?: ReactNode;
 }) {
   return <ResearchArtifactDocument {...props} />;
 }
@@ -4419,9 +4330,7 @@ function AssistantDocumentFramePage({
   if (loading && !hasServerRenderedDocument) {
     return (
       <section className="assistant-document-pane assistant-document-standalone">
-        <div className="assistant-document-scroll">
-          <div className="session-loading">Loading research document…</div>
-        </div>
+        <div className="assistant-document-scroll" />
       </section>
     );
   }
@@ -6865,7 +6774,36 @@ export default function App() {
     return (
       <section className="assistant-page">
         {assistantSessionLoading ? (
-          <AssistantWorkspaceLoadingState width={bookAssistantWidth} />
+          <AssistantWorkspace
+            onResizeStart={startBookAssistantResize}
+            isResizing={isDraggingBookAssistant}
+            width={bookAssistantWidth}
+            pageRef={bookPageRef}
+            leftPane={(
+              <ResearchArtifactPane
+                sessionTitle={assistantSessionName(activeSession)}
+                documentHtml=""
+                emptyState={null}
+              />
+            )}
+            rightPane={(
+              <AssistantSurface
+                key={`loading-${selectedSessionId ?? "new-thread"}`}
+                messages={[]}
+                isSending={false}
+                streamingAssistantId={null}
+                artifacts={[]}
+                showArtifacts={false}
+                showWelcome={false}
+                effortLevel={assistantEffort}
+                onEffortLevelChange={setAssistantEffort}
+                onPrompt={sendPrompt}
+                onCancel={cancelActiveRun}
+                composerDisabled={authLocked}
+                composerDisabledNotice={assistantComposerNotice}
+              />
+            )}
+          />
         ) : showRestrictedConversation ? (
           <div className="assistant-thread-shell" data-testid="thread">
             <LockedState compact title={authLocked ? "Sign in to view this conversation." : "This conversation is private."} />
