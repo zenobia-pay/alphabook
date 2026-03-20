@@ -4799,7 +4799,7 @@ async function persistPlanToolTrace(
   deps: AppDeps,
   messageId: string | null,
   runId: string,
-  toolCalls: LiveToolTraceEntry[],
+  _toolCalls: LiveToolTraceEntry[],
   researchDocumentHtml: string,
 ) {
   if (!messageId) {
@@ -4808,8 +4808,6 @@ async function persistPlanToolTrace(
   await deps.store.updateMessageMetadata(messageId, {
     phase: "plan",
     runId,
-    toolCalls,
-    researchLog: toolCalls,
     researchDocumentHtml,
   });
 }
@@ -4999,25 +4997,18 @@ async function persistRecoveredPlanToolTrace(
   if (!planMessage) {
     return;
   }
-
   const existingMetadata = planMessage.metadata && typeof planMessage.metadata === "object"
     ? planMessage.metadata as Record<string, unknown>
     : {};
-  const existingTrace = readPersistedPlanToolTrace(
-    existingMetadata,
-  );
-  const recoveredTrace = mergeRecoveredTraceWithExisting(existingTrace, buildRecoveredToolTrace(toolCalls));
   const existingResearchDocumentHtml =
     typeof existingMetadata.researchDocumentHtml === "string" && existingMetadata.researchDocumentHtml.trim().length > 0
       ? existingMetadata.researchDocumentHtml
-      : null;
+      : "";
   await deps.store.updateMessageMetadata(planMessage.id, {
     ...existingMetadata,
     phase: "plan",
     runId,
-    toolCalls: recoveredTrace,
-    researchLog: recoveredTrace,
-    researchDocumentHtml: existingResearchDocumentHtml ?? "",
+    researchDocumentHtml: existingResearchDocumentHtml,
   });
 }
 
@@ -7157,6 +7148,15 @@ async function runOrchestrator(
     }
   };
   send = async (event: string, data: Record<string, unknown>) => {
+    const persistableRunEventNames = new Set([
+      "run.started",
+      "assistant.plan",
+      "tool.started",
+      "tool.progress",
+      "tool.completed",
+      "assistant.completed",
+      "run.completed",
+    ]);
     const nowMs = deps.now?.() ?? Date.now();
     if (event === "tool.started") {
       const toolName = typeof data.toolName === "string" ? data.toolName : "";
@@ -7290,6 +7290,11 @@ async function runOrchestrator(
       }
     }
     await originalSend(event, nextData);
+    const persistedRunId = typeof nextData.runId === "string" ? nextData.runId : null;
+    const persistedSessionId = typeof nextData.sessionId === "string" ? nextData.sessionId : session?.id ?? null;
+    if (persistedRunId && persistedSessionId && persistableRunEventNames.has(event)) {
+      await deps.store.appendRunEvent(persistedRunId, persistedSessionId, event, nextData);
+    }
     await fanOutNotifications(event, nextData);
     const runId = typeof nextData.runId === "string" ? nextData.runId : null;
     if (!runId) {
@@ -8177,20 +8182,21 @@ async function runOrchestrator(
             detail: data.detail && typeof data.detail === "object" ? data.detail as Record<string, unknown> : undefined,
           },
           async (progressText, detail) => {
+            const toolCallId = typeof data.toolCallId === "string" ? data.toolCallId : toolRecord.id;
             liveToolTrace = liveToolTrace.map((entry) =>
-              entry.id === data.toolCallId
+              entry.id === toolCallId
                 ? appendToolProgress(entry, progressText, detail)
                 : entry,
             );
             if (detail) {
-              await appendResearchDocumentDetailOnce(data.toolCallId, detail);
+              await appendResearchDocumentDetailOnce(toolCallId, detail);
             } else {
-              appendResearchDocumentLogOnce(data.toolCallId, progressText);
+              appendResearchDocumentLogOnce(toolCallId, progressText);
             }
             await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
             await send("tool.progress", {
               runId: run.id,
-              toolCallId: data.toolCallId,
+              toolCallId,
               toolName,
               text: progressText,
               researchDocumentHtml: liveResearchDocumentHtml,
@@ -10066,18 +10072,16 @@ export function createApp(deps: AppDeps) {
 
     return streamResponse(
       async (send) => {
-        await send("run.started", {
-          runId,
-          sessionId,
-        });
-
-        let lastPlanSignature = "";
-        let lastAssistantSignature = "";
+        let lastSequence = 0;
+        const existingEvents = await deps.store.listRunEvents(runId);
+        if (existingEvents.length > 0) {
+          lastSequence = existingEvents[existingEvents.length - 1]!.sequence;
+        }
 
         while (!stopped) {
-          const [nextRun, messages] = await Promise.all([
+          const [nextRun, runEvents] = await Promise.all([
             deps.store.getRun(runId),
-            deps.store.listMessages(sessionId),
+            deps.store.listRunEvents(runId),
           ]);
           if (!nextRun || nextRun.sessionId !== sessionId) {
             await send("error", {
@@ -10086,60 +10090,15 @@ export function createApp(deps: AppDeps) {
             return;
           }
 
-          const planMessage = [...messages].reverse().find((message) => (
-            message.role === "assistant"
-            && message.metadata?.phase === "plan"
-            && message.metadata?.runId === runId
-          ));
-          const planSignature = JSON.stringify(planMessage?.metadata?.toolCalls ?? []);
-          if (planSignature !== lastPlanSignature) {
-            lastPlanSignature = planSignature;
-            if (planMessage) {
-              await send("tool.progress", {
-                runId,
-                sessionId,
-                toolName: "run_workspace_task",
-                text: "stream_update",
-              });
+          for (const runEvent of runEvents) {
+            if (runEvent.sequence <= lastSequence) {
+              continue;
             }
-          }
-
-          const assistantMessage = [...messages].reverse().find((message) => (
-            message.role === "assistant"
-            && message.metadata?.phase !== "plan"
-            && message.metadata?.runId === runId
-          ));
-          const assistantSignature = assistantMessage
-            ? JSON.stringify({
-                id: assistantMessage.id,
-                content: assistantMessage.content,
-                metadata: assistantMessage.metadata,
-              })
-            : "";
-          if (assistantSignature && assistantSignature !== lastAssistantSignature) {
-            lastAssistantSignature = assistantSignature;
-            await send("assistant.completed", {
-              runId,
-              sessionId,
-              answer: assistantMessage?.content ?? "",
-              citations: Array.isArray(assistantMessage?.metadata?.citations)
-                ? assistantMessage?.metadata?.citations as Citation[]
-                : [],
-              phase: typeof assistantMessage?.metadata?.phase === "string"
-                ? assistantMessage.metadata.phase
-                : null,
-              researchDocumentHtml: typeof assistantMessage?.metadata?.researchDocumentHtml === "string"
-                ? assistantMessage.metadata.researchDocumentHtml
-                : null,
-            });
+            lastSequence = runEvent.sequence;
+            await send(runEvent.event, runEvent.dataJson);
           }
 
           if (nextRun.status !== "running" && nextRun.status !== "queued") {
-            await send("run.completed", {
-              runId,
-              sessionId,
-              status: nextRun.status,
-            });
             return;
           }
 
@@ -10174,18 +10133,16 @@ export function createApp(deps: AppDeps) {
 
     return streamResponse(
       async (send) => {
-        await send("run.started", {
-          runId,
-          sessionId,
-        });
-
-        let lastPlanSignature = "";
-        let lastAssistantSignature = "";
+        let lastSequence = 0;
+        const existingEvents = await deps.store.listRunEvents(runId);
+        if (existingEvents.length > 0) {
+          lastSequence = existingEvents[existingEvents.length - 1]!.sequence;
+        }
 
         while (!stopped) {
-          const [nextRun, messages] = await Promise.all([
+          const [nextRun, runEvents] = await Promise.all([
             deps.store.getRun(runId),
-            deps.store.listMessages(sessionId),
+            deps.store.listRunEvents(runId),
           ]);
           if (!nextRun || nextRun.sessionId !== sessionId) {
             await send("error", {
@@ -10194,57 +10151,15 @@ export function createApp(deps: AppDeps) {
             return;
           }
 
-          const planMessage = [...messages].reverse().find((message) => (
-            message.role === "assistant"
-            && message.metadata?.phase === "plan"
-            && message.metadata?.runId === runId
-          ));
-          const planSignature = JSON.stringify(planMessage?.metadata?.toolCalls ?? []);
-          if (planSignature !== lastPlanSignature) {
-            lastPlanSignature = planSignature;
-            if (planMessage) {
-              await send("tool.progress", {
-                runId,
-                sessionId,
-                toolName: "run_workspace_task",
-                text: "stream_update",
-              });
+          for (const runEvent of runEvents) {
+            if (runEvent.sequence <= lastSequence) {
+              continue;
             }
-          }
-
-          const assistantMessage = [...messages].reverse().find((message) => (
-            message.role === "assistant"
-            && message.metadata?.phase !== "plan"
-            && message.metadata?.runId === runId
-          ));
-          const assistantSignature = assistantMessage
-            ? JSON.stringify({
-                id: assistantMessage.id,
-                content: assistantMessage.content,
-                metadata: assistantMessage.metadata,
-              })
-            : "";
-          if (assistantSignature && assistantSignature !== lastAssistantSignature) {
-            lastAssistantSignature = assistantSignature;
-            await send("assistant.completed", {
-              runId,
-              sessionId,
-              answer: assistantMessage?.content ?? "",
-              citations: Array.isArray(assistantMessage?.metadata?.citations)
-                ? assistantMessage?.metadata?.citations as Citation[]
-                : [],
-              phase: typeof assistantMessage?.metadata?.phase === "string"
-                ? assistantMessage.metadata.phase
-                : null,
-            });
+            lastSequence = runEvent.sequence;
+            await send(runEvent.event, runEvent.dataJson);
           }
 
           if (nextRun.status !== "running" && nextRun.status !== "queued") {
-            await send("run.completed", {
-              runId,
-              sessionId,
-              status: nextRun.status,
-            });
             return;
           }
 
@@ -10441,10 +10356,11 @@ export function createApp(deps: AppDeps) {
     if (!run || run.sessionId !== sessionId) {
       return c.json({ error: "Run not found." }, 404);
     }
-    const [messages, toolCalls, runtimeInstances] = await Promise.all([
+    const [messages, toolCalls, runtimeInstances, runEvents] = await Promise.all([
       deps.store.listMessages(sessionId),
       deps.store.listToolCalls(runId),
       deps.store.listRuntimeInstances(sessionId),
+      deps.store.listRunEvents(runId),
     ]);
     const artifacts = await loadRunArtifacts(deps, sessionId, runId, toolCalls);
     const rawLog = resolveRunRawLog(activeRuns, runId, artifacts);
@@ -10454,6 +10370,7 @@ export function createApp(deps: AppDeps) {
     return c.json({
       run,
       toolCalls,
+      runEvents,
       toolTrace: persistedPlanState.toolTrace,
       runtimeInstances,
       artifacts,
@@ -10477,15 +10394,17 @@ export function createApp(deps: AppDeps) {
     if (!run || run.sessionId !== sessionId) {
       return c.json({ error: "Run not found." }, 404);
     }
-    const [messages, toolCalls] = await Promise.all([
+    const [messages, toolCalls, runEvents] = await Promise.all([
       deps.store.listMessages(sessionId),
       deps.store.listToolCalls(runId),
+      deps.store.listRunEvents(runId),
     ]);
     const artifacts = await loadRunArtifacts(deps, sessionId, runId, toolCalls);
     const persistedPlanState = readPersistedPlanMessageState(messages, runId);
 
     return c.json({
       run,
+      runEvents,
       toolTrace: persistedPlanState.toolTrace,
       researchDocumentHtml: persistedPlanState.researchDocumentHtml,
       artifacts,
@@ -10507,10 +10426,11 @@ export function createApp(deps: AppDeps) {
     if (!run || run.sessionId !== sessionId) {
       return c.json({ error: "Run not found." }, 404);
     }
-    const [messages, toolCalls, runtimeInstances] = await Promise.all([
+    const [messages, toolCalls, runtimeInstances, runEvents] = await Promise.all([
       deps.store.listMessages(sessionId),
       deps.store.listToolCalls(runId),
       deps.store.listRuntimeInstances(sessionId),
+      deps.store.listRunEvents(runId),
     ]);
     const artifacts = await loadRunArtifacts(deps, sessionId, runId, toolCalls);
     const rawLog = resolveRunRawLog(activeRuns, runId, artifacts);
@@ -10520,6 +10440,7 @@ export function createApp(deps: AppDeps) {
     return c.json({
       run,
       toolCalls,
+      runEvents,
       toolTrace: persistedPlanState.toolTrace,
       runtimeInstances,
       artifacts,
@@ -10543,15 +10464,17 @@ export function createApp(deps: AppDeps) {
     if (!run || run.sessionId !== sessionId) {
       return c.json({ error: "Run not found." }, 404);
     }
-    const [messages, toolCalls] = await Promise.all([
+    const [messages, toolCalls, runEvents] = await Promise.all([
       deps.store.listMessages(sessionId),
       deps.store.listToolCalls(runId),
+      deps.store.listRunEvents(runId),
     ]);
     const artifacts = await loadRunArtifacts(deps, sessionId, runId, toolCalls);
     const persistedPlanState = readPersistedPlanMessageState(messages, runId);
 
     return c.json({
       run,
+      runEvents,
       toolTrace: persistedPlanState.toolTrace,
       researchDocumentHtml: persistedPlanState.researchDocumentHtml,
       artifacts,

@@ -218,6 +218,16 @@ export interface ToolCallRecord {
   completedAt: string | null;
 }
 
+export interface RunEventRecord {
+  id: string;
+  runId: string;
+  sessionId: string;
+  event: string;
+  sequence: number;
+  dataJson: Record<string, unknown>;
+  createdAt: string;
+}
+
 export interface WorkTextRecord {
   workId: string;
   r2Key: string | null;
@@ -359,6 +369,8 @@ export interface AppStore {
   startToolCall(runId: string, toolName: ToolName, argsJson: Record<string, unknown>): Promise<ToolCallRecord>;
   listToolCalls(runId: string): Promise<ToolCallRecord[]>;
   finishToolCall(toolCallId: string, status: ToolCallRecord["status"], resultJson: Record<string, unknown>): Promise<void>;
+  appendRunEvent(runId: string, sessionId: string, event: string, dataJson: Record<string, unknown>): Promise<RunEventRecord>;
+  listRunEvents(runId: string): Promise<RunEventRecord[]>;
   listWorks(offset?: number, limit?: number): Promise<WorkSummary[]>;
   countWorks(): Promise<number>;
   refreshExploreFeedSnapshot(limit?: number): Promise<void>;
@@ -1608,6 +1620,7 @@ export class InMemoryAppStore implements AppStore {
   private readonly messages = new Map<string, MessageRecord[]>();
   private readonly runs = new Map<string, RunRecord>();
   private readonly toolCalls = new Map<string, ToolCallRecord>();
+  private readonly runEvents = new Map<string, RunEventRecord[]>();
   private readonly runtimeInstances = new Map<string, RuntimeInstanceRecord>();
   private readonly artifacts = new Map<string, ArtifactRecord>();
   private readonly notifications = new Map<string, NotificationRecord>();
@@ -1869,7 +1882,7 @@ export class InMemoryAppStore implements AppStore {
       .map((session) => {
         const messages = this.messages.get(session.id) ?? [];
         const lastMessage = messages[messages.length - 1] ?? null;
-        const activeRun =
+        const activeRun: RunRecord | null =
           [...this.runs.values()]
             .filter((run) => run.sessionId === session.id && (run.status === "queued" || run.status === "running"))
             .sort((left, right) => right.startedAt.localeCompare(left.startedAt))[0]
@@ -1878,7 +1891,10 @@ export class InMemoryAppStore implements AppStore {
           ...session,
           lastMessageAt: lastMessage?.createdAt ?? null,
           lastMessagePreview: lastMessage?.content.slice(0, 120) ?? null,
-          activeRunStatus: activeRun?.status ?? null,
+          activeRunStatus:
+            activeRun?.status === "queued" || activeRun?.status === "running"
+              ? activeRun.status
+              : null,
         };
       })
       .sort((left, right) => (right.lastMessageAt ?? right.createdAt).localeCompare(left.lastMessageAt ?? left.createdAt));
@@ -2231,6 +2247,26 @@ export class InMemoryAppStore implements AppStore {
     toolCall.status = status;
     toolCall.resultJson = resultJson;
     toolCall.completedAt = nowIso();
+  }
+
+  async appendRunEvent(runId: string, sessionId: string, event: string, dataJson: Record<string, unknown>): Promise<RunEventRecord> {
+    const existing = this.runEvents.get(runId) ?? [];
+    const record: RunEventRecord = {
+      id: crypto.randomUUID(),
+      runId,
+      sessionId,
+      event,
+      sequence: existing.length + 1,
+      dataJson: structuredClone(dataJson),
+      createdAt: nowIso(),
+    };
+    existing.push(record);
+    this.runEvents.set(runId, existing);
+    return record;
+  }
+
+  async listRunEvents(runId: string): Promise<RunEventRecord[]> {
+    return [...(this.runEvents.get(runId) ?? [])];
   }
 
   async listWorks(offset = 0, limit = 12): Promise<WorkSummary[]> {
@@ -2745,6 +2781,7 @@ export class InMemoryAppStore implements AppStore {
 export class NeonAppStore implements AppStore {
   private analyticsSchemaReady: Promise<void> | null = null;
   private exploreFeedSchemaReady: Promise<void> | null = null;
+  private runEventsSchemaReady: Promise<void> | null = null;
   private workCountCache: { value: number; expiresAt: number } | null = null;
 
   constructor(private readonly db: DbClient) {}
@@ -2822,6 +2859,33 @@ export class NeonAppStore implements AppStore {
       })();
     }
     return this.exploreFeedSchemaReady;
+  }
+
+  private ensureRunEventsSchema() {
+    if (!this.runEventsSchemaReady) {
+      this.runEventsSchemaReady = (async () => {
+        await this.db.query(
+          `
+            CREATE TABLE IF NOT EXISTS run_events (
+              id uuid PRIMARY KEY,
+              run_id uuid NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+              session_id uuid NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+              sequence integer NOT NULL,
+              event text NOT NULL,
+              data_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+              created_at timestamptz NOT NULL DEFAULT now()
+            )
+          `,
+        );
+        await this.db.query(
+          "CREATE UNIQUE INDEX IF NOT EXISTS idx_run_events_run_id_sequence ON run_events(run_id, sequence)",
+        );
+        await this.db.query(
+          "CREATE INDEX IF NOT EXISTS idx_run_events_run_id_created_at ON run_events(run_id, created_at ASC)",
+        );
+      })();
+    }
+    return this.runEventsSchemaReady;
   }
 
   async ensureUser(userId: string): Promise<void> {
@@ -4150,6 +4214,67 @@ export class NeonAppStore implements AppStore {
       `,
       [toolCallId, status, JSON.stringify(resultJson)],
     );
+  }
+
+  async appendRunEvent(runId: string, sessionId: string, event: string, dataJson: Record<string, unknown>): Promise<RunEventRecord> {
+    await this.ensureRunEventsSchema();
+    const id = crypto.randomUUID();
+    const createdAt = nowIso();
+    const nextSequenceResult = await this.db.query<{ sequence: number }>(
+      `
+        SELECT COALESCE(MAX(sequence), 0)::int + 1 AS sequence
+        FROM run_events
+        WHERE run_id = $1::uuid
+      `,
+      [runId],
+    );
+    const sequence = Number(nextSequenceResult.rows[0]?.sequence ?? 1);
+    await this.db.query(
+      `
+        INSERT INTO run_events (id, run_id, session_id, sequence, event, data_json, created_at)
+        VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6::jsonb, $7::timestamptz)
+      `,
+      [id, runId, sessionId, sequence, event, JSON.stringify(dataJson), createdAt],
+    );
+    return {
+      id,
+      runId,
+      sessionId,
+      sequence,
+      event,
+      dataJson,
+      createdAt,
+    };
+  }
+
+  async listRunEvents(runId: string): Promise<RunEventRecord[]> {
+    await this.ensureRunEventsSchema();
+    const result = await this.db.query<{
+      id: string;
+      run_id: string;
+      session_id: string;
+      sequence: number;
+      event: string;
+      data_json: Record<string, unknown>;
+      created_at: string;
+    }>(
+      `
+        SELECT id, run_id, session_id, sequence, event, data_json, created_at
+        FROM run_events
+        WHERE run_id = $1::uuid
+        ORDER BY sequence ASC, created_at ASC
+      `,
+      [runId],
+    );
+    return result.rows.map((row) => ({
+      id: row.id,
+      runId: row.run_id,
+      sessionId: row.session_id,
+      sequence: Number(row.sequence ?? 0),
+      event: row.event,
+      dataJson: row.data_json ?? {},
+      createdAt: row.created_at,
+    }));
   }
 
   async listToolCalls(runId: string): Promise<ToolCallRecord[]> {

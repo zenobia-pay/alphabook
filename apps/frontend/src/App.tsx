@@ -9,7 +9,7 @@ import { ChevronsLeft, ChevronsRight, Link2, LoaderCircle, MessageSquarePlus, X 
 
 import { ChatSessionSummarySchema, getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type NotificationRecord, type ProfileBookStat, type ProfileFacetStat, type ProfileQueryStat, type PublicProfileResponse, type UserProfile, type UserProfileStats, type WorkDetail, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
-import { ApiError, buildSignInUrl, buildSignOutUrl, cancelRun, claimGuestProfile, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchAssistantDocumentState, fetchCurrentUser, fetchMessages, fetchNotifications, fetchProfile, fetchProfileStats, fetchRunState, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, getErrorMessage, markNotificationRead, queryAdminAnalytics, sendAnalyticsEvent, streamChat, streamRun, unfollowProfile, type RunArtifactRecord, type SessionRunRecord } from "./api";
+import { ApiError, buildSignInUrl, buildSignOutUrl, cancelRun, claimGuestProfile, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchAssistantDocumentState, fetchCurrentUser, fetchMessages, fetchNotifications, fetchProfile, fetchProfileStats, fetchRunState, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, getErrorMessage, markNotificationRead, queryAdminAnalytics, sendAnalyticsEvent, streamChat, streamRun, unfollowProfile, type PersistedRunEventRecord, type RunArtifactRecord, type SessionRunRecord } from "./api";
 import { Thread } from "./components/assistant-ui/thread";
 import { Avatar, AvatarFallback, AvatarImage } from "./components/ui/avatar";
 import { Button } from "./components/ui/button";
@@ -48,6 +48,7 @@ type AssistantDocumentBootstrapPayload = {
   messages?: RawUiMessage[];
   runState?: {
     run?: SessionRunRecord;
+    runEvents?: PersistedRunEventRecord[];
     toolTrace?: Array<Record<string, unknown>>;
     artifacts?: RunArtifactRecord[];
   };
@@ -62,6 +63,7 @@ type AssistantSessionBootstrapPayload = {
   runs?: SessionRunRecord[];
   runState?: {
     run?: SessionRunRecord;
+    runEvents?: PersistedRunEventRecord[];
     toolTrace?: Array<Record<string, unknown>>;
     artifacts?: RunArtifactRecord[];
   };
@@ -624,6 +626,110 @@ function hydrateStoredMessage(message: RawUiMessage): UiMessage {
         )
       : [],
   };
+}
+
+function buildToolTraceFromRunEvents(events: PersistedRunEventRecord[]) {
+  const trace: ToolTraceEntry[] = [];
+  const indexById = new Map<string, number>();
+
+  const ensureEntry = (eventData: Record<string, unknown>) => {
+    const toolCallId = typeof eventData.toolCallId === "string" ? eventData.toolCallId : null;
+    const toolName = typeof eventData.toolName === "string" ? eventData.toolName : "search_works";
+    const resolvedId = toolCallId ?? `${toolName}-${trace.length}`;
+    const existingIndex = indexById.get(resolvedId);
+    if (existingIndex !== undefined) {
+      return { entry: trace[existingIndex]!, index: existingIndex };
+    }
+    const entry: ToolTraceEntry = {
+      id: resolvedId,
+      toolName,
+      label: typeof eventData.label === "string" ? eventData.label : getToolLabel(toolName),
+      rationale: typeof eventData.rationale === "string" ? eventData.rationale : undefined,
+      progress: [],
+      args: eventData.args && typeof eventData.args === "object" ? eventData.args as Record<string, unknown> : {},
+      state: "running",
+    };
+    indexById.set(resolvedId, trace.length);
+    trace.push(entry);
+    return { entry, index: trace.length - 1 };
+  };
+
+  for (const runEvent of [...events].sort((left, right) => left.sequence - right.sequence)) {
+    const eventData = runEvent.dataJson && typeof runEvent.dataJson === "object"
+      ? runEvent.dataJson as Record<string, unknown>
+      : {};
+    if (runEvent.event === "tool.started") {
+      const { entry, index } = ensureEntry(eventData);
+      trace[index] = {
+        ...entry,
+        label: typeof eventData.label === "string" ? eventData.label : entry.label,
+        rationale: typeof eventData.rationale === "string" ? eventData.rationale : entry.rationale,
+        progress:
+          typeof eventData.rationale === "string" && eventData.rationale.trim().length > 0
+            ? entry.progress.includes(eventData.rationale) ? entry.progress : [...entry.progress, eventData.rationale]
+            : entry.progress,
+        args: eventData.args && typeof eventData.args === "object" ? eventData.args as Record<string, unknown> : entry.args,
+        state: "running",
+      };
+      continue;
+    }
+    if (runEvent.event === "tool.progress") {
+      const { entry, index } = ensureEntry(eventData);
+      const text = typeof eventData.text === "string" ? eventData.text : "";
+      const detail = eventData.detail && typeof eventData.detail === "object"
+        ? eventData.detail as Record<string, unknown>
+        : undefined;
+      trace[index] = {
+        ...entry,
+        rationale: text || entry.rationale,
+        progress: text && !entry.progress.includes(text) ? [...entry.progress, text] : entry.progress,
+        ...(detail ? { progressDetails: appendProgressDetail(entry.progressDetails, detail) } : {}),
+        state: "running",
+      };
+      continue;
+    }
+    if (runEvent.event === "tool.completed") {
+      const { entry, index } = ensureEntry(eventData);
+      const status = eventData.status === "failed" ? "error" : "completed";
+      const result = eventData.result && typeof eventData.result === "object"
+        ? eventData.result as Record<string, unknown>
+        : entry.result;
+      const rationale = typeof eventData.rationale === "string"
+        ? eventData.rationale
+        : entry.progress[entry.progress.length - 1] ?? entry.rationale;
+      trace[index] = {
+        ...entry,
+        label: typeof eventData.label === "string" ? eventData.label : entry.label,
+        rationale,
+        result,
+        isError: status === "error",
+        state: status,
+      };
+    }
+  }
+
+  return trace;
+}
+
+function mergePersistedRunEvents(messages: UiMessage[], runId: string, events: PersistedRunEventRecord[]) {
+  const normalizedTrace = buildToolTraceFromRunEvents(events);
+  if (normalizedTrace.length === 0) {
+    return messages;
+  }
+  let changed = false;
+  const nextMessages = messages.map((message) => {
+    const messageRunId = typeof message.metadata?.runId === "string" ? message.metadata.runId : null;
+    const phase = typeof message.metadata?.phase === "string" ? message.metadata.phase : null;
+    if (messageRunId !== runId || phase !== "plan") {
+      return message;
+    }
+    changed = true;
+    return {
+      ...message,
+      toolCalls: normalizedTrace,
+    };
+  });
+  return changed ? nextMessages : messages;
 }
 
 function reconcileMessagesWithRunState(messages: UiMessage[], runs: SessionRunRecord[]) {
@@ -4277,6 +4383,10 @@ function AssistantDocumentFramePage({
   const bootstrapHydratedMessages = useMemo(() => {
     const rawMessages = Array.isArray(bootstrap?.messages) ? bootstrap.messages : [];
     const hydrated = rawMessages.map(hydrateStoredMessage);
+    const bootstrapRunEvents = Array.isArray(bootstrap?.runState?.runEvents) ? bootstrap.runState.runEvents : [];
+    if (bootstrapRunEvents.length > 0) {
+      return mergePersistedRunEvents(hydrated, runId, bootstrapRunEvents);
+    }
     const bootstrapToolTrace = Array.isArray(bootstrap?.runState?.toolTrace) ? bootstrap.runState.toolTrace : [];
     return bootstrapToolTrace.length > 0
       ? mergePersistedToolTrace(hydrated, runId, bootstrapToolTrace)
@@ -4344,9 +4454,11 @@ function AssistantDocumentFramePage({
           loadingTimer = null;
         }
         const hydrated = nextMessages.map(hydrateStoredMessage);
-        const merged = Array.isArray(nextState.toolTrace)
-          ? mergePersistedToolTrace(hydrated, runId, nextState.toolTrace)
-          : hydrated;
+        const merged = Array.isArray(nextState.runEvents) && nextState.runEvents.length > 0
+          ? mergePersistedRunEvents(hydrated, runId, nextState.runEvents)
+          : Array.isArray(nextState.toolTrace)
+            ? mergePersistedToolTrace(hydrated, runId, nextState.toolTrace)
+            : hydrated;
         setMessages(merged);
         setToolTrace(currentResearchToolTrace(merged, runId));
         setArtifacts(Array.isArray(nextState.artifacts) ? nextState.artifacts : []);
@@ -5723,12 +5835,19 @@ export default function App() {
     };
 
     const refreshMessages = async () => {
-      const nextMessages = await fetchMessages(selectedSessionId);
+      const [nextMessages, nextRunState] = await Promise.all([
+        fetchMessages(selectedSessionId),
+        recoveredActiveRunId ? fetchRunState(selectedSessionId, recoveredActiveRunId).catch(() => null) : Promise.resolve(null),
+      ]);
       if (cancelled) {
         return;
       }
       const hydrated = nextMessages.map(hydrateStoredMessage);
-      setMessages((current) => mergeFetchedMessages(current, hydrated, selectedSessionId));
+      const mergedWithRunEvents =
+        nextRunState && Array.isArray(nextRunState.runEvents) && nextRunState.runEvents.length > 0
+          ? mergePersistedRunEvents(hydrated, recoveredActiveRunId ?? "", nextRunState.runEvents)
+          : hydrated;
+      setMessages((current) => mergeFetchedMessages(current, mergedWithRunEvents, selectedSessionId));
     };
 
     void streamRun(
@@ -5823,11 +5942,12 @@ export default function App() {
         const nextState = await fetchRunState(selectedSessionId, preferredRun.id);
         if (!cancelled) {
           setRunArtifacts(Array.isArray(nextState.artifacts) ? nextState.artifacts : []);
-          if (
-            Array.isArray(nextState.toolTrace)
-            && !hasCanonicalPlanToolTrace(messagesRef.current, preferredRun.id)
-          ) {
-            setMessages((current) => mergePersistedToolTrace(current, preferredRun.id, nextState.toolTrace ?? []));
+          if (!hasCanonicalPlanToolTrace(messagesRef.current, preferredRun.id)) {
+            if (Array.isArray(nextState.runEvents) && nextState.runEvents.length > 0) {
+              setMessages((current) => mergePersistedRunEvents(current, preferredRun.id, nextState.runEvents ?? []));
+            } else if (Array.isArray(nextState.toolTrace)) {
+              setMessages((current) => mergePersistedToolTrace(current, preferredRun.id, nextState.toolTrace ?? []));
+            }
           }
         }
       } catch {

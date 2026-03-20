@@ -131,8 +131,19 @@ export type RunArtifactRecord = {
   content?: string | null;
 };
 
+export type PersistedRunEventRecord = {
+  id: string;
+  runId: string;
+  sessionId: string;
+  event: string;
+  sequence: number;
+  dataJson: Record<string, unknown>;
+  createdAt: string;
+};
+
 export type RunStateRecord = {
   run?: SessionRunRecord;
+  runEvents?: PersistedRunEventRecord[];
   toolTrace?: Array<Record<string, unknown>>;
   artifacts?: RunArtifactRecord[];
 };
