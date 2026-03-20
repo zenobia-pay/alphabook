@@ -1754,6 +1754,53 @@ async function listBookHtmlWorks(context: IngestContext, limit: number, startAft
   } satisfies ExistingBookHtmlWork));
 }
 
+async function listBookHtmlWorksByCreatedAt(
+  context: IngestContext,
+  limit: number,
+  createdAtFrom: string,
+  createdAtTo: string,
+  startAfterGutenbergId?: string | null,
+) {
+  const rows = await context.db.query<{
+    work_id: string;
+    gutenberg_id: string;
+    title: string;
+    summary: string | null;
+    language: string | null;
+    release_date: string | null;
+    metadata_json: Record<string, unknown> | null;
+  }>(
+    `
+      SELECT
+        w.id AS work_id,
+        w.gutenberg_id::bigint::text AS gutenberg_id,
+        w.title,
+        w.summary,
+        w.language,
+        w.release_date::text AS release_date,
+        w.metadata_json
+      FROM works w
+      WHERE w.gutenberg_id IS NOT NULL
+        AND w.created_at >= $1::timestamptz
+        AND w.created_at < $2::timestamptz
+        AND ($3::bigint IS NULL OR w.gutenberg_id > $3::bigint)
+      ORDER BY w.gutenberg_id ASC
+      LIMIT $4
+    `,
+    [createdAtFrom, createdAtTo, startAfterGutenbergId ? Number(startAfterGutenbergId) : null, limit],
+  );
+
+  return rows.rows.map((row) => ({
+    workId: row.work_id,
+    gutenbergId: String(row.gutenberg_id),
+    title: row.title,
+    summary: row.summary,
+    language: row.language,
+    releaseDate: row.release_date,
+    metadata: row.metadata_json ?? {},
+  } satisfies ExistingBookHtmlWork));
+}
+
 async function persistBookHtmlArtifact(
   context: IngestContext,
   work: ExistingBookHtmlWork,
@@ -1927,6 +1974,75 @@ async function rebuildBookHtml(
   await Promise.all(Array.from({ length: Math.min(concurrency, works.length || 1) }, () => worker()));
 
   return {
+    processed: results.length + errors.length,
+    inserted: results.length,
+    errors,
+    nextStartAfterId: works.length > 0 ? works[works.length - 1].gutenbergId : options.startAfterId ?? null,
+    results,
+  };
+}
+
+async function rebuildBookHtmlByCreatedAt(
+  context: IngestContext,
+  options: {
+    createdAtFrom: string;
+    createdAtTo: string;
+    startAfterId?: string | null;
+    limit: number;
+    concurrency?: number;
+  },
+) {
+  const works = await listBookHtmlWorksByCreatedAt(
+    context,
+    options.limit,
+    options.createdAtFrom,
+    options.createdAtTo,
+    options.startAfterId ?? null,
+  );
+  const results: BookHtmlPersistResult[] = [];
+  const errors: Array<Record<string, unknown>> = [];
+
+  const concurrency = Math.max(1, Number(options.concurrency ?? process.env.BOOK_HTML_REBUILD_CONCURRENCY ?? "8"));
+  let cursor = 0;
+
+  async function worker() {
+    while (cursor < works.length) {
+      const work = works[cursor++];
+      try {
+        const result = await persistBookHtmlArtifact(context, work);
+        if (result.error) {
+          errors.push({
+            gutenbergId: work.gutenbergId,
+            error: result.error,
+          });
+          console.error(JSON.stringify({
+            phase: "book-html-rebuild-created-at-error",
+            gutenbergId: work.gutenbergId,
+            error: result.error,
+          }));
+          continue;
+        }
+        results.push(result);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        errors.push({
+          gutenbergId: work.gutenbergId,
+          error: message,
+        });
+        console.error(JSON.stringify({
+          phase: "book-html-rebuild-created-at-error",
+          gutenbergId: work.gutenbergId,
+          error: message,
+        }));
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, works.length || 1) }, () => worker()));
+
+  return {
+    createdAtFrom: options.createdAtFrom,
+    createdAtTo: options.createdAtTo,
     processed: results.length + errors.length,
     inserted: results.length,
     errors,
@@ -2221,6 +2337,22 @@ async function main() {
       return;
     }
 
+    if (command === "rebuild-book-html-created-at") {
+      const [createdAtFrom, createdAtTo, startAfterId, limitValue, concurrencyValue] = args;
+      if (!createdAtFrom || !createdAtTo) {
+        throw new Error("Usage: rebuild-book-html-created-at <createdAtFrom> <createdAtTo> [startAfterId|-] [limit] [concurrency]");
+      }
+      const result = await rebuildBookHtmlByCreatedAt(context, {
+        createdAtFrom,
+        createdAtTo,
+        startAfterId: startAfterId && startAfterId !== "-" ? startAfterId : null,
+        limit: Number(limitValue ?? process.env.BOOK_HTML_BATCH_SIZE ?? "100"),
+        concurrency: Number(concurrencyValue ?? process.env.BOOK_HTML_REBUILD_CONCURRENCY ?? "8"),
+      });
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
     if (command === "delete-gutenberg") {
       if (args.length === 0) {
         throw new Error("Usage: delete-gutenberg <gutenbergId...>");
@@ -2237,6 +2369,7 @@ async function main() {
     console.log("  backfill-mirror-parallel [startAfterId|-] [limit] [concurrency]");
     console.log("  backfill-book-html [startAfterId|-] [limit] [concurrency]");
     console.log("  rebuild-book-html [startAfterId|-] [limit] [concurrency]");
+    console.log("  rebuild-book-html-created-at <createdAtFrom> <createdAtTo> [startAfterId|-] [limit] [concurrency]");
     console.log("  delete-gutenberg <gutenbergId...>");
     console.log("  run-once");
   } finally {
