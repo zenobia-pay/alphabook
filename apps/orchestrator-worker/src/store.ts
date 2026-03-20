@@ -3412,14 +3412,14 @@ export class NeonAppStore implements AppStore {
       }>(
         `
           WITH active_days AS (
-            SELECT DISTINCT created_at::date AS day
+            SELECT DISTINCT m.created_at::date AS day
             FROM messages m
             JOIN chat_sessions cs ON cs.id = m.session_id
             WHERE cs.user_id = $1
             UNION
-            SELECT DISTINCT created_at::date AS day
-            FROM analytics_events
-            WHERE user_id = $1 AND event = 'book_open'
+            SELECT DISTINCT ae.created_at::date AS day
+            FROM analytics_events ae
+            WHERE ae.user_id = $1 AND ae.event = 'book_open'
           )
           SELECT
             COALESCE((SELECT COUNT(*)::int FROM chat_sessions WHERE user_id = $1), 0) AS session_count,
