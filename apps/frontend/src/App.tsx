@@ -100,6 +100,7 @@ type UrlState = {
   sessionId: string | null | undefined;
   workId: string | null | undefined;
   readerPath: string | null | undefined;
+  chunkId: string | null | undefined;
   profileUserId: string | null | undefined;
   runId: string | null | undefined;
   adminSection: "runs" | "users" | "analytics" | "incidents" | "logs";
@@ -375,6 +376,7 @@ function readUrlState(): UrlState {
       sessionId: undefined,
       workId: undefined,
       readerPath: undefined,
+      chunkId: undefined,
       profileUserId: undefined,
       runId: undefined,
       adminSection: "runs",
@@ -392,6 +394,7 @@ function readUrlState(): UrlState {
     sessionId: params.has("session") ? params.get("session") || null : undefined,
     workId: pathnameMatch ? decodeURIComponent(pathnameMatch[1]) : params.has("work") ? params.get("work") || null : undefined,
     readerPath: params.has("reader") ? params.get("reader") || null : undefined,
+    chunkId: params.has("chunk") ? params.get("chunk") || null : undefined,
     profileUserId: profilePathMatch ? decodeURIComponent(profilePathMatch[1]) : params.has("profile") ? params.get("profile") || null : undefined,
     runId: params.has("run") ? params.get("run") || null : undefined,
     adminSection:
@@ -456,6 +459,11 @@ function writeUrlState(next: UrlState, mode: UrlWriteMode = "replace") {
     url.searchParams.set("reader", next.readerPath);
   } else {
     url.searchParams.delete("reader");
+  }
+  if (next.view === "book" && next.chunkId) {
+    url.searchParams.set("chunk", next.chunkId);
+  } else {
+    url.searchParams.delete("chunk");
   }
   if (next.view !== "book" && next.workId) {
     url.searchParams.set("work", next.workId);
@@ -4892,6 +4900,7 @@ export default function App() {
   const [activeWorkLoading, setActiveWorkLoading] = useState(false);
   const [activeWorkSourceLoading, setActiveWorkSourceLoading] = useState(false);
   const [activeReaderPath, setActiveReaderPath] = useState<string | null | undefined>(initialUrlState.readerPath);
+  const [activeChunkId, setActiveChunkId] = useState<string | null | undefined>(initialUrlState.chunkId);
   const [pendingCitation, setPendingCitation] = useState<Citation | null>(null);
   const [activePassageId, setActivePassageId] = useState<string | null>(null);
   const [highlightedPassageExcerpt, setHighlightedPassageExcerpt] = useState<string | null>(null);
@@ -5207,6 +5216,7 @@ export default function App() {
       setSelectedSessionId(next.sessionId);
       setActiveWorkId(next.workId);
       setActiveReaderPath(next.readerPath);
+      setActiveChunkId(next.chunkId);
       setActiveProfileUserId(next.profileUserId);
       setSelectedAdminRunId(next.runId);
       setAdminSection(next.adminSection);
@@ -5225,13 +5235,14 @@ export default function App() {
       sessionId: selectedSessionId,
       workId: activeWorkId,
       readerPath: activeReaderPath,
+      chunkId: activeChunkId,
       profileUserId: activeProfileUserId,
       runId: selectedAdminRunId,
       adminSection,
       debugEnabled,
     }, pendingUrlWriteModeRef.current);
     pendingUrlWriteModeRef.current = "replace";
-  }, [activeView, selectedSessionId, activeWorkId, activeReaderPath, activeProfileUserId, selectedAdminRunId, adminSection, debugEnabled]);
+  }, [activeView, selectedSessionId, activeWorkId, activeReaderPath, activeChunkId, activeProfileUserId, selectedAdminRunId, adminSection, debugEnabled]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -5543,6 +5554,23 @@ export default function App() {
   }, [activeProfileUserId, activeView, authState.authConfigured, currentUserId]);
 
   useEffect(() => {
+    if (!activeChunkId || !activeWorkId || activeView !== "book") {
+      return;
+    }
+    setPendingCitation((current) => {
+      if (current?.workId === activeWorkId && current.chunkId === activeChunkId) {
+        return current;
+      }
+      return {
+        workId: activeWorkId,
+        chunkId: activeChunkId,
+        label: `${activeWorkId}#${activeChunkId}`,
+        excerpt: "",
+      };
+    });
+  }, [activeChunkId, activeWorkId, activeView]);
+
+  useEffect(() => {
     if (!pendingCitation || !activeWork || activeWork.id !== pendingCitation.workId || readerPassages.length === 0) {
       return;
     }
@@ -5551,12 +5579,15 @@ export default function App() {
     if (match) {
       setActivePassageId(match.passageId);
       setHighlightedPassageExcerpt(match.highlight);
+      if (activeChunkId) {
+        setActiveChunkId(null);
+      }
       const url = new URL(window.location.href);
       url.hash = match.passageId;
       window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
     }
     setPendingCitation(null);
-  }, [activeWork, pendingCitation, readerPassages]);
+  }, [activeWork, pendingCitation, readerPassages, activeChunkId]);
 
   useEffect(() => {
     if (typeof window === "undefined") {

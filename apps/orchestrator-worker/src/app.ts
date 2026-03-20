@@ -6696,6 +6696,13 @@ function buildResearchDocumentWorkUrl(sessionId: string, workId: string) {
   return url.toString();
 }
 
+function buildResearchDocumentChunkUrl(sessionId: string, workId: string, chunkId: string) {
+  const url = new URL(`https://alpha-book.org/works/${encodeURIComponent(workId)}`);
+  url.searchParams.set("session", sessionId);
+  url.searchParams.set("chunk", chunkId);
+  return url.toString();
+}
+
 function buildResearchDocumentPassageUrl(
   sessionId: string,
   workId: string,
@@ -7539,8 +7546,14 @@ async function runOrchestrator(
       const workTitle = normalizeDocumentText(detail.workTitle ?? detail.title) || "Source";
       const chunkIndex = typeof detail.chunkIndex === "number" ? detail.chunkIndex : null;
       const workId = typeof detail.workId === "string" ? detail.workId : null;
-      const href = workId && chunkIndex !== null
-        ? await buildChunkIndexPassageUrl(deps, session!.id, workId, chunkIndex)
+      const chunkId =
+        typeof detail.chunkId === "string"
+          ? detail.chunkId
+          : typeof detail.id === "string"
+            ? detail.id
+            : null;
+      const href = workId && chunkId
+        ? buildResearchDocumentChunkUrl(session!.id, workId, chunkId)
         : workId
           ? buildResearchDocumentWorkUrl(session!.id, workId)
           : null;
