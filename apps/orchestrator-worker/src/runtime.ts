@@ -1,6 +1,7 @@
 import { artifactKeys, HARD_LIMITS, withLegacyWorkAliases, type CorpusWorkspaceDocument } from "@alphabook/corpus-core";
 import { ToolArgsSchemas, type WorkSummary } from "@alphabook/shared";
 import { gutenbergCorpusAdapter } from "@alphabook/source-gutenberg/adapter";
+import { createPlatformRepository } from "./platform-repository";
 
 import type { RuntimeToolGateway } from "./app";
 import type { BlobStore } from "./r2";
@@ -806,14 +807,33 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     chunkIds: string[],
     taskContext: Record<string, unknown>,
   ) {
+    const repository = createPlatformRepository(this.store);
     const resolvedWorkIds = uniqueStrings(workIds);
-    const [workMetadata, workFiles, selectedChunks, corpusWorkCount] = await Promise.all([
-      this.store.getWorkMetadata(resolvedWorkIds),
-      this.store.getWorkFiles(resolvedWorkIds, ["clean", "chunks"] satisfies WorkFileKind[]),
-      chunkIds.length > 0 ? this.store.getChunksByIds(chunkIds) : Promise.resolve([]),
-      this.store.countWorks(),
+    const [documents, documentFiles, selectedChunks, corpusDocumentCount] = await Promise.all([
+      repository.getDocumentMetadata(resolvedWorkIds),
+      repository.getDocumentFiles(resolvedWorkIds, ["clean", "chunks"]),
+      chunkIds.length > 0 ? repository.getChunksByIds(chunkIds) : Promise.resolve([]),
+      repository.countDocuments(),
     ]);
     let totalBytes = 0;
+    const workMetadata = documents.map((document) => ({
+      id: document.id,
+      title: document.title,
+      authors: document.contributors ?? [],
+      language: document.language ?? null,
+      releaseDate: document.publishedAt ?? null,
+      rightsStatus: document.rightsStatus ?? null,
+      summary: document.summary ?? null,
+      subjects: document.subjects ?? [],
+    })) as WorkSummary[];
+    const workFiles = documentFiles.map((file) => ({
+      id: `${file.documentId}:${file.kind}:${file.r2Key}`,
+      workId: file.documentId,
+      kind: file.kind as WorkFileKind,
+      r2Key: file.r2Key,
+      byteSize: file.byteSize ?? null,
+      metadata: file.metadata ?? {},
+    }));
     const fileCatalog = dedupeByKey(workFiles).map((file) => ({
       documentId: file.workId,
       kind: file.kind,
@@ -836,7 +856,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
       selectedChunkIds: chunkIds,
       selectedChunks: selectedChunks.map((chunk) => ({
         id: chunk.id,
-        documentId: chunk.workId,
+        documentId: chunk.documentId,
         chunkIndex: chunk.chunkIndex,
         text: chunk.text,
         excerpt: chunk.excerpt,
@@ -844,7 +864,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
       })),
       taskContext: {
         ...restTaskContext,
-        corpusWorkCount,
+        corpusWorkCount: corpusDocumentCount,
         hydratedWorkCount: resolvedWorkIds.length,
       },
     });

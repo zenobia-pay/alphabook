@@ -8,9 +8,7 @@
   },
   "include": [
     "src/**/*.ts",
-    "../corpus-core/src/**/*.ts",
-    "../corpus-text/src/**/*.ts",
-    "../platform/src/**/*.ts",
-    "../source-gutenberg/src/**/*.ts"
+    "test/**/*.ts",
+    "../corpus-core/src/**/*.ts"
   ]
 }

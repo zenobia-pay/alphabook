@@ -13,6 +13,7 @@
     "test/**/*.ts",
     "../../packages/corpus-core/src/**/*.ts",
     "../../packages/corpus-text/src/**/*.ts",
+    "../../packages/platform/src/**/*.ts",
     "../../packages/shared/src/**/*.ts",
     "../../packages/db/src/**/*.ts",
     "../../packages/source-gutenberg/src/**/*.ts"

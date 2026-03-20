@@ -19,6 +19,14 @@ AlphaBook remains a book-focused product, but the codebase now has an explicit a
 - `CorpusChunk`
 - `CorpusWorkspaceManifest`
 
+`packages/platform` adds reusable platform contracts on top of that core:
+
+- neutral document/source/citation schemas
+- tool alias translation
+- adapter registry
+- repository interfaces
+- generic prompt templates for non-AlphaBook consumers
+
 These types are intentionally generic and do not assume books, authors, or Gutenberg.
 
 ## Compatibility Layer
@@ -40,7 +48,7 @@ To avoid breaking the live app, the runtime path uses compatibility helpers that
 - Gutenberg boilerplate cleanup
 - text normalization and chunking hooks
 
-AlphaBook continues to use this adapter by default.
+AlphaBook continues to use this adapter by default through the adapter registry.
 
 ## Adding Another Corpus
 
@@ -51,4 +59,4 @@ To add a new corpus without changing AlphaBook UX:
 3. Map the new corpus into generic `CorpusDocument` / `CorpusChunk` shapes.
 4. Reuse the existing compatibility helpers if you need to interoperate with AlphaBook's current `work`-based runtime flow.
 
-The `packages/corpus-core/test/workspace.test.ts` fixture adapter is the minimal non-book example of the contract in use.
+`packages/source-fixture` is the minimal non-book example of the contract in use.

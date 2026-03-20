@@ -2,7 +2,7 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "composite": true,
-    "types": ["vite/client", "node"],
+    "types": ["vite/client", "node", "@cloudflare/workers-types"],
     "lib": ["DOM", "DOM.Iterable", "ES2022"],
     "rootDir": "../../",
     "outDir": "dist",
@@ -10,7 +10,14 @@
     "jsx": "react-jsx",
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@alphabook/corpus-core": ["../../packages/corpus-core/src/index.ts"],
+      "@alphabook/corpus-text": ["../../packages/corpus-text/src/index.ts"],
+      "@alphabook/platform": ["../../packages/platform/src/index.ts"],
+      "@alphabook/shared": ["../../packages/shared/src/index.ts"],
+      "@alphabook/source-gutenberg": ["../../packages/source-gutenberg/src/index.ts"],
+      "@alphabook/source-gutenberg/*": ["../../packages/source-gutenberg/src/*"],
+      "@alphabook/source-fixture": ["../../packages/source-fixture/src/index.ts"]
     }
   },
   "include": [
@@ -20,6 +27,7 @@
     "playwright.config.ts",
     "../../packages/corpus-core/src/**/*.ts",
     "../../packages/corpus-text/src/**/*.ts",
+    "../../packages/platform/src/**/*.ts",
     "../../packages/shared/src/**/*.ts",
     "../../packages/source-gutenberg/src/**/*.ts"
   ]
