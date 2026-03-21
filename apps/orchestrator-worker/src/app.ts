@@ -3109,7 +3109,7 @@ function parseRuntimeChunkProgressLine(line: string): Record<string, unknown> | 
 }
 
 function parseRuntimeProgressMarker(line: string): Record<string, unknown> | null {
-  const match = line.match(/^ALPHABOOK_PROGRESS\s+(\{.+\})$/u);
+  const match = line.match(/^ALPHABOOK[ _]PROGRESS\s+(\{.+\})$/u);
   if (!match) {
     return null;
   }
@@ -6958,6 +6958,93 @@ function buildResearchDocumentLink(label: string, href: string) {
   return `<a class="assistant-document-link" href="${escapeResearchHtml(href)}">${escapeResearchHtml(label)}</a>`;
 }
 
+const BRIEFING_REFERENCE_TOKEN_RE = /\b([0-9a-f]{8}(?:-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?)(?:#(\d+(?:-\d+)?))?\b/giu;
+
+async function resolveBriefingReferenceMap(
+  deps: AppDeps,
+  tokens: string[],
+) {
+  const normalizedTokens = [...new Set(tokens.map((token) => token.trim().toLowerCase()).filter(Boolean))];
+  const resolved = new Map<string, WorkDetailRecord>();
+  const fullIds = normalizedTokens.filter((token) => token.length > 8);
+  const prefixes = normalizedTokens.filter((token) => token.length === 8);
+
+  for (const workId of fullIds) {
+    const work = await deps.store.getWorkById(workId);
+    if (work) {
+      resolved.set(workId, work);
+    }
+  }
+
+  if (prefixes.length > 0) {
+    const prefixMatches = await deps.store.getWorksByIdPrefixes(prefixes);
+    for (const match of prefixMatches) {
+      resolved.set(match.prefix, match.work);
+    }
+  }
+
+  return resolved;
+}
+
+function buildBriefingReferenceLabel(
+  line: string,
+  matchIndex: number,
+  workTitle: string,
+  location: string | null,
+) {
+  const priorText = line.slice(Math.max(0, matchIndex - 120), matchIndex);
+  const titleAlreadyVisible = /\*[^*]+\*\s*,?\s*$/u.test(priorText.trim());
+  if (location) {
+    return titleAlreadyVisible ? location : `${workTitle}, ${location}`;
+  }
+  return titleAlreadyVisible ? "work" : workTitle;
+}
+
+async function renderBriefingInlineHtml(
+  deps: AppDeps,
+  sessionId: string,
+  value: string,
+) {
+  const matches = [...value.matchAll(BRIEFING_REFERENCE_TOKEN_RE)];
+  const resolvedByToken = await resolveBriefingReferenceMap(
+    deps,
+    matches.map((match) => String(match[1]).toLowerCase()),
+  );
+
+  let withPlaceholders = value;
+  const replacements = new Map<string, string>();
+  for (const [index, match] of matches.entries()) {
+    const token = String(match[1]);
+    const tokenKey = token.toLowerCase();
+    const range = typeof match[2] === "string" ? match[2] : null;
+    const resolved = resolvedByToken.get(tokenKey);
+    if (!resolved) {
+      continue;
+    }
+    const location = range ? `passage${range.includes("-") ? "s" : ""} ${range}` : null;
+    const label = buildBriefingReferenceLabel(value, match.index ?? 0, resolved.title, location);
+    const href = range
+      ? await buildChunkIndexPassageUrl(
+          deps,
+          sessionId,
+          resolved.id,
+          Number.parseInt(range.split("-")[0] ?? range, 10),
+        ) ?? buildResearchDocumentWorkUrl(sessionId, resolved.id)
+      : buildResearchDocumentWorkUrl(sessionId, resolved.id);
+    const placeholder = `@@BRIEFING_REF_${index}@@`;
+    withPlaceholders = withPlaceholders.replace(match[0], placeholder);
+    replacements.set(placeholder, buildResearchDocumentLink(label, href));
+  }
+
+  let html = escapeResearchHtml(withPlaceholders)
+    .replace(/\*\*(.+?)\*\*/gu, "<strong>$1</strong>")
+    .replace(/(^|[\\s(])\*(.+?)\*(?=[$\\s).,;:!?])/gmu, "$1<em>$2</em>");
+  for (const [placeholder, replacement] of replacements.entries()) {
+    html = html.replace(placeholder, replacement);
+  }
+  return html;
+}
+
 function appendResearchDocumentFragment(currentHtml: string, fragment: string) {
   return fragment.trim().length > 0 ? `${currentHtml}${fragment}` : currentHtml;
 }
@@ -7059,15 +7146,17 @@ function appendResearchDocumentHtml(
   return `${existingHtml ?? ""}${nextSections.join("")}`;
 }
 
-function renderBriefingHtml(briefing: string) {
+async function renderBriefingHtml(
+  deps: AppDeps,
+  sessionId: string,
+  briefing: string,
+) {
   const lines = briefing
     .split(/\r?\n/u)
     .map((line) => line.trimEnd())
     .filter((line, index, all) => !(line === "" && all[index - 1] === ""));
   const html: string[] = [];
   let listItems: string[] = [];
-  const emphasize = (value: string) =>
-    escapeResearchHtml(value).replace(/\*\*(.+?)\*\*/gu, "<strong>$1</strong>");
   const flushList = () => {
     if (listItems.length === 0) {
       return;
@@ -7082,6 +7171,14 @@ function renderBriefingHtml(briefing: string) {
       flushList();
       continue;
     }
+    const markdownHeadingMatch = trimmed.match(/^(#{2,4})\s+(.+)$/u);
+    if (markdownHeadingMatch) {
+      flushList();
+      const level = Math.min(4, markdownHeadingMatch[1].length + 1);
+      const headingHtml = await renderBriefingInlineHtml(deps, sessionId, markdownHeadingMatch[2].trim());
+      html.push(`<h${level}>${headingHtml}</h${level}>`);
+      continue;
+    }
     const headingMatch = trimmed.match(/^\*\*(.+)\*\*$/u);
     if (headingMatch) {
       flushList();
@@ -7089,11 +7186,11 @@ function renderBriefingHtml(briefing: string) {
       continue;
     }
     if (trimmed.startsWith("- ")) {
-      listItems.push(`<li>${emphasize(trimmed.slice(2))}</li>`);
+      listItems.push(`<li>${await renderBriefingInlineHtml(deps, sessionId, trimmed.slice(2))}</li>`);
       continue;
     }
     flushList();
-    html.push(`<p class="assistant-document-entry is-log">${emphasize(trimmed)}</p>`);
+    html.push(`<p class="assistant-document-entry is-log">${await renderBriefingInlineHtml(deps, sessionId, trimmed)}</p>`);
   }
   flushList();
   return html.join("");
@@ -7732,16 +7829,34 @@ async function runOrchestrator(
     liveResearchDocumentHtml = appendResearchDocumentFragment(liveResearchDocumentHtml, fragment);
   };
 
+  const researchDocumentWorkTitleCache = new Map<string, Promise<string | null>>();
+  const getResearchDocumentWorkTitle = async (workId: string) => {
+    const cached = researchDocumentWorkTitleCache.get(workId);
+    if (cached) {
+      return cached;
+    }
+    const pending = deps.store.getWorkById(workId).then((work) => normalizeDocumentText(work?.title) || null);
+    researchDocumentWorkTitleCache.set(workId, pending);
+    return pending;
+  };
+
   const appendResearchDocumentSectionOnce = (entry: LiveToolTraceEntry) => {
     appendResearchDocumentOnce(`section:${entry.id}`, buildResearchDocumentSectionHeader(entry.label, entry.rationale ?? ""));
   };
 
   const appendResearchDocumentLogOnce = (toolCallId: string, text: string, suffix = "") => {
     const normalized = normalizeDocumentText(text);
-    if (!normalized || isLowValueDocumentSummary(normalized)) {
+    const sanitized = sanitizeUserFacingToolText(normalized)?.replace(/\s+/gu, " ").trim() ?? "";
+    if (
+      !sanitized
+      || isLowValueDocumentSummary(sanitized)
+      || /^ALPHABOOK[ _]PROGRESS\b/iu.test(normalized)
+      || /^[a-f0-9]{8}(?:[- ][a-f0-9]{4}){3}[- ][a-f0-9]{12}\s+\d+:/iu.test(normalized)
+      || /[{}]/u.test(normalized)
+    ) {
       return;
     }
-    appendResearchDocumentOnce(`log:${toolCallId}:${suffix || normalized}`, buildResearchDocumentLogEntry(normalized));
+    appendResearchDocumentOnce(`log:${toolCallId}:${suffix || sanitized}`, buildResearchDocumentLogEntry(sanitized));
   };
 
   const appendResearchDocumentDetailOnce = async (
@@ -7779,7 +7894,6 @@ async function runOrchestrator(
       if (!isUsefulPersistedExcerpt(excerpt)) {
         return;
       }
-      const workTitle = normalizeDocumentText(detail.workTitle ?? detail.title) || "Source";
       const chunkIndex = typeof detail.chunkIndex === "number" ? detail.chunkIndex : null;
       const workId = typeof detail.workId === "string" ? detail.workId : null;
       const chunkId =
@@ -7788,6 +7902,10 @@ async function runOrchestrator(
           : typeof detail.id === "string"
             ? detail.id
             : null;
+      const workTitle =
+        normalizeDocumentText(detail.workTitle ?? detail.title)
+        || (workId ? await getResearchDocumentWorkTitle(workId) : null)
+        || "Source";
       const href = workId && chunkId
         ? buildResearchDocumentChunkUrl(session!.id, workId, chunkId)
         : workId
@@ -8042,7 +8160,7 @@ async function runOrchestrator(
     if (toolName === "run_workspace_task") {
       const briefing = typeof result.briefing === "string" ? result.briefing.trim() : "";
       if (briefing) {
-        appendResearchDocumentOnce(`briefing:${toolCallId}`, renderBriefingHtml(briefing));
+        appendResearchDocumentOnce(`briefing:${toolCallId}`, await renderBriefingHtml(deps, session!.id, briefing));
       }
     }
     await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
