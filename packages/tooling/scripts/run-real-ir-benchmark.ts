@@ -15,6 +15,7 @@ import {
   type BenchmarkLabel,
   type BenchmarkQuery,
   type BenchmarkCorpus,
+  type PassageJudge,
   type QuerySet,
 } from "@alphabook/benchmark-core";
 
@@ -24,11 +25,14 @@ interface ScriptOptions {
   corpusPath: string;
   querySetPath: string;
   outputRoot: string;
+  provider: "auto" | "openai" | "openrouter";
   batchSize: number;
   model: string;
   minScore: number;
   highScore: number;
   maxLabelsPerQuery: number;
+  requestTimeoutMs: number;
+  maxRetries: number;
 }
 
 function parseArgs(argv: string[]): ScriptOptions {
@@ -36,11 +40,14 @@ function parseArgs(argv: string[]): ScriptOptions {
     corpusPath: "output/benchmark-samples/grief-topical-10-books.json",
     querySetPath: "output/benchmark-samples/grief-10-query-set.json",
     outputRoot: "output/benchmark-runs/real-ir-benchmark",
+    provider: "auto",
     batchSize: 8,
     model: "z-ai/glm-4.5-air",
     minScore: 0.25,
     highScore: 0.75,
     maxLabelsPerQuery: 20,
+    requestTimeoutMs: 10_000,
+    maxRetries: 1,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -54,6 +61,9 @@ function parseArgs(argv: string[]): ScriptOptions {
         break;
       case "--output-root":
         options.outputRoot = argv[++index] ?? options.outputRoot;
+        break;
+      case "--provider":
+        options.provider = (argv[++index] as ScriptOptions["provider"]) ?? options.provider;
         break;
       case "--batch-size":
         options.batchSize = Number(argv[++index] ?? options.batchSize);
@@ -69,6 +79,12 @@ function parseArgs(argv: string[]): ScriptOptions {
         break;
       case "--max-labels":
         options.maxLabelsPerQuery = Number(argv[++index] ?? options.maxLabelsPerQuery);
+        break;
+      case "--request-timeout-ms":
+        options.requestTimeoutMs = Number(argv[++index] ?? options.requestTimeoutMs);
+        break;
+      case "--max-retries":
+        options.maxRetries = Number(argv[++index] ?? options.maxRetries);
         break;
       case "--help":
       case "-h":
@@ -87,6 +103,48 @@ function parseArgs(argv: string[]): ScriptOptions {
 
 async function loadJson<T>(filePath: string): Promise<T> {
   return JSON.parse(await readFile(path.resolve(process.cwd(), filePath), "utf8")) as T;
+}
+
+function resolveJudgeProvider(options: ScriptOptions): {
+  provider: "openai" | "openrouter";
+  apiKey: string;
+  baseUrl: string;
+  judgeId: string;
+  extraHeaders?: Record<string, string>;
+  useJsonSchema: boolean;
+} {
+  const explicitProvider = options.provider === "auto" ? null : options.provider;
+  const inferredProvider = explicitProvider
+    ?? (options.model.startsWith("gpt-") || options.model.startsWith("o") ? "openai" : "openrouter");
+  if (inferredProvider === "openai") {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      throw new Error("OPENAI_API_KEY is required when provider=openai.");
+    }
+    return {
+      provider: "openai",
+      apiKey,
+      baseUrl: process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1/chat/completions",
+      judgeId: `openai-${options.model}`,
+      useJsonSchema: true,
+    };
+  }
+
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) {
+    throw new Error("OPENROUTER_API_KEY is required when provider=openrouter.");
+  }
+  return {
+    provider: "openrouter",
+    apiKey,
+    baseUrl: process.env.OPENROUTER_BASE_URL ?? "https://openrouter.ai/api/v1/chat/completions",
+    judgeId: `openrouter-${options.model}`,
+    extraHeaders: {
+      "HTTP-Referer": "https://alpha-book.org",
+      "X-OpenRouter-Title": "AlphaBook Benchmark",
+    },
+    useJsonSchema: false,
+  };
 }
 
 function sanitizeFileComponent(value: string): string {
@@ -111,11 +169,7 @@ function toSilverLabels(input: {
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   await loadDotEnvFile();
-
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) {
-    throw new Error("OPENROUTER_API_KEY is required.");
-  }
+  const judgeProvider = resolveJudgeProvider(options);
 
   const corpus = await loadJson<BenchmarkCorpus>(options.corpusPath);
   const querySet = await loadJson<QuerySet>(options.querySetPath);
@@ -130,6 +184,17 @@ async function main() {
   const progressPath = path.join(stagingDir, "progress.json");
   const silverRunsPath = path.join(stagingDir, "silver-label-runs.partial.json");
   const partialQuerySetPath = path.join(stagingDir, "silver-query-set.partial.json");
+  let batchProgress: {
+    queryId: string | null;
+    processedPassages: number;
+    totalPassages: number;
+    completedBatches: number;
+  } = {
+    queryId: null,
+    processedPassages: 0,
+    totalPassages: corpus.passages.length,
+    completedBatches: 0,
+  };
 
   async function flushProgress(input: {
     stage: "silver-labeling" | "retrieval" | "completed";
@@ -147,6 +212,7 @@ async function main() {
       model: options.model,
       completedQueries: input.completedQueries,
       totalQueries: input.totalQueries,
+      batchProgress,
       finalArtifacts: input.finalArtifacts ?? null,
     }, null, 2));
     await writeFile(silverRunsPath, JSON.stringify(input.silverRuns, null, 2));
@@ -159,19 +225,46 @@ async function main() {
     }, null, 2));
   }
 
-  const silverRetriever = createComprehensiveLLMRetriever({
-    judge: createOpenAICompatibleExhaustiveJudge({
-      apiKey,
+  const baseJudge = createOpenAICompatibleExhaustiveJudge({
+      apiKey: judgeProvider.apiKey,
       model: options.model,
-      id: `openrouter-${options.model}`,
-      baseUrl: process.env.OPENROUTER_BASE_URL ?? "https://openrouter.ai/api/v1/chat/completions",
-      extraHeaders: {
-        "HTTP-Referer": "https://alpha-book.org",
-        "X-OpenRouter-Title": "AlphaBook Benchmark",
-      },
+      id: judgeProvider.judgeId,
+      baseUrl: judgeProvider.baseUrl,
+      extraHeaders: judgeProvider.extraHeaders,
       includeRationale: false,
-      useJsonSchema: false,
-    }),
+      useJsonSchema: judgeProvider.useJsonSchema,
+      requestTimeoutMs: options.requestTimeoutMs,
+      maxRetries: options.maxRetries,
+    });
+  const loggingJudge: PassageJudge = {
+    id: baseJudge.id,
+    async judgeBatch(input) {
+      const batchNumber = batchProgress.completedBatches + 1;
+      process.stderr.write(
+        `  batch ${batchNumber} query=${input.query.id} size=${input.passages.length} processed=${batchProgress.processedPassages}/${batchProgress.totalPassages}\n`,
+      );
+      try {
+        const result = await baseJudge.judgeBatch(input);
+        batchProgress = {
+          queryId: input.query.id,
+          processedPassages: batchProgress.processedPassages + input.passages.length,
+          totalPassages: batchProgress.totalPassages,
+          completedBatches: batchNumber,
+        };
+        process.stderr.write(
+          `  batch ${batchNumber} complete query=${input.query.id} processed=${batchProgress.processedPassages}/${batchProgress.totalPassages}\n`,
+        );
+        return result;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        process.stderr.write(`  batch ${batchNumber} failed query=${input.query.id} reason=${message}\n`);
+        throw error;
+      }
+    },
+  };
+
+  const silverRetriever = createComprehensiveLLMRetriever({
+    judge: loggingJudge,
     batchSize: options.batchSize,
     minScore: options.minScore,
   });
@@ -180,6 +273,19 @@ async function main() {
   const silverRuns: Array<Record<string, unknown>> = [];
   for (const query of querySet.queries) {
     process.stderr.write(`Silver labeling ${query.id}: ${query.text}\n`);
+    batchProgress = {
+      queryId: query.id,
+      processedPassages: 0,
+      totalPassages: corpus.passages.length,
+      completedBatches: 0,
+    };
+    await flushProgress({
+      stage: "silver-labeling",
+      completedQueries: silverQueries.length,
+      totalQueries: querySet.queries.length,
+      silverQueries,
+      silverRuns,
+    });
     const result = await silverRetriever.retrieve(query, { corpus });
     const labels = toSilverLabels({
       passageIds: result.hits.map((hit) => ({ passageId: hit.passageId, score: hit.score })),

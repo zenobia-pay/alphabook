@@ -1,3 +1,4 @@
+export * from "./adapters";
 export * from "./expansion";
 export * from "./fixtures";
 export * from "./harness";

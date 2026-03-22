@@ -3,6 +3,7 @@
 This repo now includes a first-pass benchmark harness for the paper thesis: CLI-first retrieval pipelines can surface relevant passages for associative queries in large corpora.
 
 The tracked paper plan and progress checklist live in [cli-retrieval-research-plan.md](cli-retrieval-research-plan.md).
+Human labeling requirements for the unfinished slices live in [benchmark-labeling.md](benchmark-labeling.md).
 
 ## What Exists Now
 
@@ -135,3 +136,45 @@ Recommended adjudication workflow:
 - Cost accounting currently records rough resource usage, not cloud billing exports.
 
 This is enough to start piloting the benchmark design inside the repo, pressure-test query families, and validate the artifact model before scaling up to publishable datasets.
+
+## New Adapter Paths
+
+Two reusable adapter paths are now available in `@alphabook/benchmark-core`:
+
+- `loadBeirBenchmarkDataset(...)` for BEIR-style `corpus.jsonl` / `queries.jsonl` / `qrels.tsv` directories
+- `benchmarkCorpusFromWorkspaceManifest(...)` for AlphaBook runtime workspace manifests
+
+To import one of those datasets into frozen benchmark JSON artifacts:
+
+```bash
+npm run benchmark:import -- \
+  --format beir \
+  --input /path/to/dataset \
+  --output-dir output/benchmark-imports
+```
+
+Or:
+
+```bash
+npm run benchmark:import -- \
+  --format workspace \
+  --input /path/to/workspace-manifest.json \
+  --output-dir output/benchmark-imports
+```
+
+To audit which queries still need human labels:
+
+```bash
+npm run benchmark:audit-labels -- \
+  --query-set data/benchmarks/grief-25-query-set.json \
+  --output output/benchmark-runs/grief-25-label-audit.json
+```
+
+To run the benchmark over any already-labeled corpus/query-set pair:
+
+```bash
+npm run benchmark:run -- \
+  --corpus output/benchmark-samples/grief-topical-1-book.json \
+  --query-set output/benchmark-samples/grief-topical-1-book-manual-query-set.json \
+  --output-root output/benchmark-runs/manual
+```

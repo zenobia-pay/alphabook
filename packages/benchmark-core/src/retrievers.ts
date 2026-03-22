@@ -271,6 +271,16 @@ export function createComprehensiveLLMRetriever(input: {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         const likelyOversized = /status 400|context|maximum context|too large|token|timed out|timeout|no content|empty response|unexpected end|json/i.test(message);
+        const likelyTransient = /timed out|timeout|429|5\d\d|rate limit/i.test(message);
+        if (likelyTransient && batch.length <= 1) {
+          traces.push(`batch_fallback_zero size=${batch.length} reason=${message}`);
+          judged.push(...batch.map((passage) => ({
+            passageId: passage.id,
+            score: 0,
+            rationale: `fallback-zero: ${message}`,
+          })));
+          continue;
+        }
         if (!likelyOversized || batch.length <= 1) {
           throw error;
         }

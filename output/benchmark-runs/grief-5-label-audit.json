@@ -1,0 +1,58 @@
+{
+  "generatedAt": "2026-03-22T22:38:04.187Z",
+  "summary": {
+    "querySetId": "grief-5-v1",
+    "queryCount": 5,
+    "unlabeledQueryCount": 5,
+    "invalidLabelCount": 0,
+    "corpusId": "grief-topical-2-books",
+    "passageCount": 668
+  },
+  "queries": [
+    {
+      "queryId": "grief-001",
+      "text": "dealing with grief",
+      "family": "associative",
+      "labelCount": 0,
+      "requiresHumanLabeling": true,
+      "invalidPassageIds": [],
+      "notes": "Broad plain-language grief query."
+    },
+    {
+      "queryId": "grief-002",
+      "text": "coping with the death of someone close",
+      "family": "paraphrase",
+      "labelCount": 0,
+      "requiresHumanLabeling": true,
+      "invalidPassageIds": [],
+      "notes": "Direct paraphrase of bereavement."
+    },
+    {
+      "queryId": "grief-003",
+      "text": "what helps after losing a loved one",
+      "family": "paraphrase",
+      "labelCount": 0,
+      "requiresHumanLabeling": true,
+      "invalidPassageIds": [],
+      "notes": "Advice-oriented loss framing."
+    },
+    {
+      "queryId": "grief-004",
+      "text": "mourning and recovery after loss",
+      "family": "lexical-easy",
+      "labelCount": 0,
+      "requiresHumanLabeling": true,
+      "invalidPassageIds": [],
+      "notes": "Lexically grief-adjacent."
+    },
+    {
+      "queryId": "grief-005",
+      "text": "finding comfort after bereavement",
+      "family": "paraphrase",
+      "labelCount": 0,
+      "requiresHumanLabeling": true,
+      "invalidPassageIds": [],
+      "notes": "Bereavement synonym test."
+    }
+  ]
+}
