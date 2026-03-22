@@ -30,22 +30,38 @@ The shared app code remains the same.
 
 ## Corpus
 
-The initial AlphaJustice corpus path uses the `supreme_court` adapter in `packages/source-supreme-court`.
+AlphaJustice uses the `supreme_court` adapter in `packages/source-supreme-court`.
 
 That package currently includes:
 
-- Supreme Court case fixture metadata
-- case text fixture sources
+- Supreme Court case fixture metadata for local validation
+- a real CourtListener-backed ingest path for historical SCOTUS opinions
 - corpus adapter hooks
 - a neutral repository implementation for local validation and demos
 
-Use the local demo ingest command to exercise the path:
+Use the local demo ingest command to exercise the path without any external source dependency:
 
 ```bash
 npx tsx apps/ingest/src/index.ts ingest-supreme-court-demo
 ```
 
 If local DB and R2 env vars are configured, the command persists demo records through the shared ingest flow. Otherwise it prints a local preview of the prepared AlphaJustice artifacts so contributors can validate the path without provisioning infra first.
+
+For the real corpus path, use a CourtListener API token and the production ingest commands:
+
+```bash
+npx tsx apps/ingest/src/index.ts count-supreme-court
+npx tsx apps/ingest/src/index.ts ingest-supreme-court-cluster <clusterId>
+npx tsx apps/ingest/src/index.ts backfill-supreme-court - 25
+```
+
+The current production source strategy is:
+
+- CourtListener case law API for SCOTUS clusters and opinions
+- one AlphaJustice document per CourtListener opinion cluster
+- all linked sub-opinions combined into the stored case text for that case
+
+The ingest expects `COURTLISTENER_API_TOKEN` plus the usual Postgres and R2 variables from [environment.md](environment.md).
 
 ## Validation
 

@@ -23,6 +23,8 @@ import {
 import { gutenbergCorpusAdapter } from "@alphabook/source-gutenberg/adapter";
 import { listMirrorIds, resolveMirrorSource } from "@alphabook/source-gutenberg/mirror";
 import {
+  CourtListenerCaseLawClient,
+  buildSupremeCourtCaseSource,
   supremeCourtCases,
   supremeCourtCaseSources,
   supremeCourtCorpusAdapter,
@@ -45,6 +47,11 @@ interface MirrorBackfillCheckpoint {
   lastProcessedId: string | null;
   processed: number;
   updatedAt: string;
+}
+
+interface SupremeCourtBackfillOptions {
+  startAfterId?: number | null;
+  limit: number;
 }
 
 interface ExistingWorkStatus {
@@ -1905,6 +1912,113 @@ async function previewSupremeCourtDemo(documentId?: string) {
   };
 }
 
+function buildCourtListenerCaseLawClient() {
+  const authToken = process.env.COURTLISTENER_API_TOKEN;
+  if (!authToken) {
+    throw new Error("COURTLISTENER_API_TOKEN is required for Supreme Court backfill.");
+  }
+  return new CourtListenerCaseLawClient(authToken);
+}
+
+async function ingestSupremeCourtCluster(
+  context: IngestContext,
+  clusterId: number,
+  client = buildCourtListenerCaseLawClient(),
+) {
+  const cluster = await client.getCluster(clusterId);
+  const opinions = await client.getClusterOpinions(cluster);
+  const source = buildSupremeCourtCaseSource(cluster, opinions);
+  return persistIngestedWork(context, supremeCourtCorpusAdapter, {
+    adapterId: supremeCourtCorpusAdapter.id,
+    externalId: source.externalId,
+    title: source.title,
+    rawSource: source.rawSource,
+    rawText: source.rawText,
+    sourceFormat: source.sourceFormat,
+    authors: source.authors,
+    subjects: source.subjects,
+    language: "en",
+    rightsStatus: source.rightsStatus,
+    releaseDate: source.releaseDate,
+    summary: source.summary,
+    sourceUrl: source.sourceUrl ?? undefined,
+    metadata: source.metadata,
+  });
+}
+
+async function countSupremeCourtCases(startAfterId?: number | null) {
+  const client = buildCourtListenerCaseLawClient();
+  const count = await client.countSupremeCourtClusters(startAfterId ?? null);
+  return {
+    source: "courtlistener-api",
+    court: "scotus",
+    startAfterId: startAfterId ?? null,
+    count,
+  };
+}
+
+async function backfillSupremeCourt(context: IngestContext, options: SupremeCourtBackfillOptions) {
+  const client = buildCourtListenerCaseLawClient();
+  const results: Array<Record<string, unknown>> = [];
+  let processed = 0;
+  let inserted = 0;
+  let skipped = 0;
+  let errors = 0;
+  let nextUrl: string | null = null;
+  let nextStartAfterId = options.startAfterId ?? null;
+
+  while (processed < options.limit) {
+    const page = await client.listSupremeCourtClustersPage({
+      nextUrl,
+      startAfterId: nextUrl ? undefined : nextStartAfterId,
+    });
+    if (!page.results.length) {
+      break;
+    }
+
+    for (const cluster of page.results) {
+      if (processed >= options.limit) {
+        break;
+      }
+      processed += 1;
+      nextStartAfterId = cluster.id;
+      try {
+        const result = await ingestSupremeCourtCluster(context, cluster.id, client);
+        results.push(result);
+        if (result.skipped) {
+          skipped += 1;
+        } else {
+          inserted += 1;
+        }
+      } catch (error) {
+        errors += 1;
+        results.push({
+          clusterId: cluster.id,
+          title: cluster.case_name_full ?? cluster.case_name ?? `Cluster ${cluster.id}`,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    nextUrl = page.next;
+    if (!nextUrl) {
+      break;
+    }
+  }
+
+  return {
+    source: "courtlistener-api",
+    court: "scotus",
+    startAfterId: options.startAfterId ?? null,
+    processed,
+    inserted,
+    skipped,
+    errors,
+    nextStartAfterId,
+    results,
+  };
+}
+
 async function deleteGutenbergWorks(context: IngestContext, gutenbergIds: string[]) {
   const ids = [...new Set(gutenbergIds.map((id) => id.trim()).filter(Boolean))];
   if (ids.length === 0) {
@@ -2539,7 +2653,11 @@ function requireContext(context: IngestContext | null): IngestContext {
 
 async function main() {
   const [command, ...args] = process.argv.slice(2);
-  const requiresContext = !["ingest-fixture", "ingest-supreme-court-demo"].includes(command ?? "");
+  const requiresContext = ![
+    "ingest-fixture",
+    "ingest-supreme-court-demo",
+    "count-supreme-court",
+  ].includes(command ?? "");
   let context: IngestContext | null = null;
 
   if (requiresContext) {
@@ -2593,6 +2711,44 @@ async function main() {
       const result = context
         ? await ingestSupremeCourtDemo(context, resolvedDocumentId)
         : await previewSupremeCourtDemo(resolvedDocumentId);
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
+    if (command === "count-supreme-court") {
+      const [startAfterId] = args;
+      const result = await countSupremeCourtCases(
+        startAfterId && startAfterId !== "-"
+          ? Number.parseInt(startAfterId, 10)
+          : null,
+      );
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
+    if (command === "ingest-supreme-court-cluster") {
+      const [clusterId] = args;
+      if (!clusterId) {
+        throw new Error("Usage: ingest-supreme-court-cluster <clusterId>");
+      }
+      const parsedClusterId = Number.parseInt(clusterId, 10);
+      if (!Number.isFinite(parsedClusterId)) {
+        throw new Error(`Invalid cluster id: ${clusterId}`);
+      }
+      const result = await ingestSupremeCourtCluster(requireContext(context), parsedClusterId);
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
+    if (command === "backfill-supreme-court") {
+      const [startAfterId, limitValue] = args;
+      const parsedStartAfterId = startAfterId && startAfterId !== "-"
+        ? Number.parseInt(startAfterId, 10)
+        : null;
+      const result = await backfillSupremeCourt(requireContext(context), {
+        startAfterId: Number.isFinite(parsedStartAfterId ?? NaN) ? parsedStartAfterId : null,
+        limit: Number(limitValue ?? process.env.SUPREME_COURT_BATCH_SIZE ?? "25"),
+      });
       console.log(JSON.stringify(result, null, 2));
       return;
     }
@@ -2681,6 +2837,9 @@ async function main() {
     console.log("  ingest-gutenberg <gutenbergId> [title]");
     console.log("  ingest-fixture [documentId|-]");
     console.log("  ingest-supreme-court-demo [caseId|-]");
+    console.log("  count-supreme-court [startAfterClusterId|-]");
+    console.log("  ingest-supreme-court-cluster <clusterId>");
+    console.log("  backfill-supreme-court [startAfterClusterId|-] [limit]");
     console.log("  backfill-mirror [startAfterId|-] [limit]");
     console.log("  backfill-mirror-parallel [startAfterId|-] [limit] [concurrency]");
     console.log("  backfill-book-html [startAfterId|-] [limit] [concurrency]");

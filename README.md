@@ -31,6 +31,15 @@ npx tsx apps/ingest/src/index.ts ingest-supreme-court-demo
 
 That command falls back to local preview mode when infra env vars are not set.
 
+Backfill real Supreme Court opinions with CourtListener:
+
+```bash
+npx tsx apps/ingest/src/index.ts count-supreme-court
+npx tsx apps/ingest/src/index.ts backfill-supreme-court - 25
+```
+
+That path requires `COURTLISTENER_API_TOKEN` plus the normal DB and R2 ingest variables.
+
 If you want the full operator path for setting up associative deep research on your own large corpus, use [docs/deep-research-setup.md](docs/deep-research-setup.md).
 
 ## What This Repo Is
@@ -63,7 +72,7 @@ The repo is structured as a shared core-plus-implementations monorepo:
 - `apps/orchestrator-worker`: Cloudflare Worker API on `api.<domain>`
 - `apps/alphajustice-orchestrator`: AlphaJustice API wrapper over the shared orchestrator Worker
 - `apps/runtime`: Fly Machine runtime service for filesystem-backed analysis
-- `apps/ingest`: adapter-aware ingest service with Gutenberg production flows plus fixture and Supreme Court demo corpus paths
+- `apps/ingest`: adapter-aware ingest service with Gutenberg production flows plus fixture and CourtListener-backed Supreme Court ingest paths
 - `packages/corpus-core`: generic runtime limits and artifact key helpers
 - `packages/corpus-text`: generic text embedding helpers
 - `packages/implementations`: implementation-level branding, origins, and prompt configuration

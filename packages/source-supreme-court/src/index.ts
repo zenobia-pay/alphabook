@@ -6,6 +6,12 @@ import type {
   CorpusRepository,
 } from "@alphabook/platform";
 
+export {
+  CourtListenerCaseLawClient,
+  buildSupremeCourtCaseSource,
+  htmlToPlainText,
+} from "./courtlistener";
+
 export const supremeCourtCases = [
   {
     id: "brown-v-board-1954",
