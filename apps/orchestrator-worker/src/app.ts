@@ -4032,6 +4032,7 @@ async function normalizeToolLinesForUser(
   input: {
     toolName: ToolName;
     lines: ToolStreamCleanupLine[];
+    allowModelCleanup?: boolean;
   },
   auditLog?: AuditLogger,
 ) {
@@ -4061,7 +4062,8 @@ async function normalizeToolLinesForUser(
     return (preferred.length > 0 ? preferred : lines).slice(0, 28);
   })();
   if (
-    !deps.ai
+    input.allowModelCleanup === false
+    || !deps.ai
     || cleanupLines.length === 0
     || input.toolName === "create_workspace"
     || isEphemeralProgressBatch
@@ -8460,19 +8462,20 @@ async function runOrchestrator(
       );
     }
     const streamedResult = clientSafeToolResult(toolName, result);
-    const completedToolLines = await normalizeToolLinesForUser(deps, {
-      toolName,
-      lines: flattenValueForCleanup(streamedResult).map((line) => ({
-        ...line,
-        toolName,
-      })),
-    });
     recordRawLog("tool.completed.raw", {
       runId: run.id,
       toolCallId,
       toolName,
       status,
       result,
+    });
+    const completedToolLines = await normalizeToolLinesForUser(deps, {
+      toolName,
+      lines: flattenValueForCleanup(streamedResult).map((line) => ({
+        ...line,
+        toolName,
+      })),
+      allowModelCleanup: false,
     });
     liveToolTrace = liveToolTrace.map((entry) =>
       entry.id === toolCallId
