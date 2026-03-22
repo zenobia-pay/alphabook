@@ -6391,43 +6391,10 @@ async function buildCitationPassageUrl(
   sessionId: string,
   citation: Citation,
 ): Promise<string> {
-  const work = await deps.store.getWorkById(citation.workId);
   if (typeof citation.chunkId === "string" && citation.chunkId.trim().length > 0) {
-    const [chunk] = await deps.store.getChunksByIds([citation.chunkId]);
-    if (chunk) {
-      return await buildChunkPassageUrlFromChunk(deps, sessionId, chunk);
-    }
+    return buildResearchDocumentChunkUrl(sessionId, citation.workId, citation.chunkId);
   }
-  const baseUrl = buildResearchDocumentWorkUrl(sessionId, citation.workId);
-  const files = await deps.store.getWorkFiles([citation.workId], ["raw", "clean"]);
-  const rawFile = files.find((file) => file.kind === "raw") ?? null;
-  const cleanFile = files.find((file) => file.kind === "clean") ?? null;
-  const preferredFile = rawFile ?? cleanFile;
-  if (!preferredFile?.r2Key) {
-    return baseUrl;
-  }
-  const content = await deps.blobStore.getText(preferredFile.r2Key);
-  if (!content) {
-    return baseUrl;
-  }
-  const metadata = work?.metadata ?? {};
-  const sourceFormat =
-    typeof metadata.sourceFormat === "string" && (metadata.sourceFormat === "html" || metadata.sourceFormat === "text")
-      ? metadata.sourceFormat
-      : rawFile?.r2Key?.endsWith(".html") || content.trimStart().startsWith("<!DOCTYPE html") || content.trimStart().startsWith("<html")
-        ? "html"
-        : "text";
-  const passages = buildSourceWorkPassages(sourceFormat, content);
-  const candidates = buildExcerptCandidates(citation.excerpt).map((candidate) => buildNormalizedSearchIndex(candidate));
-  const match = passages.find((passage) => candidates.some((candidate) => candidate && passage.searchText.includes(candidate)));
-  return match
-    ? buildResearchDocumentPassageUrl(
-        sessionId,
-        citation.workId,
-        match.id,
-        typeof work?.gutenbergId === "number" || typeof work?.gutenbergId === "string" ? work.gutenbergId : null,
-      ) ?? `${baseUrl}#${match.id}`
-    : baseUrl;
+  return buildResearchDocumentWorkUrl(sessionId, citation.workId);
 }
 
 async function buildChunkIndexPassageUrl(
@@ -6460,42 +6427,8 @@ async function buildChunkPassageUrlFromChunk(
   sessionId: string,
   chunk: Pick<ChunkSearchResult, "id" | "workId" | "text" | "excerpt">,
 ): Promise<string> {
-  const work = await deps.store.getWorkById(chunk.workId);
-  const baseUrl = buildResearchDocumentWorkUrl(sessionId, chunk.workId);
-  const gutenbergId =
-    typeof work?.gutenbergId === "number" || typeof work?.gutenbergId === "string"
-      ? work.gutenbergId
-      : null;
-  if (gutenbergId == null || String(gutenbergId).trim().length === 0) {
-    return baseUrl;
-  }
-
-  const files = await deps.store.getWorkFiles([chunk.workId], ["raw", "clean"]);
-  const rawFile = files.find((file) => file.kind === "raw") ?? null;
-  const cleanFile = files.find((file) => file.kind === "clean") ?? null;
-  const preferredFile = rawFile ?? cleanFile;
-  if (!preferredFile?.r2Key) {
-    return baseUrl;
-  }
-  const content = await deps.blobStore.getText(preferredFile.r2Key);
-  if (!content) {
-    return baseUrl;
-  }
-
-  const metadata = work?.metadata ?? {};
-  const sourceFormat =
-    typeof metadata.sourceFormat === "string" && (metadata.sourceFormat === "html" || metadata.sourceFormat === "text")
-      ? metadata.sourceFormat
-      : rawFile?.r2Key?.endsWith(".html") || content.trimStart().startsWith("<!DOCTYPE html") || content.trimStart().startsWith("<html")
-        ? "html"
-        : "text";
-  const passages = buildSourceWorkPassages(sourceFormat, content);
-  const candidates = [...buildExcerptCandidates(chunk.excerpt), ...buildExcerptCandidates(chunk.text)]
-    .map((candidate) => buildNormalizedSearchIndex(candidate));
-  const match = passages.find((passage) => candidates.some((candidate) => candidate && passage.searchText.includes(candidate)));
-  return match
-    ? buildResearchDocumentPassageUrl(sessionId, chunk.workId, match.id, gutenbergId) ?? `${baseUrl}#${match.id}`
-    : baseUrl;
+  void deps;
+  return buildResearchDocumentChunkUrl(sessionId, chunk.workId, chunk.id);
 }
 
 async function rewriteAnswerWithCitationLinks(
@@ -6651,46 +6584,38 @@ async function synthesizeAnswer(
     const runtimeEvidenceNotes = latestWorkspaceFileContent(params.toolHistory, /evidence-notes\.md$/u);
     const researchDocument = buildSynthesisResearchDocument(params.toolHistory);
 
-    const synthesis = await withToolExecutionDeadline(
-      deps.synthesizer.synthesize({
-        userMessage: params.userMessage,
-        conversationHistory: params.conversationHistory,
-        plannerDraft: params.plannerDraft,
-        plannerCitations: params.plannerCitations,
-        toolHistory: params.toolHistory,
-        runtimeBriefing: latestBriefing?.answer ?? null,
-        runtimeEvidenceNotes,
-        researchDocument,
-        exactCitationLinks,
-        priorAnswerSummary: latestPriorAssistantSummaryFromConversation(params.conversationHistory),
-        billingContext: {
-          userId: params.userId,
-          sessionId: params.sessionId,
-          runId: params.runId,
-          source: "synthesizer",
-        },
-      }),
-      SYNTHESIS_DEADLINE_MS,
-      "Final answer synthesis timed out after corpus briefing completed.",
-    );
+    const synthesis = await deps.synthesizer.synthesize({
+      userMessage: params.userMessage,
+      conversationHistory: params.conversationHistory,
+      plannerDraft: params.plannerDraft,
+      plannerCitations: params.plannerCitations,
+      toolHistory: params.toolHistory,
+      runtimeBriefing: latestBriefing?.answer ?? null,
+      runtimeEvidenceNotes,
+      researchDocument,
+      exactCitationLinks,
+      priorAnswerSummary: latestPriorAssistantSummaryFromConversation(params.conversationHistory),
+      billingContext: {
+        userId: params.userId,
+        sessionId: params.sessionId,
+        runId: params.runId,
+        source: "synthesizer",
+      },
+    });
     synthesis.citations = ensureCitationBreadth(params.userMessage, synthesis.citations, availableSynthesisCitations);
     const answerEvaluation = typeof deps.synthesizer.evaluateAnswer === "function"
-      ? await withToolExecutionDeadline(
-          deps.synthesizer.evaluateAnswer({
-            userMessage: params.userMessage,
-            answer: synthesis.answer,
-            citations: synthesis.citations,
-            priorAnswerSummary: latestPriorAssistantSummaryFromConversation(params.conversationHistory),
-            billingContext: {
-              userId: params.userId,
-              sessionId: params.sessionId,
-              runId: params.runId,
-              source: "synthesizer-eval",
-            },
-          }),
-          15_000,
-          "Answer evaluation timed out.",
-        ).catch(() => null)
+      ? await deps.synthesizer.evaluateAnswer({
+          userMessage: params.userMessage,
+          answer: synthesis.answer,
+          citations: synthesis.citations,
+          priorAnswerSummary: latestPriorAssistantSummaryFromConversation(params.conversationHistory),
+          billingContext: {
+            userId: params.userId,
+            sessionId: params.sessionId,
+            runId: params.runId,
+            source: "synthesizer-eval",
+          },
+        }).catch(() => null)
       : null;
     if (answerEvaluation) {
       params.auditLog?.("answer.evaluation", answerEvaluation as unknown as Record<string, unknown>);
@@ -6707,8 +6632,6 @@ async function synthesizeAnswer(
     });
 
     const completedAnswer = await persistCompletedAssistantAnswer(deps, {
-      request: params.request,
-      userId: params.userId,
       sessionId: params.sessionId,
       runId: params.runId,
       answer: synthesis.answer,
@@ -7244,13 +7167,9 @@ async function persistResearchDocumentArtifact(
   return r2Key;
 }
 
-const SYNTHESIS_DEADLINE_MS = 45_000;
-
 async function persistCompletedAssistantAnswer(
   deps: AppDeps,
   params: {
-    request: Request;
-    userId: string;
     sessionId: string;
     runId: string;
     answer: string;
@@ -8242,52 +8161,27 @@ async function runOrchestrator(
 
   const completeRunFromBriefing = async (
     completedBriefing: { answer: string; citations: Citation[] },
-    completionMode: "standard" | "retrieval_fallback" | "briefing_fallback" = "standard",
+    completionMode: "standard" | "retrieval_fallback" = "standard",
   ) => {
     if (runFinalized) {
       return;
     }
-    let resolvedCompletionMode = completionMode;
-    try {
-      await synthesizeAnswer(
-        deps,
-        {
-          request,
-          userId: activeSession.userId,
-          sessionId: activeSession.id,
-          runId: run.id,
-          userMessage: input.message,
-          conversationHistory,
-          plannerDraft: completedBriefing.answer,
-          plannerCitations: completedBriefing.citations,
-          toolHistory,
-          auditLog: recordRawLog,
-        },
-        send,
-      );
-    } catch (error) {
-      recordRawLog("internal.synthesis.fallback", {
-        runId: run.id,
-        sessionId: activeSession.id,
-        error: error instanceof Error ? error.message : "Unknown synthesis error",
-      });
-      await persistCompletedAssistantAnswer(deps, {
+    await synthesizeAnswer(
+      deps,
+      {
         request,
         userId: activeSession.userId,
         sessionId: activeSession.id,
         runId: run.id,
-        answer: completedBriefing.answer,
-        citations: completedBriefing.citations,
+        userMessage: input.message,
+        conversationHistory,
+        plannerDraft: completedBriefing.answer,
+        plannerCitations: completedBriefing.citations,
         toolHistory,
-        send,
         auditLog: recordRawLog,
-        extraMetadata: {
-          synthesisFallback: true,
-          synthesisFallbackReason: error instanceof Error ? error.message : "Unknown synthesis error",
-        },
-      });
-      resolvedCompletionMode = "briefing_fallback";
-    }
+      },
+      send,
+    );
     runFinalized = true;
     await deps.store.updateRun(run.id, {
       status: "completed",
@@ -8297,13 +8191,13 @@ async function runOrchestrator(
       runId: run.id,
       sessionId: activeSession.id,
       status: "completed",
-      completionMode: resolvedCompletionMode,
+      completionMode,
     });
     recordRawLog("run.completed", {
       runId: run.id,
       sessionId: activeSession.id,
       status: "completed",
-      completionMode: resolvedCompletionMode,
+      completionMode,
     });
   };
 
