@@ -3051,9 +3051,29 @@ export class NeonAppStore implements AppStore {
   private workCountCache: { value: number; expiresAt: number } | null = null;
   private readonly corpusRepository: NeonCorpusDbRepository;
   private readonly adapterId: string | null;
+  private readonly feedLabels: {
+    summary: string;
+    taxonomy: string;
+    fallback: string;
+  };
 
-  constructor(private readonly db: DbClient, options: { adapterId?: string | null } = {}) {
+  constructor(
+    private readonly db: DbClient,
+    options: {
+      adapterId?: string | null;
+      feedLabels?: {
+        summary: string;
+        taxonomy: string;
+        fallback: string;
+      };
+    } = {},
+  ) {
     this.adapterId = options.adapterId ?? null;
+    this.feedLabels = options.feedLabels ?? {
+      summary: "Worth opening",
+      taxonomy: "Browse by shelf",
+      fallback: "From the stack",
+    };
     this.corpusRepository = new NeonCorpusDbRepository(db, {
       adapterId: this.adapterId,
     });
@@ -4692,9 +4712,9 @@ export class NeonAppStore implements AppStore {
             ARRAY_REMOVE(ARRAY_AGG(DISTINCT s.label), NULL) AS subjects,
             0::float AS score,
             CASE
-              WHEN COALESCE(w.summary, '') <> '' THEN 'Key precedent'
-              WHEN EXISTS (SELECT 1 FROM work_subjects ws_check WHERE ws_check.work_id = w.id) THEN 'Browse by doctrine'
-              ELSE 'From the docket'
+              WHEN COALESCE(w.summary, '') <> '' THEN $3::text
+              WHEN EXISTS (SELECT 1 FROM work_subjects ws_check WHERE ws_check.work_id = w.id) THEN $4::text
+              ELSE $5::text
             END AS feed_label
           FROM works w
           LEFT JOIN work_authors wa ON wa.work_id = w.id
@@ -4717,7 +4737,7 @@ export class NeonAppStore implements AppStore {
           OFFSET $1
           LIMIT $2
         `,
-        [offset, limit],
+        [offset, limit, this.feedLabels.summary, this.feedLabels.taxonomy, this.feedLabels.fallback],
       );
 
       return fallback.rows.map((row) =>

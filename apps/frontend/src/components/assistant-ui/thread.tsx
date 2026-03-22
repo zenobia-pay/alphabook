@@ -43,14 +43,13 @@ import {
 import { type FC, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuiState } from "@assistant-ui/store";
 import type { RunArtifactRecord } from "@/api";
+import { resolveFrontendImplementation } from "@/implementation";
 
 type AssistantEffortLevel = "normal" | "high" | "maximum";
 
-const IMPLEMENTATION_ID = (import.meta.env.VITE_IMPLEMENTATION_ID as string | undefined) ?? "alphabook";
-const SITE_ORIGIN = (import.meta.env.VITE_SITE_ORIGIN as string | undefined) ?? "https://alpha-book.org";
-const WELCOME_HEADING = IMPLEMENTATION_ID === "alphajustice"
-  ? "Search and compare evidence across United States Supreme Court cases."
-  : "Search for evidence and themes over 75,000 books.";
+const IMPLEMENTATION = resolveFrontendImplementation();
+const SITE_ORIGIN = IMPLEMENTATION.siteOrigin;
+const WELCOME_HEADING = IMPLEMENTATION.assistantWelcomeHeading;
 const COPY_PROMPT = `Go to ${SITE_ORIGIN}/skill.md and follow the instructions there.`;
 
 type MessagePartRecord = {

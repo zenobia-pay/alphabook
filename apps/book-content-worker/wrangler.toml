@@ -11,6 +11,10 @@ upload_source_maps = true
 [observability]
 enabled = true
 
+[vars]
+IMPLEMENTATION_ID = "alphabook"
+SITE_ORIGIN = "https://alpha-book.org"
+
 [[r2_buckets]]
 binding = "BOOK_CONTENT_BUCKET"
 bucket_name = "alphabook"

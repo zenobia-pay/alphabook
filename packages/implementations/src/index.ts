@@ -15,6 +15,19 @@ export type AlphaResearchImplementation = {
   adapterId: string;
   themeColor: string;
   ogImageUrl: string;
+  explorePlaceholder: string;
+  assistantWelcomeHeading: string;
+  emptyCorpusMessage: string;
+  assistantWelcomeSuggestions: Array<{
+    icon: "search" | "heart";
+    title: string;
+    prompt: string;
+  }>;
+  feedLabels: {
+    summary: string;
+    taxonomy: string;
+    fallback: string;
+  };
 };
 
 export const ALPHABOOK_IMPLEMENTATION: AlphaResearchImplementation = {
@@ -34,6 +47,26 @@ export const ALPHABOOK_IMPLEMENTATION: AlphaResearchImplementation = {
   adapterId: "gutenberg",
   themeColor: "#f5f0e8",
   ogImageUrl: "https://alpha-book.org/social-card.svg",
+  explorePlaceholder: "Ask about a book, a theme, or the whole corpus...",
+  assistantWelcomeHeading: "Search for evidence and themes over 75,000 books.",
+  emptyCorpusMessage: "No books are loaded yet.",
+  assistantWelcomeSuggestions: [
+    {
+      icon: "search",
+      title: "Hypothesis test: grief in 19th century fiction",
+      prompt: "Find me all the ways that characters deal with grief in 19th century fiction.",
+    },
+    {
+      icon: "heart",
+      title: "Theme analysis: heartbreak",
+      prompt: "Find me stories with themes of heartbreak and what that means.",
+    },
+  ],
+  feedLabels: {
+    summary: "Worth opening",
+    taxonomy: "Browse by shelf",
+    fallback: "From the stack",
+  },
 };
 
 export const ALPHAJUSTICE_IMPLEMENTATION: AlphaResearchImplementation = {
@@ -53,6 +86,26 @@ export const ALPHAJUSTICE_IMPLEMENTATION: AlphaResearchImplementation = {
   adapterId: "supreme_court",
   themeColor: "#eef2f7",
   ogImageUrl: "https://alphajustice.org/social-card.svg",
+  explorePlaceholder: "Ask about a case, a doctrine, or the whole corpus...",
+  assistantWelcomeHeading: "Search and compare evidence across United States Supreme Court cases.",
+  emptyCorpusMessage: "No Supreme Court cases are loaded yet. Run the Supreme Court backfill to populate this implementation.",
+  assistantWelcomeSuggestions: [
+    {
+      icon: "search",
+      title: "Equal protection reasoning",
+      prompt: "Compare how the Supreme Court reasons about equal protection across major cases.",
+    },
+    {
+      icon: "heart",
+      title: "Free speech precedent",
+      prompt: "Find the strongest Supreme Court cases on political speech and explain the rule they establish.",
+    },
+  ],
+  feedLabels: {
+    summary: "Key precedent",
+    taxonomy: "Browse by doctrine",
+    fallback: "From the docket",
+  },
 };
 
 const IMPLEMENTATIONS = new Map<string, AlphaResearchImplementation>([

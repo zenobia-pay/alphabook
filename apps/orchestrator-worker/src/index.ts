@@ -133,8 +133,13 @@ function buildFetchHandler(env: Env) {
       apiOrigin: env.API_ORIGIN ?? base.apiOrigin,
     };
   })();
+  const ingestQueueName = env.QUEUE_INGEST_NAME ?? `${implementation.id}-ingest`;
+  const jobsQueueName = env.QUEUE_JOBS_NAME ?? `${implementation.id}-jobs`;
   const db = createNeonDb(env.DATABASE_URL);
-  const store = new NeonAppStore(db, { adapterId: implementation.adapterId });
+  const store = new NeonAppStore(db, {
+    adapterId: implementation.adapterId,
+    feedLabels: implementation.feedLabels,
+  });
   const blobStore = new CloudflareR2Store(env.CORPUS_BUCKET);
   const billing = createBillingService(store, {
     monthlyLimitUsd: env.BILLING_MONTHLY_LIMIT_USD ? Number(env.BILLING_MONTHLY_LIMIT_USD) : undefined,
@@ -198,8 +203,8 @@ function buildFetchHandler(env: Env) {
           )
         : undefined,
     queues: {
-      ingestName: env.QUEUE_INGEST_NAME ?? "alphabook-ingest",
-      jobsName: env.QUEUE_JOBS_NAME ?? "alphabook-jobs",
+      ingestName: ingestQueueName,
+      jobsName: jobsQueueName,
     },
     adminAllowedEmail: env.ADMIN_ALLOWED_EMAIL,
     openAIApiKey: env.OPENAI_API_KEY,
@@ -248,8 +253,13 @@ async function runScheduledJanitor(env: Env) {
     throw new Error("OPENAI_API_KEY is required.");
   }
   const implementation = getImplementationConfig(env.IMPLEMENTATION_ID);
+  const ingestQueueName = env.QUEUE_INGEST_NAME ?? `${implementation.id}-ingest`;
+  const jobsQueueName = env.QUEUE_JOBS_NAME ?? `${implementation.id}-jobs`;
   const db = createNeonDb(env.DATABASE_URL);
-  const store = new NeonAppStore(db, { adapterId: implementation.adapterId });
+  const store = new NeonAppStore(db, {
+    adapterId: implementation.adapterId,
+    feedLabels: implementation.feedLabels,
+  });
   const blobStore = new CloudflareR2Store(env.CORPUS_BUCKET);
   const billing = createBillingService(store, {
     monthlyLimitUsd: env.BILLING_MONTHLY_LIMIT_USD ? Number(env.BILLING_MONTHLY_LIMIT_USD) : undefined,
@@ -287,8 +297,8 @@ async function runScheduledJanitor(env: Env) {
       blobStore,
       runtimeGateway: resolveRuntimeGateway(env, store, blobStore),
       queues: {
-        ingestName: env.QUEUE_INGEST_NAME ?? "alphabook-ingest",
-        jobsName: env.QUEUE_JOBS_NAME ?? "alphabook-jobs",
+        ingestName: ingestQueueName,
+        jobsName: jobsQueueName,
       },
       openAIApiKey: env.OPENAI_API_KEY,
       openAIModel: env.OPENAI_SYNTH_MODEL ?? env.OPENAI_MODEL ?? "gpt-5.2",
@@ -312,8 +322,8 @@ async function runScheduledJanitor(env: Env) {
       blobStore,
       runtimeGateway: resolveRuntimeGateway(env, store, blobStore),
       queues: {
-        ingestName: env.QUEUE_INGEST_NAME ?? "alphabook-ingest",
-        jobsName: env.QUEUE_JOBS_NAME ?? "alphabook-jobs",
+        ingestName: ingestQueueName,
+        jobsName: jobsQueueName,
       },
       openAIApiKey: env.OPENAI_API_KEY,
       openAIModel: env.OPENAI_SYNTH_MODEL ?? env.OPENAI_MODEL ?? "gpt-5.2",

@@ -16,6 +16,7 @@ import { Button } from "./components/ui/button";
 import { Card, CardContent } from "./components/ui/card";
 import { Skeleton } from "./components/ui/skeleton";
 import { Textarea } from "./components/ui/textarea";
+import { resolveFrontendImplementation } from "./implementation";
 import { cn } from "./lib/utils";
 
 type UiMessage = MessageRecord & {
@@ -184,21 +185,18 @@ const ASSISTANT_EFFORT_STORAGE_KEY = "alphabook.assistantEffort";
 const RECENT_SESSIONS_STORAGE_KEY = "alphabook.recentSessions";
 const BOOK_ASSISTANT_MIN_WIDTH = 320;
 const BOOK_ASSISTANT_MAX_WIDTH = 720;
-const IMPLEMENTATION_ID = (import.meta.env.VITE_IMPLEMENTATION_ID as string | undefined) ?? "alphabook";
-const PRODUCT_NAME = (import.meta.env.VITE_PRODUCT_NAME as string | undefined) ?? "AlphaBook";
-const DEFAULT_READER_NAME = (import.meta.env.VITE_DEFAULT_READER_NAME as string | undefined) ?? "AlphaBook Reader";
-const SEO_SITE_NAME = (import.meta.env.VITE_SITE_NAME as string | undefined) ?? "alpha book";
-const SEO_SITE_ORIGIN = (import.meta.env.VITE_SITE_ORIGIN as string | undefined) ?? "https://alpha-book.org";
-const BOOK_CONTENT_ORIGIN = (import.meta.env.VITE_CONTENT_ORIGIN as string | undefined) ?? "https://books.alpha-book.org";
+const IMPLEMENTATION = resolveFrontendImplementation();
+const IMPLEMENTATION_ID = IMPLEMENTATION.id;
+const PRODUCT_NAME = IMPLEMENTATION.productName;
+const DEFAULT_READER_NAME = IMPLEMENTATION.defaultReaderName;
+const SEO_SITE_NAME = IMPLEMENTATION.siteName;
+const SEO_SITE_ORIGIN = IMPLEMENTATION.siteOrigin;
+const BOOK_CONTENT_ORIGIN = IMPLEMENTATION.contentOrigin;
 const BOOK_CONTENT_VERSION = "20260320b";
-const DEFAULT_SEO_DESCRIPTION = (import.meta.env.VITE_SITE_DESCRIPTION as string | undefined)
-  ?? "Search, read, and ask questions across a growing library of books with cited answers.";
+const DEFAULT_SEO_DESCRIPTION = IMPLEMENTATION.siteDescription;
 const DEFAULT_OG_IMAGE_PATH = "/social-card.svg";
-const IS_ALPHAJUSTICE = IMPLEMENTATION_ID === "alphajustice";
-const CORPUS_LABEL_PLURAL = IS_ALPHAJUSTICE ? "cases" : "books";
-const EXPLORE_PLACEHOLDER = IS_ALPHAJUSTICE
-  ? "Ask about a case, a doctrine, or the whole corpus..."
-  : "Ask about a book, a theme, or the whole corpus...";
+const CORPUS_LABEL_PLURAL = IMPLEMENTATION.corpusLabelPlural;
+const EXPLORE_PLACEHOLDER = IMPLEMENTATION.explorePlaceholder;
 const WORDMARK = SEO_SITE_NAME;
 const WORDMARK_MONOGRAM = `${WORDMARK
   .split(/\s+/u)
@@ -207,31 +205,7 @@ const WORDMARK_MONOGRAM = `${WORDMARK
   .slice(0, 2)}.`;
 let hasAttemptedInitialFeedLoad = false;
 const GUEST_CLAIM_STORAGE_PREFIX = `${IMPLEMENTATION_ID}:guest-claimed:`;
-const ASSISTANT_WELCOME_SUGGESTIONS: ThreadSuggestion[] = IS_ALPHAJUSTICE
-  ? [
-      {
-        icon: "search",
-        title: "Equal protection reasoning",
-        prompt: "Compare how the Supreme Court reasons about equal protection across major cases.",
-      },
-      {
-        icon: "heart",
-        title: "Free speech precedent",
-        prompt: "Find the strongest Supreme Court cases on political speech and explain the rule they establish.",
-      },
-    ]
-  : [
-      {
-        icon: "search",
-        title: "Hypothesis test: grief in 19th century fiction",
-        prompt: "Find me all the ways that characters deal with grief in 19th century fiction.",
-      },
-      {
-        icon: "heart",
-        title: "Theme analysis: heartbreak",
-        prompt: "Find me stories with themes of heartbreak and what that means.",
-      },
-    ];
+const ASSISTANT_WELCOME_SUGGESTIONS: ThreadSuggestion[] = IMPLEMENTATION.assistantWelcomeSuggestions;
 
 type SeoDocumentState = {
   title: string;
@@ -7450,9 +7424,7 @@ export default function App() {
           {!feedLoading && feedWorks.length === 0 && feedInitialLoadState !== "error" ? (
             <div className="feed-status">
               <p>
-                {IS_ALPHAJUSTICE
-                  ? "No Supreme Court cases are loaded yet. Run the Supreme Court backfill to populate AlphaJustice."
-                  : `No ${CORPUS_LABEL_PLURAL} are loaded yet.`}
+                {IMPLEMENTATION.emptyCorpusMessage}
               </p>
             </div>
           ) : null}

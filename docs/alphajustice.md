@@ -2,11 +2,12 @@
 
 AlphaJustice is the Supreme Court implementation of Alpha Research.
 
-It shares the same major architecture as AlphaBook:
+It shares the same platform code as AlphaBook, but it is intended to deploy as its own implementation with implementation-scoped infrastructure:
 
 - shared frontend code in `apps/frontend`
 - shared orchestrator code in `apps/orchestrator-worker`
-- shared runtime and ingest infrastructure
+- shared content worker code in `apps/book-content-worker`
+- shared runtime and ingest code
 - implementation-specific configuration in `packages/implementations`
 - implementation-specific corpus adapter in `packages/source-supreme-court`
 
@@ -15,7 +16,9 @@ It shares the same major architecture as AlphaBook:
 AlphaJustice is deployed as separate wrappers around the shared apps:
 
 - `apps/alphajustice-frontend`
+- `apps/alphajustice-content`
 - `apps/alphajustice-orchestrator`
+- `apps/alphajustice-runtime`
 
 Those wrappers provide:
 
@@ -25,8 +28,16 @@ Those wrappers provide:
 - content origin
 - product naming
 - theme values
+- implementation-scoped bucket / queue / runtime names
 
 The shared app code remains the same.
+
+The intended deployment shape is:
+
+- AlphaJustice web on its own Worker
+- AlphaJustice content on its own Worker and R2 bucket
+- AlphaJustice orchestrator on its own Worker and queues
+- AlphaJustice runtime on its own Fly app
 
 ## Corpus
 
@@ -75,5 +86,6 @@ For implementation-specific checks:
 
 ```bash
 npm run typecheck -w @alphabook/alphajustice-frontend
+npm run typecheck -w @alphabook/alphajustice-content
 npm run typecheck -w @alphabook/alphajustice-orchestrator
 ```

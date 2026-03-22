@@ -25,15 +25,15 @@ ORCHESTRATOR_MAX_RUNTIME_TASKS_PER_RUN = "16"
 ORCHESTRATOR_MAX_RUN_WALL_CLOCK_SECONDS = "1800"
 CHEAP_TOOL_TIMEOUT_SECONDS = "120"
 RUNTIME_TOOL_TIMEOUT_SECONDS = "1500"
-QUEUE_INGEST_NAME = "alphabook-ingest"
-QUEUE_JOBS_NAME = "alphabook-jobs"
-R2_BUCKET_NAME = "alphabook"
-RUNTIME_R2_BUCKET_NAME = "alphabook"
+QUEUE_INGEST_NAME = "alphajustice-ingest"
+QUEUE_JOBS_NAME = "alphajustice-jobs"
+R2_BUCKET_NAME = "alphajustice-corpus"
+RUNTIME_R2_BUCKET_NAME = "alphajustice-corpus"
 ADMIN_ALLOWED_EMAIL = "rprendergast1121@gmail.com"
 RUNTIME_SERVICE_URL = ""
-FLY_RUNTIME_APP_NAME = "alphabook-runtime"
-FLY_RUNTIME_APP_URL = "https://alphabook-runtime.fly.dev"
-FLY_RUNTIME_IMAGE = "registry.fly.io/alphabook-runtime:briefingquality-20260319c"
+FLY_RUNTIME_APP_NAME = "alphajustice-runtime"
+FLY_RUNTIME_APP_URL = "https://alphajustice-runtime.fly.dev"
+FLY_RUNTIME_IMAGE = "registry.fly.io/alphajustice-runtime:briefingquality-20260319c"
 FLY_RUNTIME_REGION = "iad"
 FLY_RUNTIME_MACHINE_CPU_KIND = "shared"
 FLY_RUNTIME_MACHINE_CPUS = "2"
@@ -41,16 +41,16 @@ FLY_RUNTIME_MACHINE_MEMORY_MB = "4096"
 
 [[r2_buckets]]
 binding = "CORPUS_BUCKET"
-bucket_name = "alphabook"
-preview_bucket_name = "alphabook-corpus-preview"
+bucket_name = "alphajustice-corpus"
+preview_bucket_name = "alphajustice-corpus-preview"
 
 [[queues.producers]]
 binding = "INGEST_QUEUE"
-queue = "alphabook-ingest"
+queue = "alphajustice-ingest"
 
 [[queues.producers]]
 binding = "JOBS_QUEUE"
-queue = "alphabook-jobs"
+queue = "alphajustice-jobs"
 
 [ai]
 binding = "AI"

@@ -12,6 +12,8 @@ test("implementation registry resolves AlphaJustice", () => {
   const config = getImplementationConfig("alphajustice");
   assert.equal(config.productName, "AlphaJustice");
   assert.equal(config.adapterId, "supreme_court");
+  assert.equal(config.feedLabels.summary, "Key precedent");
+  assert.equal(config.assistantWelcomeSuggestions.length > 0, true);
 });
 
 test("implementation prompt builders reflect implementation branding", () => {

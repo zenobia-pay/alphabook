@@ -156,9 +156,11 @@ That config should define:
 Then add wrapper apps like:
 
 - `apps/mycorpus-frontend`
+- `apps/mycorpus-content`
 - `apps/mycorpus-orchestrator`
+- `apps/mycorpus-runtime`
 
-Reuse the shared frontend and orchestrator just like AlphaJustice does.
+Reuse the shared frontend, content worker, orchestrator, and runtime code just like AlphaJustice does.
 
 If you only need the corpus inside an internal or single-product deployment, you may not need separate wrappers.
 
@@ -168,8 +170,9 @@ For a real deployed corpus, make sure these exist:
 
 - Postgres with the current `packages/db` migrations applied
 - R2 bucket for raw / clean / chunks / rendered artifacts
+- implementation-specific Worker queues
 - Worker env vars and secrets
-- runtime config if workspace analysis is enabled
+- runtime app config if workspace analysis is enabled
 
 The shared env list lives in `docs/environment.md`.
 
@@ -190,6 +193,8 @@ The practical minimum for the deployed orchestrator is:
 - `OPENAI_EMBEDDING_MODEL`
 - R2 bindings / credentials
 - runtime configuration if using Fly machines
+
+For a separate branded implementation, do not reuse another implementation's bucket, queue, or runtime names. The wrapper config should point at implementation-scoped resources.
 
 ### 9. Validate locally
 
@@ -227,7 +232,7 @@ Use this as the implementation checklist:
 5. add ingest command(s)
 6. add rendered artifact generation if needed
 7. add implementation config and wrapper apps if the corpus needs its own brand
-8. provision DB, R2, Worker secrets, and runtime config
+8. provision DB, implementation-scoped R2, Worker queues, Worker secrets, and runtime config
 9. run `npm run validate:oss`
 10. verify live `health`, `documents`, retrieval, and content endpoints
 

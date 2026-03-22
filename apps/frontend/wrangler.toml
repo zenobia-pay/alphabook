@@ -19,7 +19,10 @@ not_found_handling = "single-page-application"
 html_handling = "auto-trailing-slash"
 
 [vars]
+IMPLEMENTATION_ID = "alphabook"
 API_ORIGIN = "https://api.alpha-book.org"
+SITE_ORIGIN = "https://alpha-book.org"
+CONTENT_ORIGIN = "https://books.alpha-book.org"
 
 [[r2_buckets]]
 binding = "BOOK_CONTENT_BUCKET"

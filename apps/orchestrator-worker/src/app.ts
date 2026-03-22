@@ -127,6 +127,7 @@ const VERIFICATION_CODE_WORDS = [
 ];
 const DEFAULT_SESSION_TITLE_MODEL = "@cf/zai-org/glm-4.7-flash";
 const ORPHANED_RUN_GRACE_MS = 30_000;
+const PLANNER_STALL_GRACE_MS = HARD_LIMITS.MAX_TOOL_TIMEOUT_SECONDS * 1000 + 30_000;
 
 function randomToken(length = 24) {
   const bytes = crypto.getRandomValues(new Uint8Array(length));
@@ -482,7 +483,7 @@ async function persistAnalyticsEvent(
   const forwardedFor = request?.headers.get("cf-connecting-ip") ?? request?.headers.get("x-forwarded-for");
   const userAgent = request?.headers.get("user-agent");
   const properties: Record<string, unknown> = {
-    source: "alphabook-web",
+    source: `${deps.implementation?.id ?? "alphabook"}-web`,
     userAgent,
     ip: forwardedFor ?? null,
     ...payload,
@@ -3552,6 +3553,9 @@ function userFacingRunFailureMessage(error: unknown) {
   if (/runtime|fly/i.test(rawMessage) && /timed out|timeout/i.test(rawMessage)) {
     return "The assistant took too long to hear back from its research runtime. Please try again.";
   }
+  if (/planner timed out before choosing the next step/i.test(rawMessage)) {
+    return "The assistant stalled while choosing the next research step.";
+  }
   if (/timed out|timeout/i.test(rawMessage)) {
     return "This run timed out before it produced an answer.";
   }
@@ -4648,6 +4652,31 @@ async function finalizeStaleRun(
     }));
   const runningToolCall = [...toolCalls].reverse().find((toolCall) => toolCall.status === "running");
   if (!runningToolCall) {
+    if (toolCalls.length > 0) {
+      const plannerRawLog = await loadPersistedRawRunLog(deps, session.id, run.id);
+      const openPlannerStartAt = latestOpenPlannerStartAt(plannerRawLog);
+      if (openPlannerStartAt) {
+        const plannerStallMs = Date.now() - Date.parse(openPlannerStartAt);
+        if (plannerStallMs > PLANNER_STALL_GRACE_MS) {
+          const failureMessage = "The assistant stalled while choosing the next research step.";
+          await deps.store.updateRun(run.id, {
+            status: "failed",
+            completedAt: new Date().toISOString(),
+          });
+          await persistRecoveredPlanToolTrace(deps, session.id, run.id, toolCalls);
+          const persistedPlanState = readPersistedPlanMessageState(await deps.store.listMessages(session.id), run.id);
+          await appendRunErrorMessageOnce(deps, session.id, run.id, failureMessage, {
+            runId: run.id,
+            phase: "error",
+            toolCalls: persistedPlanState.toolTrace,
+            researchLog: persistedPlanState.toolTrace,
+            recoveredFromPlannerTimeout: true,
+          });
+          await cancelLiveExecution(toolCalls);
+          return deps.store.getRun(run.id);
+        }
+      }
+    }
     if (toolCalls.length > 0 && runAgeMs > ORPHANED_RUN_GRACE_MS) {
       const messages = await deps.store.listMessages(session.id);
       const latestUserMessage =
@@ -5985,6 +6014,57 @@ function parseRawRunLogEntries(artifacts: RunArtifactLike[]) {
       }
     })
     .filter((entry): entry is Record<string, unknown> => Boolean(entry));
+}
+
+async function loadPersistedRawRunLog(
+  deps: AppDeps,
+  sessionId: string,
+  runId: string,
+) {
+  const artifacts = await deps.store.listArtifacts(sessionId);
+  const rawArtifact = artifacts.find((artifact) =>
+    (artifact.metadata?.kind === "tool_stream_raw" || artifact.filename === `${runId}-tool-stream.jsonl`)
+    && artifact.filename.includes(runId),
+  );
+  if (!rawArtifact) {
+    return [];
+  }
+  let content: string | null = null;
+  try {
+    content = await deps.blobStore.getText(rawArtifact.r2Key);
+  } catch {
+    return [];
+  }
+  if (!content) {
+    return [];
+  }
+  return content
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map((line) => {
+      try {
+        return JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        return null;
+      }
+    })
+    .filter((entry): entry is Record<string, unknown> => Boolean(entry));
+}
+
+function latestOpenPlannerStartAt(rawLog: Array<Record<string, unknown>>) {
+  let latestStartAt: string | null = null;
+  for (const entry of rawLog) {
+    const event = typeof entry.event === "string" ? entry.event : null;
+    if (event === "planner.started" && typeof entry.timestamp === "string") {
+      latestStartAt = entry.timestamp;
+      continue;
+    }
+    if (event === "planner.completed" || event === "planner.failed" || event === "run.completed") {
+      latestStartAt = null;
+    }
+  }
+  return latestStartAt;
 }
 
 function resolveRunRawLog(
@@ -9287,7 +9367,11 @@ async function runOrchestrator(
       });
       let decision: PlannerDecision;
       try {
-        decision = await deps.planner.decide(plannerContext);
+        decision = await withToolExecutionDeadline(
+          deps.planner.decide(plannerContext),
+          HARD_LIMITS.MAX_TOOL_TIMEOUT_SECONDS * 1000,
+          "Planner timed out before choosing the next step.",
+        );
       } catch (error) {
         recordRawLog("planner.failed", {
           runId: run.id,
@@ -10122,7 +10206,7 @@ export function createApp(inputDeps: CreateAppInput) {
     const database = await deps.store.healthCheck();
     return c.json({
       status: "ok",
-      service: "alphabook-orchestrator-worker",
+      service: `${deps.implementation?.id ?? "alphabook"}-orchestrator-worker`,
       database,
       r2: "bound",
       authConfigured: deps.auth?.isConfigured() ?? false,
@@ -10140,13 +10224,14 @@ export function createApp(inputDeps: CreateAppInput) {
 
   app.get("/skill.md", (c) => {
     const apiBase = `${new URL(c.req.url).origin}/api/v1`;
+    const implementationId = deps.implementation?.id ?? "alphabook";
     const skill = [
       "---",
-      "name: alphabook",
+      `name: ${implementationId}`,
       "version: 1.0.0",
       `description: Agent-facing research access for ${productName(deps)}'s corpus and retrieval runtime.`,
       `homepage: ${new URL(c.req.url).origin}`,
-      `metadata: ${JSON.stringify({ alphabook: { api_base: apiBase, category: "research" } })}`,
+      `metadata: ${JSON.stringify({ [implementationId]: { api_base: apiBase, category: "research" } })}`,
       "---",
       "",
       `# ${productName(deps)}`,

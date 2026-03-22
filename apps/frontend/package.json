@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@alphabook/implementations": "0.1.0",
     "@alphabook/platform": "0.1.0",
     "@alphabook/shared": "0.1.0",
     "@assistant-ui/react": "^0.12.17",

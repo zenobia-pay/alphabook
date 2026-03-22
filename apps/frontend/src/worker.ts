@@ -1,4 +1,5 @@
-import { defaultCorpusAdapter } from "@alphabook/shared";
+import { getImplementationConfig } from "@alphabook/implementations";
+import { getCorpusAdapter } from "@alphabook/shared";
 
 export interface Env {
   ASSETS: {
@@ -8,6 +9,7 @@ export interface Env {
   API_ORIGIN?: string;
   SITE_ORIGIN?: string;
   CONTENT_ORIGIN?: string;
+  IMPLEMENTATION_ID?: string;
 }
 
 type RewriterElement = {
@@ -52,16 +54,33 @@ type WorkPageBootstrapPayload = {
 
 const BOOK_CONTENT_VERSION = "20260320b";
 
-function buildBookHtmlKey(gutenbergId: string) {
-  return defaultCorpusAdapter.artifactKeys.renderedDocument?.(gutenbergId) ?? `gutenberg/clean/${gutenbergId}/book.html`;
+function resolveImplementation(env: Env) {
+  return getImplementationConfig(env.IMPLEMENTATION_ID);
+}
+
+function resolveCorpusAdapter(env: Env) {
+  return getCorpusAdapter(resolveImplementation(env).adapterId);
+}
+
+function buildRenderedDocumentKey(env: Env, externalId: string) {
+  return resolveCorpusAdapter(env)?.artifactKeys.renderedDocument?.(externalId) ?? `gutenberg/clean/${externalId}/book.html`;
+}
+
+function resolveStaticContentRoutePrefix(env: Env) {
+  return resolveCorpusAdapter(env)?.capabilities?.staticContent?.routePrefix ?? "/book-content-static/";
+}
+
+function isValidStaticContentExternalId(env: Env, externalId: string) {
+  const pattern = resolveCorpusAdapter(env)?.capabilities?.staticContent?.externalIdPattern;
+  return pattern ? pattern.test(externalId) : /^\d+$/u.test(externalId);
 }
 
 function resolveSiteOrigin(env: Env) {
-  return env.SITE_ORIGIN ?? "https://alpha-book.org";
+  return env.SITE_ORIGIN ?? resolveImplementation(env).siteOrigin;
 }
 
 function resolveContentOrigin(env: Env) {
-  return env.CONTENT_ORIGIN ?? "https://books.alpha-book.org";
+  return env.CONTENT_ORIGIN ?? resolveImplementation(env).contentOrigin;
 }
 
 function resolveCanonicalUrl(requestUrl: URL, env: Env) {
@@ -498,21 +517,22 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
-    if (url.pathname.startsWith("/book-content-static/")) {
+    const staticContentRoutePrefix = resolveStaticContentRoutePrefix(env);
+    if (url.pathname.startsWith(staticContentRoutePrefix)) {
       const staticCache = await caches.open("book-content-static");
       const cached = await staticCache.match(request);
       if (cached) {
         return cached;
       }
 
-      const gutenbergId = decodeURIComponent(url.pathname.slice("/book-content-static/".length)).trim();
-      if (!/^\d+$/.test(gutenbergId)) {
-        return new Response("Invalid book content id.", { status: 400 });
+      const externalId = decodeURIComponent(url.pathname.slice(staticContentRoutePrefix.length)).trim();
+      if (!isValidStaticContentExternalId(env, externalId)) {
+        return new Response("Invalid content id.", { status: 400 });
       }
 
-      const object = await env.BOOK_CONTENT_BUCKET.get(buildBookHtmlKey(gutenbergId));
+      const object = await env.BOOK_CONTENT_BUCKET.get(buildRenderedDocumentKey(env, externalId));
       if (!object) {
-        return new Response("Book content not found.", { status: 404 });
+        return new Response("Content not found.", { status: 404 });
       }
 
       const headers = new Headers();
