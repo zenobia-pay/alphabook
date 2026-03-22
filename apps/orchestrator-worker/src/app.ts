@@ -930,29 +930,40 @@ function searchPlanFromEstimate(
   fallbackBroadCorpusQuery: boolean,
   intensityOverride?: "normal" | "high" | "maximum",
 ) {
+  const estimateFailed = estimate?.ok === false || typeof estimate?.error === "string";
   const estimatedIntensity = typeof estimate?.recommendedIntensity === "string"
     ? estimate.recommendedIntensity
-    : fallbackBroadCorpusQuery
+    : estimateFailed
+      ? "normal"
+      : fallbackBroadCorpusQuery
       ? "high"
       : "normal";
   const estimatedWallClockMinutes = typeof estimate?.recommendedWallClockMinutes === "number"
     ? estimate.recommendedWallClockMinutes
-    : fallbackBroadCorpusQuery
+    : estimateFailed
+      ? 5
+      : fallbackBroadCorpusQuery
       ? 15
       : 5;
   const estimatedParallelism = typeof estimate?.recommendedParallelism === "number"
     ? estimate.recommendedParallelism
-    : fallbackBroadCorpusQuery
+    : estimateFailed
+      ? 1
+      : fallbackBroadCorpusQuery
       ? 3
       : 1;
   const estimatedShardAxis = typeof estimate?.recommendedShardAxis === "string"
     ? estimate.recommendedShardAxis
-    : fallbackBroadCorpusQuery
+    : estimateFailed
+      ? "none"
+      : fallbackBroadCorpusQuery
       ? "work_id_hash"
       : "none";
   const estimatedFrontierWorks = typeof estimate?.recommendedFrontierWorks === "number"
     ? estimate.recommendedFrontierWorks
-    : fallbackBroadCorpusQuery
+    : estimateFailed
+      ? 24
+      : fallbackBroadCorpusQuery
       ? 72
       : 24;
   const intensity = intensityOverride ?? estimatedIntensity;
@@ -3460,7 +3471,7 @@ function normalizeRuntimeProgressLine(event: Record<string, unknown>): {
     const note = maybeResearchNote(line);
     return note
       ? { text: note.note as string, detail: note }
-      : { text: line };
+      : { text: null };
   }
   if (type === "research.work") {
     return {
@@ -3523,7 +3534,7 @@ function sanitizeUserFacingToolText(text: string | null | undefined): string | n
     .replace(/\bhydrat(?:e|ed|ing)\b/gi, "load")
     .replace(/\b(?<!(?:deep|deeper) research )workspace\b/giu, "research run")
     .trim();
-  if (!sanitized || isCodeLikeUserFacingText(sanitized)) {
+  if (!sanitized || containsSensitiveUserFacingText(sanitized) || isCodeLikeUserFacingText(sanitized)) {
     return null;
   }
   return sanitized;
@@ -3913,8 +3924,20 @@ function redactSensitiveText(text: string): string {
   return text
     .replace(/\b(sk|rk|pk)_[a-z0-9_-]{12,}\b/giu, "[redacted]")
     .replace(/\bBearer\s+[A-Za-z0-9._-]+\b/giu, "Bearer [redacted]")
+    .replace(/\b(?:R2|AWS|OPENAI|CLOUDFLARE|ALPHABOOK)_[A-Z0-9_]*?(?:KEY|TOKEN|SECRET|COOKIE|PASSWORD)\s*=\s*[^\s]+/gu, "[redacted]")
+    .replace(/\b(?:R2|AWS|OPENAI|CLOUDFLARE|ALPHABOOK)\s+(?:ACCESS KEY ID|SECRET ACCESS KEY|SESSION COOKIE|API KEY)\s*=\s*[^\s]+/giu, "[redacted]")
+    .replace(/\bhttps?:\/\/[A-Za-z0-9.-]+\.r2\.cloudflarestorage\.com\b/giu, "[redacted]")
     .replace(/\b[A-Fa-f0-9]{32,}\b/gu, "[redacted]")
     .replace(/([A-Za-z0-9+/]{32,}={0,2})/gu, "[redacted]");
+}
+
+function containsSensitiveUserFacingText(text: string): boolean {
+  return (
+    /\b(?:access key|secret access key|api key|session cookie|authorization token|bearer token)\b/iu.test(text)
+    || /\b(?:R2|AWS|OPENAI|CLOUDFLARE|ALPHABOOK)_[A-Z0-9_]*?(?:KEY|TOKEN|SECRET|COOKIE|PASSWORD)\b/u.test(text)
+    || /\b(?:R2|AWS|OPENAI|CLOUDFLARE|ALPHABOOK)\s+(?:ACCESS KEY ID|SECRET ACCESS KEY|SESSION COOKIE|API KEY)\b/iu.test(text)
+    || /\bhttps?:\/\/[A-Za-z0-9.-]+\.r2\.cloudflarestorage\.com\b/iu.test(text)
+  );
 }
 
 function isCodeLikeUserFacingText(text: string): boolean {
@@ -8622,6 +8645,7 @@ async function runOrchestrator(
   const buildBackgroundWorkspaceTaskSpec = (runtimeId: string) => {
     const broadCorpusQuery = isBroadCorpusResearchQuery(routedQueryRef.current, Array.isArray(input.workIds) ? input.workIds.length : 0);
     const estimate = latestScopeEstimateFromHistory(toolHistory);
+    const scopeEstimateFailed = estimate?.ok === false || typeof estimate?.error === "string";
     const searchPlan = searchPlanFromEstimate(estimate, broadCorpusQuery, input.intensityOverride);
     const workLimit = Math.max(broadCorpusQuery ? (searchPlan.intensity === "normal" ? 48 : 40) : 12, Math.min(72, searchPlan.frontierWorks));
     const candidateLimit = broadCorpusQuery
@@ -8690,6 +8714,9 @@ async function runOrchestrator(
           ...rankedMetadataWorks.map((work) => (typeof work.id === "string" ? work.id : null)),
         ]);
     const effectiveParallelism = (() => {
+      if (scopeEstimateFailed) {
+        return 1;
+      }
       const verifiedBound = strictVerifiedFrontier
         ? Math.max(1, Math.floor(verifiedWorkIds.length / 3))
         : 0;
@@ -8706,7 +8733,7 @@ async function runOrchestrator(
       phase: "collect_and_brief",
       question: routedQueryRef.current,
       researchObjective: routedQueryRef.current,
-      mode: scopedWorkIds.length > 0 ? "open_book_analysis" : "exhaustive_corpus_search",
+      mode: scopedWorkIds.length > 0 || scopeEstimateFailed ? "open_book_analysis" : "exhaustive_corpus_search",
       intensity: searchPlan.intensity,
       timeBudgetMinutes: searchPlan.wallClockMinutes,
       parallelism: effectiveParallelism,
