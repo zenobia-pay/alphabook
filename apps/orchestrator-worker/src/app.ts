@@ -930,40 +930,29 @@ function searchPlanFromEstimate(
   fallbackBroadCorpusQuery: boolean,
   intensityOverride?: "normal" | "high" | "maximum",
 ) {
-  const estimateFailed = estimate?.ok === false || typeof estimate?.error === "string";
   const estimatedIntensity = typeof estimate?.recommendedIntensity === "string"
     ? estimate.recommendedIntensity
-    : estimateFailed
-      ? "normal"
-      : fallbackBroadCorpusQuery
+    : fallbackBroadCorpusQuery
       ? "high"
       : "normal";
   const estimatedWallClockMinutes = typeof estimate?.recommendedWallClockMinutes === "number"
     ? estimate.recommendedWallClockMinutes
-    : estimateFailed
-      ? 5
-      : fallbackBroadCorpusQuery
+    : fallbackBroadCorpusQuery
       ? 15
       : 5;
   const estimatedParallelism = typeof estimate?.recommendedParallelism === "number"
     ? estimate.recommendedParallelism
-    : estimateFailed
-      ? 1
-      : fallbackBroadCorpusQuery
+    : fallbackBroadCorpusQuery
       ? 3
       : 1;
   const estimatedShardAxis = typeof estimate?.recommendedShardAxis === "string"
     ? estimate.recommendedShardAxis
-    : estimateFailed
-      ? "none"
-      : fallbackBroadCorpusQuery
+    : fallbackBroadCorpusQuery
       ? "work_id_hash"
       : "none";
   const estimatedFrontierWorks = typeof estimate?.recommendedFrontierWorks === "number"
     ? estimate.recommendedFrontierWorks
-    : estimateFailed
-      ? 24
-      : fallbackBroadCorpusQuery
+    : fallbackBroadCorpusQuery
       ? 72
       : 24;
   const intensity = intensityOverride ?? estimatedIntensity;
@@ -8645,7 +8634,6 @@ async function runOrchestrator(
   const buildBackgroundWorkspaceTaskSpec = (runtimeId: string) => {
     const broadCorpusQuery = isBroadCorpusResearchQuery(routedQueryRef.current, Array.isArray(input.workIds) ? input.workIds.length : 0);
     const estimate = latestScopeEstimateFromHistory(toolHistory);
-    const scopeEstimateFailed = estimate?.ok === false || typeof estimate?.error === "string";
     const searchPlan = searchPlanFromEstimate(estimate, broadCorpusQuery, input.intensityOverride);
     const workLimit = Math.max(broadCorpusQuery ? (searchPlan.intensity === "normal" ? 48 : 40) : 12, Math.min(72, searchPlan.frontierWorks));
     const candidateLimit = broadCorpusQuery
@@ -8714,9 +8702,6 @@ async function runOrchestrator(
           ...rankedMetadataWorks.map((work) => (typeof work.id === "string" ? work.id : null)),
         ]);
     const effectiveParallelism = (() => {
-      if (scopeEstimateFailed) {
-        return 1;
-      }
       const verifiedBound = strictVerifiedFrontier
         ? Math.max(1, Math.floor(verifiedWorkIds.length / 3))
         : 0;
@@ -8733,7 +8718,7 @@ async function runOrchestrator(
       phase: "collect_and_brief",
       question: routedQueryRef.current,
       researchObjective: routedQueryRef.current,
-      mode: scopedWorkIds.length > 0 || scopeEstimateFailed ? "open_book_analysis" : "exhaustive_corpus_search",
+      mode: scopedWorkIds.length > 0 ? "open_book_analysis" : "exhaustive_corpus_search",
       intensity: searchPlan.intensity,
       timeBudgetMinutes: searchPlan.wallClockMinutes,
       parallelism: effectiveParallelism,
@@ -9526,7 +9511,14 @@ async function runOrchestrator(
       let result: Record<string, unknown>;
       let status: "completed" | "failed" = "completed";
       try {
-        if (toolCall.tool_name === "estimate_research_scope" && typeof normalizedToolArgs.query === "string") {
+        if (
+          toolCall.tool_name === "estimate_research_scope"
+          && typeof normalizedToolArgs.query === "string"
+          && !(
+            (Array.isArray(normalizedToolArgs.workIds) && normalizedToolArgs.workIds.length > 0)
+            || (Array.isArray(normalizedToolArgs.chunkIds) && normalizedToolArgs.chunkIds.length > 0)
+          )
+        ) {
           const estimateFilters = normalizedScopeEstimateFilters(normalizedToolArgs.filters);
           const estimateKey = scopeEstimateCacheKey(normalizedToolArgs.query, estimateFilters);
           if (prefetchedScopeEstimate && (prefetchedScopeEstimate.keys.has(estimateKey) || toolHistory.some((entry) => entry.toolName === "search_works"))) {
