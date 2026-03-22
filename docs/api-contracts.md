@@ -1,5 +1,13 @@
 # API Contracts
 
+This document describes the AlphaBook compatibility API, not a fully neutral platform API.
+
+Important boundary:
+
+- the public Worker API remains book- and `work`-shaped for AlphaBook compatibility
+- the generic corpus-platform contracts live in `packages/platform` and the adapter packages
+- open-source adopters who want to bring another corpus should start with [docs/oss-supported-surface.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/oss-supported-surface.md) and [docs/bring-your-own-corpus.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/bring-your-own-corpus.md)
+
 ## Orchestrator Worker
 
 ### `GET /health`

@@ -17,6 +17,26 @@ The repo is structured as a core-plus-app monorepo:
 
 AlphaBook itself is still book-centric today. The reusable parts are being extracted in-repo so the monorepo can support more corpus adapters over time without splitting into multiple repositories too early.
 
+## Open Source Status
+
+This repository is being published as two things at once:
+
+- AlphaBook, the book-centric reference application that powers `alpha-book.org`
+- a reusable corpus-research platform layer that lives under the app
+
+The important boundary is intentional:
+
+- the live AlphaBook product, routes, and user-facing copy stay book-centric
+- the public AlphaBook HTTP API stays `work` and `book` shaped for compatibility
+- the generic extension points for open-source adopters live in the platform and adapter packages, not in the browser product contract
+
+If you want to reuse the generic internals, start with:
+
+- [docs/oss-supported-surface.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/oss-supported-surface.md)
+- [docs/oss-quickstart.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/oss-quickstart.md)
+- [docs/bring-your-own-corpus.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/bring-your-own-corpus.md)
+- [docs/adapter-architecture.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/adapter-architecture.md)
+
 ## Positioning
 
 - `packages/corpus-core` and `packages/corpus-text` are generic substrate.
@@ -26,6 +46,8 @@ AlphaBook itself is still book-centric today. The reusable parts are being extra
 The architecture overview lives in [docs/architecture.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/architecture.md).
 The internal adapter seam for non-book corpora is documented in [docs/adapter-architecture.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/adapter-architecture.md).
 The developer quickstart for adding another corpus is in [docs/bring-your-own-corpus.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/bring-your-own-corpus.md).
+The supported open-source boundary is documented in [docs/oss-supported-surface.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/oss-supported-surface.md).
+The local validation and fixture-corpus path is documented in [docs/oss-quickstart.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/oss-quickstart.md).
 The open-source release checklist is in [docs/oss-release-checklist.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/oss-release-checklist.md).
 The retrieval benchmark scaffold for the CLI-first research paper lives in [docs/benchmarking-cli-retrieval.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/benchmarking-cli-retrieval.md).
 
@@ -176,6 +198,12 @@ Install dependencies:
 npm install
 ```
 
+Run the supported open-source validation matrix:
+
+```bash
+npm run validate:oss
+```
+
 Run Neon migrations:
 
 ```bash
@@ -218,6 +246,12 @@ Ingest from a local Gutenberg mirror:
 ```bash
 GUTENBERG_MIRROR_ROOT=/srv/alphabook/gutenberg \
 npx tsx apps/ingest/src/index.ts ingest-gutenberg 12345
+```
+
+Run the local non-book fixture ingest demo:
+
+```bash
+npx tsx apps/ingest/src/index.ts ingest-fixture
 ```
 
 Exercise the minimal non-book ingest path locally:

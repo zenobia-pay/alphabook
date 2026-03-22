@@ -18,11 +18,12 @@ AlphaBook is an open-source reference application for grounded research over lar
 
 ```bash
 npm install
-npm run typecheck
-npm run test
+npm run validate:oss
 ```
 
 For app-specific commands, start with [README.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/README.md).
+
+`npm run validate:oss` is the supported validation entry point for the reusable open-source platform surface. If you change AlphaBook-specific app code outside that surface, run the relevant package-level checks too.
 
 ## Guidelines
 
