@@ -1,11 +1,23 @@
 # Alpha Research
 
-Alpha Research is an open-source platform for grounded research over large text corpora.
+Grounded research infrastructure for large text corpora, with `AlphaBook` and `AlphaJustice` as reference implementations.
+
+Alpha Research is an open-source platform for retrieval, runtime analysis, and cited synthesis over large corpora.
 
 This repository currently ships two implementations on the same architecture:
 
 - `AlphaBook`: the book-centric reference application that powers `alpha-book.org`
 - `AlphaJustice`: a Supreme Court research implementation built on the same platform and adapter seams
+
+## GitHub Metadata
+
+Suggested GitHub repo description:
+
+> Open-source corpus research platform for grounded, cited answers over large text datasets, with AlphaBook and AlphaJustice as reference apps.
+
+Suggested repository subtitle / social preview line:
+
+> Shared infrastructure for retrieval, runtime analysis, and cited synthesis across books, cases, and other corpora.
 
 The repo is structured as a shared core-plus-implementations monorepo:
 
@@ -47,6 +59,8 @@ If you want to reuse the generic internals, start with:
 - [docs/oss-quickstart.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/oss-quickstart.md)
 - [docs/bring-your-own-corpus.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/bring-your-own-corpus.md)
 - [docs/adapter-architecture.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/adapter-architecture.md)
+
+If you want launch copy for the repo, see [docs/github-launch.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/github-launch.md).
 
 ## Implementations
 

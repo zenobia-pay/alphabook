@@ -1,17 +1,21 @@
 # Contributing
 
-AlphaBook is an open-source reference application for grounded research over large text corpora.
+Alpha Research is an open-source corpus research platform with `AlphaBook` and `AlphaJustice` as reference implementations.
 
 ## Repo Shape
 
 - `apps/frontend`: AlphaBook web app
+- `apps/alphajustice-frontend`: AlphaJustice web app wrapper
 - `apps/orchestrator-worker`: API and orchestration layer
+- `apps/alphajustice-orchestrator`: AlphaJustice API wrapper
 - `apps/runtime`: bounded runtime for hydrated workspace analysis
 - `apps/ingest`: ingest pipeline for source adapters
 - `packages/corpus-core`: runtime limits and artifact storage primitives
 - `packages/corpus-text`: text embedding helpers
+- `packages/implementations`: implementation-specific origins, branding, and prompt configuration
 - `packages/source-gutenberg`: Project Gutenberg-specific ingest and storage adapter
-- `packages/shared`: AlphaBook-facing contracts and compatibility exports
+- `packages/source-supreme-court`: Supreme Court-specific ingest and storage adapter
+- `packages/shared`: AlphaBook-facing compatibility contracts and exports
 - `packages/db`: database client and migrations
 
 ## Local Setup
@@ -23,12 +27,19 @@ npm run validate:oss
 
 For app-specific commands, start with [README.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/README.md).
 
-`npm run validate:oss` is the supported validation entry point for the reusable open-source platform surface. If you change AlphaBook-specific app code outside that surface, run the relevant package-level checks too.
+`npm run validate:oss` is the supported validation entry point for the reusable open-source platform surface. If you change AlphaBook- or AlphaJustice-specific app code outside that surface, run the relevant package-level checks too.
+
+## License
+
+This repository is released under the MIT license in [LICENSE](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/LICENSE).
+
+Unless explicitly stated otherwise in a file or directory, contributions are assumed to be submitted under that same license.
 
 ## Guidelines
 
 - Keep reusable infrastructure generic when practical.
 - Put source-specific logic behind a source adapter package instead of in app code.
+- Keep implementation-specific branding and product copy in the implementation layer instead of the shared platform packages.
 - Prefer additive compatibility shims over sweeping breaking renames.
 - Add or update tests when behavior changes.
 - Keep docs in sync when package boundaries move.
@@ -38,3 +49,4 @@ For app-specific commands, start with [README.md](/Users/ryanprendergast/Documen
 - Explain the user-facing or maintainer-facing outcome.
 - Call out any schema, environment, or deploy changes.
 - Mention validation run results in the PR description.
+- If a change affects the launch story or OSS boundary, update the README or docs alongside the code.
