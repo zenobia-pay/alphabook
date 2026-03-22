@@ -7,7 +7,7 @@ The repo is structured as a core-plus-app monorepo:
 - `apps/frontend`: Cloudflare Pages frontend
 - `apps/orchestrator-worker`: Cloudflare Worker API on `api.<domain>`
 - `apps/runtime`: Fly Machine runtime service for filesystem-backed analysis
-- `apps/ingest`: DigitalOcean-oriented ingest service with persistent disk
+- `apps/ingest`: adapter-aware ingest service with Gutenberg production flows and a local fixture-corpus demo path
 - `packages/corpus-core`: generic runtime limits and artifact key helpers
 - `packages/corpus-text`: generic text embedding helpers
 - `packages/source-gutenberg`: Project Gutenberg adapter for ingest and storage conventions
@@ -218,6 +218,12 @@ Ingest from a local Gutenberg mirror:
 ```bash
 GUTENBERG_MIRROR_ROOT=/srv/alphabook/gutenberg \
 npx tsx apps/ingest/src/index.ts ingest-gutenberg 12345
+```
+
+Exercise the minimal non-book ingest path locally:
+
+```bash
+npx tsx apps/ingest/src/index.ts ingest-fixture
 ```
 
 Backfill the local mirror into Neon + R2 in batches:

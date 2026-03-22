@@ -16,6 +16,7 @@
     "../../packages/platform/src/**/*.ts",
     "../../packages/shared/src/**/*.ts",
     "../../packages/db/src/**/*.ts",
-    "../../packages/source-gutenberg/src/**/*.ts"
+    "../../packages/source-gutenberg/src/**/*.ts",
+    "../../packages/source-fixture/src/**/*.ts"
   ]
 }

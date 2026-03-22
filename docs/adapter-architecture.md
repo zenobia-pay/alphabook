@@ -69,3 +69,5 @@ It now also ships a minimal `CorpusRepository` implementation so the non-book ex
 - neutral chunk retrieval
 - neutral document file lookup
 - runtime-facing text/file hydration contracts
+
+`apps/ingest` now includes a matching `ingest-fixture` command so the second-corpus example covers ingest as well as retrieval.

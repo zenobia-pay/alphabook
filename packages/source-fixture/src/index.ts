@@ -31,6 +31,23 @@ export const fixtureDocuments = [
   },
 ] as const;
 
+export const fixtureDocumentSources: Record<string, string> = {
+  "memo-1": [
+    "SOURCE: Incident memo",
+    "",
+    "A database failover caused elevated latency.",
+    "",
+    "The operations team documented mitigations and next steps.",
+  ].join("\n"),
+  "report-1": [
+    "SOURCE: Reliability report",
+    "",
+    "Quarterly service reliability improved.",
+    "",
+    "Error budgets stabilized and follow-up actions focused on incident prevention.",
+  ].join("\n"),
+};
+
 export const fixtureCorpusAdapter: CorpusAdapter = {
   id: "fixture",
   displayName: "Fixture Corpus",

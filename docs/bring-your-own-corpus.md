@@ -39,6 +39,7 @@ This repo can now support a second corpus without changing AlphaBook's live prod
 
 - `packages/source-gutenberg`: production book corpus adapter
 - `packages/source-fixture`: minimal non-book corpus adapter and repository
+- `apps/ingest`: now supports `ingest-fixture` as a local non-book ingest demo path
 
 ## What Is Still Required For A New Corpus
 

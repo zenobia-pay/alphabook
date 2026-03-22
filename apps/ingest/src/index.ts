@@ -8,6 +8,18 @@ import { DeleteObjectsCommand, GetObjectCommand, S3Client, PutObjectCommand } fr
 import { NodeHttpHandler } from "@smithy/node-http-handler";
 import { parseHTML } from "linkedom";
 import { createNeonDb } from "@alphabook/db";
+import type { CorpusAdapter } from "@alphabook/corpus-core";
+import {
+  buildSimpleRenderedArtifactBundle,
+  prepareCorpusIngest,
+  type CorpusIngestSourceInput,
+  type RenderedArtifactBundle,
+} from "./corpus-ingest";
+import {
+  fixtureCorpusAdapter,
+  fixtureDocuments,
+  fixtureDocumentSources,
+} from "@alphabook/source-fixture";
 import { gutenbergCorpusAdapter } from "@alphabook/source-gutenberg/adapter";
 import { listMirrorIds, resolveMirrorSource } from "@alphabook/source-gutenberg/mirror";
 
@@ -15,23 +27,6 @@ interface IngestContext {
   db: ReturnType<typeof createNeonDb>;
   r2: S3Client;
   r2Bucket: string;
-}
-
-interface IngestSourceInput {
-  gutenbergId: string;
-  title: string;
-  rawSource: string;
-  rawText: string;
-  sourceFormat?: "text" | "html";
-  authors?: string[];
-  subjects?: string[];
-  language?: string | null;
-  releaseDate?: string | null;
-  rightsStatus?: string | null;
-  summary?: string | null;
-  sourceUrl?: string;
-  sourcePath?: string;
-  metadata?: Record<string, unknown>;
 }
 
 interface MirrorBackfillOptions {
@@ -1209,7 +1204,10 @@ function shouldSkipExistingWork() {
   return process.env.FORCE_REINGEST !== "1";
 }
 
-async function findExistingWorkStatus(context: IngestContext, gutenbergId: string): Promise<ExistingWorkStatus | null> {
+async function findExistingWorkStatus(
+  context: IngestContext,
+  source: Pick<CorpusIngestSourceInput, "legacyNumericId" | "adapterId" | "externalId">,
+): Promise<ExistingWorkStatus | null> {
   const rows = await context.db.query<{
     work_id: string;
     file_kind_count: number | string;
@@ -1223,11 +1221,18 @@ async function findExistingWorkStatus(context: IngestContext, gutenbergId: strin
       FROM works w
       LEFT JOIN work_files wf ON wf.work_id = w.id
       LEFT JOIN chunks c ON c.work_id = w.id
-      WHERE w.gutenberg_id = $1::bigint
+      WHERE (
+        ($1::bigint IS NOT NULL AND w.gutenberg_id = $1::bigint)
+        OR (
+          $1::bigint IS NULL
+          AND w.metadata_json->>'corpusAdapterId' = $2
+          AND w.metadata_json->>'externalId' = $3
+        )
+      )
       GROUP BY w.id
       LIMIT 1
     `,
-    [Number(gutenbergId)],
+    [source.legacyNumericId ? Number(source.legacyNumericId) : null, source.adapterId, source.externalId],
   );
   const row = rows.rows[0];
   if (!row) {
@@ -1237,6 +1242,100 @@ async function findExistingWorkStatus(context: IngestContext, gutenbergId: strin
     workId: row.work_id,
     complete: Number(row.file_kind_count) >= 5 && Number(row.chunk_count) > 0,
   };
+}
+
+async function upsertIngestedWork(
+  context: IngestContext,
+  source: CorpusIngestSourceInput,
+  metadataPayload: Record<string, unknown>,
+) {
+  if (source.legacyNumericId) {
+    const workResult = await context.db.query<{ id: string }>(
+      `
+        INSERT INTO works (id, gutenberg_id, title, language, release_date, rights_status, summary, metadata_json)
+        VALUES ($1::uuid, $2::bigint, $3, $4, $5::date, $6, $7, $8::jsonb)
+        ON CONFLICT (gutenberg_id) DO UPDATE
+        SET
+          title = EXCLUDED.title,
+          language = EXCLUDED.language,
+          release_date = EXCLUDED.release_date,
+          rights_status = EXCLUDED.rights_status,
+          summary = EXCLUDED.summary,
+          metadata_json = EXCLUDED.metadata_json,
+          updated_at = now()
+        RETURNING id
+      `,
+      [
+        crypto.randomUUID(),
+        Number(source.legacyNumericId),
+        source.title,
+        source.language ?? null,
+        source.releaseDate ?? null,
+        source.rightsStatus ?? null,
+        source.summary ?? null,
+        JSON.stringify(metadataPayload),
+      ],
+    );
+    const workId = workResult.rows[0]?.id;
+    if (!workId) {
+      throw new Error(`Failed to resolve work id for ${source.adapterId}:${source.externalId}.`);
+    }
+    return workId;
+  }
+
+  const existing = await context.db.query<{ id: string }>(
+    `
+      SELECT id
+      FROM works
+      WHERE metadata_json->>'corpusAdapterId' = $1
+        AND metadata_json->>'externalId' = $2
+      LIMIT 1
+    `,
+    [source.adapterId, source.externalId],
+  );
+  const workId = existing.rows[0]?.id ?? crypto.randomUUID();
+  if (existing.rows[0]?.id) {
+    await context.db.query(
+      `
+        UPDATE works
+        SET
+          title = $2,
+          language = $3,
+          release_date = $4::date,
+          rights_status = $5,
+          summary = $6,
+          metadata_json = $7::jsonb,
+          updated_at = now()
+        WHERE id = $1::uuid
+      `,
+      [
+        workId,
+        source.title,
+        source.language ?? null,
+        source.releaseDate ?? null,
+        source.rightsStatus ?? null,
+        source.summary ?? null,
+        JSON.stringify(metadataPayload),
+      ],
+    );
+  } else {
+    await context.db.query(
+      `
+        INSERT INTO works (id, gutenberg_id, title, language, release_date, rights_status, summary, metadata_json)
+        VALUES ($1::uuid, NULL, $2, $3, $4::date, $5, $6, $7::jsonb)
+      `,
+      [
+        workId,
+        source.title,
+        source.language ?? null,
+        source.releaseDate ?? null,
+        source.rightsStatus ?? null,
+        source.summary ?? null,
+        JSON.stringify(metadataPayload),
+      ],
+    );
+  }
+  return workId;
 }
 
 async function putText(r2: S3Client, bucket: string, key: string, body: string, contentType: string) {
@@ -1349,13 +1448,46 @@ async function syncSubjects(context: IngestContext, workId: string, subjects: st
   }
 }
 
-async function persistIngestedWork(context: IngestContext, source: IngestSourceInput) {
+function buildRenderedArtifactsForSource(
+  source: CorpusIngestSourceInput,
+): RenderedArtifactBundle | null {
+  if (source.adapterId === gutenbergCorpusAdapter.id && source.legacyNumericId) {
+    return buildPaginatedBookArtifactBundle({
+      gutenbergId: source.legacyNumericId,
+      title: source.title,
+      subtitle: typeof source.metadata?.subtitle === "string" ? source.metadata.subtitle : null,
+      authors: source.authors ?? [],
+      bookshelves: Array.isArray(source.metadata?.bookshelves)
+        ? source.metadata.bookshelves.filter((value): value is string => typeof value === "string")
+        : [],
+      summary: source.summary ?? null,
+      language: source.language ?? null,
+      releaseDate: source.releaseDate ?? null,
+      rawSource: source.rawSource,
+      sourceFormat: source.sourceFormat ?? "text",
+    });
+  }
+  return buildSimpleRenderedArtifactBundle({
+    externalId: source.externalId,
+    title: source.title,
+    authors: source.authors ?? [],
+    summary: source.summary ?? null,
+    cleanText: source.rawText,
+  });
+}
+
+async function persistIngestedWork(
+  context: IngestContext,
+  adapter: CorpusAdapter,
+  source: CorpusIngestSourceInput,
+) {
   if (shouldSkipExistingWork()) {
-    const existing = await findExistingWorkStatus(context, source.gutenbergId);
+    const existing = await findExistingWorkStatus(context, source);
     if (existing?.complete) {
       return {
         workId: existing.workId,
-        gutenbergId: source.gutenbergId,
+        externalId: source.externalId,
+        corpusAdapterId: source.adapterId,
         title: source.title,
         skipped: true,
         reason: "already_ingested",
@@ -1363,71 +1495,31 @@ async function persistIngestedWork(context: IngestContext, source: IngestSourceI
     }
   }
 
-  const cleanText = gutenbergCorpusAdapter.text.normalizeText(
-    gutenbergCorpusAdapter.text.stripSourceBoilerplate(source.rawText),
-  );
-  const chunks = gutenbergCorpusAdapter.text.chunkText(cleanText);
+  const prepared = prepareCorpusIngest(adapter, {
+    ...source,
+    renderedArtifacts: buildRenderedArtifactsForSource(source),
+  });
+  const cleanText = prepared.cleanText;
+  const chunks = prepared.chunks;
   const chunkEmbeddings = await embedChunks(chunks);
-  const authors = uniqueStrings(source.authors ?? []);
-  const subjects = uniqueStrings(source.subjects ?? []);
+  const authors = prepared.authors;
+  const subjects = prepared.subjects;
 
-  const rawKey = gutenbergCorpusAdapter.artifactKeys.rawText(source.gutenbergId);
-  const metadataKey = gutenbergCorpusAdapter.artifactKeys.rawMetadata(source.gutenbergId);
-  const cleanKey = gutenbergCorpusAdapter.artifactKeys.cleanText(source.gutenbergId);
-  const chunksKey = gutenbergCorpusAdapter.artifactKeys.chunks(source.gutenbergId);
-  const bookHtmlKey = gutenbergCorpusAdapter.artifactKeys.renderedDocument?.(source.gutenbergId) ?? "";
+  const rawKey = prepared.rawKey;
+  const metadataKey = prepared.metadataKey;
+  const cleanKey = prepared.cleanKey;
+  const chunksKey = prepared.chunksKey;
+  const renderedDocumentKey = prepared.renderedDocumentKey ?? "";
   const coverImagePath = typeof source.metadata?.coverImagePath === "string" ? source.metadata.coverImagePath : null;
   const coverImageKey = coverImagePath
-    ? gutenbergCorpusAdapter.artifactKeys.coverImage?.(source.gutenbergId, coverExtension(coverImagePath)) ?? null
+    ? adapter.artifactKeys.coverImage?.(source.externalId, coverExtension(coverImagePath)) ?? null
     : null;
-  const proposedWorkId = crypto.randomUUID();
   const metadataPayload = {
-    gutenbergId: source.gutenbergId,
-    title: source.title,
-    authors,
-    subjects,
+    ...prepared.metadataPayload,
     subtitle: typeof source.metadata?.subtitle === "string" ? source.metadata.subtitle : null,
     coverImageKey,
-    language: source.language ?? null,
-    releaseDate: source.releaseDate ?? null,
-    rightsStatus: source.rightsStatus ?? "public_domain",
-    summary: source.summary ?? null,
-    sourceUrl: source.sourceUrl ?? null,
-    sourcePath: source.sourcePath ?? null,
-    sourceFormat: source.sourceFormat ?? "text",
-    ...source.metadata,
   };
-
-  const workResult = await context.db.query<{ id: string }>(
-    `
-      INSERT INTO works (id, gutenberg_id, title, language, release_date, rights_status, summary, metadata_json)
-      VALUES ($1::uuid, $2::bigint, $3, $4, $5::date, $6, $7, $8::jsonb)
-      ON CONFLICT (gutenberg_id) DO UPDATE
-      SET
-        title = EXCLUDED.title,
-        language = EXCLUDED.language,
-        release_date = EXCLUDED.release_date,
-        rights_status = EXCLUDED.rights_status,
-        summary = EXCLUDED.summary,
-        metadata_json = EXCLUDED.metadata_json,
-        updated_at = now()
-      RETURNING id
-    `,
-    [
-      proposedWorkId,
-      Number(source.gutenbergId),
-      source.title,
-      source.language ?? null,
-      source.releaseDate ?? null,
-      source.rightsStatus ?? "public_domain",
-      source.summary ?? null,
-      JSON.stringify(metadataPayload),
-    ],
-  );
-  const workId = workResult.rows[0]?.id;
-  if (!workId) {
-    throw new Error(`Failed to resolve work id for Gutenberg ${source.gutenbergId}.`);
-  }
+  const workId = await upsertIngestedWork(context, source, metadataPayload);
 
   const chunksPayload = chunks
     .map((chunk, index) =>
@@ -1441,21 +1533,8 @@ async function persistIngestedWork(context: IngestContext, source: IngestSourceI
       }),
     )
     .join("\n");
-  const bookBundle = buildPaginatedBookArtifactBundle({
-    gutenbergId: source.gutenbergId,
-    title: source.title,
-    subtitle: typeof source.metadata?.subtitle === "string" ? source.metadata.subtitle : null,
-    authors,
-    bookshelves: Array.isArray(source.metadata?.bookshelves)
-      ? source.metadata.bookshelves.filter((value): value is string => typeof value === "string")
-      : [],
-    summary: source.summary ?? null,
-    language: source.language ?? null,
-    releaseDate: source.releaseDate ?? null,
-    rawSource: source.rawSource,
-    sourceFormat: source.sourceFormat ?? "text",
-  });
-  const bookManifestKey = gutenbergCorpusAdapter.artifactKeys.renderedManifest?.(source.gutenbergId) ?? "";
+  const renderedArtifacts = prepared.renderedArtifacts;
+  const renderedManifestKey = prepared.renderedManifestKey ?? "";
 
   await Promise.all([
     putText(
@@ -1474,16 +1553,22 @@ async function persistIngestedWork(context: IngestContext, source: IngestSourceI
     ),
     putText(context.r2, context.r2Bucket, cleanKey, cleanText, "text/plain; charset=utf-8"),
     putText(context.r2, context.r2Bucket, chunksKey, chunksPayload, "application/x-ndjson"),
-    putText(context.r2, context.r2Bucket, bookHtmlKey, bookBundle.landingHtml, "text/html; charset=utf-8"),
-    putText(context.r2, context.r2Bucket, bookManifestKey, bookBundle.manifestJson, "application/json; charset=utf-8"),
-    ...bookBundle.pageFiles.map((page) =>
-      putText(
-        context.r2,
-        context.r2Bucket,
-        gutenbergCorpusAdapter.artifactKeys.renderedPage?.(source.gutenbergId, page.pageNumber) ?? "",
-        page.html,
-        "text/html; charset=utf-8",
-      )),
+    ...(renderedArtifacts && renderedDocumentKey
+      ? [putText(context.r2, context.r2Bucket, renderedDocumentKey, renderedArtifacts.landingHtml, "text/html; charset=utf-8")]
+      : []),
+    ...(renderedArtifacts && renderedManifestKey
+      ? [putText(context.r2, context.r2Bucket, renderedManifestKey, renderedArtifacts.manifestJson, "application/json; charset=utf-8")]
+      : []),
+    ...(renderedArtifacts
+      ? renderedArtifacts.pageFiles.map((page) =>
+          putText(
+            context.r2,
+            context.r2Bucket,
+            adapter.artifactKeys.renderedPage?.(source.externalId, page.pageNumber) ?? "",
+            page.html,
+            "text/html; charset=utf-8",
+          ))
+      : []),
     ...(coverImagePath && coverImageKey
       ? [
           readFile(coverImagePath).then((bytes) =>
@@ -1515,7 +1600,7 @@ async function persistIngestedWork(context: IngestContext, source: IngestSourceI
       crypto.randomUUID(),
       chunksKey,
       crypto.randomUUID(),
-      bookHtmlKey,
+      renderedDocumentKey,
     ],
   );
 
@@ -1545,13 +1630,14 @@ async function persistIngestedWork(context: IngestContext, source: IngestSourceI
 
   return {
     workId,
-    gutenbergId: source.gutenbergId,
+    externalId: source.externalId,
+    corpusAdapterId: source.adapterId,
     title: source.title,
     chunkCount: chunks.length,
     rawKey,
     cleanKey,
     chunksKey,
-    bookHtmlKey,
+    renderedDocumentKey,
     skipped: false,
   };
 }
@@ -1584,8 +1670,10 @@ async function ingestUrl(context: IngestContext, gutenbergId: string, sourceUrl:
     throw new Error(`Failed to fetch source URL: ${response.status}`);
   }
   const rawText = await response.text();
-  return persistIngestedWork(context, {
-    gutenbergId,
+  return persistIngestedWork(context, gutenbergCorpusAdapter, {
+    adapterId: gutenbergCorpusAdapter.id,
+    externalId: gutenbergId,
+    legacyNumericId: gutenbergId,
     title,
     rawSource: rawText,
     rawText,
@@ -1603,8 +1691,10 @@ async function ingestFromMirror(context: IngestContext, gutenbergId: string, exp
     throw new Error("GUTENBERG_MIRROR_ROOT is required for ingest-gutenberg.");
   }
   const source = await resolveMirrorSource(mirrorRoot, gutenbergId);
-  return persistIngestedWork(context, {
-    gutenbergId,
+  return persistIngestedWork(context, gutenbergCorpusAdapter, {
+    adapterId: gutenbergCorpusAdapter.id,
+    externalId: gutenbergId,
+    legacyNumericId: gutenbergId,
     title: explicitTitle ?? source.title ?? `Project Gutenberg ${gutenbergId}`,
     rawSource: source.rawSource,
     rawText: source.rawText,
@@ -1631,6 +1721,44 @@ async function ingestFromMirror(context: IngestContext, gutenbergId: string, exp
       ...source.metadata,
     },
   });
+}
+
+async function ingestFixtureDocument(context: IngestContext, documentId?: string) {
+  const selected = documentId
+    ? fixtureDocuments.filter((document) => document.id === documentId)
+    : fixtureDocuments;
+  if (selected.length === 0) {
+    throw new Error(`Unknown fixture document: ${documentId}`);
+  }
+  const results = [];
+  for (const document of selected) {
+    const rawSource = fixtureDocumentSources[document.id];
+    if (!rawSource) {
+      throw new Error(`Missing fixture source text for ${document.id}`);
+    }
+    results.push(await persistIngestedWork(context, fixtureCorpusAdapter, {
+      adapterId: fixtureCorpusAdapter.id,
+      externalId: document.id,
+      title: document.title,
+      rawSource,
+      rawText: rawSource,
+      sourceFormat: "text",
+      authors: [...document.contributors],
+      subjects: [...document.subjects],
+      language: document.language ?? null,
+      rightsStatus: document.rightsStatus ?? null,
+      summary: document.summary ?? null,
+      metadata: {
+        ...document.metadata,
+        source: "fixture-corpus",
+      },
+    }));
+  }
+  return {
+    corpusAdapterId: fixtureCorpusAdapter.id,
+    inserted: results.length,
+    results,
+  };
 }
 
 async function deleteGutenbergWorks(context: IngestContext, gutenbergIds: string[]) {
@@ -2283,6 +2411,13 @@ async function main() {
       return;
     }
 
+    if (command === "ingest-fixture") {
+      const [documentId] = args;
+      const result = await ingestFixtureDocument(context, documentId && documentId !== "-" ? documentId : undefined);
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
     if (command === "run-once") {
       const result = await backfillMirror(context, {
         limit: Number(process.env.MIRROR_BATCH_SIZE ?? "25"),
@@ -2365,6 +2500,7 @@ async function main() {
     console.log("Commands:");
     console.log("  ingest-url <gutenbergId> <sourceUrl> <title>");
     console.log("  ingest-gutenberg <gutenbergId> [title]");
+    console.log("  ingest-fixture [documentId|-]");
     console.log("  backfill-mirror [startAfterId|-] [limit]");
     console.log("  backfill-mirror-parallel [startAfterId|-] [limit] [concurrency]");
     console.log("  backfill-book-html [startAfterId|-] [limit] [concurrency]");
