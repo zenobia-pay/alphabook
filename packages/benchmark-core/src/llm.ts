@@ -24,6 +24,7 @@ export interface OpenAICompatibleJudgeInput {
   fetchImpl?: typeof fetch;
   includeRationale?: boolean;
   extraHeaders?: Record<string, string>;
+  useJsonSchema?: boolean;
 }
 
 function clampScore(score: number): number {
@@ -104,6 +105,7 @@ export function createOpenAICompatibleExhaustiveJudge(input: OpenAICompatibleJud
     fetchImpl = fetch,
     includeRationale = true,
     extraHeaders,
+    useJsonSchema = true,
   } = input;
 
   return {
@@ -143,36 +145,42 @@ export function createOpenAICompatibleExhaustiveJudge(input: OpenAICompatibleJud
         },
         body: JSON.stringify({
           model,
-          response_format: {
-            type: "json_schema",
-            json_schema: {
-              name: "passage_scores",
-              schema: {
-                type: "object",
-                additionalProperties: false,
-                required: ["scores"],
-                properties: {
-                  scores: {
-                    type: "array",
-                    items: {
-                      type: "object",
-                      additionalProperties: false,
-                      required: includeRationale ? ["passageId", "score", "rationale"] : ["passageId", "score"],
-                      properties: {
-                        passageId: { type: "string" },
-                        score: { type: "number" },
-                        ...(includeRationale ? { rationale: { type: "string" } } : {}),
+          ...(useJsonSchema
+            ? {
+              response_format: {
+                type: "json_schema",
+                json_schema: {
+                  name: "passage_scores",
+                  schema: {
+                    type: "object",
+                    additionalProperties: false,
+                    required: ["scores"],
+                    properties: {
+                      scores: {
+                        type: "array",
+                        items: {
+                          type: "object",
+                          additionalProperties: false,
+                          required: includeRationale ? ["passageId", "score", "rationale"] : ["passageId", "score"],
+                          properties: {
+                            passageId: { type: "string" },
+                            score: { type: "number" },
+                            ...(includeRationale ? { rationale: { type: "string" } } : {}),
+                          },
+                        },
                       },
                     },
                   },
                 },
               },
-            },
-          },
+            }
+            : {}),
           messages: [
             {
               role: "system",
-              content: "Score retrieval passages and return only valid JSON.",
+              content: useJsonSchema
+                ? "Score retrieval passages and return only valid JSON."
+                : "Score retrieval passages and return only a JSON object with a top-level key named scores. Do not use markdown fences.",
             },
             {
               role: "user",

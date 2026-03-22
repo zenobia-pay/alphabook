@@ -232,6 +232,7 @@ async function main() {
         baseUrl,
         includeRationale: options.includeRationale,
         extraHeaders,
+        useJsonSchema: spec.provider !== "openrouter",
       }),
       batchSize: options.batchSize,
       minScore: options.minScore,

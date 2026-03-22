@@ -1,0 +1,32 @@
+{
+  "id": "grief-25-v1",
+  "version": "1.0.0",
+  "description": "Twenty-five grief-oriented associative retrieval queries for model comparison over random book samples.",
+  "queries": [
+    { "id": "grief-001", "text": "dealing with grief", "family": "associative", "labels": [], "notes": "Broad plain-language grief query." },
+    { "id": "grief-002", "text": "coping with the death of someone close", "family": "paraphrase", "labels": [], "notes": "Direct paraphrase of bereavement." },
+    { "id": "grief-003", "text": "what helps after losing a loved one", "family": "paraphrase", "labels": [], "notes": "Advice-oriented loss framing." },
+    { "id": "grief-004", "text": "mourning and recovery after loss", "family": "lexical-easy", "labels": [], "notes": "Lexically grief-adjacent." },
+    { "id": "grief-005", "text": "finding comfort after bereavement", "family": "paraphrase", "labels": [], "notes": "Bereavement synonym test." },
+    { "id": "grief-006", "text": "passages about sorrow after death", "family": "lexical-easy", "labels": [], "notes": "Simple sorrow/death retrieval." },
+    { "id": "grief-007", "text": "how people endure heartbreak and loss", "family": "associative", "labels": [], "notes": "Loss without using grief token." },
+    { "id": "grief-008", "text": "ways characters survive mourning", "family": "associative", "labels": [], "notes": "Narrative framing." },
+    { "id": "grief-009", "text": "examples of consolation after tragedy", "family": "multi-hop-thematic", "labels": [], "notes": "Consolation pattern." },
+    { "id": "grief-010", "text": "writings about lamentation and remembrance", "family": "associative", "labels": [], "notes": "More literary phrasing." },
+    { "id": "grief-011", "text": "living on after the death of a child", "family": "constraint-heavy", "labels": [], "notes": "Specific grief subtype." },
+    { "id": "grief-012", "text": "parents grieving a child", "family": "constraint-heavy", "labels": [], "notes": "Narrow family-role framing." },
+    { "id": "grief-013", "text": "widows coping with sorrow", "family": "constraint-heavy", "labels": [], "notes": "Role-specific query." },
+    { "id": "grief-014", "text": "religious comfort in mourning", "family": "associative", "labels": [], "notes": "Spiritual consolation angle." },
+    { "id": "grief-015", "text": "accepting loss without despair", "family": "associative", "labels": [], "notes": "Implicit emotional regulation." },
+    { "id": "grief-016", "text": "what mourning feels like", "family": "paraphrase", "labels": [], "notes": "Phenomenological framing." },
+    { "id": "grief-017", "text": "how literature describes bereaved people", "family": "multi-hop-thematic", "labels": [], "notes": "Meta-descriptive framing." },
+    { "id": "grief-018", "text": "scenes of funeral grief and remembrance", "family": "lexical-easy", "labels": [], "notes": "Event-driven lexical query." },
+    { "id": "grief-019", "text": "missing someone after they are gone", "family": "associative", "labels": [], "notes": "Informal phrasing of bereavement." },
+    { "id": "grief-020", "text": "loss transformed into resilience", "family": "multi-hop-thematic", "labels": [], "notes": "Post-loss growth pattern." },
+    { "id": "grief-021", "text": "reconciliation with death and absence", "family": "associative", "labels": [], "notes": "Abstract acceptance framing." },
+    { "id": "grief-022", "text": "grief that becomes memory and devotion", "family": "multi-hop-thematic", "labels": [], "notes": "Transformation motif." },
+    { "id": "grief-023", "text": "letters or reflections after a death", "family": "constraint-heavy", "labels": [], "notes": "Form-specific grief search." },
+    { "id": "grief-024", "text": "who comforts the bereaved", "family": "associative", "labels": [], "notes": "Social support framing." },
+    { "id": "grief-025", "text": "finding meaning after devastating loss", "family": "associative", "labels": [], "notes": "Meaning-making after grief." }
+  ]
+}

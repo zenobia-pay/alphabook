@@ -14,7 +14,7 @@ import type {
   RetrieverResult,
 } from "./types";
 import { expandQueryTerms } from "./expansion";
-import type { PassageJudge } from "./llm";
+import type { JudgedPassageScore, PassageJudge } from "./llm";
 import { tokenize, uniqueTokens } from "./tokenize";
 
 const execFileAsync = promisify(execFile);
@@ -254,6 +254,35 @@ export function createComprehensiveLLMRetriever(input: {
 }): Retriever {
   const { judge, batchSize = 8, minScore = 0.05 } = input;
 
+  async function judgeWithAdaptiveBatching(
+    query: BenchmarkQuery,
+    passages: BenchmarkPassage[],
+    currentBatchSize: number,
+    traces: string[],
+  ): Promise<JudgedPassageScore[]> {
+    const judged: JudgedPassageScore[] = [];
+
+    for (let index = 0; index < passages.length; index += currentBatchSize) {
+      const batch = passages.slice(index, index + currentBatchSize);
+      try {
+        const batchResult = await judge.judgeBatch({ query, passages: batch });
+        traces.push(`batch=${Math.floor(index / currentBatchSize) + 1} size=${batch.length}`);
+        judged.push(...batchResult);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const likelyOversized = /status 400|context|maximum context|too large|token/i.test(message);
+        if (!likelyOversized || batch.length <= 1) {
+          throw error;
+        }
+        const nextBatchSize = Math.max(1, Math.floor(batch.length / 2));
+        traces.push(`batch_split original_size=${batch.length} next_batch_size=${nextBatchSize} reason=${message}`);
+        judged.push(...await judgeWithAdaptiveBatching(query, batch, nextBatchSize, traces));
+      }
+    }
+
+    return judged;
+  }
+
   return {
     id: `comprehensive-${judge.id}`,
     displayName: `Comprehensive LLM (${judge.id})`,
@@ -267,15 +296,11 @@ export function createComprehensiveLLMRetriever(input: {
       const scoreMap = new Map<string, number>();
       const rationales = new Map<string, string>();
 
-      for (let index = 0; index < filtered.length; index += batchSize) {
-        const batch = filtered.slice(index, index + batchSize);
-        const judged = await judge.judgeBatch({ query, passages: batch });
-        traces.push(`batch=${(index / batchSize) + 1} size=${batch.length}`);
-        for (const item of judged) {
-          scoreMap.set(item.passageId, item.score);
-          if (item.rationale) {
-            rationales.set(item.passageId, item.rationale);
-          }
+      const judged = await judgeWithAdaptiveBatching(query, filtered, batchSize, traces);
+      for (const item of judged) {
+        scoreMap.set(item.passageId, item.score);
+        if (item.rationale) {
+          rationales.set(item.passageId, item.rationale);
         }
       }
 
