@@ -377,6 +377,7 @@ export interface AppStore {
   getUserProfileStats(userId: string): Promise<UserProfileStatsRecord>;
   listAdminSessions(): Promise<AdminSessionRecord[]>;
   listMessages(sessionId: string): Promise<MessageRecord[]>;
+  getLatestPlanMessageForRun(sessionId: string, runId: string): Promise<MessageRecord | null>;
   appendMessage(sessionId: string, role: MessageRecord["role"], content: string, metadata?: Record<string, unknown>): Promise<MessageRecord>;
   updateMessageMetadata(messageId: string, metadata: Record<string, unknown>): Promise<void>;
   createRun(sessionId: string): Promise<RunRecord>;
@@ -2217,6 +2218,21 @@ export class InMemoryAppStore implements AppStore {
 
   async listMessages(sessionId: string): Promise<MessageRecord[]> {
     return [...(this.messages.get(sessionId) ?? [])];
+  }
+
+  async getLatestPlanMessageForRun(sessionId: string, runId: string): Promise<MessageRecord | null> {
+    const messages = this.messages.get(sessionId) ?? [];
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (
+        message.role === "assistant"
+        && message.metadata?.phase === "plan"
+        && message.metadata?.runId === runId
+      ) {
+        return message;
+      }
+    }
+    return null;
   }
 
   async appendMessage(
@@ -4130,6 +4146,41 @@ export class NeonAppStore implements AppStore {
       metadata: row.metadata_json,
       createdAt: row.created_at,
     }));
+  }
+
+  async getLatestPlanMessageForRun(sessionId: string, runId: string): Promise<MessageRecord | null> {
+    const result = await this.db.query<{
+      id: string;
+      session_id: string;
+      role: MessageRecord["role"];
+      content: string;
+      metadata_json: Record<string, unknown>;
+      created_at: string;
+    }>(
+      `
+        SELECT id, session_id, role, content, metadata_json, created_at
+        FROM messages
+        WHERE session_id = $1::uuid
+          AND role = 'assistant'
+          AND metadata_json->>'phase' = 'plan'
+          AND metadata_json->>'runId' = $2
+        ORDER BY created_at DESC
+        LIMIT 1
+      `,
+      [sessionId, runId],
+    );
+    const row = result.rows[0];
+    if (!row) {
+      return null;
+    }
+    return {
+      id: row.id,
+      sessionId: row.session_id,
+      role: row.role,
+      content: row.content,
+      metadata: row.metadata_json,
+      createdAt: row.created_at,
+    };
   }
 
   async appendMessage(

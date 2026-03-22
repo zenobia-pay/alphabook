@@ -5442,8 +5442,7 @@ function findPlanMessageForRun(messages: MessageRecord[], runId: string) {
   )) ?? null;
 }
 
-function readPersistedPlanMessageState(messages: MessageRecord[], runId: string) {
-  const planMessage = findPlanMessageForRun(messages, runId);
+function readPersistedPlanMessageStateFromPlanMessage(planMessage: MessageRecord | null) {
   if (!planMessage || !planMessage.metadata || typeof planMessage.metadata !== "object") {
     return {
       planMessage: null,
@@ -5460,6 +5459,20 @@ function readPersistedPlanMessageState(messages: MessageRecord[], runId: string)
         ? metadata.researchDocumentHtml
         : null,
   };
+}
+
+function readPersistedPlanMessageState(messages: MessageRecord[], runId: string) {
+  return readPersistedPlanMessageStateFromPlanMessage(findPlanMessageForRun(messages, runId));
+}
+
+async function readPersistedPlanMessageStateForRun(
+  deps: AppDeps,
+  sessionId: string,
+  runId: string,
+) {
+  return readPersistedPlanMessageStateFromPlanMessage(
+    await deps.store.getLatestPlanMessageForRun(sessionId, runId),
+  );
 }
 
 async function persistRecoveredPlanToolTrace(
@@ -5634,6 +5647,32 @@ async function loadRunArtifacts(
     })),
   );
   return synthesizeReferenceArtifacts(hydrated);
+}
+
+async function loadRunArtifactSummaries(
+  deps: AppDeps,
+  sessionId: string,
+  runId: string,
+  toolCalls: Awaited<ReturnType<AppStore["listToolCalls"]>>,
+) {
+  const runtimeIds = new Set<string>();
+  for (const toolCall of toolCalls) {
+    const result = toolCall.resultJson;
+    const args = toolCall.argsJson;
+    if (typeof result?.runtimeId === "string") {
+      runtimeIds.add(result.runtimeId);
+    }
+    if (typeof args?.runtimeId === "string") {
+      runtimeIds.add(args.runtimeId);
+    }
+  }
+
+  const artifacts = await deps.store.listArtifacts(sessionId);
+  return artifacts.filter((artifact) =>
+    artifact.runtimeId === null
+      ? artifact.filename.includes(runId)
+      : runtimeIds.has(artifact.runtimeId),
+  );
 }
 
 function isAdminUser(user: Awaited<ReturnType<AppStore["getUserProfile"]>>, allowedEmail?: string) {
@@ -11004,16 +11043,13 @@ export function createApp(inputDeps: CreateAppInput) {
     if (!run || run.sessionId !== sessionId) {
       return c.json({ error: "Run not found." }, 404);
     }
-    const [messages, toolCalls, runtimeInstances, runEvents] = await Promise.all([
-      deps.store.listMessages(sessionId),
-      deps.store.listToolCalls(runId),
+    const toolCalls = await deps.store.listToolCalls(runId);
+    const [runtimeInstances, runEvents, persistedPlanState, artifacts] = await Promise.all([
       deps.store.listRuntimeInstances(sessionId),
       deps.store.listRunEvents(runId),
+      readPersistedPlanMessageStateForRun(deps, sessionId, runId),
+      loadRunArtifactSummaries(deps, sessionId, runId, toolCalls),
     ]);
-    const artifacts = await loadRunArtifacts(deps, sessionId, runId, toolCalls);
-    const rawLog = resolveRunRawLog(activeRuns, runId, artifacts);
-    const metrics = extractRecordedRunMetrics(rawLog);
-    const persistedPlanState = readPersistedPlanMessageState(messages, runId);
 
     return c.json({
       run,
@@ -11022,8 +11058,6 @@ export function createApp(inputDeps: CreateAppInput) {
       toolTrace: persistedPlanState.toolTrace,
       runtimeInstances,
       artifacts,
-      rawLog,
-      metrics,
     });
   });
 
@@ -11042,13 +11076,12 @@ export function createApp(inputDeps: CreateAppInput) {
     if (!run || run.sessionId !== sessionId) {
       return c.json({ error: "Run not found." }, 404);
     }
-    const [messages, toolCalls, runEvents] = await Promise.all([
-      deps.store.listMessages(sessionId),
-      deps.store.listToolCalls(runId),
+    const toolCalls = await deps.store.listToolCalls(runId);
+    const [runEvents, persistedPlanState, artifacts] = await Promise.all([
       deps.store.listRunEvents(runId),
+      readPersistedPlanMessageStateForRun(deps, sessionId, runId),
+      loadRunArtifactSummaries(deps, sessionId, runId, toolCalls),
     ]);
-    const artifacts = await loadRunArtifacts(deps, sessionId, runId, toolCalls);
-    const persistedPlanState = readPersistedPlanMessageState(messages, runId);
 
     return c.json({
       run,
@@ -11074,16 +11107,13 @@ export function createApp(inputDeps: CreateAppInput) {
     if (!run || run.sessionId !== sessionId) {
       return c.json({ error: "Run not found." }, 404);
     }
-    const [messages, toolCalls, runtimeInstances, runEvents] = await Promise.all([
-      deps.store.listMessages(sessionId),
-      deps.store.listToolCalls(runId),
+    const toolCalls = await deps.store.listToolCalls(runId);
+    const [runtimeInstances, runEvents, persistedPlanState, artifacts] = await Promise.all([
       deps.store.listRuntimeInstances(sessionId),
       deps.store.listRunEvents(runId),
+      readPersistedPlanMessageStateForRun(deps, sessionId, runId),
+      loadRunArtifactSummaries(deps, sessionId, runId, toolCalls),
     ]);
-    const artifacts = await loadRunArtifacts(deps, sessionId, runId, toolCalls);
-    const rawLog = resolveRunRawLog(activeRuns, runId, artifacts);
-    const metrics = extractRecordedRunMetrics(rawLog);
-    const persistedPlanState = readPersistedPlanMessageState(messages, runId);
 
     return c.json({
       run,
@@ -11092,8 +11122,6 @@ export function createApp(inputDeps: CreateAppInput) {
       toolTrace: persistedPlanState.toolTrace,
       runtimeInstances,
       artifacts,
-      rawLog,
-      metrics,
     });
   });
 
@@ -11112,13 +11140,12 @@ export function createApp(inputDeps: CreateAppInput) {
     if (!run || run.sessionId !== sessionId) {
       return c.json({ error: "Run not found." }, 404);
     }
-    const [messages, toolCalls, runEvents] = await Promise.all([
-      deps.store.listMessages(sessionId),
-      deps.store.listToolCalls(runId),
+    const toolCalls = await deps.store.listToolCalls(runId);
+    const [runEvents, persistedPlanState, artifacts] = await Promise.all([
       deps.store.listRunEvents(runId),
+      readPersistedPlanMessageStateForRun(deps, sessionId, runId),
+      loadRunArtifactSummaries(deps, sessionId, runId, toolCalls),
     ]);
-    const artifacts = await loadRunArtifacts(deps, sessionId, runId, toolCalls);
-    const persistedPlanState = readPersistedPlanMessageState(messages, runId);
 
     return c.json({
       run,
