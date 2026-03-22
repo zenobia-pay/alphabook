@@ -2616,8 +2616,8 @@ async function executeTool(
     }
     case "classify_candidate_chunks": {
       const parsed = ToolArgsSchemas.classify_candidate_chunks.parse(normalizedArgs);
-      if (!deps.ai) {
-        throw new Error("Workers AI is required for candidate chunk classification.");
+      if (!deps.openAIApiKey) {
+        throw new Error("OPENAI_API_KEY is required for candidate chunk classification.");
       }
       const candidates = await deps.store.getChunksByIds(parsed.chunkIds);
       const orderedCandidates = parsed.chunkIds
@@ -2632,25 +2632,71 @@ async function executeTool(
         await context.progressReporter?.(
           `Classifying candidate passages ${index + 1}-${Math.min(index + batch.length, orderedCandidates.length)} of ${orderedCandidates.length}.`,
         );
-        const prompt = [
-          "You are classifying literary passages for research relevance.",
-          "Reply with JSON only.",
-          "Do not use markdown fences.",
-          "Do not use prose before or after the JSON.",
-          "Return exactly this shape: {\"items\":[{\"id\":\"...\",\"score\":0-1,\"reason\":\"...\"}]}",
-          "Score for whether the passage is directly useful for answering the user query.",
-          "High scores require clear topical relevance, not just loose keyword overlap.",
-          "Down-rank incidental mentions and generic emotional language.",
-          `Return exactly ${batch.length} items, one per passage id in the same order.`,
-          `Query: ${parsed.query}`,
-          "Passages:",
-          ...batch.map((chunk, batchIndex) => `${batchIndex + 1}. id=${chunk.id}\nworkId=${chunk.workId}\nchunkIndex=${chunk.chunkIndex}\nexcerpt=${(chunk.excerpt ?? chunk.text).replace(/\s+/gu, " ").slice(0, 700)}`),
-        ].join("\n\n");
-        const payload = await deps.ai.run<{ prompt: string }, unknown>(
-          deps.toolStreamCleanupModel ?? DEFAULT_SESSION_TITLE_MODEL,
-          { prompt },
-        );
-        const text = normalizeWorkersAiText(payload);
+        const body = {
+          model: deps.openAIModel ?? "gpt-5.2",
+          response_format: { type: "json_object" as const },
+          messages: [
+            {
+              role: "system",
+              content: [
+                "You are classifying literary passages for research relevance.",
+                "Return one JSON object only.",
+                "Do not use markdown fences.",
+                "Do not use prose before or after the JSON.",
+              ].join("\n"),
+            },
+            {
+              role: "user",
+              content: JSON.stringify({
+                query: parsed.query,
+                scoringGuidance: [
+                  "Score for whether the passage is directly useful for answering the user query.",
+                  "High scores require clear topical relevance, not just loose keyword overlap.",
+                  "Down-rank incidental mentions and generic emotional language.",
+                  `Return exactly ${batch.length} items, one per passage id in the same order.`,
+                ],
+                passages: batch.map((chunk) => ({
+                  id: chunk.id,
+                  workId: chunk.workId,
+                  chunkIndex: chunk.chunkIndex,
+                  excerpt: (chunk.excerpt ?? chunk.text).replace(/\s+/gu, " ").slice(0, 700),
+                })),
+                outputShape: {
+                  items: [{ id: "string", score: "number 0-1", reason: "string" }],
+                },
+              }),
+            },
+          ],
+        };
+        let response: Response;
+        try {
+          response = await fetch("https://api.openai.com/v1/chat/completions", {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              authorization: `Bearer ${deps.openAIApiKey}`,
+            },
+            body: JSON.stringify(body),
+            signal: AbortSignal.timeout(HARD_LIMITS.MAX_TOOL_TIMEOUT_SECONDS * 1000),
+          });
+        } catch (error) {
+          if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
+            throw new Error("Candidate chunk classification timed out before the model returned scores.");
+          }
+          throw error;
+        }
+        if (!response.ok) {
+          const detail = await response.text();
+          throw new Error(`Candidate chunk classification request failed: ${detail}`);
+        }
+        const payload = (await response.json()) as {
+          choices?: Array<{
+            message?: {
+              content?: string;
+            };
+          }>;
+        };
+        const text = payload.choices?.[0]?.message?.content?.trim();
         if (!text) {
           throw new Error("Candidate chunk classifier returned an empty response.");
         }
