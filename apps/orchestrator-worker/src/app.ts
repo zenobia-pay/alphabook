@@ -11044,18 +11044,26 @@ export function createApp(inputDeps: CreateAppInput) {
       return c.json({ error: "Run not found." }, 404);
     }
     const toolCalls = await deps.store.listToolCalls(runId);
-    const [runtimeInstances, runEvents, persistedPlanState, artifacts] = await Promise.all([
+    const [runtimeInstances, persistedPlanState, artifacts] = await Promise.all([
       deps.store.listRuntimeInstances(sessionId),
-      deps.store.listRunEvents(runId),
       readPersistedPlanMessageStateForRun(deps, sessionId, runId),
       loadRunArtifactSummaries(deps, sessionId, runId, toolCalls),
     ]);
+    const runEvents = run.status === "running" || run.status === "queued"
+      ? await deps.store.listRunEvents(runId)
+      : [];
+    const toolTrace = runEvents.length > 0
+      ? persistedPlanState.toolTrace
+      : mergeRecoveredTraceWithExisting(
+          persistedPlanState.toolTrace,
+          buildRecoveredToolTrace(toolCalls),
+        );
 
     return c.json({
       run,
       toolCalls,
       runEvents,
-      toolTrace: persistedPlanState.toolTrace,
+      toolTrace,
       runtimeInstances,
       artifacts,
     });
@@ -11077,16 +11085,24 @@ export function createApp(inputDeps: CreateAppInput) {
       return c.json({ error: "Run not found." }, 404);
     }
     const toolCalls = await deps.store.listToolCalls(runId);
-    const [runEvents, persistedPlanState, artifacts] = await Promise.all([
-      deps.store.listRunEvents(runId),
+    const [persistedPlanState, artifacts] = await Promise.all([
       readPersistedPlanMessageStateForRun(deps, sessionId, runId),
       loadRunArtifactSummaries(deps, sessionId, runId, toolCalls),
     ]);
+    const runEvents = run.status === "running" || run.status === "queued"
+      ? await deps.store.listRunEvents(runId)
+      : [];
+    const toolTrace = runEvents.length > 0
+      ? persistedPlanState.toolTrace
+      : mergeRecoveredTraceWithExisting(
+          persistedPlanState.toolTrace,
+          buildRecoveredToolTrace(toolCalls),
+        );
 
     return c.json({
       run,
       runEvents,
-      toolTrace: persistedPlanState.toolTrace,
+      toolTrace,
       researchDocumentHtml: persistedPlanState.researchDocumentHtml,
       artifacts,
     });
@@ -11108,18 +11124,26 @@ export function createApp(inputDeps: CreateAppInput) {
       return c.json({ error: "Run not found." }, 404);
     }
     const toolCalls = await deps.store.listToolCalls(runId);
-    const [runtimeInstances, runEvents, persistedPlanState, artifacts] = await Promise.all([
+    const [runtimeInstances, persistedPlanState, artifacts] = await Promise.all([
       deps.store.listRuntimeInstances(sessionId),
-      deps.store.listRunEvents(runId),
       readPersistedPlanMessageStateForRun(deps, sessionId, runId),
       loadRunArtifactSummaries(deps, sessionId, runId, toolCalls),
     ]);
+    const runEvents = run.status === "running" || run.status === "queued"
+      ? await deps.store.listRunEvents(runId)
+      : [];
+    const toolTrace = runEvents.length > 0
+      ? persistedPlanState.toolTrace
+      : mergeRecoveredTraceWithExisting(
+          persistedPlanState.toolTrace,
+          buildRecoveredToolTrace(toolCalls),
+        );
 
     return c.json({
       run,
       toolCalls,
       runEvents,
-      toolTrace: persistedPlanState.toolTrace,
+      toolTrace,
       runtimeInstances,
       artifacts,
     });
@@ -11141,16 +11165,24 @@ export function createApp(inputDeps: CreateAppInput) {
       return c.json({ error: "Run not found." }, 404);
     }
     const toolCalls = await deps.store.listToolCalls(runId);
-    const [runEvents, persistedPlanState, artifacts] = await Promise.all([
-      deps.store.listRunEvents(runId),
+    const [persistedPlanState, artifacts] = await Promise.all([
       readPersistedPlanMessageStateForRun(deps, sessionId, runId),
       loadRunArtifactSummaries(deps, sessionId, runId, toolCalls),
     ]);
+    const runEvents = run.status === "running" || run.status === "queued"
+      ? await deps.store.listRunEvents(runId)
+      : [];
+    const toolTrace = runEvents.length > 0
+      ? persistedPlanState.toolTrace
+      : mergeRecoveredTraceWithExisting(
+          persistedPlanState.toolTrace,
+          buildRecoveredToolTrace(toolCalls),
+        );
 
     return c.json({
       run,
       runEvents,
-      toolTrace: persistedPlanState.toolTrace,
+      toolTrace,
       researchDocumentHtml: persistedPlanState.researchDocumentHtml,
       artifacts,
     });
