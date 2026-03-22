@@ -2,6 +2,8 @@
 
 This repo now includes a first-pass benchmark harness for the paper thesis: CLI-first retrieval pipelines can surface relevant passages for associative queries in large corpora.
 
+The tracked paper plan and progress checklist live in [docs/cli-retrieval-research-plan.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/cli-retrieval-research-plan.md).
+
 ## What Exists Now
 
 - `@alphabook/benchmark-core` defines the benchmark contracts:
