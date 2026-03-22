@@ -6651,45 +6651,46 @@ async function synthesizeAnswer(
     const runtimeEvidenceNotes = latestWorkspaceFileContent(params.toolHistory, /evidence-notes\.md$/u);
     const researchDocument = buildSynthesisResearchDocument(params.toolHistory);
 
-    let synthesis;
-    synthesis = await deps.synthesizer.synthesize({
-      userMessage: params.userMessage,
-      conversationHistory: params.conversationHistory,
-      plannerDraft: params.plannerDraft,
-      plannerCitations: params.plannerCitations,
-      toolHistory: params.toolHistory,
-      runtimeBriefing: latestBriefing?.answer ?? null,
-      runtimeEvidenceNotes,
-      researchDocument,
-      exactCitationLinks,
-      priorAnswerSummary: latestPriorAssistantSummaryFromConversation(params.conversationHistory),
-      billingContext: {
-        userId: params.userId,
-        sessionId: params.sessionId,
-        runId: params.runId,
-        source: "synthesizer",
-      },
-    });
-    synthesis.citations = ensureCitationBreadth(params.userMessage, synthesis.citations, availableSynthesisCitations);
-    synthesis.answer = await rewriteAnswerWithCitationLinks(
-      deps,
-      params.sessionId,
-      synthesis.answer,
-      synthesis.citations,
+    const synthesis = await withToolExecutionDeadline(
+      deps.synthesizer.synthesize({
+        userMessage: params.userMessage,
+        conversationHistory: params.conversationHistory,
+        plannerDraft: params.plannerDraft,
+        plannerCitations: params.plannerCitations,
+        toolHistory: params.toolHistory,
+        runtimeBriefing: latestBriefing?.answer ?? null,
+        runtimeEvidenceNotes,
+        researchDocument,
+        exactCitationLinks,
+        priorAnswerSummary: latestPriorAssistantSummaryFromConversation(params.conversationHistory),
+        billingContext: {
+          userId: params.userId,
+          sessionId: params.sessionId,
+          runId: params.runId,
+          source: "synthesizer",
+        },
+      }),
+      SYNTHESIS_DEADLINE_MS,
+      "Final answer synthesis timed out after corpus briefing completed.",
     );
+    synthesis.citations = ensureCitationBreadth(params.userMessage, synthesis.citations, availableSynthesisCitations);
     const answerEvaluation = typeof deps.synthesizer.evaluateAnswer === "function"
-      ? await deps.synthesizer.evaluateAnswer({
-          userMessage: params.userMessage,
-          answer: synthesis.answer,
-          citations: synthesis.citations,
-          priorAnswerSummary: latestPriorAssistantSummaryFromConversation(params.conversationHistory),
-          billingContext: {
-            userId: params.userId,
-            sessionId: params.sessionId,
-            runId: params.runId,
-            source: "synthesizer-eval",
-          },
-        }).catch(() => null)
+      ? await withToolExecutionDeadline(
+          deps.synthesizer.evaluateAnswer({
+            userMessage: params.userMessage,
+            answer: synthesis.answer,
+            citations: synthesis.citations,
+            priorAnswerSummary: latestPriorAssistantSummaryFromConversation(params.conversationHistory),
+            billingContext: {
+              userId: params.userId,
+              sessionId: params.sessionId,
+              runId: params.runId,
+              source: "synthesizer-eval",
+            },
+          }),
+          15_000,
+          "Answer evaluation timed out.",
+        ).catch(() => null)
       : null;
     if (answerEvaluation) {
       params.auditLog?.("answer.evaluation", answerEvaluation as unknown as Record<string, unknown>);
@@ -6705,28 +6706,17 @@ async function synthesizeAnswer(
       answerLength: synthesis.answer.length,
     });
 
-    const persistedPlanState = readPersistedPlanMessageState(
-      await deps.store.listMessages(params.sessionId),
-      params.runId,
-    );
-    const researchDocumentHtml = await appendFinalAnswerResearchDocumentHtml(
-      deps,
-      params.sessionId,
-      persistedPlanState.researchDocumentHtml,
-      synthesis.citations,
-      synthesis.answer,
-    );
-    const artifactKey = await persistFinalArtifact(deps, params.sessionId, params.runId, synthesis.answer, synthesis.citations);
-    await persistResearchDocumentArtifact(deps, params.sessionId, params.runId, researchDocumentHtml);
-    const summarizedToolHistory = summarizeToolHistory(params.toolHistory);
-    await deps.store.appendMessage(params.sessionId, "assistant", synthesis.answer, {
+    const completedAnswer = await persistCompletedAssistantAnswer(deps, {
+      request: params.request,
+      userId: params.userId,
+      sessionId: params.sessionId,
       runId: params.runId,
-      phase: "answer",
+      answer: synthesis.answer,
       citations: synthesis.citations,
-      answerEvaluation,
-      artifactKey,
-      researchLog: summarizedToolHistory,
-      researchDocumentHtml,
+      toolHistory: params.toolHistory,
+      send,
+      auditLog: params.auditLog,
+      extraMetadata: { answerEvaluation },
     });
 
     const citedWorkIds = uniqueWorkIds(synthesis.citations.map((citation) => citation.workId));
@@ -6769,13 +6759,7 @@ async function synthesizeAnswer(
       citedWorkIds,
     );
 
-    await streamAssistantText(synthesis.answer, send);
-    await send("assistant.completed", {
-      answer: synthesis.answer,
-      citations: synthesis.citations,
-      artifactKey,
-      researchDocumentHtml,
-    });
+    void completedAnswer;
   } catch (error) {
     params.auditLog?.("internal.synthesis.failed", {
       error: error instanceof Error ? error.message : "Unknown synthesis error",
@@ -7258,6 +7242,74 @@ async function persistResearchDocumentArtifact(
     },
   });
   return r2Key;
+}
+
+const SYNTHESIS_DEADLINE_MS = 45_000;
+
+async function persistCompletedAssistantAnswer(
+  deps: AppDeps,
+  params: {
+    request: Request;
+    userId: string;
+    sessionId: string;
+    runId: string;
+    answer: string;
+    citations: Citation[];
+    toolHistory: ToolHistoryEntry[];
+    send: (event: string, data: Record<string, unknown>) => Promise<void>;
+    auditLog?: AuditLogger;
+    extraMetadata?: Record<string, unknown>;
+  },
+) {
+  const linkedAnswer = await rewriteAnswerWithCitationLinks(
+    deps,
+    params.sessionId,
+    params.answer,
+    params.citations,
+  );
+  const persistedPlanState = readPersistedPlanMessageState(
+    await deps.store.listMessages(params.sessionId),
+    params.runId,
+  );
+  const researchDocumentHtml = await appendFinalAnswerResearchDocumentHtml(
+    deps,
+    params.sessionId,
+    persistedPlanState.researchDocumentHtml,
+    params.citations,
+    linkedAnswer,
+  );
+  const artifactKey = await persistFinalArtifact(
+    deps,
+    params.sessionId,
+    params.runId,
+    linkedAnswer,
+    params.citations,
+  );
+  await persistResearchDocumentArtifact(deps, params.sessionId, params.runId, researchDocumentHtml);
+  await deps.store.appendMessage(params.sessionId, "assistant", linkedAnswer, {
+    runId: params.runId,
+    phase: "answer",
+    citations: params.citations,
+    artifactKey,
+    researchLog: summarizeToolHistory(params.toolHistory),
+    researchDocumentHtml,
+    ...(params.extraMetadata ?? {}),
+  });
+  await streamAssistantText(linkedAnswer, params.send);
+  await params.send("assistant.completed", {
+    answer: linkedAnswer,
+    citations: params.citations,
+    artifactKey,
+    researchDocumentHtml,
+    ...(params.extraMetadata ?? {}),
+  });
+  params.auditLog?.("assistant.completed", {
+    answerLength: linkedAnswer.length,
+    citationCount: params.citations.length,
+    artifactKey,
+    ...(params.extraMetadata ?? {}),
+  });
+  return { answer: linkedAnswer, citations: params.citations, artifactKey, researchDocumentHtml };
 }
 
 async function runOrchestrator(
@@ -8190,27 +8242,52 @@ async function runOrchestrator(
 
   const completeRunFromBriefing = async (
     completedBriefing: { answer: string; citations: Citation[] },
-    completionMode: "standard" | "retrieval_fallback" = "standard",
+    completionMode: "standard" | "retrieval_fallback" | "briefing_fallback" = "standard",
   ) => {
     if (runFinalized) {
       return;
     }
-    await synthesizeAnswer(
-      deps,
-      {
+    let resolvedCompletionMode = completionMode;
+    try {
+      await synthesizeAnswer(
+        deps,
+        {
+          request,
+          userId: activeSession.userId,
+          sessionId: activeSession.id,
+          runId: run.id,
+          userMessage: input.message,
+          conversationHistory,
+          plannerDraft: completedBriefing.answer,
+          plannerCitations: completedBriefing.citations,
+          toolHistory,
+          auditLog: recordRawLog,
+        },
+        send,
+      );
+    } catch (error) {
+      recordRawLog("internal.synthesis.fallback", {
+        runId: run.id,
+        sessionId: activeSession.id,
+        error: error instanceof Error ? error.message : "Unknown synthesis error",
+      });
+      await persistCompletedAssistantAnswer(deps, {
         request,
         userId: activeSession.userId,
         sessionId: activeSession.id,
         runId: run.id,
-        userMessage: input.message,
-        conversationHistory,
-        plannerDraft: completedBriefing.answer,
-        plannerCitations: completedBriefing.citations,
+        answer: completedBriefing.answer,
+        citations: completedBriefing.citations,
         toolHistory,
+        send,
         auditLog: recordRawLog,
-      },
-      send,
-    );
+        extraMetadata: {
+          synthesisFallback: true,
+          synthesisFallbackReason: error instanceof Error ? error.message : "Unknown synthesis error",
+        },
+      });
+      resolvedCompletionMode = "briefing_fallback";
+    }
     runFinalized = true;
     await deps.store.updateRun(run.id, {
       status: "completed",
@@ -8220,13 +8297,13 @@ async function runOrchestrator(
       runId: run.id,
       sessionId: activeSession.id,
       status: "completed",
-      completionMode,
+      completionMode: resolvedCompletionMode,
     });
     recordRawLog("run.completed", {
       runId: run.id,
       sessionId: activeSession.id,
       status: "completed",
-      completionMode,
+      completionMode: resolvedCompletionMode,
     });
   };
 
