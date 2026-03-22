@@ -1,0 +1,21 @@
+{
+  "id": "literary-2-v1",
+  "version": "1.0.0",
+  "description": "Two exploratory literary queries for manual labeling.",
+  "queries": [
+    {
+      "id": "literary-001",
+      "text": "characters dealing with grief",
+      "family": "associative",
+      "labels": [],
+      "notes": "Find passages where characters are coping with grief, mourning, bereavement, or loss."
+    },
+    {
+      "id": "literary-002",
+      "text": "great men being introspective",
+      "family": "associative",
+      "labels": [],
+      "notes": "Passages with strong introspection, self-examination, or reflective interiority in notable male figures."
+    }
+  ]
+}
