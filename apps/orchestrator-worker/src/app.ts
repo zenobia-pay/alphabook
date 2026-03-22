@@ -3517,12 +3517,16 @@ function sanitizeUserFacingToolText(text: string | null | undefined): string | n
   if (!text || !text.trim()) {
     return null;
   }
-  return text
+  const sanitized = text
     .replace(/\bCodex\b/gi, "deep research")
     .replace(/\bcodex\b/gi, "deep research")
     .replace(/\bhydrat(?:e|ed|ing)\b/gi, "load")
     .replace(/\b(?<!(?:deep|deeper) research )workspace\b/giu, "research run")
     .trim();
+  if (!sanitized || isCodeLikeUserFacingText(sanitized)) {
+    return null;
+  }
+  return sanitized;
 }
 
 function userFacingRunFailureMessage(error: unknown) {
@@ -3913,6 +3917,28 @@ function redactSensitiveText(text: string): string {
     .replace(/([A-Za-z0-9+/]{32,}={0,2})/gu, "[redacted]");
 }
 
+function isCodeLikeUserFacingText(text: string): boolean {
+  const value = text.trim();
+  if (!value) {
+    return false;
+  }
+  return (
+    /^(?:const|let|var|function|import|export|return)\b/u.test(value)
+    || /^(?:if|for|while|switch|catch)\s*\(/u.test(value)
+    || /^(?:try\s*\{|finally\s*\{|else\b)/u.test(value)
+    || /\bspawn\(/u.test(value)
+    || /\bprocess\.(?:env|kill|exit|pid)\b/u.test(value)
+    || /\bchild\.on\(/u.test(value)
+    || /\bstdio:\s*["'][^"']+["']/u.test(value)
+    || /\benv:\s*process\.env\b/u.test(value)
+    || /\bJSON\.parse\(/u.test(value)
+    || /\b(?:readFileSync|writeFileSync)\(/u.test(value)
+    || /^\s*["'][^"']+["']:\s*/u.test(value)
+    || /^\s*[}\])][,;]?\s*$/u.test(value)
+    || /=>\s*\{?/u.test(value)
+  );
+}
+
 function fallbackNormalizeToolLines(lines: ToolStreamCleanupLine[]): string[] {
   const normalized: string[] = [];
   for (const line of lines) {
@@ -3923,7 +3949,11 @@ function fallbackNormalizeToolLines(lines: ToolStreamCleanupLine[]): string[] {
     if (!value) {
       continue;
     }
-    value = sanitizeUserFacingToolText(value) ?? value;
+    const sanitized = sanitizeUserFacingToolText(value);
+    if (!sanitized || isCodeLikeUserFacingText(sanitized)) {
+      continue;
+    }
+    value = sanitized;
     if (looksSensitiveKey(line.key)) {
       value = "[redacted]";
     }
@@ -8243,6 +8273,20 @@ async function runOrchestrator(
     result?: Record<string, unknown>;
   };
   let pendingWorkspaceExecution: PendingWorkspaceExecution | null = null;
+
+  const hasWorkspaceTaskStarted = async (toolName: "run_workspace_task") => {
+    if (pendingWorkspaceExecution?.toolName === toolName) {
+      return true;
+    }
+    if (liveToolTrace.some((entry) => entry.toolName === toolName)) {
+      return true;
+    }
+    if (toolHistory.some((entry) => entry.toolName === toolName)) {
+      return true;
+    }
+    const persistedToolCalls = await deps.store.listToolCalls(run.id);
+    return persistedToolCalls.some((toolCall) => toolCall.toolName === toolName);
+  };
   let runFinalized = false;
   const completedForegroundRetrievalCount = () =>
     toolHistory.filter((entry) => entry.toolName !== "create_workspace" && entry.toolName !== "run_workspace_task").length;
@@ -8463,7 +8507,7 @@ async function runOrchestrator(
     }
     if (
       completedWorkspaceRuntimeId
-      && !toolHistory.some((entry) => entry.toolName === "run_workspace_task")
+      && !(await hasWorkspaceTaskStarted("run_workspace_task"))
     ) {
       await startBackgroundTool(
         "run_workspace_task",
@@ -8577,7 +8621,7 @@ async function runOrchestrator(
     const verifiedWorkIds = uniqueWorkIds(
       seedChunks.map((chunk) => (typeof chunk.workId === "string" ? chunk.workId : null)),
     ).slice(0, candidateLimit);
-    const strictVerifiedFrontier = verifiedWorkIds.length >= (broadCorpusQuery ? 3 : 2);
+    const strictVerifiedFrontier = verifiedWorkIds.length >= 2;
     const candidateWorkIds = uniqueWorkIds(
       strictVerifiedFrontier
         ? [
@@ -8730,7 +8774,7 @@ async function runOrchestrator(
       }
       workspaceStartAttempts += 1;
     }
-    if (toolName === "run_workspace_task" && toolHistory.some((entry) => entry.toolName === "run_workspace_task")) {
+    if (toolName === "run_workspace_task" && await hasWorkspaceTaskStarted("run_workspace_task")) {
       return;
     }
     runtimeTasks += 1;
@@ -9134,7 +9178,7 @@ async function runOrchestrator(
       }
       if (
         !pendingWorkspaceExecution
-        && !toolHistory.some((entry) => entry.toolName === "run_workspace_task")
+        && !(await hasWorkspaceTaskStarted("run_workspace_task"))
       ) {
         const runtimeId = latestCompletedRuntimeId();
         if (runtimeId) {
