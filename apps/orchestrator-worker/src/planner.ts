@@ -447,6 +447,14 @@ function classifiedChunkPayload(context: PlannerContext): ChunkSearchResult[] {
   return (classifyResult?.chunks as ChunkSearchResult[] | undefined) ?? [];
 }
 
+function classifyFailureMessage(context: PlannerContext): string | null {
+  const classifyResult = context.toolHistory.find((item) => item.toolName === "classify_candidate_chunks")?.result;
+  if (classifyResult?.ok === false && typeof classifyResult.error === "string" && classifyResult.error.trim().length > 0) {
+    return classifyResult.error;
+  }
+  return null;
+}
+
 function verifiedWorkIds(chunks: ChunkSearchResult[], limit = 256): string[] {
   return uniqueWorkIds(chunks.map((chunk) => chunk.workId), limit);
 }
@@ -712,6 +720,7 @@ function buildWorkspaceTaskSpec(context: PlannerContext, workIds: string[], chun
 export class FallbackPlanner implements Planner {
   async decide(context: PlannerContext): Promise<PlannerDecision> {
     const broadCorpusQuery = isBroadCorpusQuery(context);
+    const classifyFailure = classifyFailureMessage(context);
     const estimate = scopeEstimate(context);
     const metadataLimit = Math.max(broadCorpusQuery ? 40 : 12, Math.min(60, estimateNumber(estimate, "recommendedFrontierWorks", broadCorpusQuery ? 40 : 12)));
     const workLimit = broadCorpusQuery
@@ -773,6 +782,14 @@ export class FallbackPlanner implements Planner {
           },
         };
       }
+    }
+
+    if (broadCorpusQuery && classifyFailure) {
+      return {
+        type: "final_answer",
+        answer: `The relevance filter failed, so I stopped instead of continuing with an unvetted passage pool. Error: ${classifyFailure}`,
+        citations: [],
+      };
     }
 
     if (!toolNames.includes("estimate_research_scope")) {
@@ -898,6 +915,8 @@ export class OpenAIPlanner implements Planner {
 
   async decide(context: PlannerContext): Promise<PlannerDecision> {
     const modelContext = summarizePlannerContext(context);
+    const broadCorpusQuery = isBroadCorpusQuery(context);
+    const classifyFailure = classifyFailureMessage(context);
     const body = {
       model: this.model,
       response_format: { type: "json_object" as const },
@@ -1049,6 +1068,13 @@ export class OpenAIPlanner implements Planner {
           },
         };
       }
+    }
+    if (broadCorpusQuery && classifyFailure) {
+      return {
+        type: "final_answer",
+        answer: `The relevance filter failed, so I stopped instead of continuing with an unvetted passage pool. Error: ${classifyFailure}`,
+        citations: [],
+      };
     }
     if (!hasToolStarted(context, "estimate_research_scope")) {
       const chunks = seedChunkPayload(context);

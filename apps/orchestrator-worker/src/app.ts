@@ -20,6 +20,7 @@ import { cleanupToolStreamWithWorkersAi, type ToolStreamCleanupLine } from "./to
 import type { Synthesizer, ToolHistoryEntry } from "./synthesizer";
 import type { AgentIdentityRecord, AnalyticsEventRecord, AppStore, MessageRecord, NotificationRecord, PassageSearchFilters, SessionRecord, UserRecord, WorkDetailRecord } from "./store";
 import type { WorkersAiBinding } from "./index";
+import { parseModelJsonObject } from "./json";
 
 export interface WorkerQueues {
   ingestName: string;
@@ -2522,7 +2523,12 @@ async function executeTool(
         if (!text) {
           throw new Error("Candidate chunk classifier returned an empty response.");
         }
-        const parsedPayload = JSON.parse(text) as { items?: Array<{ id?: string; score?: number; reason?: string }> };
+        let parsedPayload: { items?: Array<{ id?: string; score?: number; reason?: string }> };
+        try {
+          parsedPayload = parseModelJsonObject<{ items?: Array<{ id?: string; score?: number; reason?: string }> }>(text);
+        } catch {
+          throw new Error(`Candidate chunk classifier returned invalid JSON: ${text.replace(/\s+/gu, " ").slice(0, 240)}`);
+        }
         const items = Array.isArray(parsedPayload.items) ? parsedPayload.items : [];
         for (const item of items) {
           if (typeof item?.id !== "string" || typeof item?.score !== "number") {
@@ -9429,37 +9435,7 @@ async function runOrchestrator(
         ? extractCompletedBriefing(toolCall.tool_name, normalizedToolArgs, result)
         : null;
       if (completedBriefing) {
-        await deps.store.updateRun(run.id, {
-          status: "completed",
-          plannerTurns: turn,
-          completedAt: new Date().toISOString(),
-        });
-        await synthesizeAnswer(
-          deps,
-          {
-            request,
-            userId: session.userId,
-            sessionId: session.id,
-            runId: run.id,
-            userMessage: input.message,
-            conversationHistory,
-            plannerDraft: completedBriefing.answer,
-            plannerCitations: completedBriefing.citations,
-            toolHistory,
-            auditLog: recordRawLog,
-          },
-          send,
-        );
-        await send("run.completed", {
-          runId: run.id,
-          sessionId: session.id,
-          status: "completed",
-        });
-        recordRawLog("run.completed", {
-          runId: run.id,
-          sessionId: session.id,
-          status: "completed",
-        });
+        await completeRunFromBriefing(completedBriefing, "standard");
         return;
       }
     }
