@@ -31,6 +31,8 @@ npx tsx apps/ingest/src/index.ts ingest-supreme-court-demo
 
 That command falls back to local preview mode when infra env vars are not set.
 
+If you want the full operator path for setting up associative deep research on your own large corpus, use [docs/deep-research-setup.md](docs/deep-research-setup.md).
+
 ## What This Repo Is
 
 This repository is published as three things at once:
@@ -50,6 +52,7 @@ If you want to reuse the generic internals, start with:
 
 - [docs/oss-supported-surface.md](docs/oss-supported-surface.md)
 - [docs/oss-quickstart.md](docs/oss-quickstart.md)
+- [docs/deep-research-setup.md](docs/deep-research-setup.md)
 - [docs/bring-your-own-corpus.md](docs/bring-your-own-corpus.md)
 - [docs/adapter-architecture.md](docs/adapter-architecture.md)
 
@@ -84,6 +87,7 @@ If you want launch copy for the repo, see [docs/github-launch.md](docs/github-la
 The architecture overview lives in [docs/architecture.md](docs/architecture.md).
 The internal adapter seam for non-book corpora is documented in [docs/adapter-architecture.md](docs/adapter-architecture.md).
 The developer quickstart for adding another corpus is in [docs/bring-your-own-corpus.md](docs/bring-your-own-corpus.md).
+The full step-by-step setup guide for deep research on a large corpus is in [docs/deep-research-setup.md](docs/deep-research-setup.md).
 The supported open-source boundary is documented in [docs/oss-supported-surface.md](docs/oss-supported-surface.md).
 The local validation and fixture-corpus path is documented in [docs/oss-quickstart.md](docs/oss-quickstart.md).
 The open-source release checklist is in [docs/oss-release-checklist.md](docs/oss-release-checklist.md).
