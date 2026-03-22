@@ -5,9 +5,6 @@ import { serialize } from "cookie";
 
 import type { AppStore, UserRecord } from "./store";
 
-const SESSION_COOKIE_NAME = "alphabook_session";
-const STATE_COOKIE_NAME = "alphabook_auth_state";
-
 interface PendingAuthState {
   state: string;
   codeVerifier: string;
@@ -20,6 +17,7 @@ export interface AuthConfig {
   cookiePassword: string;
   frontendOrigin?: string;
   cookieDomain?: string;
+  cookiePrefix?: string;
   allowedHosts?: string[];
   defaultReaderName?: string;
 }
@@ -38,14 +36,53 @@ interface AuthenticatedSessionCookie {
   };
 }
 
+function cookiePrefix(config?: AuthConfig) {
+  return config?.cookiePrefix?.trim() || "alphabook";
+}
+
+function sessionCookieName(config?: AuthConfig) {
+  return `${cookiePrefix(config)}_session`;
+}
+
+function stateCookieName(config?: AuthConfig) {
+  return `${cookiePrefix(config)}_auth_state`;
+}
+
+function frontendHost(config?: AuthConfig): string | null {
+  if (!config?.frontendOrigin) {
+    return null;
+  }
+  try {
+    return new URL(config.frontendOrigin).hostname;
+  } catch {
+    return null;
+  }
+}
+
+function derivedCookieDomainFromHost(hostname: string): string | undefined {
+  if (
+    hostname === "localhost"
+    || hostname === "127.0.0.1"
+    || /^[0-9.]+$/u.test(hostname)
+    || hostname.endsWith(".workers.dev")
+  ) {
+    return undefined;
+  }
+  return `.${hostname.replace(/^www\./u, "")}`;
+}
+
 function deriveCookieDomain(url: URL, config?: AuthConfig): string | undefined {
   if (config?.cookieDomain) {
     return config.cookieDomain;
   }
-  if (url.hostname === "alpha-book.org" || url.hostname.endsWith(".alpha-book.org")) {
-    return ".alpha-book.org";
+  const configuredFrontendHost = frontendHost(config);
+  if (configuredFrontendHost) {
+    return derivedCookieDomainFromHost(configuredFrontendHost);
   }
-  return undefined;
+  if (url.hostname.startsWith("api.")) {
+    return derivedCookieDomainFromHost(url.hostname.slice(4));
+  }
+  return derivedCookieDomainFromHost(url.hostname);
 }
 
 function deriveFrontendOrigin(url: URL, config?: AuthConfig): string {
@@ -71,10 +108,15 @@ function safeReturnTo(value: string | null | undefined, fallback: string, config
   try {
     const url = new URL(value);
     const allowedHosts = new Set(config?.allowedHosts ?? []);
+    const configuredFrontendHost = frontendHost(config);
+    if (configuredFrontendHost) {
+      allowedHosts.add(configuredFrontendHost);
+    }
     if (allowedHosts.has(url.hostname)) {
       return url.toString();
     }
-    if (url.hostname === "alpha-book.org" || url.hostname.endsWith(".alpha-book.org")) {
+    const cookieDomain = deriveCookieDomain(url, config);
+    if (cookieDomain && url.hostname.endsWith(cookieDomain.replace(/^\./u, ""))) {
       return url.toString();
     }
     if (url.hostname === "localhost" || url.hostname === "127.0.0.1") {
@@ -154,12 +196,12 @@ function clearCookies(c: Context, cookieNames: string[], cookieDomain?: string) 
   }
 }
 
-function clearAuthCookies(c: Context, cookieDomain?: string) {
-  clearCookies(c, [SESSION_COOKIE_NAME, STATE_COOKIE_NAME], cookieDomain);
+function clearAuthCookies(c: Context, config?: AuthConfig, cookieDomain?: string) {
+  clearCookies(c, [sessionCookieName(config), stateCookieName(config)], cookieDomain);
 }
 
-function clearPendingAuthState(c: Context, cookieDomain?: string) {
-  clearCookies(c, [STATE_COOKIE_NAME], cookieDomain);
+function clearPendingAuthState(c: Context, config?: AuthConfig, cookieDomain?: string) {
+  clearCookies(c, [stateCookieName(config)], cookieDomain);
 }
 
 export class WorkOSAuth {
@@ -177,7 +219,7 @@ export class WorkOSAuth {
   }
 
   async getCurrentUser(c: Context): Promise<UserRecord | null> {
-    const sessionData = getCookie(c, SESSION_COOKIE_NAME);
+    const sessionData = getCookie(c, sessionCookieName(this.config));
     if (!sessionData) {
       return null;
     }
@@ -215,7 +257,7 @@ export class WorkOSAuth {
       ...(screenHint ? { screenHint } : {}),
     });
 
-    setCookie(c, STATE_COOKIE_NAME, encodeStateCookie({ state, codeVerifier, returnTo }), {
+    setCookie(c, stateCookieName(this.config), encodeStateCookie({ state, codeVerifier, returnTo }), {
       httpOnly: true,
       secure: requestUrl.protocol === "https:",
       sameSite: "Lax",
@@ -240,12 +282,12 @@ export class WorkOSAuth {
     const cookieDomain = deriveCookieDomain(requestUrl);
     const code = c.req.query("code");
     const state = c.req.query("state");
-    const pendingState = decodeStateCookie(getCookie(c, STATE_COOKIE_NAME));
+    const pendingState = decodeStateCookie(getCookie(c, stateCookieName(this.config)));
     const fallbackReturnTo = deriveFrontendOrigin(requestUrl);
     const returnTo = safeReturnTo(pendingState?.returnTo, fallbackReturnTo);
 
     if (!code || !state || !pendingState || pendingState.state !== state) {
-      clearAuthCookies(c, cookieDomain);
+      clearAuthCookies(c, this.config, cookieDomain);
       return c.redirect(`${returnTo}?auth_error=state_mismatch`, 302);
     }
 
@@ -263,7 +305,7 @@ export class WorkOSAuth {
         throw new Error("WorkOS did not return a sealed session.");
       }
 
-      setCookie(c, SESSION_COOKIE_NAME, authResponse.sealedSession, {
+      setCookie(c, sessionCookieName(this.config), authResponse.sealedSession, {
         httpOnly: true,
         secure: requestUrl.protocol === "https:",
         sameSite: "Lax",
@@ -271,7 +313,7 @@ export class WorkOSAuth {
         maxAge: 60 * 60 * 24 * 30,
         ...(cookieDomain ? { domain: cookieDomain } : {}),
       });
-      clearPendingAuthState(c, cookieDomain);
+      clearPendingAuthState(c, this.config, cookieDomain);
 
       await this.store.upsertUserProfile({
         id: authResponse.user.id,
@@ -282,7 +324,7 @@ export class WorkOSAuth {
 
       return c.redirect(returnTo, 302);
     } catch {
-      clearAuthCookies(c, cookieDomain);
+      clearAuthCookies(c, this.config, cookieDomain);
       return c.redirect(`${returnTo}?auth_error=callback_failed`, 302);
     }
   }
@@ -291,7 +333,7 @@ export class WorkOSAuth {
     const requestUrl = new URL(c.req.url);
     const cookieDomain = deriveCookieDomain(requestUrl);
     const returnTo = safeReturnTo(c.req.query("returnTo"), deriveFrontendOrigin(requestUrl));
-    const sessionData = getCookie(c, SESSION_COOKIE_NAME);
+    const sessionData = getCookie(c, sessionCookieName(this.config));
 
     let logoutUrl = returnTo;
     if (sessionData) {
@@ -312,7 +354,7 @@ export class WorkOSAuth {
       }
     }
 
-    clearAuthCookies(c, cookieDomain);
+    clearAuthCookies(c, this.config, cookieDomain);
 
     return logoutUrl;
   }

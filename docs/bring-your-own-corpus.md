@@ -2,6 +2,8 @@
 
 This repo can support another text corpus without changing AlphaBook's live book product, but the integration path is still developer-oriented.
 
+Before you start, read [implementation-isolation.md](implementation-isolation.md). The intended default is that each implementation gets its own wrappers, buckets, queues, runtime app, and branded config.
+
 ## What Stays AlphaBook-Specific
 
 - `apps/frontend`
@@ -161,6 +163,20 @@ Then add wrapper apps like:
 - `apps/mycorpus-runtime`
 
 Reuse the shared frontend, content worker, orchestrator, and runtime code just like AlphaJustice does.
+
+The fastest way to get the wrapper shape right is:
+
+```bash
+npm run implementation:scaffold -- \
+  --id mycorpus \
+  --product-name "MyCorpus" \
+  --site-origin https://mycorpus.org \
+  --api-origin https://api.mycorpus.org \
+  --content-origin https://content.mycorpus.org \
+  --account-id <cloudflare-account-id>
+```
+
+That command creates isolated wrapper directories so you do not accidentally reuse another implementation's resource names.
 
 If you only need the corpus inside an internal or single-product deployment, you may not need separate wrappers.
 

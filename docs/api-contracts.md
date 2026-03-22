@@ -18,12 +18,12 @@ Response:
 ```json
 {
   "status": "ok",
-  "service": "alphabook-orchestrator-worker",
+  "service": "<implementation-id>-orchestrator-worker",
   "database": "ok",
   "r2": "bound",
   "queues": {
-    "ingest": "alphabook-ingest",
-    "jobs": "alphabook-jobs"
+    "ingest": "<implementation-id>-ingest",
+    "jobs": "<implementation-id>-jobs"
   },
   "limits": {
     "maxTurns": 10,
@@ -62,7 +62,7 @@ Notes:
 
 Behavior:
 
-- returns the public markdown prompt that tells agents how to register, claim, and call AlphaBook from the CLI
+- returns the public markdown prompt that tells agents how to register, claim, and call the current implementation from the CLI
 
 ### `POST /api/v1/agents/register`
 

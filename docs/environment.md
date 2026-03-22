@@ -1,5 +1,7 @@
 # Environment Variables
 
+For any new implementation, do not reuse another implementation's bucket, queue, runtime app, or content origin in committed config. Use implementation-scoped names such as `<implementation-id>-corpus`, `<implementation-id>-ingest`, `<implementation-id>-jobs`, and `<implementation-id>-runtime`.
+
 ## Frontend
 
 - `VITE_API_BASE_URL`

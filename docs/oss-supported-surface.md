@@ -24,7 +24,9 @@ The supported open-source integration surface is:
 - `apps/ingest` via adapter-aware ingest flows
 - `apps/orchestrator-worker` repository, retrieval, and runtime seams used by the fixture and adapter tests
 - `apps/alphajustice-frontend`
+- `apps/alphajustice-content`
 - `apps/alphajustice-orchestrator`
+- `apps/alphajustice-runtime`
 - the neutral Worker API under `/api/v1/documents/*`
 
 These are the packages and codepaths covered by the OSS validation matrix in `npm run validate:oss`.
@@ -52,13 +54,15 @@ Those names remain stable for AlphaBook compatibility even though the underlying
 These parts of the repository are reference-app code, not generic platform requirements:
 
 - `apps/frontend`
+- `apps/book-content-worker`
 - `apps/alphajustice-frontend`
+- `apps/alphajustice-content`
 - book-reader and static book HTML flows
 - AlphaBook auth and account UX
 - AlphaBook social/profile/feed features
 - production `alpha-book.org` routing and branding
 
-AlphaJustice is a second implementation rather than a generic shell. It shares the platform code, but still has its own implementation-specific branding, routes, and deployment targets.
+AlphaJustice is a second implementation rather than a generic shell. It shares the platform code, but still has its own implementation-specific branding, routes, deployment targets, and isolated resource names.
 
 They can stay book-centric without blocking reuse of the platform layer.
 
@@ -72,6 +76,21 @@ Current intentional limitations:
 - the neutral document API is additive; it does not replace the AlphaBook compatibility API
 - the database schema still uses legacy `works`, `work_files`, `gutenberg_id`, and `book_html` tables/columns
 - the frontend app is a book-centric reference app, not a generic corpus UI
+
+## Isolation Contract
+
+New implementations should be isolated by default.
+
+That means:
+
+- separate wrapper apps
+- separate bucket names
+- separate queue names
+- separate runtime app names
+- separate cookie namespace
+- implementation-configured branding and prompts
+
+See [implementation-isolation.md](implementation-isolation.md).
 
 To make the schema boundary explicit, the database now also exposes additive neutral views:
 

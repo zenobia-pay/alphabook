@@ -195,6 +195,7 @@ function buildFetchHandler(env: Env) {
               workosApiKey: env.WORKOS_API_KEY,
               workosClientId: env.WORKOS_CLIENT_ID,
               cookiePassword: env.AUTH_COOKIE_PASSWORD,
+              cookiePrefix: implementation.id,
               frontendOrigin: implementation.siteOrigin,
               allowedHosts: [new URL(implementation.siteOrigin).hostname, "127.0.0.1", "localhost"],
               defaultReaderName: implementation.defaultReaderName,

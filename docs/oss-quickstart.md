@@ -64,6 +64,7 @@ Start from:
 
 - [bring-your-own-corpus.md](bring-your-own-corpus.md)
 - [adapter-architecture.md](adapter-architecture.md)
+- [implementation-isolation.md](implementation-isolation.md)
 
 The shortest path is:
 
@@ -81,6 +82,7 @@ If you want the full operational path, [bring-your-own-corpus.md](bring-your-own
 - DB and R2 provisioning
 - branded wrapper apps
 - deployment verification
+- implementation isolation rules
 
 ## 6. Understand The Product Boundary
 
