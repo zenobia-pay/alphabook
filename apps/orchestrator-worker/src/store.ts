@@ -1,5 +1,14 @@
 import type { DbClient } from "@alphabook/db";
+import {
+  workDetailToDocumentDetail,
+  workSummaryToDocumentSummary,
+} from "@alphabook/platform";
 import type { ChunkSearchResult, NotificationType, ToolName, WorkDetail, WorkSummary } from "@alphabook/shared";
+import type {
+  CorpusChunkRecord,
+  CorpusDocumentRecord,
+  CorpusFileRecord,
+} from "@alphabook/platform";
 
 const PASSAGE_SEARCH_TIMEOUT_MS = 45_000;
 
@@ -257,6 +266,19 @@ export interface WorkFileRecord {
   createdAt?: string;
 }
 
+export interface DocumentTextRecord {
+  documentId: string;
+  r2Key: string | null;
+}
+
+export type DocumentFileKind = WorkFileKind;
+
+export interface DocumentFileRecord extends CorpusFileRecord {
+  id: string;
+  kind: DocumentFileKind;
+  createdAt?: string;
+}
+
 export interface RuntimeInstanceRecord {
   id: string;
   sessionId: string;
@@ -383,16 +405,22 @@ export interface AppStore {
   listRunEvents(runId: string): Promise<RunEventRecord[]>;
   listWorks(offset?: number, limit?: number): Promise<WorkSummary[]>;
   countWorks(): Promise<number>;
+  listDocuments(offset?: number, limit?: number): Promise<CorpusDocumentRecord[]>;
+  countDocuments(): Promise<number>;
   refreshExploreFeedSnapshot(limit?: number): Promise<void>;
   getWorkById(workId: string): Promise<WorkDetailRecord | null>;
+  getDocumentById(documentId: string): Promise<CorpusDocumentRecord | null>;
   getWorksByIdPrefixes(prefixes: string[]): Promise<Array<{
     prefix: string;
     work: WorkDetailRecord;
   }>>;
   estimateWorkSetSize(workIds?: string[], filters?: PassageSearchFilters): Promise<WorkSetSizeEstimate>;
+  estimateDocumentSetSize(documentIds?: string[], filters?: PassageSearchFilters): Promise<WorkSetSizeEstimate>;
   estimateResearchScope(query: string, filters?: PassageSearchFilters): Promise<ResearchScopeEstimate>;
   searchWorks(query: string, filters?: Record<string, unknown>): Promise<WorkSummary[]>;
+  searchDocuments(query: string, filters?: Record<string, unknown>): Promise<CorpusDocumentRecord[]>;
   getWorkMetadata(workIds: string[]): Promise<WorkSummary[]>;
+  getDocumentMetadata(documentIds: string[]): Promise<CorpusDocumentRecord[]>;
   getRelevantChunks(
     query: string,
     workIds?: string[],
@@ -400,8 +428,17 @@ export interface AppStore {
     embedding?: number[],
     filters?: PassageSearchFilters,
   ): Promise<ChunkSearchResult[]>;
+  getRelevantDocumentChunks(
+    query: string,
+    documentIds?: string[],
+    limit?: number,
+    embedding?: number[],
+    filters?: PassageSearchFilters,
+  ): Promise<CorpusChunkRecord[]>;
   getWorkTextFile(workId: string): Promise<WorkTextRecord | null>;
+  getDocumentTextFile(documentId: string): Promise<DocumentTextRecord | null>;
   getWorkFiles(workIds: string[], kinds?: WorkFileKind[]): Promise<WorkFileRecord[]>;
+  getDocumentFiles(documentIds: string[], kinds?: DocumentFileKind[]): Promise<DocumentFileRecord[]>;
   getChunksByIds(chunkIds: string[]): Promise<ChunkSearchResult[]>;
   getChunkByWorkAndIndex(workId: string, chunkIndex: number): Promise<ChunkSearchResult | null>;
   listRuntimeInstances(sessionId: string): Promise<RuntimeInstanceRecord[]>;
@@ -461,6 +498,38 @@ type SeedChunk = ChunkSearchResult & {
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function mapWorkSummaryToDocument(work: WorkSummary): CorpusDocumentRecord {
+  return workSummaryToDocumentSummary(work);
+}
+
+function mapWorkDetailToDocument(work: WorkDetailRecord): CorpusDocumentRecord {
+  return workDetailToDocumentDetail(work);
+}
+
+function mapChunkToDocument(chunk: ChunkSearchResult): CorpusChunkRecord {
+  return {
+    id: chunk.id,
+    documentId: chunk.workId,
+    chunkIndex: chunk.chunkIndex,
+    text: chunk.text,
+    excerpt: chunk.excerpt,
+    r2Key: chunk.r2Key ?? null,
+    score: chunk.score,
+  };
+}
+
+function mapWorkFileToDocument(file: WorkFileRecord): DocumentFileRecord {
+  return {
+    id: file.id,
+    documentId: file.workId,
+    kind: file.kind,
+    r2Key: file.r2Key,
+    byteSize: file.byteSize,
+    metadata: file.metadata,
+    createdAt: file.createdAt,
+  };
 }
 
 function normalizeGutenbergId(value: number | string | null | undefined): number | null {
@@ -2366,6 +2435,15 @@ export class InMemoryAppStore implements AppStore {
     return this.works.length;
   }
 
+  async listDocuments(offset = 0, limit = 50): Promise<CorpusDocumentRecord[]> {
+    const works = await this.listWorks(offset, limit);
+    return works.map(mapWorkSummaryToDocument);
+  }
+
+  async countDocuments(): Promise<number> {
+    return this.countWorks();
+  }
+
   async refreshExploreFeedSnapshot(_limit = 512): Promise<void> {}
 
   async estimateWorkSetSize(workIds?: string[], filters: PassageSearchFilters = {}): Promise<WorkSetSizeEstimate> {
@@ -2382,6 +2460,10 @@ export class InMemoryAppStore implements AppStore {
       totalChunkCount: this.chunks.filter((chunk) => eligibleWorkIds.has(chunk.workId)).length,
       totalTextBytes: eligibleWorks.reduce((sum, work) => sum + (work.text?.length ?? 0), 0),
     };
+  }
+
+  async estimateDocumentSetSize(documentIds?: string[], filters: PassageSearchFilters = {}): Promise<WorkSetSizeEstimate> {
+    return this.estimateWorkSetSize(documentIds, filters);
   }
 
   async estimateResearchScope(query: string, filters: PassageSearchFilters = {}): Promise<ResearchScopeEstimate> {
@@ -2446,6 +2528,11 @@ export class InMemoryAppStore implements AppStore {
     };
   }
 
+  async getDocumentById(documentId: string): Promise<CorpusDocumentRecord | null> {
+    const work = await this.getWorkById(documentId);
+    return work ? mapWorkDetailToDocument(work) : null;
+  }
+
   async getWorksByIdPrefixes(prefixes: string[]): Promise<Array<{
     prefix: string;
     work: WorkDetailRecord;
@@ -2496,9 +2583,19 @@ export class InMemoryAppStore implements AppStore {
       .map((work) => toWorkSummary(work));
   }
 
+  async searchDocuments(query: string, filters: Record<string, unknown> = {}): Promise<CorpusDocumentRecord[]> {
+    const works = await this.searchWorks(query, filters);
+    return works.map(mapWorkSummaryToDocument);
+  }
+
   async getWorkMetadata(workIds: string[]): Promise<WorkSummary[]> {
     const set = new Set(workIds);
     return this.works.filter((work) => set.has(work.id)).map((work) => toWorkSummary(work));
+  }
+
+  async getDocumentMetadata(documentIds: string[]): Promise<CorpusDocumentRecord[]> {
+    const works = await this.getWorkMetadata(documentIds);
+    return works.map(mapWorkSummaryToDocument);
   }
 
   async getRelevantChunks(
@@ -2567,9 +2664,25 @@ export class InMemoryAppStore implements AppStore {
     return diversifyChunkResults(query, workIds, rankedRows, limit);
   }
 
+  async getRelevantDocumentChunks(
+    query: string,
+    documentIds?: string[],
+    limit = 8,
+    embedding?: number[],
+    filters: PassageSearchFilters = {},
+  ): Promise<CorpusChunkRecord[]> {
+    const chunks = await this.getRelevantChunks(query, documentIds, limit, embedding, filters);
+    return chunks.map(mapChunkToDocument);
+  }
+
   async getWorkTextFile(workId: string): Promise<WorkTextRecord | null> {
     const work = this.works.find((candidate) => candidate.id === workId);
     return work ? { workId, r2Key: work.cleanTextKey ?? null } : null;
+  }
+
+  async getDocumentTextFile(documentId: string): Promise<DocumentTextRecord | null> {
+    const record = await this.getWorkTextFile(documentId);
+    return record ? { documentId: record.workId, r2Key: record.r2Key } : null;
   }
 
   async getWorkFiles(workIds: string[], kinds?: WorkFileKind[]): Promise<WorkFileRecord[]> {
@@ -2615,6 +2728,11 @@ export class InMemoryAppStore implements AppStore {
         }
         return records;
       });
+  }
+
+  async getDocumentFiles(documentIds: string[], kinds?: DocumentFileKind[]): Promise<DocumentFileRecord[]> {
+    const files = await this.getWorkFiles(documentIds, kinds);
+    return files.map(mapWorkFileToDocument);
   }
 
   async getChunksByIds(chunkIds: string[]): Promise<ChunkSearchResult[]> {
@@ -4571,6 +4689,15 @@ export class NeonAppStore implements AppStore {
     return parsed;
   }
 
+  async listDocuments(offset = 0, limit = 50): Promise<CorpusDocumentRecord[]> {
+    const works = await this.listWorks(offset, limit);
+    return works.map(mapWorkSummaryToDocument);
+  }
+
+  async countDocuments(): Promise<number> {
+    return this.countWorks();
+  }
+
   async refreshExploreFeedSnapshot(limit = NeonAppStore.EXPLORE_FEED_DEFAULT_LIMIT): Promise<void> {
     await this.ensureAnalyticsSchema();
     await this.ensureExploreFeedSchema();
@@ -4967,6 +5094,10 @@ export class NeonAppStore implements AppStore {
     };
   }
 
+  async estimateDocumentSetSize(documentIds?: string[], filters: PassageSearchFilters = {}): Promise<WorkSetSizeEstimate> {
+    return this.estimateWorkSetSize(documentIds, filters);
+  }
+
   async getWorkById(workId: string): Promise<WorkDetailRecord | null> {
     const result = await this.db.query<{
       id: string;
@@ -5022,6 +5153,11 @@ export class NeonAppStore implements AppStore {
       }),
       metadata: row.metadata_json ?? {},
     };
+  }
+
+  async getDocumentById(documentId: string): Promise<CorpusDocumentRecord | null> {
+    const work = await this.getWorkById(documentId);
+    return work ? mapWorkDetailToDocument(work) : null;
   }
 
   async getWorksByIdPrefixes(prefixes: string[]): Promise<Array<{
@@ -5411,6 +5547,11 @@ export class NeonAppStore implements AppStore {
     }
   }
 
+  async searchDocuments(query: string, filters: Record<string, unknown> = {}): Promise<CorpusDocumentRecord[]> {
+    const works = await this.searchWorks(query, filters);
+    return works.map(mapWorkSummaryToDocument);
+  }
+
   async getWorkMetadata(workIds: string[]): Promise<WorkSummary[]> {
     const result = await this.db.query<{
       id: string;
@@ -5461,6 +5602,11 @@ export class NeonAppStore implements AppStore {
         metadata: row.metadata_json ?? {},
       }),
     );
+  }
+
+  async getDocumentMetadata(documentIds: string[]): Promise<CorpusDocumentRecord[]> {
+    const works = await this.getWorkMetadata(documentIds);
+    return works.map(mapWorkSummaryToDocument);
   }
 
   async getRelevantChunks(
@@ -5674,6 +5820,17 @@ export class NeonAppStore implements AppStore {
     return diversifyChunkResults(query, workIds, rankedRows, limit);
   }
 
+  async getRelevantDocumentChunks(
+    query: string,
+    documentIds?: string[],
+    limit = 8,
+    embedding?: number[],
+    filters: PassageSearchFilters = {},
+  ): Promise<CorpusChunkRecord[]> {
+    const chunks = await this.getRelevantChunks(query, documentIds, limit, embedding, filters);
+    return chunks.map(mapChunkToDocument);
+  }
+
   async getWorkTextFile(workId: string): Promise<WorkTextRecord | null> {
     const result = await this.db.query<{ work_id: string; r2_key: string | null }>(
       `
@@ -5686,6 +5843,11 @@ export class NeonAppStore implements AppStore {
     );
     const row = result.rows[0];
     return row ? { workId: row.work_id, r2Key: row.r2_key } : null;
+  }
+
+  async getDocumentTextFile(documentId: string): Promise<DocumentTextRecord | null> {
+    const record = await this.getWorkTextFile(documentId);
+    return record ? { documentId: record.workId, r2Key: record.r2Key } : null;
   }
 
   async getWorkFiles(workIds: string[], kinds?: WorkFileKind[]): Promise<WorkFileRecord[]> {
@@ -5717,6 +5879,11 @@ export class NeonAppStore implements AppStore {
       metadata: row.metadata_json,
       createdAt: row.created_at,
     }));
+  }
+
+  async getDocumentFiles(documentIds: string[], kinds?: DocumentFileKind[]): Promise<DocumentFileRecord[]> {
+    const files = await this.getWorkFiles(documentIds, kinds);
+    return files.map(mapWorkFileToDocument);
   }
 
   async getChunksByIds(chunkIds: string[]): Promise<ChunkSearchResult[]> {

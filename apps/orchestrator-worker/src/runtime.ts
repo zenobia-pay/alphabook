@@ -1,11 +1,10 @@
 import { artifactKeys, HARD_LIMITS, withLegacyWorkAliases, type CorpusWorkspaceDocument } from "@alphabook/corpus-core";
-import { ToolArgsSchemas, type WorkSummary } from "@alphabook/shared";
-import { gutenbergCorpusAdapter } from "@alphabook/source-gutenberg/adapter";
+import { defaultCorpusAdapter, ToolArgsSchemas, type WorkSummary } from "@alphabook/shared";
 import { createPlatformRepository } from "./platform-repository";
 
 import type { RuntimeToolGateway } from "./app";
 import type { BlobStore } from "./r2";
-import type { AppStore, RuntimeInstanceRecord, WorkFileKind, WorkFileRecord } from "./store";
+import type { AppStore, DocumentFileKind, DocumentFileRecord, RuntimeInstanceRecord } from "./store";
 
 type FetchLike = typeof fetch;
 
@@ -96,12 +95,12 @@ function sanitizeMachineName(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 55);
 }
 
-function groupWorkFiles(workIds: string[], files: WorkFileRecord[], metadata: WorkSummary[]) {
-  return workIds.map((workId): CorpusWorkspaceDocument => {
-    const workFiles = files.filter((file) => file.workId === workId);
-    const work = metadata.find((candidate) => candidate.id === workId);
+function groupDocumentFiles(documentIds: string[], files: DocumentFileRecord[], metadata: WorkSummary[]) {
+  return documentIds.map((documentId): CorpusWorkspaceDocument => {
+    const documentFiles = files.filter((file) => file.documentId === documentId);
+    const work = metadata.find((candidate) => candidate.id === documentId);
     return {
-      documentId: workId,
+      documentId,
       title: work?.title,
       contributors: work?.authors,
       language: work?.language ?? null,
@@ -109,8 +108,8 @@ function groupWorkFiles(workIds: string[], files: WorkFileRecord[], metadata: Wo
       rightsStatus: work?.rightsStatus ?? null,
       summary: work?.summary ?? null,
       subjects: work?.subjects,
-      cleanTextKey: workFiles.find((file) => file.kind === "clean")?.r2Key,
-      chunksKey: workFiles.find((file) => file.kind === "chunks")?.r2Key,
+      cleanTextKey: documentFiles.find((file) => file.kind === "clean")?.r2Key,
+      chunksKey: documentFiles.find((file) => file.kind === "chunks")?.r2Key,
     };
   });
 }
@@ -826,22 +825,22 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
       summary: document.summary ?? null,
       subjects: document.subjects ?? [],
     })) as WorkSummary[];
-    const workFiles = documentFiles.map((file) => ({
+    const corpusFiles = documentFiles.map((file) => ({
       id: `${file.documentId}:${file.kind}:${file.r2Key}`,
-      workId: file.documentId,
-      kind: file.kind as WorkFileKind,
+      documentId: file.documentId,
+      kind: file.kind as DocumentFileKind,
       r2Key: file.r2Key,
       byteSize: file.byteSize ?? null,
       metadata: file.metadata ?? {},
     }));
-    const fileCatalog = dedupeByKey(workFiles).map((file) => ({
-      documentId: file.workId,
+    const fileCatalog = dedupeByKey(corpusFiles).map((file) => ({
+      documentId: file.documentId,
       kind: file.kind,
       r2Key: file.r2Key,
       destinationPath:
         file.kind === "clean"
-          ? `books/${file.workId}/clean.txt`
-          : `chunks/${file.workId}/chunks.jsonl`,
+          ? `books/${file.documentId}/clean.txt`
+          : `chunks/${file.documentId}/chunks.jsonl`,
       byteSize: file.byteSize ?? null,
     }));
 
@@ -850,8 +849,8 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     const manifest = withLegacyWorkAliases({
       runtimeId,
       sessionId,
-      documents: groupWorkFiles(resolvedWorkIds, workFiles, workMetadata),
-      dataSchema: gutenbergCorpusAdapter.workspaceSchema,
+      documents: groupDocumentFiles(resolvedWorkIds, corpusFiles, workMetadata),
+      dataSchema: defaultCorpusAdapter.workspaceSchema,
       fileCatalog,
       selectedChunkIds: chunkIds,
       selectedChunks: selectedChunks.map((chunk) => ({

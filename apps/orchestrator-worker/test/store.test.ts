@@ -71,3 +71,54 @@ test("notifications support dedupe, unread counts, and read transitions", async 
   assert.equal(notifications.length, 2);
   assert.ok(notifications.every((notification) => notification.readAt));
 });
+
+test("document aliases expose neutral corpus records without changing work storage", async () => {
+  const store = new InMemoryAppStore([
+    {
+      id: "work-1",
+      gutenbergId: 42,
+      title: "Sample Book",
+      language: "en",
+      releaseDate: "1900-01-01",
+      rightsStatus: "public_domain",
+      summary: "Sample summary",
+      authors: ["Jane Doe"],
+      subjects: ["testing"],
+      metadata: {
+        rawKey: "gutenberg/raw/42/raw.txt",
+      },
+      cleanTextKey: "gutenberg/clean/42/clean.txt",
+      chunksKey: "gutenberg/clean/42/chunks.jsonl",
+      text: "First paragraph.\n\nSecond paragraph.",
+    } as never,
+  ], [
+    {
+      id: "chunk-1",
+      workId: "work-1",
+      chunkIndex: 0,
+      text: "First paragraph.",
+      excerpt: "First paragraph.",
+      r2Key: "gutenberg/clean/42/chunks.jsonl",
+    } as never,
+  ]);
+
+  const [documents, detail, files, textFile, chunks] = await Promise.all([
+    store.searchDocuments("sample"),
+    store.getDocumentById("work-1"),
+    store.getDocumentFiles(["work-1"], ["clean", "chunks"]),
+    store.getDocumentTextFile("work-1"),
+    store.getRelevantDocumentChunks("paragraph", ["work-1"], 4),
+  ]);
+
+  assert.equal(documents[0]?.id, "work-1");
+  assert.equal(documents[0]?.externalId, 42);
+  assert.equal(detail?.title, "Sample Book");
+  assert.deepEqual(detail?.contributors, ["Jane Doe"]);
+  assert.equal(files.length, 2);
+  assert.ok(files.every((file) => file.documentId === "work-1"));
+  assert.deepEqual(textFile, {
+    documentId: "work-1",
+    r2Key: "gutenberg/clean/42/clean.txt",
+  });
+  assert.equal(chunks[0]?.documentId, "work-1");
+});

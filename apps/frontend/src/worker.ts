@@ -1,5 +1,4 @@
-import { createCorpusAdapterRegistry } from "@alphabook/platform";
-import { gutenbergCorpusAdapter } from "@alphabook/source-gutenberg/adapter";
+import { defaultCorpusAdapter } from "@alphabook/shared";
 
 export interface Env {
   ASSETS: {
@@ -22,11 +21,6 @@ declare class HTMLRewriter {
 
 const SITE_ORIGIN = "https://alpha-book.org";
 const BOOK_CONTENT_CACHE_TTL_SECONDS = 60 * 60 * 4;
-const adapterRegistry = createCorpusAdapterRegistry({
-  adapters: [gutenbergCorpusAdapter],
-  defaultAdapterId: gutenbergCorpusAdapter.id,
-});
-
 type AssistantDocumentBootstrapPayload = {
   sessionId: string;
   runId: string;
@@ -59,7 +53,7 @@ const BOOK_CONTENT_ORIGIN = "https://books.alpha-book.org";
 const BOOK_CONTENT_VERSION = "20260320b";
 
 function buildBookHtmlKey(gutenbergId: string) {
-  return adapterRegistry.getDefault()?.artifactKeys.renderedDocument?.(gutenbergId) ?? `gutenberg/clean/${gutenbergId}/book.html`;
+  return defaultCorpusAdapter.artifactKeys.renderedDocument?.(gutenbergId) ?? `gutenberg/clean/${gutenbergId}/book.html`;
 }
 
 function resolveCanonicalUrl(requestUrl: URL) {
