@@ -4,8 +4,9 @@
 
 This repository is open sourced as:
 
+- `Alpha Research`, the shared platform
 - `AlphaBook`, the book-centric reference app
-- a reusable corpus-research platform layer that AlphaBook runs on
+- `AlphaJustice`, a Supreme Court implementation on the same architecture
 
 That split is deliberate. `alpha-book.org` remains book-specific, and the live browser product is not being rebranded into a generic corpus UI.
 
@@ -15,11 +16,15 @@ The supported open-source integration surface is:
 
 - `packages/corpus-core`
 - `packages/corpus-text`
+- `packages/implementations`
 - `packages/platform`
 - `packages/source-gutenberg`
 - `packages/source-fixture`
+- `packages/source-supreme-court`
 - `apps/ingest` via adapter-aware ingest flows
 - `apps/orchestrator-worker` repository, retrieval, and runtime seams used by the fixture and adapter tests
+- `apps/alphajustice-frontend`
+- `apps/alphajustice-orchestrator`
 - the neutral Worker API under `/api/v1/documents/*`
 
 These are the packages and codepaths covered by the OSS validation matrix in `npm run validate:oss`.
@@ -47,10 +52,13 @@ Those names remain stable for AlphaBook compatibility even though the underlying
 These parts of the repository are reference-app code, not generic platform requirements:
 
 - `apps/frontend`
+- `apps/alphajustice-frontend`
 - book-reader and static book HTML flows
 - AlphaBook auth and account UX
 - AlphaBook social/profile/feed features
 - production `alpha-book.org` routing and branding
+
+AlphaJustice is a second implementation rather than a generic shell. It shares the platform code, but still has its own implementation-specific branding, routes, and deployment targets.
 
 They can stay book-centric without blocking reuse of the platform layer.
 
@@ -83,9 +91,11 @@ This validation matrix also runs in CI through `.github/workflows/oss-validate.y
 
 That command covers:
 
+- implementation config typechecks and tests
 - platform typechecks and tests
 - adapter typechecks and tests
 - ingest typechecks and tests
+- implementation wrapper typechecks
 - shared compatibility typechecks
 - focused orchestrator repository/store tests
 

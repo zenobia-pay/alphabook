@@ -82,6 +82,7 @@ export class OpenAIRouter implements Router {
     private readonly model: string,
     private readonly fetchImpl: typeof fetch = (input, init) => fetch(input, init),
     private readonly billing?: BillingService,
+    private readonly systemPrompt: string = ROUTER_SYSTEM_PROMPT,
   ) {}
 
   async decide(context: RouterContext): Promise<RouterDecision> {
@@ -91,7 +92,7 @@ export class OpenAIRouter implements Router {
       messages: [
         {
           role: "system",
-          content: `${ROUTER_SYSTEM_PROMPT}\nReturn a single JSON object matching the requested output shape.`,
+          content: `${this.systemPrompt}\nReturn a single JSON object matching the requested output shape.`,
         },
         {
           role: "user",

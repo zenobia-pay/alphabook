@@ -259,7 +259,7 @@ function getDisplayLogLines(value: unknown) {
     if (!valueText) {
       return [];
     }
-    const candidate = {
+    const candidate: ToolLogLine = {
       key: typeof entry.key === "string" ? entry.key : "",
       value: valueText,
       tone:

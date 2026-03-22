@@ -83,16 +83,19 @@ export interface AppDeps {
       }>;
     };
   };
+  implementation?: {
+    id: string;
+    productName: string;
+    siteOrigin: string;
+    apiOrigin: string;
+    contentOrigin?: string;
+    allowedWebOrigins?: string[];
+    defaultUserName?: string;
+    defaultReaderName?: string;
+  };
 }
 
 type CreateAppInput = Partial<Omit<AppDeps, "store" | "billing">> & Pick<AppDeps, "store" | "billing">;
-
-const ALLOWED_WEB_ORIGINS = new Set([
-  "https://alpha-book.org",
-  "https://www.alpha-book.org",
-  "http://127.0.0.1:4193",
-  "http://localhost:4193",
-]);
 
 const AgentRegistrationRequestSchema = z.object({
   name: z.string().trim().min(1).max(120),
@@ -226,7 +229,7 @@ async function createX402PaymentRequired(
     error,
     resource: {
       url: request.url,
-      description: deps.x402.description ?? "AlphaBook CLI research access",
+      description: deps.x402.description ?? `${productName(deps)} CLI research access`,
       mimeType: "text/event-stream",
     },
     accepts: [
@@ -320,12 +323,12 @@ async function verifyAndSettleX402Payment(
       deps,
       request,
       billingCheck,
-      "Payment does not match AlphaBook's current x402 requirements.",
+      `Payment does not match ${productName(deps)}'s current x402 requirements.`,
     );
     return {
       ok: false as const,
       response: new Response(JSON.stringify({
-        error: "Payment does not match AlphaBook's current x402 requirements.",
+        error: `Payment does not match ${productName(deps)}'s current x402 requirements.`,
         code: "x402_payment_mismatch",
         paymentRequirements,
       }), {
@@ -418,16 +421,29 @@ function sseEvent(event: string, data: Record<string, unknown>): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
-function isAllowedWebOrigin(origin: string | null | undefined): boolean {
+function allowedWebOrigins(deps: AppDeps) {
+  return new Set([
+    ...(deps.implementation?.allowedWebOrigins ?? [
+      "https://alpha-book.org",
+      "https://www.alpha-book.org",
+    ]),
+    "http://127.0.0.1:4193",
+    "http://localhost:4193",
+    "http://127.0.0.1:4293",
+    "http://localhost:4293",
+  ]);
+}
+
+function isAllowedWebOrigin(deps: AppDeps, origin: string | null | undefined): boolean {
   if (!origin) {
     return false;
   }
-  return ALLOWED_WEB_ORIGINS.has(origin);
+  return allowedWebOrigins(deps).has(origin);
 }
 
-function applyCorsHeaders(c: Context, response: Response): Response {
+function applyCorsHeaders(deps: AppDeps, c: Context, response: Response): Response {
   const origin = c.req.header("origin");
-  if (!origin || !isAllowedWebOrigin(origin)) {
+  if (!origin || !isAllowedWebOrigin(deps, origin)) {
     return response;
   }
   response.headers.set("Access-Control-Allow-Origin", origin);
@@ -440,6 +456,21 @@ function analyticsKey(eventName: string) {
   const date = new Date().toISOString().slice(0, 10);
   const safeEvent = eventName.replace(/[^a-z0-9_-]+/gi, "-").toLowerCase();
   return `analytics/${date}/${Date.now()}-${crypto.randomUUID()}-${safeEvent}.json`;
+}
+
+function productName(deps: AppDeps) {
+  return deps.implementation?.productName ?? "AlphaBook";
+}
+
+function siteOrigin(deps: AppDeps) {
+  return deps.implementation?.siteOrigin ?? "https://alpha-book.org";
+}
+
+function apiOrigin(deps: AppDeps, request?: Request) {
+  if (deps.implementation?.apiOrigin) {
+    return deps.implementation.apiOrigin;
+  }
+  return request ? new URL(request.url).origin : "https://api.alpha-book.org";
 }
 
 async function persistAnalyticsEvent(
@@ -544,9 +575,9 @@ async function shouldSendIncidentAlert(deps: AppDeps, fingerprint: string) {
   });
 }
 
-async function sendIncidentAlert(webhookUrl: string, incident: Record<string, unknown>) {
+async function sendIncidentAlert(productLabel: string, webhookUrl: string, incident: Record<string, unknown>) {
   const text = [
-    "AlphaBook unexpected error",
+    `${productLabel} unexpected error`,
     typeof incident.service === "string" ? `service: ${incident.service}` : null,
     typeof incident.route === "string" ? `route: ${incident.route}` : null,
     typeof incident.toolName === "string" ? `tool: ${incident.toolName}` : null,
@@ -605,7 +636,7 @@ async function recordUnexpectedError(
   try {
     if (await shouldSendIncidentAlert(deps, incident.fingerprint)) {
       if (deps.errorAlertWebhookUrl) {
-        await sendIncidentAlert(deps.errorAlertWebhookUrl, incident);
+        await sendIncidentAlert(productName(deps), deps.errorAlertWebhookUrl, incident);
         alertDelivered = true;
       }
     }
@@ -5723,16 +5754,16 @@ async function sendRunCompletionEmail(
   const target = describeRunTarget(input.session, input.sessionTitle);
   const subject =
     input.status === "completed"
-      ? `AlphaBook research complete: ${input.sessionTitle?.trim() || "your thread"}`
+      ? `${productName(deps)} research complete: ${input.sessionTitle?.trim() || "your thread"}`
       : input.status === "failed"
-        ? `AlphaBook research failed: ${input.sessionTitle?.trim() || "your thread"}`
-        : `AlphaBook research timed out: ${input.sessionTitle?.trim() || "your thread"}`;
+        ? `${productName(deps)} research failed: ${input.sessionTitle?.trim() || "your thread"}`
+        : `${productName(deps)} research timed out: ${input.sessionTitle?.trim() || "your thread"}`;
   const text =
     input.status === "completed"
-      ? `Your AlphaBook research run for ${target} has completed.\n\nRun ID: ${input.runId}\n\nOpen AlphaBook to review the result.`
+      ? `Your ${productName(deps)} research run for ${target} has completed.\n\nRun ID: ${input.runId}\n\nOpen ${productName(deps)} to review the result.`
       : input.status === "failed"
-        ? `Your AlphaBook research run for ${target} failed.\n\nRun ID: ${input.runId}\n\nOpen AlphaBook to inspect the session and retry if needed.`
-        : `Your AlphaBook research run for ${target} timed out.\n\nRun ID: ${input.runId}\n\nOpen AlphaBook to inspect the session and retry if needed.`;
+        ? `Your ${productName(deps)} research run for ${target} failed.\n\nRun ID: ${input.runId}\n\nOpen ${productName(deps)} to inspect the session and retry if needed.`
+        : `Your ${productName(deps)} research run for ${target} timed out.\n\nRun ID: ${input.runId}\n\nOpen ${productName(deps)} to inspect the session and retry if needed.`;
 
   const response = await fetch("https://api.resend.com/emails", {
     method: "POST",
@@ -5961,7 +5992,7 @@ export async function reapStaleRuns(
   const staleRuns = allRuns
     .filter((run) => run.status === "running" || run.status === "queued")
     .slice(0, limit);
-  const janitorRequest = new Request("https://api.alpha-book.org/internal/janitor");
+  const janitorRequest = new Request(`${apiOrigin(deps)}/internal/janitor`);
   for (const run of staleRuns) {
     const runRecord = await deps.store.getRun(run.id);
     if (!runRecord) {
@@ -6212,7 +6243,7 @@ async function runAnalyticsQuery(
         {
           role: "system",
           content: [
-            "You are the AlphaBook analytics model.",
+            `You are the ${productName(deps)} analytics model.`,
             "Answer the admin's analytics question using only the supplied analytics events and user message corpus.",
             "Return JSON with this exact shape:",
             "{",
@@ -6575,9 +6606,9 @@ async function buildCitationPassageUrl(
   citation: Citation,
 ): Promise<string> {
   if (typeof citation.chunkId === "string" && citation.chunkId.trim().length > 0) {
-    return buildResearchDocumentChunkUrl(sessionId, citation.workId, citation.chunkId);
+    return buildResearchDocumentChunkUrl(siteOrigin(deps), sessionId, citation.workId, citation.chunkId);
   }
-  return buildResearchDocumentWorkUrl(sessionId, citation.workId);
+  return buildResearchDocumentWorkUrl(siteOrigin(deps), sessionId, citation.workId);
 }
 
 async function buildChunkIndexPassageUrl(
@@ -6611,7 +6642,7 @@ async function buildChunkPassageUrlFromChunk(
   chunk: Pick<ChunkSearchResult, "id" | "workId" | "text" | "excerpt">,
 ): Promise<string> {
   void deps;
-  return buildResearchDocumentChunkUrl(sessionId, chunk.workId, chunk.id);
+  return buildResearchDocumentChunkUrl(siteOrigin(deps), sessionId, chunk.workId, chunk.id);
 }
 
 async function rewriteAnswerWithCitationLinks(
@@ -7016,20 +7047,21 @@ function persistedPassageLocation(chunkIndex: number | null) {
   return `around passage ${chunkIndex}`;
 }
 
-function buildResearchDocumentWorkUrl(sessionId: string, workId: string) {
-  const url = new URL(`https://alpha-book.org/works/${encodeURIComponent(workId)}`);
+function buildResearchDocumentWorkUrl(siteBaseOrigin: string, sessionId: string, workId: string) {
+  const url = new URL(`${siteBaseOrigin}/works/${encodeURIComponent(workId)}`);
   url.searchParams.set("session", sessionId);
   return url.toString();
 }
 
-function buildResearchDocumentChunkUrl(sessionId: string, workId: string, chunkId: string) {
-  const url = new URL(`https://alpha-book.org/works/${encodeURIComponent(workId)}`);
+function buildResearchDocumentChunkUrl(siteBaseOrigin: string, sessionId: string, workId: string, chunkId: string) {
+  const url = new URL(`${siteBaseOrigin}/works/${encodeURIComponent(workId)}`);
   url.searchParams.set("session", sessionId);
   url.searchParams.set("chunk", chunkId);
   return url.toString();
 }
 
 function buildResearchDocumentPassageUrl(
+  siteBaseOrigin: string,
   sessionId: string,
   workId: string,
   passageId: string,
@@ -7038,7 +7070,7 @@ function buildResearchDocumentPassageUrl(
   if (!passageId || gutenbergId == null || String(gutenbergId).trim().length === 0) {
     return null;
   }
-  const url = new URL(`https://alpha-book.org/works/${encodeURIComponent(workId)}`);
+  const url = new URL(`${siteBaseOrigin}/works/${encodeURIComponent(workId)}`);
   url.searchParams.set("session", sessionId);
   url.searchParams.set("reader", `/${encodeURIComponent(String(gutenbergId))}/passages/${encodeURIComponent(passageId)}`);
   return url.toString();
@@ -7119,8 +7151,8 @@ async function renderBriefingInlineHtml(
           sessionId,
           resolved.id,
           Number.parseInt(range.split("-")[0] ?? range, 10),
-        ) ?? buildResearchDocumentWorkUrl(sessionId, resolved.id)
-      : buildResearchDocumentWorkUrl(sessionId, resolved.id);
+        ) ?? buildResearchDocumentWorkUrl(siteOrigin(deps), sessionId, resolved.id)
+      : buildResearchDocumentWorkUrl(siteOrigin(deps), sessionId, resolved.id);
     const placeholder = `@@BRIEFING_REF_${index}@@`;
     withPlaceholders = withPlaceholders.replace(match[0], placeholder);
     replacements.set(placeholder, buildResearchDocumentLink(label, href));
@@ -8037,7 +8069,7 @@ async function runOrchestrator(
         `detail:${toolCallId}:work:${workId ?? titleText}`,
         `<p class="assistant-document-entry is-book">${
           workId
-            ? buildResearchDocumentLink(line, buildResearchDocumentWorkUrl(session!.id, workId))
+            ? buildResearchDocumentLink(line, buildResearchDocumentWorkUrl(siteOrigin(deps), session!.id, workId))
             : escapeResearchHtml(line)
         }</p>`,
       );
@@ -8061,9 +8093,9 @@ async function runOrchestrator(
         || (workId ? await getResearchDocumentWorkTitle(workId) : null)
         || "Source";
       const href = workId && chunkId
-        ? buildResearchDocumentChunkUrl(session!.id, workId, chunkId)
+        ? buildResearchDocumentChunkUrl(siteOrigin(deps), session!.id, workId, chunkId)
         : workId
-          ? buildResearchDocumentWorkUrl(session!.id, workId)
+          ? buildResearchDocumentWorkUrl(siteOrigin(deps), session!.id, workId)
           : null;
       const sourceLabel = `Source: ${workTitle}, ${persistedPassageLocation(chunkIndex)}`;
       appendResearchDocumentOnce(
@@ -9832,6 +9864,7 @@ export function createApp(inputDeps: CreateAppInput) {
       // Fall through to the response even if incident capture fails.
     }
     return applyCorsHeaders(
+      deps,
       c,
       c.json({ error: error instanceof Error ? error.message : "Internal server error." }, 500),
     );
@@ -9843,7 +9876,7 @@ export function createApp(inputDeps: CreateAppInput) {
         if (!origin) {
           return origin;
         }
-        if (isAllowedWebOrigin(origin)) {
+        if (isAllowedWebOrigin(deps, origin)) {
           return origin;
         }
         return "";
@@ -9926,14 +9959,14 @@ export function createApp(inputDeps: CreateAppInput) {
       return null;
     }
     const origin = c.req.header("origin");
-    if (origin && isAllowedWebOrigin(origin)) {
+    if (origin && isAllowedWebOrigin(deps, origin)) {
       return null;
     }
     const secFetchSite = c.req.header("sec-fetch-site");
     if (secFetchSite === "same-origin" || secFetchSite === "same-site") {
       return null;
     }
-    return applyCorsHeaders(c, c.json({ error: "Cross-site requests are not allowed." }, 403));
+      return applyCorsHeaders(deps, c, c.json({ error: "Cross-site requests are not allowed." }, 403));
   }
 
   async function respondWithLoggedError(
@@ -9967,6 +10000,7 @@ export function createApp(inputDeps: CreateAppInput) {
       // Preserve the original response if incident capture fails.
     }
     return applyCorsHeaders(
+      deps,
       c,
       c.json({ error: error instanceof Error ? error.message : fallbackMessage }, 500),
     );
@@ -10008,21 +10042,21 @@ export function createApp(inputDeps: CreateAppInput) {
       "---",
       "name: alphabook",
       "version: 1.0.0",
-      "description: Agent-facing research access for AlphaBook's corpus and retrieval runtime.",
+      `description: Agent-facing research access for ${productName(deps)}'s corpus and retrieval runtime.`,
       `homepage: ${new URL(c.req.url).origin}`,
       `metadata: ${JSON.stringify({ alphabook: { api_base: apiBase, category: "research" } })}`,
       "---",
       "",
-      "# AlphaBook",
+      `# ${productName(deps)}`,
       "",
-      "If a human sends you this file, you are the AI agent that should connect to AlphaBook over the CLI.",
+      `If a human sends you this file, you are the AI agent that should connect to ${productName(deps)} over the CLI.`,
       "",
       "## What to do",
       "",
       "1. Register yourself.",
       "2. Save the returned `api_key`.",
       "3. Send the returned `claim_url` back to your human.",
-      "4. Tell them to open the claim URL while signed into AlphaBook.",
+      `4. Tell them to open the claim URL while signed into ${productName(deps)}.`,
       "5. Use the same API key for future research requests.",
       "",
       "## Register first",
@@ -10043,15 +10077,16 @@ export function createApp(inputDeps: CreateAppInput) {
       "## Run research from the CLI",
       "",
       "```bash",
-      `curl -N -X POST ${apiBase}/chat \\`,
+      `curl -N -X POST ${apiBase}/documents/chat \\`,
       "  -H \"Authorization: Bearer YOUR_API_KEY\" \\",
       "  -H \"Content-Type: application/json\" \\",
-      "  -d '{\"message\":\"Find public domain works about grief and exile\"}'",
+      "  -d '{\"message\":\"Find cases about equal protection and segregation\"}'",
       "```",
       "",
       "## Session endpoints",
       "",
-      `- \`POST ${apiBase}/chat\` streams a research run`,
+      `- \`POST ${apiBase}/chat\` streams the compatibility API`,
+      `- \`POST ${apiBase}/documents/chat\` streams the neutral document API`,
       `- \`GET ${apiBase}/sessions\` lists your sessions`,
       `- \`GET ${apiBase}/sessions/:sessionId/runs\` lists runs for a session`,
       `- \`GET ${apiBase}/sessions/:sessionId/runs/:runId\` returns run status, tool trace, and artifacts`,
@@ -10065,7 +10100,7 @@ export function createApp(inputDeps: CreateAppInput) {
       "",
       "## Billing",
       "",
-      "If AlphaBook replies with HTTP 402, inspect the JSON body plus the `PAYMENT-REQUIRED` or `payment-required` headers for x402 requirements.",
+      `If ${productName(deps)} replies with HTTP 402, inspect the JSON body plus the \`PAYMENT-REQUIRED\` or \`payment-required\` headers for x402 requirements.`,
       "When you pay, retry the same request with `PAYMENT-SIGNATURE` and read `PAYMENT-RESPONSE` on success.",
     ].join("\n");
     return c.text(skill, 200, {
@@ -10191,7 +10226,7 @@ export function createApp(inputDeps: CreateAppInput) {
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>AlphaBook agent claimed</title>
+    <title>${productName(deps)} agent claimed</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <style>
       body { font-family: Manrope, system-ui, sans-serif; background: #f6f0e7; color: #1f1c17; padding: 48px 24px; }
@@ -10203,7 +10238,7 @@ export function createApp(inputDeps: CreateAppInput) {
   <body>
     <main>
       <h1>Agent claimed</h1>
-      <p><strong>${claimed.name}</strong> is now attached to your AlphaBook account.</p>
+      <p><strong>${claimed.name}</strong> is now attached to your ${productName(deps)} account.</p>
       <p>The agent can keep using its existing API key over the CLI. Its verification code is <code>${claimed.verificationCode}</code>.</p>
       <p>You can close this tab and return to your agent.</p>
     </main>
@@ -10509,7 +10544,7 @@ export function createApp(inputDeps: CreateAppInput) {
 
   app.get("/auth/sign-out", async (c) => {
     if (!deps.auth?.isConfigured()) {
-      return c.redirect("https://alpha-book.org", 302);
+      return c.redirect(siteOrigin(deps), 302);
     }
     const redirectTo = await deps.auth.signOut(c);
     return c.redirect(redirectTo, 302);
@@ -10521,7 +10556,7 @@ export function createApp(inputDeps: CreateAppInput) {
       return trustedRequest;
     }
     if (!deps.auth?.isConfigured()) {
-      return c.json({ redirectTo: "https://alpha-book.org" });
+      return c.json({ redirectTo: siteOrigin(deps) });
     }
     const redirectTo = await deps.auth.signOut(c);
     return c.json({ redirectTo });

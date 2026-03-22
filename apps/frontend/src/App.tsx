@@ -184,14 +184,18 @@ const ASSISTANT_EFFORT_STORAGE_KEY = "alphabook.assistantEffort";
 const RECENT_SESSIONS_STORAGE_KEY = "alphabook.recentSessions";
 const BOOK_ASSISTANT_MIN_WIDTH = 320;
 const BOOK_ASSISTANT_MAX_WIDTH = 720;
-const SEO_SITE_NAME = "alpha book";
-const SEO_SITE_ORIGIN = "https://alpha-book.org";
-const BOOK_CONTENT_ORIGIN = "https://books.alpha-book.org";
+const IMPLEMENTATION_ID = (import.meta.env.VITE_IMPLEMENTATION_ID as string | undefined) ?? "alphabook";
+const PRODUCT_NAME = (import.meta.env.VITE_PRODUCT_NAME as string | undefined) ?? "AlphaBook";
+const DEFAULT_READER_NAME = (import.meta.env.VITE_DEFAULT_READER_NAME as string | undefined) ?? "AlphaBook Reader";
+const SEO_SITE_NAME = (import.meta.env.VITE_SITE_NAME as string | undefined) ?? "alpha book";
+const SEO_SITE_ORIGIN = (import.meta.env.VITE_SITE_ORIGIN as string | undefined) ?? "https://alpha-book.org";
+const BOOK_CONTENT_ORIGIN = (import.meta.env.VITE_CONTENT_ORIGIN as string | undefined) ?? "https://books.alpha-book.org";
 const BOOK_CONTENT_VERSION = "20260320b";
-const DEFAULT_SEO_DESCRIPTION = "Search, read, and ask questions across a growing library of books with cited answers.";
+const DEFAULT_SEO_DESCRIPTION = (import.meta.env.VITE_SITE_DESCRIPTION as string | undefined)
+  ?? "Search, read, and ask questions across a growing library of books with cited answers.";
 const DEFAULT_OG_IMAGE_PATH = "/social-card.svg";
 let hasAttemptedInitialFeedLoad = false;
-const GUEST_CLAIM_STORAGE_PREFIX = "alphabook:guest-claimed:";
+const GUEST_CLAIM_STORAGE_PREFIX = `${IMPLEMENTATION_ID}:guest-claimed:`;
 const ASSISTANT_WELCOME_SUGGESTIONS: ThreadSuggestion[] = [
   {
     icon: "search",
@@ -222,7 +226,7 @@ function upsertMetaTag(attribute: "name" | "property", key: string, content: str
   if (!(element instanceof HTMLMetaElement)) {
     element = document.createElement("meta");
     element.setAttribute(attribute, key);
-    document.head.append(element);
+    document.head.appendChild(element);
   }
   element.setAttribute("content", content);
 }
@@ -235,7 +239,7 @@ function upsertLinkTag(rel: string, href: string) {
   if (!(element instanceof HTMLLinkElement)) {
     element = document.createElement("link");
     element.setAttribute("rel", rel);
-    document.head.append(element);
+    document.head.appendChild(element);
   }
   element.setAttribute("href", href);
 }
@@ -249,7 +253,7 @@ function upsertJsonLdScript(id: string, payload: Record<string, unknown>) {
     element = document.createElement("script");
     element.id = id;
     element.type = "application/ld+json";
-    document.head.append(element);
+    document.head.appendChild(element);
   }
   element.textContent = JSON.stringify(payload);
 }
@@ -530,7 +534,7 @@ function createGuestProfile(id: string): UserProfile {
     id,
     email: null,
     handle: null,
-    name: "AlphaBook Reader",
+    name: DEFAULT_READER_NAME,
     avatarUrl: null,
     createdAt: new Date().toISOString(),
     followersCount: 0,
@@ -2235,7 +2239,7 @@ function summarizeToolSentence({
 }
 
 function displayName(user: UserProfile | null) {
-  return user?.name?.trim() || user?.email?.split("@")[0] || "AlphaBook Reader";
+  return user?.name?.trim() || user?.email?.split("@")[0] || DEFAULT_READER_NAME;
 }
 
 function profileHandle(user: UserProfile | null) {
@@ -5028,7 +5032,7 @@ export default function App() {
         ? activeWork?.title ?? "Book"
         : activeView === "admin"
           ? "Admin"
-          : NAV_ITEMS.find((item) => item.id === activeView)?.label ?? "AlphaBook";
+          : NAV_ITEMS.find((item) => item.id === activeView)?.label ?? PRODUCT_NAME;
   const authLocked = authState.authConfigured && !authState.user;
   const hasAuthenticatedUser = Boolean(authState.user);
   const authPending = authState.loading;

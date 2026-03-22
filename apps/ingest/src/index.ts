@@ -22,6 +22,11 @@ import {
 } from "@alphabook/source-fixture";
 import { gutenbergCorpusAdapter } from "@alphabook/source-gutenberg/adapter";
 import { listMirrorIds, resolveMirrorSource } from "@alphabook/source-gutenberg/mirror";
+import {
+  supremeCourtCases,
+  supremeCourtCaseSources,
+  supremeCourtCorpusAdapter,
+} from "@alphabook/source-supreme-court";
 
 interface IngestContext {
   db: ReturnType<typeof createNeonDb>;
@@ -1761,6 +1766,145 @@ async function ingestFixtureDocument(context: IngestContext, documentId?: string
   };
 }
 
+function buildLocalPreviewResult(
+  adapter: CorpusAdapter,
+  source: CorpusIngestSourceInput,
+) {
+  const prepared = prepareCorpusIngest(adapter, {
+    ...source,
+    renderedArtifacts: buildRenderedArtifactsForSource(source),
+  });
+
+  return {
+    externalId: source.externalId,
+    corpusAdapterId: source.adapterId,
+    title: source.title,
+    chunkCount: prepared.chunks.length,
+    rawKey: prepared.rawKey,
+    metadataKey: prepared.metadataKey,
+    cleanKey: prepared.cleanKey,
+    chunksKey: prepared.chunksKey,
+    renderedDocumentKey: prepared.renderedDocumentKey,
+    renderedManifestKey: prepared.renderedManifestKey,
+    sampleChunk: prepared.chunks[0] ?? null,
+    metadataPayload: prepared.metadataPayload,
+  };
+}
+
+async function previewFixtureDocument(documentId?: string) {
+  const selected = documentId
+    ? fixtureDocuments.filter((document) => document.id === documentId)
+    : fixtureDocuments;
+  if (selected.length === 0) {
+    throw new Error(`Unknown fixture document: ${documentId}`);
+  }
+
+  return {
+    corpusAdapterId: fixtureCorpusAdapter.id,
+    previewOnly: true,
+    results: selected.map((document) => {
+      const rawSource = fixtureDocumentSources[document.id];
+      if (!rawSource) {
+        throw new Error(`Missing fixture source text for ${document.id}`);
+      }
+      return buildLocalPreviewResult(fixtureCorpusAdapter, {
+        adapterId: fixtureCorpusAdapter.id,
+        externalId: document.id,
+        title: document.title,
+        rawSource,
+        rawText: rawSource,
+        sourceFormat: "text",
+        authors: [...document.contributors],
+        subjects: [...document.subjects],
+        language: document.language ?? null,
+        rightsStatus: document.rightsStatus ?? null,
+        summary: document.summary ?? null,
+        metadata: {
+          ...document.metadata,
+          source: "fixture-corpus",
+        },
+      });
+    }),
+  };
+}
+
+async function ingestSupremeCourtDemo(context: IngestContext, documentId?: string) {
+  const selected = documentId
+    ? supremeCourtCases.filter((document) => document.id === documentId)
+    : supremeCourtCases;
+  if (selected.length === 0) {
+    throw new Error(`Unknown supreme court demo case: ${documentId}`);
+  }
+  const results = [];
+  for (const document of selected) {
+    const rawSource = supremeCourtCaseSources[document.id];
+    if (!rawSource) {
+      throw new Error(`Missing supreme court source text for ${document.id}`);
+    }
+    results.push(await persistIngestedWork(context, supremeCourtCorpusAdapter, {
+      adapterId: supremeCourtCorpusAdapter.id,
+      externalId: document.id,
+      title: document.title,
+      rawSource,
+      rawText: rawSource,
+      sourceFormat: "text",
+      authors: [...document.contributors],
+      subjects: [...document.subjects],
+      language: document.language ?? null,
+      rightsStatus: document.rightsStatus ?? null,
+      releaseDate: document.publishedAt ?? null,
+      summary: document.summary ?? null,
+      metadata: {
+        ...document.metadata,
+        source: "supreme-court-demo",
+      },
+    }));
+  }
+  return {
+    corpusAdapterId: supremeCourtCorpusAdapter.id,
+    inserted: results.length,
+    results,
+  };
+}
+
+async function previewSupremeCourtDemo(documentId?: string) {
+  const selected = documentId
+    ? supremeCourtCases.filter((document) => document.id === documentId)
+    : supremeCourtCases;
+  if (selected.length === 0) {
+    throw new Error(`Unknown supreme court demo case: ${documentId}`);
+  }
+
+  return {
+    corpusAdapterId: supremeCourtCorpusAdapter.id,
+    previewOnly: true,
+    results: selected.map((document) => {
+      const rawSource = supremeCourtCaseSources[document.id];
+      if (!rawSource) {
+        throw new Error(`Missing supreme court source text for ${document.id}`);
+      }
+      return buildLocalPreviewResult(supremeCourtCorpusAdapter, {
+        adapterId: supremeCourtCorpusAdapter.id,
+        externalId: document.id,
+        title: document.title,
+        rawSource,
+        rawText: rawSource,
+        sourceFormat: "text",
+        authors: [...document.contributors],
+        subjects: [...document.subjects],
+        language: document.language ?? null,
+        rightsStatus: document.rightsStatus ?? null,
+        releaseDate: document.publishedAt ?? null,
+        summary: document.summary ?? null,
+        metadata: {
+          ...document.metadata,
+          source: "supreme-court-demo",
+        },
+      });
+    }),
+  };
+}
+
 async function deleteGutenbergWorks(context: IngestContext, gutenbergIds: string[]) {
   const ids = [...new Set(gutenbergIds.map((id) => id.trim()).filter(Boolean))];
   if (ids.length === 0) {
@@ -2386,9 +2530,27 @@ async function buildContext(): Promise<IngestContext> {
   };
 }
 
+function requireContext(context: IngestContext | null): IngestContext {
+  if (!context) {
+    throw new Error("DATABASE_URL, R2_BUCKET_NAME, R2_ENDPOINT, R2_ACCESS_KEY_ID, and R2_SECRET_ACCESS_KEY are required.");
+  }
+  return context;
+}
+
 async function main() {
   const [command, ...args] = process.argv.slice(2);
-  const context = await buildContext();
+  const requiresContext = !["ingest-fixture", "ingest-supreme-court-demo"].includes(command ?? "");
+  let context: IngestContext | null = null;
+
+  if (requiresContext) {
+    context = await buildContext();
+  } else {
+    try {
+      context = await buildContext();
+    } catch {
+      context = null;
+    }
+  }
 
   try {
     if (command === "ingest-url") {
@@ -2396,7 +2558,7 @@ async function main() {
       if (!gutenbergId || !sourceUrl || titleParts.length === 0) {
         throw new Error("Usage: ingest-url <gutenbergId> <sourceUrl> <title>");
       }
-      const result = await ingestUrl(context, gutenbergId, sourceUrl, titleParts.join(" "));
+      const result = await ingestUrl(requireContext(context), gutenbergId, sourceUrl, titleParts.join(" "));
       console.log(JSON.stringify(result, null, 2));
       return;
     }
@@ -2406,20 +2568,37 @@ async function main() {
       if (!gutenbergId) {
         throw new Error("Usage: ingest-gutenberg <gutenbergId> [title]");
       }
-      const result = await ingestFromMirror(context, gutenbergId, titleParts.length ? titleParts.join(" ") : undefined);
+      const result = await ingestFromMirror(
+        requireContext(context),
+        gutenbergId,
+        titleParts.length ? titleParts.join(" ") : undefined,
+      );
       console.log(JSON.stringify(result, null, 2));
       return;
     }
 
     if (command === "ingest-fixture") {
       const [documentId] = args;
-      const result = await ingestFixtureDocument(context, documentId && documentId !== "-" ? documentId : undefined);
+      const resolvedDocumentId = documentId && documentId !== "-" ? documentId : undefined;
+      const result = context
+        ? await ingestFixtureDocument(context, resolvedDocumentId)
+        : await previewFixtureDocument(resolvedDocumentId);
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
+    if (command === "ingest-supreme-court-demo") {
+      const [documentId] = args;
+      const resolvedDocumentId = documentId && documentId !== "-" ? documentId : undefined;
+      const result = context
+        ? await ingestSupremeCourtDemo(context, resolvedDocumentId)
+        : await previewSupremeCourtDemo(resolvedDocumentId);
       console.log(JSON.stringify(result, null, 2));
       return;
     }
 
     if (command === "run-once") {
-      const result = await backfillMirror(context, {
+      const result = await backfillMirror(requireContext(context), {
         limit: Number(process.env.MIRROR_BATCH_SIZE ?? "25"),
         checkpointPath: process.env.MIRROR_CHECKPOINT_PATH ?? ".alphabook/ingest-checkpoint.json",
       });
@@ -2429,7 +2608,7 @@ async function main() {
 
     if (command === "backfill-mirror") {
       const [startAfterId, limitValue] = args;
-      const result = await backfillMirror(context, {
+      const result = await backfillMirror(requireContext(context), {
         startAfterId: startAfterId && startAfterId !== "-" ? startAfterId : null,
         limit: Number(limitValue ?? process.env.MIRROR_BATCH_SIZE ?? "100"),
         checkpointPath: process.env.MIRROR_CHECKPOINT_PATH ?? ".alphabook/ingest-checkpoint.json",
@@ -2440,7 +2619,7 @@ async function main() {
 
     if (command === "backfill-mirror-parallel") {
       const [startAfterId, limitValue, concurrencyValue] = args;
-      const result = await backfillMirrorParallel(context, {
+      const result = await backfillMirrorParallel(requireContext(context), {
         startAfterId: startAfterId && startAfterId !== "-" ? startAfterId : null,
         limit: Number(limitValue ?? process.env.MIRROR_BATCH_SIZE ?? "100"),
         checkpointPath: process.env.MIRROR_CHECKPOINT_PATH ?? ".alphabook/ingest-checkpoint.json",
@@ -2452,7 +2631,7 @@ async function main() {
 
     if (command === "backfill-book-html") {
       const [startAfterId, limitValue, concurrencyValue] = args;
-      const result = await backfillBookHtml(context, {
+      const result = await backfillBookHtml(requireContext(context), {
         startAfterId: startAfterId && startAfterId !== "-" ? startAfterId : null,
         limit: Number(limitValue ?? process.env.BOOK_HTML_BATCH_SIZE ?? "100"),
         concurrency: Number(concurrencyValue ?? process.env.BOOK_HTML_BACKFILL_CONCURRENCY ?? "8"),
@@ -2463,7 +2642,7 @@ async function main() {
 
     if (command === "rebuild-book-html") {
       const [startAfterId, limitValue, concurrencyValue] = args;
-      const result = await rebuildBookHtml(context, {
+      const result = await rebuildBookHtml(requireContext(context), {
         startAfterId: startAfterId && startAfterId !== "-" ? startAfterId : null,
         limit: Number(limitValue ?? process.env.BOOK_HTML_BATCH_SIZE ?? "100"),
         concurrency: Number(concurrencyValue ?? process.env.BOOK_HTML_REBUILD_CONCURRENCY ?? "8"),
@@ -2477,7 +2656,7 @@ async function main() {
       if (!createdAtFrom || !createdAtTo) {
         throw new Error("Usage: rebuild-book-html-created-at <createdAtFrom> <createdAtTo> [startAfterId|-] [limit] [concurrency]");
       }
-      const result = await rebuildBookHtmlByCreatedAt(context, {
+      const result = await rebuildBookHtmlByCreatedAt(requireContext(context), {
         createdAtFrom,
         createdAtTo,
         startAfterId: startAfterId && startAfterId !== "-" ? startAfterId : null,
@@ -2492,7 +2671,7 @@ async function main() {
       if (args.length === 0) {
         throw new Error("Usage: delete-gutenberg <gutenbergId...>");
       }
-      const result = await deleteGutenbergWorks(context, args);
+      const result = await deleteGutenbergWorks(requireContext(context), args);
       console.log(JSON.stringify(result, null, 2));
       return;
     }
@@ -2501,6 +2680,7 @@ async function main() {
     console.log("  ingest-url <gutenbergId> <sourceUrl> <title>");
     console.log("  ingest-gutenberg <gutenbergId> [title]");
     console.log("  ingest-fixture [documentId|-]");
+    console.log("  ingest-supreme-court-demo [caseId|-]");
     console.log("  backfill-mirror [startAfterId|-] [limit]");
     console.log("  backfill-mirror-parallel [startAfterId|-] [limit] [concurrency]");
     console.log("  backfill-book-html [startAfterId|-] [limit] [concurrency]");
@@ -2509,8 +2689,8 @@ async function main() {
     console.log("  delete-gutenberg <gutenbergId...>");
     console.log("  run-once");
   } finally {
-    await context.db.end();
-    context.r2.destroy();
+    await context?.db.end();
+    context?.r2.destroy();
   }
 }
 

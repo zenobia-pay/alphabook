@@ -911,6 +911,7 @@ export class OpenAIPlanner implements Planner {
     private readonly model: string,
     private readonly fetchImpl: typeof fetch = (input, init) => fetch(input, init),
     private readonly billing?: BillingService,
+    private readonly systemPrompt: string = PLANNER_SYSTEM_PROMPT,
   ) {}
 
   async decide(context: PlannerContext): Promise<PlannerDecision> {
@@ -923,7 +924,7 @@ export class OpenAIPlanner implements Planner {
       messages: [
         {
           role: "system",
-          content: `${PLANNER_SYSTEM_PROMPT}\nReturn a single JSON object that matches the requested output shape.`,
+          content: `${this.systemPrompt}\nReturn a single JSON object that matches the requested output shape.`,
         },
         {
           role: "user",

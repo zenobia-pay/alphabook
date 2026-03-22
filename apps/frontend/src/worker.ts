@@ -6,6 +6,8 @@ export interface Env {
   };
   BOOK_CONTENT_BUCKET: R2Bucket;
   API_ORIGIN?: string;
+  SITE_ORIGIN?: string;
+  CONTENT_ORIGIN?: string;
 }
 
 type RewriterElement = {
@@ -19,7 +21,6 @@ declare class HTMLRewriter {
   transform(response: Response): Response;
 }
 
-const SITE_ORIGIN = "https://alpha-book.org";
 const BOOK_CONTENT_CACHE_TTL_SECONDS = 60 * 60 * 4;
 type AssistantDocumentBootstrapPayload = {
   sessionId: string;
@@ -49,18 +50,26 @@ type WorkPageBootstrapPayload = {
   errorStatus?: number;
 };
 
-const BOOK_CONTENT_ORIGIN = "https://books.alpha-book.org";
 const BOOK_CONTENT_VERSION = "20260320b";
 
 function buildBookHtmlKey(gutenbergId: string) {
   return defaultCorpusAdapter.artifactKeys.renderedDocument?.(gutenbergId) ?? `gutenberg/clean/${gutenbergId}/book.html`;
 }
 
-function resolveCanonicalUrl(requestUrl: URL) {
+function resolveSiteOrigin(env: Env) {
+  return env.SITE_ORIGIN ?? "https://alpha-book.org";
+}
+
+function resolveContentOrigin(env: Env) {
+  return env.CONTENT_ORIGIN ?? "https://books.alpha-book.org";
+}
+
+function resolveCanonicalUrl(requestUrl: URL, env: Env) {
+  const siteOrigin = resolveSiteOrigin(env);
   if (requestUrl.pathname.startsWith("/works/") || requestUrl.pathname.startsWith("/u/")) {
-    return new URL(`${requestUrl.pathname}${requestUrl.hash}`, SITE_ORIGIN).toString();
+    return new URL(`${requestUrl.pathname}${requestUrl.hash}`, siteOrigin).toString();
   }
-  return `${SITE_ORIGIN}/`;
+  return `${siteOrigin}/`;
 }
 
 function escapeInlineJson(value: unknown) {
@@ -280,21 +289,21 @@ function renderAssistantSessionMarkup(bootstrap: AssistantSessionBootstrapPayloa
   ].join("");
 }
 
-function buildWorkContentHref(workId: string, gutenbergId?: string | number | null) {
+function buildWorkContentHref(env: Env, workId: string, gutenbergId?: string | number | null) {
   if (gutenbergId != null && String(gutenbergId).trim().length > 0) {
-    return `${BOOK_CONTENT_ORIGIN}/${encodeURIComponent(String(gutenbergId))}/?v=${BOOK_CONTENT_VERSION}`;
+    return `${resolveContentOrigin(env)}/${encodeURIComponent(String(gutenbergId))}/?v=${BOOK_CONTENT_VERSION}`;
   }
   return `/api/works/${encodeURIComponent(workId)}/content?v=${BOOK_CONTENT_VERSION}`;
 }
 
-function renderWorkPageMarkup(bootstrap: WorkPageBootstrapPayload | null) {
+function renderWorkPageMarkup(env: Env, bootstrap: WorkPageBootstrapPayload | null) {
   if (!bootstrap || bootstrap.error || !bootstrap.work || typeof bootstrap.work !== "object") {
     return null;
   }
   const work = bootstrap.work as { id?: unknown; title?: unknown; gutenbergId?: unknown };
   const workId = typeof work.id === "string" ? work.id : bootstrap.workId;
   const title = typeof work.title === "string" && work.title.trim().length > 0 ? work.title.trim() : "Book text";
-  const frameHref = buildWorkContentHref(workId, typeof work.gutenbergId === "string" || typeof work.gutenbergId === "number" ? work.gutenbergId : null);
+  const frameHref = buildWorkContentHref(env, workId, typeof work.gutenbergId === "string" || typeof work.gutenbergId === "number" ? work.gutenbergId : null);
   return [
     `<section class="book-page" style="--book-assistant-width:420px" data-ssr="work-page">`,
     `<div class="book-reader-pane">`,
@@ -490,7 +499,8 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname.startsWith("/book-content-static/")) {
-      const cached = await caches.default.match(request);
+      const staticCache = await caches.open("book-content-static");
+      const cached = await staticCache.match(request);
       if (cached) {
         return cached;
       }
@@ -518,7 +528,7 @@ export default {
         status: 200,
         headers,
       });
-      ctx.waitUntil(caches.default.put(request, response.clone()));
+      ctx.waitUntil(staticCache.put(request, response.clone()));
       return response;
     }
 
@@ -544,7 +554,7 @@ export default {
     ]);
     const headers = new Headers(response.headers);
     headers.set("x-alphabook-surface", "frontend-worker");
-    const canonicalUrl = resolveCanonicalUrl(url);
+    const canonicalUrl = resolveCanonicalUrl(url, env);
     const robots = url.searchParams.get("view") === "admin" ? "noindex, nofollow" : "index, follow";
     headers.set("x-robots-tag", robots);
 
@@ -554,7 +564,7 @@ export default {
     let injectedWorkPageBootstrap = false;
     const assistantDocumentMarkup = renderAssistantDocumentMarkup(assistantDocumentBootstrap);
     const assistantSessionMarkup = renderAssistantSessionMarkup(assistantSessionBootstrap);
-    const workPageMarkup = renderWorkPageMarkup(workPageBootstrap);
+    const workPageMarkup = renderWorkPageMarkup(env, workPageBootstrap);
     const body = contentType.includes("text/html")
       ? new HTMLRewriter()
         .on("link[rel='canonical']", {

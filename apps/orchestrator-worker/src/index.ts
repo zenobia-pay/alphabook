@@ -1,4 +1,10 @@
 import { createNeonDb } from "@alphabook/db";
+import {
+  buildPlannerPrompt,
+  buildRouterPrompt,
+  buildSynthesizerPrompt,
+  getImplementationConfig,
+} from "@alphabook/implementations";
 
 import { createApp, reapExpiredRuntimeInstances, reapStaleRuns } from "./app";
 import { WorkOSAuth } from "./auth";
@@ -58,6 +64,9 @@ export interface Env {
   ERROR_ALERT_WEBHOOK_URL?: string;
   RESEND_API_KEY?: string;
   RESEND_FROM_EMAIL?: string;
+  IMPLEMENTATION_ID?: string;
+  SITE_ORIGIN?: string;
+  API_ORIGIN?: string;
   X402_ENABLED?: string;
   X402_PAY_TO?: string;
   X402_NETWORK?: string;
@@ -116,6 +125,14 @@ function buildFetchHandler(env: Env) {
   if (!env.OPENAI_API_KEY) {
     throw new Error("OPENAI_API_KEY is required.");
   }
+  const implementation = (() => {
+    const base = getImplementationConfig(env.IMPLEMENTATION_ID);
+    return {
+      ...base,
+      siteOrigin: env.SITE_ORIGIN ?? base.siteOrigin,
+      apiOrigin: env.API_ORIGIN ?? base.apiOrigin,
+    };
+  })();
   const db = createNeonDb(env.DATABASE_URL);
   const store = new NeonAppStore(db);
   const blobStore = new CloudflareR2Store(env.CORPUS_BUCKET);
@@ -129,8 +146,20 @@ function buildFetchHandler(env: Env) {
       }>
       : undefined,
   });
-  const router = new OpenAIRouter(env.OPENAI_API_KEY, env.OPENAI_MODEL ?? "gpt-5.2", undefined, billing);
-  const planner = new OpenAIPlanner(env.OPENAI_API_KEY, env.OPENAI_MODEL ?? "gpt-5.2", undefined, billing);
+  const router = new OpenAIRouter(
+    env.OPENAI_API_KEY,
+    env.OPENAI_MODEL ?? "gpt-5.2",
+    undefined,
+    billing,
+    buildRouterPrompt(implementation),
+  );
+  const planner = new OpenAIPlanner(
+    env.OPENAI_API_KEY,
+    env.OPENAI_MODEL ?? "gpt-5.2",
+    undefined,
+    billing,
+    buildPlannerPrompt(implementation),
+  );
   const embedder = new OpenAIEmbedder(
     env.OPENAI_API_KEY,
     env.OPENAI_EMBEDDING_MODEL ?? "text-embedding-3-small",
@@ -142,6 +171,7 @@ function buildFetchHandler(env: Env) {
     env.OPENAI_SYNTH_MODEL ?? env.OPENAI_MODEL ?? "gpt-5.2",
     undefined,
     billing,
+    buildSynthesizerPrompt(implementation),
   );
 
   const app = createApp({
@@ -160,6 +190,9 @@ function buildFetchHandler(env: Env) {
               workosApiKey: env.WORKOS_API_KEY,
               workosClientId: env.WORKOS_CLIENT_ID,
               cookiePassword: env.AUTH_COOKIE_PASSWORD,
+              frontendOrigin: implementation.siteOrigin,
+              allowedHosts: [new URL(implementation.siteOrigin).hostname, "127.0.0.1", "localhost"],
+              defaultReaderName: implementation.defaultReaderName,
             },
             store,
           )
@@ -195,6 +228,16 @@ function buildFetchHandler(env: Env) {
             cdpApiKeySecret: env.CDP_API_KEY_SECRET,
           }
         : undefined,
+    implementation: {
+      id: implementation.id,
+      productName: implementation.productName,
+      siteOrigin: implementation.siteOrigin,
+      apiOrigin: implementation.apiOrigin,
+      contentOrigin: implementation.contentOrigin,
+      allowedWebOrigins: [implementation.siteOrigin, `https://www.${new URL(implementation.siteOrigin).hostname.replace(/^www\./, "")}`],
+      defaultUserName: implementation.defaultUserName,
+      defaultReaderName: implementation.defaultReaderName,
+    },
   });
 
   return app.fetch;

@@ -18,6 +18,10 @@ export interface AuthConfig {
   workosApiKey: string;
   workosClientId: string;
   cookiePassword: string;
+  frontendOrigin?: string;
+  cookieDomain?: string;
+  allowedHosts?: string[];
+  defaultReaderName?: string;
 }
 
 interface AuthenticatedSessionCookie {
@@ -34,14 +38,20 @@ interface AuthenticatedSessionCookie {
   };
 }
 
-function deriveCookieDomain(url: URL): string | undefined {
+function deriveCookieDomain(url: URL, config?: AuthConfig): string | undefined {
+  if (config?.cookieDomain) {
+    return config.cookieDomain;
+  }
   if (url.hostname === "alpha-book.org" || url.hostname.endsWith(".alpha-book.org")) {
     return ".alpha-book.org";
   }
   return undefined;
 }
 
-function deriveFrontendOrigin(url: URL): string {
+function deriveFrontendOrigin(url: URL, config?: AuthConfig): string {
+  if (config?.frontendOrigin) {
+    return config.frontendOrigin;
+  }
   if (url.hostname === "api.alpha-book.org") {
     return "https://alpha-book.org";
   }
@@ -54,12 +64,16 @@ function deriveFrontendOrigin(url: URL): string {
   return `${url.protocol}//${url.hostname}`;
 }
 
-function safeReturnTo(value: string | null | undefined, fallback: string): string {
+function safeReturnTo(value: string | null | undefined, fallback: string, config?: AuthConfig): string {
   if (!value) {
     return fallback;
   }
   try {
     const url = new URL(value);
+    const allowedHosts = new Set(config?.allowedHosts ?? []);
+    if (allowedHosts.has(url.hostname)) {
+      return url.toString();
+    }
     if (url.hostname === "alpha-book.org" || url.hostname.endsWith(".alpha-book.org")) {
       return url.toString();
     }
@@ -103,12 +117,12 @@ function displayNameFromUser(user: {
   firstName?: string | null;
   lastName?: string | null;
   email?: string | null;
-}) {
+}, fallbackName = "AlphaBook Reader") {
   const name = [user.firstName ?? "", user.lastName ?? ""].join(" ").trim();
   if (name.length > 0) {
     return name;
   }
-  return user.email ?? "AlphaBook Reader";
+  return user.email ?? fallbackName;
 }
 
 function sessionIdFromCookieSession(session: AuthenticatedSessionCookie | null | undefined): string | null {
@@ -179,7 +193,7 @@ export class WorkOSAuth {
       return this.store.upsertUserProfile({
         id: session.user.id,
         email: session.user.email ?? null,
-        name: displayNameFromUser(session.user),
+        name: displayNameFromUser(session.user, this.config.defaultReaderName),
         avatarUrl: session.user.profilePictureUrl ?? null,
       });
     } catch {
@@ -189,8 +203,8 @@ export class WorkOSAuth {
 
   private async beginAuth(c: Context, screenHint?: "sign-in" | "sign-up") {
     const requestUrl = new URL(c.req.url);
-    const cookieDomain = deriveCookieDomain(requestUrl);
-    const returnTo = safeReturnTo(c.req.query("returnTo"), deriveFrontendOrigin(requestUrl));
+    const cookieDomain = deriveCookieDomain(requestUrl, this.config);
+    const returnTo = safeReturnTo(c.req.query("returnTo"), deriveFrontendOrigin(requestUrl, this.config), this.config);
     const redirectUri = `${requestUrl.origin}/auth/callback`;
     const prompt = c.req.query("prompt") || (screenHint === "sign-in" ? "login" : undefined);
     const { url, state, codeVerifier } = await this.workos.userManagement.getAuthorizationUrlWithPKCE({

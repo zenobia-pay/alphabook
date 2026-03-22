@@ -620,6 +620,7 @@ export class OpenAISynthesizer implements Synthesizer {
     private readonly model: string,
     private readonly fetchImpl: typeof fetch = (input, init) => fetch(input, init),
     private readonly billing?: BillingService,
+    private readonly systemPrompt: string = SYNTHESIZER_SYSTEM_PROMPT,
   ) {}
 
   async synthesize(input: SynthesisInput): Promise<SynthesisResult> {
@@ -643,7 +644,7 @@ export class OpenAISynthesizer implements Synthesizer {
       messages: [
         {
           role: "system",
-          content: `${SYNTHESIZER_SYSTEM_PROMPT}
+          content: `${this.systemPrompt}
 Return a single JSON object with answer and citations.
 If exact citation URLs are provided, cite with short markdown links such as [Open passage](ABSOLUTE_URL).
 Use the exact provided absolute URL as the href. Do not invent, shorten, rewrite, or substitute any URL.`,

@@ -1,33 +1,44 @@
-# AlphaBook
+# Alpha Research
 
-AlphaBook is an open-source reference application for grounded research over large text corpora.
+Alpha Research is an open-source platform for grounded research over large text corpora.
 
-The repo is structured as a core-plus-app monorepo:
+This repository currently ships two implementations on the same architecture:
+
+- `AlphaBook`: the book-centric reference application that powers `alpha-book.org`
+- `AlphaJustice`: a Supreme Court research implementation built on the same platform and adapter seams
+
+The repo is structured as a shared core-plus-implementations monorepo:
 
 - `apps/frontend`: Cloudflare Pages frontend
+- `apps/alphajustice-frontend`: AlphaJustice frontend wrapper over the shared frontend app
 - `apps/orchestrator-worker`: Cloudflare Worker API on `api.<domain>`
+- `apps/alphajustice-orchestrator`: AlphaJustice API wrapper over the shared orchestrator Worker
 - `apps/runtime`: Fly Machine runtime service for filesystem-backed analysis
-- `apps/ingest`: adapter-aware ingest service with Gutenberg production flows and a local fixture-corpus demo path
+- `apps/ingest`: adapter-aware ingest service with Gutenberg production flows plus fixture and Supreme Court demo corpus paths
 - `packages/corpus-core`: generic runtime limits and artifact key helpers
 - `packages/corpus-text`: generic text embedding helpers
+- `packages/implementations`: implementation-level branding, origins, and prompt configuration
 - `packages/source-gutenberg`: Project Gutenberg adapter for ingest and storage conventions
+- `packages/source-supreme-court`: Supreme Court corpus adapter and repository fixture for AlphaJustice
 - `packages/db`: Neon schema and migration utilities
 - `packages/shared`: AlphaBook-facing contracts, prompts, and compatibility exports
 - `packages/tooling`: local scripts such as migrations
 
-AlphaBook itself is still book-centric today. The reusable parts are being extracted in-repo so the monorepo can support more corpus adapters over time without splitting into multiple repositories too early.
+AlphaBook and AlphaJustice are both implementation layers on top of the same reusable platform packages.
 
 ## Open Source Status
 
-This repository is being published as two things at once:
+This repository is being published as three things at once:
 
-- AlphaBook, the book-centric reference application that powers `alpha-book.org`
-- a reusable corpus-research platform layer that lives under the app
+- Alpha Research, the shared corpus-research platform layer
+- AlphaBook, the book-centric implementation that powers `alpha-book.org`
+- AlphaJustice, the Supreme Court implementation that can be deployed separately
 
 The important boundary is intentional:
 
 - the live AlphaBook product, routes, and user-facing copy stay book-centric
-- the public AlphaBook HTTP API stays `work` and `book` shaped for compatibility
+- AlphaJustice can have separate origins, branding, and dataset copy without forking the core app structure
+- the AlphaBook HTTP API stays `work` and `book` shaped for compatibility
 - the generic extension points for open-source adopters live in the platform and adapter packages, plus the neutral document API under `/api/v1/documents/*`
 
 If you want to reuse the generic internals, start with:
@@ -37,11 +48,12 @@ If you want to reuse the generic internals, start with:
 - [docs/bring-your-own-corpus.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/bring-your-own-corpus.md)
 - [docs/adapter-architecture.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/adapter-architecture.md)
 
-## Positioning
+## Implementations
 
 - `packages/corpus-core` and `packages/corpus-text` are generic substrate.
-- `packages/source-gutenberg` is the first source adapter.
-- AlphaBook is the flagship reference app built on top of that substrate.
+- `packages/implementations` carries the implementation-specific configuration for AlphaBook and AlphaJustice.
+- `packages/source-gutenberg` and `packages/source-supreme-court` are source adapters.
+- AlphaBook and AlphaJustice are separate deployments built on top of that substrate.
 
 The architecture overview lives in [docs/architecture.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/architecture.md).
 The internal adapter seam for non-book corpora is documented in [docs/adapter-architecture.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/adapter-architecture.md).
@@ -203,6 +215,12 @@ Run the supported open-source validation matrix:
 
 ```bash
 npm run validate:oss
+```
+
+Run the non-book Supreme Court demo ingest:
+
+```bash
+npx tsx apps/ingest/src/index.ts ingest-supreme-court-demo
 ```
 
 Run Neon migrations:

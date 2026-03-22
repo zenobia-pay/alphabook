@@ -7,6 +7,7 @@
     "@alphabook/db": "0.1.0",
     "@alphabook/source-fixture": "0.1.0",
     "@alphabook/source-gutenberg": "0.1.0",
+    "@alphabook/source-supreme-court": "0.1.0",
     "linkedom": "^0.18.12"
   },
   "scripts": {

@@ -6,6 +6,7 @@
   "dependencies": {
     "@alphabook/corpus-core": "0.1.0",
     "@alphabook/corpus-text": "0.1.0",
+    "@alphabook/implementations": "0.1.0",
     "@alphabook/platform": "0.1.0",
     "@alphabook/shared": "0.1.0",
     "@alphabook/source-gutenberg": "0.1.0",
