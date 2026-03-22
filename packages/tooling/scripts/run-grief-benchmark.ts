@@ -26,6 +26,14 @@ interface ScriptOptions {
   models: ModelSpec[];
 }
 
+function parseModelSpec(raw: string): ModelSpec {
+  const [label, provider, model] = raw.split(":");
+  if (!label || (provider !== "openai" && provider !== "openrouter") || !model) {
+    throw new Error(`Invalid --model spec: ${raw}. Expected label:provider:model`);
+  }
+  return { label, provider: provider as ModelSpec["provider"], model };
+}
+
 function parseArgs(argv: string[]): ScriptOptions {
   const options: ScriptOptions = {
     corpusPath: "output/benchmark-samples/grief-random-250-books.json",
@@ -58,10 +66,16 @@ function parseArgs(argv: string[]): ScriptOptions {
       case "--top-k":
         options.topK = Number(argv[++index] ?? options.topK);
         break;
+      case "--model":
+        if (index === 0 || !argv.slice(0, index).includes("--model")) {
+          options.models = [];
+        }
+        options.models.push(parseModelSpec(argv[++index] ?? ""));
+        break;
       case "--help":
       case "-h":
         process.stdout.write(
-          "Usage: node --import tsx packages/tooling/scripts/run-grief-benchmark.ts [--corpus path] [--query-set path] [--output-dir path]\n",
+          "Usage: node --import tsx packages/tooling/scripts/run-grief-benchmark.ts [--corpus path] [--query-set path] [--output-dir path] [--model label:provider:model]\n",
         );
         process.exit(0);
         break;
@@ -77,6 +91,30 @@ function topOverlap(left: string[], right: string[], k: number) {
   const leftTop = left.slice(0, k);
   const rightSet = new Set(right.slice(0, k));
   return leftTop.filter((id) => rightSet.has(id)).length;
+}
+
+function buildSummary(results: Array<Record<string, unknown>>) {
+  const comparable = results.filter((entry) => entry.skipped !== true) as Array<{
+    label: string;
+    topHits: Array<{ passageId: string }>;
+  } & Record<string, unknown>>;
+  const reference = comparable[0] ?? null;
+
+  const summary = comparable.map((entry) => ({
+    label: entry.label,
+    top20OverlapWithReference: reference ? topOverlap(
+      entry.topHits.map((hit) => hit.passageId),
+      reference.topHits.map((hit) => hit.passageId),
+      20,
+    ) : null,
+    top100OverlapWithReference: reference ? topOverlap(
+      entry.topHits.map((hit) => hit.passageId),
+      reference.topHits.map((hit) => hit.passageId),
+      100,
+    ) : null,
+  }));
+
+  return { comparable, reference, summary };
 }
 
 async function runModelOnQuery(
@@ -163,34 +201,54 @@ async function main() {
 
   for (const query of querySet.queries) {
     process.stderr.write(`Running query ${query.id}: ${query.text}\n`);
-    const results = [];
-    for (const model of options.models) {
-      process.stderr.write(`  Model ${model.label} (${model.model})\n`);
-      results.push(await runModelOnQuery(model, query, corpus, options.batchSize, options.topK));
+    const filePath = path.resolve(process.cwd(), options.outputDir, `${query.id}.json`);
+    let results: Array<Record<string, unknown>> = [];
+
+    try {
+      const existing = JSON.parse(await readFile(filePath, "utf8")) as {
+        results?: Array<Record<string, unknown>>;
+      };
+      results = existing.results ?? [];
+      if (results.length > 0) {
+        process.stderr.write(`  Resuming from ${results.length} saved model result(s)\n`);
+      }
+    } catch {
+      results = [];
     }
 
-    const comparable = results.filter((entry) => entry.skipped !== true) as Array<{
-      label: string;
-      topHits: Array<{ passageId: string }>;
-    } & Record<string, unknown>>;
-    const reference = comparable[0] ?? null;
+    for (const model of options.models) {
+      const alreadyCompleted = results.some((entry) => entry.label === model.label);
+      if (alreadyCompleted) {
+        process.stderr.write(`  Model ${model.label} (${model.model}) already saved, skipping\n`);
+        continue;
+      }
 
-    const summary = comparable.map((entry) => ({
-      label: entry.label,
-      top20OverlapWithReference: reference ? topOverlap(
-        entry.topHits.map((hit) => hit.passageId),
-        reference.topHits.map((hit) => hit.passageId),
-        20,
-      ) : null,
-      top100OverlapWithReference: reference ? topOverlap(
-        entry.topHits.map((hit) => hit.passageId),
-        reference.topHits.map((hit) => hit.passageId),
-        100,
-      ) : null,
-    }));
+      process.stderr.write(`  Model ${model.label} (${model.model})\n`);
+      results.push(await runModelOnQuery(model, query, corpus, options.batchSize, options.topK));
+
+      const { reference, summary } = buildSummary(results);
+      const partialPayload = {
+        generatedAt: new Date().toISOString(),
+        status: "partial",
+        query,
+        corpus: {
+          id: corpus.id,
+          documentCount: corpus.documents.length,
+          passageCount: corpus.passages.length,
+        },
+        referenceLabel: reference?.label ?? null,
+        summary,
+        results,
+      };
+
+      await writeFile(filePath, JSON.stringify(partialPayload, null, 2));
+    }
+
+    const { comparable, reference, summary } = buildSummary(results);
 
     const payload = {
       generatedAt: new Date().toISOString(),
+      status: "complete",
       query,
       corpus: {
         id: corpus.id,
@@ -202,7 +260,6 @@ async function main() {
       results,
     };
 
-    const filePath = path.resolve(process.cwd(), options.outputDir, `${query.id}.json`);
     await writeFile(filePath, JSON.stringify(payload, null, 2));
     aggregate.push({
       queryId: query.id,

@@ -25,6 +25,8 @@ export interface OpenAICompatibleJudgeInput {
   includeRationale?: boolean;
   extraHeaders?: Record<string, string>;
   useJsonSchema?: boolean;
+  maxRetries?: number;
+  requestTimeoutMs?: number;
 }
 
 function clampScore(score: number): number {
@@ -52,6 +54,15 @@ function extractJsonObject(raw: string): string {
   }
 
   return trimmed;
+}
+
+async function readResponseTextWithTimeout(response: Response, timeoutMs: number): Promise<string> {
+  return await Promise.race([
+    response.text(),
+    new Promise<string>((_, reject) => {
+      setTimeout(() => reject(new Error(`Response body timed out after ${timeoutMs} ms`)), timeoutMs);
+    }),
+  ]);
 }
 
 export function normalizeJudgedScores(
@@ -106,6 +117,8 @@ export function createOpenAICompatibleExhaustiveJudge(input: OpenAICompatibleJud
     includeRationale = true,
     extraHeaders,
     useJsonSchema = true,
+    maxRetries = 5,
+    requestTimeoutMs = 60_000,
   } = input;
 
   return {
@@ -136,65 +149,98 @@ export function createOpenAICompatibleExhaustiveJudge(input: OpenAICompatibleJud
         ].join("\n")),
       ].join("\n");
 
-      const response = await fetchImpl(baseUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-          ...extraHeaders,
-        },
-        body: JSON.stringify({
-          model,
-          ...(useJsonSchema
-            ? {
-              response_format: {
-                type: "json_schema",
-                json_schema: {
-                  name: "passage_scores",
-                  schema: {
-                    type: "object",
-                    additionalProperties: false,
-                    required: ["scores"],
-                    properties: {
-                      scores: {
-                        type: "array",
-                        items: {
-                          type: "object",
-                          additionalProperties: false,
-                          required: includeRationale ? ["passageId", "score", "rationale"] : ["passageId", "score"],
-                          properties: {
-                            passageId: { type: "string" },
-                            score: { type: "number" },
-                            ...(includeRationale ? { rationale: { type: "string" } } : {}),
+      let response: Response | null = null;
+      for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), requestTimeoutMs);
+        try {
+          response = await fetchImpl(baseUrl, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${apiKey}`,
+              ...extraHeaders,
+            },
+            body: JSON.stringify({
+              model,
+              ...(useJsonSchema
+                ? {
+                  response_format: {
+                    type: "json_schema",
+                    json_schema: {
+                      name: "passage_scores",
+                      schema: {
+                        type: "object",
+                        additionalProperties: false,
+                        required: ["scores"],
+                        properties: {
+                          scores: {
+                            type: "array",
+                            items: {
+                              type: "object",
+                              additionalProperties: false,
+                              required: includeRationale ? ["passageId", "score", "rationale"] : ["passageId", "score"],
+                              properties: {
+                                passageId: { type: "string" },
+                                score: { type: "number" },
+                                ...(includeRationale ? { rationale: { type: "string" } } : {}),
+                              },
+                            },
                           },
                         },
                       },
                     },
                   },
+                }
+                : {}),
+              messages: [
+                {
+                  role: "system",
+                  content: useJsonSchema
+                    ? "Score retrieval passages and return only valid JSON."
+                    : "Score retrieval passages and return only a JSON object with a top-level key named scores. Do not use markdown fences.",
                 },
-              },
+                {
+                  role: "user",
+                  content: prompt,
+                },
+              ],
+            }),
+            signal: controller.signal,
+          });
+        } catch (error) {
+          clearTimeout(timeoutId);
+          if (error instanceof Error && error.name === "AbortError") {
+            if (attempt >= maxRetries) {
+              throw new Error(`OpenAI exhaustive judge timed out after ${requestTimeoutMs} ms`);
             }
-            : {}),
-          messages: [
-            {
-              role: "system",
-              content: useJsonSchema
-                ? "Score retrieval passages and return only valid JSON."
-                : "Score retrieval passages and return only a JSON object with a top-level key named scores. Do not use markdown fences.",
-            },
-            {
-              role: "user",
-              content: prompt,
-            },
-          ],
-        }),
-      });
+            continue;
+          }
+          throw error;
+        }
+        clearTimeout(timeoutId);
 
-      if (!response.ok) {
-        throw new Error(`OpenAI exhaustive judge failed with status ${response.status}`);
+        if (response.ok) {
+          break;
+        }
+
+        const retryable = response.status === 429 || response.status >= 500;
+        if (!retryable || attempt >= maxRetries) {
+          const responseBody = await readResponseTextWithTimeout(response, requestTimeoutMs).catch(() => "");
+          throw new Error(
+            `OpenAI exhaustive judge failed with status ${response.status}${responseBody ? `: ${responseBody.slice(0, 300)}` : ""}`,
+          );
+        }
+
+        const backoffMs = Math.min(10_000, 1_000 * (attempt + 1));
+        await new Promise((resolve) => setTimeout(resolve, backoffMs));
       }
 
-      const payload = await response.json() as {
+      if (!response?.ok) {
+        throw new Error("OpenAI exhaustive judge failed without a response.");
+      }
+
+      const payload = JSON.parse(await readResponseTextWithTimeout(response, requestTimeoutMs)) as {
         choices?: Array<{
           message?: {
             content?: string | null;
