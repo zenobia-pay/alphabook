@@ -134,7 +134,7 @@ function buildFetchHandler(env: Env) {
     };
   })();
   const db = createNeonDb(env.DATABASE_URL);
-  const store = new NeonAppStore(db);
+  const store = new NeonAppStore(db, { adapterId: implementation.adapterId });
   const blobStore = new CloudflareR2Store(env.CORPUS_BUCKET);
   const billing = createBillingService(store, {
     monthlyLimitUsd: env.BILLING_MONTHLY_LIMIT_USD ? Number(env.BILLING_MONTHLY_LIMIT_USD) : undefined,
@@ -247,8 +247,9 @@ async function runScheduledJanitor(env: Env) {
   if (!env.OPENAI_API_KEY) {
     throw new Error("OPENAI_API_KEY is required.");
   }
+  const implementation = getImplementationConfig(env.IMPLEMENTATION_ID);
   const db = createNeonDb(env.DATABASE_URL);
-  const store = new NeonAppStore(db);
+  const store = new NeonAppStore(db, { adapterId: implementation.adapterId });
   const blobStore = new CloudflareR2Store(env.CORPUS_BUCKET);
   const billing = createBillingService(store, {
     monthlyLimitUsd: env.BILLING_MONTHLY_LIMIT_USD ? Number(env.BILLING_MONTHLY_LIMIT_USD) : undefined,

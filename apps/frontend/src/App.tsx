@@ -194,20 +194,44 @@ const BOOK_CONTENT_VERSION = "20260320b";
 const DEFAULT_SEO_DESCRIPTION = (import.meta.env.VITE_SITE_DESCRIPTION as string | undefined)
   ?? "Search, read, and ask questions across a growing library of books with cited answers.";
 const DEFAULT_OG_IMAGE_PATH = "/social-card.svg";
+const IS_ALPHAJUSTICE = IMPLEMENTATION_ID === "alphajustice";
+const CORPUS_LABEL_PLURAL = IS_ALPHAJUSTICE ? "cases" : "books";
+const EXPLORE_PLACEHOLDER = IS_ALPHAJUSTICE
+  ? "Ask about a case, a doctrine, or the whole corpus..."
+  : "Ask about a book, a theme, or the whole corpus...";
+const WORDMARK = SEO_SITE_NAME;
+const WORDMARK_MONOGRAM = `${WORDMARK
+  .split(/\s+/u)
+  .map((part) => part[0]?.toLowerCase() ?? "")
+  .join("")
+  .slice(0, 2)}.`;
 let hasAttemptedInitialFeedLoad = false;
 const GUEST_CLAIM_STORAGE_PREFIX = `${IMPLEMENTATION_ID}:guest-claimed:`;
-const ASSISTANT_WELCOME_SUGGESTIONS: ThreadSuggestion[] = [
-  {
-    icon: "search",
-    title: "Hypothesis test: grief in 19th century fiction",
-    prompt: "Find me all the ways that characters deal with grief in 19th century fiction.",
-  },
-  {
-    icon: "heart",
-    title: "Theme analysis: heartbreak",
-    prompt: "Find me stories with themes of heartbreak and what that means.",
-  },
-];
+const ASSISTANT_WELCOME_SUGGESTIONS: ThreadSuggestion[] = IS_ALPHAJUSTICE
+  ? [
+      {
+        icon: "search",
+        title: "Equal protection reasoning",
+        prompt: "Compare how the Supreme Court reasons about equal protection across major cases.",
+      },
+      {
+        icon: "heart",
+        title: "Free speech precedent",
+        prompt: "Find the strongest Supreme Court cases on political speech and explain the rule they establish.",
+      },
+    ]
+  : [
+      {
+        icon: "search",
+        title: "Hypothesis test: grief in 19th century fiction",
+        prompt: "Find me all the ways that characters deal with grief in 19th century fiction.",
+      },
+      {
+        icon: "heart",
+        title: "Theme analysis: heartbreak",
+        prompt: "Find me stories with themes of heartbreak and what that means.",
+      },
+    ];
 
 type SeoDocumentState = {
   title: string;
@@ -7315,7 +7339,7 @@ export default function App() {
         <section className="explore-hero">
           <h1>
             {formattedCorpusCount
-              ? `Ask or search anything over ${formattedCorpusCount} books.`
+              ? `Ask or search anything over ${formattedCorpusCount} ${CORPUS_LABEL_PLURAL}.`
               : "Ask or search anything over the corpus."}
           </h1>
 
@@ -7342,7 +7366,7 @@ export default function App() {
               <div className="explore-composer-surface">
                 <Textarea
                   className="explore-composer-input"
-                  placeholder="Ask about a book, a theme, or the whole corpus..."
+                  placeholder={EXPLORE_PLACEHOLDER}
                   value={exploreDraft}
                   onChange={(event) => setExploreDraft(event.currentTarget.value)}
                   onKeyDown={(event) => {
@@ -7420,6 +7444,16 @@ export default function App() {
             <div className="feed-status">
               <p>We couldn't load the corpus feed.</p>
               <Button type="button" variant="ghost" onClick={retryInitialWorksLoad}>Retry</Button>
+            </div>
+          ) : null}
+
+          {!feedLoading && feedWorks.length === 0 && feedInitialLoadState !== "error" ? (
+            <div className="feed-status">
+              <p>
+                {IS_ALPHAJUSTICE
+                  ? "No Supreme Court cases are loaded yet. Run the Supreme Court backfill to populate AlphaJustice."
+                  : `No ${CORPUS_LABEL_PLURAL} are loaded yet.`}
+              </p>
             </div>
           ) : null}
         </section>
@@ -8535,8 +8569,8 @@ export default function App() {
         <div className="sidebar-header gap-4">
           <div className="brand-lockup">
             <div className="flex min-w-0 items-center gap-3">
-              <span className={cn("wordmark", sidebarCollapsed && "sr-only")}>alphabook</span>
-              {sidebarCollapsed ? <span className="wordmark">a.</span> : null}
+              <span className={cn("wordmark", sidebarCollapsed && "sr-only")}>{WORDMARK}</span>
+              {sidebarCollapsed ? <span className="wordmark">{WORDMARK_MONOGRAM}</span> : null}
             </div>
             <div className="flex items-center gap-2">
               <Button
@@ -8676,7 +8710,7 @@ export default function App() {
             <MenuIcon />
           </Button>
           <div className="mobile-shell-meta">
-            <span className="mobile-shell-wordmark">alphabook</span>
+            <span className="mobile-shell-wordmark">{WORDMARK}</span>
             <strong>{activeViewLabel}</strong>
           </div>
           <Button

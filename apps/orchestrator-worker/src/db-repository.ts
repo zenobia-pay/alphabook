@@ -48,10 +48,27 @@ function mapRowToDocument(row: {
 }
 
 export class NeonCorpusDbRepository {
-  constructor(private readonly db: DbClient) {}
+  private readonly adapterId: string | null;
+
+  constructor(private readonly db: DbClient, options: { adapterId?: string | null } = {}) {
+    this.adapterId = options.adapterId ?? null;
+  }
+
+  private hasScopedCorpus() {
+    return Boolean(this.adapterId && this.adapterId !== "gutenberg");
+  }
+
+  private adapterWorkClause(alias = "w") {
+    if (!this.hasScopedCorpus()) {
+      return "";
+    }
+    return ` AND COALESCE(${alias}.metadata_json->>'corpusAdapterId', '') = '${this.adapterId}'`;
+  }
 
   async countDocuments(): Promise<number> {
-    const result = await this.db.query<{ count: string }>("SELECT COUNT(*)::text AS count FROM works");
+    const result = await this.db.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM works w WHERE 1 = 1 ${this.adapterWorkClause("w")}`,
+    );
     return Number.parseInt(result.rows[0]?.count ?? "0", 10) || 0;
   }
 
@@ -87,6 +104,7 @@ export class NeonCorpusDbRepository {
         LEFT JOIN authors a ON a.id = wa.author_id
         LEFT JOIN work_subjects ws ON ws.work_id = w.id
         LEFT JOIN subjects s ON s.id = ws.subject_id
+        WHERE 1 = 1 ${this.adapterWorkClause("w")}
         GROUP BY w.id, w.gutenberg_id, w.title, w.metadata_json, w.language, w.release_date, w.rights_status, w.summary
         ORDER BY w.release_date DESC NULLS LAST, w.title ASC
         OFFSET $1
@@ -134,7 +152,7 @@ export class NeonCorpusDbRepository {
         LEFT JOIN authors a ON a.id = wa.author_id
         LEFT JOIN work_subjects ws ON ws.work_id = w.id
         LEFT JOIN subjects s ON s.id = ws.subject_id
-        WHERE w.id = ANY($1::uuid[])
+        WHERE w.id = ANY($1::uuid[]) ${this.adapterWorkClause("w")}
         GROUP BY w.id, w.gutenberg_id, w.title, w.metadata_json, w.language, w.release_date, w.rights_status, w.summary
         ORDER BY w.title ASC
       `,

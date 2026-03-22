@@ -46,6 +46,13 @@ import type { RunArtifactRecord } from "@/api";
 
 type AssistantEffortLevel = "normal" | "high" | "maximum";
 
+const IMPLEMENTATION_ID = (import.meta.env.VITE_IMPLEMENTATION_ID as string | undefined) ?? "alphabook";
+const SITE_ORIGIN = (import.meta.env.VITE_SITE_ORIGIN as string | undefined) ?? "https://alpha-book.org";
+const WELCOME_HEADING = IMPLEMENTATION_ID === "alphajustice"
+  ? "Search and compare evidence across United States Supreme Court cases."
+  : "Search for evidence and themes over 75,000 books.";
+const COPY_PROMPT = `Go to ${SITE_ORIGIN}/skill.md and follow the instructions there.`;
+
 type MessagePartRecord = {
   type?: string;
   text?: string;
@@ -388,8 +395,7 @@ const ThreadWelcome: FC = () => {
   const [copied, setCopied] = useState(false);
 
   const handleCopyPrompt = useCallback(() => {
-    const prompt = "Go to https://alpha-book.org/skill.md and follow the instructions there.";
-    void navigator.clipboard.writeText(prompt).then(() => {
+    void navigator.clipboard.writeText(COPY_PROMPT).then(() => {
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1600);
     });
@@ -400,7 +406,7 @@ const ThreadWelcome: FC = () => {
       <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-center">
         <div className="aui-thread-welcome-message flex size-full flex-col justify-center px-4">
           <h1 className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in fill-mode-both font-semibold text-2xl duration-200">
-            Search for evidence and themes over 75,000 books.
+            {WELCOME_HEADING}
           </h1>
           <p className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in fill-mode-both text-base text-muted-foreground/70 delay-75 duration-200">
             Or: Want your agent to use this? Copy{" "}

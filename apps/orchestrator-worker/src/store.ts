@@ -3050,13 +3050,28 @@ export class NeonAppStore implements AppStore {
   private runEventsSchemaReady: Promise<void> | null = null;
   private workCountCache: { value: number; expiresAt: number } | null = null;
   private readonly corpusRepository: NeonCorpusDbRepository;
+  private readonly adapterId: string | null;
 
-  constructor(private readonly db: DbClient) {
-    this.corpusRepository = new NeonCorpusDbRepository(db);
+  constructor(private readonly db: DbClient, options: { adapterId?: string | null } = {}) {
+    this.adapterId = options.adapterId ?? null;
+    this.corpusRepository = new NeonCorpusDbRepository(db, {
+      adapterId: this.adapterId,
+    });
   }
 
   private static readonly WORK_COUNT_CACHE_TTL_MS = 1000 * 60 * 60 * 24;
   private static readonly EXPLORE_FEED_DEFAULT_LIMIT = 512;
+
+  private hasScopedCorpus() {
+    return Boolean(this.adapterId && this.adapterId !== "gutenberg");
+  }
+
+  private adapterWorkClause(alias = "w") {
+    if (!this.hasScopedCorpus()) {
+      return "";
+    }
+    return ` AND COALESCE(${alias}.metadata_json->>'corpusAdapterId', '') = '${this.adapterId}'`;
+  }
 
   private ensureAnalyticsSchema() {
     if (!this.analyticsSchemaReady) {
@@ -4648,6 +4663,81 @@ export class NeonAppStore implements AppStore {
   }
 
   async listWorks(offset = 0, limit = 12): Promise<WorkSummary[]> {
+    if (this.hasScopedCorpus()) {
+      const fallback = await this.db.query<{
+        id: string;
+        gutenberg_id: number | string | null;
+        title: string;
+        metadata_json: Record<string, unknown>;
+        language: string | null;
+        release_date: string | null;
+        rights_status: string | null;
+        summary: string | null;
+        authors: string[];
+        subjects: string[];
+        score: number;
+        feed_label: string | null;
+      }>(
+        `
+          SELECT
+            w.id,
+            w.gutenberg_id,
+            w.title,
+            w.metadata_json,
+            w.language,
+            w.release_date::text,
+            w.rights_status,
+            w.summary,
+            ARRAY_REMOVE(ARRAY_AGG(DISTINCT a.name), NULL) AS authors,
+            ARRAY_REMOVE(ARRAY_AGG(DISTINCT s.label), NULL) AS subjects,
+            0::float AS score,
+            CASE
+              WHEN COALESCE(w.summary, '') <> '' THEN 'Key precedent'
+              WHEN EXISTS (SELECT 1 FROM work_subjects ws_check WHERE ws_check.work_id = w.id) THEN 'Browse by doctrine'
+              ELSE 'From the docket'
+            END AS feed_label
+          FROM works w
+          LEFT JOIN work_authors wa ON wa.work_id = w.id
+          LEFT JOIN authors a ON a.id = wa.author_id
+          LEFT JOIN work_subjects ws ON ws.work_id = w.id
+          LEFT JOIN subjects s ON s.id = ws.subject_id
+          WHERE 1 = 1 ${this.adapterWorkClause("w")}
+          GROUP BY
+            w.id,
+            w.gutenberg_id,
+            w.title,
+            w.metadata_json,
+            w.language,
+            w.release_date,
+            w.rights_status,
+            w.summary
+          ORDER BY
+            w.release_date DESC NULLS LAST,
+            w.title ASC
+          OFFSET $1
+          LIMIT $2
+        `,
+        [offset, limit],
+      );
+
+      return fallback.rows.map((row) =>
+        toWorkSummary({
+          id: row.id,
+          gutenbergId: normalizeGutenbergId(row.gutenberg_id),
+          title: row.title,
+          language: row.language,
+          releaseDate: row.release_date,
+          rightsStatus: row.rights_status,
+          summary: row.summary,
+          authors: row.authors ?? [],
+          subjects: row.subjects ?? [],
+          score: Number(row.score ?? 0),
+          feedLabel: row.feed_label ?? null,
+          metadata: row.metadata_json ?? {},
+        }),
+      );
+    }
+
     await this.ensureAnalyticsSchema();
     await this.ensureExploreFeedSchema();
     const result = await this.db.query<{
@@ -4775,6 +4865,12 @@ export class NeonAppStore implements AppStore {
   }
 
   async countWorks(): Promise<number> {
+    if (this.hasScopedCorpus()) {
+      const fallback = await this.db.query<{ count: string }>(
+        `SELECT COUNT(*)::text AS count FROM works w WHERE 1 = 1 ${this.adapterWorkClause("w")}`,
+      );
+      return Number.parseInt(fallback.rows[0]?.count ?? "0", 10) || 0;
+    }
     await this.ensureExploreFeedSchema();
     if (this.workCountCache && this.workCountCache.expiresAt > Date.now()) {
       return this.workCountCache.value;
@@ -5023,6 +5119,7 @@ export class NeonAppStore implements AppStore {
           SELECT w.id, w.title, w.summary, w.metadata_json
           FROM works w
           WHERE ($2::text IS NULL OR w.language = $2::text)
+            ${this.adapterWorkClause("w")}
             AND ($3::text IS NULL OR w.rights_status = $3::text)
             AND (
               $4::int IS NULL
@@ -5136,6 +5233,7 @@ export class NeonAppStore implements AppStore {
           SELECT w.id
           FROM works w
           WHERE ($1::uuid[] IS NULL OR w.id = ANY($1::uuid[]))
+            ${this.adapterWorkClause("w")}
             AND ($2::text IS NULL OR w.language = $2::text)
             AND ($3::text IS NULL OR w.rights_status = $3::text)
             AND (
@@ -5236,7 +5334,7 @@ export class NeonAppStore implements AppStore {
         LEFT JOIN authors a ON a.id = wa.author_id
         LEFT JOIN work_subjects ws ON ws.work_id = w.id
         LEFT JOIN subjects s ON s.id = ws.subject_id
-        WHERE w.id = $1::uuid
+        WHERE w.id = $1::uuid ${this.adapterWorkClause("w")}
         GROUP BY w.id, w.gutenberg_id, w.title, w.language, w.release_date, w.rights_status, w.summary, w.metadata_json
         LIMIT 1
       `,
@@ -5303,7 +5401,7 @@ export class NeonAppStore implements AppStore {
           LEFT JOIN authors a ON a.id = wa.author_id
           LEFT JOIN work_subjects ws ON ws.work_id = w.id
           LEFT JOIN subjects s ON s.id = ws.subject_id
-          WHERE LOWER(w.id::text) LIKE $1
+          WHERE LOWER(w.id::text) LIKE $1 ${this.adapterWorkClause("w")}
           GROUP BY w.id, w.gutenberg_id, w.title, w.language, w.release_date, w.rights_status, w.summary, w.metadata_json
           ORDER BY w.id
           LIMIT 1
@@ -5418,6 +5516,7 @@ export class NeonAppStore implements AppStore {
             LEFT JOIN authors a ON a.id = wa.author_id
             LEFT JOIN work_subjects ws ON ws.work_id = w.id
             LEFT JOIN subjects s ON s.id = ws.subject_id
+            WHERE 1 = 1 ${this.adapterWorkClause("w")}
             GROUP BY w.id, w.gutenberg_id, w.title, w.metadata_json, w.language, w.release_date, w.rights_status, w.summary
           )
           SELECT
@@ -5524,6 +5623,7 @@ export class NeonAppStore implements AppStore {
               w.summary
             FROM works w
             WHERE ($1::text IS NULL OR w.language = $1::text)
+              ${this.adapterWorkClause("w")}
               AND ($2::text IS NULL OR w.rights_status = $2::text)
               AND (
                 $3::int IS NULL
@@ -5689,7 +5789,7 @@ export class NeonAppStore implements AppStore {
         LEFT JOIN authors a ON a.id = wa.author_id
         LEFT JOIN work_subjects ws ON ws.work_id = w.id
         LEFT JOIN subjects s ON s.id = ws.subject_id
-        WHERE w.id = ANY($1::uuid[])
+        WHERE w.id = ANY($1::uuid[]) ${this.adapterWorkClause("w")}
         GROUP BY w.id, w.gutenberg_id, w.title, w.metadata_json, w.language, w.release_date, w.rights_status, w.summary
         ORDER BY w.title ASC
       `,
@@ -5760,6 +5860,7 @@ export class NeonAppStore implements AppStore {
           FROM works w
           WHERE
             ($2::uuid[] IS NULL OR w.id = ANY($2::uuid[]))
+            ${this.adapterWorkClause("w")}
             AND ($7::text IS NULL OR w.language = $7::text)
             AND ($8::text IS NULL OR w.rights_status = $8::text)
             AND (
