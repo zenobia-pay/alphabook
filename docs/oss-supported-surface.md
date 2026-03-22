@@ -20,6 +20,7 @@ The supported open-source integration surface is:
 - `packages/source-fixture`
 - `apps/ingest` via adapter-aware ingest flows
 - `apps/orchestrator-worker` repository, retrieval, and runtime seams used by the fixture and adapter tests
+- the neutral Worker API under `/api/v1/documents/*`
 
 These are the packages and codepaths covered by the OSS validation matrix in `npm run validate:oss`.
 
@@ -60,8 +61,15 @@ The repository is not claiming a fully neutral product contract yet.
 Current intentional limitations:
 
 - the public AlphaBook HTTP API is still `work` and `book` shaped
+- the neutral document API is additive; it does not replace the AlphaBook compatibility API
 - the database schema still uses legacy `works`, `work_files`, `gutenberg_id`, and `book_html` tables/columns
 - the frontend app is a book-centric reference app, not a generic corpus UI
+
+To make the schema boundary explicit, the database now also exposes additive neutral views:
+
+- `corpus_documents`
+- `corpus_document_files`
+- `corpus_document_chunks`
 
 ## Validation Contract
 
@@ -70,6 +78,8 @@ The supported OSS validation entry point is:
 ```bash
 npm run validate:oss
 ```
+
+This validation matrix also runs in CI through `.github/workflows/oss-validate.yml`.
 
 That command covers:
 

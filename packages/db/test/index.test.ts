@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createNeonDb } from "../src/index";
+import { createNeonDb, schemaMigrations } from "../src/index";
 
 test("createNeonDb retries transient Neon transport errors with a fresh pool", async () => {
   const calls: string[] = [];
@@ -52,4 +52,13 @@ test("createNeonDb does not retry non-transient errors", async () => {
 
   await assert.rejects(() => db.query("select nope"), /column does not exist/);
   assert.deepEqual(calls, ["query"]);
+});
+
+test("schema migrations expose additive corpus views over legacy work tables", () => {
+  const corpusViewsMigration = schemaMigrations.find((migration) => migration.id === "0010_corpus_views");
+
+  assert.ok(corpusViewsMigration);
+  assert.match(corpusViewsMigration!.sql, /CREATE OR REPLACE VIEW corpus_documents AS/);
+  assert.match(corpusViewsMigration!.sql, /CREATE OR REPLACE VIEW corpus_document_files AS/);
+  assert.match(corpusViewsMigration!.sql, /CREATE OR REPLACE VIEW corpus_document_chunks AS/);
 });

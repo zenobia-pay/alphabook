@@ -60,6 +60,27 @@ export const DocumentSourceSchema = z.object({
 
 export type DocumentSource = z.infer<typeof DocumentSourceSchema>;
 
+export const DocumentListResponseSchema = z.object({
+  documents: z.array(DocumentSummarySchema),
+  nextOffset: z.number().nullable(),
+  totalCount: z.number().int().nonnegative(),
+});
+
+export type DocumentListResponse = z.infer<typeof DocumentListResponseSchema>;
+
+export const DocumentDetailResponseSchema = z.object({
+  document: DocumentDetailSchema,
+  source: DocumentSourceSchema.nullable(),
+});
+
+export type DocumentDetailResponse = z.infer<typeof DocumentDetailResponseSchema>;
+
+export const DocumentSourceResponseSchema = z.object({
+  source: DocumentSourceSchema.nullable(),
+});
+
+export type DocumentSourceResponse = z.infer<typeof DocumentSourceResponseSchema>;
+
 export const PlatformChatRequestSchema = z.object({
   sessionId: z.string().uuid().optional(),
   userId: z.string().min(1).optional(),

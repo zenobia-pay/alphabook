@@ -6,6 +6,7 @@ Important boundary:
 
 - the public Worker API remains book- and `work`-shaped for AlphaBook compatibility
 - the generic corpus-platform contracts live in `packages/platform` and the adapter packages
+- the Worker now also exposes a parallel document-shaped API for OSS consumers under `/api/v1/documents/*`
 - open-source adopters who want to bring another corpus should start with [docs/oss-supported-surface.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/oss-supported-surface.md) and [docs/bring-your-own-corpus.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/bring-your-own-corpus.md)
 
 ## Orchestrator Worker
@@ -180,6 +181,25 @@ Behavior:
 - when billing blocks a request, returns `402` and, if configured, includes x402-style payment requirements in the JSON body plus `PAYMENT-REQUIRED` and `payment-required` headers
 - a paid retry can send `PAYMENT-SIGNATURE` or `X-PAYMENT`; successful settlements return `PAYMENT-RESPONSE`
 
+### `POST /api/v1/documents/chat`
+
+Request:
+
+```json
+{
+  "sessionId": "optional-uuid",
+  "message": "Find documents about grief and exile",
+  "documentIds": ["optional-document-id"]
+}
+```
+
+Behavior:
+
+- streams the same research pipeline as `POST /chat`
+- accepts the neutral document-shaped request body
+- translates streamed tool names and citation identifiers into document-shaped payloads
+- leaves the AlphaBook `/chat` compatibility route unchanged
+
 ### `GET /sessions?userId=...`
 
 Also available as `GET /api/v1/sessions`.
@@ -266,6 +286,58 @@ Behavior:
 - streams status updates for an already-started run
 
 ### `POST /runs/:runId/cancel`
+
+## Document Catalog
+
+### `GET /api/v1/documents`
+
+Response:
+
+```json
+{
+  "documents": [
+    {
+      "id": "document-uuid",
+      "externalId": 123,
+      "title": "Document Title",
+      "language": "en",
+      "publishedAt": "1900-01-01",
+      "rightsStatus": "public_domain",
+      "summary": "Corpus summary",
+      "contributors": ["Jane Doe"],
+      "subjects": ["history"],
+      "metadata": {}
+    }
+  ],
+  "nextOffset": 12,
+  "totalCount": 1000
+}
+```
+
+### `GET /api/v1/documents/:documentId`
+
+Behavior:
+
+- returns the neutral document detail payload
+- preserves AlphaBook's existing `/works/:workId` route separately
+
+### `GET /api/v1/documents/:documentId/source`
+
+Behavior:
+
+- returns the normalized source payload using `documentId`, `format`, `content`, `r2Key`, `sourcePath`, and `metadataPath`
+
+### `GET /api/v1/documents/:documentId/content`
+
+Behavior:
+
+- returns rendered or fallback HTML for the document when available
+
+### `GET /api/v1/documents/:documentId/cover`
+
+Behavior:
+
+- returns the document cover image when the active adapter exposes one
 
 Also available as `POST /api/v1/runs/:runId/cancel`.
 

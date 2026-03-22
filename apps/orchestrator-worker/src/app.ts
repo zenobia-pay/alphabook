@@ -1,6 +1,14 @@
 import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import { artifactKeys, HARD_LIMITS } from "@alphabook/corpus-core";
+import {
+  PlatformChatRequestSchema,
+  toLegacyChatRequest,
+  toPlatformToolName,
+  workDetailToDocumentDetail,
+  workSourceToDocumentSource,
+  workSummaryToDocumentSummary,
+} from "@alphabook/platform";
 import { ChatRequestSchema, ToolArgsSchemas, getToolLabel, type ChatRequest, type ChunkSearchResult, type Citation, type NotificationType, type PlannerDecision, type ToolName, type WorkSummary } from "@alphabook/shared";
 import { createFacilitatorConfig } from "@coinbase/x402";
 import { decodePaymentSignatureHeader, encodePaymentRequiredHeader, encodePaymentResponseHeader } from "@x402/core/http";
@@ -11,8 +19,8 @@ import { ZodError, z } from "zod";
 
 import type { WorkOSAuth } from "./auth";
 import type { BillingService } from "./billing";
-import type { Embedder } from "./embeddings";
-import type { BlobStore } from "./r2";
+import { HashEmbedder, type Embedder } from "./embeddings";
+import { MemoryBlobStore, type BlobStore } from "./r2";
 import type { Planner, PlannerContext } from "./planner";
 import { FallbackPlanner, parseToolCall } from "./planner";
 import type { Router } from "./router";
@@ -76,6 +84,8 @@ export interface AppDeps {
     };
   };
 }
+
+type CreateAppInput = Partial<Omit<AppDeps, "store" | "billing">> & Pick<AppDeps, "store" | "billing">;
 
 const ALLOWED_WEB_ORIGINS = new Set([
   "https://alpha-book.org",
@@ -2223,6 +2233,123 @@ function decorateWork(c: Context, work: WorkSummary): WorkSummary {
     ...work,
     coverImageUrl: new URL(`/works/${work.id}/cover`, c.req.url).toString(),
   };
+}
+
+function decorateCorpusDocument(c: Context, document: {
+  id: string;
+  title: string;
+  externalId?: string | number | null;
+  subtitle?: string | null;
+  coverImageUrl?: string | null;
+  hasCoverImage?: boolean;
+  language?: string | null;
+  publishedAt?: string | null;
+  rightsStatus?: string | null;
+  summary?: string | null;
+  publisher?: string | null;
+  contributors?: string[];
+  subjects?: string[];
+  score?: number;
+  metadata?: Record<string, unknown>;
+}) {
+  const metadata = document.metadata && typeof document.metadata === "object"
+    ? document.metadata as Record<string, unknown>
+    : null;
+  const coverImageKey = metadata && typeof metadata.coverImageKey === "string" ? metadata.coverImageKey : null;
+  if (document.coverImageUrl || !coverImageKey) {
+    return document;
+  }
+  return {
+    ...document,
+    coverImageUrl: new URL(`/api/v1/documents/${document.id}/cover`, c.req.url).toString(),
+  };
+}
+
+function decorateDocumentDetail(c: Context, work: WorkDetailRecord) {
+  const metadata = work.metadata && typeof work.metadata === "object" ? work.metadata as Record<string, unknown> : null;
+  const document = workDetailToDocumentDetail(work);
+  const coverImageKey = metadata && typeof metadata.coverImageKey === "string" ? metadata.coverImageKey : null;
+  if (document.coverImageUrl || !coverImageKey) {
+    return document;
+  }
+  return {
+    ...document,
+    coverImageUrl: new URL(`/api/v1/documents/${work.id}/cover`, c.req.url).toString(),
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function looksLikeWorkSummary(value: unknown): value is WorkSummary {
+  return isRecord(value) && typeof value.id === "string" && typeof value.title === "string";
+}
+
+function looksLikeWorkDetail(value: unknown): value is WorkDetailRecord {
+  return isRecord(value)
+    && typeof value.id === "string"
+    && typeof value.title === "string"
+    && isRecord(value.metadata);
+}
+
+const PLATFORM_EVENT_KEY_ALIASES: Record<string, string> = {
+  work: "document",
+  works: "documents",
+  workId: "documentId",
+  workIds: "documentIds",
+  workTitle: "documentTitle",
+  verifiedWorkIds: "verifiedDocumentIds",
+  relevantWorkIds: "relevantDocumentIds",
+  candidateWorkIds: "candidateDocumentIds",
+  scopedWorkIds: "scopedDocumentIds",
+  frontierWorks: "frontierDocuments",
+};
+
+function toPlatformEventPayload(value: unknown, parentKey?: string): unknown {
+  if (Array.isArray(value)) {
+    if (parentKey === "works" || parentKey === "frontierWorks") {
+      return value.map((entry) => (looksLikeWorkSummary(entry) ? workSummaryToDocumentSummary(entry) : toPlatformEventPayload(entry)));
+    }
+    if (parentKey === "citations") {
+      return value.map((entry) => toPlatformEventPayload(entry));
+    }
+    return value.map((entry) => toPlatformEventPayload(entry));
+  }
+
+  if (!isRecord(value)) {
+    return value;
+  }
+
+  if (parentKey === "work" && looksLikeWorkDetail(value)) {
+    return workDetailToDocumentDetail(value);
+  }
+  if (parentKey === "work" && looksLikeWorkSummary(value)) {
+    return workSummaryToDocumentSummary(value);
+  }
+
+  const result: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    const nextKey = PLATFORM_EVENT_KEY_ALIASES[key] ?? key;
+    if ((key === "toolName" || key === "tool_name") && typeof entry === "string") {
+      result[nextKey] = toPlatformToolName(entry) ?? entry;
+      continue;
+    }
+    if (key === "works" && Array.isArray(entry)) {
+      result[nextKey] = entry.map((item) => (looksLikeWorkSummary(item) ? workSummaryToDocumentSummary(item) : toPlatformEventPayload(item)));
+      continue;
+    }
+    if (key === "work" && isRecord(entry)) {
+      result[nextKey] = looksLikeWorkDetail(entry)
+        ? workDetailToDocumentDetail(entry)
+        : looksLikeWorkSummary(entry)
+          ? workSummaryToDocumentSummary(entry)
+          : toPlatformEventPayload(entry, key);
+      continue;
+    }
+    result[nextKey] = toPlatformEventPayload(entry, key);
+  }
+  return result;
 }
 
 function escapeBookHtml(value: string) {
@@ -9605,7 +9732,43 @@ async function runOrchestrator(
   }
 }
 
-export function createApp(deps: AppDeps) {
+const DEFAULT_RUNTIME_GATEWAY: RuntimeToolGateway = {
+  async createWorkspace() {
+    return { ok: false, error: "disabled" };
+  },
+  async runWorkspaceTask() {
+    return { ok: false, error: "disabled" };
+  },
+  async readWorkspaceFile() {
+    return { ok: false, error: "disabled" };
+  },
+  async destroyWorkspace() {
+    return { ok: false, error: "disabled" };
+  },
+};
+
+const DEFAULT_SYNTHESIZER: Synthesizer = {
+  async synthesize(input) {
+    return {
+      answer: input.plannerDraft ?? "No synthesized answer was available.",
+      citations: input.plannerCitations,
+    };
+  },
+};
+
+export function createApp(inputDeps: CreateAppInput) {
+  const deps: AppDeps = {
+    ...inputDeps,
+    planner: inputDeps.planner ?? new FallbackPlanner(),
+    embedder: inputDeps.embedder ?? new HashEmbedder(),
+    synthesizer: inputDeps.synthesizer ?? DEFAULT_SYNTHESIZER,
+    blobStore: inputDeps.blobStore ?? new MemoryBlobStore(),
+    runtimeGateway: inputDeps.runtimeGateway ?? DEFAULT_RUNTIME_GATEWAY,
+    queues: inputDeps.queues ?? {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  };
   const app = new Hono();
   const activeRuns = new Map<string, ActiveRunState>();
   app.onError(async (error, c) => {
@@ -10319,7 +10482,11 @@ export function createApp(deps: AppDeps) {
     if (trustedRequest) {
       return trustedRequest;
     }
-    const payload = ChatRequestSchema.parse(await c.req.json());
+    const requestBody = await c.req.json();
+    const usePlatformChatContract = c.req.path === "/api/v1/documents/chat";
+    const payload = usePlatformChatContract
+      ? toLegacyChatRequest(PlatformChatRequestSchema.parse(requestBody))
+      : ChatRequestSchema.parse(requestBody);
     const principal = await resolvePrincipal(c);
     const user = principal?.user ?? null;
     if ((deps.auth?.isConfigured() ?? false) && !user && !bearerTokenFromRequest(c.req.raw)) {
@@ -10371,7 +10538,15 @@ export function createApp(deps: AppDeps) {
       }
     }
     const response = streamResponse(
-      (send) => runOrchestrator(deps, c.req.raw, requestPayload, send, activeRuns),
+      (send) => runOrchestrator(
+        deps,
+        c.req.raw,
+        requestPayload,
+        usePlatformChatContract
+          ? async (event, data) => send(event, toPlatformEventPayload(data) as Record<string, unknown>)
+          : send,
+        activeRuns,
+      ),
       (error) =>
         recordUnexpectedError(deps, error, {
           request: c.req.raw,
@@ -10391,6 +10566,7 @@ export function createApp(deps: AppDeps) {
 
   app.post("/chat", handleChatRequest);
   app.post("/api/v1/chat", handleChatRequest);
+  app.post("/api/v1/documents/chat", handleChatRequest);
 
   app.get("/sessions/:sessionId/runs/:runId/stream", async (c) => {
     const trustedRequest = requireTrustedBrowserRequest(c);
@@ -11034,6 +11210,20 @@ export function createApp(deps: AppDeps) {
     });
   });
 
+  app.get("/api/v1/documents", async (c) => {
+    const offset = Math.max(0, Number.parseInt(c.req.query("offset") ?? "0", 10) || 0);
+    const limit = Math.min(24, Math.max(1, Number.parseInt(c.req.query("limit") ?? "12", 10) || 12));
+    const [documents, totalCount] = await Promise.all([
+      deps.store.listDocuments(offset, limit),
+      deps.store.countDocuments(),
+    ]);
+    return c.json({
+      documents: documents.map((document) => decorateCorpusDocument(c, document)),
+      nextOffset: documents.length === limit ? offset + documents.length : null,
+      totalCount,
+    });
+  });
+
   app.get("/works/:workId", async (c) => {
     const workId = c.req.param("workId");
     const work = await deps.store.getWorkById(workId);
@@ -11043,6 +11233,25 @@ export function createApp(deps: AppDeps) {
 
     return c.json({
       work: decorateWork(c, work),
+      source: null,
+    });
+  });
+
+  app.get("/api/v1/documents/:documentId", async (c) => {
+    const documentId = c.req.param("documentId");
+    const [document, work] = await Promise.all([
+      deps.store.getDocumentById(documentId),
+      deps.store.getWorkById(documentId),
+    ]);
+    if (!document || !work) {
+      return c.json({ error: "Document not found." }, 404);
+    }
+
+    return c.json({
+      document: {
+        ...decorateCorpusDocument(c, document),
+        ...decorateDocumentDetail(c, work),
+      },
       source: null,
     });
   });
@@ -11075,6 +11284,47 @@ export function createApp(deps: AppDeps) {
     const content = preferredFile?.r2Key ? await deps.blobStore.getText(preferredFile.r2Key) : null;
     if (!content) {
       return c.json({ error: "Book content not found." }, 404);
+    }
+    const metadata = work.metadata && typeof work.metadata === "object" ? work.metadata as Record<string, unknown> : {};
+    const sourceFormat = metadata.sourceFormat === "html" ? "html" : "text";
+    const html = buildFallbackBookHtml(work, content, sourceFormat);
+    return new Response(html, {
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": "public, max-age=300",
+        "x-alphabook-content-source": "fallback-generated",
+      },
+    });
+  });
+
+  app.get("/api/v1/documents/:documentId/content", async (c) => {
+    const documentId = c.req.param("documentId");
+    const work = await deps.store.getWorkById(documentId);
+    if (!work) {
+      return c.json({ error: "Document not found." }, 404);
+    }
+
+    const files = await deps.store.getWorkFiles([documentId], ["book_html"]);
+    const htmlFile = files.find((file) => file.kind === "book_html") ?? null;
+    if (htmlFile?.r2Key) {
+      const object = await deps.blobStore.getObject(htmlFile.r2Key);
+      if (object) {
+        return new Response(await object.arrayBuffer(), {
+          headers: {
+            "content-type": object.contentType ?? "text/html; charset=utf-8",
+            "cache-control": "public, max-age=14400",
+          },
+        });
+      }
+    }
+
+    const sourceFiles = await deps.store.getWorkFiles([documentId], ["raw", "clean"]);
+    const rawFile = sourceFiles.find((file) => file.kind === "raw") ?? null;
+    const cleanFile = sourceFiles.find((file) => file.kind === "clean") ?? null;
+    const preferredFile = rawFile ?? cleanFile;
+    const content = preferredFile?.r2Key ? await deps.blobStore.getText(preferredFile.r2Key) : null;
+    if (!content) {
+      return c.json({ error: "Document content not found." }, 404);
     }
     const metadata = work.metadata && typeof work.metadata === "object" ? work.metadata as Record<string, unknown> : {};
     const sourceFormat = metadata.sourceFormat === "html" ? "html" : "text";
@@ -11121,11 +11371,67 @@ export function createApp(deps: AppDeps) {
     });
   });
 
+  app.get("/api/v1/documents/:documentId/source", async (c) => {
+    const documentId = c.req.param("documentId");
+    const work = await deps.store.getWorkById(documentId);
+    if (!work) {
+      return c.json({ error: "Document not found." }, 404);
+    }
+
+    const files = await deps.store.getWorkFiles([documentId], ["raw", "clean"]);
+    const rawFile = files.find((file) => file.kind === "raw") ?? null;
+    const cleanFile = files.find((file) => file.kind === "clean") ?? null;
+    const preferredFile = rawFile ?? cleanFile;
+    const content = preferredFile?.r2Key ? await deps.blobStore.getText(preferredFile.r2Key) : null;
+    const metadata = work.metadata ?? {};
+    const sourceFormat =
+      typeof metadata.sourceFormat === "string" && (metadata.sourceFormat === "html" || metadata.sourceFormat === "text")
+        ? metadata.sourceFormat
+        : rawFile?.r2Key?.endsWith(".html")
+          ? "html"
+          : "text";
+
+    return c.json({
+      source: content
+        ? workSourceToDocumentSource({
+            format: sourceFormat,
+            content,
+            r2Key: preferredFile?.r2Key ?? null,
+            sourcePath: typeof metadata.sourcePath === "string" ? metadata.sourcePath : null,
+            metadataPath: typeof metadata.metadataPath === "string" ? metadata.metadataPath : null,
+          })
+        : null,
+    });
+  });
+
   app.get("/works/:workId/cover", async (c) => {
     const workId = c.req.param("workId");
     const work = await deps.store.getWorkById(workId);
     if (!work) {
       return c.json({ error: "Work not found." }, 404);
+    }
+    const metadata = work.metadata ?? {};
+    const coverImageKey = typeof metadata.coverImageKey === "string" ? metadata.coverImageKey : null;
+    if (!coverImageKey) {
+      return c.json({ error: "Cover not found." }, 404);
+    }
+    const object = await deps.blobStore.getObject(coverImageKey);
+    if (!object) {
+      return c.json({ error: "Cover not found." }, 404);
+    }
+    return new Response(await object.arrayBuffer(), {
+      headers: {
+        "content-type": object.contentType ?? "image/jpeg",
+        "cache-control": "public, max-age=86400",
+      },
+    });
+  });
+
+  app.get("/api/v1/documents/:documentId/cover", async (c) => {
+    const documentId = c.req.param("documentId");
+    const work = await deps.store.getWorkById(documentId);
+    if (!work) {
+      return c.json({ error: "Document not found." }, 404);
     }
     const metadata = work.metadata ?? {};
     const coverImageKey = typeof metadata.coverImageKey === "string" ? metadata.coverImageKey : null;

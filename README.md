@@ -28,7 +28,7 @@ The important boundary is intentional:
 
 - the live AlphaBook product, routes, and user-facing copy stay book-centric
 - the public AlphaBook HTTP API stays `work` and `book` shaped for compatibility
-- the generic extension points for open-source adopters live in the platform and adapter packages, not in the browser product contract
+- the generic extension points for open-source adopters live in the platform and adapter packages, plus the neutral document API under `/api/v1/documents/*`
 
 If you want to reuse the generic internals, start with:
 
@@ -50,6 +50,7 @@ The supported open-source boundary is documented in [docs/oss-supported-surface.
 The local validation and fixture-corpus path is documented in [docs/oss-quickstart.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/oss-quickstart.md).
 The open-source release checklist is in [docs/oss-release-checklist.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/oss-release-checklist.md).
 The retrieval benchmark scaffold for the CLI-first research paper lives in [docs/benchmarking-cli-retrieval.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/benchmarking-cli-retrieval.md).
+The additive neutral API and compatibility contract details live in [docs/api-contracts.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/api-contracts.md).
 
 ## Current Status
 
