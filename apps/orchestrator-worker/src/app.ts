@@ -2625,7 +2625,7 @@ async function executeTool(
         .filter((chunk): chunk is ChunkSearchResult => Boolean(chunk));
       const maxRelevantChunks = parsed.maxRelevantChunks ?? 96;
       const maxRelevantWorks = parsed.maxRelevantWorks ?? 24;
-      const batchSize = 24;
+      const batchSize = 12;
       const scored = new Map<string, { score: number; reason?: string }>();
       for (let index = 0; index < orderedCandidates.length; index += batchSize) {
         const batch = orderedCandidates.slice(index, index + batchSize);
@@ -2634,10 +2634,14 @@ async function executeTool(
         );
         const prompt = [
           "You are classifying literary passages for research relevance.",
-          "Return strict JSON: {\"items\":[{\"id\":\"...\",\"score\":0-1,\"reason\":\"...\"}]}",
+          "Reply with JSON only.",
+          "Do not use markdown fences.",
+          "Do not use prose before or after the JSON.",
+          "Return exactly this shape: {\"items\":[{\"id\":\"...\",\"score\":0-1,\"reason\":\"...\"}]}",
           "Score for whether the passage is directly useful for answering the user query.",
           "High scores require clear topical relevance, not just loose keyword overlap.",
           "Down-rank incidental mentions and generic emotional language.",
+          `Return exactly ${batch.length} items, one per passage id in the same order.`,
           `Query: ${parsed.query}`,
           "Passages:",
           ...batch.map((chunk, batchIndex) => `${batchIndex + 1}. id=${chunk.id}\nworkId=${chunk.workId}\nchunkIndex=${chunk.chunkIndex}\nexcerpt=${(chunk.excerpt ?? chunk.text).replace(/\s+/gu, " ").slice(0, 700)}`),
