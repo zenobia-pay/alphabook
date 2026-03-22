@@ -3088,7 +3088,12 @@ function persistedResearchDocumentHtml(artifacts: RunArtifactRecord[]) {
   return candidate ? artifactText(candidate) : "";
 }
 
-function currentResearchDocumentHtml(messages: UiMessage[], artifacts: RunArtifactRecord[], runId: string | null) {
+function currentResearchDocumentHtml(
+  messages: UiMessage[],
+  artifacts: RunArtifactRecord[],
+  runId: string | null,
+  options: { fallbackToLatestSessionDocument?: boolean } = {},
+) {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (message.role !== "assistant") {
@@ -3101,6 +3106,18 @@ function currentResearchDocumentHtml(messages: UiMessage[], artifacts: RunArtifa
     const html = messageResearchDocumentHtml(message);
     if (html) {
       return html;
+    }
+  }
+  if (options.fallbackToLatestSessionDocument) {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message.role !== "assistant") {
+        continue;
+      }
+      const html = messageResearchDocumentHtml(message);
+      if (html) {
+        return html;
+      }
     }
   }
   return persistedResearchDocumentHtml(artifacts);
@@ -7073,6 +7090,7 @@ export default function App() {
       visibleMessages,
       runArtifacts,
       preferredAssistantRun?.id ?? null,
+      { fallbackToLatestSessionDocument: true },
     );
     const showBlankSession =
       !assistantSessionLoading
