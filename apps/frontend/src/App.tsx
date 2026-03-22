@@ -4412,14 +4412,14 @@ function AssistantDocumentFramePage({
   const bootstrapHydratedMessages = useMemo(() => {
     const rawMessages = Array.isArray(bootstrap?.messages) ? bootstrap.messages : [];
     const hydrated = rawMessages.map(hydrateStoredMessage);
-    const bootstrapRunEvents = Array.isArray(bootstrap?.runState?.runEvents) ? bootstrap.runState.runEvents : [];
-    if (bootstrapRunEvents.length > 0) {
-      return mergePersistedRunEvents(hydrated, runId, bootstrapRunEvents);
-    }
     const bootstrapToolTrace = Array.isArray(bootstrap?.runState?.toolTrace) ? bootstrap.runState.toolTrace : [];
-    return bootstrapToolTrace.length > 0
+    const withTrace = bootstrapToolTrace.length > 0
       ? mergePersistedToolTrace(hydrated, runId, bootstrapToolTrace)
       : hydrated;
+    const bootstrapRunEvents = Array.isArray(bootstrap?.runState?.runEvents) ? bootstrap.runState.runEvents : [];
+    return bootstrapRunEvents.length > 0
+      ? mergePersistedRunEvents(withTrace, runId, bootstrapRunEvents)
+      : withTrace;
   }, [bootstrap, runId]);
   const [messages, setMessages] = useState<UiMessage[]>(bootstrapHydratedMessages);
   const [toolTrace, setToolTrace] = useState<ToolTraceEntry[]>(() => currentResearchToolTrace(bootstrapHydratedMessages, runId));
@@ -4483,11 +4483,12 @@ function AssistantDocumentFramePage({
           loadingTimer = null;
         }
         const hydrated = nextMessages.map(hydrateStoredMessage);
+        const withTrace = Array.isArray(nextState.toolTrace)
+          ? mergePersistedToolTrace(hydrated, runId, nextState.toolTrace)
+          : hydrated;
         const merged = Array.isArray(nextState.runEvents) && nextState.runEvents.length > 0
-          ? mergePersistedRunEvents(hydrated, runId, nextState.runEvents)
-          : Array.isArray(nextState.toolTrace)
-            ? mergePersistedToolTrace(hydrated, runId, nextState.toolTrace)
-            : hydrated;
+          ? mergePersistedRunEvents(withTrace, runId, nextState.runEvents)
+          : withTrace;
         setMessages(merged);
         setToolTrace(currentResearchToolTrace(merged, runId));
         setArtifacts(Array.isArray(nextState.artifacts) ? nextState.artifacts : []);
@@ -5895,10 +5896,14 @@ export default function App() {
         return;
       }
       const hydrated = nextMessages.map(hydrateStoredMessage);
+      const withTrace =
+        nextRunState && Array.isArray(nextRunState.toolTrace)
+          ? mergePersistedToolTrace(hydrated, recoveredActiveRunId ?? "", nextRunState.toolTrace)
+          : hydrated;
       const mergedWithRunEvents =
         nextRunState && Array.isArray(nextRunState.runEvents) && nextRunState.runEvents.length > 0
-          ? mergePersistedRunEvents(hydrated, recoveredActiveRunId ?? "", nextRunState.runEvents)
-          : hydrated;
+          ? mergePersistedRunEvents(withTrace, recoveredActiveRunId ?? "", nextRunState.runEvents)
+          : withTrace;
       setMessages((current) => mergeFetchedMessages(current, mergedWithRunEvents, selectedSessionId));
     };
 
@@ -5995,11 +6000,14 @@ export default function App() {
         if (!cancelled) {
           setRunArtifacts(Array.isArray(nextState.artifacts) ? nextState.artifacts : []);
           if (!hasCanonicalPlanToolTrace(messagesRef.current, preferredRun.id)) {
-            if (Array.isArray(nextState.runEvents) && nextState.runEvents.length > 0) {
-              setMessages((current) => mergePersistedRunEvents(current, preferredRun.id, nextState.runEvents ?? []));
-            } else if (Array.isArray(nextState.toolTrace)) {
-              setMessages((current) => mergePersistedToolTrace(current, preferredRun.id, nextState.toolTrace ?? []));
-            }
+            setMessages((current) => {
+              const withTrace = Array.isArray(nextState.toolTrace)
+                ? mergePersistedToolTrace(current, preferredRun.id, nextState.toolTrace ?? [])
+                : current;
+              return Array.isArray(nextState.runEvents) && nextState.runEvents.length > 0
+                ? mergePersistedRunEvents(withTrace, preferredRun.id, nextState.runEvents ?? [])
+                : withTrace;
+            });
           }
         }
       } catch {

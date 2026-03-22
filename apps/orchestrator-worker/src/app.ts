@@ -11049,9 +11049,7 @@ export function createApp(inputDeps: CreateAppInput) {
       readPersistedPlanMessageStateForRun(deps, sessionId, runId),
       loadRunArtifactSummaries(deps, sessionId, runId, toolCalls),
     ]);
-    const runEvents = run.status === "running" || run.status === "queued"
-      ? await deps.store.listRunEvents(runId)
-      : [];
+    const runEvents = await deps.store.listRecentRunEvents(runId, 200);
     const toolTrace = runEvents.length > 0
       ? persistedPlanState.toolTrace
       : mergeRecoveredTraceWithExisting(
@@ -11089,9 +11087,7 @@ export function createApp(inputDeps: CreateAppInput) {
       readPersistedPlanMessageStateForRun(deps, sessionId, runId),
       loadRunArtifactSummaries(deps, sessionId, runId, toolCalls),
     ]);
-    const runEvents = run.status === "running" || run.status === "queued"
-      ? await deps.store.listRunEvents(runId)
-      : [];
+    const runEvents = await deps.store.listRecentRunEvents(runId, 200);
     const toolTrace = runEvents.length > 0
       ? persistedPlanState.toolTrace
       : mergeRecoveredTraceWithExisting(
@@ -11129,9 +11125,7 @@ export function createApp(inputDeps: CreateAppInput) {
       readPersistedPlanMessageStateForRun(deps, sessionId, runId),
       loadRunArtifactSummaries(deps, sessionId, runId, toolCalls),
     ]);
-    const runEvents = run.status === "running" || run.status === "queued"
-      ? await deps.store.listRunEvents(runId)
-      : [];
+    const runEvents = await deps.store.listRecentRunEvents(runId, 200);
     const toolTrace = runEvents.length > 0
       ? persistedPlanState.toolTrace
       : mergeRecoveredTraceWithExisting(
@@ -11169,9 +11163,7 @@ export function createApp(inputDeps: CreateAppInput) {
       readPersistedPlanMessageStateForRun(deps, sessionId, runId),
       loadRunArtifactSummaries(deps, sessionId, runId, toolCalls),
     ]);
-    const runEvents = run.status === "running" || run.status === "queued"
-      ? await deps.store.listRunEvents(runId)
-      : [];
+    const runEvents = await deps.store.listRecentRunEvents(runId, 200);
     const toolTrace = runEvents.length > 0
       ? persistedPlanState.toolTrace
       : mergeRecoveredTraceWithExisting(

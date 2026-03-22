@@ -405,6 +405,7 @@ export interface AppStore {
   finishToolCall(toolCallId: string, status: ToolCallRecord["status"], resultJson: Record<string, unknown>): Promise<void>;
   appendRunEvent(runId: string, sessionId: string, event: string, dataJson: Record<string, unknown>): Promise<RunEventRecord>;
   listRunEvents(runId: string): Promise<RunEventRecord[]>;
+  listRecentRunEvents(runId: string, limit: number): Promise<RunEventRecord[]>;
   listWorks(offset?: number, limit?: number): Promise<WorkSummary[]>;
   countWorks(): Promise<number>;
   listDocuments(offset?: number, limit?: number): Promise<CorpusDocumentRecord[]>;
@@ -2423,6 +2424,11 @@ export class InMemoryAppStore implements AppStore {
 
   async listRunEvents(runId: string): Promise<RunEventRecord[]> {
     return [...(this.runEvents.get(runId) ?? [])];
+  }
+
+  async listRecentRunEvents(runId: string, limit: number): Promise<RunEventRecord[]> {
+    const events = this.runEvents.get(runId) ?? [];
+    return events.slice(Math.max(0, events.length - Math.max(1, limit)));
   }
 
   async listWorks(offset = 0, limit = 12): Promise<WorkSummary[]> {
@@ -4563,6 +4569,41 @@ export class NeonAppStore implements AppStore {
         ORDER BY sequence ASC, created_at ASC
       `,
       [runId],
+    );
+    return result.rows.map((row) => ({
+      id: row.id,
+      runId: row.run_id,
+      sessionId: row.session_id,
+      sequence: Number(row.sequence ?? 0),
+      event: row.event,
+      dataJson: row.data_json ?? {},
+      createdAt: row.created_at,
+    }));
+  }
+
+  async listRecentRunEvents(runId: string, limit: number): Promise<RunEventRecord[]> {
+    const safeLimit = Math.max(1, Math.min(1000, Math.trunc(limit) || 200));
+    const result = await this.db.query<{
+      id: string;
+      run_id: string;
+      session_id: string;
+      sequence: number;
+      event: string;
+      data_json: Record<string, unknown>;
+      created_at: string;
+    }>(
+      `
+        SELECT id, run_id, session_id, sequence, event, data_json, created_at
+        FROM (
+          SELECT id, run_id, session_id, sequence, event, data_json, created_at
+          FROM run_events
+          WHERE run_id = $1::uuid
+          ORDER BY sequence DESC
+          LIMIT $2
+        ) recent
+        ORDER BY sequence ASC
+      `,
+      [runId, safeLimit],
     );
     return result.rows.map((row) => ({
       id: row.id,
