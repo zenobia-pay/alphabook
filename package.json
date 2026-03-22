@@ -14,6 +14,7 @@
     "benchmark:sample-topical": "node --import tsx packages/tooling/scripts/export-topical-benchmark-sample.ts",
     "benchmark:import": "node --import tsx packages/tooling/scripts/import-benchmark-dataset.ts",
     "benchmark:audit-labels": "node --import tsx packages/tooling/scripts/audit-benchmark-labels.ts",
+    "benchmark:labeler": "node --import tsx packages/tooling/scripts/build-benchmark-labeler.ts",
     "benchmark:run": "node --import tsx packages/tooling/scripts/run-benchmark.ts",
     "benchmark:compare-models": "node --import tsx packages/tooling/scripts/run-comprehensive-model-comparison.ts",
     "benchmark:grief": "node --import tsx packages/tooling/scripts/run-grief-benchmark.ts",

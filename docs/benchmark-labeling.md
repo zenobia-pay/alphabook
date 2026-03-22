@@ -37,6 +37,38 @@ npm run benchmark:audit-labels -- \
   --output output/benchmark-runs/grief-5-label-audit.json
 ```
 
+## Easiest Local Workflow
+
+Build the static labeling page:
+
+```bash
+npm run benchmark:labeler -- \
+  --corpus output/benchmark-samples/grief-topical-2-books.json \
+  --query-set output/benchmark-samples/grief-5-query-set.json \
+  --output output/benchmark-labeler/grief-5.html \
+  --candidate-limit 60
+```
+
+Then open:
+
+- `output/benchmark-labeler/grief-5.html`
+
+The page gives you:
+
+- `Yes` to save grade `2`
+- `Maybe` to save grade `1`
+- `No` to mark the passage reviewed and rejected locally
+- `Export JSON` to download the updated query set when you are done
+
+Keyboard shortcuts:
+
+- `Y` yes
+- `M` maybe
+- `N` no
+- `U` unset
+- `J` / `K` next or previous passage
+- `[` / `]` previous or next query
+
 ## Labeling Standard
 
 For each query:
