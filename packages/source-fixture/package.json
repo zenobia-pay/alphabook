@@ -4,10 +4,12 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@alphabook/corpus-core": "0.1.0"
+    "@alphabook/corpus-core": "0.1.0",
+    "@alphabook/platform": "0.1.0"
   },
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./repository": "./src/repository.ts"
   },
   "scripts": {
     "test": "node --import tsx --test test/**/*.test.ts",

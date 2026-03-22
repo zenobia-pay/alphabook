@@ -25,19 +25,25 @@ This repo can now support a second corpus without changing AlphaBook's live prod
    - `text`
    - optional `capabilities`
    - optional `hooks`
-3. Map your source records into neutral document/chunk/file shapes.
-4. Register the adapter through `createCorpusAdapterRegistry`.
-5. Reuse the compatibility helpers if you need AlphaBook's legacy `work` surface.
+3. If your source needs dataset-specific retrieval behavior, implement optional hooks for:
+   - query-term expansion
+   - metadata scoring
+   - metadata acceptance thresholds
+   - shard-axis hints
+4. Map your source records into neutral document/chunk/file shapes.
+5. Implement a repository returning `CorpusDocumentRecord`, `CorpusChunkRecord`, and `CorpusFileRecord`.
+6. Register the adapter through `createCorpusAdapterRegistry`.
+7. Reuse the compatibility helpers if you need AlphaBook's legacy `work` surface.
 
 ## Current Examples
 
 - `packages/source-gutenberg`: production book corpus adapter
-- `packages/source-fixture`: minimal non-book corpus adapter
+- `packages/source-fixture`: minimal non-book corpus adapter and repository
 
 ## What Is Still Required For A New Corpus
 
 - an ingest implementation for the new source
-- a repository implementation or mapping layer that can return neutral document records
+- a repository implementation or mapping layer that can return neutral document/chunk/file records
 - any source-specific scoring/query hooks you need
 
 The platform package is the stable starting point. AlphaBook-specific packages should only be used when you explicitly want the current book product behavior.

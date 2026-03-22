@@ -69,6 +69,20 @@ export const fixtureCorpusAdapter: CorpusAdapter = {
         filters,
       };
     },
+    expandQueryTerms(input) {
+      const normalizedQuery = input.query.replace(/\bbooks?\b/giu, "documents").trim().toLowerCase();
+      const tokens = normalizedQuery.split(/[^a-z0-9]+/u).filter((token) => token.length >= 3);
+      const expanded = new Set(tokens);
+      if (tokens.includes("incident")) {
+        expanded.add("incidents");
+        expanded.add("memo");
+      }
+      if (tokens.includes("reliability")) {
+        expanded.add("report");
+        expanded.add("metrics");
+      }
+      return [...expanded];
+    },
     summarizeFacets(metadata) {
       const tags = Array.isArray(metadata.tags)
         ? metadata.tags.filter((value): value is string => typeof value === "string")
@@ -78,6 +92,30 @@ export const fixtureCorpusAdapter: CorpusAdapter = {
         value: tag,
         score: Math.max(0, 1 - index * 0.1),
       }));
+    },
+    scoreDocumentMetadata({ query, document }) {
+      const queryText = query.toLowerCase();
+      const haystack = [
+        document.title,
+        document.summary ?? "",
+        ...(document.contributors ?? []),
+        ...(document.subjects ?? []),
+        JSON.stringify(document.metadata ?? {}),
+      ].join(" ").toLowerCase();
+      let bonus = 0;
+      if (queryText.includes("incident") && haystack.includes("incident")) {
+        bonus += 0.5;
+      }
+      if (queryText.includes("reliability") && haystack.includes("reliability")) {
+        bonus += 0.5;
+      }
+      return bonus;
+    },
+    acceptMetadataResults(input) {
+      return input.documents.length >= Math.min(input.limit, 2);
+    },
+    recommendedShardAxis() {
+      return "work_id_hash";
     },
   },
 };

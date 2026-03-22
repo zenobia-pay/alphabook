@@ -23,6 +23,7 @@ AlphaBook remains a book-focused product, but the codebase now has an explicit a
 
 - neutral document/source/citation schemas
 - tool alias translation
+- platform tool/chat argument translation helpers
 - adapter registry
 - repository interfaces
 - generic prompt templates for non-AlphaBook consumers
@@ -47,6 +48,7 @@ To avoid breaking the live app, the runtime path uses compatibility helpers that
 - artifact key generation
 - Gutenberg boilerplate cleanup
 - text normalization and chunking hooks
+- Gutenberg-specific query expansion, metadata scoring, metadata acceptance, and shard-axis hints through generic adapter hooks
 
 AlphaBook continues to use this adapter by default through the adapter registry.
 
@@ -60,3 +62,10 @@ To add a new corpus without changing AlphaBook UX:
 4. Reuse the existing compatibility helpers if you need to interoperate with AlphaBook's current `work`-based runtime flow.
 
 `packages/source-fixture` is the minimal non-book example of the contract in use.
+
+It now also ships a minimal `CorpusRepository` implementation so the non-book example exercises:
+
+- neutral document search
+- neutral chunk retrieval
+- neutral document file lookup
+- runtime-facing text/file hydration contracts

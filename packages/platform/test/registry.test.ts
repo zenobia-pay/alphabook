@@ -5,7 +5,11 @@ import type { CorpusAdapter } from "@alphabook/corpus-core";
 
 import {
   createCorpusAdapterRegistry,
+  toLegacyChatRequest,
+  toLegacyToolArgs,
   toLegacyToolName,
+  toPlatformChatRequest,
+  toPlatformToolArgs,
   toPlatformToolName,
 } from "../src/index";
 
@@ -37,4 +41,23 @@ test("platform tool aliases translate between generic and AlphaBook names", () =
   assert.equal(toLegacyToolName("search_documents"), "search_works");
   assert.equal(toPlatformToolName("get_work_metadata"), "get_document_metadata");
   assert.equal(toPlatformToolName("unknown"), null);
+});
+
+test("platform contract helpers translate between work and document args", () => {
+  assert.deepEqual(
+    toPlatformToolArgs("get_work_metadata", { workIds: ["work-1"] }),
+    { documentIds: ["work-1"] },
+  );
+  assert.deepEqual(
+    toLegacyToolArgs("get_document_text", { documentId: "doc-1" }),
+    { documentId: "doc-1", workId: "doc-1" },
+  );
+  assert.deepEqual(
+    toPlatformChatRequest({ message: "hello", workIds: ["work-1"] }),
+    { message: "hello", documentIds: ["work-1"] },
+  );
+  assert.deepEqual(
+    toLegacyChatRequest({ message: "hello", documentIds: ["doc-1"] }),
+    { message: "hello", documentIds: ["doc-1"], workIds: ["doc-1"] },
+  );
 });

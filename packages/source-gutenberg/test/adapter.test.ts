@@ -26,3 +26,17 @@ test("gutenberg adapter text hooks preserve current cleanup behavior", () => {
     "Paragraph one.\n\nParagraph two.",
   ]);
 });
+
+test("gutenberg adapter exposes book-specific retrieval hooks behind the generic contract", () => {
+  assert.ok(gutenbergCorpusAdapter.hooks?.expandQueryTerms?.({
+    query: "grief in novels",
+    mode: "metadata",
+  })?.includes("mourning"));
+  assert.equal(
+    gutenbergCorpusAdapter.hooks?.recommendedShardAxis?.({
+      query: "authors writing about grief",
+      estimatedDocumentBreadth: 128,
+    }),
+    "author_initial",
+  );
+});

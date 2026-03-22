@@ -3,12 +3,13 @@ import {
   workDetailToDocumentDetail,
   workSummaryToDocumentSummary,
 } from "@alphabook/platform";
-import type { ChunkSearchResult, NotificationType, ToolName, WorkDetail, WorkSummary } from "@alphabook/shared";
+import { defaultCorpusAdapter, type ChunkSearchResult, type NotificationType, type ToolName, type WorkDetail, type WorkSummary } from "@alphabook/shared";
 import type {
   CorpusChunkRecord,
   CorpusDocumentRecord,
   CorpusFileRecord,
 } from "@alphabook/platform";
+import { NeonCorpusDbRepository } from "./db-repository";
 
 const PASSAGE_SEARCH_TIMEOUT_MS = 45_000;
 
@@ -1158,6 +1159,14 @@ function searchTokens(query: string): string[] {
 function expandedSearchTokens(query: string): string[] {
   const baseTokens = searchTokens(query);
   const expanded = new Set(baseTokens);
+  for (const token of defaultCorpusAdapter.hooks?.expandQueryTerms?.({
+    query,
+    mode: "search",
+  }) ?? []) {
+    if (token.length >= 3 && !WORK_SEARCH_STOP_WORDS.has(token)) {
+      expanded.add(token);
+    }
+  }
   for (const token of baseTokens) {
     for (const synonym of QUERY_SYNONYMS[token] ?? []) {
       if (synonym.length >= 3 && !WORK_SEARCH_STOP_WORDS.has(synonym)) {
@@ -1169,7 +1178,12 @@ function expandedSearchTokens(query: string): string[] {
 }
 
 function passageSearchTokens(query: string): string[] {
+  const adapterTerms = defaultCorpusAdapter.hooks?.expandQueryTerms?.({
+    query,
+    mode: "passage",
+  }) ?? [];
   const expanded = expandedSearchTokens(query)
+    .concat(adapterTerms)
     .filter((token) => !PASSAGE_SEARCH_QUERY_STOP_WORDS.has(token))
     .filter((token) => !/^\d{4}$/u.test(token));
   const hasStrongGriefSignal = expanded.some((token) => GRIEF_THEME_TOKENS.has(token) || token === "grief");
@@ -1186,7 +1200,13 @@ function isBroadMetadataSurveyQuery(query: string) {
 }
 
 function metadataSearchTerms(query: string): string[] {
-  const expanded = expandedSearchTokens(query);
+  const expanded = Array.from(new Set([
+    ...expandedSearchTokens(query),
+    ...(defaultCorpusAdapter.hooks?.expandQueryTerms?.({
+      query,
+      mode: "metadata",
+    }) ?? []),
+  ]));
   const hasStrongGriefSignal = expanded.some((token) => GRIEF_THEME_TOKENS.has(token));
   const broadSurveyQuery = isBroadMetadataSurveyQuery(query);
   const terms = hasStrongGriefSignal
@@ -1221,6 +1241,13 @@ function isTemporalAnalysisQuery(query: string) {
 }
 
 function recommendedShardAxis(query: string, estimatedWorkBreadth: number): ResearchScopeEstimate["recommendedShardAxis"] {
+  const adapterShardAxis = defaultCorpusAdapter.hooks?.recommendedShardAxis?.({
+    query,
+    estimatedDocumentBreadth: estimatedWorkBreadth,
+  });
+  if (adapterShardAxis) {
+    return adapterShardAxis;
+  }
   if (estimatedWorkBreadth <= 24) {
     return "none";
   }
@@ -1515,6 +1542,21 @@ function shouldAcceptMetadataRows<T extends {
   subjects: string[];
   metadata_json: Record<string, unknown>;
 }>(rows: T[], query: string, limit: number) {
+  const adapterDecision = defaultCorpusAdapter.hooks?.acceptMetadataResults?.({
+    query,
+    limit,
+    documents: rows.map((row) => ({
+      id: "",
+      title: row.title,
+      summary: row.summary ?? null,
+      contributors: row.authors ?? [],
+      subjects: row.subjects ?? [],
+      metadata: row.metadata_json ?? {},
+    })),
+  });
+  if (typeof adapterDecision === "boolean") {
+    return adapterDecision;
+  }
   const terms = metadataSearchTerms(query);
   const hasStrongGriefSignal = terms.some((token) => GRIEF_THEME_TOKENS.has(token));
   const broadSurveyQuery = isBroadMetadataSurveyQuery(query);
@@ -1529,6 +1571,7 @@ function shouldAcceptMetadataRows<T extends {
 }
 
 function rerankMetadataRows<T extends {
+  id: string;
   title: string;
   summary: string | null;
   authors: string[];
@@ -1536,56 +1579,20 @@ function rerankMetadataRows<T extends {
   metadata_json: Record<string, unknown>;
   score: number;
 }>(rows: T[], query: string): T[] {
-  const terms = metadataSearchTerms(query);
-  const hasStrongGriefSignal = terms.some((token) => GRIEF_THEME_TOKENS.has(token));
-  const asksForJuvenile = /\b(children|child|juvenile|girl|girls|boy|boys|school|orphan|orphans)\b/iu.test(query);
-  const asksForFiction = /\bfiction|novel|novels|short fiction|story|stories|tale|tales|romance\b/iu.test(query);
   return rows
     .map((row) => {
-      const haystack = metadataTextHaystack(row);
-      let bonus = 0;
-      for (const term of terms) {
-        if (!haystack.includes(term)) {
-          continue;
-        }
-        bonus += GRIEF_THEME_TOKENS.has(term) ? 0.35 : 0.12;
-      }
-      const hasExplicitGriefMatch = GRIEF_EXPLICIT_MATCH_PATTERN.test(haystack);
-      const titleHasDeathWord = DEATH_TITLE_ONLY_PATTERN.test(row.title.toLowerCase());
-      if (hasStrongGriefSignal && !hasExplicitGriefMatch) {
-        bonus -= 0.4;
-      }
-      if (hasStrongGriefSignal && /\bwidows?\b/u.test(haystack) && !hasExplicitGriefMatch) {
-        bonus -= 0.45;
-      }
-      if (hasStrongGriefSignal && titleHasDeathWord && !hasExplicitGriefMatch) {
-        bonus -= 1.2;
-      }
-      if (hasStrongGriefSignal && LOW_SIGNAL_GENRE_PATTERN.test(haystack) && !hasExplicitGriefMatch) {
-        bonus -= 0.9;
-      }
-      if (asksForFiction && !FICTION_SIGNAL_PATTERN.test(haystack)) {
-        bonus -= 1.1;
-      }
-      if (asksForFiction && NONFICTION_SIGNAL_PATTERN.test(haystack)) {
-        bonus -= 1.25;
-      }
-      if (hasStrongGriefSignal && !asksForJuvenile) {
-        if (JUVENILE_MATCH_PATTERN.test(haystack) && !hasExplicitGriefMatch) {
-          bonus -= 1.15;
-        } else if (JUVENILE_MATCH_PATTERN.test(haystack)) {
-          bonus -= 0.55;
-        }
-        if (ORPHAN_MATCH_PATTERN.test(haystack) && !hasExplicitGriefMatch) {
-          bonus -= 0.35;
-        }
-        if (SHORT_FORM_PATTERN.test(haystack) && !hasExplicitGriefMatch) {
-          bonus -= 0.45;
-        }
-      }
-      if (hasStrongGriefSignal && hasExplicitGriefMatch) {
-        bonus += 0.45;
-      }
+      const bonus = defaultCorpusAdapter.hooks?.scoreDocumentMetadata?.({
+        query,
+        document: {
+          id: row.id,
+          title: row.title,
+          summary: row.summary ?? null,
+          contributors: row.authors ?? [],
+          subjects: row.subjects ?? [],
+          metadata: row.metadata_json ?? {},
+        },
+        metadata: row.metadata_json ?? {},
+      }) ?? 0;
       return {
         row,
         totalScore: row.score + bonus,
@@ -1619,7 +1626,14 @@ function buildMetadataTsQuery(query: string): string {
 }
 
 function scopeEstimateTerms(query: string) {
-  return metadataSearchTerms(query)
+  const adapterTerms = defaultCorpusAdapter.hooks?.expandQueryTerms?.({
+    query,
+    mode: "scope",
+  }) ?? [];
+  return Array.from(new Set([
+    ...metadataSearchTerms(query),
+    ...adapterTerms,
+  ]))
     .filter((term) => /^[a-z0-9]+$/iu.test(term))
     .slice(0, 24);
 }
@@ -3013,8 +3027,11 @@ export class NeonAppStore implements AppStore {
   private exploreFeedSchemaReady: Promise<void> | null = null;
   private runEventsSchemaReady: Promise<void> | null = null;
   private workCountCache: { value: number; expiresAt: number } | null = null;
+  private readonly corpusRepository: NeonCorpusDbRepository;
 
-  constructor(private readonly db: DbClient) {}
+  constructor(private readonly db: DbClient) {
+    this.corpusRepository = new NeonCorpusDbRepository(db);
+  }
 
   private static readonly WORK_COUNT_CACHE_TTL_MS = 1000 * 60 * 60 * 24;
   private static readonly EXPLORE_FEED_DEFAULT_LIMIT = 512;
@@ -4690,12 +4707,11 @@ export class NeonAppStore implements AppStore {
   }
 
   async listDocuments(offset = 0, limit = 50): Promise<CorpusDocumentRecord[]> {
-    const works = await this.listWorks(offset, limit);
-    return works.map(mapWorkSummaryToDocument);
+    return this.corpusRepository.listDocuments(offset, limit);
   }
 
   async countDocuments(): Promise<number> {
-    return this.countWorks();
+    return this.corpusRepository.countDocuments();
   }
 
   async refreshExploreFeedSnapshot(limit = NeonAppStore.EXPLORE_FEED_DEFAULT_LIMIT): Promise<void> {
@@ -5156,8 +5172,7 @@ export class NeonAppStore implements AppStore {
   }
 
   async getDocumentById(documentId: string): Promise<CorpusDocumentRecord | null> {
-    const work = await this.getWorkById(documentId);
-    return work ? mapWorkDetailToDocument(work) : null;
+    return this.corpusRepository.getDocumentById(documentId);
   }
 
   async getWorksByIdPrefixes(prefixes: string[]): Promise<Array<{
@@ -5605,8 +5620,7 @@ export class NeonAppStore implements AppStore {
   }
 
   async getDocumentMetadata(documentIds: string[]): Promise<CorpusDocumentRecord[]> {
-    const works = await this.getWorkMetadata(documentIds);
-    return works.map(mapWorkSummaryToDocument);
+    return this.corpusRepository.getDocumentMetadata(documentIds);
   }
 
   async getRelevantChunks(
@@ -5846,8 +5860,7 @@ export class NeonAppStore implements AppStore {
   }
 
   async getDocumentTextFile(documentId: string): Promise<DocumentTextRecord | null> {
-    const record = await this.getWorkTextFile(documentId);
-    return record ? { documentId: record.workId, r2Key: record.r2Key } : null;
+    return this.corpusRepository.getDocumentTextFile(documentId);
   }
 
   async getWorkFiles(workIds: string[], kinds?: WorkFileKind[]): Promise<WorkFileRecord[]> {
@@ -5882,8 +5895,15 @@ export class NeonAppStore implements AppStore {
   }
 
   async getDocumentFiles(documentIds: string[], kinds?: DocumentFileKind[]): Promise<DocumentFileRecord[]> {
-    const files = await this.getWorkFiles(documentIds, kinds);
-    return files.map(mapWorkFileToDocument);
+    const files = await this.corpusRepository.getDocumentFiles(documentIds, kinds);
+    return files.map((file) => ({
+      id: `${file.documentId}:${file.kind}:${file.r2Key}`,
+      documentId: file.documentId,
+      kind: file.kind as DocumentFileKind,
+      r2Key: file.r2Key,
+      byteSize: file.byteSize,
+      metadata: file.metadata ?? {},
+    }));
   }
 
   async getChunksByIds(chunkIds: string[]): Promise<ChunkSearchResult[]> {

@@ -9,6 +9,7 @@ export interface CorpusDocument {
   rightsStatus?: string | null;
   contributors?: string[];
   subjects?: string[];
+  score?: number;
   metadata?: Record<string, unknown>;
 }
 
@@ -69,12 +70,26 @@ export interface CorpusAdapterTextOps {
 
 export interface CorpusAdapterHooks {
   normalizeQuery?(query: string, filters?: Record<string, unknown>): CorpusQueryNormalizationResult;
+  expandQueryTerms?(input: {
+    query: string;
+    mode: "search" | "metadata" | "passage" | "scope";
+    filters?: Record<string, unknown>;
+  }): string[] | null;
   summarizeFacets?(metadata: Record<string, unknown>): CorpusFacetSummary[];
   scoreDocumentMetadata?(input: {
     query: string;
     document: CorpusDocument;
     metadata: Record<string, unknown>;
   }): number | null;
+  acceptMetadataResults?(input: {
+    query: string;
+    limit: number;
+    documents: CorpusDocument[];
+  }): boolean | null;
+  recommendedShardAxis?(input: {
+    query: string;
+    estimatedDocumentBreadth: number;
+  }): "none" | "work_id_hash" | "author_initial" | "publication_year" | "retrieval_strategy" | null;
 }
 
 export interface CorpusAdapter {

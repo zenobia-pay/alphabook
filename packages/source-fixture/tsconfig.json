@@ -9,6 +9,7 @@
   "include": [
     "src/**/*.ts",
     "test/**/*.ts",
-    "../corpus-core/src/**/*.ts"
+    "../corpus-core/src/**/*.ts",
+    "../platform/src/**/*.ts"
   ]
 }

@@ -2,6 +2,12 @@ import type { CorpusAdapter } from "@alphabook/corpus-core";
 
 import { GUTENBERG_WORKSPACE_POSTGRES_SCHEMA } from "./schema";
 import { gutenbergCorpusKeys } from "./storage";
+import {
+  gutenbergAcceptMetadataResults,
+  gutenbergMetadataScoreBonus,
+  gutenbergQueryTerms,
+  gutenbergRecommendedShardAxis,
+} from "./strategy";
 import { chunkCorpusText, normalizeCorpusText, stripGutenbergBoilerplate } from "./text";
 
 export const gutenbergCorpusAdapter: CorpusAdapter = {
@@ -29,6 +35,9 @@ export const gutenbergCorpusAdapter: CorpusAdapter = {
     chunkText: chunkCorpusText,
   },
   hooks: {
+    expandQueryTerms(input) {
+      return gutenbergQueryTerms(input.query, input.mode);
+    },
     summarizeFacets(metadata) {
       const bookshelves = Array.isArray(metadata.bookshelves)
         ? metadata.bookshelves.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
@@ -38,6 +47,15 @@ export const gutenbergCorpusAdapter: CorpusAdapter = {
         value,
         score: Math.max(0, 1 - index * 0.1),
       }));
+    },
+    scoreDocumentMetadata(input) {
+      return gutenbergMetadataScoreBonus(input.query, input.document);
+    },
+    acceptMetadataResults(input) {
+      return gutenbergAcceptMetadataResults(input.query, input.limit, input.documents);
+    },
+    recommendedShardAxis(input) {
+      return gutenbergRecommendedShardAxis(input.query, input.estimatedDocumentBreadth);
     },
   },
 };

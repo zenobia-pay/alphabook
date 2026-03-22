@@ -71,6 +71,71 @@ export const PlatformChatRequestSchema = z.object({
 
 export type PlatformChatRequest = z.infer<typeof PlatformChatRequestSchema>;
 
+export const EstimateResearchScopeDocumentArgsSchema = z.object({
+  query: z.string().min(1),
+  documentIds: z.array(z.string()).max(128).optional(),
+  chunkIds: z.array(z.string()).max(512).optional(),
+  filters: z
+    .object({
+      language: z.string().optional(),
+      rightsStatus: z.string().optional(),
+      yearRange: z.tuple([z.number().int(), z.number().int()]).optional(),
+      genre: z.array(z.string().min(1)).max(8).optional(),
+    })
+    .optional(),
+});
+
+export const SearchDocumentsArgsSchema = z.object({
+  query: z.string().min(1),
+  filters: z
+    .object({
+      language: z.string().optional(),
+      rightsStatus: z.string().optional(),
+      yearRange: z.tuple([z.number().int(), z.number().int()]).optional(),
+      genre: z.array(z.string().min(1)).max(8).optional(),
+      subjects: z.array(z.string()).optional(),
+      limit: z.number().int().positive().max(80).optional(),
+    })
+    .optional(),
+});
+
+export const GetDocumentMetadataArgsSchema = z.object({
+  documentIds: z.array(z.string()).min(1).max(80),
+});
+
+export const GetRelevantDocumentChunksArgsSchema = z.object({
+  query: z.string().min(1),
+  documentIds: z.array(z.string()).max(80).optional(),
+  filters: z
+    .object({
+      limit: z.number().int().positive().max(3000).optional(),
+      language: z.string().optional(),
+      rightsStatus: z.string().optional(),
+      yearRange: z.tuple([z.number().int(), z.number().int()]).optional(),
+      genre: z.array(z.string().min(1)).max(8).optional(),
+    })
+    .optional(),
+});
+
+export const GetDocumentTextArgsSchema = z.object({
+  documentId: z.string(),
+});
+
+export const CreateDocumentWorkspaceArgsSchema = z.object({
+  documentIds: z.array(z.string()).max(20),
+  chunkIds: z.array(z.string()).max(100),
+  taskContext: z.record(z.string(), z.unknown()).default({}),
+});
+
+export const PlatformToolArgsSchemas = {
+  estimate_research_scope: EstimateResearchScopeDocumentArgsSchema,
+  search_documents: SearchDocumentsArgsSchema,
+  get_document_metadata: GetDocumentMetadataArgsSchema,
+  get_relevant_chunks: GetRelevantDocumentChunksArgsSchema,
+  get_document_text: GetDocumentTextArgsSchema,
+  create_workspace: CreateDocumentWorkspaceArgsSchema,
+} as const;
+
 export const PlatformToolAliases = {
   search_documents: "search_works",
   get_document_metadata: "get_work_metadata",
@@ -99,4 +164,118 @@ export function toPlatformToolName(toolName: string): PlatformToolName | null {
     default:
       return null;
   }
+}
+
+export function toPlatformToolArgs(toolName: string, args: Record<string, unknown>) {
+  switch (toolName) {
+    case "search_works":
+      return SearchDocumentsArgsSchema.parse(args);
+    case "get_work_metadata": {
+      const { workIds, ...rest } = args;
+      return GetDocumentMetadataArgsSchema.parse({
+        ...rest,
+        documentIds: workIds,
+      });
+    }
+    case "get_work_text": {
+      const { workId, ...rest } = args;
+      return GetDocumentTextArgsSchema.parse({
+        ...rest,
+        documentId: workId,
+      });
+    }
+    case "estimate_research_scope": {
+      const { workIds, ...rest } = args;
+      return EstimateResearchScopeDocumentArgsSchema.parse({
+        ...rest,
+        documentIds: workIds,
+      });
+    }
+    case "get_relevant_chunks": {
+      const { workIds, ...rest } = args;
+      return GetRelevantDocumentChunksArgsSchema.parse({
+        ...rest,
+        documentIds: workIds,
+      });
+    }
+    case "create_workspace": {
+      const { workIds, ...rest } = args;
+      return CreateDocumentWorkspaceArgsSchema.parse({
+        ...rest,
+        documentIds: workIds,
+      });
+    }
+    default:
+      return PlatformToolArgsSchemas[toPlatformToolName(toolName) as keyof typeof PlatformToolArgsSchemas]?.parse(args) ?? args;
+  }
+}
+
+export function toLegacyToolArgs(toolName: string, args: Record<string, unknown>) {
+  switch (toolName) {
+    case "search_documents":
+      return SearchDocumentsArgsSchema.parse(args);
+    case "get_document_metadata": {
+      const { documentIds, ...rest } = args;
+      return {
+        ...GetDocumentMetadataArgsSchema.parse(args),
+        ...rest,
+        workIds: documentIds,
+      };
+    }
+    case "get_document_text": {
+      const { documentId, ...rest } = args;
+      return {
+        ...GetDocumentTextArgsSchema.parse(args),
+        ...rest,
+        workId: documentId,
+      };
+    }
+    case "estimate_research_scope": {
+      const { documentIds, ...rest } = args;
+      return {
+        ...EstimateResearchScopeDocumentArgsSchema.parse(args),
+        ...rest,
+        workIds: documentIds,
+      };
+    }
+    case "get_relevant_chunks": {
+      const { documentIds, ...rest } = args;
+      return {
+        ...GetRelevantDocumentChunksArgsSchema.parse(args),
+        ...rest,
+        workIds: documentIds,
+      };
+    }
+    case "create_workspace": {
+      const { documentIds, ...rest } = args;
+      return {
+        ...CreateDocumentWorkspaceArgsSchema.parse(args),
+        ...rest,
+        workIds: documentIds,
+      };
+    }
+    default:
+      return args;
+  }
+}
+
+export function toPlatformChatRequest(input: {
+  sessionId?: string;
+  userId?: string;
+  message: string;
+  workIds?: string[];
+  stream?: boolean;
+  intensityOverride?: "normal" | "high" | "maximum";
+}) {
+  return PlatformChatRequestSchema.parse({
+    ...input,
+    documentIds: input.workIds,
+  });
+}
+
+export function toLegacyChatRequest(input: PlatformChatRequest) {
+  return {
+    ...input,
+    workIds: input.documentIds,
+  };
 }
