@@ -72,6 +72,16 @@ The shortest path is:
 3. wire that adapter into ingest and repository flows
 4. validate with `npm run validate:oss`
 
+If you want the full operational path, [bring-your-own-corpus.md](bring-your-own-corpus.md) now includes a step-by-step setup guide covering:
+
+- package creation
+- adapter design
+- neutral record mapping
+- ingest wiring
+- DB and R2 provisioning
+- branded wrapper apps
+- deployment verification
+
 ## 6. Understand The Product Boundary
 
 AlphaBook itself stays book-centric:
