@@ -9,15 +9,49 @@ This repository currently ships two implementations on the same architecture:
 - `AlphaBook`: the book-centric reference application that powers `alpha-book.org`
 - `AlphaJustice`: a Supreme Court research implementation built on the same platform and adapter seams
 
-## GitHub Metadata
+## Quick Start
 
-Suggested GitHub repo description:
+Install dependencies:
 
-> Open-source corpus research platform for grounded, cited answers over large text datasets, with AlphaBook and AlphaJustice as reference apps.
+```bash
+npm install
+```
 
-Suggested repository subtitle / social preview line:
+Run the supported OSS validation matrix:
 
-> Shared infrastructure for retrieval, runtime analysis, and cited synthesis across books, cases, and other corpora.
+```bash
+npm run validate:oss
+```
+
+Try the Supreme Court demo corpus without provisioning DB or R2:
+
+```bash
+npx tsx apps/ingest/src/index.ts ingest-supreme-court-demo
+```
+
+That command falls back to local preview mode when infra env vars are not set.
+
+## What This Repo Is
+
+This repository is published as three things at once:
+
+- Alpha Research, the shared corpus-research platform layer
+- AlphaBook, the book-centric implementation that powers `alpha-book.org`
+- AlphaJustice, the Supreme Court implementation that can be deployed separately
+
+The boundary is intentional:
+
+- the live AlphaBook product, routes, and user-facing copy stay book-centric
+- AlphaJustice can have separate origins, branding, and dataset copy without forking the shared app structure
+- the AlphaBook HTTP API stays `work` and `book` shaped for compatibility
+- the generic extension points for OSS adopters live in the platform and adapter packages, plus the neutral document API under `/api/v1/documents/*`
+
+If you want to reuse the generic internals, start with:
+
+- [docs/oss-supported-surface.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/oss-supported-surface.md)
+- [docs/oss-quickstart.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/oss-quickstart.md)
+- [docs/bring-your-own-corpus.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/bring-your-own-corpus.md)
+- [docs/adapter-architecture.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/adapter-architecture.md)
 
 The repo is structured as a shared core-plus-implementations monorepo:
 
@@ -37,28 +71,6 @@ The repo is structured as a shared core-plus-implementations monorepo:
 - `packages/tooling`: local scripts such as migrations
 
 AlphaBook and AlphaJustice are both implementation layers on top of the same reusable platform packages.
-
-## Open Source Status
-
-This repository is being published as three things at once:
-
-- Alpha Research, the shared corpus-research platform layer
-- AlphaBook, the book-centric implementation that powers `alpha-book.org`
-- AlphaJustice, the Supreme Court implementation that can be deployed separately
-
-The important boundary is intentional:
-
-- the live AlphaBook product, routes, and user-facing copy stay book-centric
-- AlphaJustice can have separate origins, branding, and dataset copy without forking the core app structure
-- the AlphaBook HTTP API stays `work` and `book` shaped for compatibility
-- the generic extension points for open-source adopters live in the platform and adapter packages, plus the neutral document API under `/api/v1/documents/*`
-
-If you want to reuse the generic internals, start with:
-
-- [docs/oss-supported-surface.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/oss-supported-surface.md)
-- [docs/oss-quickstart.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/oss-quickstart.md)
-- [docs/bring-your-own-corpus.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/bring-your-own-corpus.md)
-- [docs/adapter-architecture.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/adapter-architecture.md)
 
 If you want launch copy for the repo, see [docs/github-launch.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/github-launch.md).
 
@@ -80,39 +92,24 @@ The additive neutral API and compatibility contract details live in [docs/api-co
 
 ## Current Status
 
-Phase 1 is implemented:
-
-- `POST /chat` and `GET /health` exist in the orchestrator Worker
-- the planner loop is deterministic code around an LLM planner
-- retrieval tools are implemented:
-  - `search_works`
-  - `get_work_metadata`
-  - `get_relevant_chunks`
-  - `get_work_text`
-- tool calls and run state are persisted through the store interface
-- final answer artifacts are written to R2
-- a happy-path retrieval test passes
-
-Phase 2 is implemented:
-
-- the Worker can create and destroy Fly Machines
-- runtime instances are persisted in Neon
-- workspace manifests and runtime artifacts are written to R2
-- the runtime hydrates `/workspace/books`, `/workspace/chunks`, and `/workspace/context` from R2 keys
-- the Worker can run a bounded runtime task, read back `output/summary.md`, and persist the result
-- runtimes are reused per session when they already contain the requested works
-
-Phase 3 remains scaffolded:
-
-- the ingest service can ingest a single Gutenberg URL or a local Gutenberg mirror copy into Neon + R2 for the V1 path
-- the DigitalOcean rsync mirror box bootstrap and systemd timer are included under `ops/digitalocean`
-- daily Project Gutenberg feed diffing still needs to be completed
-- chunk embedding generation/upload still needs to be completed
+- Implemented:
+  - Worker chat and health endpoints
+  - retrieval, workspace hydration, and cited synthesis flow
+  - Fly runtime creation and reuse
+  - neutral document API plus AlphaBook compatibility API
+  - adapter-aware ingest helpers
+  - separate AlphaBook and AlphaJustice deployments
+- Still incomplete:
+  - daily Project Gutenberg feed diffing
+  - full production-grade Gutenberg embedding backfill automation
+  - broader turnkey scaffolding for arbitrary new datasets
 
 ## Monorepo Tree
 
 ```text
 apps/
+  alphajustice-frontend/
+  alphajustice-orchestrator/
   frontend/
   orchestrator-worker/
     src/
@@ -130,7 +127,11 @@ packages/
     src/
   corpus-text/
     src/
+  implementations/
+    src/
   source-gutenberg/
+    src/
+  source-supreme-court/
     src/
   db/
     migrations/
@@ -149,7 +150,7 @@ ops/
 
 ## Assistant Experience
 
-The frontend now ships a real chat interface in `apps/frontend`:
+The shared frontend in `apps/frontend` now ships a real chat interface:
 
 - ChatGPT-style session sidebar
 - one persistent assistant thread per session
@@ -167,7 +168,7 @@ The orchestrator flow is now explicit:
 
 ## CLI Agent Access
 
-AlphaBook now exposes a generic agent-facing path alongside browser auth:
+The orchestrator exposes a generic agent-facing path alongside browser auth:
 
 - `GET /skill.md` publishes an installable prompt for agents
 - `POST /api/v1/agents/register` creates a claimable API key plus a human-facing `claim_url`
@@ -175,7 +176,7 @@ AlphaBook now exposes a generic agent-facing path alongside browser auth:
 - `POST /api/v1/chat` streams the same research pipeline over CLI-friendly HTTP
 - `GET /api/v1/sessions` and `GET /api/v1/sessions/:sessionId/messages` let agents reopen their own threads
 
-The claim flow is meant to mirror the MoltCourt-style pattern:
+The claim flow works like this:
 
 1. an agent registers itself and receives an `api_key`
 2. the agent sends the `claim_url` back to its human
@@ -192,7 +193,7 @@ Operational runbooks:
 
 - [docs/session-debugging.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/session-debugging.md) for tracing failed assistant sessions from the live API
 
-Core variables:
+Core variables include:
 
 - `DATABASE_URL`
 - `OPENAI_API_KEY`
@@ -218,24 +219,6 @@ Core variables:
 - `VITE_API_BASE_URL`
 
 ## Local Development
-
-Install dependencies:
-
-```bash
-npm install
-```
-
-Run the supported open-source validation matrix:
-
-```bash
-npm run validate:oss
-```
-
-Run the non-book Supreme Court demo ingest:
-
-```bash
-npx tsx apps/ingest/src/index.ts ingest-supreme-court-demo
-```
 
 Run Neon migrations:
 
@@ -287,10 +270,10 @@ Run the local non-book fixture ingest demo:
 npx tsx apps/ingest/src/index.ts ingest-fixture
 ```
 
-Exercise the minimal non-book ingest path locally:
+Run the Supreme Court demo ingest:
 
 ```bash
-npx tsx apps/ingest/src/index.ts ingest-fixture
+npx tsx apps/ingest/src/index.ts ingest-supreme-court-demo
 ```
 
 Backfill the local mirror into Neon + R2 in batches:
