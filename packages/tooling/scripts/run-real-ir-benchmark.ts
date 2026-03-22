@@ -89,6 +89,10 @@ async function loadJson<T>(filePath: string): Promise<T> {
   return JSON.parse(await readFile(path.resolve(process.cwd(), filePath), "utf8")) as T;
 }
 
+function sanitizeFileComponent(value: string): string {
+  return value.replace(/[^a-z0-9._-]+/giu, "-").replace(/-+/gu, "-").replace(/^-|-$/gu, "").toLowerCase();
+}
+
 function toSilverLabels(input: {
   passageIds: Array<{ passageId: string; score: number }>;
   minScore: number;
@@ -115,6 +119,45 @@ async function main() {
 
   const corpus = await loadJson<BenchmarkCorpus>(options.corpusPath);
   const querySet = await loadJson<QuerySet>(options.querySetPath);
+  const outputRoot = path.resolve(process.cwd(), options.outputRoot);
+  await mkdir(outputRoot, { recursive: true });
+  const stagingDir = path.join(
+    outputRoot,
+    `${sanitizeFileComponent(corpus.id)}-${sanitizeFileComponent(querySet.id)}-${sanitizeFileComponent(options.model)}-staging`,
+  );
+  await mkdir(stagingDir, { recursive: true });
+
+  const progressPath = path.join(stagingDir, "progress.json");
+  const silverRunsPath = path.join(stagingDir, "silver-label-runs.partial.json");
+  const partialQuerySetPath = path.join(stagingDir, "silver-query-set.partial.json");
+
+  async function flushProgress(input: {
+    stage: "silver-labeling" | "retrieval" | "completed";
+    completedQueries: number;
+    totalQueries: number;
+    silverQueries: BenchmarkQuery[];
+    silverRuns: Array<Record<string, unknown>>;
+    finalArtifacts?: Record<string, unknown>;
+  }) {
+    await writeFile(progressPath, JSON.stringify({
+      generatedAt: new Date().toISOString(),
+      stage: input.stage,
+      corpusId: corpus.id,
+      querySetId: querySet.id,
+      model: options.model,
+      completedQueries: input.completedQueries,
+      totalQueries: input.totalQueries,
+      finalArtifacts: input.finalArtifacts ?? null,
+    }, null, 2));
+    await writeFile(silverRunsPath, JSON.stringify(input.silverRuns, null, 2));
+    await writeFile(partialQuerySetPath, JSON.stringify({
+      ...querySet,
+      id: `${querySet.id}-silver-${options.model.replaceAll("/", "-")}`,
+      version: `${querySet.version}-silver`,
+      description: `${querySet.description} Silver-labeled with ${options.model}.`,
+      queries: input.silverQueries,
+    }, null, 2));
+  }
 
   const silverRetriever = createComprehensiveLLMRetriever({
     judge: createOpenAICompatibleExhaustiveJudge({
@@ -136,6 +179,7 @@ async function main() {
   const silverQueries: BenchmarkQuery[] = [];
   const silverRuns: Array<Record<string, unknown>> = [];
   for (const query of querySet.queries) {
+    process.stderr.write(`Silver labeling ${query.id}: ${query.text}\n`);
     const result = await silverRetriever.retrieve(query, { corpus });
     const labels = toSilverLabels({
       passageIds: result.hits.map((hit) => ({ passageId: hit.passageId, score: hit.score })),
@@ -155,6 +199,13 @@ async function main() {
       trace: result.trace ?? [],
       retainedHits: result.hits.length,
     });
+    await flushProgress({
+      stage: "silver-labeling",
+      completedQueries: silverQueries.length,
+      totalQueries: querySet.queries.length,
+      silverQueries,
+      silverRuns,
+    });
   }
 
   const labeledQuerySet: QuerySet = {
@@ -164,6 +215,14 @@ async function main() {
     description: `${querySet.description} Silver-labeled with ${options.model}.`,
     queries: silverQueries,
   };
+
+  await flushProgress({
+    stage: "retrieval",
+    completedQueries: silverQueries.length,
+    totalQueries: querySet.queries.length,
+    silverQueries,
+    silverRuns,
+  });
 
   const benchmarkRun = await runBenchmark({
     corpus,
@@ -178,20 +237,32 @@ async function main() {
     ],
   });
 
-  const outputRoot = path.resolve(process.cwd(), options.outputRoot);
-  await mkdir(outputRoot, { recursive: true });
   const artifacts = await persistBenchmarkRun(benchmarkRun, outputRoot);
 
   const labelsPath = path.join(path.dirname(artifacts.manifestPath), "silver-query-set.json");
-  const silverRunsPath = path.join(path.dirname(artifacts.manifestPath), "silver-label-runs.json");
+  const finalSilverRunsPath = path.join(path.dirname(artifacts.manifestPath), "silver-label-runs.json");
   await writeFile(labelsPath, JSON.stringify(labeledQuerySet, null, 2));
-  await writeFile(silverRunsPath, JSON.stringify(silverRuns, null, 2));
+  await writeFile(finalSilverRunsPath, JSON.stringify(silverRuns, null, 2));
+  await flushProgress({
+    stage: "completed",
+    completedQueries: silverQueries.length,
+    totalQueries: querySet.queries.length,
+    silverQueries,
+    silverRuns,
+    finalArtifacts: {
+      manifestPath: artifacts.manifestPath,
+      queryRunsPath: artifacts.queryRunsPath,
+      summariesPath: artifacts.summariesPath,
+      labelsPath,
+      silverRunsPath: finalSilverRunsPath,
+    },
+  });
 
   process.stdout.write(`${JSON.stringify({
     corpusId: corpus.id,
     querySetId: labeledQuerySet.id,
     labelsPath,
-    silverRunsPath,
+    silverRunsPath: finalSilverRunsPath,
     artifacts,
     summaries: benchmarkRun.summaries,
   }, null, 2)}\n`);
