@@ -25,13 +25,13 @@ npm install
 npm run validate:oss
 ```
 
-For app-specific commands, start with [README.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/README.md).
+For app-specific commands, start with [README.md](README.md).
 
 `npm run validate:oss` is the supported validation entry point for the reusable open-source platform surface. If you change AlphaBook- or AlphaJustice-specific app code outside that surface, run the relevant package-level checks too.
 
 ## License
 
-This repository is released under the MIT license in [LICENSE](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/LICENSE).
+This repository is released under the MIT license in [LICENSE](LICENSE).
 
 Unless explicitly stated otherwise in a file or directory, contributions are assumed to be submitted under that same license.
 

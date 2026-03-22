@@ -48,10 +48,10 @@ The boundary is intentional:
 
 If you want to reuse the generic internals, start with:
 
-- [docs/oss-supported-surface.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/oss-supported-surface.md)
-- [docs/oss-quickstart.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/oss-quickstart.md)
-- [docs/bring-your-own-corpus.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/bring-your-own-corpus.md)
-- [docs/adapter-architecture.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/adapter-architecture.md)
+- [docs/oss-supported-surface.md](docs/oss-supported-surface.md)
+- [docs/oss-quickstart.md](docs/oss-quickstart.md)
+- [docs/bring-your-own-corpus.md](docs/bring-your-own-corpus.md)
+- [docs/adapter-architecture.md](docs/adapter-architecture.md)
 
 The repo is structured as a shared core-plus-implementations monorepo:
 
@@ -72,7 +72,7 @@ The repo is structured as a shared core-plus-implementations monorepo:
 
 AlphaBook and AlphaJustice are both implementation layers on top of the same reusable platform packages.
 
-If you want launch copy for the repo, see [docs/github-launch.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/github-launch.md).
+If you want launch copy for the repo, see [docs/github-launch.md](docs/github-launch.md).
 
 ## Implementations
 
@@ -81,14 +81,14 @@ If you want launch copy for the repo, see [docs/github-launch.md](/Users/ryanpre
 - `packages/source-gutenberg` and `packages/source-supreme-court` are source adapters.
 - AlphaBook and AlphaJustice are separate deployments built on top of that substrate.
 
-The architecture overview lives in [docs/architecture.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/architecture.md).
-The internal adapter seam for non-book corpora is documented in [docs/adapter-architecture.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/adapter-architecture.md).
-The developer quickstart for adding another corpus is in [docs/bring-your-own-corpus.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/bring-your-own-corpus.md).
-The supported open-source boundary is documented in [docs/oss-supported-surface.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/oss-supported-surface.md).
-The local validation and fixture-corpus path is documented in [docs/oss-quickstart.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/oss-quickstart.md).
-The open-source release checklist is in [docs/oss-release-checklist.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/oss-release-checklist.md).
-The retrieval benchmark scaffold for the CLI-first research paper lives in [docs/benchmarking-cli-retrieval.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/benchmarking-cli-retrieval.md).
-The additive neutral API and compatibility contract details live in [docs/api-contracts.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/api-contracts.md).
+The architecture overview lives in [docs/architecture.md](docs/architecture.md).
+The internal adapter seam for non-book corpora is documented in [docs/adapter-architecture.md](docs/adapter-architecture.md).
+The developer quickstart for adding another corpus is in [docs/bring-your-own-corpus.md](docs/bring-your-own-corpus.md).
+The supported open-source boundary is documented in [docs/oss-supported-surface.md](docs/oss-supported-surface.md).
+The local validation and fixture-corpus path is documented in [docs/oss-quickstart.md](docs/oss-quickstart.md).
+The open-source release checklist is in [docs/oss-release-checklist.md](docs/oss-release-checklist.md).
+The retrieval benchmark scaffold for the CLI-first research paper lives in [docs/benchmarking-cli-retrieval.md](docs/benchmarking-cli-retrieval.md).
+The additive neutral API and compatibility contract details live in [docs/api-contracts.md](docs/api-contracts.md).
 
 ## Current Status
 
@@ -187,11 +187,11 @@ This keeps the transport generic for non-browser agents while leaving room to at
 
 ## Environment
 
-The full environment list is in [docs/environment.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/environment.md).
+The full environment list is in [docs/environment.md](docs/environment.md).
 
 Operational runbooks:
 
-- [docs/session-debugging.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/session-debugging.md) for tracing failed assistant sessions from the live API
+- [docs/session-debugging.md](docs/session-debugging.md) for tracing failed assistant sessions from the live API
 
 Core variables include:
 
@@ -294,13 +294,13 @@ npm run test:ui
 
 ## Open Source
 
-- License: [LICENSE](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/LICENSE)
-- Contributing guide: [CONTRIBUTING.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/CONTRIBUTING.md)
-- Security policy: [SECURITY.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/SECURITY.md)
+- License: [LICENSE](LICENSE)
+- Contributing guide: [CONTRIBUTING.md](CONTRIBUTING.md)
+- Security policy: [SECURITY.md](SECURITY.md)
 
 ## API Contracts
 
-The request/response contracts are documented in [docs/api-contracts.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/api-contracts.md).
+The request/response contracts are documented in [docs/api-contracts.md](docs/api-contracts.md).
 
 ## Notes
 
@@ -313,5 +313,5 @@ The request/response contracts are documented in [docs/api-contracts.md](/Users/
 - The runtime agent now writes `summary.md`, `search-plan.json`, `search-iterations.json`, and `evidence.json` for each long VM search.
 - The ingest service supports single-URL ingestion plus local Gutenberg mirror ingestion through `GUTENBERG_MIRROR_ROOT`.
 - `run-once` now processes a mirror batch, and `backfill-mirror` can drain the rsync mirror into Neon + R2 with chunk embeddings.
-- The Gutenberg mirror box bootstrap is documented in [ops/digitalocean/README.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/ops/digitalocean/README.md).
+- The Gutenberg mirror box bootstrap is documented in [ops/digitalocean/README.md](ops/digitalocean/README.md).
 - Daily feed diffing is still the remaining ingest gap.

@@ -4,7 +4,7 @@ Use this runbook when a URL like `https://alpha-book.org/?view=assistant&session
 
 ## Fast Path
 
-1. Load the signed-in session cookie from [`.dev.vars`](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/.dev.vars).
+1. Load the signed-in session cookie from [`.dev.vars`](../.dev.vars).
 
 Prefer extracting just `ALPHABOOK_API_SESSION_COOKIE` instead of `source`-ing the whole file, because `.dev.vars` may contain unquoted values that are not safe to execute as shell.
 

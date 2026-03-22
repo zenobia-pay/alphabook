@@ -7,7 +7,7 @@ Important boundary:
 - the public Worker API remains book- and `work`-shaped for AlphaBook compatibility
 - the generic corpus-platform contracts live in `packages/platform` and the adapter packages
 - the Worker now also exposes a parallel document-shaped API for OSS consumers under `/api/v1/documents/*`
-- open-source adopters who want to bring another corpus should start with [docs/oss-supported-surface.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/oss-supported-surface.md) and [docs/bring-your-own-corpus.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/bring-your-own-corpus.md)
+- open-source adopters who want to bring another corpus should start with [oss-supported-surface.md](oss-supported-surface.md) and [bring-your-own-corpus.md](bring-your-own-corpus.md)
 
 ## Orchestrator Worker
 

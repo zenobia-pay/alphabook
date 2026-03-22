@@ -56,14 +56,14 @@ This exercises a second implementation path that is not book-shaped:
 
 Like the fixture command, this runs in local preview mode when DB and R2 env vars are absent.
 
-The implementation layout is documented in [docs/alphajustice.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/alphajustice.md).
+The implementation layout is documented in [alphajustice.md](alphajustice.md).
 
 ## 5. Add Your Own Corpus
 
 Start from:
 
-- [docs/bring-your-own-corpus.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/bring-your-own-corpus.md)
-- [docs/adapter-architecture.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/adapter-architecture.md)
+- [bring-your-own-corpus.md](bring-your-own-corpus.md)
+- [adapter-architecture.md](adapter-architecture.md)
 
 The shortest path is:
 
@@ -80,4 +80,4 @@ AlphaBook itself stays book-centric:
 - the public Worker API remains `work` shaped for compatibility
 - the generic extension points live under the platform and adapter packages
 
-If you need the AlphaBook compatibility API details, see [docs/api-contracts.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/api-contracts.md).
+If you need the AlphaBook compatibility API details, see [api-contracts.md](api-contracts.md).
