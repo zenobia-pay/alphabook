@@ -3079,7 +3079,8 @@ export class NeonAppStore implements AppStore {
     });
   }
 
-  private static readonly WORK_COUNT_CACHE_TTL_MS = 1000 * 60 * 60 * 24;
+  private static readonly WORK_COUNT_CACHE_TTL_MS = 1000 * 60 * 5;
+  private static readonly WORK_COUNT_STAT_STALE_AFTER_MS = 1000 * 60 * 15;
   private static readonly EXPLORE_FEED_DEFAULT_LIMIT = 512;
 
   private hasScopedCorpus() {
@@ -4895,15 +4896,19 @@ export class NeonAppStore implements AppStore {
     if (this.workCountCache && this.workCountCache.expiresAt > Date.now()) {
       return this.workCountCache.value;
     }
-    const result = await this.db.query<{ value: number | string | null }>(
+    const result = await this.db.query<{ value: number | string | null; updated_at: string | Date | null }>(
       `
-        SELECT value_json->>'value' AS value
+        SELECT value_json->>'value' AS value, updated_at
         FROM site_stats
         WHERE key = 'work_count'
       `,
     );
-    let parsed = Number.parseInt(String(result.rows[0]?.value ?? ""), 10);
-    if (!Number.isFinite(parsed)) {
+    const row = result.rows[0];
+    let parsed = Number.parseInt(String(row?.value ?? ""), 10);
+    const updatedAtMs = row?.updated_at ? new Date(row.updated_at).getTime() : Number.NaN;
+    const statIsFresh = Number.isFinite(updatedAtMs)
+      && (Date.now() - updatedAtMs) <= NeonAppStore.WORK_COUNT_STAT_STALE_AFTER_MS;
+    if (!Number.isFinite(parsed) || !statIsFresh) {
       const fallback = await this.db.query<{ count: string }>("SELECT COUNT(*)::text AS count FROM works");
       parsed = Number.parseInt(fallback.rows[0]?.count ?? "0", 10) || 0;
     }
