@@ -7533,11 +7533,7 @@ function buildResearchDocumentRunShell(question: string) {
   const summary = normalizedQuestion
     ? `Looking for direct evidence about: ${normalizedQuestion}`
     : "Searching broadly for direct evidence across the library.";
-  return [
-    buildResearchDocumentSectionHeader("Search Underway", summary),
-    buildResearchDocumentLogEntry("Starting a broad search across the library."),
-    buildResearchDocumentLogEntry("I’ll add notes here as books load, passages surface, and the draft answer starts taking shape."),
-  ].join("");
+  return buildResearchDocumentSectionHeader("Search Underway", summary);
 }
 
 function persistedSectionLabel(entry: ToolHistoryEntry) {
@@ -7930,6 +7926,7 @@ async function runOrchestrator(
   }
   const started = deps.now?.() ?? Date.now();
   const runMetrics = createLiveRunMetricsState(started);
+  let lastKnownResearchDocumentHtml = "";
   const captureTaskSpecRunMetrics = (taskSpec: Record<string, unknown>) => {
     const workIds = Array.isArray(taskSpec.workIds) ? taskSpec.workIds : [];
     if (typeof taskSpec.parallelism === "number" && taskSpec.parallelism > 0) {
@@ -8025,6 +8022,30 @@ async function runOrchestrator(
     }
   };
   send = async (event: string, data: Record<string, unknown>) => {
+    const embeddedResearchDocumentHtml =
+      typeof data.researchDocumentHtml === "string" && data.researchDocumentHtml.trim().length > 0
+        ? data.researchDocumentHtml
+        : null;
+    let nextData = embeddedResearchDocumentHtml
+      ? data
+      : (
+        lastKnownResearchDocumentHtml
+        && (
+          event === "assistant.plan"
+          || event === "tool.started"
+          || event === "tool.progress"
+          || event === "tool.completed"
+          || event === "assistant.completed"
+        )
+      )
+        ? {
+            ...data,
+            researchDocumentHtml: lastKnownResearchDocumentHtml,
+          }
+        : data;
+    if (embeddedResearchDocumentHtml) {
+      lastKnownResearchDocumentHtml = embeddedResearchDocumentHtml;
+    }
     const persistableRunEventNames = new Set([
       "run.started",
       "assistant.plan",
@@ -8137,7 +8158,6 @@ async function runOrchestrator(
         }
       }
     }
-    let nextData = data;
     if (event === "run.completed") {
       runMetrics.completionMode =
         typeof data.completionMode === "string"
@@ -8151,7 +8171,7 @@ async function runOrchestrator(
         nowMs,
       );
       nextData = {
-        ...data,
+        ...nextData,
         metrics,
       };
       if (!runMetrics.recorded) {

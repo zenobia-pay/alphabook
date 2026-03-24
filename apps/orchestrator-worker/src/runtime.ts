@@ -91,6 +91,35 @@ function shardLabel(shard: SpriteShardManifest): string {
   return `Sprite ${shard.index + 1}/${shard.totalShards}`;
 }
 
+function normalizeSpriteProgressMessage(event: Record<string, unknown>, shard: SpriteShardManifest): string | null {
+  const rawMessage =
+    typeof event.message === "string"
+      ? event.message.trim()
+      : typeof event.line === "string"
+        ? event.line.trim()
+        : "";
+  if (!rawMessage) {
+    return null;
+  }
+  if (
+    /^(OpenAI Codex v|workdir:|model:|provider:|approval:|sandbox:|reasoning effort:|reasoning summaries:|session id:|user|--------)$/iu.test(rawMessage)
+    || /^(You are |You operate |Your goal is |Goal:|Constraints:|Research objective:|Task spec:|Workspace manifest summary:|Seed evidence from the orchestrator:|When finished,|Only use local files under |Start from |If the task spec already includes |Keep the search bounded:|Use the remote Postgres database |The CLI turns corpus-wide search requests |Guaranteed tools in this runtime image:|It also supports |Always copy chunk IDs exactly |Use repeated regex, keyword, metadata|Hydrate local book files only |Use shell tools like |To pull files into the workspace|Expand across more books |Create a focused local corpus |Your required deliverable is |The briefing should |Every quote should |Prefer primary-source quotations |Once you have 2 to 8 |If the evidence is thin|You may optionally write helper notes |Do not stop after searching\.)/iu.test(rawMessage)
+    || /^[\[\]{}]+,?$/u.test(rawMessage)
+  ) {
+    return null;
+  }
+  if (/ready to run\.$/iu.test(rawMessage)) {
+    return null;
+  }
+  if (/^sending codex corpus briefing to codex\.$/iu.test(rawMessage)) {
+    return `Reviewing passages in part ${shard.index + 1} of ${shard.totalShards}.`;
+  }
+  if (/^retrying codex corpus briefing with codex\.$/iu.test(rawMessage)) {
+    return `Retrying the close reading for part ${shard.index + 1} of ${shard.totalShards}.`;
+  }
+  return rawMessage.length > 220 ? `${rawMessage.slice(0, 217)}...` : rawMessage;
+}
+
 export function estimateSpritePrepareTimeoutMs(shard: Pick<SpriteShardManifest, "bookCount" | "totalTextBytes">): number {
   const byBookCountMs = shard.bookCount * 150;
   const byBytesMs = Math.ceil(Math.max(0, shard.totalTextBytes) / (2 * 1024 * 1024)) * 1_500;
@@ -1418,6 +1447,105 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     return catalog;
   }
 
+  private startSpriteShardProgressRelay(
+    instance: RuntimeInstanceRecord,
+    shard: SpriteShardManifest,
+    progressReporter?: ProgressReporter,
+  ) {
+    let stopped = false;
+    let inFlight = false;
+    let seenCodexLines = 0;
+    let seenBriefingLines = 0;
+    const machineId = instance.providerMachineId ?? instance.runtimeId;
+
+    const readFile = async (path: string) => {
+      try {
+        const result = await this.callRuntime(
+          machineId,
+          `/file?path=${encodeURIComponent(path)}`,
+          { method: "GET" },
+        );
+        return typeof result.content === "string" ? result.content : "";
+      } catch {
+        return "";
+      }
+    };
+
+    const poll = async () => {
+      if (stopped || inFlight) {
+        return;
+      }
+      inFlight = true;
+      try {
+        const codexContent = await readFile("output/codex-progress.jsonl");
+        const codexLines = codexContent.split("\n").filter((line) => line.trim().length > 0);
+        if (seenCodexLines > codexLines.length) {
+          seenCodexLines = 0;
+        }
+        for (let index = seenCodexLines; index < codexLines.length; index += 1) {
+          try {
+            const event = JSON.parse(codexLines[index] ?? "{}") as Record<string, unknown>;
+            const message = normalizeSpriteProgressMessage(event, shard);
+            if (!message) {
+              continue;
+            }
+            await progressReporter?.(message, {
+              type: "research.note",
+              researchMode: "sprite_fanout",
+              phase: "search_progress",
+              shardId: shard.shardId,
+              shardLabel: shardLabel(shard),
+              bookCount: shard.bookCount,
+              message,
+            });
+          } catch {
+            continue;
+          }
+        }
+        seenCodexLines = codexLines.length;
+
+        const briefingContent = await readFile("output/briefing.md");
+        const briefingLines = briefingContent
+          .split(/\r?\n/u)
+          .map((line) => line.trimEnd())
+          .filter((line) => line.trim().length > 0);
+        if (seenBriefingLines > briefingLines.length) {
+          seenBriefingLines = 0;
+        }
+        for (let index = seenBriefingLines; index < briefingLines.length; index += 1) {
+          const line = briefingLines[index]?.trim();
+          if (!line) {
+            continue;
+          }
+          await progressReporter?.(line, {
+            type: "research.briefing_line",
+            line,
+            lineIndex: index,
+            researchMode: "sprite_fanout",
+            shardId: shard.shardId,
+            shardLabel: shardLabel(shard),
+            bookCount: shard.bookCount,
+          });
+        }
+        seenBriefingLines = briefingLines.length;
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    void poll();
+    const timer = setInterval(() => {
+      void poll();
+    }, 1500);
+
+    return {
+      stop: () => {
+        stopped = true;
+        clearInterval(timer);
+      },
+    };
+  }
+
   private async runSpriteShard(
     sessionId: string,
     query: string,
@@ -1431,6 +1559,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
   ) {
     let machineId: string | null = null;
     let instance: RuntimeInstanceRecord | null = null;
+    let progressRelay: ReturnType<FlyMachinesRuntimeGateway["startSpriteShardProgressRelay"]> | null = null;
     try {
       const progressReporter = options.progressReporter;
       const prepareTimeoutMs = estimateSpritePrepareTimeoutMs(shard);
@@ -1502,6 +1631,11 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
           phase: "search_start",
         },
       );
+      progressRelay = this.startSpriteShardProgressRelay(
+        instance,
+        shard,
+        progressReporter,
+      );
       const result = await this.executeRuntimeTask(instance, {
         kind: "sprite_fanout_research",
         mode: "sprite_shard_search",
@@ -1553,6 +1687,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
         error: error instanceof Error ? error.message : "Unknown Sprite shard error",
       };
     } finally {
+      progressRelay?.stop();
       if (instance) {
         await this.destroyWorkspace({
           runtimeId: instance.runtimeId,
