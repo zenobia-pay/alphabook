@@ -1187,7 +1187,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     const resolvedWorkIds = uniqueStrings(workIds);
     const [documents, documentFiles, corpusDocumentCount] = await Promise.all([
       repository.getDocumentMetadata(resolvedWorkIds),
-      repository.getDocumentFiles(resolvedWorkIds, ["clean", "chunks"]),
+      repository.getDocumentFiles(resolvedWorkIds, ["clean"]),
       repository.countDocuments(),
     ]);
     const workMetadata = documents.map((document) => ({
