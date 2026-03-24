@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { estimateSpritePrepareTimeoutMs, spriteGuestConfig } from "../src/runtime";
+import { estimateSpritePrepareTimeoutMs, isStaleSpriteMachine, spriteGuestConfig } from "../src/runtime";
 
 test("estimateSpritePrepareTimeoutMs scales up for larger shard hydration", () => {
   const small = estimateSpritePrepareTimeoutMs({
@@ -49,5 +49,47 @@ test("spriteGuestConfig preserves larger configured machine sizes", () => {
       cpus: 8,
       memory_mb: 16_384,
     },
+  );
+});
+
+test("isStaleSpriteMachine ignores current-session shard machines", () => {
+  assert.equal(
+    isStaleSpriteMachine(
+      {
+        id: "machine-1",
+        name: "alphabook-sprite-a6381ba1-deadbeef",
+        updated_at: "2026-03-24T19:00:00.000Z",
+        incomplete_config: {
+          metadata: {
+            "alphabook.runtime_mode": "sprite-shard",
+            "alphabook.session_id": "a6381ba1-130b-493a-95c1-90722b343b4b",
+          },
+        },
+      },
+      "a6381ba1-130b-493a-95c1-90722b343b4b",
+      Date.parse("2026-03-24T20:00:00.000Z"),
+    ),
+    false,
+  );
+});
+
+test("isStaleSpriteMachine matches old shard machines from other sessions", () => {
+  assert.equal(
+    isStaleSpriteMachine(
+      {
+        id: "machine-2",
+        name: "alphabook-sprite-f9719734-deadbeef",
+        updated_at: "2026-03-24T19:00:00.000Z",
+        incomplete_config: {
+          metadata: {
+            "alphabook.runtime_mode": "sprite-shard",
+            "alphabook.session_id": "f9719734-274f-412f-838f-1e7d7549136e",
+          },
+        },
+      },
+      "a6381ba1-130b-493a-95c1-90722b343b4b",
+      Date.parse("2026-03-24T20:00:00.000Z"),
+    ),
+    true,
   );
 });

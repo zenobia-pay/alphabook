@@ -29,6 +29,15 @@ interface FlyMachine {
   id: string;
   state?: string;
   instance_id?: string;
+  name?: string;
+  created_at?: string;
+  updated_at?: string;
+  config?: {
+    metadata?: Record<string, string>;
+  } | null;
+  incomplete_config?: {
+    metadata?: Record<string, string>;
+  } | null;
 }
 
 interface FlyMachineGuestConfig {
@@ -86,6 +95,8 @@ const DEFAULT_SPRITE_AGGREGATOR_GUEST: FlyMachineGuestConfig = {
   cpus: 2,
   memory_mb: 4096,
 };
+const STALE_SPRITE_MACHINE_THRESHOLD_MS = 20 * 60_000;
+const SPRITE_MACHINE_NAME_PREFIXES = ["alphabook-sprite-", "alphabook-aggregate-"] as const;
 
 function spriteShardCatalogKey(implementationId: string): string {
   return `sprite-shards/${implementationId}/catalog.json`;
@@ -202,6 +213,53 @@ function shouldStreamSpriteResearchLine(line: string): boolean {
     || /^(?:#{1,4}\s*)?Seed Passages$/iu.test(trimmed)
     || /^(?:#{1,4}\s*)?Strong Local Matches$/iu.test(trimmed)
   );
+}
+
+function flyMachineMetadata(machine: FlyMachine): Record<string, string> {
+  return machine.config?.metadata ?? machine.incomplete_config?.metadata ?? {};
+}
+
+function isSpriteRuntimeMachine(machine: FlyMachine): boolean {
+  const metadata = flyMachineMetadata(machine);
+  const runtimeMode = metadata["alphabook.runtime_mode"];
+  if (runtimeMode === "sprite-shard" || runtimeMode === "sprite-aggregate") {
+    return true;
+  }
+  const name = machine.name ?? "";
+  return SPRITE_MACHINE_NAME_PREFIXES.some((prefix) => name.startsWith(prefix));
+}
+
+function isMachineForSession(machine: FlyMachine, sessionId: string): boolean {
+  const metadata = flyMachineMetadata(machine);
+  if (metadata["alphabook.session_id"] === sessionId) {
+    return true;
+  }
+  const name = machine.name ?? "";
+  return name.includes(sessionId.slice(0, 8));
+}
+
+function machineUpdatedAtMs(machine: FlyMachine): number | null {
+  const value = machine.updated_at ?? machine.created_at;
+  if (!value) {
+    return null;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+export function isStaleSpriteMachine(machine: FlyMachine, sessionId: string, nowMs = Date.now()): boolean {
+  if (!isSpriteRuntimeMachine(machine) || isMachineForSession(machine, sessionId)) {
+    return false;
+  }
+  const updatedAtMs = machineUpdatedAtMs(machine);
+  if (updatedAtMs === null) {
+    return false;
+  }
+  return nowMs - updatedAtMs >= STALE_SPRITE_MACHINE_THRESHOLD_MS;
+}
+
+function isFlyMachineLimitError(error: unknown): boolean {
+  return error instanceof Error && error.message.toLowerCase().includes("reached its machine limit");
 }
 
 export function estimateSpritePrepareTimeoutMs(shard: Pick<SpriteShardManifest, "bookCount" | "totalTextBytes">): number {
@@ -746,6 +804,24 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     const intensity = normalizeSpriteIntensity(args.intensity);
     const progressReporter = args.progressReporter;
 
+    const cleanedMachineCount = await this.cleanupStaleSpriteMachines(sessionId);
+    if (cleanedMachineCount > 0) {
+      await this.store.appendRunEvent(runId, sessionId, "sprite.cleanup.completed", {
+        cleanedMachineCount,
+        state: "completed",
+      });
+      await safeReportProgress(
+        progressReporter,
+        `Cleared ${cleanedMachineCount} older background workers before starting this broad search.`,
+        {
+          type: "sprite.cleanup_state",
+          researchMode: "sprite_fanout",
+          cleanedMachineCount,
+          state: "completed",
+        },
+      );
+    }
+
     await safeReportProgress(progressReporter, "Planning a broad search across the library.", {
       type: "research.note",
       researchMode: "sprite_fanout",
@@ -1160,6 +1236,14 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     return (await response.json()) as FlyMachine;
   }
 
+  private async listMachines(summary = true): Promise<FlyMachine[]> {
+    const suffix = summary ? "?summary=true" : "";
+    const response = await this.flyRequest(`/apps/${this.config.appName}/machines${suffix}`, {
+      method: "GET",
+    });
+    return (await response.json()) as FlyMachine[];
+  }
+
   private async waitForMachine(machineId: string, state = "started"): Promise<void> {
     const waitTimeoutSeconds = Math.min(HARD_LIMITS.MAX_RUNTIME_TOOL_TIMEOUT_SECONDS, 60);
     await this.flyRequest(
@@ -1219,6 +1303,26 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
         expiresAt: nowIso(),
       });
     }
+  }
+
+  private async cleanupStaleSpriteMachines(sessionId: string): Promise<number> {
+    const machines = await this.listMachines(true).catch(() => [] as FlyMachine[]);
+    const staleMachines = machines.filter((machine) => isStaleSpriteMachine(machine, sessionId));
+    if (staleMachines.length === 0) {
+      return 0;
+    }
+
+    const deletedIds = new Set<string>();
+    await this.mapWithConcurrency(staleMachines, 6, async (machine) => {
+      try {
+        await this.deleteMachine(machine.id);
+        deletedIds.add(machine.id);
+      } catch {
+        // Best-effort cleanup before launching a new fanout.
+      }
+    });
+
+    return deletedIds.size;
   }
 
   private async buildWorkspacePlan(
@@ -1905,6 +2009,9 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
           break;
         } catch (error) {
           lastLaunchError = error;
+          if (isFlyMachineLimitError(error)) {
+            await this.cleanupStaleSpriteMachines(sessionId).catch(() => {});
+          }
           if (attemptInstance) {
             await this.store.updateRuntimeInstance(attemptInstance.runtimeId, {
               status: "failed",
