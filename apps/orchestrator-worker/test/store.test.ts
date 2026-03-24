@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { InMemoryAppStore } from "../src/store";
+import type { DbClient } from "@alphabook/db";
+
+import { InMemoryAppStore, NeonAppStore } from "../src/store";
 
 test("upsertUserProfile updates the existing user when the auth id is stable", async () => {
   const store = new InMemoryAppStore();
@@ -121,4 +123,36 @@ test("document aliases expose neutral corpus records without changing work stora
     r2Key: "gutenberg/clean/42/clean.txt",
   });
   assert.equal(chunks[0]?.documentId, "work-1");
+});
+
+test("appendRunEvent uses an atomic insert query for sequence allocation", async () => {
+  const queries: Array<{ sql: string; params?: unknown[] }> = [];
+  const db: DbClient = {
+    async query<T = Record<string, unknown>>(sql: string, params?: unknown[]) {
+      queries.push({ sql, params });
+      if (sql.includes("CREATE TABLE IF NOT EXISTS run_events") || sql.includes("CREATE UNIQUE INDEX IF NOT EXISTS idx_run_events_run_id_sequence") || sql.includes("CREATE INDEX IF NOT EXISTS idx_run_events_run_id_created_at")) {
+        return { rows: [] as T[] };
+      }
+      if (sql.includes("WITH run_lock AS")) {
+        return { rows: [{ sequence: 7 }] as T[] };
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+    async end() {},
+  };
+  const store = new NeonAppStore(db);
+
+  const event = await store.appendRunEvent(
+    "11111111-1111-1111-1111-111111111111",
+    "22222222-2222-2222-2222-222222222222",
+    "sprite.shard.started",
+    { shardId: "books-1" },
+  );
+
+  assert.equal(event.sequence, 7);
+  const insertQuery = queries.find((entry) => entry.sql.includes("WITH run_lock AS"));
+  assert.ok(insertQuery);
+  assert.match(insertQuery!.sql, /pg_advisory_xact_lock/);
+  assert.match(insertQuery!.sql, /INSERT INTO run_events/);
+  assert.equal(queries.filter((entry) => entry.sql.includes("INSERT INTO run_events")).length, 1);
 });

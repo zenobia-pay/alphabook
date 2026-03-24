@@ -4560,22 +4560,30 @@ export class NeonAppStore implements AppStore {
     await this.ensureRunEventsSchema();
     const id = crypto.randomUUID();
     const createdAt = nowIso();
-    const nextSequenceResult = await this.db.query<{ sequence: number }>(
+    const insertResult = await this.db.query<{ sequence: number }>(
       `
-        SELECT COALESCE(MAX(sequence), 0)::int + 1 AS sequence
-        FROM run_events
-        WHERE run_id = $1::uuid
+        WITH run_lock AS (
+          SELECT pg_advisory_xact_lock(
+            ('x' || substr(md5($1::text), 1, 16))::bit(64)::bigint
+          )
+        ),
+        next_sequence AS (
+          SELECT COALESCE(MAX(sequence), 0)::int + 1 AS sequence
+          FROM run_events
+          WHERE run_id = $1::uuid
+        ),
+        inserted AS (
+          INSERT INTO run_events (id, run_id, session_id, sequence, event, data_json, created_at)
+          SELECT $2::uuid, $1::uuid, $3::uuid, next_sequence.sequence, $4, $5::jsonb, $6::timestamptz
+          FROM run_lock, next_sequence
+          RETURNING sequence
+        )
+        SELECT sequence
+        FROM inserted
       `,
-      [runId],
+      [runId, id, sessionId, event, JSON.stringify(dataJson), createdAt],
     );
-    const sequence = Number(nextSequenceResult.rows[0]?.sequence ?? 1);
-    await this.db.query(
-      `
-        INSERT INTO run_events (id, run_id, session_id, sequence, event, data_json, created_at)
-        VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6::jsonb, $7::timestamptz)
-      `,
-      [id, runId, sessionId, sequence, event, JSON.stringify(dataJson), createdAt],
-    );
+    const sequence = Number(insertResult.rows[0]?.sequence ?? 1);
     return {
       id,
       runId,

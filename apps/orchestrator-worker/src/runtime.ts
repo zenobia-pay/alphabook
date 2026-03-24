@@ -582,6 +582,18 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
       implementationId,
     });
     const catalog = await this.loadSpriteShardCatalog(implementationId);
+    await this.store.appendRunEvent(runId, sessionId, "sprite.catalog.loaded", {
+      implementationId,
+      shardCount: catalog.shardCount,
+      shardSize: catalog.shardSize,
+    });
+    await progressReporter?.(`Loaded ${catalog.shardCount} Sprite shards.`, {
+      type: "research.note",
+      researchMode: "sprite_fanout",
+      implementationId,
+      shardCount: catalog.shardCount,
+      shardSize: catalog.shardSize,
+    });
     const scopedWorkIds = Array.isArray(args.workIds)
       ? args.workIds.filter((value): value is string => typeof value === "string" && value.length > 0)
       : [];
@@ -652,6 +664,11 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     await progressReporter?.("Starting the aggregator runtime.", {
       type: "research.note",
       researchMode: "sprite_fanout",
+      successfulShardCount: successfulShards.length,
+      shardCount: shardResults.length,
+    });
+    await this.store.appendRunEvent(runId, sessionId, "sprite.aggregate.started", {
+      implementationId,
       successfulShardCount: successfulShards.length,
       shardCount: shardResults.length,
     });
