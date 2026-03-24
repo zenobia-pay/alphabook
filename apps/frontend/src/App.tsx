@@ -1,4 +1,4 @@
-import { Component, createContext, type ComponentType, type CSSProperties, type ErrorInfo, type FormEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type UIEvent, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { Component, createContext, type ComponentType, type CSSProperties, type ErrorInfo, type FormEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type UIEvent, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   AssistantRuntimeProvider,
   useExternalStoreRuntime,
@@ -4602,6 +4602,42 @@ function ResearchArtifactDocument({
   documentHtml: string;
   emptyState?: ReactNode;
 }) {
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const previousHtmlRef = useRef<string>("");
+
+  useLayoutEffect(() => {
+    const element = bodyRef.current;
+    if (!element) {
+      previousHtmlRef.current = "";
+      return;
+    }
+    const nextHtml = documentHtml.trim();
+    const previousHtml = previousHtmlRef.current;
+    if (!nextHtml) {
+      element.innerHTML = "";
+      previousHtmlRef.current = "";
+      return;
+    }
+    if (!previousHtml) {
+      element.innerHTML = nextHtml;
+      previousHtmlRef.current = nextHtml;
+      return;
+    }
+    if (nextHtml === previousHtml) {
+      return;
+    }
+    if (nextHtml.startsWith(previousHtml)) {
+      const delta = nextHtml.slice(previousHtml.length);
+      if (delta.trim().length > 0) {
+        element.insertAdjacentHTML("beforeend", delta);
+      }
+      previousHtmlRef.current = nextHtml;
+      return;
+    }
+    element.innerHTML = nextHtml;
+    previousHtmlRef.current = nextHtml;
+  }, [documentHtml]);
+
   return (
     <ResearchDocumentErrorBoundary>
       <section className="assistant-document-pane">
@@ -4611,10 +4647,7 @@ function ResearchArtifactDocument({
               {sessionTitle.trim() || "Research log"}
             </h1>
             {documentHtml.trim().length > 0 ? (
-              <div
-                className="assistant-document-body"
-                dangerouslySetInnerHTML={{ __html: documentHtml }}
-              />
+              <div ref={bodyRef} className="assistant-document-body" />
             ) : emptyState ? (
               <div className="assistant-document-body">{emptyState}</div>
             ) : null}

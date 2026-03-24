@@ -7510,6 +7510,42 @@ function appendResearchDocumentFragment(currentHtml: string, fragment: string) {
   return fragment.trim().length > 0 ? `${currentHtml}${fragment}` : currentHtml;
 }
 
+async function renderStreamingBriefingLineHtml(
+  deps: AppDeps,
+  sessionId: string,
+  line: string,
+) {
+  const trimmed = line.trim();
+  if (!trimmed) {
+    return "";
+  }
+  const markdownHeadingMatch = trimmed.match(/^(#{2,4})\s+(.+)$/u);
+  if (markdownHeadingMatch) {
+    const level = Math.min(4, markdownHeadingMatch[1].length + 1);
+    const headingHtml = await renderBriefingInlineHtml(deps, sessionId, markdownHeadingMatch[2].trim());
+    return `<h${level}>${headingHtml}</h${level}>`;
+  }
+  const headingMatch = trimmed.match(/^\*\*(.+)\*\*$/u);
+  if (headingMatch) {
+    return `<h3>${escapeResearchHtml(headingMatch[1].trim())}</h3>`;
+  }
+  if (trimmed.startsWith("- ")) {
+    const itemHtml = await renderBriefingInlineHtml(deps, sessionId, trimmed.slice(2).trim());
+    return `<ul class="assistant-document-briefing-list"><li>${itemHtml}</li></ul>`;
+  }
+  const orderedMatch = trimmed.match(/^(\d+)\.\s+(.+)$/u);
+  if (orderedMatch) {
+    const itemHtml = await renderBriefingInlineHtml(deps, sessionId, orderedMatch[2].trim());
+    return `<ol class="assistant-document-briefing-list"><li value="${escapeResearchHtml(orderedMatch[1])}">${itemHtml}</li></ol>`;
+  }
+  if (trimmed.startsWith("> ")) {
+    const quoteHtml = await renderBriefingInlineHtml(deps, sessionId, trimmed.slice(2).trim());
+    return `<blockquote class="assistant-document-entry is-chunk"><p class="assistant-document-quote">${quoteHtml}</p></blockquote>`;
+  }
+  const paragraphHtml = await renderBriefingInlineHtml(deps, sessionId, trimmed);
+  return `<p class="assistant-document-entry is-log">${paragraphHtml}</p>`;
+}
+
 type ResearchDocumentSectionOptions = {
   className?: string;
   meta?: string;
@@ -7703,6 +7739,17 @@ async function renderBriefingHtml(
     }
     if (trimmed.startsWith("- ")) {
       listItems.push(`<li>${await renderBriefingInlineHtml(deps, sessionId, trimmed.slice(2))}</li>`);
+      continue;
+    }
+    const orderedMatch = trimmed.match(/^(\d+)\.\s+(.+)$/u);
+    if (orderedMatch) {
+      flushList();
+      html.push(`<ol class="assistant-document-briefing-list"><li value="${escapeResearchHtml(orderedMatch[1])}">${await renderBriefingInlineHtml(deps, sessionId, orderedMatch[2].trim())}</li></ol>`);
+      continue;
+    }
+    if (trimmed.startsWith("> ")) {
+      flushList();
+      html.push(`<blockquote class="assistant-document-entry is-chunk"><p class="assistant-document-quote">${await renderBriefingInlineHtml(deps, sessionId, trimmed.slice(2).trim())}</p></blockquote>`);
       continue;
     }
     flushList();
@@ -8563,25 +8610,7 @@ async function runOrchestrator(
         return;
       }
       const key = `detail:${toolCallId}:briefing:${typeof detail.lineIndex === "number" ? detail.lineIndex : line}`;
-      const markdownHeadingMatch = line.match(/^(#{2,4})\s+(.+)$/u);
-      if (markdownHeadingMatch) {
-        const level = Math.min(4, markdownHeadingMatch[1].length + 1);
-        const headingHtml = await renderBriefingInlineHtml(deps, session!.id, markdownHeadingMatch[2].trim());
-        appendResearchDocumentOnce(key, `<h${level}>${headingHtml}</h${level}>`);
-        return;
-      }
-      const headingMatch = line.match(/^\*\*(.+)\*\*$/u);
-      if (headingMatch) {
-        appendResearchDocumentOnce(key, `<h3>${escapeResearchHtml(headingMatch[1].trim())}</h3>`);
-        return;
-      }
-      if (line.startsWith("- ")) {
-        const itemHtml = await renderBriefingInlineHtml(deps, session!.id, line.slice(2).trim());
-        appendResearchDocumentOnce(key, `<ul class="assistant-document-briefing-list"><li>${itemHtml}</li></ul>`);
-        return;
-      }
-      const paragraphHtml = await renderBriefingInlineHtml(deps, session!.id, line);
-      appendResearchDocumentOnce(key, `<p class="assistant-document-entry is-log">${paragraphHtml}</p>`);
+      appendResearchDocumentOnce(key, await renderStreamingBriefingLineHtml(deps, session!.id, line));
     }
   };
 
