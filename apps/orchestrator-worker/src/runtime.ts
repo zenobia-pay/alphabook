@@ -971,7 +971,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     return sessionId;
   }
 
-  private async flyRequest(path: string, init: RequestInit = {}) {
+  private async flyRequest(path: string, init: RequestInit = {}, options: { timeoutMs?: number } = {}) {
     const headers = new Headers(init.headers);
     headers.set("authorization", `Bearer ${this.config.apiToken}`);
     if (init.body && !headers.has("content-type")) {
@@ -981,7 +981,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     const response = await this.fetchImpl(`${this.apiBaseUrl}${path}`, {
       ...init,
       headers,
-      signal: AbortSignal.timeout(HARD_LIMITS.MAX_RUNTIME_TOOL_TIMEOUT_SECONDS * 1000),
+      signal: AbortSignal.timeout(options.timeoutMs ?? HARD_LIMITS.MAX_RUNTIME_TOOL_TIMEOUT_SECONDS * 1000),
     });
 
     if (!response.ok) {
@@ -1165,6 +1165,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     await this.flyRequest(
       `/apps/${this.config.appName}/machines/${machineId}/wait?state=${encodeURIComponent(state)}&timeout=${waitTimeoutSeconds}`,
       { method: "GET" },
+      { timeoutMs: (waitTimeoutSeconds + 5) * 1000 },
     );
   }
 
