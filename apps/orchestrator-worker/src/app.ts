@@ -3940,6 +3940,7 @@ type ToolProgressBuffer = {
   lines: ToolStreamCleanupLine[];
   timer: ReturnType<typeof setTimeout> | null;
   flushPromise: Promise<void> | null;
+  directEmitChain?: Promise<void>;
 };
 
 function looksSensitiveKey(key: string) {
@@ -8422,7 +8423,18 @@ async function runOrchestrator(
       || detailType === "research.chunk"
       || detailType === "research.briefing_line"
     ) {
-      void onEmit(payload.text, payload.detail);
+      const buffer = progressBuffers.get(payload.toolCallId) ?? {
+        toolName: payload.toolName,
+        lines: [],
+        timer: null,
+        flushPromise: null,
+        directEmitChain: Promise.resolve(),
+      };
+      buffer.toolName = payload.toolName;
+      buffer.directEmitChain = (buffer.directEmitChain ?? Promise.resolve())
+        .then(() => onEmit(payload.text, payload.detail))
+        .catch(() => {});
+      progressBuffers.set(payload.toolCallId, buffer);
       return;
     }
     const buffer = progressBuffers.get(payload.toolCallId) ?? {
@@ -8454,11 +8466,14 @@ async function runOrchestrator(
     onEmit: (toolCallId: string, toolName: ToolName, text: string, detail?: Record<string, unknown>) => Promise<void>,
   ) => {
     await Promise.all(
-      Array.from(progressBuffers.entries()).map(([toolCallId, buffer]) =>
-        flushToolProgress(toolCallId, { runId: "", toolName: buffer.toolName }, (text, detail) =>
+      Array.from(progressBuffers.entries()).map(async ([toolCallId, buffer]) => {
+        await flushToolProgress(toolCallId, { runId: "", toolName: buffer.toolName }, (text, detail) =>
           onEmit(toolCallId, buffer.toolName, text, detail)
-        ),
-      ),
+        );
+        if (buffer.directEmitChain) {
+          await buffer.directEmitChain;
+        }
+      }),
     );
   };
 
@@ -8620,7 +8635,13 @@ async function runOrchestrator(
       if (!line) {
         return;
       }
-      const key = `detail:${toolCallId}:briefing:${typeof detail.lineIndex === "number" ? detail.lineIndex : line}`;
+      const shardScope =
+        typeof detail.shardId === "string" && detail.shardId.trim().length > 0
+          ? detail.shardId.trim()
+          : typeof detail.shardLabel === "string" && detail.shardLabel.trim().length > 0
+            ? detail.shardLabel.trim()
+            : "global";
+      const key = `detail:${toolCallId}:briefing:${shardScope}:${typeof detail.lineIndex === "number" ? detail.lineIndex : line}`;
       appendResearchDocumentOnce(key, await renderStreamingBriefingLineHtml(deps, session!.id, line));
     }
   };
