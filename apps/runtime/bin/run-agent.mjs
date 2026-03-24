@@ -866,15 +866,10 @@ function buildSearchEvidence(question, selectedChunks, runtimeChunks, workById) 
 }
 
 function buildInitialEvidenceNotes(question, evidence) {
-  const lines = [
-    "# Early Evidence",
-    "",
-    question ? `Question: ${normalizeWhitespace(String(question))}` : "Question: Broad corpus search",
-    "",
-  ];
+  void question;
+  const lines = [];
 
   if (Array.isArray(evidence.selectedChunks) && evidence.selectedChunks.length > 0) {
-    lines.push("## Seed Passages", "");
     for (const chunk of evidence.selectedChunks.slice(0, 6)) {
       const title = normalizeWhitespace(String(chunk.title || chunk.workId || "Source"));
       const excerpt = normalizeWhitespace(String(chunk.excerpt || "")).slice(0, 420);
@@ -889,7 +884,6 @@ function buildInitialEvidenceNotes(question, evidence) {
   }
 
   if (Array.isArray(evidence.runtimeHits) && evidence.runtimeHits.length > 0) {
-    lines.push("## Strong Local Matches", "");
     for (const chunk of evidence.runtimeHits.slice(0, 8)) {
       const title = normalizeWhitespace(String(chunk.title || chunk.workId || "Source"));
       const excerpt = normalizeWhitespace(String(chunk.excerpt || "")).slice(0, 420);

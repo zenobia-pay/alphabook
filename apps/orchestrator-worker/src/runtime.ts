@@ -191,6 +191,19 @@ function normalizeSpriteProgressMessage(event: Record<string, unknown>, shard: S
   return rawMessage.length > 220 ? `${rawMessage.slice(0, 217)}...` : rawMessage;
 }
 
+function shouldStreamSpriteResearchLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed) {
+    return false;
+  }
+  return !(
+    /^(?:#{1,4}\s*)?Early Evidence$/iu.test(trimmed)
+    || /^Question:\s+/iu.test(trimmed)
+    || /^(?:#{1,4}\s*)?Seed Passages$/iu.test(trimmed)
+    || /^(?:#{1,4}\s*)?Strong Local Matches$/iu.test(trimmed)
+  );
+}
+
 export function estimateSpritePrepareTimeoutMs(shard: Pick<SpriteShardManifest, "bookCount" | "totalTextBytes">): number {
   const byBookCountMs = shard.bookCount * 150;
   const byBytesMs = Math.ceil(Math.max(0, shard.totalTextBytes) / (2 * 1024 * 1024)) * 1_500;
@@ -1675,7 +1688,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
         }
         for (let index = seenEvidenceNoteLines; index < evidenceNoteLines.length; index += 1) {
           const line = evidenceNoteLines[index]?.trim();
-          if (!line) {
+          if (!line || !shouldStreamSpriteResearchLine(line)) {
             continue;
           }
           await safeReportProgress(progressReporter, line, {
@@ -1700,7 +1713,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
         }
         for (let index = seenBriefingLines; index < briefingLines.length; index += 1) {
           const line = briefingLines[index]?.trim();
-          if (!line) {
+          if (!line || !shouldStreamSpriteResearchLine(line)) {
             continue;
           }
           await safeReportProgress(progressReporter, line, {

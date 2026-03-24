@@ -7526,9 +7526,17 @@ async function renderStreamingBriefingLineHtml(
   if (!trimmed) {
     return "";
   }
-  const markdownHeadingMatch = trimmed.match(/^(#{2,4})\s+(.+)$/u);
+  if (
+    /^(?:#{1,4}\s*)?Early Evidence$/iu.test(trimmed)
+    || /^Question:\s+/iu.test(trimmed)
+    || /^(?:#{1,4}\s*)?Seed Passages$/iu.test(trimmed)
+    || /^(?:#{1,4}\s*)?Strong Local Matches$/iu.test(trimmed)
+  ) {
+    return "";
+  }
+  const markdownHeadingMatch = trimmed.match(/^(#{1,4})\s+(.+)$/u);
   if (markdownHeadingMatch) {
-    const level = Math.min(4, markdownHeadingMatch[1].length + 1);
+    const level = Math.min(4, markdownHeadingMatch[1].length);
     const headingHtml = await renderBriefingInlineHtml(deps, sessionId, markdownHeadingMatch[2].trim());
     return `<h${level}>${headingHtml}</h${level}>`;
   }
