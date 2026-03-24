@@ -63,6 +63,17 @@ interface SpriteFanoutRuntimeArgs extends RuntimeToolArgs {
   progressReporter?: ProgressReporter;
 }
 
+type SpriteShardLifecycleState =
+  | "queued"
+  | "starting"
+  | "hydrating"
+  | "ready"
+  | "searching"
+  | "completed"
+  | "failed";
+
+type SpriteAggregateLifecycleState = "starting" | "completed" | "failed";
+
 const SPRITE_SHARD_SIZE = 1000;
 const MAX_SPRITE_WORKSPACE_BYTES = 2 * 1024 * 1024 * 1024;
 const DEFAULT_SPRITE_SHARD_GUEST: FlyMachineGuestConfig = {
@@ -90,7 +101,49 @@ function spriteConcurrencyForIntensity(intensity: "normal" | "high" | "maximum",
 }
 
 function shardLabel(shard: SpriteShardManifest): string {
-  return `Sprite ${shard.index + 1}/${shard.totalShards}`;
+  return `Part ${shard.index + 1} of ${shard.totalShards}`;
+}
+
+function runtimeStatusForShardLifecycle(state: SpriteShardLifecycleState): RuntimeInstanceRecord["status"] {
+  if (state === "ready") {
+    return "ready";
+  }
+  if (state === "searching") {
+    return "busy";
+  }
+  if (state === "failed") {
+    return "failed";
+  }
+  if (state === "completed") {
+    return "ready";
+  }
+  return "creating";
+}
+
+function withSpriteShardLifecycle(
+  manifest: Record<string, unknown>,
+  state: SpriteShardLifecycleState,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const taskContext = manifest.taskContext && typeof manifest.taskContext === "object"
+    ? manifest.taskContext as Record<string, unknown>
+    : {};
+  const existingShard = taskContext.spriteShard && typeof taskContext.spriteShard === "object"
+    ? taskContext.spriteShard as Record<string, unknown>
+    : {};
+  return {
+    ...manifest,
+    taskContext: {
+      ...taskContext,
+      researchMode: "sprite_fanout",
+      spriteShard: {
+        ...existingShard,
+        lifecycleState: state,
+        lastLifecycleAt: nowIso(),
+        ...extra,
+      },
+    },
+  };
 }
 
 async function safeReportProgress(
@@ -699,6 +752,28 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
         concurrency,
       },
     );
+    for (const shard of selectedShards) {
+      const label = shardLabel(shard);
+      await this.store.appendRunEvent(runId, sessionId, "sprite.shard.queued", {
+        implementationId,
+        shardId: shard.shardId,
+        label,
+        state: "queued",
+        shardIndex: shard.index,
+        totalShards: shard.totalShards,
+        bookCount: shard.bookCount,
+      });
+      await safeReportProgress(progressReporter, `Queued ${label.toLowerCase()} for the broad search.`, {
+        type: "sprite.shard_state",
+        researchMode: "sprite_fanout",
+        shardId: shard.shardId,
+        shardLabel: label,
+        shardIndex: shard.index,
+        totalShards: shard.totalShards,
+        bookCount: shard.bookCount,
+        state: "queued",
+      });
+    }
 
     const shardResults = await this.mapWithConcurrency(selectedShards, concurrency, async (shard) => {
       const label = shardLabel(shard);
@@ -706,14 +781,20 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
         implementationId,
         shardId: shard.shardId,
         label,
+        state: "starting",
+        shardIndex: shard.index,
+        totalShards: shard.totalShards,
         bookCount: shard.bookCount,
       });
-      await safeReportProgress(progressReporter, `Searching part ${shard.index + 1} of ${shard.totalShards} across about ${shard.bookCount} books.`, {
-        type: "research.note",
+      await safeReportProgress(progressReporter, `Starting ${label.toLowerCase()} across about ${shard.bookCount} books.`, {
+        type: "sprite.shard_state",
         researchMode: "sprite_fanout",
         shardId: shard.shardId,
         shardLabel: label,
+        shardIndex: shard.index,
+        totalShards: shard.totalShards,
         bookCount: shard.bookCount,
+        state: "starting",
       });
       const result = await this.runSpriteShard(sessionId, query, shard, {
         runId,
@@ -725,18 +806,27 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
         implementationId,
         shardId: shard.shardId,
         label,
+        state: result.ok ? "completed" : "failed",
+        shardIndex: shard.index,
+        totalShards: shard.totalShards,
+        runtimeId: result.runtimeId,
         ...(result.ok ? { citationCount: Array.isArray(result.citations) ? result.citations.length : 0 } : { error: result.error }),
       });
       await safeReportProgress(
         progressReporter,
         result.ok
-          ? `Finished part ${shard.index + 1} of ${shard.totalShards} and found ${Array.isArray(result.citations) ? result.citations.length : 0} supporting passages.`
-          : `Part ${shard.index + 1} of ${shard.totalShards} took too long and had to stop.`,
+          ? `Finished ${label.toLowerCase()} and found ${Array.isArray(result.citations) ? result.citations.length : 0} supporting passages.`
+          : `${label} stopped before it finished.`,
         {
-          type: "research.note",
+          type: "sprite.shard_state",
           researchMode: "sprite_fanout",
           shardId: shard.shardId,
           shardLabel: label,
+          shardIndex: shard.index,
+          totalShards: shard.totalShards,
+          bookCount: shard.bookCount,
+          runtimeId: result.runtimeId,
+          state: result.ok ? "completed" : "failed",
           ok: result.ok,
           ...(typeof result.error === "string" ? { error: result.error } : {}),
         },
@@ -750,33 +840,65 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     }
 
     await safeReportProgress(progressReporter, "Combining the strongest passages into one answer.", {
-      type: "research.note",
+      type: "sprite.aggregate_state",
       researchMode: "sprite_fanout",
       successfulShardCount: successfulShards.length,
       shardCount: shardResults.length,
+      state: "starting",
     });
     await this.store.appendRunEvent(runId, sessionId, "sprite.aggregate.started", {
       implementationId,
       successfulShardCount: successfulShards.length,
       shardCount: shardResults.length,
+      state: "starting",
     });
-    const aggregateResult = await this.runSpriteAggregator(sessionId, query, shardResults, {
-      implementationId,
-      intensity,
-    });
-    const aggregateRecord = aggregateResult as Record<string, unknown>;
-    const aggregateCitations = Array.isArray(aggregateRecord.citations)
-      ? aggregateRecord.citations as Array<Record<string, unknown>>
+    let aggregateResult: Record<string, unknown>;
+    try {
+      aggregateResult = await this.runSpriteAggregator(sessionId, query, shardResults, {
+        implementationId,
+        intensity,
+      }) as Record<string, unknown>;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "Sprite aggregation failed.";
+      await this.store.appendRunEvent(runId, sessionId, "sprite.aggregate.failed", {
+        implementationId,
+        shardCount: shardResults.length,
+        successfulShardCount: successfulShards.length,
+        state: "failed",
+        error: errorMessage,
+      });
+      await safeReportProgress(progressReporter, "The final merge stopped before it could finish the answer.", {
+        type: "sprite.aggregate_state",
+        researchMode: "sprite_fanout",
+        successfulShardCount: successfulShards.length,
+        shardCount: shardResults.length,
+        state: "failed",
+        error: errorMessage,
+      });
+      throw error;
+    }
+    const aggregateCitations = Array.isArray(aggregateResult.citations)
+      ? aggregateResult.citations as Array<Record<string, unknown>>
       : [];
-    const aggregateRuntimeId = typeof aggregateRecord.runtimeId === "string" ? aggregateRecord.runtimeId : "";
-    const aggregateBriefing = typeof aggregateRecord.briefing === "string" ? aggregateRecord.briefing : "";
-    const aggregateArtifacts = Array.isArray(aggregateRecord.artifacts) ? aggregateRecord.artifacts : [];
+    const aggregateRuntimeId = typeof aggregateResult.runtimeId === "string" ? aggregateResult.runtimeId : "";
+    const aggregateBriefing = typeof aggregateResult.briefing === "string" ? aggregateResult.briefing : "";
+    const aggregateArtifacts = Array.isArray(aggregateResult.artifacts) ? aggregateResult.artifacts : [];
     await this.store.appendRunEvent(runId, sessionId, "sprite.aggregate.completed", {
       implementationId,
       shardCount: shardResults.length,
       successfulShardCount: successfulShards.length,
       citationCount: aggregateCitations.length,
       aggregatorRuntimeId: aggregateRuntimeId,
+      state: "completed",
+    });
+    await safeReportProgress(progressReporter, "Finished combining the strongest passages into one answer.", {
+      type: "sprite.aggregate_state",
+      researchMode: "sprite_fanout",
+      successfulShardCount: successfulShards.length,
+      shardCount: shardResults.length,
+      citationCount: aggregateCitations.length,
+      aggregatorRuntimeId: aggregateRuntimeId,
+      state: "completed",
     });
 
     return {
@@ -789,6 +911,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
         shardId: result.shardId,
         label: result.label,
         ok: result.ok,
+        state: result.ok ? "completed" : "failed",
         bookCount: result.bookCount,
         totalTextBytes: result.totalTextBytes,
         runtimeId: result.runtimeId,
@@ -1623,6 +1746,24 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     let machineId: string | null = null;
     let instance: RuntimeInstanceRecord | null = null;
     let progressRelay: ReturnType<FlyMachinesRuntimeGateway["startSpriteShardProgressRelay"]> | null = null;
+    let currentManifest: Record<string, unknown> | null = null;
+    const persistShardLifecycle = async (
+      runtimeId: string,
+      state: SpriteShardLifecycleState,
+      extra: Record<string, unknown> = {},
+    ) => {
+      if (!currentManifest) {
+        return;
+      }
+      currentManifest = withSpriteShardLifecycle(currentManifest, state, extra);
+      await this.store.updateRuntimeInstance(runtimeId, {
+        status: runtimeStatusForShardLifecycle(state),
+        lastUsedAt: nowIso(),
+        expiresAt: addMinutesIso(HARD_LIMITS.MAX_RUNTIME_IDLE_MINUTES),
+        manifestJson: currentManifest,
+        ...(machineId ? { providerMachineId: machineId } : {}),
+      });
+    };
     try {
       const progressReporter = options.progressReporter;
       const prepareTimeoutMs = estimateSpritePrepareTimeoutMs(shard);
@@ -1646,53 +1787,77 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
           totalTextBytes: shard.totalTextBytes,
         },
       });
+      currentManifest = withSpriteShardLifecycle(workspacePlan.manifest, "starting");
       await this.store.saveRuntimeInstance({
         sessionId,
         runtimeId,
         provider: "fly-sprites",
         providerMachineId: machine.id,
         status: "creating",
-        manifestJson: workspacePlan.manifest,
+        manifestJson: currentManifest,
         lastUsedAt: nowIso(),
         expiresAt: addMinutesIso(HARD_LIMITS.MAX_RUNTIME_IDLE_MINUTES),
       });
       instance = await this.requireRuntime(runtimeId);
+      await this.store.appendRunEvent(options.runId, sessionId, "sprite.shard.hydrating", {
+        implementationId: options.implementationId,
+        shardId: shard.shardId,
+        label: shardLabel(shard),
+        state: "hydrating",
+        shardIndex: shard.index,
+        totalShards: shard.totalShards,
+        bookCount: shard.bookCount,
+        runtimeId,
+      });
+      await safeReportProgress(progressReporter, `Loading books for ${shardLabel(shard).toLowerCase()}.`, {
+        type: "sprite.shard_state",
+        researchMode: "sprite_fanout",
+        shardId: shard.shardId,
+        shardLabel: shardLabel(shard),
+        shardIndex: shard.index,
+        totalShards: shard.totalShards,
+        bookCount: shard.bookCount,
+        runtimeId,
+        state: "hydrating",
+      });
+      await persistShardLifecycle(runtimeId, "hydrating");
       await this.waitForMachine(machine.id, "started");
       await this.waitForRuntimeHttpReady(machine.id);
       await this.prepareWorkspace(machine.id, {
         runtimeId,
         sessionId,
-        works: workspacePlan.manifest.works,
-        dataSchema: workspacePlan.manifest.dataSchema,
-        fileCatalog: workspacePlan.manifest.fileCatalog,
+        works: currentManifest.works,
+        dataSchema: currentManifest.dataSchema,
+        fileCatalog: currentManifest.fileCatalog,
         selectedChunkIds: [],
         selectedChunks: [],
-        taskContext: workspacePlan.manifest.taskContext,
+        taskContext: currentManifest.taskContext,
         downloads: workspacePlan.downloads,
       }, { timeoutMs: prepareTimeoutMs });
-      await this.store.updateRuntimeInstance(runtimeId, {
-        status: "ready",
-        lastUsedAt: nowIso(),
-        expiresAt: addMinutesIso(HARD_LIMITS.MAX_RUNTIME_IDLE_MINUTES),
-        manifestJson: workspacePlan.manifest,
-        providerMachineId: machine.id,
-      });
+      await persistShardLifecycle(runtimeId, "ready");
       await this.store.appendRunEvent(options.runId, sessionId, "sprite.shard.ready", {
         implementationId: options.implementationId,
         shardId: shard.shardId,
         label: shardLabel(shard),
+        state: "ready",
+        shardIndex: shard.index,
+        totalShards: shard.totalShards,
         bookCount: shard.bookCount,
+        runtimeId,
       });
       await safeReportProgress(
         progressReporter,
-        `Loaded the books for part ${shard.index + 1} of ${shard.totalShards}. Starting the search now.`,
+        `Loaded the books for ${shardLabel(shard).toLowerCase()}. Starting the search now.`,
         {
-          type: "research.note",
+          type: "sprite.shard_state",
           researchMode: "sprite_fanout",
           shardId: shard.shardId,
           shardLabel: shardLabel(shard),
+          shardIndex: shard.index,
+          totalShards: shard.totalShards,
           bookCount: shard.bookCount,
-          phase: "search_start",
+          runtimeId,
+          state: "ready",
         },
       );
       progressRelay = this.startSpriteShardProgressRelay(
@@ -1700,6 +1865,28 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
         shard,
         progressReporter,
       );
+      await this.store.appendRunEvent(options.runId, sessionId, "sprite.shard.searching", {
+        implementationId: options.implementationId,
+        shardId: shard.shardId,
+        label: shardLabel(shard),
+        state: "searching",
+        shardIndex: shard.index,
+        totalShards: shard.totalShards,
+        bookCount: shard.bookCount,
+        runtimeId,
+      });
+      await persistShardLifecycle(runtimeId, "searching");
+      await safeReportProgress(progressReporter, `Searching ${shardLabel(shard).toLowerCase()} now.`, {
+        type: "sprite.shard_state",
+        researchMode: "sprite_fanout",
+        shardId: shard.shardId,
+        shardLabel: shardLabel(shard),
+        shardIndex: shard.index,
+        totalShards: shard.totalShards,
+        bookCount: shard.bookCount,
+        runtimeId,
+        state: "searching",
+      });
       const result = await this.executeRuntimeTask(instance, {
         kind: "sprite_fanout_research",
         mode: "sprite_shard_search",
@@ -1720,6 +1907,11 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
         briefingFile: "output/briefing.md",
         briefingJsonFile: "output/briefing.json",
       }, { skipMachineStartupCheck: true });
+      await persistShardLifecycle(runtimeId, "completed", {
+        citationCount: Array.isArray((result as Record<string, unknown>).citations)
+          ? ((result as Record<string, unknown>).citations as unknown[]).length
+          : 0,
+      });
       return {
         ok: true as const,
         shardId: shard.shardId,
@@ -1741,6 +1933,11 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
         result,
       };
     } catch (error) {
+      if (instance) {
+        await persistShardLifecycle(instance.runtimeId, "failed", {
+          error: error instanceof Error ? error.message : "Unknown Sprite shard error",
+        }).catch(() => {});
+      }
       return {
         ok: false as const,
         shardId: shard.shardId,

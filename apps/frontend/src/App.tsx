@@ -687,6 +687,43 @@ function buildToolTraceFromRunEvents(events: PersistedRunEventRecord[]) {
     const eventData = runEvent.dataJson && typeof runEvent.dataJson === "object"
       ? runEvent.dataJson as Record<string, unknown>
       : {};
+    if (runEvent.event.startsWith("sprite.shard.")) {
+      const state = progressDetailString(eventData.state) || runEvent.event.split(".").at(-1) || "";
+      const detail = {
+        ...eventData,
+        type: "sprite.shard_state",
+        state,
+      } satisfies Record<string, unknown>;
+      const text =
+        state === "queued"
+          ? `Queued ${spriteLabel(detail).toLowerCase()}.`
+          : state === "starting"
+            ? `Starting ${spriteLabel(detail).toLowerCase()}.`
+            : state === "hydrating"
+              ? `Loading books for ${spriteLabel(detail).toLowerCase()}.`
+              : state === "ready"
+                ? `Loaded books for ${spriteLabel(detail).toLowerCase()}.`
+                : state === "searching"
+                  ? `Searching ${spriteLabel(detail).toLowerCase()}.`
+                  : state === "completed"
+                    ? `Finished ${spriteLabel(detail).toLowerCase()}.`
+                    : `${spriteLabel(detail)} failed.`;
+      const updatedTrace = applySpriteLifecycleDetail(trace, detail, text);
+      trace.length = 0;
+      trace.push(...updatedTrace);
+      continue;
+    }
+    if (runEvent.event.startsWith("sprite.aggregate.")) {
+      const state = progressDetailString(eventData.state) || runEvent.event.split(".").at(-1) || "";
+      const updatedTrace = applySpriteLifecycleDetail(trace, {
+        ...eventData,
+        type: "sprite.aggregate_state",
+        state,
+      }, undefined);
+      trace.length = 0;
+      trace.push(...updatedTrace);
+      continue;
+    }
     if (runEvent.event === "tool.started") {
       const { entry, index } = ensureEntry(eventData);
       trace[index] = {
@@ -3411,6 +3448,185 @@ function appendProgressDetail(
     return existing;
   }
   return [...existing, detail];
+}
+
+type SpriteTraceState = "queued" | "starting" | "hydrating" | "ready" | "searching" | "completed" | "failed";
+
+function progressDetailState(value: unknown): SpriteTraceState | null {
+  return value === "queued"
+    || value === "starting"
+    || value === "hydrating"
+    || value === "ready"
+    || value === "searching"
+    || value === "completed"
+    || value === "failed"
+    ? value
+    : null;
+}
+
+function spriteShardEntryId(detail: Record<string, unknown>) {
+  const shardId = progressDetailString(detail.shardId) || "unknown";
+  return `sprite-shard:${shardId}`;
+}
+
+function spriteAggregateEntryId() {
+  return "sprite-aggregate";
+}
+
+function spriteLabel(detail: Record<string, unknown>) {
+  const explicit = progressDetailString(detail.shardLabel) || progressDetailString(detail.label);
+  if (explicit) {
+    return explicit;
+  }
+  const shardIndex = progressDetailNumber(detail.shardIndex);
+  const totalShards = progressDetailNumber(detail.totalShards);
+  if (shardIndex !== null && totalShards !== null) {
+    return `Part ${shardIndex + 1} of ${totalShards}`;
+  }
+  return "Library Part";
+}
+
+function spriteStateSummary(state: SpriteTraceState | null, detail: Record<string, unknown>) {
+  const citationCount = progressDetailNumber(detail.citationCount);
+  if (state === "queued") {
+    return "Queued";
+  }
+  if (state === "starting") {
+    return "Starting";
+  }
+  if (state === "hydrating") {
+    return "Loading books";
+  }
+  if (state === "ready") {
+    return "Loaded and waiting";
+  }
+  if (state === "searching") {
+    return "Searching";
+  }
+  if (state === "completed") {
+    return citationCount !== null ? `Completed with ${pluralize(citationCount, "passage")}` : "Completed";
+  }
+  if (state === "failed") {
+    return "Failed";
+  }
+  return "";
+}
+
+function spriteEntryMeta(detail: Record<string, unknown>) {
+  const bookCount = progressDetailNumber(detail.bookCount);
+  return bookCount !== null ? pluralize(bookCount, "book") : "";
+}
+
+function applySpriteLifecycleDetail(
+  trace: ToolTraceEntry[],
+  detail: Record<string, unknown>,
+  progressText?: string,
+) {
+  const detailType = progressDetailString(detail.type);
+  if (detailType !== "sprite.shard_state" && detailType !== "sprite.aggregate_state") {
+    return trace;
+  }
+
+  const nextTrace = [...trace];
+  if (detailType === "sprite.shard_state") {
+    const entryId = spriteShardEntryId(detail);
+    const state = progressDetailState(detail.state);
+    const existingIndex = nextTrace.findIndex((entry) => entry.id === entryId);
+    const existing = existingIndex >= 0 ? nextTrace[existingIndex]! : null;
+    const label = spriteLabel(detail);
+    const progressLine = progressText || spriteStateSummary(state, detail);
+    const nextEntry: ToolTraceEntry = {
+      id: entryId,
+      toolName: "run_workspace_task",
+      label,
+      rationale: progressLine || existing?.rationale,
+      progress: progressLine
+        ? existing?.progress?.includes(progressLine)
+          ? (existing.progress ?? [])
+          : [...(existing?.progress ?? []), progressLine]
+        : (existing?.progress ?? []),
+      progressDetails: appendProgressDetail(existing?.progressDetails, detail),
+      args: {
+        __summary: spriteEntryMeta(detail) || undefined,
+      },
+      ...(state === "completed"
+        ? { result: { ok: true, citationCount: progressDetailNumber(detail.citationCount) ?? undefined } }
+        : state === "failed"
+          ? {
+              result: {
+                ok: false,
+                error: progressDetailString(detail.error) || "This part failed.",
+              },
+              isError: true,
+            }
+          : existing?.result
+            ? { result: existing.result }
+            : {}),
+      state:
+        state === "completed"
+          ? "completed"
+          : state === "failed"
+            ? "error"
+            : "running",
+      isError: state === "failed",
+    };
+    if (existingIndex >= 0) {
+      nextTrace[existingIndex] = nextEntry;
+    } else {
+      nextTrace.push(nextEntry);
+    }
+    return nextTrace;
+  }
+
+  const state = progressDetailState(detail.state);
+  const entryId = spriteAggregateEntryId();
+  const existingIndex = nextTrace.findIndex((entry) => entry.id === entryId);
+  const existing = existingIndex >= 0 ? nextTrace[existingIndex]! : null;
+  const progressLine = progressText
+    || (state === "starting"
+      ? "Combining the strongest passages."
+      : state === "completed"
+        ? "Finished combining the strongest passages."
+        : "The final merge failed.");
+  const nextEntry: ToolTraceEntry = {
+    id: entryId,
+    toolName: "run_workspace_task",
+    label: "Compiled Answer",
+    rationale: progressLine,
+    progress: progressLine
+      ? existing?.progress?.includes(progressLine)
+        ? (existing.progress ?? [])
+        : [...(existing?.progress ?? []), progressLine]
+      : (existing?.progress ?? []),
+    progressDetails: appendProgressDetail(existing?.progressDetails, detail),
+    args: {},
+    ...(state === "completed"
+      ? { result: { ok: true, citationCount: progressDetailNumber(detail.citationCount) ?? undefined } }
+      : state === "failed"
+        ? {
+            result: {
+              ok: false,
+              error: progressDetailString(detail.error) || "The final merge failed.",
+            },
+            isError: true,
+          }
+        : existing?.result
+          ? { result: existing.result }
+          : {}),
+    state:
+      state === "completed"
+        ? "completed"
+        : state === "failed"
+          ? "error"
+          : "running",
+    isError: state === "failed",
+  };
+  if (existingIndex >= 0) {
+    nextTrace[existingIndex] = nextEntry;
+  } else {
+    nextTrace.push(nextEntry);
+  }
+  return nextTrace;
 }
 
 function recordArray(value: unknown): Array<Record<string, unknown>> {
@@ -6705,8 +6921,11 @@ export default function App() {
                         ? { progressDetails: appendProgressDetail(entry.progressDetails, detail) }
                         : {}),
                     }
-                  : entry,
+                      : entry,
               );
+              if (detail) {
+                activityLog = applySpriteLifecycleDetail(activityLog, detail, rationale);
+              }
               updatePlanMessage((message) => ({
                 ...message,
                 metadata: {

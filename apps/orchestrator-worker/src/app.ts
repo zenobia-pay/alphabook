@@ -7510,6 +7510,16 @@ function appendResearchDocumentFragment(currentHtml: string, fragment: string) {
   return fragment.trim().length > 0 ? `${currentHtml}${fragment}` : currentHtml;
 }
 
+type ResearchDocumentSectionOptions = {
+  className?: string;
+  meta?: string;
+  open?: boolean;
+};
+
+function buildResearchDocumentSectionMarker(sectionKey: string) {
+  return `<!--assistant-document-section:${encodeURIComponent(sectionKey)}-->`;
+}
+
 function buildResearchDocumentSectionHeader(title: string, summary: string) {
   const normalizedSummary = normalizeDocumentText(summary);
   const summaryHtml =
@@ -7578,19 +7588,29 @@ function formatResearchDocumentBookLine(titleText: string, authors: string[]) {
   return authors.length > 0 ? `- ${titleText} by ${authors.join(", ")}` : `- ${titleText}`;
 }
 
-function appendResearchDocumentHtmlSection(htmlSections: string[], title: string, summary: string, bodyHtml: string[]) {
+function appendResearchDocumentHtmlSection(
+  htmlSections: string[],
+  title: string,
+  summary: string,
+  bodyHtml: string[],
+  options: ResearchDocumentSectionOptions = {},
+) {
   const filtered = bodyHtml.filter((line) => line.trim().length > 0);
   const kicker = summary && !isLowValueDocumentSummary(summary)
     ? `<span class="assistant-document-section-kicker">${escapeResearchHtml(summary)}</span>`
+    : "";
+  const meta = normalizeDocumentText(options.meta)
+    ? `<span class="assistant-document-section-meta">${escapeResearchHtml(normalizeDocumentText(options.meta))}</span>`
     : "";
   if (!kicker && filtered.length === 0) {
     return;
   }
   htmlSections.push([
-    `<details class="assistant-document-section" open>`,
+    `<details class="${["assistant-document-section", options.className].filter(Boolean).join(" ")}"${options.open === false ? "" : " open"}>`,
     `<summary class="assistant-document-section-summary">`,
     `<span class="assistant-document-section-title-row">`,
     `<span class="assistant-document-section-title">${escapeResearchHtml(title)}</span>`,
+    meta,
     `</span>`,
     kicker,
     `</summary>`,
@@ -7606,13 +7626,40 @@ function appendResearchDocumentHtml(
   title: string,
   summary: string,
   bodyHtml: string[],
+  options?: ResearchDocumentSectionOptions,
 ) {
   const nextSections: string[] = [];
-  appendResearchDocumentHtmlSection(nextSections, title, summary, bodyHtml);
+  appendResearchDocumentHtmlSection(nextSections, title, summary, bodyHtml, options);
   if (nextSections.length === 0) {
     return existingHtml ?? "";
   }
   return `${existingHtml ?? ""}${nextSections.join("")}`;
+}
+
+function appendResearchDocumentSectionFragment(
+  existingHtml: string | null | undefined,
+  sectionKey: string,
+  title: string,
+  summary: string,
+  fragment: string,
+  options: ResearchDocumentSectionOptions = {},
+) {
+  const trimmedFragment = fragment.trim();
+  if (!trimmedFragment) {
+    return existingHtml ?? "";
+  }
+  const currentHtml = existingHtml ?? "";
+  const marker = buildResearchDocumentSectionMarker(sectionKey);
+  if (currentHtml.includes(marker)) {
+    return currentHtml.replace(marker, `${trimmedFragment}${marker}`);
+  }
+  return appendResearchDocumentHtml(
+    currentHtml,
+    title,
+    summary,
+    [trimmedFragment, marker],
+    options,
+  );
 }
 
 async function renderBriefingHtml(
