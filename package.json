@@ -21,6 +21,7 @@
     "benchmark:analyze-model-selection": "node --import tsx packages/tooling/scripts/analyze-model-selection.ts",
     "benchmark:real-ir": "node --import tsx packages/tooling/scripts/run-real-ir-benchmark.ts",
     "sprite:build-shards": "node --import tsx packages/tooling/scripts/build-sprite-shards.ts",
+    "sprite:cleanup": "node --import tsx packages/tooling/scripts/cleanup-sprite-machines.ts",
     "runtime:sync-image": "node --import tsx packages/tooling/scripts/sync-runtime-image-pin.ts",
     "implementation:scaffold": "node --import tsx packages/tooling/scripts/scaffold-implementation.ts",
     "migrate": "tsx packages/tooling/scripts/migrate.ts",

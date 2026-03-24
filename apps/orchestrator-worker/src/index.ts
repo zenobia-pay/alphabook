@@ -285,6 +285,11 @@ async function runScheduledJanitor(env: Env) {
     undefined,
     billing,
   );
+  const runtimeGateway = resolveRuntimeGateway(env, store, blobStore);
+
+  if (typeof runtimeGateway.cleanupStaleSpriteMachines === "function") {
+    await runtimeGateway.cleanupStaleSpriteMachines("");
+  }
 
   await store.refreshExploreFeedSnapshot();
 
@@ -296,7 +301,7 @@ async function runScheduledJanitor(env: Env) {
       embedder,
       synthesizer,
       blobStore,
-      runtimeGateway: resolveRuntimeGateway(env, store, blobStore),
+      runtimeGateway,
       queues: {
         ingestName: ingestQueueName,
         jobsName: jobsQueueName,
@@ -321,7 +326,7 @@ async function runScheduledJanitor(env: Env) {
       embedder,
       synthesizer,
       blobStore,
-      runtimeGateway: resolveRuntimeGateway(env, store, blobStore),
+      runtimeGateway,
       queues: {
         ingestName: ingestQueueName,
         jobsName: jobsQueueName,

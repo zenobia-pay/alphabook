@@ -230,6 +230,9 @@ function isSpriteRuntimeMachine(machine: FlyMachine): boolean {
 }
 
 function isMachineForSession(machine: FlyMachine, sessionId: string): boolean {
+  if (!sessionId) {
+    return false;
+  }
   const metadata = flyMachineMetadata(machine);
   if (metadata["alphabook.session_id"] === sessionId) {
     return true;
@@ -462,6 +465,10 @@ export class StubRuntimeGateway implements RuntimeToolGateway {
       error: "Sprite fanout research is not enabled in this environment.",
     };
   }
+
+  async cleanupStaleSpriteMachines() {
+    return 0;
+  }
 }
 
 export class HttpRuntimeGateway implements RuntimeToolGateway {
@@ -472,6 +479,10 @@ export class HttpRuntimeGateway implements RuntimeToolGateway {
     if (!authToken || authToken.trim().length === 0) {
       throw new Error("RUNTIME_SERVICE_TOKEN is required for runtime gateway access.");
     }
+  }
+
+  async cleanupStaleSpriteMachines() {
+    return 0;
   }
 
   private async request(path: string, init: RequestInit = {}) {
@@ -1305,7 +1316,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     }
   }
 
-  private async cleanupStaleSpriteMachines(sessionId: string): Promise<number> {
+  async cleanupStaleSpriteMachines(sessionId = ""): Promise<number> {
     const machines = await this.listMachines(true).catch(() => [] as FlyMachine[]);
     const staleMachines = machines.filter((machine) => isStaleSpriteMachine(machine, sessionId));
     if (staleMachines.length === 0) {

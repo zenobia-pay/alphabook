@@ -39,6 +39,7 @@ export interface RuntimeToolGateway {
   createWorkspace(args: Record<string, unknown>): Promise<Record<string, unknown>>;
   runWorkspaceTask(args: Record<string, unknown>): Promise<Record<string, unknown>>;
   runSpriteFanoutResearch?(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+  cleanupStaleSpriteMachines?(sessionId?: string): Promise<number>;
   cancelWorkspaceTask?(args: Record<string, unknown>): Promise<Record<string, unknown>>;
   getWorkspaceTaskStatus?(args: Record<string, unknown>): Promise<Record<string, unknown>>;
   readWorkspaceFile(args: Record<string, unknown>): Promise<Record<string, unknown>>;
