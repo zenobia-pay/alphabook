@@ -3505,6 +3505,16 @@ function normalizeRuntimeProgressLine(event: Record<string, unknown>): {
   if (type === "research.seed_summary") {
     return { text: rawMessage, detail: event };
   }
+  if (type === "research.briefing_line") {
+    const line = typeof event.line === "string" ? event.line.trim() : "";
+    if (!line) {
+      return { text: null, detail: event };
+    }
+    return {
+      text: /^(?:#{1,6}\s+|[-*]\s+)/u.test(line) ? "Updating the briefing draft." : line,
+      detail: event,
+    };
+  }
 
   if (type === "codex.step.prepared") {
     return { text: "The deeper research pass is ready to run." };
@@ -4176,6 +4186,7 @@ function startRuntimeTaskProgressEmitter(
   let stopped = false;
   let inFlight = false;
   let seenLines = 0;
+  let seenBriefingLines = 0;
 
   const emit = async (text: string, detail?: Record<string, unknown>) => {
     await send("tool.progress", {
@@ -4216,6 +4227,37 @@ function startRuntimeTaskProgressEmitter(
         }
       }
       seenLines = lines.length;
+      const briefingResult = await runtimeGateway.readWorkspaceFile({
+        runtimeId,
+        path: "output/briefing.md",
+        sessionId: context.sessionId,
+        runId: context.runId,
+      }).catch(() => null);
+      const briefingContent = briefingResult && typeof briefingResult.content === "string"
+        ? briefingResult.content
+        : "";
+      const briefingLines = briefingContent
+        .split(/\r?\n/u)
+        .map((line) => line.trimEnd())
+        .filter((line) => line.trim().length > 0);
+      if (seenBriefingLines > briefingLines.length) {
+        seenBriefingLines = 0;
+      }
+      for (let index = seenBriefingLines; index < briefingLines.length; index += 1) {
+        const line = briefingLines[index]?.trim();
+        if (!line) {
+          continue;
+        }
+        await emit(
+          /^(?:#{1,6}\s+|[-*]\s+)/u.test(line) ? "Updating the briefing draft." : line,
+          {
+            type: "research.briefing_line",
+            line,
+            lineIndex: index,
+          },
+        );
+      }
+      seenBriefingLines = briefingLines.length;
     } catch {
       // Runtime progress is best-effort while the task is still starting up.
     } finally {
@@ -8297,6 +8339,33 @@ async function runOrchestrator(
         `detail:${toolCallId}:chunk:${workId ?? "unknown"}:${String(chunkIndex ?? "mid")}:${excerpt.slice(0, 60)}`,
         `<blockquote class="assistant-document-entry is-chunk"><p class="assistant-document-quote">${escapeResearchHtml(excerpt)}</p><footer class="assistant-document-citation">${href ? buildResearchDocumentLink(sourceLabel, href) : escapeResearchHtml(sourceLabel)}</footer></blockquote>`,
       );
+      return;
+    }
+    if (detailType === "research.briefing_line") {
+      const line = typeof detail.line === "string" ? detail.line.trim() : "";
+      if (!line) {
+        return;
+      }
+      const key = `detail:${toolCallId}:briefing:${typeof detail.lineIndex === "number" ? detail.lineIndex : line}`;
+      const markdownHeadingMatch = line.match(/^(#{2,4})\s+(.+)$/u);
+      if (markdownHeadingMatch) {
+        const level = Math.min(4, markdownHeadingMatch[1].length + 1);
+        const headingHtml = await renderBriefingInlineHtml(deps, session!.id, markdownHeadingMatch[2].trim());
+        appendResearchDocumentOnce(key, `<h${level}>${headingHtml}</h${level}>`);
+        return;
+      }
+      const headingMatch = line.match(/^\*\*(.+)\*\*$/u);
+      if (headingMatch) {
+        appendResearchDocumentOnce(key, `<h3>${escapeResearchHtml(headingMatch[1].trim())}</h3>`);
+        return;
+      }
+      if (line.startsWith("- ")) {
+        const itemHtml = await renderBriefingInlineHtml(deps, session!.id, line.slice(2).trim());
+        appendResearchDocumentOnce(key, `<ul class="assistant-document-briefing-list"><li>${itemHtml}</li></ul>`);
+        return;
+      }
+      const paragraphHtml = await renderBriefingInlineHtml(deps, session!.id, line);
+      appendResearchDocumentOnce(key, `<p class="assistant-document-entry is-log">${paragraphHtml}</p>`);
     }
   };
 

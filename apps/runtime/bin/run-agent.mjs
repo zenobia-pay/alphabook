@@ -1064,6 +1064,7 @@ function buildBriefingPrompt(runtimePrompt, manifest, task, evidence, question) 
     ? manifest.taskContext
     : {};
   const openBookMode = taskContext.mode === "open_book_analysis";
+  const spriteShardMode = typeof task?.mode === "string" && task.mode === "sprite_shard_search";
   const manifestSummary = {
     corpusWorkCount:
       typeof manifest.taskContext?.corpusWorkCount === "number"
@@ -1108,6 +1109,51 @@ function buildBriefingPrompt(runtimePrompt, manifest, task, evidence, question) 
       : intensity === "high"
         ? 28
         : 14;
+  if (spriteShardMode) {
+    const shard = task?.shard && typeof task.shard === "object" ? task.shard : {};
+    const shardLabel = typeof shard.label === "string"
+      ? shard.label
+      : typeof shard.shardId === "string"
+        ? shard.shardId
+        : "this shard";
+    const shardBookCount = typeof shard.bookCount === "number"
+      ? shard.bookCount
+      : Array.isArray(manifest.works) ? manifest.works.length : 0;
+    return [
+      runtimePrompt,
+      "",
+      "You are running one AlphaBook Sprite shard search.",
+      `Goal: answer the research objective using only the books hydrated into ${shardLabel}.`,
+      "Constraints:",
+      "- Only use local files under /workspace.",
+      "- This VM is responsible for one fixed shard of the corpus. Do not widen outside this shard.",
+      "- Do not use the remote Postgres corpus CLI for discovery. Search the hydrated local shard directly.",
+      "- Use shell tools like rg, jq, python3, sed, awk, grep, and cat over /workspace/books and /workspace/chunks.",
+      `- This shard currently contains about ${shardBookCount} hydrated books.`,
+      `- Keep the search bounded but thorough: use at most ${commandBudget} shell commands total.`,
+      "- Search repeatedly across the local shard until you have the strongest quotations and representative books for this shard.",
+      "- Favor explicit grief-, mourning-, bereavement-, lament-, consolation-, funeral-, and loss-related evidence over generic sadness or death references.",
+      "- Pull neighboring passages from local chunk files when you need context.",
+      "- Create a focused local evidence set in /workspace/scratch/research-corpus if it helps you compare books.",
+      "- Your required deliverable is one file: /workspace/output/briefing.md",
+      "- The briefing should summarize what this shard contributes to the overall answer, with direct quotations and source identifiers.",
+      "- Every quote should preserve the work title and chunk/source identifier when available.",
+      "- If this shard has thin evidence, say that clearly in the briefing instead of forcing a conclusion.",
+      "",
+      `Research objective: ${researchObjective}`,
+      "",
+      "Task spec:",
+      JSON.stringify(compactTask, null, 2),
+      "",
+      "Workspace manifest summary:",
+      JSON.stringify(manifestSummary, null, 2),
+      "",
+      "Seed evidence from the orchestrator:",
+      JSON.stringify(evidence, null, 2),
+      "",
+      "When finished, return one short plain-text sentence confirming that the shard briefing has been written.",
+    ].filter(Boolean).join("\n");
+  }
   return [
     runtimePrompt,
     "",
