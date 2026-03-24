@@ -20,6 +20,7 @@ interface WorkspaceDownload {
   r2Key?: string;
   sourceUrl?: string;
   destinationPath: string;
+  byteSize?: number | null;
 }
 
 interface PrepareRequest {
@@ -359,30 +360,41 @@ async function downloadFiles(
   r2Client: S3Client | null,
   r2BucketName: string | null,
 ) {
-  for (const item of downloads) {
-    const destination = safeJoin(workspaceRoot, item.destinationPath);
-    await mkdir(dirname(destination), { recursive: true });
+  const orderedDownloads = [...downloads].sort((left, right) => (right.byteSize ?? 0) - (left.byteSize ?? 0));
+  const concurrency = Math.max(1, Math.min(8, orderedDownloads.length));
+  let nextIndex = 0;
 
-    if (item.r2Key) {
-      if (!r2Client || !r2BucketName) {
-        throw new Error("R2 hydration requested but runtime R2 credentials are not configured.");
+  const worker = async () => {
+    while (nextIndex < orderedDownloads.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      const item = orderedDownloads[currentIndex]!;
+      const destination = safeJoin(workspaceRoot, item.destinationPath);
+      await mkdir(dirname(destination), { recursive: true });
+
+      if (item.r2Key) {
+        if (!r2Client || !r2BucketName) {
+          throw new Error("R2 hydration requested but runtime R2 credentials are not configured.");
+        }
+        const body = await downloadFromR2(r2Client, r2BucketName, item.r2Key);
+        await writeFile(destination, body, "utf8");
+        continue;
       }
-      const body = await downloadFromR2(r2Client, r2BucketName, item.r2Key);
-      await writeFile(destination, body, "utf8");
-      continue;
-    }
 
-    if (item.sourceUrl) {
-      const response = await fetch(item.sourceUrl);
-      if (!response.ok) {
-        throw new Error(`Failed to download ${item.sourceUrl}: ${response.status}`);
+      if (item.sourceUrl) {
+        const response = await fetch(item.sourceUrl);
+        if (!response.ok) {
+          throw new Error(`Failed to download ${item.sourceUrl}: ${response.status}`);
+        }
+        await writeFile(destination, await response.text(), "utf8");
+        continue;
       }
-      await writeFile(destination, await response.text(), "utf8");
-      continue;
-    }
 
-    throw new Error("Workspace download requires either r2Key or sourceUrl.");
-  }
+      throw new Error("Workspace download requires either r2Key or sourceUrl.");
+    }
+  };
+
+  await Promise.all(new Array(concurrency).fill(null).map(() => worker()));
 }
 
 async function writeManifest(paths: ReturnType<typeof createPaths>, payload: PrepareRequest) {

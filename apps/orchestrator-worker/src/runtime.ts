@@ -29,6 +29,12 @@ interface FlyMachine {
   instance_id?: string;
 }
 
+interface FlyMachineGuestConfig {
+  cpu_kind: "shared" | "performance";
+  cpus: number;
+  memory_mb: number;
+}
+
 interface SpriteShardManifest {
   implementationId: string;
   shardId: string;
@@ -57,6 +63,16 @@ interface SpriteFanoutRuntimeArgs extends RuntimeToolArgs {
 
 const SPRITE_SHARD_SIZE = 1000;
 const MAX_SPRITE_WORKSPACE_BYTES = 2 * 1024 * 1024 * 1024;
+const DEFAULT_SPRITE_SHARD_GUEST: FlyMachineGuestConfig = {
+  cpu_kind: "performance",
+  cpus: 4,
+  memory_mb: 8192,
+};
+const DEFAULT_SPRITE_AGGREGATOR_GUEST: FlyMachineGuestConfig = {
+  cpu_kind: "shared",
+  cpus: 2,
+  memory_mb: 4096,
+};
 
 function spriteShardCatalogKey(implementationId: string): string {
   return `sprite-shards/${implementationId}/catalog.json`;
@@ -73,6 +89,27 @@ function spriteConcurrencyForIntensity(intensity: "normal" | "high" | "maximum",
 
 function shardLabel(shard: SpriteShardManifest): string {
   return `Sprite ${shard.index + 1}/${shard.totalShards}`;
+}
+
+export function estimateSpritePrepareTimeoutMs(shard: Pick<SpriteShardManifest, "bookCount" | "totalTextBytes">): number {
+  const byBookCountMs = shard.bookCount * 150;
+  const byBytesMs = Math.ceil(Math.max(0, shard.totalTextBytes) / (2 * 1024 * 1024)) * 1_500;
+  return Math.max(90_000, Math.min(10 * 60_000, 45_000 + byBookCountMs + byBytesMs));
+}
+
+export function spriteGuestConfig(
+  kind: "shard" | "aggregate",
+  config: Pick<FlyRuntimeGatewayConfig, "machineCpuKind" | "machineCpus" | "machineMemoryMb">,
+): FlyMachineGuestConfig {
+  const fallback = kind === "shard" ? DEFAULT_SPRITE_SHARD_GUEST : DEFAULT_SPRITE_AGGREGATOR_GUEST;
+  return {
+    cpu_kind:
+      config.machineCpuKind === "performance" || fallback.cpu_kind === "performance"
+        ? "performance"
+        : "shared",
+    cpus: Math.max(fallback.cpus, config.machineCpus ?? 0),
+    memory_mb: Math.max(fallback.memory_mb, config.machineMemoryMb ?? 0),
+  };
 }
 
 export interface FlyRuntimeGatewayConfig {
@@ -786,7 +823,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
 
   private async waitForRuntimeHttpReady(machineId: string): Promise<void> {
     const startedAt = Date.now();
-    const maxWaitMs = 45_000;
+    const maxWaitMs = 90_000;
     let lastError: unknown = null;
 
     while (Date.now() - startedAt < maxWaitMs) {
@@ -805,14 +842,18 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     throw new Error("Runtime became reachable too slowly.");
   }
 
-  private async prepareWorkspace(machineId: string, payload: Record<string, unknown>) {
+  private async prepareWorkspace(
+    machineId: string,
+    payload: Record<string, unknown>,
+    options: { timeoutMs?: number } = {},
+  ) {
     let lastError: unknown = null;
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       try {
         return await this.callRuntime(machineId, "/prepare", {
           method: "POST",
           body: JSON.stringify(payload),
-        }, { timeoutMs: 12_000 });
+        }, { timeoutMs: options.timeoutMs ?? 12_000 });
       } catch (error) {
         lastError = error;
         if (attempt >= 2 || !isRetryableRuntimeStartupError(error)) {
@@ -833,6 +874,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     options: {
       namePrefix?: string;
       metadata?: Record<string, string>;
+      guest?: FlyMachineGuestConfig;
     } = {},
   ): Promise<FlyMachine> {
     const namePrefix = options.namePrefix ?? "alphabook";
@@ -859,9 +901,9 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
             R2_SECRET_ACCESS_KEY: this.config.r2SecretAccessKey,
           },
           guest: {
-            cpu_kind: this.config.machineCpuKind ?? "shared",
-            cpus: this.config.machineCpus ?? 1,
-            memory_mb: this.config.machineMemoryMb ?? 1024,
+            cpu_kind: options.guest?.cpu_kind ?? this.config.machineCpuKind ?? "shared",
+            cpus: options.guest?.cpus ?? this.config.machineCpus ?? 1,
+            memory_mb: options.guest?.memory_mb ?? this.config.machineMemoryMb ?? 1024,
           },
           restart: {
             policy: "no",
@@ -1380,12 +1422,14 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     let machineId: string | null = null;
     let instance: RuntimeInstanceRecord | null = null;
     try {
+      const prepareTimeoutMs = estimateSpritePrepareTimeoutMs(shard);
       const machine = await this.createMachineWithMetadata(sessionId, {
         namePrefix: "alphabook-sprite",
         metadata: {
           "alphabook.runtime_mode": "sprite-shard",
           "alphabook.shard_id": shard.shardId,
         },
+        guest: spriteGuestConfig("shard", this.config),
       });
       machineId = machine.id;
       const runtimeId = machine.id;
@@ -1422,7 +1466,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
         selectedChunks: [],
         taskContext: workspacePlan.manifest.taskContext,
         downloads: workspacePlan.downloads,
-      });
+      }, { timeoutMs: prepareTimeoutMs });
       await this.store.updateRuntimeInstance(runtimeId, {
         status: "ready",
         lastUsedAt: nowIso(),
@@ -1507,6 +1551,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
         "alphabook.runtime_mode": "sprite-aggregate",
         "alphabook.implementation_id": options.implementationId,
       },
+      guest: spriteGuestConfig("aggregate", this.config),
     });
     const runtimeId = machine.id;
     const workspacePlan = await this.buildWorkspacePlan(sessionId, runtimeId, [], [], {
