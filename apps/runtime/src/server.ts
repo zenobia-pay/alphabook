@@ -1048,6 +1048,12 @@ export function createAlphaBookRuntimeServer(options: RuntimeServerOptions = {})
   const r2BucketName = options.r2BucketName ?? process.env.R2_BUCKET_NAME ?? null;
   const paths = createPaths(workspaceRoot);
   const activeTasks = new Map<string, AbortController>();
+  const activePrepares = new Map<string, Promise<{
+    ok: true;
+    runtimeId: string;
+    workspaceRoot: string;
+    manifestPath: string;
+  }>>();
 
   return createServer(async (request, response) => {
     try {
@@ -1070,19 +1076,32 @@ export function createAlphaBookRuntimeServer(options: RuntimeServerOptions = {})
 
       if (request.method === "POST" && request.url === "/prepare") {
         const payload = await readJson<PrepareRequest>(request);
-        await resetWorkspace(paths);
-        await writeManifest(paths, payload);
-        await writeSelectedChunks(paths, payload);
-        await writeWorkspaceHelpers(paths);
-        if (payload.downloads?.length) {
-          await downloadFiles(payload.downloads, workspaceRoot, r2Client, r2BucketName);
+        const existingPrepare = activePrepares.get(payload.runtimeId);
+        const preparePromise = existingPrepare ?? (async () => {
+          await resetWorkspace(paths);
+          await writeManifest(paths, payload);
+          await writeSelectedChunks(paths, payload);
+          await writeWorkspaceHelpers(paths);
+          if (payload.downloads?.length) {
+            await downloadFiles(payload.downloads, workspaceRoot, r2Client, r2BucketName);
+          }
+          return {
+            ok: true as const,
+            runtimeId: payload.runtimeId,
+            workspaceRoot,
+            manifestPath: "context/manifest.json",
+          };
+        })();
+        if (!existingPrepare) {
+          activePrepares.set(payload.runtimeId, preparePromise);
         }
-        return json(response, 200, {
-          ok: true,
-          runtimeId: payload.runtimeId,
-          workspaceRoot,
-          manifestPath: "context/manifest.json",
-        });
+        try {
+          return json(response, 200, await preparePromise);
+        } finally {
+          if (!existingPrepare) {
+            activePrepares.delete(payload.runtimeId);
+          }
+        }
       }
 
       if (request.method === "POST" && request.url === "/run-task") {
