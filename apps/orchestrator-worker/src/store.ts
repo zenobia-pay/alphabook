@@ -3082,6 +3082,7 @@ export class NeonAppStore implements AppStore {
   private static readonly WORK_COUNT_CACHE_TTL_MS = 1000 * 60 * 5;
   private static readonly WORK_COUNT_STAT_STALE_AFTER_MS = 1000 * 60 * 15;
   private static readonly EXPLORE_FEED_DEFAULT_LIMIT = 512;
+  private static readonly RUN_EVENT_INSERT_MAX_ATTEMPTS = 6;
 
   private hasScopedCorpus() {
     return Boolean(this.adapterId && this.adapterId !== "gutenberg");
@@ -4560,29 +4561,49 @@ export class NeonAppStore implements AppStore {
     await this.ensureRunEventsSchema();
     const id = crypto.randomUUID();
     const createdAt = nowIso();
-    const insertResult = await this.db.query<{ sequence: number }>(
-      `
-        WITH run_lock AS (
-          SELECT pg_advisory_xact_lock(
-            ('x' || substr(md5($1::text), 1, 16))::bit(64)::bigint
-          )
-        ),
-        next_sequence AS (
-          SELECT COALESCE(MAX(sequence), 0)::int + 1 AS sequence
-          FROM run_events
-          WHERE run_id = $1::uuid
-        ),
-        inserted AS (
-          INSERT INTO run_events (id, run_id, session_id, sequence, event, data_json, created_at)
-          SELECT $2::uuid, $1::uuid, $3::uuid, next_sequence.sequence, $4, $5::jsonb, $6::timestamptz
-          FROM run_lock, next_sequence
-          RETURNING sequence
-        )
-        SELECT sequence
-        FROM inserted
-      `,
-      [runId, id, sessionId, event, JSON.stringify(dataJson), createdAt],
-    );
+    let insertResult: { rows: Array<{ sequence: number }> } | null = null;
+    let lastError: unknown = null;
+    for (let attempt = 1; attempt <= NeonAppStore.RUN_EVENT_INSERT_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        insertResult = await this.db.query<{ sequence: number }>(
+          `
+            WITH run_lock AS (
+              SELECT pg_advisory_xact_lock(
+                ('x' || substr(md5($1::text), 1, 16))::bit(64)::bigint
+              )
+            ),
+            next_sequence AS (
+              SELECT COALESCE(MAX(sequence), 0)::int + 1 AS sequence
+              FROM run_events
+              WHERE run_id = $1::uuid
+            ),
+            inserted AS (
+              INSERT INTO run_events (id, run_id, session_id, sequence, event, data_json, created_at)
+              SELECT $2::uuid, $1::uuid, $3::uuid, next_sequence.sequence, $4, $5::jsonb, $6::timestamptz
+              FROM run_lock, next_sequence
+              RETURNING sequence
+            )
+            SELECT sequence
+            FROM inserted
+          `,
+          [runId, id, sessionId, event, JSON.stringify(dataJson), createdAt],
+        );
+        break;
+      } catch (error) {
+        lastError = error;
+        const message = error instanceof Error ? error.message : String(error ?? "");
+        const code = typeof error === "object" && error && "code" in error ? String((error as { code?: unknown }).code ?? "") : "";
+        const isSequenceConflict =
+          code === "23505"
+          && /idx_run_events_run_id_sequence/i.test(message);
+        if (!isSequenceConflict || attempt === NeonAppStore.RUN_EVENT_INSERT_MAX_ATTEMPTS) {
+          throw error;
+        }
+      }
+    }
+    if (!insertResult) {
+      throw lastError instanceof Error ? lastError : new Error("Run event insert failed.");
+    }
     const sequence = Number(insertResult.rows[0]?.sequence ?? 1);
     return {
       id,

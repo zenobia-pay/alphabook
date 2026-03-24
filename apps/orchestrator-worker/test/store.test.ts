@@ -156,3 +156,36 @@ test("appendRunEvent uses an atomic insert query for sequence allocation", async
   assert.match(insertQuery!.sql, /INSERT INTO run_events/);
   assert.equal(queries.filter((entry) => entry.sql.includes("INSERT INTO run_events")).length, 1);
 });
+
+test("appendRunEvent retries sequence conflicts from Neon before failing", async () => {
+  let attempts = 0;
+  const db: DbClient = {
+    async query<T = Record<string, unknown>>(sql: string) {
+      if (sql.includes("CREATE TABLE IF NOT EXISTS run_events") || sql.includes("CREATE UNIQUE INDEX IF NOT EXISTS idx_run_events_run_id_sequence") || sql.includes("CREATE INDEX IF NOT EXISTS idx_run_events_run_id_created_at")) {
+        return { rows: [] as T[] };
+      }
+      if (sql.includes("WITH run_lock AS")) {
+        attempts += 1;
+        if (attempts === 1) {
+          const error = new Error('duplicate key value violates unique constraint "idx_run_events_run_id_sequence"') as Error & { code?: string };
+          error.code = "23505";
+          throw error;
+        }
+        return { rows: [{ sequence: 8 }] as T[] };
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+    async end() {},
+  };
+  const store = new NeonAppStore(db);
+
+  const event = await store.appendRunEvent(
+    "11111111-1111-1111-1111-111111111111",
+    "22222222-2222-2222-2222-222222222222",
+    "sprite.shard.started",
+    { shardId: "books-2" },
+  );
+
+  assert.equal(event.sequence, 8);
+  assert.equal(attempts, 2);
+});
