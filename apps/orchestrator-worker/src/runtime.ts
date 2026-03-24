@@ -288,6 +288,26 @@ function isRetryableRuntimeStartupError(error: unknown): boolean {
   );
 }
 
+function isRetryableSpriteLaunchError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const message = error.message.toLowerCase();
+  return (
+    isRetryableRuntimeStartupError(error) ||
+    message.includes("fly api request failed (408)") ||
+    (
+      message.includes("fly api request failed (403)") &&
+      (
+        message.includes("permission_denied") ||
+        message.includes("failed to verify service token") ||
+        message.includes("no verified tokens") ||
+        message.includes("context deadline exceeded")
+      )
+    )
+  );
+}
+
 function sanitizeMachineName(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 55);
 }
@@ -1760,6 +1780,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     let instance: RuntimeInstanceRecord | null = null;
     let progressRelay: ReturnType<FlyMachinesRuntimeGateway["startSpriteShardProgressRelay"]> | null = null;
     let currentManifest: Record<string, unknown> | null = null;
+    const launchAttemptCount = 3;
     const persistShardLifecycle = async (
       runtimeId: string,
       state: SpriteShardLifecycleState,
@@ -1780,99 +1801,155 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     try {
       const progressReporter = options.progressReporter;
       const prepareTimeoutMs = estimateSpritePrepareTimeoutMs(shard);
-      const machine = await this.createMachineWithMetadata(sessionId, {
-        namePrefix: "alphabook-sprite",
-        metadata: {
-          "alphabook.runtime_mode": "sprite-shard",
-          "alphabook.shard_id": shard.shardId,
-        },
-        guest: spriteGuestConfig("shard", this.config),
-      });
-      machineId = machine.id;
-      const runtimeId = machine.id;
-      const workspacePlan = await this.buildSpriteWorkspacePlan(sessionId, runtimeId, shard.workIds, {
-        spriteShard: {
-          implementationId: options.implementationId,
-          shardId: shard.shardId,
-          index: shard.index,
-          totalShards: shard.totalShards,
-          bookCount: shard.bookCount,
-          totalTextBytes: shard.totalTextBytes,
-        },
-      });
-      currentManifest = withSpriteShardLifecycle(workspacePlan.manifest, "starting");
-      await this.store.saveRuntimeInstance({
-        sessionId,
-        runtimeId,
-        provider: "fly-sprites",
-        providerMachineId: machine.id,
-        status: "creating",
-        manifestJson: currentManifest,
-        lastUsedAt: nowIso(),
-        expiresAt: addMinutesIso(HARD_LIMITS.MAX_RUNTIME_IDLE_MINUTES),
-      });
-      instance = await this.requireRuntime(runtimeId);
-      await this.store.appendRunEvent(options.runId, sessionId, "sprite.shard.hydrating", {
-        implementationId: options.implementationId,
-        shardId: shard.shardId,
-        label: shardLabel(shard),
-        state: "hydrating",
-        shardIndex: shard.index,
-        totalShards: shard.totalShards,
-        bookCount: shard.bookCount,
-        runtimeId,
-      });
-      await safeReportProgress(progressReporter, `Loading books for ${shardLabel(shard).toLowerCase()}.`, {
-        type: "sprite.shard_state",
-        researchMode: "sprite_fanout",
-        shardId: shard.shardId,
-        shardLabel: shardLabel(shard),
-        shardIndex: shard.index,
-        totalShards: shard.totalShards,
-        bookCount: shard.bookCount,
-        runtimeId,
-        state: "hydrating",
-      });
-      await persistShardLifecycle(runtimeId, "hydrating");
-      await this.waitForMachine(machine.id, "started");
-      await this.waitForRuntimeHttpReady(machine.id);
-      await this.prepareWorkspace(machine.id, {
-        runtimeId,
-        sessionId,
-        works: currentManifest.works,
-        dataSchema: currentManifest.dataSchema,
-        fileCatalog: currentManifest.fileCatalog,
-        selectedChunkIds: [],
-        selectedChunks: [],
-        taskContext: currentManifest.taskContext,
-        downloads: workspacePlan.downloads,
-      }, { timeoutMs: prepareTimeoutMs });
-      await persistShardLifecycle(runtimeId, "ready");
-      await this.store.appendRunEvent(options.runId, sessionId, "sprite.shard.ready", {
-        implementationId: options.implementationId,
-        shardId: shard.shardId,
-        label: shardLabel(shard),
-        state: "ready",
-        shardIndex: shard.index,
-        totalShards: shard.totalShards,
-        bookCount: shard.bookCount,
-        runtimeId,
-      });
-      await safeReportProgress(
-        progressReporter,
-        `Loaded the books for ${shardLabel(shard).toLowerCase()}. Starting the search now.`,
-        {
-          type: "sprite.shard_state",
-          researchMode: "sprite_fanout",
-          shardId: shard.shardId,
-          shardLabel: shardLabel(shard),
-          shardIndex: shard.index,
-          totalShards: shard.totalShards,
-          bookCount: shard.bookCount,
-          runtimeId,
-          state: "ready",
-        },
-      );
+      let lastLaunchError: unknown = null;
+      for (let attempt = 1; attempt <= launchAttemptCount; attempt += 1) {
+        let attemptMachineId: string | null = null;
+        let attemptInstance: RuntimeInstanceRecord | null = null;
+        try {
+          const machine = await this.createMachineWithMetadata(sessionId, {
+            namePrefix: "alphabook-sprite",
+            metadata: {
+              "alphabook.runtime_mode": "sprite-shard",
+              "alphabook.shard_id": shard.shardId,
+            },
+            guest: spriteGuestConfig("shard", this.config),
+          });
+          attemptMachineId = machine.id;
+          const runtimeId = machine.id;
+          const workspacePlan = await this.buildSpriteWorkspacePlan(sessionId, runtimeId, shard.workIds, {
+            spriteShard: {
+              implementationId: options.implementationId,
+              shardId: shard.shardId,
+              index: shard.index,
+              totalShards: shard.totalShards,
+              bookCount: shard.bookCount,
+              totalTextBytes: shard.totalTextBytes,
+            },
+          });
+          currentManifest = withSpriteShardLifecycle(workspacePlan.manifest, "starting");
+          await this.store.saveRuntimeInstance({
+            sessionId,
+            runtimeId,
+            provider: "fly-sprites",
+            providerMachineId: machine.id,
+            status: "creating",
+            manifestJson: currentManifest,
+            lastUsedAt: nowIso(),
+            expiresAt: addMinutesIso(HARD_LIMITS.MAX_RUNTIME_IDLE_MINUTES),
+          });
+          attemptInstance = await this.requireRuntime(runtimeId);
+          machineId = machine.id;
+          instance = attemptInstance;
+          await this.store.appendRunEvent(options.runId, sessionId, "sprite.shard.hydrating", {
+            implementationId: options.implementationId,
+            shardId: shard.shardId,
+            label: shardLabel(shard),
+            state: "hydrating",
+            shardIndex: shard.index,
+            totalShards: shard.totalShards,
+            bookCount: shard.bookCount,
+            runtimeId,
+          });
+          await safeReportProgress(progressReporter, `Loading books for ${shardLabel(shard).toLowerCase()}.`, {
+            type: "sprite.shard_state",
+            researchMode: "sprite_fanout",
+            shardId: shard.shardId,
+            shardLabel: shardLabel(shard),
+            shardIndex: shard.index,
+            totalShards: shard.totalShards,
+            bookCount: shard.bookCount,
+            runtimeId,
+            state: "hydrating",
+          });
+          await persistShardLifecycle(runtimeId, "hydrating");
+          await this.waitForMachine(machine.id, "started");
+          await this.waitForRuntimeHttpReady(machine.id);
+          await this.prepareWorkspace(machine.id, {
+            runtimeId,
+            sessionId,
+            works: currentManifest.works,
+            dataSchema: currentManifest.dataSchema,
+            fileCatalog: currentManifest.fileCatalog,
+            selectedChunkIds: [],
+            selectedChunks: [],
+            taskContext: currentManifest.taskContext,
+            downloads: workspacePlan.downloads,
+          }, { timeoutMs: prepareTimeoutMs });
+          await persistShardLifecycle(runtimeId, "ready");
+          await this.store.appendRunEvent(options.runId, sessionId, "sprite.shard.ready", {
+            implementationId: options.implementationId,
+            shardId: shard.shardId,
+            label: shardLabel(shard),
+            state: "ready",
+            shardIndex: shard.index,
+            totalShards: shard.totalShards,
+            bookCount: shard.bookCount,
+            runtimeId,
+          });
+          await safeReportProgress(
+            progressReporter,
+            `Loaded the books for ${shardLabel(shard).toLowerCase()}. Starting the search now.`,
+            {
+              type: "sprite.shard_state",
+              researchMode: "sprite_fanout",
+              shardId: shard.shardId,
+              shardLabel: shardLabel(shard),
+              shardIndex: shard.index,
+              totalShards: shard.totalShards,
+              bookCount: shard.bookCount,
+              runtimeId,
+              state: "ready",
+            },
+          );
+          break;
+        } catch (error) {
+          lastLaunchError = error;
+          if (attemptInstance) {
+            await this.store.updateRuntimeInstance(attemptInstance.runtimeId, {
+              status: "failed",
+              lastUsedAt: nowIso(),
+              expiresAt: addMinutesIso(HARD_LIMITS.MAX_RUNTIME_IDLE_MINUTES),
+            }).catch(() => {});
+          }
+          if (attemptInstance) {
+            await this.destroyWorkspace({
+              runtimeId: attemptInstance.runtimeId,
+              sessionId,
+            }).catch(() => {});
+          } else if (attemptMachineId) {
+            await this.deleteMachine(attemptMachineId).catch(() => {});
+          }
+          machineId = null;
+          instance = null;
+          currentManifest = null;
+          if (attempt >= launchAttemptCount || !isRetryableSpriteLaunchError(error)) {
+            throw error;
+          }
+          await safeReportProgress(
+            progressReporter,
+            `${shardLabel(shard)} hit a startup delay. Retrying.`,
+            {
+              type: "sprite.shard_state",
+              researchMode: "sprite_fanout",
+              shardId: shard.shardId,
+              shardLabel: shardLabel(shard),
+              shardIndex: shard.index,
+              totalShards: shard.totalShards,
+              bookCount: shard.bookCount,
+              state: "starting",
+              retrying: true,
+              attempt,
+            },
+          );
+          await new Promise((resolve) => setTimeout(resolve, attempt * 1_500));
+        }
+      }
+      if (!instance || !machineId) {
+        throw lastLaunchError instanceof Error
+          ? lastLaunchError
+          : new Error(`Failed to launch ${shardLabel(shard)}.`);
+      }
+      const runtimeId = instance.runtimeId;
       progressRelay = this.startSpriteShardProgressRelay(
         instance,
         shard,
