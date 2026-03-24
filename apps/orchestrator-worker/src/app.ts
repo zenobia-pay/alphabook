@@ -4011,7 +4011,12 @@ function fallbackNormalizeToolLines(lines: ToolStreamCleanupLine[]): string[] {
     }
     const previous = normalized[normalized.length - 1];
     const isShortOrVague = value.length < 28 || /^(starting|working|running|loading|checking|reviewing|searching)\b/iu.test(value);
-    if (previous && isShortOrVague && previous.length < 160) {
+    const shouldKeepSeparate =
+      line.toolName === "run_workspace_task"
+      || line.key.startsWith("research.")
+      || line.key.startsWith("codex.")
+      || line.key === "progress";
+    if (!shouldKeepSeparate && previous && isShortOrVague && previous.length < 160) {
       normalized[normalized.length - 1] = `${previous} ${value}`.trim();
       continue;
     }
@@ -9308,7 +9313,7 @@ async function runOrchestrator(
         workIds: Array.isArray(input.workIds) ? input.workIds : [],
       },
     });
-    const rationale = "I’m fanning out the search across fixed Sprite shards and aggregating the shard briefings into one cited answer.";
+    const rationale = "I’m running a broad search across many parts of the library and combining the strongest passages into one answer.";
     const toolRecord = await deps.store.startToolCall(run.id, "run_workspace_task", normalizedToolArgs);
     await ensureInitialPlanSent(input.message);
     recordRawLog("tool.started.raw", {

@@ -576,7 +576,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     const intensity = normalizeSpriteIntensity(args.intensity);
     const progressReporter = args.progressReporter;
 
-    await progressReporter?.("Loading the Sprite shard catalog.", {
+    await progressReporter?.("Planning a broad search across the library.", {
       type: "research.note",
       researchMode: "sprite_fanout",
       implementationId,
@@ -587,7 +587,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
       shardCount: catalog.shardCount,
       shardSize: catalog.shardSize,
     });
-    await progressReporter?.(`Loaded ${catalog.shardCount} Sprite shards.`, {
+    await progressReporter?.(`Prepared ${catalog.shardCount} search groups for a broad pass across the library.`, {
       type: "research.note",
       researchMode: "sprite_fanout",
       implementationId,
@@ -606,7 +606,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
 
     const concurrency = spriteConcurrencyForIntensity(intensity, selectedShards.length);
     await progressReporter?.(
-      `Launching ${selectedShards.length} Sprite shard searches with concurrency ${concurrency}.`,
+      `Starting a broad search across ${selectedShards.length} parts of the library.`,
       {
         type: "research.note",
         researchMode: "sprite_fanout",
@@ -623,7 +623,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
         label,
         bookCount: shard.bookCount,
       });
-      await progressReporter?.(`Starting ${label} over ${shard.bookCount} books.`, {
+      await progressReporter?.(`Searching part ${shard.index + 1} of ${shard.totalShards} across about ${shard.bookCount} books.`, {
         type: "research.note",
         researchMode: "sprite_fanout",
         shardId: shard.shardId,
@@ -642,8 +642,8 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
       });
       await progressReporter?.(
         result.ok
-          ? `${label} completed with ${Array.isArray(result.citations) ? result.citations.length : 0} citations.`
-          : `${label} failed${typeof result.error === "string" ? `: ${result.error}` : "."}`,
+          ? `Finished part ${shard.index + 1} of ${shard.totalShards} and found ${Array.isArray(result.citations) ? result.citations.length : 0} supporting passages.`
+          : `Part ${shard.index + 1} of ${shard.totalShards} took too long and had to stop.`,
         {
           type: "research.note",
           researchMode: "sprite_fanout",
@@ -658,10 +658,10 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
 
     const successfulShards = shardResults.filter((result) => result.ok);
     if (successfulShards.length === 0) {
-      throw new Error("Sprite fanout search failed because no shard searches completed successfully.");
+      throw new Error("This broad search took too long across every part of the library, so it stopped before it could write an answer.");
     }
 
-    await progressReporter?.("Starting the aggregator runtime.", {
+    await progressReporter?.("Combining the strongest passages into one answer.", {
       type: "research.note",
       researchMode: "sprite_fanout",
       successfulShardCount: successfulShards.length,
