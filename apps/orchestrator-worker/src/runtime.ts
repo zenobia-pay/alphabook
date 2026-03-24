@@ -15,6 +15,7 @@ interface ToolExecutionContext {
 
 type RuntimeToolArgs = Record<string, unknown> & Partial<ToolExecutionContext>;
 type ProgressReporter = (text: string, detail?: Record<string, unknown>) => Promise<void>;
+const PROGRESS_REPORT_TIMEOUT_MS = 1_500;
 
 interface WorkspaceDownload {
   r2Key: string;
@@ -89,6 +90,22 @@ function spriteConcurrencyForIntensity(intensity: "normal" | "high" | "maximum",
 
 function shardLabel(shard: SpriteShardManifest): string {
   return `Sprite ${shard.index + 1}/${shard.totalShards}`;
+}
+
+async function safeReportProgress(
+  progressReporter: ProgressReporter | undefined,
+  text: string,
+  detail?: Record<string, unknown>,
+) {
+  if (!progressReporter) {
+    return;
+  }
+  await Promise.race([
+    progressReporter(text, detail).catch(() => {}),
+    new Promise<void>((resolve) => {
+      setTimeout(resolve, PROGRESS_REPORT_TIMEOUT_MS);
+    }),
+  ]);
 }
 
 function normalizeSpriteProgressMessage(event: Record<string, unknown>, shard: SpriteShardManifest): string | null {
@@ -642,7 +659,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     const intensity = normalizeSpriteIntensity(args.intensity);
     const progressReporter = args.progressReporter;
 
-    await progressReporter?.("Planning a broad search across the library.", {
+    await safeReportProgress(progressReporter, "Planning a broad search across the library.", {
       type: "research.note",
       researchMode: "sprite_fanout",
       implementationId,
@@ -653,7 +670,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
       shardCount: catalog.shardCount,
       shardSize: catalog.shardSize,
     });
-    await progressReporter?.(`Prepared ${catalog.shardCount} search groups for a broad pass across the library.`, {
+    await safeReportProgress(progressReporter, `Prepared ${catalog.shardCount} search groups for a broad pass across the library.`, {
       type: "research.note",
       researchMode: "sprite_fanout",
       implementationId,
@@ -671,7 +688,8 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     }
 
     const concurrency = spriteConcurrencyForIntensity(intensity, selectedShards.length);
-    await progressReporter?.(
+    await safeReportProgress(
+      progressReporter,
       `Starting a broad search across ${selectedShards.length} parts of the library.`,
       {
         type: "research.note",
@@ -689,7 +707,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
         label,
         bookCount: shard.bookCount,
       });
-      await progressReporter?.(`Searching part ${shard.index + 1} of ${shard.totalShards} across about ${shard.bookCount} books.`, {
+      await safeReportProgress(progressReporter, `Searching part ${shard.index + 1} of ${shard.totalShards} across about ${shard.bookCount} books.`, {
         type: "research.note",
         researchMode: "sprite_fanout",
         shardId: shard.shardId,
@@ -708,7 +726,8 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
         label,
         ...(result.ok ? { citationCount: Array.isArray(result.citations) ? result.citations.length : 0 } : { error: result.error }),
       });
-      await progressReporter?.(
+      await safeReportProgress(
+        progressReporter,
         result.ok
           ? `Finished part ${shard.index + 1} of ${shard.totalShards} and found ${Array.isArray(result.citations) ? result.citations.length : 0} supporting passages.`
           : `Part ${shard.index + 1} of ${shard.totalShards} took too long and had to stop.`,
@@ -729,7 +748,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
       throw new Error("This broad search took too long across every part of the library, so it stopped before it could write an answer.");
     }
 
-    await progressReporter?.("Combining the strongest passages into one answer.", {
+    await safeReportProgress(progressReporter, "Combining the strongest passages into one answer.", {
       type: "research.note",
       researchMode: "sprite_fanout",
       successfulShardCount: successfulShards.length,
@@ -1489,7 +1508,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
             if (!message) {
               continue;
             }
-            await progressReporter?.(message, {
+            await safeReportProgress(progressReporter, message, {
               type: "research.note",
               researchMode: "sprite_fanout",
               phase: "search_progress",
@@ -1517,7 +1536,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
           if (!line) {
             continue;
           }
-          await progressReporter?.(line, {
+          await safeReportProgress(progressReporter, line, {
             type: "research.briefing_line",
             line,
             lineIndex: index,
@@ -1620,7 +1639,8 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
         label: shardLabel(shard),
         bookCount: shard.bookCount,
       });
-      await progressReporter?.(
+      await safeReportProgress(
+        progressReporter,
         `Loaded the books for part ${shard.index + 1} of ${shard.totalShards}. Starting the search now.`,
         {
           type: "research.note",
