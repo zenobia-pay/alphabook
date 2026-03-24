@@ -26,7 +26,7 @@ import { FallbackPlanner, parseToolCall } from "./planner";
 import type { Router } from "./router";
 import { cleanupToolStreamWithWorkersAi, type ToolStreamCleanupLine } from "./tool-stream-cleanup";
 import type { Synthesizer, ToolHistoryEntry } from "./synthesizer";
-import type { AgentIdentityRecord, AnalyticsEventRecord, AppStore, MessageRecord, NotificationRecord, PassageSearchFilters, SessionRecord, UserRecord, WorkDetailRecord } from "./store";
+import type { AgentIdentityRecord, AnalyticsEventRecord, AppStore, MessageRecord, NotificationRecord, PassageSearchFilters, RunRecord, SessionRecord, UserRecord, WorkDetailRecord } from "./store";
 import type { WorkersAiBinding } from "./index";
 import { parseModelJsonObject } from "./json";
 
@@ -5736,29 +5736,137 @@ async function trackRuntimeBillingEvents(
   }
 }
 
+function createdWithinRunWindow(
+  createdAt: string | null | undefined,
+  startedAt: string,
+  completedAt?: string | null,
+  nextRunStartedAt?: string | null,
+) {
+  const createdMs = typeof createdAt === "string" ? Date.parse(createdAt) : Number.NaN;
+  const startedMs = Date.parse(startedAt);
+  if (!Number.isFinite(createdMs) || !Number.isFinite(startedMs) || createdMs < startedMs) {
+    return false;
+  }
+  const candidateEnds = [completedAt, nextRunStartedAt]
+    .filter((value): value is string => typeof value === "string" && value.length > 0)
+    .map((value) => Date.parse(value))
+    .filter((value) => Number.isFinite(value));
+  if (candidateEnds.length === 0) {
+    return true;
+  }
+  return createdMs < Math.min(...candidateEnds);
+}
+
+function runtimeLooksSpriteRelated(instance: Awaited<ReturnType<AppStore["listRuntimeInstances"]>>[number]) {
+  const taskContext = instance.manifestJson?.taskContext;
+  if (!taskContext || typeof taskContext !== "object") {
+    return false;
+  }
+  const record = taskContext as Record<string, unknown>;
+  return (
+    typeof record.researchMode === "string" && record.researchMode === "sprite_fanout"
+  ) || (
+    record.spriteShard && typeof record.spriteShard === "object"
+  ) || (
+    record.aggregator === true
+  );
+}
+
+function toolCallUsesSpriteFanout(toolCall: Awaited<ReturnType<AppStore["listToolCalls"]>>[number]) {
+  const taskSpec = toolCall.argsJson?.taskSpec;
+  return Boolean(
+    taskSpec
+    && typeof taskSpec === "object"
+    && (
+      (taskSpec as Record<string, unknown>).mode === "sprite_fanout"
+      || (taskSpec as Record<string, unknown>).mode === "sprite_shard_search"
+      || (taskSpec as Record<string, unknown>).mode === "sprite_aggregate"
+    ),
+  );
+}
+
+function addRuntimeIdsFromValue(runtimeIds: Set<string>, value: unknown, depth = 0) {
+  if (depth > 4 || value === null || value === undefined) {
+    return;
+  }
+  if (typeof value === "string") {
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      addRuntimeIdsFromValue(runtimeIds, entry, depth + 1);
+    }
+    return;
+  }
+  if (typeof value !== "object") {
+    return;
+  }
+  const record = value as Record<string, unknown>;
+  addRuntimeIds(runtimeIds, record);
+  if (typeof record.aggregatorRuntimeId === "string" && record.aggregatorRuntimeId.length > 0) {
+    runtimeIds.add(record.aggregatorRuntimeId);
+  }
+  if (Array.isArray(record.shardResults)) {
+    for (const shardResult of record.shardResults) {
+      addRuntimeIdsFromValue(runtimeIds, shardResult, depth + 1);
+    }
+  }
+}
+
+async function resolveRunRuntimeContext(
+  deps: AppDeps,
+  sessionId: string,
+  run: RunRecord,
+  toolCalls: Awaited<ReturnType<AppStore["listToolCalls"]>>,
+) {
+  const [sessionRuns, runtimeInstances, runEvents] = await Promise.all([
+    deps.store.listRuns(sessionId),
+    deps.store.listRuntimeInstances(sessionId),
+    deps.store.listRunEvents(run.id),
+  ]);
+  const runtimeIds = new Set<string>();
+  for (const toolCall of toolCalls) {
+    addRuntimeIdsFromValue(runtimeIds, toolCall.argsJson);
+    addRuntimeIdsFromValue(runtimeIds, toolCall.resultJson);
+  }
+  for (const runEvent of runEvents) {
+    addRuntimeIdsFromValue(runtimeIds, runEvent.dataJson);
+  }
+  const nextRunStartedAt = sessionRuns
+    .filter((candidate) => candidate.id !== run.id && Date.parse(candidate.startedAt) > Date.parse(run.startedAt))
+    .sort((left, right) => Date.parse(left.startedAt) - Date.parse(right.startedAt))[0]?.startedAt ?? null;
+  const spriteRun = toolCalls.some(toolCallUsesSpriteFanout) || runEvents.some((event) => event.event.startsWith("sprite."));
+  const relatedRuntimeInstances = runtimeInstances.filter((instance) => {
+    if (runtimeIds.has(instance.runtimeId)) {
+      return true;
+    }
+    if (!spriteRun || !runtimeLooksSpriteRelated(instance)) {
+      return false;
+    }
+    return createdWithinRunWindow(instance.createdAt, run.startedAt, run.completedAt, nextRunStartedAt);
+  });
+  for (const runtime of relatedRuntimeInstances) {
+    runtimeIds.add(runtime.runtimeId);
+  }
+  return {
+    runEvents,
+    runtimeIds: Array.from(runtimeIds),
+    runtimeInstances: relatedRuntimeInstances,
+  };
+}
+
 async function loadRunArtifacts(
   deps: AppDeps,
   sessionId: string,
   runId: string,
-  toolCalls: Awaited<ReturnType<AppStore["listToolCalls"]>>,
+  runtimeIds: string[],
 ) {
-  const runtimeIds = new Set<string>();
-  for (const toolCall of toolCalls) {
-    const result = toolCall.resultJson;
-    const args = toolCall.argsJson;
-    if (typeof result?.runtimeId === "string") {
-      runtimeIds.add(result.runtimeId);
-    }
-    if (typeof args?.runtimeId === "string") {
-      runtimeIds.add(args.runtimeId);
-    }
-  }
-
+  const runtimeIdSet = new Set(runtimeIds);
   const artifacts = await deps.store.listArtifacts(sessionId);
   const filtered = artifacts.filter((artifact) =>
     artifact.runtimeId === null
       ? artifact.filename.includes(runId)
-      : runtimeIds.has(artifact.runtimeId),
+      : runtimeIdSet.has(artifact.runtimeId),
   );
   const hydrated = await Promise.all(
     filtered.map(async (artifact) => ({
@@ -5775,25 +5883,14 @@ async function loadRunArtifactSummaries(
   deps: AppDeps,
   sessionId: string,
   runId: string,
-  toolCalls: Awaited<ReturnType<AppStore["listToolCalls"]>>,
+  runtimeIds: string[],
 ) {
-  const runtimeIds = new Set<string>();
-  for (const toolCall of toolCalls) {
-    const result = toolCall.resultJson;
-    const args = toolCall.argsJson;
-    if (typeof result?.runtimeId === "string") {
-      runtimeIds.add(result.runtimeId);
-    }
-    if (typeof args?.runtimeId === "string") {
-      runtimeIds.add(args.runtimeId);
-    }
-  }
-
+  const runtimeIdSet = new Set(runtimeIds);
   const artifacts = await deps.store.listArtifacts(sessionId);
   return artifacts.filter((artifact) =>
     artifact.runtimeId === null
       ? artifact.filename.includes(runId)
-      : runtimeIds.has(artifact.runtimeId),
+      : runtimeIdSet.has(artifact.runtimeId),
   );
 }
 
@@ -11433,12 +11530,11 @@ export function createApp(inputDeps: CreateAppInput) {
       return c.json({ error: "Run not found." }, 404);
     }
     const toolCalls = await deps.store.listToolCalls(runId);
-    const [runtimeInstances, persistedPlanState, artifacts] = await Promise.all([
-      deps.store.listRuntimeInstances(sessionId),
+    const [{ runtimeInstances, runEvents, runtimeIds }, persistedPlanState] = await Promise.all([
+      resolveRunRuntimeContext(deps, sessionId, run, toolCalls),
       readPersistedPlanMessageStateForRun(deps, sessionId, runId),
-      loadRunArtifactSummaries(deps, sessionId, runId, toolCalls),
     ]);
-    const runEvents = await deps.store.listRecentRunEvents(runId, 200);
+    const artifacts = await loadRunArtifactSummaries(deps, sessionId, runId, runtimeIds);
     const toolTrace = runEvents.length > 0
       ? persistedPlanState.toolTrace
       : mergeRecoveredTraceWithExisting(
@@ -11472,11 +11568,11 @@ export function createApp(inputDeps: CreateAppInput) {
       return c.json({ error: "Run not found." }, 404);
     }
     const toolCalls = await deps.store.listToolCalls(runId);
-    const [persistedPlanState, artifacts] = await Promise.all([
+    const [{ runEvents, runtimeIds }, persistedPlanState] = await Promise.all([
+      resolveRunRuntimeContext(deps, sessionId, run, toolCalls),
       readPersistedPlanMessageStateForRun(deps, sessionId, runId),
-      loadRunArtifactSummaries(deps, sessionId, runId, toolCalls),
     ]);
-    const runEvents = await deps.store.listRecentRunEvents(runId, 200);
+    const artifacts = await loadRunArtifactSummaries(deps, sessionId, runId, runtimeIds);
     const toolTrace = runEvents.length > 0
       ? persistedPlanState.toolTrace
       : mergeRecoveredTraceWithExisting(
@@ -11509,12 +11605,11 @@ export function createApp(inputDeps: CreateAppInput) {
       return c.json({ error: "Run not found." }, 404);
     }
     const toolCalls = await deps.store.listToolCalls(runId);
-    const [runtimeInstances, persistedPlanState, artifacts] = await Promise.all([
-      deps.store.listRuntimeInstances(sessionId),
+    const [{ runtimeInstances, runEvents, runtimeIds }, persistedPlanState] = await Promise.all([
+      resolveRunRuntimeContext(deps, sessionId, run, toolCalls),
       readPersistedPlanMessageStateForRun(deps, sessionId, runId),
-      loadRunArtifactSummaries(deps, sessionId, runId, toolCalls),
     ]);
-    const runEvents = await deps.store.listRecentRunEvents(runId, 200);
+    const artifacts = await loadRunArtifactSummaries(deps, sessionId, runId, runtimeIds);
     const toolTrace = runEvents.length > 0
       ? persistedPlanState.toolTrace
       : mergeRecoveredTraceWithExisting(
@@ -11548,11 +11643,11 @@ export function createApp(inputDeps: CreateAppInput) {
       return c.json({ error: "Run not found." }, 404);
     }
     const toolCalls = await deps.store.listToolCalls(runId);
-    const [persistedPlanState, artifacts] = await Promise.all([
+    const [{ runEvents, runtimeIds }, persistedPlanState] = await Promise.all([
+      resolveRunRuntimeContext(deps, sessionId, run, toolCalls),
       readPersistedPlanMessageStateForRun(deps, sessionId, runId),
-      loadRunArtifactSummaries(deps, sessionId, runId, toolCalls),
     ]);
-    const runEvents = await deps.store.listRecentRunEvents(runId, 200);
+    const artifacts = await loadRunArtifactSummaries(deps, sessionId, runId, runtimeIds);
     const toolTrace = runEvents.length > 0
       ? persistedPlanState.toolTrace
       : mergeRecoveredTraceWithExisting(
@@ -11592,7 +11687,8 @@ export function createApp(inputDeps: CreateAppInput) {
     const rawLogByRun = Object.fromEntries(
       await Promise.all(
         runs.map(async (run) => {
-          const runArtifacts = await loadRunArtifacts(deps, sessionId, run.id, toolCallsByRun[run.id] ?? []);
+          const { runtimeIds } = await resolveRunRuntimeContext(deps, sessionId, run, toolCallsByRun[run.id] ?? []);
+          const runArtifacts = await loadRunArtifacts(deps, sessionId, run.id, runtimeIds);
           return [run.id, resolveRunRawLog(activeRuns, run.id, runArtifacts)];
         }),
       ),
@@ -11624,28 +11720,27 @@ export function createApp(inputDeps: CreateAppInput) {
     if (!run || run.sessionId !== sessionId) {
       return c.json({ error: "Run not found." }, 404);
     }
-    const [messages, toolCalls, runtimeInstances, artifacts] = await Promise.all([
+    const [messages, toolCalls] = await Promise.all([
       deps.store.listMessages(sessionId),
       deps.store.listToolCalls(runId),
-      deps.store.listRuntimeInstances(sessionId),
-      deps.store.listArtifacts(sessionId),
     ]);
-    const rawLog = resolveRunRawLog(activeRuns, runId,
-      artifacts.filter((artifact) =>
-        artifact.metadata?.kind === "tool_stream_raw" && artifact.filename.includes(runId),
-      ),
-    );
+    const runContext = await resolveRunRuntimeContext(deps, sessionId, run, toolCalls);
+    const artifacts = await loadRunArtifacts(deps, sessionId, runId, runContext.runtimeIds);
+    const rawLog = resolveRunRawLog(activeRuns, runId, artifacts);
     const metrics = extractRecordedRunMetrics(rawLog);
+    const liveRuntime = await loadLiveRuntimeLogs(deps, sessionId, runId, runContext.runtimeIds);
 
     return c.json({
       session,
       run,
       messages,
       toolCalls,
-      runtimeInstances,
+      runtimeInstances: runContext.runtimeInstances,
+      runEvents: runContext.runEvents,
       artifacts,
       rawLog,
       metrics,
+      liveRuntime,
     });
   });
 
@@ -11664,24 +11759,27 @@ export function createApp(inputDeps: CreateAppInput) {
     if (!run || run.sessionId !== sessionId) {
       return c.json({ error: "Run not found." }, 404);
     }
-    const [messages, toolCalls, runtimeInstances] = await Promise.all([
+    const [messages, toolCalls] = await Promise.all([
       deps.store.listMessages(sessionId),
       deps.store.listToolCalls(runId),
-      deps.store.listRuntimeInstances(sessionId),
     ]);
-    const artifacts = await loadRunArtifacts(deps, sessionId, runId, toolCalls);
+    const runContext = await resolveRunRuntimeContext(deps, sessionId, run, toolCalls);
+    const artifacts = await loadRunArtifacts(deps, sessionId, runId, runContext.runtimeIds);
     const rawLog = resolveRunRawLog(activeRuns, runId, artifacts);
     const metrics = extractRecordedRunMetrics(rawLog);
+    const liveRuntime = await loadLiveRuntimeLogs(deps, sessionId, runId, runContext.runtimeIds);
 
     return c.json({
       session,
       run,
       messages,
       toolCalls,
-      runtimeInstances,
+      runtimeInstances: runContext.runtimeInstances,
+      runEvents: runContext.runEvents,
       artifacts,
       rawLog,
       metrics,
+      liveRuntime,
     });
   });
 
@@ -11700,24 +11798,27 @@ export function createApp(inputDeps: CreateAppInput) {
     if (!run || run.sessionId !== sessionId) {
       return c.json({ error: "Run not found." }, 404);
     }
-    const [messages, toolCalls, runtimeInstances] = await Promise.all([
+    const [messages, toolCalls] = await Promise.all([
       deps.store.listMessages(sessionId),
       deps.store.listToolCalls(runId),
-      deps.store.listRuntimeInstances(sessionId),
     ]);
-    const artifacts = await loadRunArtifacts(deps, sessionId, runId, toolCalls);
+    const runContext = await resolveRunRuntimeContext(deps, sessionId, run, toolCalls);
+    const artifacts = await loadRunArtifacts(deps, sessionId, runId, runContext.runtimeIds);
     const rawLog = resolveRunRawLog(activeRuns, runId, artifacts);
     const metrics = extractRecordedRunMetrics(rawLog);
+    const liveRuntime = await loadLiveRuntimeLogs(deps, sessionId, runId, runContext.runtimeIds);
 
     return c.json({
       session,
       run,
       messages,
       toolCalls,
-      runtimeInstances,
+      runtimeInstances: runContext.runtimeInstances,
+      runEvents: runContext.runEvents,
       artifacts,
       rawLog,
       metrics,
+      liveRuntime,
     });
   });
 
@@ -11737,15 +11838,15 @@ export function createApp(inputDeps: CreateAppInput) {
       return c.json({ error: "Session not found." }, 404);
     }
 
-    const [messages, toolCalls, runtimeInstances, owner] = await Promise.all([
+    const [messages, toolCalls, owner] = await Promise.all([
       deps.store.listMessages(session.id),
       deps.store.listToolCalls(runId),
-      deps.store.listRuntimeInstances(session.id),
       deps.store.getUserProfile(session.userId),
     ]);
-    const artifacts = await loadRunArtifacts(deps, session.id, runId, toolCalls);
+    const runContext = await resolveRunRuntimeContext(deps, session.id, run, toolCalls);
+    const artifacts = await loadRunArtifacts(deps, session.id, runId, runContext.runtimeIds);
     const rawLog = parseRawRunLogEntries(artifacts);
-    const liveRuntime = await loadLiveRuntimeLogs(deps, session.id, runId, collectRuntimeIds(toolCalls));
+    const liveRuntime = await loadLiveRuntimeLogs(deps, session.id, runId, runContext.runtimeIds);
 
     return c.json({
       requestedBy: {
@@ -11758,7 +11859,8 @@ export function createApp(inputDeps: CreateAppInput) {
       run,
       messages,
       toolCalls,
-      runtimeInstances,
+      runtimeInstances: runContext.runtimeInstances,
+      runEvents: runContext.runEvents,
       artifacts,
       rawLog,
       liveRuntime,

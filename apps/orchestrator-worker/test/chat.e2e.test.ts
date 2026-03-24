@@ -3175,6 +3175,176 @@ test("run details endpoint recovers a completed run answer from a persisted brie
   assert.equal(payload.messages[1]?.metadata.runId, run.id);
 });
 
+test("run debug and logs endpoints include child sprite runtime logs and artifacts", async () => {
+  const store = new InMemoryAppStore();
+  const blobStore = new MemoryBlobStore();
+  const session = await store.createSession("reader-user", "Sprite debug");
+  await store.appendMessage(session.id, "user", "Find grief patterns.");
+  const run = await store.createRun(session.id);
+  const toolCall = await store.startToolCall(run.id, "run_workspace_task", {
+    runtimeId: `sprite-fanout:${run.id}`,
+    taskSpec: {
+      kind: "sprite_fanout_research",
+      mode: "sprite_fanout",
+      phase: "collect_and_brief",
+      question: "Find grief patterns.",
+      researchObjective: "Find grief patterns.",
+    },
+  });
+  await store.appendRunEvent(run.id, session.id, "sprite.catalog.loaded", {
+    shardCount: 2,
+    shardSize: 1000,
+  });
+  const startedAt = new Date(Date.now() + 50).toISOString();
+  await store.saveRuntimeInstance({
+    sessionId: session.id,
+    runtimeId: "shard-runtime-1",
+    provider: "fly-sprites",
+    providerMachineId: "machine-1",
+    status: "ready",
+    manifestJson: {
+      taskContext: {
+        researchMode: "sprite_fanout",
+        spriteShard: {
+          shardId: "books-1",
+          index: 0,
+          totalShards: 2,
+        },
+      },
+    },
+    lastUsedAt: startedAt,
+    expiresAt: startedAt,
+    createdAt: startedAt,
+  });
+  await store.saveRuntimeInstance({
+    sessionId: session.id,
+    runtimeId: "aggregate-runtime-1",
+    provider: "fly-sprites",
+    providerMachineId: "machine-2",
+    status: "ready",
+    manifestJson: {
+      taskContext: {
+        researchMode: "sprite_fanout",
+        aggregator: true,
+      },
+    },
+    lastUsedAt: startedAt,
+    expiresAt: startedAt,
+    createdAt: startedAt,
+  });
+  await store.saveArtifact({
+    sessionId: session.id,
+    runtimeId: "shard-runtime-1",
+    r2Key: artifactKeys.runtimeArtifact("shard-runtime-1", "codex-progress.jsonl"),
+    filename: "codex-progress.jsonl",
+    mimeType: "application/json",
+    metadata: {
+      kind: "runtime-output",
+    },
+  });
+  blobStore.seed(
+    artifactKeys.runtimeArtifact("shard-runtime-1", "codex-progress.jsonl"),
+    `${JSON.stringify({ type: "codex.stdout", message: "Shard is searching." })}\n`,
+  );
+  await store.saveArtifact({
+    sessionId: session.id,
+    runtimeId: "aggregate-runtime-1",
+    r2Key: artifactKeys.runtimeArtifact("aggregate-runtime-1", "briefing.md"),
+    filename: "briefing.md",
+    mimeType: "text/markdown",
+    metadata: {
+      kind: "runtime-output",
+    },
+  });
+  blobStore.seed(
+    artifactKeys.runtimeArtifact("aggregate-runtime-1", "briefing.md"),
+    "# Final briefing\n\nQuoted answer.",
+  );
+  await store.finishToolCall(toolCall.id, "completed", {
+    ok: true,
+    runtimeId: "aggregate-runtime-1",
+    briefing: "Quoted answer.",
+    citations: [],
+  });
+  await store.updateRun(run.id, {
+    status: "completed",
+    completedAt: new Date(Date.now() + 100).toISOString(),
+  });
+
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore,
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+      async runWorkspaceTask() {
+        return { ok: false, error: "disabled" };
+      },
+      async readWorkspaceFile(args) {
+        if (args.runtimeId === "shard-runtime-1" && args.path === "output/codex-progress.jsonl") {
+          return { path: args.path, content: "{\"type\":\"codex.stdout\",\"message\":\"Shard is searching.\"}\n", size: 54 };
+        }
+        if (args.runtimeId === "aggregate-runtime-1" && args.path === "output/briefing.md") {
+          return { path: args.path, content: "# Final briefing\n\nQuoted answer.", size: 31 };
+        }
+        return { path: args.path, content: "", size: 0 };
+      },
+      async listWorkspaceFiles(args) {
+        if (args.runtimeId === "shard-runtime-1") {
+          return { files: ["output/codex-progress.jsonl"] };
+        }
+        if (args.runtimeId === "aggregate-runtime-1") {
+          return { files: ["output/briefing.md"] };
+        }
+        return { files: [] };
+      },
+      async destroyWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const runDebugResponse = await app.request(`/sessions/${session.id}/runs/${run.id}/debug?userId=reader-user`);
+  assert.equal(runDebugResponse.status, 200);
+  const runDebugPayload = await runDebugResponse.json() as {
+    runtimeInstances: Array<{ runtimeId: string }>;
+    artifacts: Array<{ runtimeId: string | null; filename: string; content?: string | null }>;
+    liveRuntime: Array<{ runtimeId: string; files?: Array<{ path: string; content?: string }> }>;
+  };
+  assert.deepEqual(
+    runDebugPayload.runtimeInstances.map((runtime) => runtime.runtimeId).sort(),
+    ["aggregate-runtime-1", "shard-runtime-1"],
+  );
+  assert.ok(runDebugPayload.artifacts.some((artifact) => artifact.runtimeId === "shard-runtime-1" && artifact.filename === "codex-progress.jsonl"));
+  assert.ok(runDebugPayload.artifacts.some((artifact) => artifact.runtimeId === "aggregate-runtime-1" && artifact.filename === "briefing.md"));
+  assert.ok(runDebugPayload.liveRuntime.some((runtime) => runtime.runtimeId === "shard-runtime-1"));
+  assert.ok(runDebugPayload.liveRuntime.some((runtime) => runtime.runtimeId === "aggregate-runtime-1"));
+
+  const logsResponse = await app.request(`/sessions/${session.id}/runs/${run.id}/logs?userId=reader-user`);
+  assert.equal(logsResponse.status, 200);
+  const logsPayload = await logsResponse.json() as {
+    runtimeInstances: Array<{ runtimeId: string }>;
+    artifacts: Array<{ runtimeId: string | null; filename: string }>;
+    liveRuntime: Array<{ runtimeId: string }>;
+  };
+  assert.deepEqual(
+    logsPayload.runtimeInstances.map((runtime) => runtime.runtimeId).sort(),
+    ["aggregate-runtime-1", "shard-runtime-1"],
+  );
+  assert.ok(logsPayload.artifacts.some((artifact) => artifact.runtimeId === "shard-runtime-1" && artifact.filename === "codex-progress.jsonl"));
+  assert.ok(logsPayload.artifacts.some((artifact) => artifact.runtimeId === "aggregate-runtime-1" && artifact.filename === "briefing.md"));
+  assert.ok(logsPayload.liveRuntime.some((runtime) => runtime.runtimeId === "shard-runtime-1"));
+  assert.ok(logsPayload.liveRuntime.some((runtime) => runtime.runtimeId === "aggregate-runtime-1"));
+});
+
 test("run recovery synthesizes a user-facing answer from the saved briefing and research document", async () => {
   const store = new InMemoryAppStore();
   const session = await store.createSession("reader-user", "Recover synthesized briefing");
