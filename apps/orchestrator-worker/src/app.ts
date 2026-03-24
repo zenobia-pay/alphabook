@@ -8437,19 +8437,18 @@ async function runOrchestrator(
     detail?: Record<string, unknown>,
   ) => {
     ensureResearchDocumentShell(routedQueryRef.current);
-    if (detail) {
-      await appendResearchDocumentDetailOnce(toolCallId, detail);
-      const detailType = typeof detail.type === "string" ? detail.type : "";
-      if (detailType === "research.briefing_line" && typeof detail.line === "string") {
-        appendResearchDocumentLogOnce(toolCallId, detail.line, `briefing:${String(detail.lineIndex ?? "")}`);
-        return;
-      }
-      if (detailType === "research.note" && typeof detail.note === "string") {
-        appendResearchDocumentLogOnce(toolCallId, detail.note, `note:${detail.note}`);
-        return;
-      }
+    if (!detail) {
+      return;
     }
-    appendResearchDocumentLogOnce(toolCallId, text);
+    const detailType = typeof detail.type === "string" ? detail.type : "";
+    if (
+      detailType !== "research.work"
+      && detailType !== "research.chunk"
+      && detailType !== "research.briefing_line"
+    ) {
+      return;
+    }
+    await appendResearchDocumentDetailOnce(toolCallId, detail);
   };
 
   const appendResearchDocumentDetailOnce = async (
@@ -9211,9 +9210,6 @@ async function runOrchestrator(
     ];
     const startedEntry = liveToolTrace[liveToolTrace.length - 1]!;
     appendResearchDocumentSectionOnce(startedEntry);
-    if (sanitizeUserFacingToolText(rationale)) {
-      appendResearchDocumentLogOnce(toolRecord.id, sanitizeUserFacingToolText(rationale)!, "start");
-    }
     let lastResearchDocumentActivityAt = Date.now();
     const noteResearchDocumentActivity = () => {
       lastResearchDocumentActivityAt = Date.now();
@@ -9427,9 +9423,7 @@ async function runOrchestrator(
                   : entry,
               );
               if (detail) {
-                await appendResearchDocumentDetailOnce(toolRecord.id, detail);
-              } else {
-                appendResearchDocumentLogOnce(toolRecord.id, progressText);
+                await appendResearchDocumentProgress(toolRecord.id, progressText, detail);
               }
               await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
               await send("tool.progress", {
