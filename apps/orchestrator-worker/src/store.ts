@@ -444,6 +444,7 @@ export interface AppStore {
   getDocumentFiles(documentIds: string[], kinds?: DocumentFileKind[]): Promise<DocumentFileRecord[]>;
   getChunksByIds(chunkIds: string[]): Promise<ChunkSearchResult[]>;
   getChunkByWorkAndIndex(workId: string, chunkIndex: number): Promise<ChunkSearchResult | null>;
+  findChunkByWorkAndExcerpt(workId: string, excerpt: string): Promise<ChunkSearchResult | null>;
   listRuntimeInstances(sessionId: string): Promise<RuntimeInstanceRecord[]>;
   listExpiredRuntimeInstances(limit?: number): Promise<RuntimeInstanceRecord[]>;
   getRuntimeInstance(runtimeId: string): Promise<RuntimeInstanceRecord | null>;
@@ -876,6 +877,38 @@ function excerpt(text: string, query: string): string {
   const start = Math.max(0, index - 80);
   const end = Math.min(text.length, start + 220);
   return `${start > 0 ? "..." : ""}${text.slice(start, end)}${end < text.length ? "..." : ""}`;
+}
+
+function normalizeExcerptMatchText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[\u2018\u2019]/gu, "'")
+    .replace(/[\u201c\u201d]/gu, '"')
+    .replace(/[^a-z0-9\s']/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+function excerptMatchScore(chunkText: string, excerptText: string): number {
+  const chunk = normalizeExcerptMatchText(chunkText);
+  const excerpt = normalizeExcerptMatchText(excerptText);
+  if (!chunk || !excerpt) {
+    return -1;
+  }
+  if (chunk.includes(excerpt)) {
+    return excerpt.length + 10_000;
+  }
+  const excerptTokens = excerpt.split(" ").filter((token) => token.length >= 4);
+  if (excerptTokens.length === 0) {
+    return -1;
+  }
+  let overlap = 0;
+  for (const token of excerptTokens) {
+    if (chunk.includes(token)) {
+      overlap += token.length;
+    }
+  }
+  return overlap;
 }
 
 const EXPECTED_EMBEDDING_DIMENSIONS = 1536;
@@ -2778,6 +2811,26 @@ export class InMemoryAppStore implements AppStore {
 
   async getChunkByWorkAndIndex(workId: string, chunkIndex: number): Promise<ChunkSearchResult | null> {
     return this.chunks.find((chunk) => chunk.workId === workId && chunk.chunkIndex === chunkIndex) ?? null;
+  }
+
+  async findChunkByWorkAndExcerpt(workId: string, excerpt: string): Promise<ChunkSearchResult | null> {
+    const normalizedExcerpt = normalizeExcerptMatchText(excerpt);
+    if (!normalizedExcerpt) {
+      return null;
+    }
+    let best: ChunkSearchResult | null = null;
+    let bestScore = -1;
+    for (const chunk of this.chunks) {
+      if (chunk.workId !== workId) {
+        continue;
+      }
+      const score = excerptMatchScore(chunk.text, normalizedExcerpt);
+      if (score > bestScore) {
+        best = chunk;
+        bestScore = score;
+      }
+    }
+    return bestScore > 24 ? best : null;
   }
 
   async listRuntimeInstances(sessionId: string): Promise<RuntimeInstanceRecord[]> {
@@ -6209,6 +6262,58 @@ export class NeonAppStore implements AppStore {
       score: 0,
       excerpt: row.text.slice(0, 220),
     };
+  }
+
+  async findChunkByWorkAndExcerpt(workId: string, excerpt: string): Promise<ChunkSearchResult | null> {
+    const normalizedExcerpt = normalizeExcerptMatchText(excerpt);
+    if (!normalizedExcerpt) {
+      return null;
+    }
+    const tokenNeedles = [...new Set(
+      normalizedExcerpt
+        .split(" ")
+        .filter((token) => token.length >= 5)
+        .slice(0, 8),
+    )];
+    const result = await this.db.query<{
+      id: string;
+      work_id: string;
+      chunk_index: number;
+      text: string;
+      r2_key: string | null;
+    }>(
+      `
+        SELECT id, work_id, chunk_index, text, r2_key
+        FROM chunks
+        WHERE work_id = $1::uuid
+        ORDER BY chunk_index ASC
+      `,
+      [workId],
+    );
+    let best: ChunkSearchResult | null = null;
+    let bestScore = -1;
+    for (const row of result.rows) {
+      if (
+        tokenNeedles.length > 0
+        && !tokenNeedles.some((token) => normalizeExcerptMatchText(row.text).includes(token))
+      ) {
+        continue;
+      }
+      const score = excerptMatchScore(row.text, normalizedExcerpt);
+      if (score > bestScore) {
+        bestScore = score;
+        best = {
+          id: row.id,
+          workId: row.work_id,
+          chunkIndex: row.chunk_index,
+          text: row.text,
+          r2Key: row.r2_key,
+          score: 0,
+          excerpt: row.text.slice(0, 220),
+        };
+      }
+    }
+    return bestScore > 24 ? best : null;
   }
 
   async listRuntimeInstances(sessionId: string): Promise<RuntimeInstanceRecord[]> {

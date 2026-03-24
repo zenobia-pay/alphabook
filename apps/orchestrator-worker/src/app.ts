@@ -6947,6 +6947,12 @@ async function buildCitationPassageUrl(
   if (typeof citation.chunkId === "string" && citation.chunkId.trim().length > 0) {
     return buildResearchDocumentChunkUrl(siteOrigin(deps), sessionId, citation.workId, citation.chunkId);
   }
+  if (typeof citation.excerpt === "string" && citation.excerpt.trim().length > 0) {
+    const matchedChunk = await deps.store.findChunkByWorkAndExcerpt(citation.workId, citation.excerpt);
+    if (matchedChunk) {
+      return buildResearchDocumentChunkUrl(siteOrigin(deps), sessionId, matchedChunk.workId, matchedChunk.id);
+    }
+  }
   return buildResearchDocumentWorkUrl(siteOrigin(deps), sessionId, citation.workId);
 }
 
@@ -8595,7 +8601,12 @@ async function runOrchestrator(
       const href = workId && chunkId
         ? buildResearchDocumentChunkUrl(siteOrigin(deps), session!.id, workId, chunkId)
         : workId
-          ? buildResearchDocumentWorkUrl(siteOrigin(deps), session!.id, workId)
+          ? await buildCitationPassageUrl(deps, session!.id, {
+              workId,
+              chunkId: undefined,
+              label: workTitle,
+              excerpt,
+            })
           : null;
       const sourceLabel = `Source: ${workTitle}, ${persistedPassageLocation(chunkIndex)}`;
       appendResearchDocumentOnce(
