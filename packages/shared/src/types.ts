@@ -141,6 +141,7 @@ export const ChatRequestSchema = z.object({
   workIds: z.array(z.string()).optional(),
   stream: z.boolean().optional(),
   intensityOverride: z.enum(["normal", "high", "maximum"]).optional(),
+  researchMode: z.enum(["default", "sprite_fanout"]).optional(),
 });
 
 export type ChatRequest = z.infer<typeof ChatRequestSchema>;

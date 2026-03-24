@@ -38,6 +38,7 @@ export interface WorkerQueues {
 export interface RuntimeToolGateway {
   createWorkspace(args: Record<string, unknown>): Promise<Record<string, unknown>>;
   runWorkspaceTask(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+  runSpriteFanoutResearch?(args: Record<string, unknown>): Promise<Record<string, unknown>>;
   cancelWorkspaceTask?(args: Record<string, unknown>): Promise<Record<string, unknown>>;
   getWorkspaceTaskStatus?(args: Record<string, unknown>): Promise<Record<string, unknown>>;
   readWorkspaceFile(args: Record<string, unknown>): Promise<Record<string, unknown>>;
@@ -2912,6 +2913,28 @@ async function executeTool(
             context,
           );
         }
+        if (taskSpec.mode === "sprite_fanout") {
+          if (!deps.runtimeGateway.runSpriteFanoutResearch) {
+            throw new Error("Sprite fanout research is not configured for this environment.");
+          }
+          return deps.runtimeGateway.runSpriteFanoutResearch({
+            runtimeId: parsed.runtimeId,
+            query:
+              typeof taskSpec.question === "string" && taskSpec.question.trim().length > 0
+                ? taskSpec.question
+                : typeof taskSpec.researchObjective === "string" && taskSpec.researchObjective.trim().length > 0
+                  ? taskSpec.researchObjective
+                  : "",
+            workIds: Array.isArray(taskSpec.workIds)
+              ? taskSpec.workIds.filter((value): value is string => typeof value === "string")
+              : [],
+            intensity: taskIntensity,
+            implementationId: deps.implementation?.id,
+            progressReporter: context.progressReporter,
+            sessionId: context.sessionId,
+            runId: context.runId,
+          });
+        }
         return deps.runtimeGateway.runWorkspaceTask({
           ...parsed,
           taskSpec,
@@ -5060,6 +5083,12 @@ function labelForToolCall(toolName: ToolName, args: Record<string, unknown>) {
       if (phase === "write_briefing") {
         return "Quoted Briefing";
       }
+      const mode = typeof (taskSpec as Record<string, unknown>).mode === "string"
+        ? (taskSpec as Record<string, unknown>).mode
+        : null;
+      if (mode === "sprite_fanout" || mode === "sprite_shard_search" || mode === "sprite_aggregate") {
+        return "Sprite Fanout Research";
+      }
     }
   }
   if (toolName === "read_workspace_file") {
@@ -5222,6 +5251,7 @@ function clientSafeToolResult(toolName: ToolName, result: Record<string, unknown
     const artifacts = Array.isArray(result.artifacts) ? result.artifacts : [];
     const citations = Array.isArray(result.citations) ? result.citations : [];
     const codexRuns = Array.isArray(result.codexRuns) ? result.codexRuns : [];
+    const shardResults = Array.isArray(result.shardResults) ? result.shardResults : [];
     const evidenceCount =
       result.evidence && typeof result.evidence === "object" && Array.isArray((result.evidence as Record<string, unknown>).items)
         ? ((result.evidence as Record<string, unknown>).items as unknown[]).length
@@ -5232,6 +5262,8 @@ function clientSafeToolResult(toolName: ToolName, result: Record<string, unknown
       artifactCount: artifacts.length,
       citationCount: citations.length,
       codexRunCount: codexRuns.length,
+      shardCount: shardResults.length,
+      successfulShardCount: shardResults.filter((value) => value && typeof value === "object" && (value as Record<string, unknown>).ok === true).length,
       evidenceCount: typeof evidenceCount === "number" ? evidenceCount : undefined,
       briefing: typeof result.briefing === "string" ? result.briefing : undefined,
       briefingLength: typeof result.briefing === "string" ? result.briefing.length : undefined,
@@ -9194,7 +9226,180 @@ async function runOrchestrator(
       promise: Promise<Record<string, unknown>>;
     }
     | null = null;
+  const runSpriteFanoutMode = async () => {
+    const normalizedToolArgs = normalizeToolArgs("run_workspace_task", {
+      runtimeId: `sprite-fanout:${run.id}`,
+      taskSpec: {
+        kind: "sprite_fanout_research",
+        mode: "sprite_fanout",
+        phase: "collect_and_brief",
+        question: input.message,
+        researchObjective: input.message,
+        intensity: input.intensityOverride ?? "normal",
+        workIds: Array.isArray(input.workIds) ? input.workIds : [],
+      },
+    });
+    const rationale = "I’m fanning out the search across fixed Sprite shards and aggregating the shard briefings into one cited answer.";
+    const toolRecord = await deps.store.startToolCall(run.id, "run_workspace_task", normalizedToolArgs);
+    await ensureInitialPlanSent(input.message);
+    recordRawLog("tool.started.raw", {
+      runId: run.id,
+      toolCallId: toolRecord.id,
+      toolName: "run_workspace_task",
+      rationale,
+      args: normalizedToolArgs,
+    });
+    if (normalizedToolArgs.taskSpec && typeof normalizedToolArgs.taskSpec === "object") {
+      captureTaskSpecRunMetrics(normalizedToolArgs.taskSpec as Record<string, unknown>);
+    }
+    liveToolTrace = [
+      ...liveToolTrace,
+      {
+        id: toolRecord.id,
+        toolName: "run_workspace_task",
+        label: labelForToolCall("run_workspace_task", normalizedToolArgs),
+        rationale: rationale,
+        progress: [rationale],
+        args: {},
+        state: "running",
+      },
+    ];
+    await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
+    await send("tool.started", {
+      runId: run.id,
+      toolCallId: toolRecord.id,
+      toolName: "run_workspace_task",
+      label: labelForToolCall("run_workspace_task", normalizedToolArgs),
+      rationale,
+      args: {},
+    });
+    const progressEmitter = genericProgressEmitter(send, run.id, toolRecord.id, "run_workspace_task", normalizedToolArgs);
+
+    let result: Record<string, unknown> = {};
+    let status: "completed" | "failed" = "completed";
+    try {
+      result = await executeTool(deps, "run_workspace_task", normalizedToolArgs, {
+        userId: activeSession.userId,
+        sessionId: activeSession.id,
+        runId: run.id,
+        auditLog: recordRawLog,
+        progressReporter: async (text, detail) => {
+          queueToolProgress(
+            {
+              runId: run.id,
+              toolCallId: toolRecord.id,
+              toolName: "run_workspace_task",
+              text,
+              detail,
+            },
+            async (progressText, emittedDetail) => {
+              liveToolTrace = liveToolTrace.map((entry) =>
+                entry.id === toolRecord.id
+                  ? appendToolProgress(entry, progressText, emittedDetail)
+                  : entry,
+              );
+              await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
+              await send("tool.progress", {
+                runId: run.id,
+                toolCallId: toolRecord.id,
+                toolName: "run_workspace_task",
+                text: progressText,
+                ...(emittedDetail ? { detail: emittedDetail } : {}),
+              });
+            },
+          );
+        },
+      });
+      addRuntimeIds(runtimeIdsToCleanup, normalizedToolArgs, result);
+      await trackRuntimeBillingEvents(deps, activeSession, run, result.billingEvents);
+      runtimeTasks += 1;
+      const resultRuntimeId = typeof result.runtimeId === "string" ? result.runtimeId : null;
+      if (resultRuntimeId) {
+        activeRuns.get(run.id)?.runtimeIds.add(resultRuntimeId);
+      }
+    } catch (error) {
+      addRuntimeIds(runtimeIdsToCleanup, normalizedToolArgs);
+      status = "failed";
+      result = {
+        ok: false,
+        error: formatToolExecutionError("run_workspace_task", error),
+      };
+      try {
+        await recordUnexpectedError(deps, error, {
+          request,
+          route: "/chat",
+          method: "POST",
+          source: "tool_execution",
+          toolName: "run_workspace_task",
+          runId: run.id,
+          sessionId: activeSession.id,
+          userId: activeSession.userId,
+          extra: {
+            toolArgs: normalizedToolArgs,
+            researchMode: "sprite_fanout",
+          },
+        });
+      } catch {
+        // Error reporting should not block the user-facing run result.
+      }
+    } finally {
+      await progressEmitter.stop();
+      await flushToolProgress(
+        toolRecord.id,
+        {
+          runId: run.id,
+          toolName: "run_workspace_task",
+        },
+        async (progressText, detail) => {
+          liveToolTrace = liveToolTrace.map((entry) =>
+            entry.id === toolRecord.id
+              ? appendToolProgress(entry, progressText, detail)
+              : entry,
+          );
+          await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
+          await send("tool.progress", {
+            runId: run.id,
+            toolCallId: toolRecord.id,
+            toolName: "run_workspace_task",
+            text: progressText,
+            ...(detail ? { detail } : {}),
+          });
+        },
+      );
+    }
+
+    await finalizeToolExecution(
+      toolRecord.id,
+      "run_workspace_task",
+      normalizedToolArgs,
+      rationale,
+      status,
+      result,
+    );
+
+    const completedBriefing = status === "completed"
+      ? extractCompletedBriefing("run_workspace_task", normalizedToolArgs, result)
+      : null;
+    if (completedBriefing) {
+      await completeRunFromBriefing(completedBriefing, "standard");
+      return;
+    }
+    throw new Error(
+      typeof result.error === "string" && result.error.trim().length > 0
+        ? result.error
+        : "Sprite fanout research did not return a usable briefing.",
+    );
+  };
   try {
+    if (input.researchMode === "sprite_fanout") {
+      recordRawLog("research_mode.selected", {
+        runId: run.id,
+        sessionId: session.id,
+        researchMode: "sprite_fanout",
+      });
+      await runSpriteFanoutMode();
+      return;
+    }
     recordRawLog("router.started", {
       sessionId: session.id,
       message: input.message,
@@ -10008,6 +10213,9 @@ const DEFAULT_RUNTIME_GATEWAY: RuntimeToolGateway = {
     return { ok: false, error: "disabled" };
   },
   async runWorkspaceTask() {
+    return { ok: false, error: "disabled" };
+  },
+  async runSpriteFanoutResearch() {
     return { ok: false, error: "disabled" };
   },
   async readWorkspaceFile() {

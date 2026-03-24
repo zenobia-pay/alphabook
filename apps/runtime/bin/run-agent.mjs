@@ -1571,6 +1571,152 @@ async function ensureDir(path) {
   await mkdir(path, { recursive: true });
 }
 
+function dedupeSpriteCitations(citations) {
+  const seen = new Set();
+  const deduped = [];
+  for (const citation of Array.isArray(citations) ? citations : []) {
+    if (!citation || typeof citation !== "object") {
+      continue;
+    }
+    const key = [
+      typeof citation.workId === "string" ? citation.workId : "",
+      typeof citation.chunkId === "string" ? citation.chunkId : "",
+      typeof citation.excerpt === "string" ? citation.excerpt.trim().toLowerCase() : "",
+    ].join("::");
+    if (!key || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(citation);
+  }
+  return deduped;
+}
+
+async function writeBriefingJson(outputDir, briefing, citations, metadata = {}) {
+  await writeFile(
+    join(outputDir, "briefing.json"),
+    JSON.stringify({
+      briefing,
+      citations,
+      ...metadata,
+    }, null, 2),
+    "utf8",
+  );
+}
+
+async function runSpriteAggregator({
+  outputDir,
+  workspaceRoot,
+  model,
+  runtimePrompt,
+  manifest,
+  task,
+}) {
+  const shardResults = Array.isArray(task.shardResults) ? task.shardResults : [];
+  const successful = shardResults.filter((entry) => entry && typeof entry === "object" && entry.ok === true);
+  const mergedCitations = dedupeSpriteCitations(
+    successful.flatMap((entry) => Array.isArray(entry.citations) ? entry.citations : []),
+  ).slice(0, 24);
+  const mergedEvidence = {
+    question: typeof task.question === "string" ? task.question : "",
+    shardCount: shardResults.length,
+    successfulShardCount: successful.length,
+    items: mergedCitations.map((citation, index) => ({
+      rank: index + 1,
+      workId: typeof citation.workId === "string" ? citation.workId : null,
+      chunkId: typeof citation.chunkId === "string" ? citation.chunkId : null,
+      label: typeof citation.label === "string" ? citation.label : null,
+      excerpt: typeof citation.excerpt === "string" ? citation.excerpt : "",
+      r2Key: typeof citation.r2Key === "string" ? citation.r2Key : null,
+    })),
+    shardResults: shardResults.map((entry) => ({
+      shardId: typeof entry?.shardId === "string" ? entry.shardId : null,
+      label: typeof entry?.label === "string" ? entry.label : null,
+      ok: entry?.ok === true,
+      error: typeof entry?.error === "string" ? entry.error : null,
+    })),
+  };
+  await appendProgressEvent(outputDir, {
+    type: "research.aggregate.started",
+    shardCount: shardResults.length,
+    successfulShardCount: successful.length,
+    message: `Aggregating ${successful.length} completed shard briefings.`,
+  });
+  await writeFile(join(outputDir, "evidence.json"), JSON.stringify(mergedEvidence, null, 2), "utf8");
+  await writeFile(join(outputDir, "search-plan.json"), JSON.stringify({
+    question: mergedEvidence.question,
+    mode: "sprite_aggregate",
+    shardCount: shardResults.length,
+    successfulShardCount: successful.length,
+  }, null, 2), "utf8");
+  await writeFile(join(outputDir, "search-iterations.json"), JSON.stringify(
+    successful.map((entry) => ({
+      shardId: entry.shardId ?? null,
+      label: entry.label ?? null,
+      briefingPreview: typeof entry.briefing === "string" ? compactText(entry.briefing, 400) : null,
+      citationCount: Array.isArray(entry.citations) ? entry.citations.length : 0,
+    })),
+    null,
+    2,
+  ), "utf8");
+  await writeFile(join(outputDir, "evidence-notes.md"), [
+    "# Aggregation Notes",
+    "",
+    `Successful shards: ${successful.length}/${shardResults.length}`,
+    "",
+    ...successful.flatMap((entry) => [
+      `## ${entry.label || entry.shardId || "Shard"}`,
+      "",
+      typeof entry.briefing === "string" && entry.briefing.trim().length > 0
+        ? compactText(entry.briefing, 1200)
+        : "No shard briefing was returned.",
+      "",
+    ]),
+  ].join("\n"), "utf8");
+  const promptText = [
+    runtimePrompt,
+    "",
+    "You are aggregating multiple shard-level corpus research briefings.",
+    `Research objective: ${mergedEvidence.question || "Analyze the corpus evidence."}`,
+    `Workspace manifest summary: ${compactText(JSON.stringify({ works: Array.isArray(manifest.works) ? manifest.works.length : 0 }), 200)}`,
+    "Use only the shard evidence below. Write /workspace/output/briefing.md and keep it grounded in the supplied quotations.",
+    "Also write /workspace/output/evidence-notes.md if you need additional analysis notes.",
+    "",
+    "Merged citations:",
+    JSON.stringify(mergedEvidence.items, null, 2),
+    "",
+    "Shard outcomes:",
+    JSON.stringify(mergedEvidence.shardResults, null, 2),
+  ].join("\n");
+  const briefingRun = await runCodexStep({
+    workspaceRoot,
+    outputDir,
+    model,
+    step: "codex-briefing",
+    promptText,
+  });
+  const briefingPath = join(outputDir, "briefing.md");
+  if (!(await fileExists(briefingPath))) {
+    throw new Error("Codex did not write /workspace/output/briefing.md.");
+  }
+  const briefing = await readFile(briefingPath, "utf8");
+  if (!briefing.trim()) {
+    throw new Error("Codex wrote an empty /workspace/output/briefing.md.");
+  }
+  await writeBriefingJson(outputDir, briefing, mergedCitations, {
+    successfulShardCount: successful.length,
+    shardCount: shardResults.length,
+  });
+  await writeFile(join(outputDir, "aggregation-summary.json"), JSON.stringify({
+    successfulShardCount: successful.length,
+    shardCount: shardResults.length,
+    citations: mergedCitations.slice(0, 12),
+  }, null, 2), "utf8");
+  const previousCodexRuns = await readJsonIfPresent(join(outputDir, "codex-runs.json"), []);
+  const nextCodexRuns = Array.isArray(previousCodexRuns) ? [...previousCodexRuns, briefingRun] : [briefingRun];
+  await writeFile(join(outputDir, "codex-runs.json"), JSON.stringify(nextCodexRuns, null, 2), "utf8");
+}
+
 async function main() {
   const taskPath = process.env.ALPHABOOK_TASK_PATH;
   const outputDir = process.env.ALPHABOOK_OUTPUT_DIR;
@@ -1597,6 +1743,18 @@ async function main() {
     parseJson(taskPath),
     readJsonIfPresent(selectedChunksPath, []),
   ]);
+
+  if (task && typeof task === "object" && task.mode === "sprite_aggregate") {
+    await runSpriteAggregator({
+      outputDir,
+      workspaceRoot,
+      model,
+      runtimePrompt,
+      manifest,
+      task,
+    });
+    return;
+  }
 
   const question = String(task.researchObjective || task.question || task.goal || task.prompt || task.task || "Analyze the workspace corpus.");
   const broadCorpusTask = isBroadCorpusTask(task, false);
@@ -1748,6 +1906,7 @@ async function main() {
     "utf8",
   );
   await writeFile(join(outputDir, "evidence.seed.json"), JSON.stringify(evidence, null, 2), "utf8");
+  await writeFile(join(outputDir, "evidence.json"), JSON.stringify(evidence, null, 2), "utf8");
   const viewedChunksReference = buildViewedChunksArtifact(seedChunks, iterations, evidence, topRuntimeHits, workById);
   await writeFile(join(outputDir, "viewed-chunks.json"), JSON.stringify(viewedChunksReference, null, 2), "utf8");
   await writeFile(join(outputDir, "every-single-reference.md"), buildViewedChunksMarkdown(viewedChunksReference), "utf8");
@@ -1786,6 +1945,29 @@ async function main() {
         ].join("\n"),
         "utf8",
       );
+    }
+    const citations = dedupeSpriteCitations(
+      evidence.items.map((item, index) => ({
+        workId: typeof item.workId === "string" ? item.workId : typeof item.documentId === "string" ? item.documentId : "unknown",
+        chunkId: typeof item.chunkId === "string" ? item.chunkId : `sprite-${index}`,
+        label: typeof item.label === "string"
+          ? item.label
+          : `${typeof item.workId === "string" ? item.workId : "work"}#${typeof item.chunkIndex === "number" ? item.chunkIndex : index}`,
+        excerpt: typeof item.excerpt === "string" ? item.excerpt : "",
+        r2Key: typeof item.r2Key === "string" ? item.r2Key : undefined,
+      })),
+    ).slice(0, 24);
+    await writeBriefingJson(outputDir, briefing, citations, {
+      mode: typeof task.mode === "string" ? task.mode : null,
+    });
+    if (task.mode === "sprite_shard_search") {
+      await writeFile(join(outputDir, "shard-summary.json"), JSON.stringify({
+        shard: task.shard && typeof task.shard === "object" ? task.shard : null,
+        question,
+        citationCount: citations.length,
+        topCitations: citations.slice(0, 12),
+        briefingPreview: compactText(briefing, 1200),
+      }, null, 2), "utf8");
     }
   }
 

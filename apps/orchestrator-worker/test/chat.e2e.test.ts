@@ -121,6 +121,144 @@ test("orchestrator can answer direct chat without starting the tool chain", asyn
   assert.match(body, /You could ask about themes, moods, exact passages, or comparisons between books\./);
 });
 
+test("sprite fanout mode bypasses router and runs the distributed runtime lane", async () => {
+  const store = new InMemoryAppStore([], []);
+  let spriteRuns = 0;
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+      async runWorkspaceTask() {
+        return { ok: false, error: "disabled" };
+      },
+      async runSpriteFanoutResearch() {
+        spriteRuns += 1;
+        return {
+          ok: true,
+          runtimeId: "sprite-aggregate-1",
+          briefing: "Sprite aggregate briefing with shard evidence.",
+          citations: [
+            {
+              workId: "work-1",
+              chunkId: "chunk-1",
+              label: "Don Quixote#7",
+              excerpt: "Don Quixote frames grief as a kind of honorable endurance.",
+              r2Key: "gutenberg/clean/996/chunks.jsonl",
+            },
+          ],
+          shardResults: [
+            {
+              shardId: "books-1",
+              label: "Sprite 1/1",
+              ok: true,
+              runtimeId: "sprite-shard-1",
+              bookCount: 2,
+            },
+          ],
+          billingEvents: [],
+        };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: false, error: "disabled" };
+      },
+      async destroyWorkspace() {
+        return { ok: true };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const response = await app.request("/chat", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      userId: "11111111-1111-1111-1111-111111111111",
+      message: "Find grief across the corpus.",
+      researchMode: "sprite_fanout",
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  const body = await response.text();
+  assert.equal(spriteRuns, 1);
+  assert.doesNotMatch(body, /event: router\.completed/);
+  assert.match(body, /toolName":"run_workspace_task"/);
+  assert.match(body, /fanning out the search across fixed Sprite shards/i);
+  assert.match(body, /Sprite aggregate briefing with shard evidence\./);
+  const [run] = await store.listRuns((await store.listSessions("11111111-1111-1111-1111-111111111111"))[0]!.id);
+  const toolCalls = await store.listToolCalls(run!.id);
+  assert.equal(toolCalls.length, 1);
+  assert.equal(toolCalls[0]!.toolName, "run_workspace_task");
+  assert.equal(toolCalls[0]!.status, "completed");
+});
+
+test("sprite fanout mode fails loudly when no shard search succeeds", async () => {
+  const store = new InMemoryAppStore([], []);
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+      async runWorkspaceTask() {
+        return { ok: false, error: "disabled" };
+      },
+      async runSpriteFanoutResearch() {
+        throw new Error("Sprite fanout search failed because no shard searches completed successfully.");
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: false, error: "disabled" };
+      },
+      async destroyWorkspace() {
+        return { ok: true };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const response = await app.request("/chat", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      userId: "11111111-1111-1111-1111-111111111111",
+      message: "Find grief across the corpus.",
+      researchMode: "sprite_fanout",
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  const body = await response.text();
+  assert.match(body, /no shard searches completed successfully/i);
+  assert.match(body, /event: run\.completed/);
+  assert.match(body, /"status":"failed"/);
+});
+
 test("orchestrator streams retrieval tool calls and final answer", async () => {
   const store = new InMemoryAppStore(
     [

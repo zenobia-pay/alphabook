@@ -88,6 +88,7 @@ export const PlatformChatRequestSchema = z.object({
   documentIds: z.array(z.string()).optional(),
   stream: z.boolean().optional(),
   intensityOverride: z.enum(["normal", "high", "maximum"]).optional(),
+  researchMode: z.enum(["default", "sprite_fanout"]).optional(),
 });
 
 export type PlatformChatRequest = z.infer<typeof PlatformChatRequestSchema>;
@@ -287,6 +288,7 @@ export function toPlatformChatRequest(input: {
   workIds?: string[];
   stream?: boolean;
   intensityOverride?: "normal" | "high" | "maximum";
+  researchMode?: "default" | "sprite_fanout";
 }) {
   return PlatformChatRequestSchema.parse({
     ...input,

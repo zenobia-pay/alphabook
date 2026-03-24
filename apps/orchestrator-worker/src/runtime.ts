@@ -14,6 +14,7 @@ interface ToolExecutionContext {
 }
 
 type RuntimeToolArgs = Record<string, unknown> & Partial<ToolExecutionContext>;
+type ProgressReporter = (text: string, detail?: Record<string, unknown>) => Promise<void>;
 
 interface WorkspaceDownload {
   r2Key: string;
@@ -26,6 +27,52 @@ interface FlyMachine {
   id: string;
   state?: string;
   instance_id?: string;
+}
+
+interface SpriteShardManifest {
+  implementationId: string;
+  shardId: string;
+  index: number;
+  totalShards: number;
+  bookCount: number;
+  workIds: string[];
+  totalTextBytes: number;
+}
+
+interface SpriteShardCatalog {
+  implementationId: string;
+  generatedAt: string;
+  shardSize: number;
+  shardCount: number;
+  shards: SpriteShardManifest[];
+}
+
+interface SpriteFanoutRuntimeArgs extends RuntimeToolArgs {
+  query?: string;
+  implementationId?: string;
+  workIds?: string[];
+  intensity?: "normal" | "high" | "maximum";
+  progressReporter?: ProgressReporter;
+}
+
+const SPRITE_SHARD_SIZE = 1000;
+const MAX_SPRITE_WORKSPACE_BYTES = 2 * 1024 * 1024 * 1024;
+
+function spriteShardCatalogKey(implementationId: string): string {
+  return `sprite-shards/${implementationId}/catalog.json`;
+}
+
+function normalizeSpriteIntensity(value: unknown): "normal" | "high" | "maximum" {
+  return value === "high" || value === "maximum" || value === "normal" ? value : "normal";
+}
+
+function spriteConcurrencyForIntensity(intensity: "normal" | "high" | "maximum", shardCount: number): number {
+  const target = intensity === "maximum" ? 12 : intensity === "high" ? 8 : 4;
+  return Math.max(1, Math.min(target, shardCount));
+}
+
+function shardLabel(shard: SpriteShardManifest): string {
+  return `Sprite ${shard.index + 1}/${shard.totalShards}`;
 }
 
 export interface FlyRuntimeGatewayConfig {
@@ -180,6 +227,13 @@ export class StubRuntimeGateway implements RuntimeToolGateway {
       error: "Runtime sandboxes are not enabled in this environment.",
     };
   }
+
+  async runSpriteFanoutResearch() {
+    return {
+      ok: false,
+      error: "Sprite fanout research is not enabled in this environment.",
+    };
+  }
 }
 
 export class HttpRuntimeGateway implements RuntimeToolGateway {
@@ -258,6 +312,13 @@ export class HttpRuntimeGateway implements RuntimeToolGateway {
       method: "POST",
       body: JSON.stringify(args),
     });
+  }
+
+  async runSpriteFanoutResearch() {
+    return {
+      ok: false,
+      error: "Sprite fanout research requires Fly runtime access.",
+    };
   }
 }
 
@@ -356,68 +417,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
   async runWorkspaceTask(args: RuntimeToolArgs) {
     const parsed = ToolArgsSchemas.run_workspace_task.parse(args);
     const instance = await this.requireRuntime(parsed.runtimeId);
-    await this.ensureMachineRunning(instance);
-    await this.store.updateRuntimeInstance(parsed.runtimeId, {
-      status: "busy",
-      lastUsedAt: nowIso(),
-      expiresAt: addMinutesIso(HARD_LIMITS.MAX_RUNTIME_IDLE_MINUTES),
-    });
-
-    const machineId = instance.providerMachineId ?? parsed.runtimeId;
-    await this.callRuntime(machineId, "/run-task", {
-      method: "POST",
-      body: JSON.stringify({
-        runtimeId: parsed.runtimeId,
-        taskSpec: parsed.taskSpec,
-      }),
-    });
-
-    const startedAt = Date.now();
-    let result: Record<string, unknown> | null = null;
-    while (Date.now() - startedAt < HARD_LIMITS.MAX_RUN_WALL_CLOCK_SECONDS * 1000) {
-      const status = await this.callRuntime(machineId, "/task-status", {
-        method: "GET",
-      });
-      if (status.status === "completed" && status.result && typeof status.result === "object") {
-        result = status.result as Record<string, unknown>;
-        break;
-      }
-      if (status.status === "failed") {
-        await this.persistRuntimeArtifactsFromWorkspace(instance);
-        const error = new Error(
-          typeof status.error === "string"
-            ? status.error
-            : "Deep research failed in the runtime.",
-        ) as Error & { runtimePayload?: Record<string, unknown> };
-        error.runtimePayload = status;
-        throw error;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 750));
-    }
-
-    if (!result) {
-      await this.persistRuntimeArtifactsFromWorkspace(instance);
-      const error = new Error("Deep research timed out before the runtime produced a briefing.") as Error & {
-        runtimePayload?: Record<string, unknown>;
-      };
-      error.runtimePayload = {
-        ok: false,
-        error: "Deep research timed out before the runtime produced a briefing.",
-      };
-      throw error;
-    }
-
-    const uploadedArtifacts = await this.persistRuntimeArtifacts(instance, result);
-    await this.store.updateRuntimeInstance(parsed.runtimeId, {
-      status: "ready",
-      lastUsedAt: nowIso(),
-      expiresAt: addMinutesIso(HARD_LIMITS.MAX_RUNTIME_IDLE_MINUTES),
-    });
-
-    return {
-      ...result,
-      artifacts: uploadedArtifacts,
-    };
+    return this.executeRuntimeTask(instance, parsed.taskSpec);
   }
 
   async cancelWorkspaceTask(args: RuntimeToolArgs) {
@@ -559,6 +559,149 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     };
   }
 
+  async runSpriteFanoutResearch(args: SpriteFanoutRuntimeArgs) {
+    const sessionId = this.requireSessionId(args);
+    const runId = typeof args.runId === "string" && args.runId.length > 0 ? args.runId : crypto.randomUUID();
+    const query = typeof args.query === "string" && args.query.trim().length > 0
+      ? args.query.trim()
+      : typeof args.task === "string" && args.task.trim().length > 0
+        ? args.task.trim()
+        : "";
+    if (!query) {
+      throw new Error("Sprite fanout research requires a non-empty query.");
+    }
+    const implementationId = typeof args.implementationId === "string" && args.implementationId.trim().length > 0
+      ? args.implementationId.trim()
+      : "alphabook";
+    const intensity = normalizeSpriteIntensity(args.intensity);
+    const progressReporter = args.progressReporter;
+
+    await progressReporter?.("Loading the Sprite shard catalog.", {
+      type: "research.note",
+      researchMode: "sprite_fanout",
+      implementationId,
+    });
+    const catalog = await this.loadSpriteShardCatalog(implementationId);
+    const scopedWorkIds = Array.isArray(args.workIds)
+      ? args.workIds.filter((value): value is string => typeof value === "string" && value.length > 0)
+      : [];
+    const selectedShards = scopedWorkIds.length > 0
+      ? catalog.shards.filter((shard) => shard.workIds.some((workId) => scopedWorkIds.includes(workId)))
+      : catalog.shards;
+    if (selectedShards.length === 0) {
+      throw new Error("No Sprite shards matched the requested scope.");
+    }
+
+    const concurrency = spriteConcurrencyForIntensity(intensity, selectedShards.length);
+    await progressReporter?.(
+      `Launching ${selectedShards.length} Sprite shard searches with concurrency ${concurrency}.`,
+      {
+        type: "research.note",
+        researchMode: "sprite_fanout",
+        shardCount: selectedShards.length,
+        concurrency,
+      },
+    );
+
+    const shardResults = await this.mapWithConcurrency(selectedShards, concurrency, async (shard) => {
+      const label = shardLabel(shard);
+      await this.store.appendRunEvent(runId, sessionId, "sprite.shard.started", {
+        implementationId,
+        shardId: shard.shardId,
+        label,
+        bookCount: shard.bookCount,
+      });
+      await progressReporter?.(`Starting ${label} over ${shard.bookCount} books.`, {
+        type: "research.note",
+        researchMode: "sprite_fanout",
+        shardId: shard.shardId,
+        shardLabel: label,
+        bookCount: shard.bookCount,
+      });
+      const result = await this.runSpriteShard(sessionId, query, shard, {
+        implementationId,
+        intensity,
+      });
+      await this.store.appendRunEvent(runId, sessionId, `sprite.shard.${result.ok ? "completed" : "failed"}`, {
+        implementationId,
+        shardId: shard.shardId,
+        label,
+        ...(result.ok ? { citationCount: Array.isArray(result.citations) ? result.citations.length : 0 } : { error: result.error }),
+      });
+      await progressReporter?.(
+        result.ok
+          ? `${label} completed with ${Array.isArray(result.citations) ? result.citations.length : 0} citations.`
+          : `${label} failed${typeof result.error === "string" ? `: ${result.error}` : "."}`,
+        {
+          type: "research.note",
+          researchMode: "sprite_fanout",
+          shardId: shard.shardId,
+          shardLabel: label,
+          ok: result.ok,
+          ...(typeof result.error === "string" ? { error: result.error } : {}),
+        },
+      );
+      return result;
+    });
+
+    const successfulShards = shardResults.filter((result) => result.ok);
+    if (successfulShards.length === 0) {
+      throw new Error("Sprite fanout search failed because no shard searches completed successfully.");
+    }
+
+    await progressReporter?.("Starting the aggregator runtime.", {
+      type: "research.note",
+      researchMode: "sprite_fanout",
+      successfulShardCount: successfulShards.length,
+      shardCount: shardResults.length,
+    });
+    const aggregateResult = await this.runSpriteAggregator(sessionId, query, shardResults, {
+      implementationId,
+      intensity,
+    });
+    const aggregateRecord = aggregateResult as Record<string, unknown>;
+    const aggregateCitations = Array.isArray(aggregateRecord.citations)
+      ? aggregateRecord.citations as Array<Record<string, unknown>>
+      : [];
+    const aggregateRuntimeId = typeof aggregateRecord.runtimeId === "string" ? aggregateRecord.runtimeId : "";
+    const aggregateBriefing = typeof aggregateRecord.briefing === "string" ? aggregateRecord.briefing : "";
+    const aggregateArtifacts = Array.isArray(aggregateRecord.artifacts) ? aggregateRecord.artifacts : [];
+    await this.store.appendRunEvent(runId, sessionId, "sprite.aggregate.completed", {
+      implementationId,
+      shardCount: shardResults.length,
+      successfulShardCount: successfulShards.length,
+      citationCount: aggregateCitations.length,
+      aggregatorRuntimeId: aggregateRuntimeId,
+    });
+
+    return {
+      ok: true,
+      runtimeId: aggregateRuntimeId,
+      briefing: aggregateBriefing,
+      citations: aggregateCitations,
+      artifacts: aggregateArtifacts,
+      shardResults: shardResults.map((result) => ({
+        shardId: result.shardId,
+        label: result.label,
+        ok: result.ok,
+        bookCount: result.bookCount,
+        totalTextBytes: result.totalTextBytes,
+        runtimeId: result.runtimeId,
+        ...(typeof result.error === "string" ? { error: result.error } : {}),
+      })),
+      chunks: aggregateCitations.slice(0, 12).map((citation, index) => ({
+          id: typeof citation.chunkId === "string" ? citation.chunkId : `sprite-citation-${index}`,
+          workId: typeof citation.workId === "string" ? citation.workId : "unknown",
+          chunkIndex: index,
+          excerpt: typeof citation.excerpt === "string" ? citation.excerpt : "",
+          text: typeof citation.excerpt === "string" ? citation.excerpt : "",
+          title: typeof citation.label === "string" ? citation.label : undefined,
+          workTitle: typeof citation.label === "string" ? citation.label : undefined,
+          r2Key: typeof citation.r2Key === "string" ? citation.r2Key : null,
+        })),
+    };
+  }
+
   private requireSessionId(args: RuntimeToolArgs): string {
     const sessionId = args.sessionId;
     if (typeof sessionId !== "string" || sessionId.length === 0) {
@@ -665,7 +808,18 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
   }
 
   private async createMachine(sessionId: string): Promise<FlyMachine> {
-    const name = sanitizeMachineName(`alphabook-${sessionId.slice(0, 8)}-${crypto.randomUUID().slice(0, 8)}`);
+    return this.createMachineWithMetadata(sessionId);
+  }
+
+  private async createMachineWithMetadata(
+    sessionId: string,
+    options: {
+      namePrefix?: string;
+      metadata?: Record<string, string>;
+    } = {},
+  ): Promise<FlyMachine> {
+    const namePrefix = options.namePrefix ?? "alphabook";
+    const name = sanitizeMachineName(`${namePrefix}-${sessionId.slice(0, 8)}-${crypto.randomUUID().slice(0, 8)}`);
     const response = await this.flyRequest(`/apps/${this.config.appName}/machines`, {
       method: "POST",
       body: JSON.stringify({
@@ -698,6 +852,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
           metadata: {
             "alphabook.session_id": sessionId,
             "alphabook.runtime": "true",
+            ...(options.metadata ?? {}),
           },
           services: [
             {
@@ -912,6 +1067,89 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     };
   }
 
+  private async buildSpriteWorkspacePlan(
+    sessionId: string,
+    runtimeId: string,
+    workIds: string[],
+    taskContext: Record<string, unknown>,
+  ) {
+    const repository = createPlatformRepository(this.store);
+    const resolvedWorkIds = uniqueStrings(workIds);
+    const [documents, documentFiles, corpusDocumentCount] = await Promise.all([
+      repository.getDocumentMetadata(resolvedWorkIds),
+      repository.getDocumentFiles(resolvedWorkIds, ["clean", "chunks"]),
+      repository.countDocuments(),
+    ]);
+    const workMetadata = documents.map((document) => ({
+      id: document.id,
+      title: document.title,
+      authors: document.contributors ?? [],
+      language: document.language ?? null,
+      releaseDate: document.publishedAt ?? null,
+      rightsStatus: document.rightsStatus ?? null,
+      summary: document.summary ?? null,
+      subjects: document.subjects ?? [],
+    })) as WorkSummary[];
+    const corpusFiles = documentFiles.map((file) => ({
+      id: `${file.documentId}:${file.kind}:${file.r2Key}`,
+      documentId: file.documentId,
+      kind: file.kind as DocumentFileKind,
+      r2Key: file.r2Key,
+      byteSize: file.byteSize ?? null,
+      metadata: file.metadata ?? {},
+    }));
+    const fileCatalog = dedupeByKey(corpusFiles).map((file) => ({
+      documentId: file.documentId,
+      kind: file.kind,
+      r2Key: file.r2Key,
+      destinationPath:
+        file.kind === "clean"
+          ? `books/${file.documentId}/clean.txt`
+          : `chunks/${file.documentId}/chunks.jsonl`,
+      byteSize: file.byteSize ?? null,
+    }));
+    const manifest = withLegacyWorkAliases({
+      runtimeId,
+      sessionId,
+      documents: groupDocumentFiles(resolvedWorkIds, corpusFiles, workMetadata),
+      dataSchema: defaultCorpusAdapter.workspaceSchema,
+      fileCatalog,
+      selectedChunkIds: [],
+      selectedChunks: [],
+      taskContext: {
+        ...taskContext,
+        corpusWorkCount: corpusDocumentCount,
+        hydratedWorkCount: resolvedWorkIds.length,
+      },
+    });
+    const manifestKey = artifactKeys.runtimeArtifact(runtimeId, "manifest.json");
+    await this.blobStore.putJson(manifestKey, manifest);
+    await this.store.saveArtifact({
+      sessionId,
+      runtimeId,
+      r2Key: manifestKey,
+      filename: "manifest.json",
+      mimeType: "application/json",
+      metadata: {
+        kind: "manifest",
+        researchMode: "sprite_fanout",
+      },
+    });
+    const totalBytes = fileCatalog.reduce((sum, file) => sum + (file.byteSize ?? 0), 0);
+    if (totalBytes > MAX_SPRITE_WORKSPACE_BYTES) {
+      throw new Error(`Sprite shard hydration would exceed ${MAX_SPRITE_WORKSPACE_BYTES} bytes.`);
+    }
+    return {
+      manifest,
+      downloads: fileCatalog.map((file) => ({
+        r2Key: file.r2Key,
+        destinationPath: file.destinationPath,
+        byteSize: file.byteSize ?? null,
+      })),
+      totalBytes,
+    };
+  }
+
   private async persistRuntimeArtifacts(instance: RuntimeInstanceRecord, result: Record<string, unknown>) {
     const artifacts = Array.isArray(result.artifacts)
       ? (result.artifacts as Array<Record<string, unknown>>)
@@ -1003,5 +1241,330 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
       throw new Error(`Runtime ${runtimeId} is no longer available.`);
     }
     return instance;
+  }
+
+  private async executeRuntimeTask(instance: RuntimeInstanceRecord, taskSpec: Record<string, unknown>) {
+    await this.ensureMachineRunning(instance);
+    await this.store.updateRuntimeInstance(instance.runtimeId, {
+      status: "busy",
+      lastUsedAt: nowIso(),
+      expiresAt: addMinutesIso(HARD_LIMITS.MAX_RUNTIME_IDLE_MINUTES),
+    });
+
+    const machineId = instance.providerMachineId ?? instance.runtimeId;
+    await this.callRuntime(machineId, "/run-task", {
+      method: "POST",
+      body: JSON.stringify({
+        runtimeId: instance.runtimeId,
+        taskSpec,
+      }),
+    });
+
+    const startedAt = Date.now();
+    let result: Record<string, unknown> | null = null;
+    while (Date.now() - startedAt < HARD_LIMITS.MAX_RUN_WALL_CLOCK_SECONDS * 1000) {
+      const status = await this.callRuntime(machineId, "/task-status", {
+        method: "GET",
+      });
+      if (status.status === "completed" && status.result && typeof status.result === "object") {
+        result = status.result as Record<string, unknown>;
+        break;
+      }
+      if (status.status === "failed") {
+        await this.persistRuntimeArtifactsFromWorkspace(instance);
+        const error = new Error(
+          typeof status.error === "string"
+            ? status.error
+            : "Deep research failed in the runtime.",
+        ) as Error & { runtimePayload?: Record<string, unknown> };
+        error.runtimePayload = status;
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 750));
+    }
+
+    if (!result) {
+      await this.persistRuntimeArtifactsFromWorkspace(instance);
+      const error = new Error("Deep research timed out before the runtime produced a briefing.") as Error & {
+        runtimePayload?: Record<string, unknown>;
+      };
+      error.runtimePayload = {
+        ok: false,
+        error: "Deep research timed out before the runtime produced a briefing.",
+      };
+      throw error;
+    }
+
+    const uploadedArtifacts = await this.persistRuntimeArtifacts(instance, result);
+    await this.store.updateRuntimeInstance(instance.runtimeId, {
+      status: "ready",
+      lastUsedAt: nowIso(),
+      expiresAt: addMinutesIso(HARD_LIMITS.MAX_RUNTIME_IDLE_MINUTES),
+    });
+
+    return {
+      ...result,
+      artifacts: uploadedArtifacts,
+    };
+  }
+
+  private async loadSpriteShardCatalog(implementationId: string): Promise<SpriteShardCatalog> {
+    const prebuilt = await this.blobStore.getText(spriteShardCatalogKey(implementationId));
+    if (prebuilt) {
+      const parsed = JSON.parse(prebuilt) as SpriteShardCatalog;
+      if (Array.isArray(parsed.shards) && parsed.shards.length > 0) {
+        return parsed;
+      }
+    }
+
+    const totalDocuments = await this.store.countDocuments();
+    const documents: Array<{ id: string }> = [];
+    for (let offset = 0; offset < totalDocuments; offset += SPRITE_SHARD_SIZE) {
+      const batch = await this.store.listDocuments(offset, SPRITE_SHARD_SIZE);
+      documents.push(...batch.map((document) => ({ id: document.id })));
+    }
+    const shards: SpriteShardManifest[] = [];
+    for (let index = 0; index < documents.length; index += SPRITE_SHARD_SIZE) {
+      const workIds = documents.slice(index, index + SPRITE_SHARD_SIZE).map((document) => document.id);
+      const files = await this.store.getDocumentFiles(workIds, ["clean"]);
+      shards.push({
+        implementationId,
+        shardId: `books-${Math.floor(index / SPRITE_SHARD_SIZE) + 1}`,
+        index: Math.floor(index / SPRITE_SHARD_SIZE),
+        totalShards: Math.max(1, Math.ceil(documents.length / SPRITE_SHARD_SIZE)),
+        bookCount: workIds.length,
+        workIds,
+        totalTextBytes: files.reduce((sum, file) => sum + (file.byteSize ?? 0), 0),
+      });
+    }
+    const catalog: SpriteShardCatalog = {
+      implementationId,
+      generatedAt: nowIso(),
+      shardSize: SPRITE_SHARD_SIZE,
+      shardCount: shards.length,
+      shards: shards.map((shard) => ({
+        ...shard,
+        totalShards: shards.length,
+      })),
+    };
+    await this.blobStore.putJson(spriteShardCatalogKey(implementationId), catalog);
+    return catalog;
+  }
+
+  private async runSpriteShard(
+    sessionId: string,
+    query: string,
+    shard: SpriteShardManifest,
+    options: {
+      implementationId: string;
+      intensity: "normal" | "high" | "maximum";
+    },
+  ) {
+    let machineId: string | null = null;
+    let instance: RuntimeInstanceRecord | null = null;
+    try {
+      const machine = await this.createMachineWithMetadata(sessionId, {
+        namePrefix: "alphabook-sprite",
+        metadata: {
+          "alphabook.runtime_mode": "sprite-shard",
+          "alphabook.shard_id": shard.shardId,
+        },
+      });
+      machineId = machine.id;
+      const runtimeId = machine.id;
+      const workspacePlan = await this.buildSpriteWorkspacePlan(sessionId, runtimeId, shard.workIds, {
+        spriteShard: {
+          implementationId: options.implementationId,
+          shardId: shard.shardId,
+          index: shard.index,
+          totalShards: shard.totalShards,
+          bookCount: shard.bookCount,
+          totalTextBytes: shard.totalTextBytes,
+        },
+      });
+      await this.store.saveRuntimeInstance({
+        sessionId,
+        runtimeId,
+        provider: "fly-sprites",
+        providerMachineId: machine.id,
+        status: "creating",
+        manifestJson: workspacePlan.manifest,
+        lastUsedAt: nowIso(),
+        expiresAt: addMinutesIso(HARD_LIMITS.MAX_RUNTIME_IDLE_MINUTES),
+      });
+      instance = await this.requireRuntime(runtimeId);
+      await this.waitForMachine(machine.id, "started");
+      await this.waitForRuntimeHttpReady(machine.id);
+      await this.prepareWorkspace(machine.id, {
+        runtimeId,
+        sessionId,
+        works: workspacePlan.manifest.works,
+        dataSchema: workspacePlan.manifest.dataSchema,
+        fileCatalog: workspacePlan.manifest.fileCatalog,
+        selectedChunkIds: [],
+        selectedChunks: [],
+        taskContext: workspacePlan.manifest.taskContext,
+        downloads: workspacePlan.downloads,
+      });
+      await this.store.updateRuntimeInstance(runtimeId, {
+        status: "ready",
+        lastUsedAt: nowIso(),
+        expiresAt: addMinutesIso(HARD_LIMITS.MAX_RUNTIME_IDLE_MINUTES),
+        manifestJson: workspacePlan.manifest,
+        providerMachineId: machine.id,
+      });
+      const result = await this.executeRuntimeTask(instance, {
+        kind: "sprite_fanout_research",
+        mode: "sprite_shard_search",
+        phase: "collect_and_brief",
+        question: query,
+        researchObjective: query,
+        intensity: options.intensity,
+        workIds: shard.workIds,
+        shard: {
+          shardId: shard.shardId,
+          index: shard.index,
+          totalShards: shard.totalShards,
+          bookCount: shard.bookCount,
+          totalTextBytes: shard.totalTextBytes,
+        },
+        evidenceFile: "output/evidence.json",
+        evidenceNotesFile: "output/evidence-notes.md",
+        briefingFile: "output/briefing.md",
+        briefingJsonFile: "output/briefing.json",
+      });
+      return {
+        ok: true as const,
+        shardId: shard.shardId,
+        label: shardLabel(shard),
+        runtimeId,
+        bookCount: shard.bookCount,
+        totalTextBytes: shard.totalTextBytes,
+        briefing:
+          typeof (result as Record<string, unknown>).briefing === "string"
+            ? (result as Record<string, unknown>).briefing as string
+            : "",
+        citations: Array.isArray((result as Record<string, unknown>).citations)
+          ? (result as Record<string, unknown>).citations as unknown[]
+          : [],
+        artifacts: Array.isArray((result as Record<string, unknown>).artifacts)
+          ? (result as Record<string, unknown>).artifacts as unknown[]
+          : [],
+        shardSummary: (result as Record<string, unknown>).shardSummary,
+        result,
+      };
+    } catch (error) {
+      return {
+        ok: false as const,
+        shardId: shard.shardId,
+        label: shardLabel(shard),
+        runtimeId: instance?.runtimeId ?? null,
+        bookCount: shard.bookCount,
+        totalTextBytes: shard.totalTextBytes,
+        error: error instanceof Error ? error.message : "Unknown Sprite shard error",
+      };
+    } finally {
+      if (instance) {
+        await this.destroyWorkspace({
+          runtimeId: instance.runtimeId,
+          sessionId,
+        }).catch(() => {});
+      } else if (machineId) {
+        await this.deleteMachine(machineId).catch(() => {});
+      }
+    }
+  }
+
+  private async runSpriteAggregator(
+    sessionId: string,
+    query: string,
+    shardResults: Array<Record<string, unknown>>,
+    options: {
+      implementationId: string;
+      intensity: "normal" | "high" | "maximum";
+    },
+  ) {
+    const machine = await this.createMachineWithMetadata(sessionId, {
+      namePrefix: "alphabook-aggregate",
+      metadata: {
+        "alphabook.runtime_mode": "sprite-aggregate",
+        "alphabook.implementation_id": options.implementationId,
+      },
+    });
+    const runtimeId = machine.id;
+    const workspacePlan = await this.buildWorkspacePlan(sessionId, runtimeId, [], [], {
+      researchMode: "sprite_fanout",
+      aggregator: true,
+      implementationId: options.implementationId,
+    });
+    await this.store.saveRuntimeInstance({
+      sessionId,
+      runtimeId,
+      provider: "fly-sprites",
+      providerMachineId: machine.id,
+      status: "creating",
+      manifestJson: workspacePlan.manifest,
+      lastUsedAt: nowIso(),
+      expiresAt: addMinutesIso(HARD_LIMITS.MAX_RUNTIME_IDLE_MINUTES),
+    });
+    const instance = await this.requireRuntime(runtimeId);
+    try {
+      await this.waitForMachine(machine.id, "started");
+      await this.waitForRuntimeHttpReady(machine.id);
+      await this.prepareWorkspace(machine.id, {
+        runtimeId,
+        sessionId,
+        works: workspacePlan.manifest.works,
+        dataSchema: workspacePlan.manifest.dataSchema,
+        fileCatalog: workspacePlan.manifest.fileCatalog,
+        selectedChunkIds: [],
+        selectedChunks: [],
+        taskContext: workspacePlan.manifest.taskContext,
+        downloads: workspacePlan.downloads,
+      });
+      await this.store.updateRuntimeInstance(runtimeId, {
+        status: "ready",
+        lastUsedAt: nowIso(),
+        expiresAt: addMinutesIso(HARD_LIMITS.MAX_RUNTIME_IDLE_MINUTES),
+        manifestJson: workspacePlan.manifest,
+        providerMachineId: machine.id,
+      });
+      return await this.executeRuntimeTask(instance, {
+        kind: "sprite_fanout_research",
+        mode: "sprite_aggregate",
+        phase: "collect_and_brief",
+        question: query,
+        researchObjective: query,
+        intensity: options.intensity,
+        shardResults,
+        evidenceFile: "output/evidence.json",
+        evidenceNotesFile: "output/evidence-notes.md",
+        briefingFile: "output/briefing.md",
+        briefingJsonFile: "output/briefing.json",
+      });
+    } finally {
+      await this.destroyWorkspace({
+        runtimeId,
+        sessionId,
+      }).catch(() => {});
+    }
+  }
+
+  private async mapWithConcurrency<T, R>(
+    items: T[],
+    concurrency: number,
+    worker: (item: T, index: number) => Promise<R>,
+  ): Promise<R[]> {
+    const results = new Array<R>(items.length);
+    let nextIndex = 0;
+    const lanes = new Array(Math.max(1, Math.min(concurrency, items.length))).fill(null).map(async () => {
+      while (nextIndex < items.length) {
+        const currentIndex = nextIndex;
+        nextIndex += 1;
+        results[currentIndex] = await worker(items[currentIndex]!, currentIndex);
+      }
+    });
+    await Promise.all(lanes);
+    return results;
   }
 }
