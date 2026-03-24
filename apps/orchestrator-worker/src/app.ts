@@ -9581,12 +9581,14 @@ async function runOrchestrator(
                   ? appendToolProgress(entry, progressText, emittedDetail)
                   : entry,
               );
+              await appendResearchDocumentProgress(toolRecord.id, progressText, emittedDetail);
               await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
               await send("tool.progress", {
                 runId: run.id,
                 toolCallId: toolRecord.id,
                 toolName: "run_workspace_task",
                 text: progressText,
+                researchDocumentHtml: liveResearchDocumentHtml,
                 ...(emittedDetail ? { detail: emittedDetail } : {}),
               });
             },
