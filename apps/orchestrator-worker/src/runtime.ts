@@ -668,8 +668,10 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
         bookCount: shard.bookCount,
       });
       const result = await this.runSpriteShard(sessionId, query, shard, {
+        runId,
         implementationId,
         intensity,
+        progressReporter,
       });
       await this.store.appendRunEvent(runId, sessionId, `sprite.shard.${result.ok ? "completed" : "failed"}`, {
         implementationId,
@@ -1302,8 +1304,14 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     return instance;
   }
 
-  private async executeRuntimeTask(instance: RuntimeInstanceRecord, taskSpec: Record<string, unknown>) {
-    await this.ensureMachineRunning(instance);
+  private async executeRuntimeTask(
+    instance: RuntimeInstanceRecord,
+    taskSpec: Record<string, unknown>,
+    options: { skipMachineStartupCheck?: boolean } = {},
+  ) {
+    if (!options.skipMachineStartupCheck) {
+      await this.ensureMachineRunning(instance);
+    }
     await this.store.updateRuntimeInstance(instance.runtimeId, {
       status: "busy",
       lastUsedAt: nowIso(),
@@ -1415,13 +1423,16 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     query: string,
     shard: SpriteShardManifest,
     options: {
+      runId: string;
       implementationId: string;
       intensity: "normal" | "high" | "maximum";
+      progressReporter?: ProgressReporter;
     },
   ) {
     let machineId: string | null = null;
     let instance: RuntimeInstanceRecord | null = null;
     try {
+      const progressReporter = options.progressReporter;
       const prepareTimeoutMs = estimateSpritePrepareTimeoutMs(shard);
       const machine = await this.createMachineWithMetadata(sessionId, {
         namePrefix: "alphabook-sprite",
@@ -1474,6 +1485,23 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
         manifestJson: workspacePlan.manifest,
         providerMachineId: machine.id,
       });
+      await this.store.appendRunEvent(options.runId, sessionId, "sprite.shard.ready", {
+        implementationId: options.implementationId,
+        shardId: shard.shardId,
+        label: shardLabel(shard),
+        bookCount: shard.bookCount,
+      });
+      await progressReporter?.(
+        `Loaded the books for part ${shard.index + 1} of ${shard.totalShards}. Starting the search now.`,
+        {
+          type: "research.note",
+          researchMode: "sprite_fanout",
+          shardId: shard.shardId,
+          shardLabel: shardLabel(shard),
+          bookCount: shard.bookCount,
+          phase: "search_start",
+        },
+      );
       const result = await this.executeRuntimeTask(instance, {
         kind: "sprite_fanout_research",
         mode: "sprite_shard_search",
@@ -1493,7 +1521,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
         evidenceNotesFile: "output/evidence-notes.md",
         briefingFile: "output/briefing.md",
         briefingJsonFile: "output/briefing.json",
-      });
+      }, { skipMachineStartupCheck: true });
       return {
         ok: true as const,
         shardId: shard.shardId,
@@ -1603,7 +1631,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
         evidenceNotesFile: "output/evidence-notes.md",
         briefingFile: "output/briefing.md",
         briefingJsonFile: "output/briefing.json",
-      });
+      }, { skipMachineStartupCheck: true });
     } finally {
       await this.destroyWorkspace({
         runtimeId,
