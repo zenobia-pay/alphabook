@@ -22,6 +22,7 @@ interface WorkspaceDownload {
   destinationPath: string;
   byteSize?: number | null;
   mimeType?: string;
+  kind?: "clean" | "chunks";
 }
 
 interface FlyMachine {
@@ -1254,6 +1255,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
         r2Key: file.r2Key,
         destinationPath: file.destinationPath,
         byteSize: file.byteSize ?? null,
+        kind: file.kind === "clean" ? "clean" : "chunks",
       })),
       totalBytes,
     };
@@ -1474,6 +1476,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     let stopped = false;
     let inFlight = false;
     let seenCodexLines = 0;
+    let seenEvidenceNoteLines = 0;
     let seenBriefingLines = 0;
     const machineId = instance.providerMachineId ?? instance.runtimeId;
 
@@ -1504,6 +1507,22 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
         for (let index = seenCodexLines; index < codexLines.length; index += 1) {
           try {
             const event = JSON.parse(codexLines[index] ?? "{}") as Record<string, unknown>;
+            const eventType = typeof event.type === "string" ? event.type : "";
+            if (eventType === "research.chunk" || eventType === "research.work") {
+              const message =
+                typeof event.message === "string" && event.message.trim().length > 0
+                  ? event.message.trim()
+                  : eventType === "research.chunk"
+                    ? `Found a relevant passage in part ${shard.index + 1} of ${shard.totalShards}.`
+                    : `Identified a likely book in part ${shard.index + 1} of ${shard.totalShards}.`;
+              await safeReportProgress(progressReporter, message, {
+                ...event,
+                shardId: shard.shardId,
+                shardLabel: shardLabel(shard),
+                bookCount: shard.bookCount,
+              });
+              continue;
+            }
             const message = normalizeSpriteProgressMessage(event, shard);
             if (!message) {
               continue;
@@ -1522,6 +1541,31 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
           }
         }
         seenCodexLines = codexLines.length;
+
+        const evidenceNotesContent = await readFile("output/evidence-notes.md");
+        const evidenceNoteLines = evidenceNotesContent
+          .split(/\r?\n/u)
+          .map((line) => line.trimEnd())
+          .filter((line) => line.trim().length > 0);
+        if (seenEvidenceNoteLines > evidenceNoteLines.length) {
+          seenEvidenceNoteLines = 0;
+        }
+        for (let index = seenEvidenceNoteLines; index < evidenceNoteLines.length; index += 1) {
+          const line = evidenceNoteLines[index]?.trim();
+          if (!line) {
+            continue;
+          }
+          await safeReportProgress(progressReporter, line, {
+            type: "research.briefing_line",
+            line,
+            lineIndex: index,
+            researchMode: "sprite_fanout",
+            shardId: shard.shardId,
+            shardLabel: shardLabel(shard),
+            bookCount: shard.bookCount,
+          });
+        }
+        seenEvidenceNoteLines = evidenceNoteLines.length;
 
         const briefingContent = await readFile("output/briefing.md");
         const briefingLines = briefingContent

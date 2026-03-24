@@ -8317,7 +8317,11 @@ async function runOrchestrator(
   ) => {
     recordRawLog("tool.progress.raw", payload);
     const detailType = typeof payload.detail?.type === "string" ? payload.detail.type : null;
-    if (detailType === "research.work" || detailType === "research.chunk") {
+    if (
+      detailType === "research.work"
+      || detailType === "research.chunk"
+      || detailType === "research.briefing_line"
+    ) {
       void onEmit(payload.text, payload.detail);
       return;
     }

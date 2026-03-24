@@ -21,6 +21,7 @@ interface WorkspaceDownload {
   sourceUrl?: string;
   destinationPath: string;
   byteSize?: number | null;
+  kind?: "clean" | "chunks";
 }
 
 interface PrepareRequest {
@@ -360,7 +361,14 @@ async function downloadFiles(
   r2Client: S3Client | null,
   r2BucketName: string | null,
 ) {
-  const orderedDownloads = [...downloads].sort((left, right) => (right.byteSize ?? 0) - (left.byteSize ?? 0));
+  const orderedDownloads = [...downloads].sort((left, right) => {
+    const leftKindRank = left.kind === "clean" ? 0 : 1;
+    const rightKindRank = right.kind === "clean" ? 0 : 1;
+    if (leftKindRank !== rightKindRank) {
+      return leftKindRank - rightKindRank;
+    }
+    return (right.byteSize ?? 0) - (left.byteSize ?? 0);
+  });
   const concurrency = Math.max(1, Math.min(8, orderedDownloads.length));
   let nextIndex = 0;
 

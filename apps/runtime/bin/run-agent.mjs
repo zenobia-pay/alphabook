@@ -865,6 +865,51 @@ function buildSearchEvidence(question, selectedChunks, runtimeChunks, workById) 
   };
 }
 
+function buildInitialEvidenceNotes(question, evidence) {
+  const lines = [
+    "# Early Evidence",
+    "",
+    question ? `Question: ${normalizeWhitespace(String(question))}` : "Question: Broad corpus search",
+    "",
+  ];
+
+  if (Array.isArray(evidence.selectedChunks) && evidence.selectedChunks.length > 0) {
+    lines.push("## Seed Passages", "");
+    for (const chunk of evidence.selectedChunks.slice(0, 6)) {
+      const title = normalizeWhitespace(String(chunk.title || chunk.workId || "Source"));
+      const excerpt = normalizeWhitespace(String(chunk.excerpt || "")).slice(0, 420);
+      if (!excerpt) {
+        continue;
+      }
+      lines.push(`### ${title}`);
+      lines.push("");
+      lines.push(`> ${excerpt}`);
+      lines.push("");
+    }
+  }
+
+  if (Array.isArray(evidence.runtimeHits) && evidence.runtimeHits.length > 0) {
+    lines.push("## Strong Local Matches", "");
+    for (const chunk of evidence.runtimeHits.slice(0, 8)) {
+      const title = normalizeWhitespace(String(chunk.title || chunk.workId || "Source"));
+      const excerpt = normalizeWhitespace(String(chunk.excerpt || "")).slice(0, 420);
+      if (!excerpt) {
+        continue;
+      }
+      lines.push(`### ${title}`);
+      lines.push("");
+      lines.push(`> ${excerpt}`);
+      lines.push("");
+      if (Array.isArray(chunk.matchedConcepts) && chunk.matchedConcepts.length > 0) {
+        lines.push(`Matched concepts: ${chunk.matchedConcepts.join(", ")}`);
+        lines.push("");
+      }
+    }
+  }
+
+  return `${lines.join("\n").trim()}\n`;
+}
+
 function sampleStrings(values, limit = 8) {
   return Array.isArray(values)
     ? values.filter((value) => typeof value === "string").slice(0, limit)
@@ -1953,6 +1998,19 @@ async function main() {
   );
   await writeFile(join(outputDir, "evidence.seed.json"), JSON.stringify(evidence, null, 2), "utf8");
   await writeFile(join(outputDir, "evidence.json"), JSON.stringify(evidence, null, 2), "utf8");
+  await writeFile(
+    join(outputDir, "evidence.jsonl"),
+    [
+      ...evidence.selectedChunks.map((chunk) => JSON.stringify({ kind: "seed", ...chunk })),
+      ...evidence.runtimeHits.map((chunk) => JSON.stringify({ kind: "runtime_hit", ...chunk })),
+    ].join("\n"),
+    "utf8",
+  );
+  await writeFile(
+    join(outputDir, "evidence-notes.md"),
+    buildInitialEvidenceNotes(question, evidence),
+    "utf8",
+  );
   const viewedChunksReference = buildViewedChunksArtifact(seedChunks, iterations, evidence, topRuntimeHits, workById);
   await writeFile(join(outputDir, "viewed-chunks.json"), JSON.stringify(viewedChunksReference, null, 2), "utf8");
   await writeFile(join(outputDir, "every-single-reference.md"), buildViewedChunksMarkdown(viewedChunksReference), "utf8");
