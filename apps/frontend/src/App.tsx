@@ -160,7 +160,7 @@ type ThreadSuggestion = {
   prompt: string;
 };
 
-type AssistantEffortLevel = "normal" | "high" | "maximum";
+type AssistantEffortLevel = "normal" | "high" | "maximum" | "comprehensive";
 
 type ReaderPassageKind = "heading" | "paragraph" | "quote" | "list-item" | "preformatted";
 
@@ -182,6 +182,25 @@ declare global {
 const USER_STORAGE_KEY = "alphabook.localUserId";
 const BOOK_ASSISTANT_WIDTH_STORAGE_KEY = "alphabook.bookAssistantWidth";
 const ASSISTANT_EFFORT_STORAGE_KEY = "alphabook.assistantEffort";
+
+function normalizeAssistantEffort(value: string | null): AssistantEffortLevel {
+  return value === "normal" || value === "high" || value === "maximum" || value === "comprehensive" ? value : "high";
+}
+
+function resolveResearchMode(
+  effort: AssistantEffortLevel,
+): { intensityOverride: "normal" | "high" | "maximum"; researchMode?: "sprite_fanout" } {
+  if (effort === "comprehensive") {
+    return {
+      intensityOverride: "maximum",
+      researchMode: "sprite_fanout",
+    };
+  }
+
+  return {
+    intensityOverride: effort,
+  };
+}
 const RECENT_SESSIONS_STORAGE_KEY = "alphabook.recentSessions";
 const BOOK_ASSISTANT_MIN_WIDTH = 320;
 const BOOK_ASSISTANT_MAX_WIDTH = 720;
@@ -4891,8 +4910,7 @@ export default function App() {
     if (typeof window === "undefined") {
       return "high";
     }
-    const saved = window.localStorage.getItem(ASSISTANT_EFFORT_STORAGE_KEY);
-    return saved === "normal" || saved === "high" || saved === "maximum" ? saved : "high";
+    return normalizeAssistantEffort(window.localStorage.getItem(ASSISTANT_EFFORT_STORAGE_KEY));
   });
   const [sessionRuns, setSessionRuns] = useState<SessionRunRecord[]>(initialBootstrapRuns);
   const [runArtifacts, setRunArtifacts] = useState<RunArtifactRecord[]>(() => (
@@ -6485,13 +6503,15 @@ export default function App() {
     };
 
     try {
+      const researchConfig = resolveResearchMode(assistantEffort);
       await streamChat(
         {
           sessionId: initialSessionId ?? undefined,
           userId: authState.authConfigured ? undefined : currentUserId,
           message: transportQuestion,
           workIds: options.workIdsOverride,
-          intensityOverride: assistantEffort,
+          intensityOverride: researchConfig.intensityOverride,
+          researchMode: researchConfig.researchMode,
         },
         {
           onEvent: (event) => {

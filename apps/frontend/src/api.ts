@@ -512,6 +512,7 @@ export async function streamChat(
     message: string;
     workIds?: string[];
     intensityOverride?: "normal" | "high" | "maximum";
+    researchMode?: "default" | "sprite_fanout";
   },
   handlers: ChatStreamHandlers,
   options: {
