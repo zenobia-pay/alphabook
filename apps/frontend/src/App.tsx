@@ -742,16 +742,7 @@ function buildToolTraceFromRunEvents(events: PersistedRunEventRecord[]) {
 
 function mergePersistedRunEvents(messages: UiMessage[], runId: string, events: PersistedRunEventRecord[]) {
   const normalizedTrace = buildToolTraceFromRunEvents(events);
-  const latestResearchDocumentHtml = [...events]
-    .sort((left, right) => left.sequence - right.sequence)
-    .reduce<string>((html, event) => {
-      const candidate =
-        event.dataJson && typeof event.dataJson === "object" && typeof event.dataJson.researchDocumentHtml === "string"
-          ? event.dataJson.researchDocumentHtml.trim()
-          : "";
-      return candidate.length > 0 ? candidate : html;
-    }, "");
-  if (normalizedTrace.length === 0 && latestResearchDocumentHtml.length === 0) {
+  if (normalizedTrace.length === 0) {
     return messages;
   }
   let changed = false;
@@ -764,10 +755,6 @@ function mergePersistedRunEvents(messages: UiMessage[], runId: string, events: P
     changed = true;
     return {
       ...message,
-      metadata: {
-        ...message.metadata,
-        ...(latestResearchDocumentHtml.length > 0 ? { researchDocumentHtml: latestResearchDocumentHtml } : {}),
-      },
       toolCalls: normalizedTrace,
     };
   });
