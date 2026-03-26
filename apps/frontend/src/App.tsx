@@ -1,8 +1,4 @@
 import { Component, createContext, type ComponentType, type CSSProperties, type ErrorInfo, type FormEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type UIEvent, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import {
-  AssistantRuntimeProvider,
-  useExternalStoreRuntime,
-} from "@assistant-ui/react";
 import type { ReadonlyJSONObject, ReadonlyJSONValue } from "assistant-stream/utils";
 import type { AgentationProps } from "agentation";
 import { ChevronsLeft, ChevronsRight, Link2, LoaderCircle, MessageSquarePlus, X } from "lucide-react";
@@ -10,7 +6,7 @@ import { ChevronsLeft, ChevronsRight, Link2, LoaderCircle, MessageSquarePlus, X 
 import { ChatSessionSummarySchema, getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type NotificationRecord, type ProfileBookStat, type ProfileFacetStat, type ProfileQueryStat, type PublicProfileResponse, type UserProfile, type UserProfileStats, type WorkDetail, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
 import { ApiError, buildSignInUrl, buildSignOutUrl, cancelRun, claimGuestProfile, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchAssistantDocumentState, fetchAssistantSessionBootstrap, fetchCurrentUser, fetchMessages, fetchNotifications, fetchProfile, fetchProfileStats, fetchRunState, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, getErrorMessage, markNotificationRead, queryAdminAnalytics, sendAnalyticsEvent, streamChat, streamRun, unfollowProfile, type PersistedRunEventRecord, type RunArtifactRecord, type SessionRunRecord } from "./api";
-import { Thread } from "./components/assistant-ui/thread";
+import type { AssistantSurfaceProps } from "./components/assistant-surface";
 import { Avatar, AvatarFallback, AvatarImage } from "./components/ui/avatar";
 import { Button } from "./components/ui/button";
 import { Card, CardContent } from "./components/ui/card";
@@ -443,11 +439,16 @@ function readUrlState(): UrlState {
 
   const pathnameMatch = window.location.pathname.match(/^\/works\/([^/]+)$/);
   const profilePathMatch = window.location.pathname.match(/^\/u\/([^/]+)$/);
+  const pathnameView = window.location.pathname === "/explore"
+    ? "explore"
+    : window.location.pathname === "/profile"
+      ? "profile"
+      : null;
   const params = new URLSearchParams(window.location.search);
   const rawView = params.get("view");
   const resolvedView = rawView === "library" ? "explore" : rawView;
   return {
-    view: pathnameMatch ? "book" : profilePathMatch ? "profile" : isViewMode(resolvedView) ? resolvedView : "assistant",
+    view: pathnameMatch ? "book" : profilePathMatch ? "profile" : pathnameView ?? (isViewMode(resolvedView) ? resolvedView : "assistant"),
     sessionId: params.has("session") ? params.get("session") || null : undefined,
     workId: pathnameMatch ? decodeURIComponent(pathnameMatch[1]) : params.has("work") ? params.get("work") || null : undefined,
     readerPath: params.has("reader") ? params.get("reader") || null : undefined,
@@ -3068,69 +3069,11 @@ function SidebarRecents({
   );
 }
 
-function AssistantSurface({
-  messages,
-  isSending,
-  streamingAssistantId,
-  artifacts,
-  showArtifacts = true,
-  showWelcome = true,
-  effortLevel,
-  onEffortLevelChange,
-  onPrompt,
-  onCancel,
-  suggestions = ASSISTANT_WELCOME_SUGGESTIONS,
-  composerDisabled = false,
-  composerDisabledNotice,
-}: {
-  messages: UiMessage[];
-  isSending: boolean;
-  streamingAssistantId: string | null;
-  artifacts: RunArtifactRecord[];
-  showArtifacts?: boolean;
-  showWelcome?: boolean;
-  effortLevel: AssistantEffortLevel;
-  onEffortLevelChange: (value: AssistantEffortLevel) => void;
-  onPrompt: (prompt: string) => Promise<void>;
-  onCancel: () => Promise<void>;
-  suggestions?: ThreadSuggestion[];
-  composerDisabled?: boolean;
-  composerDisabledNotice?: ReactNode;
-}) {
-  const runtime = useExternalStoreRuntime({
-    isRunning: isSending,
-    messages: messages.filter((message) => message.role === "user" || message.role === "assistant"),
-    convertMessage: (message: UiMessage) => messageToThreadMessage(message, streamingAssistantId, isSending, isSending),
-    onNew: async (message: { content?: unknown }) => {
-      if (composerDisabled) {
-        return;
-      }
-      const prompt = extractPromptText(message);
-      if (!prompt) {
-        return;
-      }
-      await onPrompt(prompt);
-    },
-    onCancel,
-  });
-
+function AssistantSurfaceFallback() {
   return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <Thread
-        isRunning={isSending}
-        artifacts={artifacts}
-        showArtifacts={showArtifacts}
-        showWelcome={showWelcome}
-        suggestions={suggestions}
-        effortLevel={effortLevel}
-        onEffortLevelChange={onEffortLevelChange}
-        composerDisabled={composerDisabled}
-        composerDisabledNotice={composerDisabledNotice}
-        onCancel={() => {
-          void onCancel();
-        }}
-      />
-    </AssistantRuntimeProvider>
+    <div className="assistant-thread-shell" data-testid="thread-loading">
+      <div className="session-loading">Loading assistant…</div>
+    </div>
   );
 }
 
@@ -5268,6 +5211,7 @@ export default function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [debugEnabled, setDebugEnabled] = useState(initialUrlState.debugEnabled);
   const [AgentationComponent, setAgentationComponent] = useState<ComponentType<AgentationProps> | null>(null);
+  const [AssistantSurfaceComponent, setAssistantSurfaceComponent] = useState<ComponentType<AssistantSurfaceProps> | null>(null);
   const [exploreDraft, setExploreDraft] = useState("");
   const [feedWorks, setFeedWorks] = useState<WorkSummary[]>([]);
   const [feedNextOffset, setFeedNextOffset] = useState<number | null>(0);
@@ -5697,6 +5641,30 @@ export default function App() {
       cancelled = true;
     };
   }, [debugEnabled]);
+
+  useEffect(() => {
+    if (AssistantSurfaceComponent || (activeView !== "assistant" && activeView !== "book")) {
+      return;
+    }
+
+    let cancelled = false;
+    void import("./components/assistant-surface")
+      .then((module) => {
+        if (!cancelled) {
+          setAssistantSurfaceComponent(() => module.default);
+        }
+      })
+      .catch((error) => {
+        reportClientIncident(error, {
+          source: "assistant_surface_import",
+        });
+        console.error("Failed to load assistant surface.", error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [AssistantSurfaceComponent, activeView]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -7475,6 +7443,50 @@ export default function App() {
     setActiveView("book");
   }
 
+  function renderAssistantSurface(props: {
+    messages: UiMessage[];
+    isSending: boolean;
+    streamingAssistantId: string | null;
+    artifacts: RunArtifactRecord[];
+    showArtifacts?: boolean;
+    showWelcome?: boolean;
+    effortLevel: AssistantEffortLevel;
+    onEffortLevelChange: (value: AssistantEffortLevel) => void;
+    onPrompt: (prompt: string) => Promise<void>;
+    onCancel: () => Promise<void>;
+    suggestions?: ThreadSuggestion[];
+    composerDisabled?: boolean;
+    composerDisabledNotice?: ReactNode;
+    componentKey?: string;
+  }) {
+    if (!AssistantSurfaceComponent) {
+      return <AssistantSurfaceFallback />;
+    }
+    const Component = AssistantSurfaceComponent;
+    return (
+      <Component
+        key={props.componentKey}
+        messages={props.messages}
+        isSending={props.isSending}
+        streamingAssistantId={props.streamingAssistantId}
+        artifacts={props.artifacts}
+        showArtifacts={props.showArtifacts}
+        showWelcome={props.showWelcome}
+        effortLevel={props.effortLevel}
+        onEffortLevelChange={props.onEffortLevelChange}
+        onPrompt={props.onPrompt}
+        onCancel={props.onCancel}
+        suggestions={props.suggestions}
+        composerDisabled={props.composerDisabled}
+        composerDisabledNotice={props.composerDisabledNotice}
+        convertMessage={(message, streamingAssistantId, isSending) =>
+          messageToThreadMessage(message, streamingAssistantId, isSending, isSending)
+        }
+        extractPromptText={extractPromptText}
+      />
+    );
+  }
+
   function renderAssistantView() {
     const assistantSessionLoading =
       selectedSessionId != null
@@ -7526,21 +7538,21 @@ export default function App() {
               </section>
             )}
             rightPane={(
-              <AssistantSurface
-                key={`loading-${selectedSessionId ?? "new-thread"}`}
-                messages={[]}
-                isSending={false}
-                streamingAssistantId={null}
-                artifacts={[]}
-                showArtifacts={false}
-                showWelcome={false}
-                effortLevel={assistantEffort}
-                onEffortLevelChange={setAssistantEffort}
-                onPrompt={sendPrompt}
-                onCancel={cancelActiveRun}
-                composerDisabled={authLocked}
-                composerDisabledNotice={assistantComposerNotice}
-              />
+              renderAssistantSurface({
+                messages: [],
+                isSending: false,
+                streamingAssistantId: null,
+                artifacts: [],
+                showArtifacts: false,
+                showWelcome: false,
+                effortLevel: assistantEffort,
+                onEffortLevelChange: setAssistantEffort,
+                onPrompt: sendPrompt,
+                onCancel: cancelActiveRun,
+                composerDisabled: authLocked,
+                composerDisabledNotice: assistantComposerNotice,
+                componentKey: `loading-${selectedSessionId ?? "new-thread"}`,
+              })
             )}
           />
         ) : showRestrictedConversation ? (
@@ -7549,19 +7561,19 @@ export default function App() {
           </div>
         ) : showBlankSession ? (
           <div className="assistant-thread-shell" data-testid="thread">
-            <AssistantSurface
-              key="assistant-landing"
-              messages={[]}
-              isSending={false}
-              streamingAssistantId={null}
-              artifacts={[]}
-              effortLevel={assistantEffort}
-              onEffortLevelChange={setAssistantEffort}
-              onPrompt={sendPrompt}
-              onCancel={cancelActiveRun}
-              composerDisabled={authLocked}
-              composerDisabledNotice={assistantComposerNotice}
-            />
+            {renderAssistantSurface({
+              messages: [],
+              isSending: false,
+              streamingAssistantId: null,
+              artifacts: [],
+              effortLevel: assistantEffort,
+              onEffortLevelChange: setAssistantEffort,
+              onPrompt: sendPrompt,
+              onCancel: cancelActiveRun,
+              composerDisabled: authLocked,
+              composerDisabledNotice: assistantComposerNotice,
+              componentKey: "assistant-landing",
+            })}
           </div>
         ) : (
           <AssistantWorkspace
@@ -7576,20 +7588,20 @@ export default function App() {
               />
             )}
             rightPane={(
-              <AssistantSurface
-                key={selectedSessionId ?? "new-thread"}
-                messages={visibleMessages}
-                isSending={isSending || recoveredActiveRunId !== null}
-                streamingAssistantId={streamingAssistantId}
-                artifacts={runArtifacts}
-                showArtifacts={false}
-                effortLevel={assistantEffort}
-                onEffortLevelChange={setAssistantEffort}
-                onPrompt={sendPrompt}
-                onCancel={cancelActiveRun}
-                composerDisabled={authLocked}
-                composerDisabledNotice={assistantComposerNotice}
-              />
+              renderAssistantSurface({
+                messages: visibleMessages,
+                isSending: isSending || recoveredActiveRunId !== null,
+                streamingAssistantId,
+                artifacts: runArtifacts,
+                showArtifacts: false,
+                effortLevel: assistantEffort,
+                onEffortLevelChange: setAssistantEffort,
+                onPrompt: sendPrompt,
+                onCancel: cancelActiveRun,
+                composerDisabled: authLocked,
+                composerDisabledNotice: assistantComposerNotice,
+                componentKey: selectedSessionId ?? "new-thread",
+              })
             )}
           />
         )}
@@ -7685,20 +7697,20 @@ export default function App() {
                 title="Sign in to ask about this book."
               />
             ) : (
-              <AssistantSurface
-                key={`book-${activeWorkId ?? "unknown"}-${selectedSessionId ?? "new-thread"}`}
-                messages={visibleMessages}
-                isSending={isSending || recoveredActiveRunId !== null}
-                streamingAssistantId={streamingAssistantId}
-                artifacts={runArtifacts}
-                effortLevel={assistantEffort}
-                onEffortLevelChange={setAssistantEffort}
-                onPrompt={bookPromptHandler}
-                onCancel={cancelActiveRun}
-                suggestions={ASSISTANT_WELCOME_SUGGESTIONS}
-                composerDisabled={bookComposerDisabled}
-                composerDisabledNotice={bookComposerDisabledNotice}
-              />
+              renderAssistantSurface({
+                messages: visibleMessages,
+                isSending: isSending || recoveredActiveRunId !== null,
+                streamingAssistantId,
+                artifacts: runArtifacts,
+                effortLevel: assistantEffort,
+                onEffortLevelChange: setAssistantEffort,
+                onPrompt: bookPromptHandler,
+                onCancel: cancelActiveRun,
+                suggestions: ASSISTANT_WELCOME_SUGGESTIONS,
+                composerDisabled: bookComposerDisabled,
+                composerDisabledNotice: bookComposerDisabledNotice,
+                componentKey: `book-${activeWorkId ?? "unknown"}-${selectedSessionId ?? "new-thread"}`,
+              })
             )}
           </div>
         </aside>
