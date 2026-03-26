@@ -163,11 +163,12 @@ function buildFetchHandler(env: Env) {
   const ingestQueueName = env.QUEUE_INGEST_NAME ?? `${implementation.id}-ingest`;
   const jobsQueueName = env.QUEUE_JOBS_NAME ?? `${implementation.id}-jobs`;
   const db = createNeonDb(env.DATABASE_URL);
+  const blobStore = new CloudflareR2Store(env.CORPUS_BUCKET);
   const store = new NeonAppStore(db, {
     adapterId: implementation.adapterId,
+    blobStore,
     feedLabels: implementation.feedLabels,
   });
-  const blobStore = new CloudflareR2Store(env.CORPUS_BUCKET);
   const billing = createBillingService(store, {
     monthlyLimitUsd: env.BILLING_MONTHLY_LIMIT_USD ? Number(env.BILLING_MONTHLY_LIMIT_USD) : undefined,
     modelPricing: env.BILLING_MODEL_PRICING_JSON
@@ -279,11 +280,12 @@ async function runScheduledJanitor(env: Env) {
   const ingestQueueName = env.QUEUE_INGEST_NAME ?? `${implementation.id}-ingest`;
   const jobsQueueName = env.QUEUE_JOBS_NAME ?? `${implementation.id}-jobs`;
   const db = createNeonDb(env.DATABASE_URL);
+  const blobStore = new CloudflareR2Store(env.CORPUS_BUCKET);
   const store = new NeonAppStore(db, {
     adapterId: implementation.adapterId,
+    blobStore,
     feedLabels: implementation.feedLabels,
   });
-  const blobStore = new CloudflareR2Store(env.CORPUS_BUCKET);
   const billing = createBillingService(store, {
     monthlyLimitUsd: env.BILLING_MONTHLY_LIMIT_USD ? Number(env.BILLING_MONTHLY_LIMIT_USD) : undefined,
     modelPricing: env.BILLING_MODEL_PRICING_JSON

@@ -9,9 +9,17 @@ import type {
   CorpusDocumentRecord,
   CorpusFileRecord,
 } from "@alphabook/platform";
+import { artifactKeys } from "@alphabook/corpus-core";
 import { NeonCorpusDbRepository } from "./db-repository";
+import { MemoryBlobStore, type BlobStore } from "./r2";
 
 const PASSAGE_SEARCH_TIMEOUT_MS = 45_000;
+const INLINE_PAYLOAD_MAX_BYTES = 4_096;
+const INLINE_STRING_MAX_LENGTH = 1_200;
+const INLINE_ARRAY_MAX_ITEMS = 12;
+const INLINE_OBJECT_MAX_KEYS = 24;
+
+type RetentionClass = "product-critical" | "debug-index" | "debug-blob";
 
 export interface PassageSearchFilters {
   language?: string;
@@ -233,6 +241,10 @@ export interface ToolCallRecord {
   toolName: ToolName;
   argsJson: Record<string, unknown>;
   resultJson: Record<string, unknown> | null;
+  argsRef?: string | null;
+  resultRef?: string | null;
+  argsSummary?: string | null;
+  resultSummary?: string | null;
   status: "queued" | "running" | "completed" | "failed" | "timed_out";
   startedAt: string;
   completedAt: string | null;
@@ -245,6 +257,13 @@ export interface RunEventRecord {
   event: string;
   sequence: number;
   dataJson: Record<string, unknown>;
+  summaryText?: string | null;
+  payloadRef?: string | null;
+  phase?: string | null;
+  status?: string | null;
+  toolCallId?: string | null;
+  runtimeId?: string | null;
+  retentionClass?: RetentionClass | null;
   createdAt: string;
 }
 
@@ -288,6 +307,14 @@ export interface RuntimeInstanceRecord {
   providerMachineId: string | null;
   status: "creating" | "ready" | "busy" | "destroyed" | "failed" | "expired";
   manifestJson: Record<string, unknown>;
+  manifestRef?: string | null;
+  taskSpecJson?: Record<string, unknown> | null;
+  selectedWorkIds?: string[];
+  selectedChunkIds?: string[];
+  fileCatalogRef?: string | null;
+  researchMode?: string | null;
+  shardId?: string | null;
+  isAggregator?: boolean;
   lastUsedAt: string | null;
   expiresAt: string | null;
   createdAt: string;
@@ -324,8 +351,11 @@ export interface ArtifactRecord {
   sessionId: string;
   runtimeId: string | null;
   r2Key: string;
+  blobRef?: string | null;
   filename: string;
   mimeType: string;
+  byteSize?: number | null;
+  summaryText?: string | null;
   metadata: Record<string, unknown>;
   createdAt: string;
 }
@@ -502,6 +532,176 @@ type SeedChunk = ChunkSearchResult & {
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function jsonByteSize(value: unknown): number {
+  return new TextEncoder().encode(JSON.stringify(value ?? null)).length;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function summarizeScalar(value: unknown): string | null {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed.slice(0, 240) : null;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return null;
+}
+
+function truncateInlineValue(value: unknown, depth = 0): unknown {
+  if (depth > 3) {
+    return undefined;
+  }
+  if (typeof value === "string") {
+    return value.length > INLINE_STRING_MAX_LENGTH ? `${value.slice(0, INLINE_STRING_MAX_LENGTH)}…` : value;
+  }
+  if (Array.isArray(value)) {
+    return value.slice(0, INLINE_ARRAY_MAX_ITEMS).map((entry) => truncateInlineValue(entry, depth + 1));
+  }
+  if (isPlainRecord(value)) {
+    return Object.fromEntries(
+      Object.entries(value)
+        .slice(0, INLINE_OBJECT_MAX_KEYS)
+        .map(([key, entry]) => [key, truncateInlineValue(entry, depth + 1)])
+        .filter(([, entry]) => entry !== undefined),
+    );
+  }
+  return value;
+}
+
+function containsHeavyPayload(value: unknown, depth = 0): boolean {
+  if (depth > 3 || value == null) {
+    return false;
+  }
+  if (typeof value === "string") {
+    return value.length > INLINE_STRING_MAX_LENGTH
+      || value.includes("<html")
+      || value.includes("<div")
+      || value.includes("<p");
+  }
+  if (Array.isArray(value)) {
+    return value.length > INLINE_ARRAY_MAX_ITEMS || value.some((entry) => containsHeavyPayload(entry, depth + 1));
+  }
+  if (isPlainRecord(value)) {
+    const keys = Object.keys(value);
+    if (keys.length > INLINE_OBJECT_MAX_KEYS) {
+      return true;
+    }
+    return keys.some((key) =>
+      key === "researchDocumentHtml"
+      || key === "works"
+      || key === "documents"
+      || key === "selectedChunks"
+      || key === "result"
+      || key === "content"
+      || key === "html"
+      || containsHeavyPayload(value[key], depth + 1));
+  }
+  return false;
+}
+
+function shouldSpillPayload(value: unknown): boolean {
+  return jsonByteSize(value) > INLINE_PAYLOAD_MAX_BYTES || containsHeavyPayload(value);
+}
+
+function buildInlinePayload(value: Record<string, unknown>): Record<string, unknown> {
+  const truncated = truncateInlineValue(value);
+  return isPlainRecord(truncated) ? truncated : {};
+}
+
+function summarizePayload(value: Record<string, unknown>, fallback: string): string {
+  const preferredKeys = [
+    "summary",
+    "text",
+    "message",
+    "error",
+    "status",
+    "label",
+    "title",
+    "phase",
+    "toolName",
+  ];
+  for (const key of preferredKeys) {
+    const summary = summarizeScalar(value[key]);
+    if (summary) {
+      return summary;
+    }
+  }
+  return fallback;
+}
+
+function compactManifest(manifest: Record<string, unknown>): {
+  compactManifest: Record<string, unknown>;
+  taskSpecJson: Record<string, unknown>;
+  selectedWorkIds: string[];
+  selectedChunkIds: string[];
+  fileCatalog: unknown[];
+  researchMode: string | null;
+  shardId: string | null;
+  isAggregator: boolean;
+} {
+  const taskContext = isPlainRecord(manifest.taskContext) ? manifest.taskContext : {};
+  const documents = Array.isArray(manifest.documents) ? manifest.documents : [];
+  const selectedWorkIds = documents
+    .map((entry) => {
+      if (!isPlainRecord(entry)) {
+        return null;
+      }
+      return typeof entry.documentId === "string"
+        ? entry.documentId
+        : typeof entry.workId === "string"
+          ? entry.workId
+          : null;
+    })
+    .filter((entry): entry is string => typeof entry === "string");
+  const selectedChunkIds = Array.isArray(manifest.selectedChunkIds)
+    ? manifest.selectedChunkIds.filter((entry): entry is string => typeof entry === "string")
+    : [];
+  const fileCatalog = Array.isArray(manifest.fileCatalog) ? manifest.fileCatalog : [];
+  const taskSpecJson = isPlainRecord(taskContext.taskSpec)
+    ? structuredClone(taskContext.taskSpec)
+    : taskContext;
+  return {
+    compactManifest: {
+      runtimeId: typeof manifest.runtimeId === "string" ? manifest.runtimeId : null,
+      sessionId: typeof manifest.sessionId === "string" ? manifest.sessionId : null,
+      selectedWorkIds,
+      selectedChunkIds,
+      fileCount: fileCatalog.length,
+      researchMode: typeof taskContext.researchMode === "string" ? taskContext.researchMode : null,
+      shardId: typeof taskContext.shardId === "string" ? taskContext.shardId : null,
+      aggregator: taskContext.aggregator === true,
+      taskContext: buildInlinePayload(taskContext),
+    },
+    taskSpecJson,
+    selectedWorkIds,
+    selectedChunkIds,
+    fileCatalog,
+    researchMode: typeof taskContext.researchMode === "string" ? taskContext.researchMode : null,
+    shardId: typeof taskContext.shardId === "string" ? taskContext.shardId : null,
+    isAggregator: taskContext.aggregator === true,
+  };
+}
+
+async function loadJsonBlob(blobStore: BlobStore, key: string | null | undefined): Promise<Record<string, unknown> | null> {
+  if (!key) {
+    return null;
+  }
+  const text = await blobStore.getText(key);
+  if (!text) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    return isPlainRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 function mapWorkSummaryToDocument(work: WorkSummary): CorpusDocumentRecord {
@@ -1806,6 +2006,7 @@ export class InMemoryAppStore implements AppStore {
   constructor(
     private readonly works: SeedWork[] = [],
     private readonly chunks: SeedChunk[] = [],
+    private readonly blobStore: BlobStore = new MemoryBlobStore(),
   ) {}
 
   async ensureUser(userId: string): Promise<void> {
@@ -2409,12 +2610,21 @@ export class InMemoryAppStore implements AppStore {
   }
 
   async startToolCall(runId: string, toolName: ToolName, argsJson: Record<string, unknown>): Promise<ToolCallRecord> {
+    const toolCallId = crypto.randomUUID();
+    const argsRef = shouldSpillPayload(argsJson)
+      ? artifactKeys.sessionArtifact(runId, `tool-call-${toolCallId}-args.json`)
+      : null;
+    if (argsRef) {
+      await this.blobStore.putJson(argsRef, argsJson);
+    }
     const toolCall: ToolCallRecord = {
-      id: crypto.randomUUID(),
+      id: toolCallId,
       runId,
       toolName,
-      argsJson,
+      argsJson: argsRef ? buildInlinePayload(argsJson) : structuredClone(argsJson),
       resultJson: null,
+      argsRef,
+      argsSummary: summarizePayload(argsJson, `${toolName} arguments`),
       status: "running",
       startedAt: nowIso(),
       completedAt: null,
@@ -2424,9 +2634,14 @@ export class InMemoryAppStore implements AppStore {
   }
 
   async listToolCalls(runId: string): Promise<ToolCallRecord[]> {
-    return [...this.toolCalls.values()]
+    const toolCalls = [...this.toolCalls.values()]
       .filter((toolCall) => toolCall.runId === runId)
       .sort((left, right) => left.startedAt.localeCompare(right.startedAt));
+    return Promise.all(toolCalls.map(async (toolCall) => ({
+      ...toolCall,
+      argsJson: toolCall.argsRef ? (await loadJsonBlob(this.blobStore, toolCall.argsRef) ?? toolCall.argsJson) : toolCall.argsJson,
+      resultJson: toolCall.resultRef ? (await loadJsonBlob(this.blobStore, toolCall.resultRef) ?? toolCall.resultJson) : toolCall.resultJson,
+    })));
   }
 
   async finishToolCall(toolCallId: string, status: ToolCallRecord["status"], resultJson: Record<string, unknown>): Promise<void> {
@@ -2434,20 +2649,42 @@ export class InMemoryAppStore implements AppStore {
     if (!toolCall) {
       return;
     }
+    const resultRef = shouldSpillPayload(resultJson)
+      ? artifactKeys.sessionArtifact(toolCall.runId, `tool-call-${toolCallId}-result.json`)
+      : null;
+    if (resultRef) {
+      await this.blobStore.putJson(resultRef, resultJson);
+    }
     toolCall.status = status;
-    toolCall.resultJson = resultJson;
+    toolCall.resultJson = resultRef ? buildInlinePayload(resultJson) : structuredClone(resultJson);
+    toolCall.resultRef = resultRef;
+    toolCall.resultSummary = summarizePayload(resultJson, `${toolCall.toolName} ${status}`);
     toolCall.completedAt = nowIso();
   }
 
   async appendRunEvent(runId: string, sessionId: string, event: string, dataJson: Record<string, unknown>): Promise<RunEventRecord> {
     const existing = this.runEvents.get(runId) ?? [];
+    const sequence = existing.length + 1;
+    const payloadRef = shouldSpillPayload(dataJson)
+      ? artifactKeys.sessionArtifact(sessionId, `runs/${runId}/events/${String(sequence).padStart(6, "0")}.json`)
+      : null;
+    if (payloadRef) {
+      await this.blobStore.putJson(payloadRef, dataJson);
+    }
     const record: RunEventRecord = {
       id: crypto.randomUUID(),
       runId,
       sessionId,
       event,
-      sequence: existing.length + 1,
-      dataJson: structuredClone(dataJson),
+      sequence,
+      dataJson: payloadRef ? buildInlinePayload(dataJson) : structuredClone(dataJson),
+      summaryText: summarizePayload(dataJson, event),
+      payloadRef,
+      phase: typeof dataJson.phase === "string" ? dataJson.phase : null,
+      status: typeof dataJson.status === "string" ? dataJson.status : null,
+      toolCallId: typeof dataJson.toolCallId === "string" ? dataJson.toolCallId : null,
+      runtimeId: typeof dataJson.runtimeId === "string" ? dataJson.runtimeId : null,
+      retentionClass: payloadRef ? "debug-blob" : "debug-index",
       createdAt: nowIso(),
     };
     existing.push(record);
@@ -2456,12 +2693,18 @@ export class InMemoryAppStore implements AppStore {
   }
 
   async listRunEvents(runId: string): Promise<RunEventRecord[]> {
-    return [...(this.runEvents.get(runId) ?? [])];
+    return Promise.all((this.runEvents.get(runId) ?? []).map(async (record) => ({
+      ...record,
+      dataJson: record.payloadRef ? (await loadJsonBlob(this.blobStore, record.payloadRef) ?? record.dataJson) : record.dataJson,
+    })));
   }
 
   async listRecentRunEvents(runId: string, limit: number): Promise<RunEventRecord[]> {
     const events = this.runEvents.get(runId) ?? [];
-    return events.slice(Math.max(0, events.length - Math.max(1, limit)));
+    return Promise.all(events.slice(Math.max(0, events.length - Math.max(1, limit))).map(async (record) => ({
+      ...record,
+      dataJson: record.payloadRef ? (await loadJsonBlob(this.blobStore, record.payloadRef) ?? record.dataJson) : record.dataJson,
+    })));
   }
 
   async listWorks(offset = 0, limit = 12): Promise<WorkSummary[]> {
@@ -2834,17 +3077,21 @@ export class InMemoryAppStore implements AppStore {
   }
 
   async listRuntimeInstances(sessionId: string): Promise<RuntimeInstanceRecord[]> {
-    return [...this.runtimeInstances.values()]
+    const rows = [...this.runtimeInstances.values()]
       .filter((instance) => instance.sessionId === sessionId)
       .sort((left, right) => {
         const leftValue = left.lastUsedAt ?? left.createdAt;
         const rightValue = right.lastUsedAt ?? right.createdAt;
         return rightValue.localeCompare(leftValue);
       });
+    return Promise.all(rows.map(async (instance) => ({
+      ...instance,
+      manifestJson: instance.manifestRef ? (await loadJsonBlob(this.blobStore, instance.manifestRef) ?? instance.manifestJson) : instance.manifestJson,
+    })));
   }
 
   async listExpiredRuntimeInstances(limit = 50): Promise<RuntimeInstanceRecord[]> {
-    return [...this.runtimeInstances.values()]
+    const rows = [...this.runtimeInstances.values()]
       .filter((instance) =>
         instance.status !== "destroyed" &&
         instance.status !== "expired" &&
@@ -2857,16 +3104,36 @@ export class InMemoryAppStore implements AppStore {
         return leftValue.localeCompare(rightValue);
       })
       .slice(0, Math.max(0, limit));
+    return Promise.all(rows.map(async (instance) => ({
+      ...instance,
+      manifestJson: instance.manifestRef ? (await loadJsonBlob(this.blobStore, instance.manifestRef) ?? instance.manifestJson) : instance.manifestJson,
+    })));
   }
 
   async getRuntimeInstance(runtimeId: string): Promise<RuntimeInstanceRecord | null> {
-    return this.runtimeInstances.get(runtimeId) ?? null;
+    const instance = this.runtimeInstances.get(runtimeId) ?? null;
+    if (!instance) {
+      return null;
+    }
+    return {
+      ...instance,
+      manifestJson: instance.manifestRef ? (await loadJsonBlob(this.blobStore, instance.manifestRef) ?? instance.manifestJson) : instance.manifestJson,
+    };
   }
 
   async saveRuntimeInstance(
     input: Omit<RuntimeInstanceRecord, "id" | "createdAt"> & { id?: string; createdAt?: string },
   ): Promise<RuntimeInstanceRecord> {
     const existing = this.runtimeInstances.get(input.runtimeId);
+    const manifestRef = artifactKeys.runtimeArtifact(input.runtimeId, "manifest.json");
+    await this.blobStore.putJson(manifestRef, input.manifestJson);
+    const compact = compactManifest(input.manifestJson);
+    const fileCatalogRef = compact.fileCatalog.length > 0
+      ? artifactKeys.runtimeArtifact(input.runtimeId, "workspace/file-catalog.json")
+      : null;
+    if (fileCatalogRef) {
+      await this.blobStore.putJson(fileCatalogRef, compact.fileCatalog);
+    }
     const record: RuntimeInstanceRecord = {
       id: input.id ?? existing?.id ?? crypto.randomUUID(),
       sessionId: input.sessionId,
@@ -2874,7 +3141,15 @@ export class InMemoryAppStore implements AppStore {
       provider: input.provider,
       providerMachineId: input.providerMachineId,
       status: input.status,
-      manifestJson: input.manifestJson,
+      manifestJson: compact.compactManifest,
+      manifestRef,
+      taskSpecJson: compact.taskSpecJson,
+      selectedWorkIds: compact.selectedWorkIds,
+      selectedChunkIds: compact.selectedChunkIds,
+      fileCatalogRef,
+      researchMode: compact.researchMode,
+      shardId: compact.shardId,
+      isAggregator: compact.isAggregator,
       lastUsedAt: input.lastUsedAt,
       expiresAt: input.expiresAt,
       createdAt: input.createdAt ?? existing?.createdAt ?? nowIso(),
@@ -2891,10 +3166,33 @@ export class InMemoryAppStore implements AppStore {
     if (!existing) {
       return;
     }
-    const next: RuntimeInstanceRecord = {
+    let next: RuntimeInstanceRecord = {
       ...existing,
       ...updates,
     };
+    if (updates.manifestJson) {
+      const manifestRef = artifactKeys.runtimeArtifact(runtimeId, "manifest.json");
+      await this.blobStore.putJson(manifestRef, updates.manifestJson);
+      const compact = compactManifest(updates.manifestJson);
+      const fileCatalogRef = compact.fileCatalog.length > 0
+        ? artifactKeys.runtimeArtifact(runtimeId, "workspace/file-catalog.json")
+        : null;
+      if (fileCatalogRef) {
+        await this.blobStore.putJson(fileCatalogRef, compact.fileCatalog);
+      }
+      next = {
+        ...next,
+        manifestJson: compact.compactManifest,
+        manifestRef,
+        taskSpecJson: compact.taskSpecJson,
+        selectedWorkIds: compact.selectedWorkIds,
+        selectedChunkIds: compact.selectedChunkIds,
+        fileCatalogRef,
+        researchMode: compact.researchMode,
+        shardId: compact.shardId,
+        isAggregator: compact.isAggregator,
+      };
+    }
     this.runtimeInstances.set(runtimeId, next);
   }
 
@@ -2907,8 +3205,11 @@ export class InMemoryAppStore implements AppStore {
       sessionId: input.sessionId,
       runtimeId: input.runtimeId,
       r2Key: input.r2Key,
+      blobRef: input.blobRef ?? input.r2Key,
       filename: input.filename,
       mimeType: input.mimeType,
+      byteSize: input.byteSize ?? null,
+      summaryText: input.summaryText ?? summarizePayload(input.metadata, input.filename),
       metadata: input.metadata,
       createdAt: input.createdAt ?? existing?.createdAt ?? nowIso(),
     };
@@ -3101,6 +3402,7 @@ export class NeonAppStore implements AppStore {
   private analyticsSchemaReady: Promise<void> | null = null;
   private exploreFeedSchemaReady: Promise<void> | null = null;
   private runEventsSchemaReady: Promise<void> | null = null;
+  private blobStorageSchemaReady: Promise<void> | null = null;
   private workCountCache: { value: number; expiresAt: number } | null = null;
   private readonly corpusRepository: NeonCorpusDbRepository;
   private readonly adapterId: string | null;
@@ -3114,6 +3416,7 @@ export class NeonAppStore implements AppStore {
     private readonly db: DbClient,
     options: {
       adapterId?: string | null;
+      blobStore?: BlobStore;
       feedLabels?: {
         summary: string;
         taxonomy: string;
@@ -3122,6 +3425,7 @@ export class NeonAppStore implements AppStore {
     } = {},
   ) {
     this.adapterId = options.adapterId ?? null;
+    this.blobStore = options.blobStore ?? new MemoryBlobStore();
     this.feedLabels = options.feedLabels ?? {
       summary: "Worth opening",
       taxonomy: "Browse by shelf",
@@ -3136,6 +3440,7 @@ export class NeonAppStore implements AppStore {
   private static readonly WORK_COUNT_STAT_STALE_AFTER_MS = 1000 * 60 * 15;
   private static readonly EXPLORE_FEED_DEFAULT_LIMIT = 512;
   private static readonly RUN_EVENT_INSERT_MAX_ATTEMPTS = 6;
+  private readonly blobStore: BlobStore;
 
   private hasScopedCorpus() {
     return Boolean(this.adapterId && this.adapterId !== "gutenberg");
@@ -3245,6 +3550,42 @@ export class NeonAppStore implements AppStore {
       })();
     }
     return this.runEventsSchemaReady;
+  }
+
+  private ensureBlobStorageSchema() {
+    if (!this.blobStorageSchemaReady) {
+      this.blobStorageSchemaReady = (async () => {
+        await this.ensureRunEventsSchema();
+        const statements = [
+          "ALTER TABLE tool_calls ADD COLUMN IF NOT EXISTS args_ref text",
+          "ALTER TABLE tool_calls ADD COLUMN IF NOT EXISTS result_ref text",
+          "ALTER TABLE tool_calls ADD COLUMN IF NOT EXISTS args_summary text",
+          "ALTER TABLE tool_calls ADD COLUMN IF NOT EXISTS result_summary text",
+          "ALTER TABLE run_events ADD COLUMN IF NOT EXISTS payload_ref text",
+          "ALTER TABLE run_events ADD COLUMN IF NOT EXISTS summary_text text",
+          "ALTER TABLE run_events ADD COLUMN IF NOT EXISTS phase text",
+          "ALTER TABLE run_events ADD COLUMN IF NOT EXISTS status text",
+          "ALTER TABLE run_events ADD COLUMN IF NOT EXISTS tool_call_id text",
+          "ALTER TABLE run_events ADD COLUMN IF NOT EXISTS runtime_id text",
+          "ALTER TABLE run_events ADD COLUMN IF NOT EXISTS retention_class text",
+          "ALTER TABLE runtime_instances ADD COLUMN IF NOT EXISTS manifest_ref text",
+          "ALTER TABLE runtime_instances ADD COLUMN IF NOT EXISTS task_spec_json jsonb NOT NULL DEFAULT '{}'::jsonb",
+          "ALTER TABLE runtime_instances ADD COLUMN IF NOT EXISTS selected_work_ids_json jsonb NOT NULL DEFAULT '[]'::jsonb",
+          "ALTER TABLE runtime_instances ADD COLUMN IF NOT EXISTS selected_chunk_ids_json jsonb NOT NULL DEFAULT '[]'::jsonb",
+          "ALTER TABLE runtime_instances ADD COLUMN IF NOT EXISTS file_catalog_ref text",
+          "ALTER TABLE runtime_instances ADD COLUMN IF NOT EXISTS research_mode text",
+          "ALTER TABLE runtime_instances ADD COLUMN IF NOT EXISTS shard_id text",
+          "ALTER TABLE runtime_instances ADD COLUMN IF NOT EXISTS aggregator boolean NOT NULL DEFAULT false",
+          "ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS blob_ref text",
+          "ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS byte_size bigint",
+          "ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS summary_text text",
+        ];
+        for (const statement of statements) {
+          await this.db.query(statement);
+        }
+      })();
+    }
+    return this.blobStorageSchemaReady;
   }
 
   async ensureUser(userId: string): Promise<void> {
@@ -4575,21 +4916,38 @@ export class NeonAppStore implements AppStore {
   }
 
   async startToolCall(runId: string, toolName: ToolName, argsJson: Record<string, unknown>): Promise<ToolCallRecord> {
+    await this.ensureBlobStorageSchema();
     const toolCallId = crypto.randomUUID();
     const startedAt = nowIso();
+    const argsRef = shouldSpillPayload(argsJson)
+      ? `runs/${runId}/tools/${toolCallId}/args.json`
+      : null;
+    if (argsRef) {
+      await this.blobStore.putJson(argsRef, argsJson);
+    }
     await this.db.query(
       `
-        INSERT INTO tool_calls (id, run_id, tool_name, args_json, status, started_at)
-        VALUES ($1::uuid, $2::uuid, $3, $4::jsonb, 'running', $5::timestamptz)
+        INSERT INTO tool_calls (id, run_id, tool_name, args_json, args_ref, args_summary, status, started_at)
+        VALUES ($1::uuid, $2::uuid, $3, $4::jsonb, $5, $6, 'running', $7::timestamptz)
       `,
-      [toolCallId, runId, toolName, JSON.stringify(argsJson), startedAt],
+      [
+        toolCallId,
+        runId,
+        toolName,
+        JSON.stringify(argsRef ? buildInlinePayload(argsJson) : argsJson),
+        argsRef,
+        summarizePayload(argsJson, `${toolName} arguments`),
+        startedAt,
+      ],
     );
     return {
       id: toolCallId,
       runId,
       toolName,
-      argsJson,
+      argsJson: argsRef ? buildInlinePayload(argsJson) : argsJson,
       resultJson: null,
+      argsRef,
+      argsSummary: summarizePayload(argsJson, `${toolName} arguments`),
       status: "running",
       startedAt,
       completedAt: null,
@@ -4597,23 +4955,53 @@ export class NeonAppStore implements AppStore {
   }
 
   async finishToolCall(toolCallId: string, status: ToolCallRecord["status"], resultJson: Record<string, unknown>): Promise<void> {
+    await this.ensureBlobStorageSchema();
+    const toolCall = await this.db.query<{ run_id: string; tool_name: ToolName }>(
+      `
+        SELECT run_id, tool_name
+        FROM tool_calls
+        WHERE id = $1::uuid
+        LIMIT 1
+      `,
+      [toolCallId],
+    );
+    const runId = toolCall.rows[0]?.run_id ?? "";
+    const toolName = toolCall.rows[0]?.tool_name ?? "unknown_tool" as ToolName;
+    const resultRef = shouldSpillPayload(resultJson)
+      ? `runs/${runId}/tools/${toolCallId}/result.json`
+      : null;
+    if (resultRef) {
+      await this.blobStore.putJson(resultRef, resultJson);
+    }
     await this.db.query(
       `
         UPDATE tool_calls
         SET
           status = $2,
           result_json = $3::jsonb,
+          result_ref = $4,
+          result_summary = $5,
           completed_at = now()
         WHERE id = $1::uuid
       `,
-      [toolCallId, status, JSON.stringify(resultJson)],
+      [
+        toolCallId,
+        status,
+        JSON.stringify(resultRef ? buildInlinePayload(resultJson) : resultJson),
+        resultRef,
+        summarizePayload(resultJson, `${toolName} ${status}`),
+      ],
     );
   }
 
   async appendRunEvent(runId: string, sessionId: string, event: string, dataJson: Record<string, unknown>): Promise<RunEventRecord> {
+    await this.ensureBlobStorageSchema();
     await this.ensureRunEventsSchema();
     const id = crypto.randomUUID();
     const createdAt = nowIso();
+    const shouldSpill = shouldSpillPayload(dataJson);
+    const inlinePayload = shouldSpill ? buildInlinePayload(dataJson) : dataJson;
+    const summaryText = summarizePayload(dataJson, event);
     let insertResult: { rows: Array<{ sequence: number }> } | null = null;
     let lastError: unknown = null;
     for (let attempt = 1; attempt <= NeonAppStore.RUN_EVENT_INSERT_MAX_ATTEMPTS; attempt += 1) {
@@ -4631,15 +5019,55 @@ export class NeonAppStore implements AppStore {
               WHERE run_id = $1::uuid
             ),
             inserted AS (
-              INSERT INTO run_events (id, run_id, session_id, sequence, event, data_json, created_at)
-              SELECT $2::uuid, $1::uuid, $3::uuid, next_sequence.sequence, $4, $5::jsonb, $6::timestamptz
+              INSERT INTO run_events (
+                id,
+                run_id,
+                session_id,
+                sequence,
+                event,
+                data_json,
+                summary_text,
+                phase,
+                status,
+                tool_call_id,
+                runtime_id,
+                retention_class,
+                created_at
+              )
+              SELECT
+                $2::uuid,
+                $1::uuid,
+                $3::uuid,
+                next_sequence.sequence,
+                $4,
+                $5::jsonb,
+                $6,
+                $7,
+                $8,
+                $9,
+                $10,
+                $11,
+                $12::timestamptz
               FROM run_lock, next_sequence
               RETURNING sequence
             )
             SELECT sequence
             FROM inserted
           `,
-          [runId, id, sessionId, event, JSON.stringify(dataJson), createdAt],
+          [
+            runId,
+            id,
+            sessionId,
+            event,
+            JSON.stringify(inlinePayload),
+            summaryText,
+            typeof dataJson.phase === "string" ? dataJson.phase : null,
+            typeof dataJson.status === "string" ? dataJson.status : null,
+            typeof dataJson.toolCallId === "string" ? dataJson.toolCallId : null,
+            typeof dataJson.runtimeId === "string" ? dataJson.runtimeId : null,
+            shouldSpill ? "debug-blob" : "debug-index",
+            createdAt,
+          ],
         );
         break;
       } catch (error) {
@@ -4658,6 +5086,19 @@ export class NeonAppStore implements AppStore {
       throw lastError instanceof Error ? lastError : new Error("Run event insert failed.");
     }
     const sequence = Number(insertResult.rows[0]?.sequence ?? 1);
+    let payloadRef: string | null = null;
+    if (shouldSpill) {
+      payloadRef = `runs/${runId}/events/${String(sequence).padStart(6, "0")}-${id}.json`;
+      await this.blobStore.putJson(payloadRef, dataJson);
+      await this.db.query(
+        `
+          UPDATE run_events
+          SET payload_ref = $2
+          WHERE id = $1::uuid
+        `,
+        [id, payloadRef],
+      );
+    }
     return {
       id,
       runId,
@@ -4665,12 +5106,20 @@ export class NeonAppStore implements AppStore {
       sequence,
       event,
       dataJson,
+      summaryText,
+      payloadRef,
+      phase: typeof dataJson.phase === "string" ? dataJson.phase : null,
+      status: typeof dataJson.status === "string" ? dataJson.status : null,
+      toolCallId: typeof dataJson.toolCallId === "string" ? dataJson.toolCallId : null,
+      runtimeId: typeof dataJson.runtimeId === "string" ? dataJson.runtimeId : null,
+      retentionClass: shouldSpill ? "debug-blob" : "debug-index",
       createdAt,
     };
   }
 
   async listRunEvents(runId: string): Promise<RunEventRecord[]> {
     await this.ensureRunEventsSchema();
+    await this.ensureBlobStorageSchema();
     const result = await this.db.query<{
       id: string;
       run_id: string;
@@ -4678,28 +5127,57 @@ export class NeonAppStore implements AppStore {
       sequence: number;
       event: string;
       data_json: Record<string, unknown>;
+      payload_ref: string | null;
+      summary_text: string | null;
+      phase: string | null;
+      status: string | null;
+      tool_call_id: string | null;
+      runtime_id: string | null;
+      retention_class: RetentionClass | null;
       created_at: string;
     }>(
       `
-        SELECT id, run_id, session_id, sequence, event, data_json, created_at
+        SELECT
+          id,
+          run_id,
+          session_id,
+          sequence,
+          event,
+          data_json,
+          payload_ref,
+          summary_text,
+          phase,
+          status,
+          tool_call_id,
+          runtime_id,
+          retention_class,
+          created_at
         FROM run_events
         WHERE run_id = $1::uuid
         ORDER BY sequence ASC, created_at ASC
       `,
       [runId],
     );
-    return result.rows.map((row) => ({
+    return Promise.all(result.rows.map(async (row) => ({
       id: row.id,
       runId: row.run_id,
       sessionId: row.session_id,
       sequence: Number(row.sequence ?? 0),
       event: row.event,
-      dataJson: row.data_json ?? {},
+      dataJson: row.payload_ref ? (await loadJsonBlob(this.blobStore, row.payload_ref) ?? row.data_json ?? {}) : row.data_json ?? {},
+      summaryText: row.summary_text,
+      payloadRef: row.payload_ref,
+      phase: row.phase,
+      status: row.status,
+      toolCallId: row.tool_call_id,
+      runtimeId: row.runtime_id,
+      retentionClass: row.retention_class,
       createdAt: row.created_at,
-    }));
+    })));
   }
 
   async listRecentRunEvents(runId: string, limit: number): Promise<RunEventRecord[]> {
+    await this.ensureBlobStorageSchema();
     const safeLimit = Math.max(1, Math.min(1000, Math.trunc(limit) || 200));
     const result = await this.db.query<{
       id: string;
@@ -4708,12 +5186,35 @@ export class NeonAppStore implements AppStore {
       sequence: number;
       event: string;
       data_json: Record<string, unknown>;
+      payload_ref: string | null;
+      summary_text: string | null;
+      phase: string | null;
+      status: string | null;
+      tool_call_id: string | null;
+      runtime_id: string | null;
+      retention_class: RetentionClass | null;
       created_at: string;
     }>(
       `
-        SELECT id, run_id, session_id, sequence, event, data_json, created_at
+        SELECT
+          id,
+          run_id,
+          session_id,
+          sequence,
+          event,
+          data_json,
+          payload_ref,
+          summary_text,
+          phase,
+          status,
+          tool_call_id,
+          runtime_id,
+          retention_class,
+          created_at
         FROM (
-          SELECT id, run_id, session_id, sequence, event, data_json, created_at
+          SELECT
+            id, run_id, session_id, sequence, event, data_json, payload_ref, summary_text, phase, status,
+            tool_call_id, runtime_id, retention_class, created_at
           FROM run_events
           WHERE run_id = $1::uuid
           ORDER BY sequence DESC
@@ -4723,46 +5224,74 @@ export class NeonAppStore implements AppStore {
       `,
       [runId, safeLimit],
     );
-    return result.rows.map((row) => ({
+    return Promise.all(result.rows.map(async (row) => ({
       id: row.id,
       runId: row.run_id,
       sessionId: row.session_id,
       sequence: Number(row.sequence ?? 0),
       event: row.event,
-      dataJson: row.data_json ?? {},
+      dataJson: row.payload_ref ? (await loadJsonBlob(this.blobStore, row.payload_ref) ?? row.data_json ?? {}) : row.data_json ?? {},
+      summaryText: row.summary_text,
+      payloadRef: row.payload_ref,
+      phase: row.phase,
+      status: row.status,
+      toolCallId: row.tool_call_id,
+      runtimeId: row.runtime_id,
+      retentionClass: row.retention_class,
       createdAt: row.created_at,
-    }));
+    })));
   }
 
   async listToolCalls(runId: string): Promise<ToolCallRecord[]> {
+    await this.ensureBlobStorageSchema();
     const result = await this.db.query<{
       id: string;
       run_id: string;
       tool_name: ToolName;
       args_json: Record<string, unknown>;
       result_json: Record<string, unknown> | null;
+      args_ref: string | null;
+      result_ref: string | null;
+      args_summary: string | null;
+      result_summary: string | null;
       status: ToolCallRecord["status"];
       started_at: string;
       completed_at: string | null;
     }>(
       `
-        SELECT id, run_id, tool_name, args_json, result_json, status, started_at, completed_at
+        SELECT
+          id,
+          run_id,
+          tool_name,
+          args_json,
+          result_json,
+          args_ref,
+          result_ref,
+          args_summary,
+          result_summary,
+          status,
+          started_at,
+          completed_at
         FROM tool_calls
         WHERE run_id = $1::uuid
         ORDER BY started_at ASC
       `,
       [runId],
     );
-    return result.rows.map((row) => ({
+    return Promise.all(result.rows.map(async (row) => ({
       id: row.id,
       runId: row.run_id,
       toolName: row.tool_name,
-      argsJson: row.args_json,
-      resultJson: row.result_json,
+      argsJson: row.args_ref ? (await loadJsonBlob(this.blobStore, row.args_ref) ?? row.args_json) : row.args_json,
+      resultJson: row.result_ref ? (await loadJsonBlob(this.blobStore, row.result_ref) ?? row.result_json) : row.result_json,
+      argsRef: row.args_ref,
+      resultRef: row.result_ref,
+      argsSummary: row.args_summary,
+      resultSummary: row.result_summary,
       status: row.status,
       startedAt: row.started_at,
       completedAt: row.completed_at,
-    }));
+    })));
   }
 
   async listWorks(offset = 0, limit = 12): Promise<WorkSummary[]> {
@@ -6317,6 +6846,7 @@ export class NeonAppStore implements AppStore {
   }
 
   async listRuntimeInstances(sessionId: string): Promise<RuntimeInstanceRecord[]> {
+    await this.ensureBlobStorageSchema();
     const result = await this.db.query<{
       id: string;
       session_id: string;
@@ -6325,6 +6855,14 @@ export class NeonAppStore implements AppStore {
       provider_machine_id: string | null;
       status: RuntimeInstanceRecord["status"];
       manifest_json: Record<string, unknown>;
+      manifest_ref: string | null;
+      task_spec_json: Record<string, unknown>;
+      selected_work_ids_json: string[];
+      selected_chunk_ids_json: string[];
+      file_catalog_ref: string | null;
+      research_mode: string | null;
+      shard_id: string | null;
+      aggregator: boolean | null;
       last_used_at: string | null;
       expires_at: string | null;
       created_at: string;
@@ -6338,6 +6876,14 @@ export class NeonAppStore implements AppStore {
           provider_machine_id,
           status,
           manifest_json,
+          manifest_ref,
+          task_spec_json,
+          selected_work_ids_json,
+          selected_chunk_ids_json,
+          file_catalog_ref,
+          research_mode,
+          shard_id,
+          aggregator,
           last_used_at,
           expires_at,
           created_at
@@ -6347,21 +6893,30 @@ export class NeonAppStore implements AppStore {
       `,
       [sessionId],
     );
-    return result.rows.map((row) => ({
+    return Promise.all(result.rows.map(async (row) => ({
       id: row.id,
       sessionId: row.session_id,
       runtimeId: row.runtime_id,
       provider: row.provider,
       providerMachineId: row.provider_machine_id,
       status: row.status,
-      manifestJson: row.manifest_json,
+      manifestJson: row.manifest_ref ? (await loadJsonBlob(this.blobStore, row.manifest_ref) ?? row.manifest_json) : row.manifest_json,
+      manifestRef: row.manifest_ref,
+      taskSpecJson: row.task_spec_json ?? {},
+      selectedWorkIds: row.selected_work_ids_json ?? [],
+      selectedChunkIds: row.selected_chunk_ids_json ?? [],
+      fileCatalogRef: row.file_catalog_ref,
+      researchMode: row.research_mode,
+      shardId: row.shard_id,
+      isAggregator: row.aggregator === true,
       lastUsedAt: row.last_used_at,
       expiresAt: row.expires_at,
       createdAt: row.created_at,
-    }));
+    })));
   }
 
   async listExpiredRuntimeInstances(limit = 50): Promise<RuntimeInstanceRecord[]> {
+    await this.ensureBlobStorageSchema();
     const result = await this.db.query<{
       id: string;
       session_id: string;
@@ -6370,6 +6925,14 @@ export class NeonAppStore implements AppStore {
       provider_machine_id: string | null;
       status: RuntimeInstanceRecord["status"];
       manifest_json: Record<string, unknown>;
+      manifest_ref: string | null;
+      task_spec_json: Record<string, unknown>;
+      selected_work_ids_json: string[];
+      selected_chunk_ids_json: string[];
+      file_catalog_ref: string | null;
+      research_mode: string | null;
+      shard_id: string | null;
+      aggregator: boolean | null;
       last_used_at: string | null;
       expires_at: string | null;
       created_at: string;
@@ -6383,6 +6946,14 @@ export class NeonAppStore implements AppStore {
           provider_machine_id,
           status,
           manifest_json,
+          manifest_ref,
+          task_spec_json,
+          selected_work_ids_json,
+          selected_chunk_ids_json,
+          file_catalog_ref,
+          research_mode,
+          shard_id,
+          aggregator,
           last_used_at,
           expires_at,
           created_at
@@ -6395,21 +6966,30 @@ export class NeonAppStore implements AppStore {
       `,
       [Math.max(0, limit)],
     );
-    return result.rows.map((row) => ({
+    return Promise.all(result.rows.map(async (row) => ({
       id: row.id,
       sessionId: row.session_id,
       runtimeId: row.runtime_id,
       provider: row.provider,
       providerMachineId: row.provider_machine_id,
       status: row.status,
-      manifestJson: row.manifest_json,
+      manifestJson: row.manifest_ref ? (await loadJsonBlob(this.blobStore, row.manifest_ref) ?? row.manifest_json) : row.manifest_json,
+      manifestRef: row.manifest_ref,
+      taskSpecJson: row.task_spec_json ?? {},
+      selectedWorkIds: row.selected_work_ids_json ?? [],
+      selectedChunkIds: row.selected_chunk_ids_json ?? [],
+      fileCatalogRef: row.file_catalog_ref,
+      researchMode: row.research_mode,
+      shardId: row.shard_id,
+      isAggregator: row.aggregator === true,
       lastUsedAt: row.last_used_at,
       expiresAt: row.expires_at,
       createdAt: row.created_at,
-    }));
+    })));
   }
 
   async getRuntimeInstance(runtimeId: string): Promise<RuntimeInstanceRecord | null> {
+    await this.ensureBlobStorageSchema();
     const result = await this.db.query<{
       id: string;
       session_id: string;
@@ -6418,6 +6998,14 @@ export class NeonAppStore implements AppStore {
       provider_machine_id: string | null;
       status: RuntimeInstanceRecord["status"];
       manifest_json: Record<string, unknown>;
+      manifest_ref: string | null;
+      task_spec_json: Record<string, unknown>;
+      selected_work_ids_json: string[];
+      selected_chunk_ids_json: string[];
+      file_catalog_ref: string | null;
+      research_mode: string | null;
+      shard_id: string | null;
+      aggregator: boolean | null;
       last_used_at: string | null;
       expires_at: string | null;
       created_at: string;
@@ -6431,6 +7019,14 @@ export class NeonAppStore implements AppStore {
           provider_machine_id,
           status,
           manifest_json,
+          manifest_ref,
+          task_spec_json,
+          selected_work_ids_json,
+          selected_chunk_ids_json,
+          file_catalog_ref,
+          research_mode,
+          shard_id,
+          aggregator,
           last_used_at,
           expires_at,
           created_at
@@ -6451,7 +7047,15 @@ export class NeonAppStore implements AppStore {
       provider: row.provider,
       providerMachineId: row.provider_machine_id,
       status: row.status,
-      manifestJson: row.manifest_json,
+      manifestJson: row.manifest_ref ? (await loadJsonBlob(this.blobStore, row.manifest_ref) ?? row.manifest_json) : row.manifest_json,
+      manifestRef: row.manifest_ref,
+      taskSpecJson: row.task_spec_json ?? {},
+      selectedWorkIds: row.selected_work_ids_json ?? [],
+      selectedChunkIds: row.selected_chunk_ids_json ?? [],
+      fileCatalogRef: row.file_catalog_ref,
+      researchMode: row.research_mode,
+      shardId: row.shard_id,
+      isAggregator: row.aggregator === true,
       lastUsedAt: row.last_used_at,
       expiresAt: row.expires_at,
       createdAt: row.created_at,
@@ -6461,8 +7065,18 @@ export class NeonAppStore implements AppStore {
   async saveRuntimeInstance(
     input: Omit<RuntimeInstanceRecord, "id" | "createdAt"> & { id?: string; createdAt?: string },
   ): Promise<RuntimeInstanceRecord> {
+    await this.ensureBlobStorageSchema();
     const recordId = input.id ?? crypto.randomUUID();
     const createdAt = input.createdAt ?? nowIso();
+    const manifestRef = artifactKeys.runtimeArtifact(input.runtimeId, "manifest.json");
+    await this.blobStore.putJson(manifestRef, input.manifestJson);
+    const compact = compactManifest(input.manifestJson);
+    const fileCatalogRef = compact.fileCatalog.length > 0
+      ? artifactKeys.runtimeArtifact(input.runtimeId, "workspace/file-catalog.json")
+      : null;
+    if (fileCatalogRef) {
+      await this.blobStore.putJson(fileCatalogRef, compact.fileCatalog);
+    }
     const result = await this.db.query<{
       id: string;
       session_id: string;
@@ -6471,6 +7085,14 @@ export class NeonAppStore implements AppStore {
       provider_machine_id: string | null;
       status: RuntimeInstanceRecord["status"];
       manifest_json: Record<string, unknown>;
+      manifest_ref: string | null;
+      task_spec_json: Record<string, unknown>;
+      selected_work_ids_json: string[];
+      selected_chunk_ids_json: string[];
+      file_catalog_ref: string | null;
+      research_mode: string | null;
+      shard_id: string | null;
+      aggregator: boolean | null;
       last_used_at: string | null;
       expires_at: string | null;
       created_at: string;
@@ -6484,6 +7106,14 @@ export class NeonAppStore implements AppStore {
           provider_machine_id,
           status,
           manifest_json,
+          manifest_ref,
+          task_spec_json,
+          selected_work_ids_json,
+          selected_chunk_ids_json,
+          file_catalog_ref,
+          research_mode,
+          shard_id,
+          aggregator,
           last_used_at,
           expires_at,
           created_at
@@ -6496,9 +7126,17 @@ export class NeonAppStore implements AppStore {
           $5,
           $6,
           $7::jsonb,
-          $8::timestamptz,
-          $9::timestamptz,
-          $10::timestamptz
+          $8,
+          $9::jsonb,
+          $10::jsonb,
+          $11::jsonb,
+          $12,
+          $13,
+          $14,
+          $15,
+          $16::timestamptz,
+          $17::timestamptz,
+          $18::timestamptz
         )
         ON CONFLICT (runtime_id) DO UPDATE
         SET
@@ -6506,6 +7144,14 @@ export class NeonAppStore implements AppStore {
           provider_machine_id = EXCLUDED.provider_machine_id,
           status = EXCLUDED.status,
           manifest_json = EXCLUDED.manifest_json,
+          manifest_ref = EXCLUDED.manifest_ref,
+          task_spec_json = EXCLUDED.task_spec_json,
+          selected_work_ids_json = EXCLUDED.selected_work_ids_json,
+          selected_chunk_ids_json = EXCLUDED.selected_chunk_ids_json,
+          file_catalog_ref = EXCLUDED.file_catalog_ref,
+          research_mode = EXCLUDED.research_mode,
+          shard_id = EXCLUDED.shard_id,
+          aggregator = EXCLUDED.aggregator,
           last_used_at = EXCLUDED.last_used_at,
           expires_at = EXCLUDED.expires_at
         RETURNING
@@ -6516,6 +7162,14 @@ export class NeonAppStore implements AppStore {
           provider_machine_id,
           status,
           manifest_json,
+          manifest_ref,
+          task_spec_json,
+          selected_work_ids_json,
+          selected_chunk_ids_json,
+          file_catalog_ref,
+          research_mode,
+          shard_id,
+          aggregator,
           last_used_at,
           expires_at,
           created_at
@@ -6527,7 +7181,15 @@ export class NeonAppStore implements AppStore {
         input.provider,
         input.providerMachineId,
         input.status,
-        JSON.stringify(input.manifestJson),
+        JSON.stringify(compact.compactManifest),
+        manifestRef,
+        JSON.stringify(compact.taskSpecJson),
+        JSON.stringify(compact.selectedWorkIds),
+        JSON.stringify(compact.selectedChunkIds),
+        fileCatalogRef,
+        compact.researchMode,
+        compact.shardId,
+        compact.isAggregator,
         input.lastUsedAt,
         input.expiresAt,
         createdAt,
@@ -6541,7 +7203,15 @@ export class NeonAppStore implements AppStore {
       provider: row.provider,
       providerMachineId: row.provider_machine_id,
       status: row.status,
-      manifestJson: row.manifest_json,
+      manifestJson: row.manifest_ref ? (await loadJsonBlob(this.blobStore, row.manifest_ref) ?? row.manifest_json) : row.manifest_json,
+      manifestRef: row.manifest_ref,
+      taskSpecJson: row.task_spec_json ?? {},
+      selectedWorkIds: row.selected_work_ids_json ?? [],
+      selectedChunkIds: row.selected_chunk_ids_json ?? [],
+      fileCatalogRef: row.file_catalog_ref,
+      researchMode: row.research_mode,
+      shardId: row.shard_id,
+      isAggregator: row.aggregator === true,
       lastUsedAt: row.last_used_at,
       expiresAt: row.expires_at,
       createdAt: row.created_at,
@@ -6552,21 +7222,65 @@ export class NeonAppStore implements AppStore {
     runtimeId: string,
     updates: Partial<Pick<RuntimeInstanceRecord, "status" | "manifestJson" | "lastUsedAt" | "expiresAt" | "providerMachineId">>,
   ): Promise<void> {
+    await this.ensureBlobStorageSchema();
+    let manifestRef: string | null = null;
+    let taskSpecJson: Record<string, unknown> | null = null;
+    let selectedWorkIds: string[] | null = null;
+    let selectedChunkIds: string[] | null = null;
+    let fileCatalogRef: string | null = null;
+    let researchMode: string | null = null;
+    let shardId: string | null = null;
+    let isAggregator: boolean | null = null;
+    let compactManifestJson: Record<string, unknown> | null = null;
+    if (updates.manifestJson) {
+      manifestRef = artifactKeys.runtimeArtifact(runtimeId, "manifest.json");
+      await this.blobStore.putJson(manifestRef, updates.manifestJson);
+      const compact = compactManifest(updates.manifestJson);
+      compactManifestJson = compact.compactManifest;
+      taskSpecJson = compact.taskSpecJson;
+      selectedWorkIds = compact.selectedWorkIds;
+      selectedChunkIds = compact.selectedChunkIds;
+      fileCatalogRef = compact.fileCatalog.length > 0
+        ? artifactKeys.runtimeArtifact(runtimeId, "workspace/file-catalog.json")
+        : null;
+      if (fileCatalogRef) {
+        await this.blobStore.putJson(fileCatalogRef, compact.fileCatalog);
+      }
+      researchMode = compact.researchMode;
+      shardId = compact.shardId;
+      isAggregator = compact.isAggregator;
+    }
     await this.db.query(
       `
         UPDATE runtime_instances
         SET
           status = COALESCE($2, status),
           manifest_json = COALESCE($3::jsonb, manifest_json),
-          last_used_at = COALESCE($4::timestamptz, last_used_at),
-          expires_at = COALESCE($5::timestamptz, expires_at),
-          provider_machine_id = COALESCE($6, provider_machine_id)
+          manifest_ref = COALESCE($4, manifest_ref),
+          task_spec_json = COALESCE($5::jsonb, task_spec_json),
+          selected_work_ids_json = COALESCE($6::jsonb, selected_work_ids_json),
+          selected_chunk_ids_json = COALESCE($7::jsonb, selected_chunk_ids_json),
+          file_catalog_ref = COALESCE($8, file_catalog_ref),
+          research_mode = COALESCE($9, research_mode),
+          shard_id = COALESCE($10, shard_id),
+          aggregator = COALESCE($11, aggregator),
+          last_used_at = COALESCE($12::timestamptz, last_used_at),
+          expires_at = COALESCE($13::timestamptz, expires_at),
+          provider_machine_id = COALESCE($14, provider_machine_id)
         WHERE runtime_id = $1
       `,
       [
         runtimeId,
         updates.status ?? null,
-        updates.manifestJson ? JSON.stringify(updates.manifestJson) : null,
+        compactManifestJson ? JSON.stringify(compactManifestJson) : null,
+        manifestRef,
+        taskSpecJson ? JSON.stringify(taskSpecJson) : null,
+        selectedWorkIds ? JSON.stringify(selectedWorkIds) : null,
+        selectedChunkIds ? JSON.stringify(selectedChunkIds) : null,
+        fileCatalogRef,
+        researchMode,
+        shardId,
+        isAggregator,
         updates.lastUsedAt ?? null,
         updates.expiresAt ?? null,
         updates.providerMachineId ?? null,
@@ -6577,6 +7291,7 @@ export class NeonAppStore implements AppStore {
   async saveArtifact(
     input: Omit<ArtifactRecord, "id" | "createdAt"> & { id?: string; createdAt?: string },
   ): Promise<ArtifactRecord> {
+    await this.ensureBlobStorageSchema();
     const artifactId = input.id ?? crypto.randomUUID();
     const createdAt = input.createdAt ?? nowIso();
     const result = await this.db.query<{
@@ -6584,29 +7299,38 @@ export class NeonAppStore implements AppStore {
       session_id: string;
       runtime_id: string | null;
       r2_key: string;
+      blob_ref: string | null;
       filename: string;
       mime_type: string;
+      byte_size: number | null;
+      summary_text: string | null;
       metadata_json: Record<string, unknown>;
       created_at: string;
     }>(
       `
-        INSERT INTO artifacts (id, session_id, runtime_id, r2_key, filename, mime_type, metadata_json, created_at)
-        VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::jsonb, $8::timestamptz)
+        INSERT INTO artifacts (id, session_id, runtime_id, r2_key, blob_ref, filename, mime_type, byte_size, summary_text, metadata_json, created_at)
+        VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::timestamptz)
         ON CONFLICT (r2_key) DO UPDATE
         SET
           runtime_id = EXCLUDED.runtime_id,
+          blob_ref = EXCLUDED.blob_ref,
           filename = EXCLUDED.filename,
           mime_type = EXCLUDED.mime_type,
+          byte_size = EXCLUDED.byte_size,
+          summary_text = EXCLUDED.summary_text,
           metadata_json = EXCLUDED.metadata_json
-        RETURNING id, session_id, runtime_id, r2_key, filename, mime_type, metadata_json, created_at
+        RETURNING id, session_id, runtime_id, r2_key, blob_ref, filename, mime_type, byte_size, summary_text, metadata_json, created_at
       `,
       [
         artifactId,
         input.sessionId,
         input.runtimeId,
         input.r2Key,
+        input.blobRef ?? input.r2Key,
         input.filename,
         input.mimeType,
+        input.byteSize ?? null,
+        input.summaryText ?? summarizePayload(input.metadata, input.filename),
         JSON.stringify(input.metadata),
         createdAt,
       ],
@@ -6617,26 +7341,33 @@ export class NeonAppStore implements AppStore {
       sessionId: row.session_id,
       runtimeId: row.runtime_id,
       r2Key: row.r2_key,
+      blobRef: row.blob_ref,
       filename: row.filename,
       mimeType: row.mime_type,
+      byteSize: row.byte_size,
+      summaryText: row.summary_text,
       metadata: row.metadata_json,
       createdAt: row.created_at,
     };
   }
 
   async listArtifacts(sessionId: string, runtimeId?: string | null): Promise<ArtifactRecord[]> {
+    await this.ensureBlobStorageSchema();
     const result = await this.db.query<{
       id: string;
       session_id: string;
       runtime_id: string | null;
       r2_key: string;
+      blob_ref: string | null;
       filename: string;
       mime_type: string;
+      byte_size: number | null;
+      summary_text: string | null;
       metadata_json: Record<string, unknown>;
       created_at: string;
     }>(
       `
-        SELECT id, session_id, runtime_id, r2_key, filename, mime_type, metadata_json, created_at
+        SELECT id, session_id, runtime_id, r2_key, blob_ref, filename, mime_type, byte_size, summary_text, metadata_json, created_at
         FROM artifacts
         WHERE
           session_id = $1::uuid
@@ -6650,8 +7381,11 @@ export class NeonAppStore implements AppStore {
       sessionId: row.session_id,
       runtimeId: row.runtime_id,
       r2Key: row.r2_key,
+      blobRef: row.blob_ref,
       filename: row.filename,
       mimeType: row.mime_type,
+      byteSize: row.byte_size,
+      summaryText: row.summary_text,
       metadata: row.metadata_json,
       createdAt: row.created_at,
     }));

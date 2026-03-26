@@ -130,7 +130,12 @@ test("appendRunEvent uses an atomic insert query for sequence allocation", async
   const db: DbClient = {
     async query<T = Record<string, unknown>>(sql: string, params?: unknown[]) {
       queries.push({ sql, params });
-      if (sql.includes("CREATE TABLE IF NOT EXISTS run_events") || sql.includes("CREATE UNIQUE INDEX IF NOT EXISTS idx_run_events_run_id_sequence") || sql.includes("CREATE INDEX IF NOT EXISTS idx_run_events_run_id_created_at")) {
+      if (
+        sql.includes("CREATE TABLE IF NOT EXISTS run_events")
+        || sql.includes("CREATE UNIQUE INDEX IF NOT EXISTS idx_run_events_run_id_sequence")
+        || sql.includes("CREATE INDEX IF NOT EXISTS idx_run_events_run_id_created_at")
+        || sql.startsWith("ALTER TABLE ")
+      ) {
         return { rows: [] as T[] };
       }
       if (sql.includes("WITH run_lock AS")) {
@@ -161,7 +166,12 @@ test("appendRunEvent retries sequence conflicts from Neon before failing", async
   let attempts = 0;
   const db: DbClient = {
     async query<T = Record<string, unknown>>(sql: string) {
-      if (sql.includes("CREATE TABLE IF NOT EXISTS run_events") || sql.includes("CREATE UNIQUE INDEX IF NOT EXISTS idx_run_events_run_id_sequence") || sql.includes("CREATE INDEX IF NOT EXISTS idx_run_events_run_id_created_at")) {
+      if (
+        sql.includes("CREATE TABLE IF NOT EXISTS run_events")
+        || sql.includes("CREATE UNIQUE INDEX IF NOT EXISTS idx_run_events_run_id_sequence")
+        || sql.includes("CREATE INDEX IF NOT EXISTS idx_run_events_run_id_created_at")
+        || sql.startsWith("ALTER TABLE ")
+      ) {
         return { rows: [] as T[] };
       }
       if (sql.includes("WITH run_lock AS")) {
@@ -188,4 +198,66 @@ test("appendRunEvent retries sequence conflicts from Neon before failing", async
 
   assert.equal(event.sequence, 8);
   assert.equal(attempts, 2);
+});
+
+test("in-memory store spills oversized run event payloads to blob storage and rehydrates them", async () => {
+  const store = new InMemoryAppStore();
+  const largeHtml = `<div>${"x".repeat(8_000)}</div>`;
+
+  const written = await store.appendRunEvent(
+    "run-1",
+    "session-1",
+    "tool.progress",
+    {
+      toolCallId: "tool-1",
+      researchDocumentHtml: largeHtml,
+      detail: {
+        type: "research.chunk",
+        chunkId: "chunk-1",
+      },
+    },
+  );
+
+  assert.ok(written.payloadRef);
+  const events = await store.listRunEvents("run-1");
+  assert.equal(events.length, 1);
+  assert.equal(events[0]?.dataJson.researchDocumentHtml, largeHtml);
+});
+
+test("in-memory store stores runtime manifests by reference and still returns the full manifest", async () => {
+  const store = new InMemoryAppStore();
+  const manifest = {
+    runtimeId: "runtime-1",
+    sessionId: "session-1",
+    documents: Array.from({ length: 20 }, (_, index) => ({
+      documentId: `work-${index}`,
+      title: `Work ${index}`,
+    })),
+    selectedChunkIds: ["chunk-a", "chunk-b"],
+    fileCatalog: [{ r2Key: "books/work-1/clean.txt" }],
+    taskContext: {
+      researchMode: "sprite_fanout",
+      shardId: "alpha",
+      taskSpec: {
+        mode: "sprite_fanout",
+      },
+    },
+  };
+
+  const saved = await store.saveRuntimeInstance({
+    sessionId: "session-1",
+    runtimeId: "runtime-1",
+    provider: "fly",
+    providerMachineId: null,
+    status: "ready",
+    manifestJson: manifest,
+    lastUsedAt: null,
+    expiresAt: null,
+  });
+
+  assert.ok(saved.manifestRef);
+  assert.deepEqual(saved.selectedChunkIds, ["chunk-a", "chunk-b"]);
+  const hydrated = await store.getRuntimeInstance("runtime-1");
+  assert.ok(hydrated);
+  assert.deepEqual(hydrated.manifestJson, manifest);
 });

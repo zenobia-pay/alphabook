@@ -43,6 +43,10 @@ CREATE TABLE IF NOT EXISTS tool_calls (
   tool_name text NOT NULL,
   args_json jsonb NOT NULL,
   result_json jsonb,
+  args_ref text,
+  result_ref text,
+  args_summary text,
+  result_summary text,
   started_at timestamptz NOT NULL DEFAULT now(),
   completed_at timestamptz,
   status text NOT NULL CHECK (status IN ('queued', 'running', 'completed', 'failed', 'timed_out'))
@@ -117,6 +121,14 @@ CREATE TABLE IF NOT EXISTS runtime_instances (
   provider_machine_id text,
   status text NOT NULL CHECK (status IN ('creating', 'ready', 'busy', 'destroyed', 'failed', 'expired')),
   manifest_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  manifest_ref text,
+  task_spec_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  selected_work_ids_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+  selected_chunk_ids_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+  file_catalog_ref text,
+  research_mode text,
+  shard_id text,
+  aggregator boolean NOT NULL DEFAULT false,
   last_used_at timestamptz,
   expires_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now()
@@ -127,8 +139,11 @@ CREATE TABLE IF NOT EXISTS artifacts (
   session_id uuid NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
   runtime_id text,
   r2_key text NOT NULL UNIQUE,
+  blob_ref text,
   filename text NOT NULL,
   mime_type text NOT NULL,
+  byte_size bigint,
+  summary_text text,
   metadata_json jsonb NOT NULL DEFAULT '{}'::jsonb,
   created_at timestamptz NOT NULL DEFAULT now()
 );

@@ -2,6 +2,7 @@ import { Pool, neonConfig } from "@neondatabase/serverless";
 
 import { MIGRATIONS } from "./sql";
 export * from "./d1";
+export * from "./d1-sql";
 
 export interface DbClient {
   query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<{ rows: T[] }>;
