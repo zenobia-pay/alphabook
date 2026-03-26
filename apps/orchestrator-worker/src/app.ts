@@ -132,6 +132,7 @@ const DEFAULT_SESSION_TITLE_MODEL = "@cf/zai-org/glm-4.7-flash";
 const ORPHANED_RUN_GRACE_MS = 30_000;
 const PLANNER_STALL_GRACE_MS = HARD_LIMITS.MAX_TOOL_TIMEOUT_SECONDS * 1000 + 30_000;
 const SPRITE_ORPHANED_RUN_GRACE_MS = 90_000;
+const SPRITE_ORPHANED_PROGRESS_STALL_MS = 5 * 60_000;
 
 function randomToken(length = 24) {
   const bytes = crypto.getRandomValues(new Uint8Array(length));
@@ -5955,7 +5956,21 @@ async function reconcileOrphanedSpriteFanoutRun(
     const state = typeof machine.state === "string" ? machine.state : "";
     return state === "created" || state === "started" || state === "starting";
   });
-  if (activeLiveMachines.length > 0) {
+  const latestLifecycleAtMs = runEvents.reduce((latest, event) => {
+    if (!event.event.startsWith("sprite.")) {
+      return latest;
+    }
+    return Math.max(latest, Date.parse(event.createdAt));
+  }, 0);
+  const pendingPreSearchOnly = lifecycle.pendingShards.length > 0
+    && lifecycle.pendingShards.every((state) =>
+      state.state === "queued" || state.state === "starting" || state.state === "hydrating",
+    );
+  const stalledWithLiveMachines = activeLiveMachines.length > 0
+    && pendingPreSearchOnly
+    && latestLifecycleAtMs > 0
+    && (Date.now() - latestLifecycleAtMs) >= SPRITE_ORPHANED_PROGRESS_STALL_MS;
+  if (activeLiveMachines.length > 0 && !stalledWithLiveMachines) {
     return null;
   }
 
@@ -5983,7 +5998,9 @@ async function reconcileOrphanedSpriteFanoutRun(
       runtimeId: shard.runtimeId,
       error: liveMachineIds.size === 0
         ? "This part stopped before it finished searching."
-        : "This part lost contact with its search worker.",
+        : stalledWithLiveMachines
+          ? "This part never moved past worker startup."
+          : "This part lost contact with its search worker.",
     });
   }
 

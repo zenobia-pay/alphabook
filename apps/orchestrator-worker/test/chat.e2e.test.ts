@@ -358,6 +358,115 @@ test("reapStaleRuns fails orphaned sprite fanout runs when no shard machines rem
   assert.ok(events.some((event) => event.event === "sprite.aggregate.failed"));
 });
 
+test("reapStaleRuns fails sprite fanout runs that stall in shard startup even if machines remain live", async () => {
+  const store = new InMemoryAppStore([], []);
+  const session = await store.createSession("11111111-1111-1111-1111-111111111111", "Sprite startup stall");
+  await store.appendMessage(session.id, "user", "Find grief across the corpus.");
+  const run = await store.createRun(session.id);
+  const toolCall = await store.startToolCall(run.id, "run_workspace_task", {
+    runtimeId: `sprite-fanout:${run.id}`,
+    taskSpec: {
+      kind: "sprite_fanout_research",
+      mode: "sprite_fanout",
+      phase: "collect_and_brief",
+      question: "Find grief across the corpus.",
+    },
+  });
+  await store.appendRunEvent(run.id, session.id, "sprite.shard.started", {
+    shardId: "books-1",
+    label: "Part 1 of 25",
+    state: "starting",
+    shardIndex: 0,
+    totalShards: 25,
+    bookCount: 1000,
+    runtimeId: "sprite-shard-1",
+  });
+  await store.appendRunEvent(run.id, session.id, "sprite.shard.hydrating", {
+    shardId: "books-1",
+    label: "Part 1 of 25",
+    state: "hydrating",
+    shardIndex: 0,
+    totalShards: 25,
+    bookCount: 1000,
+    runtimeId: "sprite-shard-1",
+  });
+  await store.saveRuntimeInstance({
+    sessionId: session.id,
+    runtimeId: "sprite-shard-1",
+    provider: "fly-sprites",
+    providerMachineId: "sprite-shard-1",
+    status: "creating",
+    manifestJson: {
+      taskContext: {
+        researchMode: "sprite_fanout",
+        spriteShard: {
+          shardId: "books-1",
+          index: 0,
+          totalShards: 25,
+          bookCount: 1000,
+          lifecycleState: "hydrating",
+        },
+      },
+    },
+    lastUsedAt: run.startedAt,
+    expiresAt: run.startedAt,
+  });
+
+  const originalNow = Date.now;
+  Date.now = () => Date.parse(run.startedAt) + 7 * 60_000;
+  try {
+    await reapStaleRuns({
+      store,
+      billing: createBillingService(store),
+      embedder: new HashEmbedder(),
+      synthesizer: new EchoSynthesizer(),
+      blobStore: new MemoryBlobStore(),
+      runtimeGateway: {
+        async createWorkspace() { return { ok: false }; },
+        async runWorkspaceTask() { return { ok: false }; },
+        async runSpriteFanoutResearch() { return { ok: false }; },
+        async cleanupStaleSpriteMachines() { return 0; },
+        async listSpriteSessionMachines() {
+          return [{
+            machineId: "sprite-shard-1",
+            state: "started",
+            runtimeMode: "sprite-shard",
+            shardId: "books-1",
+          }];
+        },
+        async cancelWorkspaceTask() { return { ok: true }; },
+        async getWorkspaceTaskStatus() { return { ok: false, error: "missing" }; },
+        async readWorkspaceFile() { return { ok: false }; },
+        async listWorkspaceFiles() { return { ok: false }; },
+        async destroyWorkspace() { return { ok: true }; },
+      },
+      planner: new FallbackPlanner(),
+      queues: {
+        ingestName: "alphabook-ingest",
+        jobsName: "alphabook-jobs",
+      },
+    }, {
+      runId: "janitor-test",
+    });
+  } finally {
+    Date.now = originalNow;
+  }
+
+  const updatedRun = await store.getRun(run.id);
+  const updatedToolCalls = await store.listToolCalls(run.id);
+  const updatedRuntime = await store.getRuntimeInstance("sprite-shard-1");
+  const events = await store.listRunEvents(run.id);
+  assert.equal(updatedRun?.status, "failed");
+  assert.equal(updatedToolCalls[0]?.id, toolCall.id);
+  assert.equal(updatedToolCalls[0]?.status, "failed");
+  assert.equal(updatedRuntime?.status, "failed");
+  assert.ok(events.some((event) =>
+    event.event === "sprite.shard.failed"
+    && typeof event.dataJson.error === "string"
+    && event.dataJson.error.includes("never moved past worker startup"),
+  ));
+});
+
 test("orchestrator streams retrieval tool calls and final answer", async () => {
   const store = new InMemoryAppStore(
     [
