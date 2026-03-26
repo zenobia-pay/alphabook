@@ -17,7 +17,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "dev:node": "node --import tsx src/dev-server.ts",
-    "deploy": "wrangler deploy",
+    "deploy": "node --import tsx ../../packages/tooling/scripts/sync-runtime-image-pin.ts --app alphabook-runtime --config wrangler.toml && wrangler deploy",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --import tsx --test test/**/*.test.ts"
   }
