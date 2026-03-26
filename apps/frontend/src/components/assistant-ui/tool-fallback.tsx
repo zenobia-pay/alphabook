@@ -13,6 +13,7 @@ import {
   type ToolCallMessagePartComponent,
   type ToolCallMessagePartStatus,
 } from "@assistant-ui/react";
+import { Citations as AlphaloopCitations, SearchProgress as AlphaloopSearchProgress } from "alphaloop/react";
 import {
   Collapsible,
   CollapsibleContent,
@@ -51,123 +52,6 @@ type AlphaloopChunk = {
   rationale?: string;
   metadata?: Record<string, unknown>;
 };
-
-function alphaloopProgressLabel(event: AlphaloopProgressEvent) {
-  switch (event.type) {
-    case "embedding_search":
-      return `Searching for "${event.query ?? ""}"`;
-    case "query_expansion":
-      return `Expanding query - ${event.queries?.length ?? 0} variants, ${event.newChunksFound ?? 0} new results`;
-    case "rerank":
-      return `Re-ranking - kept ${event.keptChunks ?? 0} of ${event.totalChunks ?? 0}`;
-    case "iterative_search":
-      return `Refining (round ${event.iteration ?? 0}) - ${event.newChunksFound ?? 0} new results`;
-    case "classifier":
-      return "Classifying results";
-    case "complete":
-      return `Found ${event.totalChunks ?? 0} relevant passages`;
-    default:
-      return "Searching...";
-  }
-}
-
-function AlphaloopSearchProgress({
-  events,
-  isRunning,
-}: {
-  events: AlphaloopProgressEvent[];
-  isRunning: boolean;
-}) {
-  if (events.length === 0 && !isRunning) {
-    return null;
-  }
-
-  return (
-    <div className="py-2 text-[13px]">
-      {events.map((event, index) => (
-        <div
-          key={`${event.type}-${index}`}
-          className="flex items-center gap-2 text-[#6b7280]"
-          style={{ lineHeight: "1.8" }}
-        >
-          <span className="h-1 w-1 rounded-full bg-[#d1d5db]" />
-          <span>{alphaloopProgressLabel(event)}</span>
-        </div>
-      ))}
-      {isRunning ? (
-        <div className="flex items-center gap-2 text-[#9ca3af]" style={{ lineHeight: "1.8" }}>
-          <span className="h-1 w-1 animate-pulse rounded-full bg-[#3b82f6]" />
-          <span>Working...</span>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function AlphaloopCitations({
-  chunks,
-}: {
-  chunks: AlphaloopChunk[];
-}) {
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-
-  if (chunks.length === 0) {
-    return null;
-  }
-
-  return (
-    <div className="mt-4">
-      <div className="mb-2 text-[12px] font-medium uppercase tracking-[0.05em] text-[#9ca3af]">
-        Sources ({chunks.length})
-      </div>
-      <div className="flex flex-col gap-0.5">
-        {chunks.map((chunk) => {
-          const isExpanded = expandedId === chunk.id;
-          const preview = chunk.text.length > 180 ? `${chunk.text.slice(0, 180)}...` : chunk.text;
-          return (
-            <div key={chunk.id} className="flex items-start gap-0 py-2">
-              <button
-                type="button"
-                onClick={() => setExpandedId(isExpanded ? null : chunk.id)}
-                className="cursor-pointer border-0 bg-transparent px-0 pr-2 text-[10px] leading-[1.6] text-[#9ca3af]"
-                aria-label={isExpanded ? "Collapse" : "Expand"}
-              >
-                <span
-                  className={cn(
-                    "inline-block transition-transform duration-150",
-                    isExpanded ? "rotate-90" : "rotate-0",
-                  )}
-                >
-                  ▶
-                </span>
-              </button>
-              <div className="min-w-0 flex-1">
-                <div
-                  className={cn(
-                    "border-l-2 border-[#e5e7eb] pl-2.5 text-[13px] leading-[1.6] text-[#374151] italic",
-                    !isExpanded && "line-clamp-3 overflow-hidden",
-                  )}
-                >
-                  {isExpanded ? chunk.text : preview}
-                </div>
-                <div className="mt-1 pl-3 text-[12px] leading-[1.5] text-[#9ca3af]">
-                  <span className="text-[#6b7280]">{chunk.id}</span>
-                  <span className="mx-1">·</span>
-                  <span>{Math.round(chunk.relevance * 100)}% match</span>
-                </div>
-                {isExpanded && chunk.rationale ? (
-                  <div className="mt-1.5 pl-3 text-[12px] leading-[1.6] text-[#6b7280]">
-                    {chunk.rationale}
-                  </div>
-                ) : null}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
 
 const statusIconMap: Record<ToolStatus, React.ElementType> = {
   running: LoaderIcon,
