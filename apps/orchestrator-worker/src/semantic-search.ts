@@ -17,6 +17,7 @@ type IterationRecord = {
 };
 
 type AlphaloopEvent = { type: string } & Record<string, unknown>;
+const SEMANTIC_SEARCH_STEP_TIMEOUT_MS = 30_000;
 
 export interface SemanticSearchService {
   search(args: {
@@ -98,6 +99,24 @@ function buildLanguageModel(options: SemanticSearchOptions): LanguageModel {
   return openai(options.openAIModel ?? "gpt-5.2");
 }
 
+async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(`${label} timed out after ${Math.round(ms / 1000)}s.`));
+        }, ms);
+      }),
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
 export class AlphaloopSemanticSearchService implements SemanticSearchService {
   private readonly model: LanguageModel;
 
@@ -120,13 +139,46 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
       maxIterations: 3,
       relevanceThreshold: 0.35,
       search: async (query, { topK }) => {
-        const embedding = await this.options.embedder.embedQuery(query, args.billingContext);
-        const matches = await this.options.vectorIndex.query(embedding, {
-          topK: Math.max(12, Math.min(256, topK)),
-          returnMetadata: true,
+        await args.onProgress?.("Embedding the semantic query.", {
+          type: "semantic.step",
+          step: "embed_query",
+          query,
         });
+        const embedding = await withTimeout(
+          this.options.embedder.embedQuery(query, args.billingContext),
+          SEMANTIC_SEARCH_STEP_TIMEOUT_MS,
+          "Semantic query embedding",
+        );
+        await args.onProgress?.("Querying the vector index.", {
+          type: "semantic.step",
+          step: "vector_query",
+          query,
+          topK: Math.max(12, Math.min(256, topK)),
+        });
+        const matches = await withTimeout(
+          this.options.vectorIndex.query(embedding, {
+            topK: Math.max(12, Math.min(256, topK)),
+            returnMetadata: true,
+          }),
+          SEMANTIC_SEARCH_STEP_TIMEOUT_MS,
+          "Semantic vector query",
+        );
         const candidateIds = matches.map((match) => match.id);
-        const hydrated = candidateIds.length > 0 ? await this.options.store.getChunksByIds(candidateIds) : [];
+        await args.onProgress?.(
+          candidateIds.length > 0 ? "Loading the matched passages." : "No semantic matches came back from the vector index.",
+          {
+            type: "semantic.step",
+            step: "hydrate_chunks",
+            candidateCount: candidateIds.length,
+          },
+        );
+        const hydrated = candidateIds.length > 0
+          ? await withTimeout(
+            this.options.store.getChunksByIds(candidateIds),
+            SEMANTIC_SEARCH_STEP_TIMEOUT_MS,
+            "Semantic chunk hydration",
+          )
+          : [];
         const hydratedById = new Map(hydrated.map((chunk) => [chunk.id, chunk]));
         const candidates = matches
           .map((match) => {
@@ -156,21 +208,30 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
     const stream = loop.stream(args.query);
     const alphaloopEvents: AlphaloopEvent[] = [];
     let finalResult: Awaited<ReturnType<typeof loop.run>> | null = null;
-    while (true) {
-      const next = await stream.next();
-      if (next.done) {
-        finalResult = next.value;
-        break;
+    try {
+      while (true) {
+        const next = await stream.next();
+        if (next.done) {
+          finalResult = next.value;
+          break;
+        }
+        const event = next.value as AlphaloopEvent;
+        alphaloopEvents.push(structuredClone(event));
+        const text = progressTextFromEvent(event);
+        if (text) {
+          await args.onProgress?.(text, {
+            type: "semantic.alphaloop",
+            event,
+          });
+        }
       }
-      const event = next.value as AlphaloopEvent;
-      alphaloopEvents.push(structuredClone(event));
-      const text = progressTextFromEvent(event);
-      if (text) {
-        await args.onProgress?.(text, {
-          type: "semantic.alphaloop",
-          event,
-        });
-      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await args.onProgress?.(message, {
+        type: "semantic.error",
+        error: message,
+      });
+      throw error;
     }
     if (!finalResult) {
       throw new Error("Semantic retrieval completed without returning a result.");
