@@ -2535,12 +2535,14 @@ function chunkArray<T>(values: T[], size: number): T[][] {
   return chunks;
 }
 
+const CORPUS_AUDIT_D1_BATCH_SIZE = 50;
+
 async function listExistingCorpusWorkRows(context: IngestContext, gutenbergIds: string[]) {
   if (gutenbergIds.length === 0) {
     return new Map<string, ExistingCorpusWorkRow>();
   }
   const rows: ExistingCorpusWorkRow[] = [];
-  for (const batch of chunkArray(gutenbergIds, 200)) {
+  for (const batch of chunkArray(gutenbergIds, CORPUS_AUDIT_D1_BATCH_SIZE)) {
     const placeholders = sqlPlaceholders(batch);
     const result = await context.db.query<ExistingCorpusWorkRow>(
       `
@@ -2568,7 +2570,7 @@ async function listExistingChunkRows(context: IngestContext, gutenbergIds: strin
     return new Map<string, ExistingChunkRow[]>();
   }
   const rows: ExistingChunkRow[] = [];
-  for (const batch of chunkArray(gutenbergIds, 200)) {
+  for (const batch of chunkArray(gutenbergIds, CORPUS_AUDIT_D1_BATCH_SIZE)) {
     const placeholders = sqlPlaceholders(batch);
     const result = await context.db.query<ExistingChunkRow>(
       `
