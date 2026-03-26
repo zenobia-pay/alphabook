@@ -198,7 +198,6 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
           matches = await withTimeout(
             this.options.vectorIndex.query(embedding, {
               topK: boundedTopK,
-              returnMetadata: true,
             }),
             SEMANTIC_SEARCH_STEP_TIMEOUT_MS,
             "Semantic vector query",
