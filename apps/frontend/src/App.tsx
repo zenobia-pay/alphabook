@@ -5250,6 +5250,8 @@ export default function App() {
   const [pendingCitation, setPendingCitation] = useState<Citation | null>(null);
   const [activePassageId, setActivePassageId] = useState<string | null>(null);
   const [highlightedPassageExcerpt, setHighlightedPassageExcerpt] = useState<string | null>(null);
+  const bookReaderFrameRef = useRef<HTMLIFrameElement | null>(null);
+  const lastReaderFrameHrefRef = useRef<string | null>(null);
   const [bookAssistantWidth, setBookAssistantWidth] = useState(() => {
     if (typeof window === "undefined") {
       return 420;
@@ -5402,6 +5404,14 @@ export default function App() {
   const sessionNotifications = useMemo(
     () => buildSessionNotificationMap(notificationsState.notifications),
     [notificationsState.notifications],
+  );
+  const activeReaderFrameHref = useMemo(
+    () => (
+      activeWorkId && activeWork
+        ? buildWorkContentFrameHref(activeWorkId, activeWork.gutenbergId, activePassageId, activeReaderPath)
+        : null
+    ),
+    [activePassageId, activeReaderPath, activeWork, activeWorkId],
   );
 
   useEffect(() => {
@@ -6011,6 +6021,7 @@ export default function App() {
       if (!normalized || normalized === activeReaderPath) {
         return;
       }
+      lastReaderFrameHrefRef.current = `${BOOK_CONTENT_ORIGIN}${appendBookVersionToReaderPath(normalized)}`;
       pendingUrlWriteModeRef.current = "replace";
       setActiveReaderPath(normalized);
     };
@@ -6021,6 +6032,7 @@ export default function App() {
 
   useEffect(() => {
     if (!activeWorkId) {
+      lastReaderFrameHrefRef.current = null;
       setActiveReaderPath(null);
     }
   }, [activeWorkId]);
@@ -6041,6 +6053,23 @@ export default function App() {
       setActiveReaderPath(null);
     }
   }, [activeReaderPath, activeWork?.gutenbergId]);
+
+  useEffect(() => {
+    if (!activeReaderFrameHref) {
+      return;
+    }
+    const frame = bookReaderFrameRef.current;
+    if (!frame) {
+      return;
+    }
+    if (lastReaderFrameHrefRef.current === activeReaderFrameHref) {
+      return;
+    }
+    if (frame.getAttribute("src") !== activeReaderFrameHref) {
+      frame.setAttribute("src", activeReaderFrameHref);
+    }
+    lastReaderFrameHrefRef.current = activeReaderFrameHref;
+  }, [activeReaderFrameHref]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -7691,37 +7720,14 @@ export default function App() {
               {activeWorkLoading ? (
                 <BookLoadingState />
               ) : activeWork ? (
-                <>
-                  <div className="book-reader-header">
-                    <div className="book-reader-header-layout">
-                      {activeWork.coverImageUrl ? (
-                        <div className="book-reader-cover">
-                          <img src={activeWork.coverImageUrl} alt="" loading="lazy" />
-                        </div>
-                      ) : null}
-                      <div className="book-reader-header-copy">
-                        <p className="book-reader-meta">
-                          {[
-                            activeWork.gutenbergId ? `Project Gutenberg #${activeWork.gutenbergId}` : null,
-                            formatDisplayLanguage(activeWork.language)?.toUpperCase() ?? null,
-                            activeWork.releaseDate ? activeWork.releaseDate.slice(0, 4) : null,
-                          ].filter(Boolean).join(" · ")}
-                        </p>
-                        <h1>{activeWork.title}</h1>
-                        {activeWork.authors.length > 0 ? (
-                          <p className="book-reader-authors">{activeWork.authors.join(" · ")}</p>
-                        ) : null}
-                      </div>
-                    </div>
-                  </div>
-                  <iframe
-                    key={activeWorkId}
-                    className="book-reader-frame"
-                    src={buildWorkContentFrameHref(activeWorkId, activeWork.gutenbergId, activePassageId, activeReaderPath)}
-                    title={activeWork.title ? `${activeWork.title} text` : "Book text"}
-                    loading="eager"
-                  />
-                </>
+                <iframe
+                  key={activeWorkId}
+                  ref={bookReaderFrameRef}
+                  className="book-reader-frame"
+                  src={activeReaderFrameHref ?? undefined}
+                  title={activeWork.title ? `${activeWork.title} text` : "Book text"}
+                  loading="eager"
+                />
               ) : (
                 <div className="book-loading">Book not found.</div>
               )}

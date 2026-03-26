@@ -572,7 +572,7 @@ function renderBookStaticStyles() {
   return `
       :root {
         color-scheme: light;
-        --bg: #f8f9fa;
+        --bg: #ffffff;
         --surface: #ffffff;
         --ink: #202122;
         --muted: #54595d;
@@ -603,15 +603,13 @@ function renderBookStaticStyles() {
         color: var(--link-visited);
       }
       .page-shell {
-        width: min(96rem, calc(100vw - 32px));
+        width: min(52rem, calc(100vw - 24px));
         margin: 0 auto;
-        padding: 16px 0 24px;
+        padding: 12px 0 112px;
       }
       .page-surface {
         background: var(--surface);
-        border: 1px solid var(--line);
-        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
-        padding: 24px 28px 28px;
+        padding: 0;
       }
       .article-header {
         display: grid;
@@ -674,7 +672,7 @@ function renderBookStaticStyles() {
         font-family: "Linux Libertine", "Georgia", "Times New Roman", serif;
         font-size: 1.12rem;
         line-height: 1.72;
-        max-width: 44rem;
+        max-width: 46rem;
       }
       .reader-body h1, .reader-body h2, .reader-body h3, .reader-body h4, .reader-body h5, .reader-body h6 {
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -737,26 +735,42 @@ function renderBookStaticStyles() {
       ::highlight(alphabook-selection) {
         background: var(--accent-strong);
       }
-      .page-nav {
-        display: flex;
-        justify-content: space-between;
-        align-items: baseline;
-        gap: 1rem;
-        margin: 0 0 1rem;
-        padding-bottom: 0.75rem;
-        border-bottom: 1px solid var(--line);
-      }
-      .page-nav-bottom {
-        margin-top: 1rem;
-        padding-top: 0.75rem;
-        padding-bottom: 0;
-        border-top: 1px solid var(--line);
-        border-bottom: none;
-      }
       .page-nav-links {
         display: flex;
         gap: 1rem;
         flex-wrap: wrap;
+        align-items: center;
+      }
+      .floating-page-nav {
+        position: fixed;
+        left: 50%;
+        bottom: 18px;
+        transform: translateX(-50%);
+        z-index: 20;
+        width: min(calc(100vw - 24px), 44rem);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 1rem;
+        padding: 0.8rem 1rem;
+        border: 1px solid rgba(162, 169, 177, 0.72);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.96);
+        box-shadow: 0 12px 30px rgba(0, 0, 0, 0.12);
+        backdrop-filter: blur(14px);
+      }
+      .floating-page-nav .page-position {
+        white-space: nowrap;
+      }
+      .floating-page-nav .page-nav-links {
+        justify-content: center;
+        min-width: 0;
+      }
+      .floating-page-nav .nav-link {
+        display: inline-flex;
+        align-items: center;
+        min-height: 2.25rem;
+        padding: 0 0.4rem;
       }
       .toc-title {
         margin: 0 0 0.65rem;
@@ -771,10 +785,10 @@ function renderBookStaticStyles() {
       @media (max-width: 780px) {
         .page-shell {
           width: min(100vw - 12px, 100%);
-          padding: 6px 0 16px;
+          padding: 6px 0 96px;
         }
         .page-surface {
-          padding: 18px 16px 20px;
+          padding: 0;
         }
         .article-layout.has-toc {
           grid-template-columns: minmax(0, 1fr);
@@ -787,9 +801,17 @@ function renderBookStaticStyles() {
           line-height: 1.66;
           max-width: none;
         }
-        .page-nav {
-          flex-direction: column;
+        .floating-page-nav {
+          width: calc(100vw - 16px);
+          bottom: 8px;
+          padding: 0.7rem 0.85rem;
+          border-radius: 18px;
           align-items: flex-start;
+          flex-direction: column;
+        }
+        .floating-page-nav .page-nav-links {
+          width: 100%;
+          justify-content: space-between;
         }
       }
   `;
@@ -998,6 +1020,12 @@ function renderBookSelectionScript() {
           }
           const target = event.target;
           if (!(target instanceof Element)) {
+            return;
+          }
+          const pageNavLink = target.closest("a[data-reader-nav='page']");
+          if (pageNavLink instanceof HTMLAnchorElement) {
+            event.preventDefault();
+            window.location.assign(pageNavLink.href);
             return;
           }
           if (target.closest("a[href]")) {
@@ -1381,9 +1409,9 @@ function buildPaginatedBookArtifactBundle(input: {
     const nextPageHref = nextPage ? withBookVersion(`./page-${String(nextPage.pageNumber).padStart(4, "0")}.html`) : null;
     const contentsHref = withBookVersion("../");
     const navLinks = [
-      previousPageHref ? `<a class="nav-link" href="${previousPageHref}">Previous page</a>` : "",
-      `<a class="nav-link" href="${contentsHref}">Contents</a>`,
-      nextPageHref ? `<a class="nav-link" href="${nextPageHref}">Next page</a>` : "",
+      previousPageHref ? `<a class="nav-link" href="${previousPageHref}" data-reader-nav="page">Previous page</a>` : "",
+      `<a class="nav-link" href="${contentsHref}" data-reader-nav="contents">Contents</a>`,
+      nextPageHref ? `<a class="nav-link" href="${nextPageHref}" data-reader-nav="page">Next page</a>` : "",
     ].filter(Boolean).join("");
     return {
       pageNumber: page.pageNumber,
@@ -1402,12 +1430,8 @@ function buildPaginatedBookArtifactBundle(input: {
   <body>
     <main class="page-shell">
       <div class="page-surface">
-        <nav class="page-nav">
-          <div class="page-nav-links">${navLinks}</div>
-          <p class="page-position">Page ${page.pageNumber} of ${pages.length}</p>
-        </nav>
         <div class="reader-body">${page.blocks.map((block) => block.html).join("\n")}</div>
-        <nav class="page-nav page-nav-bottom">
+        <nav class="floating-page-nav" aria-label="Reader navigation">
           <div class="page-nav-links">${navLinks}</div>
           <p class="page-position">Page ${page.pageNumber} of ${pages.length}</p>
         </nav>
