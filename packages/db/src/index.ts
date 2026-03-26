@@ -103,7 +103,7 @@ export function createWranglerD1Db(options: CreateWranglerD1DbOptions = {}): DbC
 
   return {
     async query<T>(sql: string, params: unknown[] = []) {
-      const command = interpolateSql(sql, params);
+      const command = interpolateSql(sql, params).replace(/\r?\n\s*/gu, " ").trim();
       const args = ["d1", "execute", databaseName, remoteFlag, "--json", "--command", command];
       if (options.wranglerConfig) {
         args.push("--config", options.wranglerConfig);
@@ -150,7 +150,7 @@ export async function loadLocalDevVars(cwd = process.cwd()) {
         continue;
       }
       const [, key, rawValue] = match;
-      if (process.env[key]) {
+      if (Object.prototype.hasOwnProperty.call(process.env, key)) {
         continue;
       }
       process.env[key] = rawValue.trim().replace(/^"(.*)"$/u, "$1").replace(/^'(.*)'$/u, "$1");

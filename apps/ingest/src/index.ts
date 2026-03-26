@@ -7,7 +7,7 @@ import { Agent as HttpsAgent } from "node:https";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { DeleteObjectsCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { DeleteObjectsCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
 import { parseHTML } from "linkedom";
 import type { DbClient } from "@alphabook/db";
@@ -1365,6 +1365,18 @@ async function getJson<T>(r2: S3Client, bucket: string, key: string): Promise<T 
   return JSON.parse(raw) as T;
 }
 
+async function r2ObjectExists(r2: S3Client, bucket: string, key: string): Promise<boolean> {
+  try {
+    await r2.send(new HeadObjectCommand({
+      Bucket: bucket,
+      Key: key,
+    }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function listR2Keys(r2: S3Client, bucket: string, prefix: string): Promise<string[]> {
   const keys: string[] = [];
   let continuationToken: string | undefined;
@@ -1415,6 +1427,74 @@ function createVectorizeApi(context: IngestContext): CloudflareVectorizeApi | nu
     return null;
   }
   return new CloudflareVectorizeApi(context.cloudflareAccountId, process.env.CLOUDFLARE_API_TOKEN);
+}
+
+async function listCanonicalCorpusIds(context: IngestContext): Promise<{ ids: string[]; orphanedKeys: string[]; idsMissingRequiredArtifacts: string[]; byId?: Map<string, GutenbergR2Artifacts> }> {
+  const explicitIdListPath = process.env.CANONICAL_CORPUS_IDS_PATH;
+  if (explicitIdListPath) {
+    const raw = await readFile(explicitIdListPath, "utf8");
+    const ids = Array.from(
+      new Set(
+        raw
+          .split(/\r?\n/u)
+          .map((line) => line.trim())
+          .filter((line) => /^\d+$/u.test(line))
+          .map((line) => String(Number(line))),
+      ),
+    ).sort((left, right) => Number(left) - Number(right));
+    return {
+      ids,
+      orphanedKeys: [],
+      idsMissingRequiredArtifacts: [],
+    };
+  }
+  const mirrorRoot = process.env.GUTENBERG_MIRROR_ROOT;
+  if (mirrorRoot) {
+    return {
+      ids: await listMirrorIds(mirrorRoot),
+      orphanedKeys: [],
+      idsMissingRequiredArtifacts: [],
+    };
+  }
+  const allKeys = await listR2Keys(context.r2, context.r2Bucket, "gutenberg/");
+  const scan = scanGutenbergR2Keys(allKeys);
+  return {
+    ids: scan.canonicalIds,
+    orphanedKeys: scan.orphanedKeys,
+    idsMissingRequiredArtifacts: scan.idsMissingRequiredArtifacts,
+    byId: scan.byId,
+  };
+}
+
+async function resolveCanonicalArtifactsForId(
+  context: IngestContext,
+  gutenbergId: string,
+  scanById?: Map<string, GutenbergR2Artifacts>,
+): Promise<GutenbergR2Artifacts | null> {
+  const fromScan = scanById?.get(gutenbergId);
+  if (fromScan) {
+    return fromScan;
+  }
+  const artifacts: GutenbergR2Artifacts = {
+    id: gutenbergId,
+    keys: {
+      raw: [gutenbergCorpusAdapter.artifactKeys.rawText(gutenbergId)],
+      metadata: [gutenbergCorpusAdapter.artifactKeys.rawMetadata(gutenbergId)],
+      clean: [gutenbergCorpusAdapter.artifactKeys.cleanText(gutenbergId)],
+      chunks: [gutenbergCorpusAdapter.artifactKeys.chunks(gutenbergId)],
+      book_html: [gutenbergCorpusAdapter.artifactKeys.renderedDocument?.(gutenbergId) ?? ""],
+    },
+    unknownKeys: [],
+  };
+  const requiredKeys = [
+    artifacts.keys.raw?.[0],
+    artifacts.keys.metadata?.[0],
+    artifacts.keys.clean?.[0],
+    artifacts.keys.chunks?.[0],
+    artifacts.keys.book_html?.[0],
+  ].filter((value): value is string => Boolean(value));
+  const exists = await Promise.all(requiredKeys.map((key) => r2ObjectExists(context.r2, context.r2Bucket, key)));
+  return exists.every(Boolean) ? artifacts : null;
 }
 
 function shouldSkipExistingWork() {
@@ -1475,8 +1555,8 @@ async function upsertIngestedWork(
   if (source.legacyNumericId) {
     const workResult = await context.db.query<{ id: string }>(
       `
-        INSERT INTO works (id, gutenberg_id, title, language, release_date, rights_status, summary, metadata_json)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        INSERT INTO works (id, gutenberg_id, title, language, release_date, rights_status, summary, metadata_json, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         ON CONFLICT (gutenberg_id) DO UPDATE
         SET
           title = EXCLUDED.title,
@@ -1544,8 +1624,8 @@ async function upsertIngestedWork(
   } else {
     await context.db.query(
       `
-        INSERT INTO works (id, gutenberg_id, title, language, release_date, rights_status, summary, metadata_json)
-        VALUES ($1, NULL, $2, $3, $4, $5, $6, $7)
+        INSERT INTO works (id, gutenberg_id, title, language, release_date, rights_status, summary, metadata_json, created_at, updated_at)
+        VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
       `,
       [
         workId,
@@ -1804,13 +1884,13 @@ async function persistIngestedWork(
 
   await context.db.query(
     `
-      INSERT INTO work_files (id, work_id, kind, r2_key, metadata_json)
+      INSERT INTO work_files (id, work_id, kind, r2_key, metadata_json, created_at)
       VALUES
-        ($1, $2, 'raw', $3, '{}'),
-        ($4, $2, 'metadata', $5, '{}'),
-        ($6, $2, 'clean', $7, '{}'),
-        ($8, $2, 'chunks', $9, '{}'),
-        ($10, $2, 'book_html', $11, '{}')
+        ($1, $2, 'raw', $3, '{}', CURRENT_TIMESTAMP),
+        ($4, $2, 'metadata', $5, '{}', CURRENT_TIMESTAMP),
+        ($6, $2, 'clean', $7, '{}', CURRENT_TIMESTAMP),
+        ($8, $2, 'chunks', $9, '{}', CURRENT_TIMESTAMP),
+        ($10, $2, 'book_html', $11, '{}', CURRENT_TIMESTAMP)
       ON CONFLICT (r2_key) DO NOTHING
     `,
     [
@@ -2484,10 +2564,9 @@ async function auditR2Corpus(
   context: IngestContext,
   options: CorpusAuditOptions,
 ) {
-  const allKeys = await listR2Keys(context.r2, context.r2Bucket, "gutenberg/");
-  const scan = scanGutenbergR2Keys(allKeys);
+  const scan = await listCanonicalCorpusIds(context);
   const startAfter = options.startAfterId ? Number(options.startAfterId) : null;
-  const selectedCanonicalIds = scan.canonicalIds
+  const selectedCanonicalIds = scan.ids
     .filter((id) => (startAfter ? Number(id) > startAfter : true))
     .slice(0, options.limit);
   const workRows = await listExistingCorpusWorkRows(context, selectedCanonicalIds);
@@ -2500,8 +2579,9 @@ async function auditR2Corpus(
   const booksMissingVectors: Array<{ gutenbergId: string; missingCount: number }> = [];
 
   for (const gutenbergId of selectedCanonicalIds) {
-    const artifacts = scan.byId.get(gutenbergId);
+    const artifacts = await resolveCanonicalArtifactsForId(context, gutenbergId, scan.byId);
     if (!artifacts) {
+      booksMissingInD1.push(gutenbergId);
       continue;
     }
     const work = workRows.get(gutenbergId);
@@ -2549,16 +2629,16 @@ async function auditR2Corpus(
     )
   ).rows
     .map((row) => String(row.gutenberg_id))
-    .filter((gutenbergId) => !scan.canonicalIds.includes(gutenbergId));
+    .filter((gutenbergId) => !scan.ids.includes(gutenbergId));
 
   const report = {
     generatedAt: new Date().toISOString(),
     r2Bucket: context.r2Bucket,
-    canonicalBookCount: scan.canonicalIds.length,
+    canonicalBookCount: scan.ids.length,
     scannedCanonicalBookCount: selectedCanonicalIds.length,
     idsMissingRequiredArtifacts: scan.idsMissingRequiredArtifacts.map((id) => ({
       gutenbergId: id,
-      missingKinds: getMissingRequiredArtifacts(scan.byId.get(id)!).map(String),
+      missingKinds: scan.byId?.get(id) ? getMissingRequiredArtifacts(scan.byId.get(id)!).map(String) : ["raw", "metadata", "clean", "chunks", "book_html"],
     })),
     orphanedKeys: scan.orphanedKeys,
     booksMissingInD1,
@@ -2616,13 +2696,13 @@ async function rebuildCanonicalR2Work(
 
   await context.db.query(
     `
-      INSERT INTO work_files (id, work_id, kind, r2_key, metadata_json)
+      INSERT INTO work_files (id, work_id, kind, r2_key, metadata_json, created_at)
       VALUES
-        ($1, $2, 'raw', $3, '{}'),
-        ($4, $2, 'metadata', $5, '{}'),
-        ($6, $2, 'clean', $7, '{}'),
-        ($8, $2, 'chunks', $9, '{}'),
-        ($10, $2, 'book_html', $11, '{}')
+        ($1, $2, 'raw', $3, '{}', CURRENT_TIMESTAMP),
+        ($4, $2, 'metadata', $5, '{}', CURRENT_TIMESTAMP),
+        ($6, $2, 'clean', $7, '{}', CURRENT_TIMESTAMP),
+        ($8, $2, 'chunks', $9, '{}', CURRENT_TIMESTAMP),
+        ($10, $2, 'book_html', $11, '{}', CURRENT_TIMESTAMP)
     `,
     [
       crypto.randomUUID(),
@@ -2698,9 +2778,8 @@ async function rebuildR2Corpus(
 ) {
   const checkpoint = options.checkpointPath ? await readCheckpoint(options.checkpointPath) : null;
   const startAfterId = options.startAfterId ?? checkpoint?.lastProcessedId ?? null;
-  const allKeys = await listR2Keys(context.r2, context.r2Bucket, "gutenberg/");
-  const scan = scanGutenbergR2Keys(allKeys);
-  const selectedCanonicalIds = scan.canonicalIds
+  const scan = await listCanonicalCorpusIds(context);
+  const selectedCanonicalIds = scan.ids
     .filter((id) => (startAfterId ? Number(id) > Number(startAfterId) : true))
     .slice(0, options.limit);
   const existingWorks = await listExistingCorpusWorkRows(context, selectedCanonicalIds);
@@ -2713,7 +2792,7 @@ async function rebuildR2Corpus(
 
   for (const gutenbergId of selectedCanonicalIds) {
     try {
-      const artifacts = scan.byId.get(gutenbergId);
+      const artifacts = await resolveCanonicalArtifactsForId(context, gutenbergId, scan.byId);
       if (!artifacts) {
         throw new Error(`Canonical R2 artifacts missing for Gutenberg ${gutenbergId}.`);
       }
@@ -2746,7 +2825,7 @@ async function rebuildR2Corpus(
   await context.db.query(`DELETE FROM subjects WHERE NOT EXISTS (SELECT 1 FROM work_subjects WHERE subject_id = subjects.id)`);
 
   return {
-    canonicalBookCount: scan.canonicalIds.length,
+    canonicalBookCount: scan.ids.length,
     processed,
     insertedOrUpdated: results.length,
     errors,
@@ -2941,8 +3020,8 @@ async function persistBookHtmlArtifact(
   ]);
   await context.db.query(
     `
-      INSERT INTO work_files (id, work_id, kind, r2_key, metadata_json)
-      VALUES ($1, $2, 'book_html', $3, '{}')
+      INSERT INTO work_files (id, work_id, kind, r2_key, metadata_json, created_at)
+      VALUES ($1, $2, 'book_html', $3, '{}', CURRENT_TIMESTAMP)
       ON CONFLICT (r2_key) DO NOTHING
     `,
     [crypto.randomUUID(), work.workId, bookHtmlKey],
