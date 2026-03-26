@@ -3837,6 +3837,86 @@ test("run details endpoint fails orphaned running runs with no active tool call"
   assert.equal(errorMessage?.content, "This run stopped unexpectedly before it produced an answer.");
 });
 
+test("run details endpoint fails orphaned foreground tool calls with no runtime id", async () => {
+  const store = new InMemoryAppStore();
+  const session = await store.createSession("reader-user", "Stuck semantic run");
+  await store.appendMessage(session.id, "user", "Find grief passages semantically.");
+  const run = await store.createRun(session.id);
+  const toolCall = await store.startToolCall(run.id, "semantic_deep_search", {
+    query: "grief",
+    maxResults: 8,
+  });
+
+  const staleStartedAt = new Date(Date.now() - 45_000).toISOString();
+  await store.updateRun(run.id, {
+    status: "running",
+    completedAt: null,
+  });
+  const runs = (store as unknown as { runs: Map<string, { startedAt: string }> }).runs;
+  const toolCalls = (store as unknown as { toolCalls: Map<string, { startedAt: string }> }).toolCalls;
+  const storedRun = runs.get(run.id);
+  const storedToolCall = toolCalls.get(toolCall.id);
+  assert.ok(storedRun);
+  assert.ok(storedToolCall);
+  storedRun.startedAt = staleStartedAt;
+  storedToolCall.startedAt = staleStartedAt;
+
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    planner: new ScriptedPlanner([
+      {
+        type: "final_answer",
+        answer: "unused",
+        citations: [],
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+      async runWorkspaceTask() {
+        return { ok: false, error: "disabled" };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: true, files: [] };
+      },
+      async destroyWorkspace() {
+        return { ok: true };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const runResponse = await app.request(`/sessions/${session.id}/runs/${run.id}?userId=reader-user`);
+  assert.equal(runResponse.status, 200);
+  const runPayload = await runResponse.json() as {
+    run: { status: string };
+  };
+  assert.equal(runPayload.run.status, "failed");
+
+  const refreshedToolCall = (await store.listToolCalls(run.id)).find((candidate) => candidate.id === toolCall.id);
+  assert.equal(refreshedToolCall?.status, "failed");
+  assert.equal(refreshedToolCall?.resultJson?.error, "Semantic Search stopped unexpectedly before it finished.");
+
+  const messagesResponse = await app.request(`/sessions/${session.id}/messages?userId=reader-user`);
+  assert.equal(messagesResponse.status, 200);
+  const payload = await messagesResponse.json() as {
+    messages: Array<{ role: string; content: string; metadata: Record<string, unknown> }>;
+  };
+  const errorMessage = payload.messages.find((message) => message.metadata?.phase === "error");
+  assert.equal(errorMessage?.content, "Semantic Search stopped unexpectedly before it finished.");
+});
+
 test("persisted tool traces keep chunk results compact enough for refresh", async () => {
   const store = new InMemoryAppStore(
     [

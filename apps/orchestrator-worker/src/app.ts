@@ -2587,6 +2587,7 @@ async function executeTool(
           source: "semantic_search",
         },
         onProgress: context.progressReporter,
+        auditLog: context.auditLog,
       });
       return structuredClone(result) as Record<string, unknown>;
     }
@@ -4951,6 +4952,34 @@ async function finalizeStaleRun(
     );
     if (reconciledSpriteRun) {
       return reconciledSpriteRun;
+    }
+  }
+  const activeRun = activeRuns?.get(run.id) ?? null;
+  if ((!runtimeId || !deps.runtimeGateway.getWorkspaceTaskStatus) && !activeRun) {
+    const runningDurationMs = Date.now() - Date.parse(runningToolCall.startedAt);
+    if (runningDurationMs > ORPHANED_RUN_GRACE_MS) {
+      const failedResult = {
+        ok: false,
+        error: `${labelForToolCall(runningToolCall.toolName, runningToolCall.argsJson)} stopped unexpectedly before it finished.`,
+        runtimeId: runtimeId ?? undefined,
+      };
+      await deps.store.finishToolCall(runningToolCall.id, "failed", failedResult);
+      const refreshedToolCalls = await deps.store.listToolCalls(run.id);
+      await persistRecoveredPlanToolTrace(deps, session.id, run.id, refreshedToolCalls);
+      await deps.store.updateRun(run.id, {
+        status: "failed",
+        completedAt: new Date().toISOString(),
+      });
+      const persistedPlanState = readPersistedPlanMessageState(await deps.store.listMessages(session.id), run.id);
+      await appendRunErrorMessageOnce(deps, session.id, run.id, failedResult.error, {
+        runId: run.id,
+        phase: "error",
+        toolCalls: persistedPlanState.toolTrace,
+        researchLog: persistedPlanState.toolTrace,
+        recoveredFromOrphanedForegroundTool: true,
+      });
+      await cancelLiveExecution(refreshedToolCalls);
+      return deps.store.getRun(run.id);
     }
   }
   if (!runtimeId || !deps.runtimeGateway.getWorkspaceTaskStatus) {
@@ -12160,16 +12189,22 @@ export function createApp(inputDeps: CreateAppInput) {
   app.get("/api/v1/sessions/:sessionId/messages", handleListMessages);
 
   const buildRunStatePayload = async (sessionId: string, runId: string) => {
-    const run = await deps.store.getRun(runId);
+    const initialRun = await deps.store.getRun(runId);
+    if (!initialRun || initialRun.sessionId !== sessionId) {
+      return null;
+    }
+    const run = initialRun.status === "running" || initialRun.status === "queued"
+      ? await finalizeStaleRun(deps, new Request(`${apiOrigin(deps)}/internal/run-state`), initialRun) ?? initialRun
+      : initialRun;
     if (!run || run.sessionId !== sessionId) {
       return null;
     }
-    const toolCalls = await deps.store.listToolCalls(runId);
+    const toolCalls = await deps.store.listToolCalls(run.id);
     const [{ runtimeInstances, runEvents, runtimeIds }, persistedPlanState] = await Promise.all([
       resolveRunRuntimeContext(deps, sessionId, run, toolCalls),
-      readPersistedPlanMessageStateForRun(deps, sessionId, runId),
+      readPersistedPlanMessageStateForRun(deps, sessionId, run.id),
     ]);
-    const artifacts = await loadRunArtifactSummaries(deps, sessionId, runId, runtimeIds);
+    const artifacts = await loadRunArtifactSummaries(deps, sessionId, run.id, runtimeIds);
     const toolTrace = runEvents.length > 0
       ? persistedPlanState.toolTrace
       : mergeRecoveredTraceWithExisting(
