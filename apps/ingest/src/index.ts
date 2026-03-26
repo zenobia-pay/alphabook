@@ -2527,51 +2527,67 @@ function sqlPlaceholders(values: string[]) {
   return values.map((_, index) => `$${index + 1}`).join(", ");
 }
 
+function chunkArray<T>(values: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < values.length; index += size) {
+    chunks.push(values.slice(index, index + size));
+  }
+  return chunks;
+}
+
 async function listExistingCorpusWorkRows(context: IngestContext, gutenbergIds: string[]) {
   if (gutenbergIds.length === 0) {
     return new Map<string, ExistingCorpusWorkRow>();
   }
-  const placeholders = sqlPlaceholders(gutenbergIds);
-  const rows = await context.db.query<ExistingCorpusWorkRow>(
-    `
-      SELECT
-        w.id AS work_id,
-        CAST(w.gutenberg_id AS TEXT) AS gutenberg_id,
-        EXISTS(SELECT 1 FROM work_files wf WHERE wf.work_id = w.id AND wf.kind = 'raw') AS has_raw,
-        EXISTS(SELECT 1 FROM work_files wf WHERE wf.work_id = w.id AND wf.kind = 'metadata') AS has_metadata,
-        EXISTS(SELECT 1 FROM work_files wf WHERE wf.work_id = w.id AND wf.kind = 'clean') AS has_clean,
-        EXISTS(SELECT 1 FROM work_files wf WHERE wf.work_id = w.id AND wf.kind = 'chunks') AS has_chunks,
-        EXISTS(SELECT 1 FROM work_files wf WHERE wf.work_id = w.id AND wf.kind = 'book_html') AS has_book_html,
-        (SELECT COUNT(*) FROM chunks c WHERE c.work_id = w.id) AS chunk_count
-      FROM works w
-      WHERE CAST(w.gutenberg_id AS TEXT) IN (${placeholders})
-    `,
-    gutenbergIds,
-  );
-  return new Map(rows.rows.map((row) => [String(row.gutenberg_id), row]));
+  const rows: ExistingCorpusWorkRow[] = [];
+  for (const batch of chunkArray(gutenbergIds, 200)) {
+    const placeholders = sqlPlaceholders(batch);
+    const result = await context.db.query<ExistingCorpusWorkRow>(
+      `
+        SELECT
+          w.id AS work_id,
+          CAST(w.gutenberg_id AS TEXT) AS gutenberg_id,
+          EXISTS(SELECT 1 FROM work_files wf WHERE wf.work_id = w.id AND wf.kind = 'raw') AS has_raw,
+          EXISTS(SELECT 1 FROM work_files wf WHERE wf.work_id = w.id AND wf.kind = 'metadata') AS has_metadata,
+          EXISTS(SELECT 1 FROM work_files wf WHERE wf.work_id = w.id AND wf.kind = 'clean') AS has_clean,
+          EXISTS(SELECT 1 FROM work_files wf WHERE wf.work_id = w.id AND wf.kind = 'chunks') AS has_chunks,
+          EXISTS(SELECT 1 FROM work_files wf WHERE wf.work_id = w.id AND wf.kind = 'book_html') AS has_book_html,
+          (SELECT COUNT(*) FROM chunks c WHERE c.work_id = w.id) AS chunk_count
+        FROM works w
+        WHERE CAST(w.gutenberg_id AS TEXT) IN (${placeholders})
+      `,
+      batch,
+    );
+    rows.push(...result.rows);
+  }
+  return new Map(rows.map((row) => [String(row.gutenberg_id), row]));
 }
 
 async function listExistingChunkRows(context: IngestContext, gutenbergIds: string[]) {
   if (gutenbergIds.length === 0) {
     return new Map<string, ExistingChunkRow[]>();
   }
-  const placeholders = sqlPlaceholders(gutenbergIds);
-  const rows = await context.db.query<ExistingChunkRow>(
-    `
-      SELECT
-        c.work_id AS work_id,
-        CAST(w.gutenberg_id AS TEXT) AS gutenberg_id,
-        c.id AS chunk_id,
-        c.chunk_index AS chunk_index
-      FROM chunks c
-      INNER JOIN works w ON w.id = c.work_id
-      WHERE CAST(w.gutenberg_id AS TEXT) IN (${placeholders})
-      ORDER BY w.gutenberg_id ASC, c.chunk_index ASC
-    `,
-    gutenbergIds,
-  );
+  const rows: ExistingChunkRow[] = [];
+  for (const batch of chunkArray(gutenbergIds, 200)) {
+    const placeholders = sqlPlaceholders(batch);
+    const result = await context.db.query<ExistingChunkRow>(
+      `
+        SELECT
+          c.work_id AS work_id,
+          CAST(w.gutenberg_id AS TEXT) AS gutenberg_id,
+          c.id AS chunk_id,
+          c.chunk_index AS chunk_index
+        FROM chunks c
+        INNER JOIN works w ON w.id = c.work_id
+        WHERE CAST(w.gutenberg_id AS TEXT) IN (${placeholders})
+        ORDER BY w.gutenberg_id ASC, c.chunk_index ASC
+      `,
+      batch,
+    );
+    rows.push(...result.rows);
+  }
   const grouped = new Map<string, ExistingChunkRow[]>();
-  for (const row of rows.rows) {
+  for (const row of rows) {
     const key = String(row.gutenberg_id);
     const bucket = grouped.get(key) ?? [];
     bucket.push(row);
