@@ -153,6 +153,61 @@ function normalizeEmbedding(values: number[]): number[] {
   return values.map((value) => value / magnitude);
 }
 
+function normalizeCorpusLanguage(
+  value: unknown,
+  disallowedValues: string[] = [],
+): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim().replace(/\s+/gu, " ");
+  if (!normalized) {
+    return null;
+  }
+  const lower = normalized.toLowerCase();
+  if (disallowedValues.some((entry) => entry.trim().toLowerCase() === lower)) {
+    return null;
+  }
+  return normalized;
+}
+
+function formatDisplayLanguage(value: unknown): string | null {
+  const normalized = normalizeCorpusLanguage(value);
+  if (!normalized) {
+    return null;
+  }
+  if (/\b(fiction|poetry|stories|story|drama|novel|novels|essays|letters|adventure|fantasy|humorous|romance|biography|speeches|literature|history|philosophy|mythology|religion|politics)\b/iu.test(normalized)) {
+    return null;
+  }
+  if (/--|\d/u.test(normalized)) {
+    return null;
+  }
+  if (!/^[A-Za-z][A-Za-z -]{0,39}$/u.test(normalized)) {
+    return null;
+  }
+  if (normalized.split(/\s+/u).length > 3) {
+    return null;
+  }
+  return normalized;
+}
+
+function parseJsonRecord(value: unknown): Record<string, unknown> {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  if (typeof value === "string" && value.trim().length > 0) {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
 async function embedChunks(chunks: string[]): Promise<number[][] | null> {
   const provider = process.env.EMBEDDING_PROVIDER ?? "openai";
   if (chunks.length === 0) {
@@ -236,26 +291,31 @@ async function embedChunksWithGoogle(chunks: string[]): Promise<number[][] | nul
 
   const model = process.env.GOOGLE_EMBEDDING_MODEL ?? "gemini-embedding-2-preview";
   const outputDimensionality = Number(process.env.GOOGLE_EMBEDDING_DIMENSIONS ?? "1536");
+  const batchSize = Number(process.env.GOOGLE_EMBEDDING_BATCH_SIZE ?? "32");
   const embeddings: number[][] = [];
 
-  for (const chunk of chunks) {
+  for (let index = 0; index < chunks.length; index += batchSize) {
+    const batch = chunks.slice(index, index + batchSize);
     let response: Response | null = null;
     let lastError: string | null = null;
 
     for (let attempt = 0; attempt < 5; attempt += 1) {
       try {
-        response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:embedContent`, {
+        response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:batchEmbedContents`, {
           method: "POST",
+          signal: AbortSignal.timeout(60_000),
           headers: {
             "content-type": "application/json",
             "x-goog-api-key": apiKey,
           },
           body: JSON.stringify({
-            model: `models/${model}`,
-            content: {
-              parts: [{ text: chunk }],
-            },
-            output_dimensionality: outputDimensionality,
+            requests: batch.map((chunk) => ({
+              model: `models/${model}`,
+              content: {
+                parts: [{ text: chunk }],
+              },
+              outputDimensionality: outputDimensionality,
+            })),
           }),
         });
         if (response.ok) {
@@ -280,15 +340,24 @@ async function embedChunksWithGoogle(chunks: string[]): Promise<number[][] | nul
     }
 
     const payload = (await response.json()) as {
-      embedding?: {
+      embeddings?: Array<{
         values?: number[];
-      };
+        embedding?: {
+          values?: number[];
+        };
+      }>;
     };
-    const vector = payload.embedding?.values;
-    if (!vector?.length) {
-      throw new Error("Google embedding response was empty.");
+    const nextVectors = (payload.embeddings ?? []).map((item) => {
+      const vector = item.values ?? item.embedding?.values ?? [];
+      if (!vector.length) {
+        throw new Error("Google embedding response was empty.");
+      }
+      return normalizeEmbedding(vector);
+    });
+    if (nextVectors.length !== batch.length) {
+      throw new Error("Google embedding response length did not match the number of chunks.");
     }
-    embeddings.push(normalizeEmbedding(vector));
+    embeddings.push(...nextVectors);
   }
 
   if (embeddings.length !== chunks.length || embeddings.some((vector) => vector.length === 0)) {
@@ -473,7 +542,7 @@ function createBookSectionId(title: string, index: number) {
   return `section-${slugify(title)}-${index + 1}`;
 }
 
-const STATIC_BOOK_CONTENT_VERSION = "20260320b";
+const STATIC_BOOK_CONTENT_VERSION = "20260326b";
 
 function withBookVersion(href: string, fragment?: string | null) {
   const separator = href.includes("?") ? "&" : "?";
@@ -1155,7 +1224,7 @@ function buildPaginatedBookArtifactBundle(input: {
 }) {
   const meta = [
     input.gutenbergId ? `Project Gutenberg #${input.gutenbergId}` : null,
-    input.language ? input.language.toUpperCase() : null,
+    formatDisplayLanguage(input.language)?.toUpperCase() ?? null,
     input.releaseDate ? input.releaseDate.slice(0, 4) : null,
   ].filter((value): value is string => Boolean(value)).join(" · ");
   const byline = input.authors.filter((author) => author.trim().length > 0).join(" · ");
@@ -2528,6 +2597,10 @@ async function readCanonicalR2Work(
   const subjects = Array.isArray(metadataPayload.subjects)
     ? metadataPayload.subjects.filter((value): value is string => typeof value === "string")
     : [];
+  const bookshelves = Array.isArray(metadataPayload.bookshelves)
+    ? metadataPayload.bookshelves.filter((value): value is string => typeof value === "string")
+    : [];
+  const language = normalizeCorpusLanguage(metadataPayload.language, [...subjects, ...bookshelves]);
 
   return {
     gutenbergId,
@@ -2536,7 +2609,7 @@ async function readCanonicalR2Work(
     title,
     authors,
     subjects,
-    language: typeof metadataPayload.language === "string" ? metadataPayload.language : null,
+    language,
     releaseDate: typeof metadataPayload.releaseDate === "string" ? metadataPayload.releaseDate : null,
     rightsStatus: typeof metadataPayload.rightsStatus === "string" ? metadataPayload.rightsStatus : null,
     summary: typeof metadataPayload.summary === "string" ? metadataPayload.summary : null,
@@ -2548,6 +2621,7 @@ async function readCanonicalR2Work(
       title,
       authors,
       subjects,
+      language,
     },
     artifactKeys: {
       raw: rawKey,
@@ -2873,7 +2947,7 @@ async function listWorksMissingBookHtml(context: IngestContext, limit: number, s
     summary: row.summary,
     language: row.language,
     releaseDate: row.release_date,
-    metadata: row.metadata_json ?? {},
+    metadata: parseJsonRecord(row.metadata_json),
   } satisfies ExistingBookHtmlWork));
 }
 
@@ -2912,7 +2986,7 @@ async function listBookHtmlWorks(context: IngestContext, limit: number, startAft
     summary: row.summary,
     language: row.language,
     releaseDate: row.release_date,
-    metadata: row.metadata_json ?? {},
+    metadata: parseJsonRecord(row.metadata_json),
   } satisfies ExistingBookHtmlWork));
 }
 
@@ -2959,7 +3033,7 @@ async function listBookHtmlWorksByCreatedAt(
     summary: row.summary,
     language: row.language,
     releaseDate: row.release_date,
-    metadata: row.metadata_json ?? {},
+    metadata: parseJsonRecord(row.metadata_json),
   } satisfies ExistingBookHtmlWork));
 }
 

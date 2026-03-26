@@ -102,6 +102,29 @@ export interface AppDeps {
 
 type CreateAppInput = Partial<Omit<AppDeps, "store" | "billing">> & Pick<AppDeps, "store" | "billing">;
 
+function formatDisplayLanguage(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim().replace(/\s+/gu, " ");
+  if (!normalized) {
+    return null;
+  }
+  if (/\b(fiction|poetry|stories|story|drama|novel|novels|essays|letters|adventure|fantasy|humorous|romance|biography|speeches|literature|history|philosophy|mythology|religion|politics)\b/iu.test(normalized)) {
+    return null;
+  }
+  if (/--|\d/u.test(normalized)) {
+    return null;
+  }
+  if (!/^[A-Za-z][A-Za-z -]{0,39}$/u.test(normalized)) {
+    return null;
+  }
+  if (normalized.split(/\s+/u).length > 3) {
+    return null;
+  }
+  return normalized;
+}
+
 const AgentRegistrationRequestSchema = z.object({
   name: z.string().trim().min(1).max(120),
   description: z.string().trim().max(500).optional(),
@@ -2464,7 +2487,7 @@ function buildFallbackBookHtml(work: WorkDetailRecord, content: string, format: 
       .join("\n");
   const meta = [
     work.gutenbergId ? `Project Gutenberg #${work.gutenbergId}` : null,
-    work.language ? work.language.toUpperCase() : null,
+    formatDisplayLanguage(work.language)?.toUpperCase() ?? null,
     work.releaseDate ? work.releaseDate.slice(0, 4) : null,
   ].filter(Boolean).join(" · ");
   const subtitle = typeof metadata.subtitle === "string" ? metadata.subtitle : null;

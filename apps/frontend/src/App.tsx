@@ -94,6 +94,29 @@ type WorkPageBootstrapPayload = {
   errorStatus?: number;
 };
 
+function formatDisplayLanguage(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim().replace(/\s+/gu, " ");
+  if (!normalized) {
+    return null;
+  }
+  if (/\b(fiction|poetry|stories|story|drama|novel|novels|essays|letters|adventure|fantasy|humorous|romance|biography|speeches|literature|history|philosophy|mythology|religion|politics)\b/iu.test(normalized)) {
+    return null;
+  }
+  if (/--|\d/u.test(normalized)) {
+    return null;
+  }
+  if (!/^[A-Za-z][A-Za-z -]{0,39}$/u.test(normalized)) {
+    return null;
+  }
+  if (normalized.split(/\s+/u).length > 3) {
+    return null;
+  }
+  return normalized;
+}
+
 type ResearchDocumentEntryKind = "title" | "log" | "book" | "chunk";
 
 type CitationNavigationContextValue = {
@@ -224,7 +247,7 @@ const DEFAULT_READER_NAME = IMPLEMENTATION.defaultReaderName;
 const SEO_SITE_NAME = IMPLEMENTATION.siteName;
 const SEO_SITE_ORIGIN = IMPLEMENTATION.siteOrigin;
 const BOOK_CONTENT_ORIGIN = IMPLEMENTATION.contentOrigin;
-const BOOK_CONTENT_VERSION = "20260320b";
+const BOOK_CONTENT_VERSION = "20260326b";
 const DEFAULT_SEO_DESCRIPTION = IMPLEMENTATION.siteDescription;
 const DEFAULT_OG_IMAGE_PATH = "/social-card.svg";
 const CORPUS_LABEL_PLURAL = IMPLEMENTATION.corpusLabelPlural;
@@ -7602,13 +7625,37 @@ export default function App() {
               {activeWorkLoading ? (
                 <BookLoadingState />
               ) : activeWork ? (
-                <iframe
-                  key={activeWorkId}
-                  className="book-reader-frame"
-                  src={buildWorkContentFrameHref(activeWorkId, activeWork.gutenbergId, activePassageId, activeReaderPath)}
-                  title={activeWork.title ? `${activeWork.title} text` : "Book text"}
-                  loading="eager"
-                />
+                <>
+                  <div className="book-reader-header">
+                    <div className="book-reader-header-layout">
+                      {activeWork.coverImageUrl ? (
+                        <div className="book-reader-cover">
+                          <img src={activeWork.coverImageUrl} alt="" loading="lazy" />
+                        </div>
+                      ) : null}
+                      <div className="book-reader-header-copy">
+                        <p className="book-reader-meta">
+                          {[
+                            activeWork.gutenbergId ? `Project Gutenberg #${activeWork.gutenbergId}` : null,
+                            formatDisplayLanguage(activeWork.language)?.toUpperCase() ?? null,
+                            activeWork.releaseDate ? activeWork.releaseDate.slice(0, 4) : null,
+                          ].filter(Boolean).join(" · ")}
+                        </p>
+                        <h1>{activeWork.title}</h1>
+                        {activeWork.authors.length > 0 ? (
+                          <p className="book-reader-authors">{activeWork.authors.join(" · ")}</p>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
+                  <iframe
+                    key={activeWorkId}
+                    className="book-reader-frame"
+                    src={buildWorkContentFrameHref(activeWorkId, activeWork.gutenbergId, activePassageId, activeReaderPath)}
+                    title={activeWork.title ? `${activeWork.title} text` : "Book text"}
+                    loading="eager"
+                  />
+                </>
               ) : (
                 <div className="book-loading">Book not found.</div>
               )}

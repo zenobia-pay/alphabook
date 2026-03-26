@@ -2324,6 +2324,31 @@ button {
   border-bottom: 1px solid var(--line);
 }
 
+.book-reader-header-layout {
+  display: flex;
+  align-items: flex-start;
+  gap: 18px;
+}
+
+.book-reader-header-copy {
+  min-width: 0;
+}
+
+.book-reader-cover {
+  width: 104px;
+  flex: 0 0 auto;
+  border-radius: 14px;
+  overflow: hidden;
+  background: rgba(15, 23, 42, 0.06);
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.12);
+}
+
+.book-reader-cover img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
 .book-reader-header h1 {
   margin: 6px 0 0;
   font-family: "Newsreader", serif;
@@ -3258,6 +3283,18 @@ button {
   .book-page {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(42vh, auto) minmax(0, 1fr);
+  }
+
+  .book-reader-header {
+    padding: 18px 16px 14px;
+  }
+
+  .book-reader-header-layout {
+    gap: 14px;
+  }
+
+  .book-reader-cover {
+    width: 82px;
   }
 
   .assistant-thread-shell {
