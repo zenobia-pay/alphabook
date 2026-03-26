@@ -5930,6 +5930,24 @@ function runtimeLifecycleTerminal(status: string | null | undefined) {
   return status === "destroyed" || status === "failed" || status === "expired";
 }
 
+function runtimeLifecycleStale(
+  instance: Awaited<ReturnType<AppStore["listRuntimeInstances"]>>[number] | null | undefined,
+  thresholdMs: number,
+) {
+  if (!instance) {
+    return false;
+  }
+  if (runtimeLifecycleTerminal(instance.status)) {
+    return true;
+  }
+  const lastUsedCandidate = typeof instance.lastUsedAt === "string"
+    ? Date.parse(instance.lastUsedAt)
+    : typeof instance.createdAt === "string"
+      ? Date.parse(instance.createdAt)
+      : Number.NaN;
+  return Number.isFinite(lastUsedCandidate) && (Date.now() - lastUsedCandidate) >= thresholdMs;
+}
+
 type SpriteShardLifecycleSummary = {
   shardId: string;
   label: string;
@@ -6015,7 +6033,21 @@ export function summarizeSpriteFanoutLifecycle(
     }
     const shardRecord = spriteShard as Record<string, unknown>;
     const shardId = typeof shardRecord.shardId === "string" ? shardRecord.shardId : null;
-    if (!shardId || shardStates.has(shardId)) {
+    if (!shardId) {
+      continue;
+    }
+    const existing = shardStates.get(shardId);
+    if (existing) {
+      if (
+        !spriteShardLifecycleTerminal(existing.state)
+        && runtimeLifecycleTerminal(instance.status)
+      ) {
+        shardStates.set(shardId, {
+          ...existing,
+          runtimeId: existing.runtimeId ?? instance.runtimeId,
+          state: "failed",
+        });
+      }
       continue;
     }
     shardStates.set(shardId, {
@@ -6082,6 +6114,10 @@ async function reconcileOrphanedSpriteFanoutRun(
     }
     return Math.max(latest, Date.parse(event.createdAt));
   }, 0);
+  const stalePendingShards = lifecycle.pendingShards.length > 0
+    && lifecycle.pendingShards.every((state) =>
+      runtimeLifecycleStale(state.runtimeId ? lifecycle.runtimesById.get(state.runtimeId) ?? null : null, SPRITE_ORPHANED_PROGRESS_STALL_MS),
+    );
   const pendingPreSearchOnly = lifecycle.pendingShards.length > 0
     && lifecycle.pendingShards.every((state) =>
       state.state === "queued" || state.state === "starting" || state.state === "hydrating",
@@ -6090,7 +6126,7 @@ async function reconcileOrphanedSpriteFanoutRun(
     && pendingPreSearchOnly
     && latestLifecycleAtMs > 0
     && (Date.now() - latestLifecycleAtMs) >= SPRITE_ORPHANED_PROGRESS_STALL_MS;
-  if (activeLiveMachines.length > 0 && !stalledWithLiveMachines) {
+  if (activeLiveMachines.length > 0 && !stalledWithLiveMachines && !stalePendingShards) {
     return null;
   }
 
@@ -6116,7 +6152,9 @@ async function reconcileOrphanedSpriteFanoutRun(
       totalShards: shard.totalShards,
       bookCount: shard.bookCount,
       runtimeId: shard.runtimeId,
-      error: liveMachineIds.size === 0
+      error: runtimeLifecycleStale(runtimeRecord, SPRITE_ORPHANED_PROGRESS_STALL_MS)
+        ? "This part stopped reporting progress while searching."
+        : liveMachineIds.size === 0
         ? "This part stopped before it finished searching."
         : stalledWithLiveMachines
           ? "This part never moved past worker startup."
