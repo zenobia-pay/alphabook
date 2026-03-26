@@ -50,12 +50,14 @@ type RuntimeTaskStatusRecord =
       status: "running";
       runtimeId: string;
       startedAt: string;
+      updatedAt: string;
     }
   | {
       status: "completed";
       runtimeId: string;
       startedAt: string;
       completedAt: string;
+      updatedAt: string;
       result: RuntimeTaskResult;
     }
   | {
@@ -63,6 +65,7 @@ type RuntimeTaskStatusRecord =
       runtimeId: string;
       startedAt: string;
       completedAt: string;
+      updatedAt: string;
       error: string;
       billingEvents?: Array<Record<string, unknown>>;
     };
@@ -161,6 +164,30 @@ async function writeRuntimeTaskStatus(
 
 async function readRuntimeTaskStatus(paths: ReturnType<typeof createPaths>): Promise<RuntimeTaskStatusRecord> {
   return readJsonIfPresent<RuntimeTaskStatusRecord>(runtimeTaskStatusPath(paths), { status: "idle" });
+}
+
+async function latestOutputActivityAt(
+  paths: ReturnType<typeof createPaths>,
+  workspaceRoot: string,
+): Promise<string | null> {
+  try {
+    const files = await listFiles(paths.output, workspaceRoot);
+    let latestMs = 0;
+    for (const relativePath of files) {
+      try {
+        const info = await stat(join(workspaceRoot, relativePath));
+        const modifiedMs = info.mtimeMs;
+        if (Number.isFinite(modifiedMs) && modifiedMs > latestMs) {
+          latestMs = modifiedMs;
+        }
+      } catch {
+        continue;
+      }
+    }
+    return latestMs > 0 ? new Date(latestMs).toISOString() : null;
+  } catch {
+    return null;
+  }
 }
 
 function json(response: ServerResponse, statusCode: number, payload: unknown) {
@@ -1022,6 +1049,7 @@ async function startExternalAgentTask(
     status: "running",
     runtimeId: payload.runtimeId,
     startedAt,
+    updatedAt: startedAt,
   });
 
   void (async () => {
@@ -1035,6 +1063,7 @@ async function startExternalAgentTask(
         runtimeId: payload.runtimeId,
         startedAt,
         completedAt: nowIso(),
+        updatedAt: nowIso(),
         result,
       });
     } catch (error) {
@@ -1043,6 +1072,7 @@ async function startExternalAgentTask(
         runtimeId: payload.runtimeId,
         startedAt,
         completedAt: nowIso(),
+        updatedAt: nowIso(),
         error: error instanceof Error ? error.message : "Unknown runtime error",
         billingEvents: await readRuntimeBillingEvents(paths),
       });
@@ -1164,7 +1194,12 @@ export function createAlphaBookRuntimeServer(options: RuntimeServerOptions = {})
       }
 
       if (request.method === "GET" && request.url === "/task-status") {
-        return json(response, 200, await readRuntimeTaskStatus(paths));
+        const status = await readRuntimeTaskStatus(paths);
+        const lastOutputAt = await latestOutputActivityAt(paths, workspaceRoot);
+        return json(response, 200, {
+          ...status,
+          ...(status.status === "idle" ? {} : { lastOutputAt }),
+        });
       }
 
       if (request.method === "GET" && request.url?.startsWith("/file?")) {

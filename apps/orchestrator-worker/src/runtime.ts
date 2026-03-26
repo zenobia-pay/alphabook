@@ -96,6 +96,7 @@ const DEFAULT_SPRITE_AGGREGATOR_GUEST: FlyMachineGuestConfig = {
   memory_mb: 4096,
 };
 const STALE_SPRITE_MACHINE_THRESHOLD_MS = 20 * 60_000;
+const SPRITE_SHARD_NO_OUTPUT_TIMEOUT_MS = 150_000;
 const SPRITE_MACHINE_NAME_PREFIXES = ["alphabook-sprite-", "alphabook-aggregate-"] as const;
 
 function spriteShardCatalogKey(implementationId: string): string {
@@ -1662,7 +1663,11 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
   private async executeRuntimeTask(
     instance: RuntimeInstanceRecord,
     taskSpec: Record<string, unknown>,
-    options: { skipMachineStartupCheck?: boolean } = {},
+    options: {
+      skipMachineStartupCheck?: boolean;
+      quietTimeoutMs?: number;
+      quietTimeoutMessage?: string;
+    } = {},
   ) {
     if (!options.skipMachineStartupCheck) {
       await this.ensureMachineRunning(instance);
@@ -1683,11 +1688,21 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     });
 
     const startedAt = Date.now();
+    let lastOutputAt = startedAt;
     let result: Record<string, unknown> | null = null;
     while (Date.now() - startedAt < HARD_LIMITS.MAX_RUN_WALL_CLOCK_SECONDS * 1000) {
       const status = await this.callRuntime(machineId, "/task-status", {
         method: "GET",
       });
+      const outputAtCandidate =
+        typeof status.lastOutputAt === "string"
+          ? Date.parse(status.lastOutputAt)
+          : typeof status.updatedAt === "string"
+            ? Date.parse(status.updatedAt)
+            : Number.NaN;
+      if (Number.isFinite(outputAtCandidate) && outputAtCandidate > lastOutputAt) {
+        lastOutputAt = outputAtCandidate;
+      }
       if (status.status === "completed" && status.result && typeof status.result === "object") {
         result = status.result as Record<string, unknown>;
         break;
@@ -1700,6 +1715,24 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
             : "Deep research failed in the runtime.",
         ) as Error & { runtimePayload?: Record<string, unknown> };
         error.runtimePayload = status;
+        throw error;
+      }
+      if (options.quietTimeoutMs && Date.now() - lastOutputAt > options.quietTimeoutMs) {
+        await this.callRuntime(machineId, "/cancel-task", {
+          method: "POST",
+          body: JSON.stringify({ runtimeId: instance.runtimeId }),
+        }).catch(() => {});
+        await this.persistRuntimeArtifactsFromWorkspace(instance);
+        const errorMessage = options.quietTimeoutMessage
+          ?? "Deep research stopped making progress before the runtime produced a briefing.";
+        const error = new Error(errorMessage) as Error & {
+          runtimePayload?: Record<string, unknown>;
+        };
+        error.runtimePayload = {
+          ...status,
+          error: errorMessage,
+          lastOutputAt: Number.isFinite(lastOutputAt) ? new Date(lastOutputAt).toISOString() : null,
+        };
         throw error;
       }
       await new Promise((resolve) => setTimeout(resolve, 750));
@@ -2148,7 +2181,11 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
         evidenceNotesFile: "output/evidence-notes.md",
         briefingFile: "output/briefing.md",
         briefingJsonFile: "output/briefing.json",
-      }, { skipMachineStartupCheck: true });
+      }, {
+        skipMachineStartupCheck: true,
+        quietTimeoutMs: SPRITE_SHARD_NO_OUTPUT_TIMEOUT_MS,
+        quietTimeoutMessage: `${shardLabel(shard)} stopped producing evidence or draft text before it finished.`,
+      });
       await persistShardLifecycle(runtimeId, "completed", {
         citationCount: Array.isArray((result as Record<string, unknown>).citations)
           ? ((result as Record<string, unknown>).citations as unknown[]).length
