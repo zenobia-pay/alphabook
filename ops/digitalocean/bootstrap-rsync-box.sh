@@ -22,6 +22,8 @@ mkdir -p "$ALPHABOOK_ROOT/logs"
 install -m 0755 "$SCRIPT_DIR/bin/gutenberg-rsync.sh" "$ALPHABOOK_ROOT/bin/gutenberg-rsync.sh"
 install -m 0755 "$SCRIPT_DIR/bin/gutenberg-rsync-epub.sh" "$ALPHABOOK_ROOT/bin/gutenberg-rsync-epub.sh"
 install -m 0755 "$SCRIPT_DIR/bin/gutenberg-upload.sh" "$ALPHABOOK_ROOT/bin/gutenberg-upload.sh"
+install -m 0755 "$SCRIPT_DIR/bin/freeze-gutenberg-ingest.sh" "$ALPHABOOK_ROOT/bin/freeze-gutenberg-ingest.sh"
+install -m 0755 "$SCRIPT_DIR/bin/resume-gutenberg-ingest.sh" "$ALPHABOOK_ROOT/bin/resume-gutenberg-ingest.sh"
 install -m 0644 "$SCRIPT_DIR/systemd/alphabook-gutenberg-rsync.service" /etc/systemd/system/alphabook-gutenberg-rsync.service
 install -m 0644 "$SCRIPT_DIR/systemd/alphabook-gutenberg-rsync.timer" /etc/systemd/system/alphabook-gutenberg-rsync.timer
 install -m 0644 "$SCRIPT_DIR/systemd/alphabook-gutenberg-rsync-epub.service" /etc/systemd/system/alphabook-gutenberg-rsync-epub.service

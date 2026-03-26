@@ -7,7 +7,7 @@ import { Agent as HttpsAgent } from "node:https";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { DeleteObjectsCommand, GetObjectCommand, S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import { DeleteObjectsCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
 import { parseHTML } from "linkedom";
 import type { DbClient } from "@alphabook/db";
@@ -19,6 +19,8 @@ import {
   type CorpusIngestSourceInput,
   type RenderedArtifactBundle,
 } from "./corpus-ingest";
+import { getMissingRequiredArtifacts, parseChunkPayload, scanGutenbergR2Keys, type GutenbergR2Artifacts } from "./rebuild";
+import { CloudflareVectorizeApi } from "./vectorize-api";
 import {
   fixtureCorpusAdapter,
   fixtureDocuments,
@@ -40,6 +42,7 @@ interface IngestContext {
   r2Bucket: string;
   vectorIndexName: string | null;
   vectorWranglerConfig: string;
+  cloudflareAccountId: string | null;
 }
 
 interface MirrorBackfillOptions {
@@ -53,6 +56,18 @@ interface MirrorBackfillCheckpoint {
   lastProcessedId: string | null;
   processed: number;
   updatedAt: string;
+}
+
+interface CorpusAuditOptions {
+  startAfterId?: string | null;
+  limit: number;
+  outputPath?: string | null;
+}
+
+interface CorpusRebuildOptions {
+  startAfterId?: string | null;
+  limit: number;
+  checkpointPath?: string | null;
 }
 
 interface SupremeCourtBackfillOptions {
@@ -1342,6 +1357,66 @@ async function getText(r2: S3Client, bucket: string, key: string): Promise<strin
   return await response.Body.transformToString();
 }
 
+async function getJson<T>(r2: S3Client, bucket: string, key: string): Promise<T | null> {
+  const raw = await getText(r2, bucket, key);
+  if (!raw) {
+    return null;
+  }
+  return JSON.parse(raw) as T;
+}
+
+async function listR2Keys(r2: S3Client, bucket: string, prefix: string): Promise<string[]> {
+  const keys: string[] = [];
+  let continuationToken: string | undefined;
+  do {
+    const response = await r2.send(new ListObjectsV2Command({
+      Bucket: bucket,
+      Prefix: prefix,
+      ContinuationToken: continuationToken,
+    }));
+    for (const entry of response.Contents ?? []) {
+      if (entry.Key) {
+        keys.push(entry.Key);
+      }
+    }
+    continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
+  } while (continuationToken);
+  return keys;
+}
+
+function readWranglerAccountId(): string | null {
+  const raw = process.env.CLOUDFLARE_ACCOUNT_ID;
+  if (raw?.trim()) {
+    return raw.trim();
+  }
+  return null;
+}
+
+async function resolveCloudflareAccountId(configPath: string): Promise<string | null> {
+  const fromEnv = readWranglerAccountId();
+  if (fromEnv) {
+    return fromEnv;
+  }
+  try {
+    const raw = await readFile(configPath, "utf8");
+    const match = raw.match(/^\s*account_id\s*=\s*"([^"]+)"\s*$/mu);
+    return match?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function firstArtifactKey(artifacts: GutenbergR2Artifacts, kind: keyof GutenbergR2Artifacts["keys"]): string | null {
+  return artifacts.keys[kind]?.[0] ?? null;
+}
+
+function createVectorizeApi(context: IngestContext): CloudflareVectorizeApi | null {
+  if (!context.vectorIndexName || !context.cloudflareAccountId || !process.env.CLOUDFLARE_API_TOKEN) {
+    return null;
+  }
+  return new CloudflareVectorizeApi(context.cloudflareAccountId, process.env.CLOUDFLARE_API_TOKEN);
+}
+
 function shouldSkipExistingWork() {
   return process.env.FORCE_REINGEST !== "1";
 }
@@ -2226,6 +2301,460 @@ async function deleteGutenbergWorks(context: IngestContext, gutenbergIds: string
   };
 }
 
+type ExistingCorpusWorkRow = {
+  work_id: string;
+  gutenberg_id: string;
+  has_raw: number | string;
+  has_metadata: number | string;
+  has_clean: number | string;
+  has_chunks: number | string;
+  has_book_html: number | string;
+  chunk_count: number | string;
+};
+
+type ExistingChunkRow = {
+  gutenberg_id: string;
+  chunk_id: string;
+  chunk_index: number | string;
+};
+
+type CanonicalR2Work = {
+  gutenbergId: string;
+  workId: string;
+  externalId: string;
+  title: string;
+  authors: string[];
+  subjects: string[];
+  language: string | null;
+  releaseDate: string | null;
+  rightsStatus: string | null;
+  summary: string | null;
+  metadataPayload: Record<string, unknown>;
+  artifactKeys: {
+    raw: string;
+    metadata: string;
+    clean: string;
+    chunks: string;
+    bookHtml: string;
+  };
+  chunks: Array<{
+    id: string;
+    chunkIndex: number;
+    text: string;
+  }>;
+};
+
+function sqlPlaceholders(values: string[]) {
+  return values.map((_, index) => `$${index + 1}`).join(", ");
+}
+
+async function listExistingCorpusWorkRows(context: IngestContext, gutenbergIds: string[]) {
+  if (gutenbergIds.length === 0) {
+    return new Map<string, ExistingCorpusWorkRow>();
+  }
+  const placeholders = sqlPlaceholders(gutenbergIds);
+  const rows = await context.db.query<ExistingCorpusWorkRow>(
+    `
+      SELECT
+        w.id AS work_id,
+        CAST(w.gutenberg_id AS TEXT) AS gutenberg_id,
+        EXISTS(SELECT 1 FROM work_files wf WHERE wf.work_id = w.id AND wf.kind = 'raw') AS has_raw,
+        EXISTS(SELECT 1 FROM work_files wf WHERE wf.work_id = w.id AND wf.kind = 'metadata') AS has_metadata,
+        EXISTS(SELECT 1 FROM work_files wf WHERE wf.work_id = w.id AND wf.kind = 'clean') AS has_clean,
+        EXISTS(SELECT 1 FROM work_files wf WHERE wf.work_id = w.id AND wf.kind = 'chunks') AS has_chunks,
+        EXISTS(SELECT 1 FROM work_files wf WHERE wf.work_id = w.id AND wf.kind = 'book_html') AS has_book_html,
+        (SELECT COUNT(*) FROM chunks c WHERE c.work_id = w.id) AS chunk_count
+      FROM works w
+      WHERE CAST(w.gutenberg_id AS TEXT) IN (${placeholders})
+    `,
+    gutenbergIds,
+  );
+  return new Map(rows.rows.map((row) => [String(row.gutenberg_id), row]));
+}
+
+async function listExistingChunkRows(context: IngestContext, gutenbergIds: string[]) {
+  if (gutenbergIds.length === 0) {
+    return new Map<string, ExistingChunkRow[]>();
+  }
+  const placeholders = sqlPlaceholders(gutenbergIds);
+  const rows = await context.db.query<ExistingChunkRow>(
+    `
+      SELECT
+        CAST(w.gutenberg_id AS TEXT) AS gutenberg_id,
+        c.id AS chunk_id,
+        c.chunk_index AS chunk_index
+      FROM chunks c
+      INNER JOIN works w ON w.id = c.work_id
+      WHERE CAST(w.gutenberg_id AS TEXT) IN (${placeholders})
+      ORDER BY w.gutenberg_id ASC, c.chunk_index ASC
+    `,
+    gutenbergIds,
+  );
+  const grouped = new Map<string, ExistingChunkRow[]>();
+  for (const row of rows.rows) {
+    const key = String(row.gutenberg_id);
+    const bucket = grouped.get(key) ?? [];
+    bucket.push(row);
+    grouped.set(key, bucket);
+  }
+  return grouped;
+}
+
+async function readCanonicalR2Work(
+  context: IngestContext,
+  artifacts: GutenbergR2Artifacts,
+  existingChunkRows: ExistingChunkRow[] = [],
+): Promise<CanonicalR2Work> {
+  const gutenbergId = artifacts.id;
+  const metadataKey = firstArtifactKey(artifacts, "metadata");
+  const chunksKey = firstArtifactKey(artifacts, "chunks");
+  const rawKey = firstArtifactKey(artifacts, "raw");
+  const cleanKey = firstArtifactKey(artifacts, "clean");
+  const bookHtmlKey = firstArtifactKey(artifacts, "book_html");
+
+  if (!metadataKey || !chunksKey || !rawKey || !cleanKey || !bookHtmlKey) {
+    throw new Error(`Gutenberg ${gutenbergId} is missing required canonical artifacts.`);
+  }
+
+  const metadataPayload = await getJson<Record<string, unknown>>(context.r2, context.r2Bucket, metadataKey);
+  if (!metadataPayload) {
+    throw new Error(`Metadata payload missing for Gutenberg ${gutenbergId}.`);
+  }
+  const chunkPayload = parseChunkPayload(await getText(context.r2, context.r2Bucket, chunksKey) ?? "");
+  const existingChunkIdsByIndex = new Map(
+    existingChunkRows.map((row) => [Number(row.chunk_index), row.chunk_id]),
+  );
+  const chunks = chunkPayload.map((chunk, index) => {
+    const chunkIndex = typeof chunk.chunk_index === "number" ? chunk.chunk_index : index;
+    const chunkId = typeof chunk.id === "string" && chunk.id.length > 0
+      ? chunk.id
+      : (existingChunkIdsByIndex.get(chunkIndex) ?? crypto.randomUUID());
+    if (!chunk.text?.trim()) {
+      throw new Error(`Chunk ${chunkIndex} for Gutenberg ${gutenbergId} was empty.`);
+    }
+    return {
+      id: chunkId,
+      chunkIndex,
+      text: chunk.text,
+    };
+  });
+
+  const title = typeof metadataPayload.title === "string" && metadataPayload.title.trim().length > 0
+    ? metadataPayload.title
+    : `Project Gutenberg ${gutenbergId}`;
+  const authors = Array.isArray(metadataPayload.authors)
+    ? metadataPayload.authors.filter((value): value is string => typeof value === "string")
+    : [];
+  const subjects = Array.isArray(metadataPayload.subjects)
+    ? metadataPayload.subjects.filter((value): value is string => typeof value === "string")
+    : [];
+
+  return {
+    gutenbergId,
+    workId: "",
+    externalId: typeof metadataPayload.externalId === "string" ? metadataPayload.externalId : gutenbergId,
+    title,
+    authors,
+    subjects,
+    language: typeof metadataPayload.language === "string" ? metadataPayload.language : null,
+    releaseDate: typeof metadataPayload.releaseDate === "string" ? metadataPayload.releaseDate : null,
+    rightsStatus: typeof metadataPayload.rightsStatus === "string" ? metadataPayload.rightsStatus : null,
+    summary: typeof metadataPayload.summary === "string" ? metadataPayload.summary : null,
+    metadataPayload: {
+      ...metadataPayload,
+      corpusAdapterId: typeof metadataPayload.corpusAdapterId === "string" ? metadataPayload.corpusAdapterId : gutenbergCorpusAdapter.id,
+      externalId: typeof metadataPayload.externalId === "string" ? metadataPayload.externalId : gutenbergId,
+      legacyNumericId: typeof metadataPayload.legacyNumericId === "string" ? metadataPayload.legacyNumericId : gutenbergId,
+      title,
+      authors,
+      subjects,
+    },
+    artifactKeys: {
+      raw: rawKey,
+      metadata: metadataKey,
+      clean: cleanKey,
+      chunks: chunksKey,
+      bookHtml: bookHtmlKey,
+    },
+    chunks,
+  };
+}
+
+async function auditR2Corpus(
+  context: IngestContext,
+  options: CorpusAuditOptions,
+) {
+  const allKeys = await listR2Keys(context.r2, context.r2Bucket, "gutenberg/");
+  const scan = scanGutenbergR2Keys(allKeys);
+  const startAfter = options.startAfterId ? Number(options.startAfterId) : null;
+  const selectedCanonicalIds = scan.canonicalIds
+    .filter((id) => (startAfter ? Number(id) > startAfter : true))
+    .slice(0, options.limit);
+  const workRows = await listExistingCorpusWorkRows(context, selectedCanonicalIds);
+  const chunkRows = await listExistingChunkRows(context, selectedCanonicalIds);
+  const vectorize = createVectorizeApi(context);
+
+  const booksMissingInD1: string[] = [];
+  const booksMissingArtifactsInD1: Array<{ gutenbergId: string; missingKinds: string[] }> = [];
+  const chunkCountMismatches: Array<{ gutenbergId: string; expected: number; actual: number }> = [];
+  const booksMissingVectors: Array<{ gutenbergId: string; missingCount: number }> = [];
+
+  for (const gutenbergId of selectedCanonicalIds) {
+    const artifacts = scan.byId.get(gutenbergId);
+    if (!artifacts) {
+      continue;
+    }
+    const work = workRows.get(gutenbergId);
+    if (!work) {
+      booksMissingInD1.push(gutenbergId);
+    } else {
+      const missingKinds = [
+        Number(work.has_raw) ? null : "raw",
+        Number(work.has_metadata) ? null : "metadata",
+        Number(work.has_clean) ? null : "clean",
+        Number(work.has_chunks) ? null : "chunks",
+        Number(work.has_book_html) ? null : "book_html",
+      ].filter((value): value is string => Boolean(value));
+      if (missingKinds.length > 0) {
+        booksMissingArtifactsInD1.push({ gutenbergId, missingKinds });
+      }
+    }
+
+    const canonical = await readCanonicalR2Work(context, artifacts, chunkRows.get(gutenbergId) ?? []);
+    const actualChunkCount = Number(work?.chunk_count ?? 0);
+    if (actualChunkCount !== canonical.chunks.length) {
+      chunkCountMismatches.push({
+        gutenbergId,
+        expected: canonical.chunks.length,
+        actual: actualChunkCount,
+      });
+    }
+
+    if (vectorize && context.vectorIndexName) {
+      const found = await vectorize.getVectorIds(context.vectorIndexName, canonical.chunks.map((chunk) => chunk.id));
+      const missingCount = canonical.chunks.length - found.size;
+      if (missingCount > 0) {
+        booksMissingVectors.push({ gutenbergId, missingCount });
+      }
+    }
+  }
+
+  const booksPresentInD1ButMissingCanonicalArtifacts = (
+    await context.db.query<{ gutenberg_id: string }>(
+      `
+        SELECT CAST(gutenberg_id AS TEXT) AS gutenberg_id
+        FROM works
+        WHERE gutenberg_id IS NOT NULL
+      `,
+    )
+  ).rows
+    .map((row) => String(row.gutenberg_id))
+    .filter((gutenbergId) => !scan.canonicalIds.includes(gutenbergId));
+
+  const report = {
+    generatedAt: new Date().toISOString(),
+    r2Bucket: context.r2Bucket,
+    canonicalBookCount: scan.canonicalIds.length,
+    scannedCanonicalBookCount: selectedCanonicalIds.length,
+    idsMissingRequiredArtifacts: scan.idsMissingRequiredArtifacts.map((id) => ({
+      gutenbergId: id,
+      missingKinds: getMissingRequiredArtifacts(scan.byId.get(id)!).map(String),
+    })),
+    orphanedKeys: scan.orphanedKeys,
+    booksMissingInD1,
+    booksPresentInD1ButMissingCanonicalArtifacts,
+    booksMissingArtifactsInD1,
+    chunkCountMismatches,
+    booksMissingVectors,
+  };
+
+  if (options.outputPath) {
+    await mkdir(dirname(options.outputPath), { recursive: true });
+    await writeFile(options.outputPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+  }
+
+  return report;
+}
+
+async function rebuildCanonicalR2Work(
+  context: IngestContext,
+  canonical: CanonicalR2Work,
+  existingWork: ExistingCorpusWorkRow | null,
+  existingChunkRows: ExistingChunkRow[],
+) {
+  const workId = (
+    await upsertIngestedWork(
+      context,
+      {
+        adapterId: gutenbergCorpusAdapter.id,
+        externalId: canonical.externalId,
+        legacyNumericId: canonical.gutenbergId,
+        title: canonical.title,
+        rawSource: "",
+        rawText: "",
+        sourceFormat: "text",
+        authors: canonical.authors,
+        subjects: canonical.subjects,
+        language: canonical.language,
+        releaseDate: canonical.releaseDate,
+        rightsStatus: canonical.rightsStatus,
+        summary: canonical.summary,
+        metadata: canonical.metadataPayload,
+      },
+      canonical.metadataPayload,
+    )
+  );
+
+  const vectorize = createVectorizeApi(context);
+  if (vectorize && context.vectorIndexName) {
+    const existingChunkIds = existingChunkRows.map((row) => row.chunk_id);
+    await vectorize.deleteVectorIds(context.vectorIndexName, existingChunkIds);
+  }
+
+  await context.db.query(`DELETE FROM work_files WHERE work_id = $1 AND kind IN ('raw', 'metadata', 'clean', 'chunks', 'book_html')`, [workId]);
+  await context.db.query(`DELETE FROM chunks WHERE work_id = $1`, [workId]);
+
+  await context.db.query(
+    `
+      INSERT INTO work_files (id, work_id, kind, r2_key, metadata_json)
+      VALUES
+        ($1, $2, 'raw', $3, '{}'),
+        ($4, $2, 'metadata', $5, '{}'),
+        ($6, $2, 'clean', $7, '{}'),
+        ($8, $2, 'chunks', $9, '{}'),
+        ($10, $2, 'book_html', $11, '{}')
+    `,
+    [
+      crypto.randomUUID(),
+      workId,
+      canonical.artifactKeys.raw,
+      crypto.randomUUID(),
+      canonical.artifactKeys.metadata,
+      crypto.randomUUID(),
+      canonical.artifactKeys.clean,
+      crypto.randomUUID(),
+      canonical.artifactKeys.chunks,
+      crypto.randomUUID(),
+      canonical.artifactKeys.bookHtml,
+    ],
+  );
+
+  const chunkEmbeddings = await embedChunks(canonical.chunks.map((chunk) => chunk.text));
+  if (!chunkEmbeddings) {
+    throw new Error("Embedding generation is required for canonical rebuilds.");
+  }
+
+  for (const [index, chunk] of canonical.chunks.entries()) {
+    await context.db.query(
+      `
+        INSERT INTO chunks (id, work_id, chunk_index, text, r2_key, metadata_json, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
+      `,
+      [
+        chunk.id,
+        workId,
+        chunk.chunkIndex,
+        chunk.text,
+        canonical.artifactKeys.chunks,
+        JSON.stringify({
+          embeddingProvider: "google",
+          embeddingModel: process.env.GOOGLE_EMBEDDING_MODEL ?? "gemini-embedding-2-preview",
+          embeddingDimensions: chunkEmbeddings[index]?.length ?? null,
+        }),
+      ],
+    );
+  }
+
+  await syncAuthors(context, workId, canonical.authors);
+  await syncSubjects(context, workId, canonical.subjects);
+
+  await upsertChunkVectors(
+    context,
+    canonical.chunks.map((chunk, index) => ({
+      id: chunk.id,
+      values: chunkEmbeddings[index] ?? [],
+      metadata: {
+        workId,
+        chunkIndex: chunk.chunkIndex,
+        adapterId: gutenbergCorpusAdapter.id,
+        externalId: canonical.externalId,
+        language: canonical.language,
+        rightsStatus: canonical.rightsStatus,
+      },
+    })),
+  );
+
+  return {
+    gutenbergId: canonical.gutenbergId,
+    workId,
+    replacedExistingWork: Boolean(existingWork),
+    chunkCount: canonical.chunks.length,
+  };
+}
+
+async function rebuildR2Corpus(
+  context: IngestContext,
+  options: CorpusRebuildOptions,
+) {
+  const checkpoint = options.checkpointPath ? await readCheckpoint(options.checkpointPath) : null;
+  const startAfterId = options.startAfterId ?? checkpoint?.lastProcessedId ?? null;
+  const allKeys = await listR2Keys(context.r2, context.r2Bucket, "gutenberg/");
+  const scan = scanGutenbergR2Keys(allKeys);
+  const selectedCanonicalIds = scan.canonicalIds
+    .filter((id) => (startAfterId ? Number(id) > Number(startAfterId) : true))
+    .slice(0, options.limit);
+  const existingWorks = await listExistingCorpusWorkRows(context, selectedCanonicalIds);
+  const existingChunks = await listExistingChunkRows(context, selectedCanonicalIds);
+
+  const results: Array<Record<string, unknown>> = [];
+  const errors: Array<Record<string, unknown>> = [];
+  let processed = 0;
+  let lastProcessedId = startAfterId;
+
+  for (const gutenbergId of selectedCanonicalIds) {
+    try {
+      const artifacts = scan.byId.get(gutenbergId);
+      if (!artifacts) {
+        throw new Error(`Canonical R2 artifacts missing for Gutenberg ${gutenbergId}.`);
+      }
+      const canonical = await readCanonicalR2Work(context, artifacts, existingChunks.get(gutenbergId) ?? []);
+      const result = await rebuildCanonicalR2Work(
+        context,
+        canonical,
+        existingWorks.get(gutenbergId) ?? null,
+        existingChunks.get(gutenbergId) ?? [],
+      );
+      results.push(result);
+    } catch (error) {
+      errors.push({
+        gutenbergId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    processed += 1;
+    lastProcessedId = gutenbergId;
+    if (options.checkpointPath) {
+      await writeCheckpoint(options.checkpointPath, {
+        lastProcessedId,
+        processed,
+        updatedAt: new Date().toISOString(),
+      });
+    }
+  }
+
+  await context.db.query(`DELETE FROM authors WHERE NOT EXISTS (SELECT 1 FROM work_authors WHERE author_id = authors.id)`);
+  await context.db.query(`DELETE FROM subjects WHERE NOT EXISTS (SELECT 1 FROM work_subjects WHERE subject_id = subjects.id)`);
+
+  return {
+    canonicalBookCount: scan.canonicalIds.length,
+    processed,
+    insertedOrUpdated: results.length,
+    errors,
+    nextStartAfterId: lastProcessedId,
+    results,
+  };
+}
+
 async function listWorksMissingBookHtml(context: IngestContext, limit: number, startAfterGutenbergId?: string | null) {
   const rows = await context.db.query<{
     work_id: string;
@@ -2786,6 +3315,7 @@ async function buildContext(): Promise<IngestContext> {
   const r2Endpoint = process.env.R2_ENDPOINT;
   const r2AccessKeyId = process.env.R2_ACCESS_KEY_ID;
   const r2SecretAccessKey = process.env.R2_SECRET_ACCESS_KEY;
+  const wranglerConfig = process.env.D1_WRANGLER_CONFIG ?? "apps/orchestrator-worker/wrangler.toml";
 
   if (!r2Bucket || !r2Endpoint || !r2AccessKeyId || !r2SecretAccessKey) {
     throw new Error("R2_BUCKET_NAME, R2_ENDPOINT, R2_ACCESS_KEY_ID, and R2_SECRET_ACCESS_KEY are required.");
@@ -2795,10 +3325,11 @@ async function buildContext(): Promise<IngestContext> {
     db: createWranglerD1Db({
       cwd: process.cwd(),
       databaseName: process.env.D1_DATABASE_NAME ?? "alphabook-app",
-      wranglerConfig: process.env.D1_WRANGLER_CONFIG ?? "apps/orchestrator-worker/wrangler.toml",
+      wranglerConfig,
     }),
     vectorIndexName: process.env.VECTOR_INDEX_NAME ?? "alphabook-semantic",
-    vectorWranglerConfig: process.env.D1_WRANGLER_CONFIG ?? "apps/orchestrator-worker/wrangler.toml",
+    vectorWranglerConfig: wranglerConfig,
+    cloudflareAccountId: await resolveCloudflareAccountId(wranglerConfig),
     r2Bucket,
     r2: new S3Client({
       region: "auto",
@@ -2959,6 +3490,28 @@ async function main() {
       return;
     }
 
+    if (command === "audit-r2-corpus") {
+      const [startAfterId, limitValue, outputPath] = args;
+      const result = await auditR2Corpus(requireContext(context), {
+        startAfterId: startAfterId && startAfterId !== "-" ? startAfterId : null,
+        limit: Number(limitValue ?? process.env.MIRROR_BATCH_SIZE ?? "100"),
+        outputPath: outputPath && outputPath !== "-" ? outputPath : null,
+      });
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
+    if (command === "rebuild-r2-corpus") {
+      const [startAfterId, limitValue] = args;
+      const result = await rebuildR2Corpus(requireContext(context), {
+        startAfterId: startAfterId && startAfterId !== "-" ? startAfterId : null,
+        limit: Number(limitValue ?? process.env.MIRROR_BATCH_SIZE ?? "100"),
+        checkpointPath: process.env.MIRROR_CHECKPOINT_PATH ?? ".alphabook/rebuild-checkpoint.json",
+      });
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
     if (command === "backfill-book-html") {
       const [startAfterId, limitValue, concurrencyValue] = args;
       const result = await backfillBookHtml(requireContext(context), {
@@ -3016,6 +3569,8 @@ async function main() {
     console.log("  backfill-supreme-court [startAfterClusterId|-] [limit]");
     console.log("  backfill-mirror [startAfterId|-] [limit]");
     console.log("  backfill-mirror-parallel [startAfterId|-] [limit] [concurrency]");
+    console.log("  audit-r2-corpus [startAfterId|-] [limit] [outputPath|-]");
+    console.log("  rebuild-r2-corpus [startAfterId|-] [limit]");
     console.log("  backfill-book-html [startAfterId|-] [limit] [concurrency]");
     console.log("  rebuild-book-html [startAfterId|-] [limit] [concurrency]");
     console.log("  rebuild-book-html-created-at <createdAtFrom> <createdAtTo> [startAfterId|-] [limit] [concurrency]");

@@ -326,5 +326,7 @@ The request/response contracts are documented in [docs/api-contracts.md](docs/ap
 - The runtime agent now writes `summary.md`, `search-plan.json`, `search-iterations.json`, and `evidence.json` for each long VM search.
 - The ingest service supports single-URL ingestion plus local Gutenberg mirror ingestion through `GUTENBERG_MIRROR_ROOT`.
 - `run-once` now processes a mirror batch, and `backfill-mirror` can drain the rsync mirror into the relational store + R2 with chunk embeddings.
+- `audit-r2-corpus` audits canonical Gutenberg R2 artifacts against D1 + Vectorize and reports missing books, artifact gaps, chunk mismatches, and orphaned R2 keys.
+- `rebuild-r2-corpus` rebuilds D1 corpus metadata/chunks from canonical R2 `metadata.json` + `chunks.jsonl` artifacts and regenerates Vectorize embeddings with Google `gemini-embedding-2-preview`.
 - The Gutenberg mirror box bootstrap is documented in [ops/digitalocean/README.md](ops/digitalocean/README.md).
 - Daily feed diffing is still the remaining ingest gap.

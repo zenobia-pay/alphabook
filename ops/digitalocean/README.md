@@ -9,6 +9,8 @@ Target layout on the VM:
 - `/srv/alphabook/bin/gutenberg-rsync.sh`
 - `/srv/alphabook/bin/gutenberg-rsync-epub.sh`
 - `/srv/alphabook/bin/gutenberg-upload.sh`
+- `/srv/alphabook/bin/freeze-gutenberg-ingest.sh`
+- `/srv/alphabook/bin/resume-gutenberg-ingest.sh`
 - `/srv/alphabook/bin/backfill-book-html-all.sh`
 - `/srv/alphabook/bin/rebuild-book-html-all.sh`
 - `/etc/systemd/system/alphabook-gutenberg-rsync.service`
@@ -32,6 +34,7 @@ That script:
 - installs the rsync runner into `/srv/alphabook/bin`
 - installs the EPUB/RDF rsync runner into `/srv/alphabook/bin`
 - installs the upload runner into `/srv/alphabook/bin`
+- installs freeze/resume helpers for the recurring ingest timers
 - installs the full book HTML backfill runner into `/srv/alphabook/bin`
 - installs the full book HTML rebuild runner into `/srv/alphabook/bin`
 - installs the systemd services and timers
@@ -78,6 +81,7 @@ EMBEDDING_PROVIDER=google # or openai
 GOOGLE_AI_API_KEY=... # required when EMBEDDING_PROVIDER=google
 GOOGLE_EMBEDDING_MODEL=gemini-embedding-2-preview
 GOOGLE_EMBEDDING_DIMENSIONS=1536
+VECTOR_INDEX_NAME=alphabook-semantic
 # OPENAI_API_KEY=... # required when EMBEDDING_PROVIDER=openai
 # OPENAI_EMBEDDING_MODEL=text-embedding-3-small
 ```
@@ -86,6 +90,7 @@ Notes:
 
 - The live repo still requires `D1_DATABASE_NAME` today because ingest persists corpus metadata and chunk rows into the existing relational store.
 - The embedding provider is now configurable. For the Cloudflare migration path, use Google embeddings with `GOOGLE_EMBEDDING_DIMENSIONS=1536`.
+- For rebuild/cutover, freeze the timers first with `sudo /srv/alphabook/bin/freeze-gutenberg-ingest.sh`, run `audit-r2-corpus` and `rebuild-r2-corpus`, then resume with `sudo /srv/alphabook/bin/resume-gutenberg-ingest.sh`.
 
 Then you can run:
 
