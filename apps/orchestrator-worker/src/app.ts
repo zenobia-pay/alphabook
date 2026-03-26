@@ -8774,6 +8774,8 @@ async function runOrchestrator(
       detailType === "research.work"
       || detailType === "research.chunk"
       || detailType === "research.briefing_line"
+      || detailType === "sprite.shard_state"
+      || detailType === "sprite.aggregate_state"
     ) {
       const buffer = progressBuffers.get(payload.toolCallId) ?? {
         toolName: payload.toolName,
