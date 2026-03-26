@@ -29,18 +29,3 @@ SELECT
   wf.created_at
 FROM work_files wf
 JOIN works w ON w.id = wf.work_id;
-
-CREATE OR REPLACE VIEW corpus_document_chunks AS
-SELECT
-  c.id,
-  c.work_id AS document_id,
-  COALESCE(NULLIF(w.metadata_json->>'sourceAdapter', ''), 'gutenberg') AS source_adapter,
-  c.chunk_index,
-  c.text,
-  c.embedding,
-  c.tsv,
-  c.r2_key,
-  c.metadata_json,
-  c.created_at
-FROM chunks c
-JOIN works w ON w.id = c.work_id;

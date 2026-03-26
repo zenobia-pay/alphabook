@@ -1,4 +1,4 @@
-export type GutenbergArtifactKind = "raw" | "metadata" | "clean" | "chunks" | "book_html" | "book_manifest" | "book_page" | "cover" | "unknown";
+export type GutenbergArtifactKind = "raw" | "metadata" | "clean" | "chunks" | "chunk_object" | "book_html" | "book_manifest" | "book_page" | "cover" | "unknown";
 
 export interface GutenbergR2Artifacts {
   id: string;
@@ -62,6 +62,8 @@ function classifyGutenbergKey(key: string): { id: string | null; kind: Gutenberg
   if (match) return { id: match[1] ?? null, kind: "clean" };
   match = key.match(/^gutenberg\/clean\/(\d+)\/chunks\.jsonl$/u);
   if (match) return { id: match[1] ?? null, kind: "chunks" };
+  match = key.match(/^gutenberg\/clean\/(\d+)\/chunks\/\d+\.json$/u);
+  if (match) return { id: match[1] ?? null, kind: "chunk_object" };
   match = key.match(/^gutenberg\/clean\/(\d+)\/book\.html$/u);
   if (match) return { id: match[1] ?? null, kind: "book_html" };
   match = key.match(/^gutenberg\/clean\/(\d+)\/book\/manifest\.json$/u);

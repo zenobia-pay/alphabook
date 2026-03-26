@@ -33,11 +33,6 @@ export const GUTENBERG_WORKSPACE_SCHEMA = {
       columns: ["id", "work_id", "kind", "r2_key", "byte_size", "sha256", "metadata_json"],
     },
     {
-      name: "chunks",
-      description: "Chunked text passages with optional R2 key and embedding metadata.",
-      columns: ["id", "work_id", "chunk_index", "text", "r2_key", "metadata_json"],
-    },
-    {
       name: "runtime_instances",
       description: "Prepared VM/runtime workspaces and their manifests.",
       columns: ["id", "session_id", "runtime_id", "provider", "provider_machine_id", "status", "manifest_json"],

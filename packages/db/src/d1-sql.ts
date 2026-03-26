@@ -117,17 +117,6 @@ CREATE TABLE IF NOT EXISTS work_files (
   created_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS chunks (
-  id TEXT PRIMARY KEY,
-  work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
-  chunk_index INTEGER NOT NULL,
-  text TEXT NOT NULL,
-  r2_key TEXT,
-  metadata_json TEXT NOT NULL DEFAULT '{}',
-  created_at TEXT NOT NULL,
-  UNIQUE (work_id, chunk_index)
-);
-
 CREATE TABLE IF NOT EXISTS runtime_instances (
   id TEXT PRIMARY KEY,
   session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
@@ -334,16 +323,4 @@ SELECT
 FROM work_files wf
 JOIN works w ON w.id = wf.work_id;
 
-CREATE VIEW IF NOT EXISTS corpus_document_chunks AS
-SELECT
-  c.id,
-  c.work_id AS document_id,
-  COALESCE(NULLIF(json_extract(w.metadata_json, '$.sourceAdapter'), ''), 'gutenberg') AS source_adapter,
-  c.chunk_index,
-  c.text,
-  c.r2_key,
-  c.metadata_json,
-  c.created_at
-FROM chunks c
-JOIN works w ON w.id = c.work_id;
 `;

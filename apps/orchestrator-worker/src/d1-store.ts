@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 
 import type { DbClient } from "@alphabook/db";
-import { artifactKeys } from "@alphabook/corpus-core";
+import { artifactKeys, buildCorpusChunkId, parseCorpusChunkId } from "@alphabook/corpus-core";
 import type { ChunkSearchResult, NotificationType, ToolName } from "@alphabook/shared";
 
 import { InMemoryAppStore, type AdminRunRecord, type AdminSessionRecord, type AdminUserRecord, type AgentIdentityRecord, type AnalyticsEventRecord, type AppStore, type ArtifactRecord, type BillingEventRecord, type BillingSpendSummary, type DocumentTextRecord, type MessageRecord, type NotificationRecord, type PassageSearchFilters, type ResearchScopeEstimate, type RunEventRecord, type RunRecord, type RuntimeInstanceRecord, type SeedChunk, type SeedWork, type SessionRecord, type SessionSummaryRecord, type ToolCallRecord, type UserProfileStatsRecord, type UserRecord, type WorkDetailRecord, type WorkFileKind, type WorkFileRecord, type WorkSetSizeEstimate } from "./store";
@@ -46,6 +46,23 @@ function parseJsonArray(value: unknown): string[] {
     }
   }
   return Array.isArray(value) ? value.map((item) => String(item)) : [];
+}
+
+type ChunkManifestEntry = {
+  id?: string;
+  chunk_index?: number;
+  text?: string;
+  excerpt?: string;
+  r2_key?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
+function parseChunkManifest(text: string): ChunkManifestEntry[] {
+  return text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as ChunkManifestEntry);
 }
 
 function deriveHandle(email: string | null, name: string | null, id: string) {
@@ -175,6 +192,10 @@ export class D1AppStore implements AppStore {
   private readonly adapterId: string | null;
   private readonly feedLabels: { summary: string; taxonomy: string; fallback: string };
   private corpusStorePromise: Promise<InMemoryAppStore> | null = null;
+  private readonly workChunksKeyById = new Map<string, string>();
+  private readonly workReferenceById = new Map<string, { adapterId: string; externalId: string }>();
+  private readonly workIdByExternalRef = new Map<string, string>();
+  private readonly chunkManifestCache = new Map<string, ChunkManifestEntry[]>();
 
   constructor(
     private readonly db: DbClient,
@@ -222,17 +243,6 @@ export class D1AppStore implements AppStore {
     const filesResult = await this.db.query<{ work_id: string; kind: WorkFileKind; r2_key: string }>(
       "SELECT work_id, kind, r2_key FROM work_files ORDER BY work_id ASC",
     );
-    const chunksResult = await this.db.query<{
-      id: string;
-      work_id: string;
-      chunk_index: number;
-      text: string;
-      r2_key: string | null;
-      metadata_json: string | Record<string, unknown> | null;
-    }>(
-      "SELECT id, work_id, chunk_index, text, r2_key, metadata_json FROM chunks ORDER BY work_id ASC, chunk_index ASC",
-    );
-
     const authorsByWork = new Map<string, string[]>();
     for (const row of authorsResult.rows) {
       const list = authorsByWork.get(row.work_id) ?? [];
@@ -263,9 +273,20 @@ export class D1AppStore implements AppStore {
       .map((row) => {
         const keys = fileKeysByWork.get(row.id) ?? {};
         const metadata = parseJsonObject(row.metadata_json);
+        const adapterId = typeof metadata.corpusAdapterId === "string" ? metadata.corpusAdapterId : "gutenberg";
+        const externalId = typeof metadata.externalId === "string"
+          ? metadata.externalId
+          : row.gutenberg_id == null
+            ? row.id
+            : String(row.gutenberg_id);
         if (keys.rawKey) {
           metadata.rawKey = keys.rawKey;
         }
+        if (keys.chunksKey) {
+          this.workChunksKeyById.set(row.id, keys.chunksKey);
+        }
+        this.workReferenceById.set(row.id, { adapterId, externalId });
+        this.workIdByExternalRef.set(`${adapterId}:${externalId}`, row.id);
         return {
           id: row.id,
           gutenbergId: row.gutenberg_id == null ? null : Number(row.gutenberg_id),
@@ -281,22 +302,54 @@ export class D1AppStore implements AppStore {
           chunksKey: keys.chunksKey,
         };
       });
+    return new InMemoryAppStore(works, [], this.blobStore);
+  }
 
-    const workIds = new Set(works.map((work) => work.id));
-    const chunks: SeedChunk[] = chunksResult.rows
-      .filter((row) => workIds.has(row.work_id))
-      .map((row) => ({
-        id: row.id,
-        workId: row.work_id,
-        chunkIndex: Number(row.chunk_index),
-        text: row.text,
-        excerpt: row.text.slice(0, 240),
-        score: 0,
-        r2Key: row.r2_key,
-        metadata: parseJsonObject(row.metadata_json),
-      }));
+  private async loadWorkChunkManifest(workId: string) {
+    const cached = this.chunkManifestCache.get(workId);
+    if (cached) {
+      return cached;
+    }
+    await this.corpusStore();
+    const chunksKey = this.workChunksKeyById.get(workId);
+    if (!chunksKey) {
+      this.chunkManifestCache.set(workId, []);
+      return [];
+    }
+    const manifestText = await this.blobStore.getText(chunksKey);
+    const manifest = manifestText ? parseChunkManifest(manifestText) : [];
+    this.chunkManifestCache.set(workId, manifest);
+    return manifest;
+  }
 
-    return new InMemoryAppStore(works, chunks, this.blobStore);
+  private makeChunkResult(workId: string, entry: ChunkManifestEntry, fallbackIndex: number): ChunkSearchResult | null {
+    const workRef = this.workReferenceById.get(workId);
+    if (!workRef) {
+      return null;
+    }
+    const chunkIndex = typeof entry.chunk_index === "number" ? entry.chunk_index : fallbackIndex;
+    const text = typeof entry.text === "string" ? entry.text : "";
+    const excerpt = typeof entry.excerpt === "string" ? entry.excerpt : text.slice(0, 240);
+    const r2Key = typeof entry.r2_key === "string" && entry.r2_key.length > 0
+      ? entry.r2_key
+      : this.workChunksKeyById.get(workId) ?? null;
+    return {
+      id: typeof entry.id === "string" && entry.id.length > 0
+        ? entry.id
+        : buildCorpusChunkId(workRef.adapterId, workRef.externalId, chunkIndex),
+      workId,
+      chunkIndex,
+      text,
+      excerpt,
+      r2Key,
+      score: 0,
+    };
+  }
+
+  private lexicalChunkScore(query: string, text: string) {
+    const haystack = text.toLowerCase();
+    const tokens = query.toLowerCase().split(/[^a-z0-9]+/u).filter((token) => token.length >= 3);
+    return tokens.reduce((total, token) => total + (haystack.includes(token) ? 1 : 0), 0);
   }
 
   private async queryUsers() {
@@ -937,15 +990,93 @@ export class D1AppStore implements AppStore {
   async searchDocuments(query: string, filters?: Record<string, unknown>) { return (await this.corpusStore()).searchDocuments(query, filters); }
   async getWorkMetadata(workIds: string[]) { return (await this.corpusStore()).getWorkMetadata(workIds); }
   async getDocumentMetadata(documentIds: string[]) { return (await this.corpusStore()).getDocumentMetadata(documentIds); }
-  async getRelevantChunks(query: string, workIds?: string[], limit?: number, embedding?: number[], filters?: PassageSearchFilters): Promise<ChunkSearchResult[]> { return (await this.corpusStore()).getRelevantChunks(query, workIds, limit, embedding, filters); }
-  async getRelevantDocumentChunks(query: string, documentIds?: string[], limit?: number, embedding?: number[], filters?: PassageSearchFilters) { return (await this.corpusStore()).getRelevantDocumentChunks(query, documentIds, limit, embedding, filters); }
+  async getRelevantChunks(query: string, workIds?: string[], limit = 8, _embedding?: number[], filters?: PassageSearchFilters): Promise<ChunkSearchResult[]> {
+    const store = await this.corpusStore();
+    const scopedWorks = workIds?.length
+      ? await store.getWorkMetadata(workIds)
+      : (await store.searchWorks(query, filters as Record<string, unknown> | undefined)).slice(0, 24);
+    const filteredWorks = scopedWorks.filter((work) => {
+      if (filters?.language && work.language !== filters.language) {
+        return false;
+      }
+      if (filters?.rightsStatus && work.rightsStatus !== filters.rightsStatus) {
+        return false;
+      }
+      return true;
+    });
+    const chunks = (
+      await Promise.all(
+        filteredWorks.slice(0, 120).map(async (work) => {
+          const manifest = await this.loadWorkChunkManifest(work.id);
+          return manifest
+            .map((entry, index) => this.makeChunkResult(work.id, entry, index))
+            .filter((entry): entry is ChunkSearchResult => Boolean(entry));
+        }),
+      )
+    ).flat();
+    return chunks
+      .map((chunk) => ({
+        ...chunk,
+        score: this.lexicalChunkScore(query, chunk.text),
+      }))
+      .filter((chunk) => chunk.score > 0)
+      .sort((left, right) => right.score - left.score)
+      .slice(0, limit);
+  }
+  async getRelevantDocumentChunks(query: string, documentIds?: string[], limit?: number, embedding?: number[], filters?: PassageSearchFilters) {
+    return (await this.getRelevantChunks(query, documentIds, limit, embedding, filters)).map((chunk) => ({
+      id: chunk.id,
+      documentId: chunk.workId,
+      chunkIndex: chunk.chunkIndex,
+      text: chunk.text,
+      excerpt: chunk.excerpt,
+      r2Key: chunk.r2Key ?? null,
+      score: chunk.score,
+    }));
+  }
   async getWorkTextFile(workId: string) { return (await this.corpusStore()).getWorkTextFile(workId); }
   async getDocumentTextFile(documentId: string): Promise<DocumentTextRecord | null> { return (await this.corpusStore()).getDocumentTextFile(documentId); }
   async getWorkFiles(workIds: string[], kinds?: WorkFileKind[]): Promise<WorkFileRecord[]> { return (await this.corpusStore()).getWorkFiles(workIds, kinds); }
   async getDocumentFiles(documentIds: string[], kinds?: WorkFileKind[]) { return (await this.corpusStore()).getDocumentFiles(documentIds, kinds); }
-  async getChunksByIds(chunkIds: string[]) { return (await this.corpusStore()).getChunksByIds(chunkIds); }
-  async getChunkByWorkAndIndex(workId: string, chunkIndex: number) { return (await this.corpusStore()).getChunkByWorkAndIndex(workId, chunkIndex); }
-  async findChunkByWorkAndExcerpt(workId: string, excerpt: string) { return (await this.corpusStore()).findChunkByWorkAndExcerpt(workId, excerpt); }
+  async getChunksByIds(chunkIds: string[]) {
+    await this.corpusStore();
+    const chunks = await Promise.all(chunkIds.map(async (chunkId) => {
+      const parsed = parseCorpusChunkId(chunkId);
+      if (!parsed) {
+        return null;
+      }
+      const workId = this.workIdByExternalRef.get(`${parsed.adapterId}:${parsed.externalId}`);
+      if (!workId) {
+        return null;
+      }
+      const manifest = await this.loadWorkChunkManifest(workId);
+      const entry = manifest.find((candidate, index) =>
+        (typeof candidate.id === "string" && candidate.id === chunkId)
+        || (typeof candidate.chunk_index === "number" ? candidate.chunk_index : index) === parsed.chunkIndex,
+      );
+      return entry ? this.makeChunkResult(workId, entry, parsed.chunkIndex) : null;
+    }));
+    return chunks.filter((chunk): chunk is ChunkSearchResult => Boolean(chunk));
+  }
+  async getChunkByWorkAndIndex(workId: string, chunkIndex: number) {
+    const manifest = await this.loadWorkChunkManifest(workId);
+    const entry = manifest.find((candidate, index) => (typeof candidate.chunk_index === "number" ? candidate.chunk_index : index) === chunkIndex);
+    return entry ? this.makeChunkResult(workId, entry, chunkIndex) : null;
+  }
+  async findChunkByWorkAndExcerpt(workId: string, excerpt: string) {
+    const normalizedExcerpt = excerpt.trim().toLowerCase();
+    if (!normalizedExcerpt) {
+      return null;
+    }
+    const manifest = await this.loadWorkChunkManifest(workId);
+    for (const [index, entry] of manifest.entries()) {
+      const chunk = this.makeChunkResult(workId, entry, index);
+      if (chunk && chunk.text.toLowerCase().includes(normalizedExcerpt)) {
+        return chunk;
+      }
+    }
+    return null;
+  }
 
   async listRuntimeInstances(sessionId: string): Promise<RuntimeInstanceRecord[]> {
     const rows = await this.db.query<any>("SELECT * FROM runtime_instances WHERE session_id = ? ORDER BY COALESCE(last_used_at, created_at) DESC", [sessionId]);

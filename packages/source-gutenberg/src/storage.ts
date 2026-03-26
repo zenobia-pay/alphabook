@@ -4,6 +4,7 @@ export const gutenbergCorpusKeys = {
   coverImage: (id: string, extension = "jpg") => `gutenberg/raw/${id}/cover.${extension.replace(/^\./, "")}`,
   cleanText: (id: string) => `gutenberg/clean/${id}/clean.txt`,
   chunks: (id: string) => `gutenberg/clean/${id}/chunks.jsonl`,
+  chunkObject: (id: string, chunkIndex: number) => `gutenberg/clean/${id}/chunks/${String(chunkIndex).padStart(6, "0")}.json`,
   bookHtml: (id: string) => `gutenberg/clean/${id}/book.html`,
   bookManifest: (id: string) => `gutenberg/clean/${id}/book/manifest.json`,
   bookPage: (id: string, pageNumber: number) => `gutenberg/clean/${id}/book/pages/page-${String(pageNumber).padStart(4, "0")}.html`,

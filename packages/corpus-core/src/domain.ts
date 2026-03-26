@@ -57,6 +57,7 @@ export interface CorpusArtifactKeyBuilder {
   coverImage?(id: string, extension?: string): string;
   cleanText(id: string): string;
   chunks(id: string): string;
+  chunkObject?(id: string, chunkIndex: number): string;
   renderedDocument?(id: string): string;
   renderedManifest?(id: string): string;
   renderedPage?(id: string, pageNumber: number): string;
@@ -101,4 +102,27 @@ export interface CorpusAdapter {
   artifactKeys: CorpusArtifactKeyBuilder;
   text: CorpusAdapterTextOps;
   hooks?: CorpusAdapterHooks;
+}
+
+export function buildCorpusChunkId(adapterId: string, externalId: string, chunkIndex: number): string {
+  return `${adapterId}:${encodeURIComponent(externalId)}:${chunkIndex}`;
+}
+
+export function parseCorpusChunkId(chunkId: string): { adapterId: string; externalId: string; chunkIndex: number } | null {
+  const firstColon = chunkId.indexOf(":");
+  const lastColon = chunkId.lastIndexOf(":");
+  if (firstColon <= 0 || lastColon <= firstColon) {
+    return null;
+  }
+  const adapterId = chunkId.slice(0, firstColon);
+  const encodedExternalId = chunkId.slice(firstColon + 1, lastColon);
+  const chunkIndex = Number.parseInt(chunkId.slice(lastColon + 1), 10);
+  if (!adapterId || !encodedExternalId || !Number.isFinite(chunkIndex)) {
+    return null;
+  }
+  return {
+    adapterId,
+    externalId: decodeURIComponent(encodedExternalId),
+    chunkIndex,
+  };
 }

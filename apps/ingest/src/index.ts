@@ -12,7 +12,7 @@ import { NodeHttpHandler } from "@smithy/node-http-handler";
 import { parseHTML } from "linkedom";
 import type { DbClient } from "@alphabook/db";
 import { createWranglerD1Db, loadLocalDevVars } from "@alphabook/db";
-import type { CorpusAdapter } from "@alphabook/corpus-core";
+import { buildCorpusChunkId, type CorpusAdapter } from "@alphabook/corpus-core";
 import {
   buildSimpleRenderedArtifactBundle,
   prepareCorpusIngest,
@@ -561,7 +561,7 @@ function createBookSectionId(title: string, index: number) {
   return `section-${slugify(title)}-${index + 1}`;
 }
 
-const STATIC_BOOK_CONTENT_VERSION = "20260326d";
+const STATIC_BOOK_CONTENT_VERSION = "20260326e";
 
 function withBookVersion(href: string, fragment?: string | null) {
   const separator = href.includes("?") ? "&" : "?";
@@ -572,51 +572,79 @@ function renderBookStaticStyles() {
   return `
       :root {
         color-scheme: light;
-        --bg: #f6f3ee;
-        --ink: #171717;
-        --muted: rgba(23, 23, 23, 0.62);
-        --line: rgba(23, 23, 23, 0.08);
-        --accent: rgba(37, 99, 235, 0.16);
-        --accent-strong: rgba(37, 99, 235, 0.24);
+        --bg: #f8f9fa;
+        --surface: #ffffff;
+        --ink: #202122;
+        --muted: #54595d;
+        --line: #c8ccd1;
+        --line-strong: #a2a9b1;
+        --accent: rgba(51, 102, 204, 0.14);
+        --accent-strong: rgba(51, 102, 204, 0.28);
+        --link: #3366cc;
+        --link-visited: #6b4ba1;
       }
       * { box-sizing: border-box; }
       html { scroll-behavior: smooth; }
       body {
         margin: 0;
-        font-family: "Newsreader", Georgia, serif;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         color: var(--ink);
-        background: transparent;
+        background: var(--bg);
         text-rendering: optimizeLegibility;
         -webkit-font-smoothing: antialiased;
         -moz-osx-font-smoothing: grayscale;
       }
       a {
-        color: inherit;
+        color: var(--link);
         text-decoration-thickness: 0.06em;
         text-underline-offset: 0.14em;
       }
+      a:visited {
+        color: var(--link-visited);
+      }
       .page-shell {
-        width: min(84ch, calc(100vw - 12px));
+        width: min(96rem, calc(100vw - 32px));
         margin: 0 auto;
-        padding: 4px 0 14px;
+        padding: 16px 0 24px;
       }
-      .hero {
+      .page-surface {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+        padding: 24px 28px 28px;
+      }
+      .article-header {
         display: grid;
-        gap: 6px;
-        margin-bottom: 1.2rem;
+        gap: 10px;
+        margin-bottom: 20px;
+        padding-bottom: 14px;
+        border-bottom: 1px solid var(--line);
       }
-      .eyebrow, .byline, .summary, .page-kicker, .page-meta, .page-position {
+      .article-layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 20px;
+      }
+      .article-layout.has-toc {
+        grid-template-columns: minmax(0, 1fr) 18rem;
+        align-items: start;
+      }
+      .article-main {
+        min-width: 0;
+      }
+      .eyebrow, .byline, .summary, .page-kicker, .page-meta, .page-position, .article-subtitle {
         margin: 0;
         color: var(--muted);
-        font-size: 0.96rem;
-        line-height: 1.5;
+        font-size: 0.95rem;
+        line-height: 1.6;
       }
       h1 {
         margin: 0;
-        font-size: clamp(2rem, 4vw, 3.25rem);
-        line-height: 0.96;
-        letter-spacing: -0.04em;
-        font-weight: 600;
+        font-family: "Linux Libertine", "Georgia", "Times New Roman", serif;
+        font-size: clamp(2rem, 3.6vw, 2.9rem);
+        line-height: 1.1;
+        letter-spacing: 0;
+        font-weight: 400;
       }
       .meta-list {
         margin: 0;
@@ -626,38 +654,53 @@ function renderBookStaticStyles() {
         content: " · ";
       }
       .toc-list {
-        list-style: none;
-        padding: 0;
+        list-style: decimal;
+        padding-left: 1.3rem;
         margin: 0;
         display: grid;
-        gap: 0.55rem;
+        gap: 0.45rem;
+      }
+      .toc-panel {
+        border: 1px solid var(--line);
+        background: #f8f9fa;
+        padding: 14px 16px;
+        position: sticky;
+        top: 16px;
       }
       .toc-link, .page-link, .nav-link {
-        text-decoration: underline;
+        text-decoration: none;
       }
       .reader-body {
-        font-size: 1.14rem;
+        font-family: "Linux Libertine", "Georgia", "Times New Roman", serif;
+        font-size: 1.12rem;
         line-height: 1.72;
+        max-width: 44rem;
       }
       .reader-body h1, .reader-body h2, .reader-body h3, .reader-body h4, .reader-body h5, .reader-body h6 {
-        font-size: 1.18em;
-        line-height: 1.18;
-        margin: 1.7em 0 0.45em;
-        letter-spacing: -0.02em;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-weight: 600;
+        line-height: 1.25;
+        margin: 1.8em 0 0.45em;
+        letter-spacing: 0;
+        border-bottom: 1px solid var(--line);
+        padding-bottom: 0.2em;
       }
       .reader-body p, .reader-body li, .reader-body blockquote, .reader-body pre {
         margin: 0 0 1em;
       }
       .reader-body blockquote {
         margin-left: 0;
-        padding-left: 0;
+        padding: 0.1rem 0 0.1rem 1rem;
+        border-left: 3px solid var(--line-strong);
         color: var(--muted);
-        font-style: italic;
       }
       .reader-body pre {
         white-space: pre-wrap;
         font: inherit;
         line-height: 1.65;
+        border: 1px solid var(--line);
+        background: #f8f9fa;
+        padding: 0.9rem 1rem;
       }
       .reader-body [data-passage-id],
       .reader-body [data-anchor-id] {
@@ -699,10 +742,16 @@ function renderBookStaticStyles() {
         justify-content: space-between;
         align-items: baseline;
         gap: 1rem;
-        margin: 0 0 0.8rem;
+        margin: 0 0 1rem;
+        padding-bottom: 0.75rem;
+        border-bottom: 1px solid var(--line);
       }
       .page-nav-bottom {
         margin-top: 1rem;
+        padding-top: 0.75rem;
+        padding-bottom: 0;
+        border-top: 1px solid var(--line);
+        border-bottom: none;
       }
       .page-nav-links {
         display: flex;
@@ -710,22 +759,33 @@ function renderBookStaticStyles() {
         flex-wrap: wrap;
       }
       .toc-title {
-        margin: 1.3rem 0 0.65rem;
-        font-size: 1rem;
+        margin: 0 0 0.65rem;
+        font-size: 0.95rem;
         font-weight: 600;
-        letter-spacing: 0.01em;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
       }
       .empty-state {
         color: var(--muted);
       }
       @media (max-width: 780px) {
         .page-shell {
-          width: min(100vw - 8px, 100%);
-          padding: 2px 0 12px;
+          width: min(100vw - 12px, 100%);
+          padding: 6px 0 16px;
+        }
+        .page-surface {
+          padding: 18px 16px 20px;
+        }
+        .article-layout.has-toc {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        .toc-panel {
+          position: static;
         }
         .reader-body {
           font-size: 1.06rem;
           line-height: 1.66;
+          max-width: none;
         }
         .page-nav {
           flex-direction: column;
@@ -1284,26 +1344,32 @@ function buildPaginatedBookArtifactBundle(input: {
   </head>
   <body>
     <main class="page-shell">
-      <div class="surface">
-        <section class="hero">
+      <div class="page-surface">
+        <header class="article-header">
           ${meta ? `<p class="eyebrow">${escapeHtml(meta)}</p>` : ""}
           <h1>${escapeHtml(input.title)}</h1>
-          ${input.subtitle ? `<p class="summary">${escapeHtml(input.subtitle)}</p>` : ""}
+          ${input.subtitle ? `<p class="article-subtitle">${escapeHtml(input.subtitle)}</p>` : ""}
           ${byline ? `<p class="byline">${escapeHtml(byline)}</p>` : ""}
           ${input.summary ? `<p class="summary">${escapeHtml(input.summary)}</p>` : ""}
           ${renderTagList(input.bookshelves)}
-        </section>
-        ${pages[0] ? `<p><a class="page-link" href="${withBookVersion(pages[0].href)}"><strong>Start Reading</strong></a></p>` : ""}
-        <section>
-          <p class="toc-title">Contents</p>
-          <ul class="toc-list">
-            ${sections.map((section) => `
-              <li>
-                <a class="toc-link" href="${withBookVersion(section.href, section.passageId)}">${escapeHtml(section.title)} · Page ${section.pageNumber}</a>
-              </li>
-            `).join("")}
-          </ul>
-        </section>
+        </header>
+        <div class="article-layout${sections.length > 0 ? " has-toc" : ""}">
+          <div class="article-main">
+            ${pages[0] ? `<p><a class="page-link" href="${withBookVersion(pages[0].href)}"><strong>Read from the beginning</strong></a></p>` : ""}
+          </div>
+          ${sections.length > 0 ? `
+            <aside class="toc-panel">
+              <p class="toc-title">Contents</p>
+              <ul class="toc-list">
+                ${sections.map((section) => `
+                  <li>
+                    <a class="toc-link" href="${withBookVersion(section.href, section.passageId)}">${escapeHtml(section.title)}</a>
+                  </li>
+                `).join("")}
+              </ul>
+            </aside>
+          ` : ""}
+        </div>
     </main>
   </body>
 </html>`;
@@ -1335,6 +1401,7 @@ function buildPaginatedBookArtifactBundle(input: {
   </head>
   <body>
     <main class="page-shell">
+      <div class="page-surface">
         <nav class="page-nav">
           <div class="page-nav-links">${navLinks}</div>
           <p class="page-position">Page ${page.pageNumber} of ${pages.length}</p>
@@ -1345,6 +1412,7 @@ function buildPaginatedBookArtifactBundle(input: {
           <p class="page-position">Page ${page.pageNumber} of ${pages.length}</p>
         </nav>
         <script>${renderBookSelectionScript()}</script>
+      </div>
     </main>
   </body>
 </html>`,
@@ -1596,7 +1664,6 @@ async function findExistingWorkStatus(
   const rows = await context.db.query<{
     work_id: string;
     file_kind_count: number | string | null;
-    chunk_count: number | string | null;
   }>(
     `
       SELECT
@@ -1606,12 +1673,7 @@ async function findExistingWorkStatus(
           FROM work_files wf
           WHERE wf.work_id = w.id
             AND wf.kind IN ('raw', 'metadata', 'clean', 'chunks', 'book_html')
-        ) AS file_kind_count,
-        (
-          SELECT COUNT(*)
-          FROM chunks c
-          WHERE c.work_id = w.id
-        ) AS chunk_count
+        ) AS file_kind_count
       FROM works w
       WHERE (
         ($1 IS NOT NULL AND w.gutenberg_id = $1)
@@ -1631,7 +1693,7 @@ async function findExistingWorkStatus(
   }
   return {
     workId: row.work_id,
-    complete: Number(row.file_kind_count) >= 5 && Number(row.chunk_count) > 0,
+    complete: Number(row.file_kind_count) >= 5,
   };
 }
 
@@ -1783,6 +1845,64 @@ async function deleteKeys(r2: S3Client, bucket: string, keys: string[]) {
   }
 }
 
+type StoredChunkArtifact = {
+  id: string;
+  chunkIndex: number;
+  text: string;
+  excerpt: string;
+  r2Key: string;
+  metadata: Record<string, unknown>;
+};
+
+function createChunkExcerpt(text: string, maxLength = 240) {
+  const normalized = text.replace(/\s+/gu, " ").trim();
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+  return `${normalized.slice(0, maxLength - 1).trimEnd()}…`;
+}
+
+function buildStoredChunkArtifacts(args: {
+  adapter: CorpusAdapter;
+  adapterId: string;
+  externalId: string;
+  chunks: string[];
+  embeddingProvider: string;
+  embeddingModel: string;
+  embeddingDimensions: Array<number | null>;
+}) {
+  return args.chunks.map((text, index) => {
+    const chunkIndex = index;
+    const r2Key = args.adapter.artifactKeys.chunkObject?.(args.externalId, chunkIndex)
+      ?? args.adapter.artifactKeys.chunks(args.externalId);
+    return {
+      id: buildCorpusChunkId(args.adapterId, args.externalId, chunkIndex),
+      chunkIndex,
+      text,
+      excerpt: createChunkExcerpt(text),
+      r2Key,
+      metadata: {
+        embeddingProvider: args.embeddingProvider,
+        embeddingModel: args.embeddingModel,
+        embeddingDimensions: args.embeddingDimensions[index] ?? null,
+      },
+    } satisfies StoredChunkArtifact;
+  });
+}
+
+function serializeChunkManifest(records: StoredChunkArtifact[], workId: string) {
+  return records.map((record) => JSON.stringify({
+    id: record.id,
+    work_id: workId,
+    chunk_index: record.chunkIndex,
+    text: record.text,
+    excerpt: record.excerpt,
+    r2_key: record.r2Key,
+    metadata: record.metadata,
+    embedding_dimensions: record.metadata.embeddingDimensions ?? null,
+  })).join("\n");
+}
+
 async function syncAuthors(context: IngestContext, workId: string, authors: string[]) {
   const normalizedAuthors = uniqueStrings(authors);
   await context.db.query(`DELETE FROM work_authors WHERE work_id = $1`, [workId]);
@@ -1893,7 +2013,6 @@ async function persistIngestedWork(
   const cleanText = prepared.cleanText;
   const chunks = prepared.chunks;
   const chunkEmbeddings = await embedChunks(chunks);
-  const chunkIds = chunks.map(() => crypto.randomUUID());
   const authors = prepared.authors;
   const subjects = prepared.subjects;
 
@@ -1912,19 +2031,20 @@ async function persistIngestedWork(
     coverImageKey,
   };
   const workId = await upsertIngestedWork(context, source, metadataPayload);
-
-  const chunksPayload = chunks
-    .map((chunk, index) =>
-      JSON.stringify({
-        id: chunkIds[index],
-        work_id: workId,
-        chunk_index: index,
-        text: chunk,
-        r2_key: chunksKey,
-        embedding_dimensions: chunkEmbeddings?.[index]?.length ?? null,
-      }),
-    )
-    .join("\n");
+  const embeddingProvider = process.env.EMBEDDING_PROVIDER ?? "openai";
+  const embeddingModel = embeddingProvider === "google"
+    ? (process.env.GOOGLE_EMBEDDING_MODEL ?? "gemini-embedding-2-preview")
+    : (process.env.OPENAI_EMBEDDING_MODEL ?? "text-embedding-3-small");
+  const chunkArtifacts = buildStoredChunkArtifacts({
+    adapter,
+    adapterId: source.adapterId,
+    externalId: source.externalId,
+    chunks,
+    embeddingProvider,
+    embeddingModel,
+    embeddingDimensions: chunks.map((_, index) => chunkEmbeddings?.[index]?.length ?? null),
+  });
+  const chunksPayload = serializeChunkManifest(chunkArtifacts, workId);
   const renderedArtifacts = prepared.renderedArtifacts;
   const renderedManifestKey = prepared.renderedManifestKey ?? "";
 
@@ -1945,6 +2065,22 @@ async function persistIngestedWork(
     ),
     putText(context.r2, context.r2Bucket, cleanKey, cleanText, "text/plain; charset=utf-8"),
     putText(context.r2, context.r2Bucket, chunksKey, chunksPayload, "application/x-ndjson"),
+    ...chunkArtifacts.map((chunk) =>
+      putText(
+        context.r2,
+        context.r2Bucket,
+        chunk.r2Key,
+        JSON.stringify({
+          id: chunk.id,
+          work_id: workId,
+          chunk_index: chunk.chunkIndex,
+          text: chunk.text,
+          excerpt: chunk.excerpt,
+          r2_key: chunk.r2Key,
+          metadata: chunk.metadata,
+        }, null, 2),
+        "application/json; charset=utf-8",
+      )),
     ...(renderedArtifacts && renderedDocumentKey
       ? [putText(context.r2, context.r2Bucket, renderedDocumentKey, renderedArtifacts.landingHtml, "text/html; charset=utf-8")]
       : []),
@@ -1996,39 +2132,11 @@ async function persistIngestedWork(
     ],
   );
 
-  for (const [index, chunk] of chunks.entries()) {
-    await context.db.query(
-      `
-        INSERT INTO chunks (id, work_id, chunk_index, text, r2_key, metadata_json, created_at)
-        VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
-        ON CONFLICT (work_id, chunk_index) DO UPDATE
-        SET
-          text = EXCLUDED.text,
-          r2_key = EXCLUDED.r2_key,
-          metadata_json = EXCLUDED.metadata_json
-      `,
-      [
-        chunkIds[index]!,
-        workId,
-        index,
-        chunk,
-        chunksKey,
-        JSON.stringify({
-          embeddingProvider: process.env.EMBEDDING_PROVIDER ?? "openai",
-          embeddingModel: process.env.EMBEDDING_PROVIDER === "google"
-            ? (process.env.GOOGLE_EMBEDDING_MODEL ?? "gemini-embedding-2-preview")
-            : (process.env.OPENAI_EMBEDDING_MODEL ?? "text-embedding-3-small"),
-          embeddingDimensions: chunkEmbeddings?.[index]?.length ?? null,
-        }),
-      ],
-    );
-  }
-
   await upsertChunkVectors(
     context,
     chunkEmbeddings
       ? chunkEmbeddings.map((values, index) => ({
-          id: chunkIds[index]!,
+          id: chunkArtifacts[index]!.id,
           values,
           metadata: {
             workId,
@@ -2477,14 +2585,6 @@ type ExistingCorpusWorkRow = {
   has_clean: number | string;
   has_chunks: number | string;
   has_book_html: number | string;
-  chunk_count: number | string;
-};
-
-type ExistingChunkRow = {
-  work_id?: string;
-  gutenberg_id: string | null;
-  chunk_id: string;
-  chunk_index: number | string;
 };
 
 type ExistingWorkReferenceRow = {
@@ -2516,6 +2616,7 @@ type CanonicalR2Work = {
     id: string;
     chunkIndex: number;
     text: string;
+    r2Key: string;
   }>;
 };
 
@@ -2554,8 +2655,7 @@ async function listExistingCorpusWorkRows(context: IngestContext, gutenbergIds: 
           EXISTS(SELECT 1 FROM work_files wf WHERE wf.work_id = w.id AND wf.kind = 'metadata') AS has_metadata,
           EXISTS(SELECT 1 FROM work_files wf WHERE wf.work_id = w.id AND wf.kind = 'clean') AS has_clean,
           EXISTS(SELECT 1 FROM work_files wf WHERE wf.work_id = w.id AND wf.kind = 'chunks') AS has_chunks,
-          EXISTS(SELECT 1 FROM work_files wf WHERE wf.work_id = w.id AND wf.kind = 'book_html') AS has_book_html,
-          (SELECT COUNT(*) FROM chunks c WHERE c.work_id = w.id) AS chunk_count
+          EXISTS(SELECT 1 FROM work_files wf WHERE wf.work_id = w.id AND wf.kind = 'book_html') AS has_book_html
         FROM works w
         WHERE CAST(w.gutenberg_id AS TEXT) IN (${placeholders})
       `,
@@ -2564,39 +2664,6 @@ async function listExistingCorpusWorkRows(context: IngestContext, gutenbergIds: 
     rows.push(...result.rows);
   }
   return new Map(rows.map((row) => [String(row.gutenberg_id), row]));
-}
-
-async function listExistingChunkRows(context: IngestContext, gutenbergIds: string[]) {
-  if (gutenbergIds.length === 0) {
-    return new Map<string, ExistingChunkRow[]>();
-  }
-  const rows: ExistingChunkRow[] = [];
-  for (const batch of chunkArray(gutenbergIds, CORPUS_AUDIT_D1_BATCH_SIZE)) {
-    const placeholders = sqlPlaceholders(batch);
-    const result = await context.db.query<ExistingChunkRow>(
-      `
-        SELECT
-          c.work_id AS work_id,
-          CAST(w.gutenberg_id AS TEXT) AS gutenberg_id,
-          c.id AS chunk_id,
-          c.chunk_index AS chunk_index
-        FROM chunks c
-        INNER JOIN works w ON w.id = c.work_id
-        WHERE CAST(w.gutenberg_id AS TEXT) IN (${placeholders})
-        ORDER BY w.gutenberg_id ASC, c.chunk_index ASC
-      `,
-      batch,
-    );
-    rows.push(...result.rows);
-  }
-  const grouped = new Map<string, ExistingChunkRow[]>();
-  for (const row of rows) {
-    const key = String(row.gutenberg_id);
-    const bucket = grouped.get(key) ?? [];
-    bucket.push(row);
-    grouped.set(key, bucket);
-  }
-  return grouped;
 }
 
 async function listAllExistingWorkReferences(context: IngestContext) {
@@ -2612,26 +2679,9 @@ async function listAllExistingWorkReferences(context: IngestContext) {
   return rows.rows;
 }
 
-async function listAllExistingChunkReferences(context: IngestContext) {
-  const rows = await context.db.query<ExistingChunkRow>(
-    `
-      SELECT
-        c.work_id AS work_id,
-        CASE WHEN w.gutenberg_id IS NULL THEN NULL ELSE CAST(w.gutenberg_id AS TEXT) END AS gutenberg_id,
-        c.id AS chunk_id,
-        c.chunk_index AS chunk_index
-      FROM chunks c
-      INNER JOIN works w ON w.id = c.work_id
-      ORDER BY c.id ASC
-    `,
-  );
-  return rows.rows;
-}
-
 async function readCanonicalR2Work(
   context: IngestContext,
   artifacts: GutenbergR2Artifacts,
-  existingChunkRows: ExistingChunkRow[] = [],
 ): Promise<CanonicalR2Work> {
   const gutenbergId = artifacts.id;
   const metadataKey = firstArtifactKey(artifacts, "metadata");
@@ -2649,14 +2699,11 @@ async function readCanonicalR2Work(
     throw new Error(`Metadata payload missing for Gutenberg ${gutenbergId}.`);
   }
   const chunkPayload = parseChunkPayload(await getText(context.r2, context.r2Bucket, chunksKey) ?? "");
-  const existingChunkIdsByIndex = new Map(
-    existingChunkRows.map((row) => [Number(row.chunk_index), row.chunk_id]),
-  );
   const chunks = chunkPayload.map((chunk, index) => {
     const chunkIndex = typeof chunk.chunk_index === "number" ? chunk.chunk_index : index;
     const chunkId = typeof chunk.id === "string" && chunk.id.length > 0
       ? chunk.id
-      : (existingChunkIdsByIndex.get(chunkIndex) ?? crypto.randomUUID());
+      : buildCorpusChunkId(gutenbergCorpusAdapter.id, gutenbergId, chunkIndex);
     if (!chunk.text?.trim()) {
       throw new Error(`Chunk ${chunkIndex} for Gutenberg ${gutenbergId} was empty.`);
     }
@@ -2664,6 +2711,9 @@ async function readCanonicalR2Work(
       id: chunkId,
       chunkIndex,
       text: chunk.text,
+      r2Key: typeof chunk.r2_key === "string" && chunk.r2_key.length > 0
+        ? chunk.r2_key
+        : (gutenbergCorpusAdapter.artifactKeys.chunkObject?.(gutenbergId, chunkIndex) ?? chunksKey),
     };
   });
 
@@ -2716,7 +2766,6 @@ async function readCanonicalR2Work(
 async function inspectCanonicalR2Work(
   context: IngestContext,
   artifacts: GutenbergR2Artifacts,
-  existingChunkRows: ExistingChunkRow[] = [],
 ): Promise<CanonicalR2WorkInspection> {
   const missingArtifacts = getMissingRequiredArtifacts(artifacts);
   if (missingArtifacts.length > 0) {
@@ -2763,7 +2812,7 @@ async function inspectCanonicalR2Work(
   }
 
   return {
-    canonical: await readCanonicalR2Work(context, artifacts, existingChunkRows),
+    canonical: await readCanonicalR2Work(context, artifacts),
     issues: [],
   };
 }
@@ -2778,12 +2827,10 @@ async function auditR2Corpus(
     .filter((id) => (startAfter ? Number(id) > startAfter : true))
     .slice(0, options.limit);
   const workRows = await listExistingCorpusWorkRows(context, selectedCanonicalIds);
-  const chunkRows = await listExistingChunkRows(context, selectedCanonicalIds);
   const vectorize = createVectorizeApi(context);
 
   const booksMissingInD1: string[] = [];
   const booksMissingArtifactsInD1: Array<{ gutenbergId: string; missingKinds: string[] }> = [];
-  const chunkCountMismatches: Array<{ gutenbergId: string; expected: number; actual: number }> = [];
   const booksMissingVectors: Array<{ gutenbergId: string; missingCount: number }> = [];
 
   for (const gutenbergId of selectedCanonicalIds) {
@@ -2808,15 +2855,7 @@ async function auditR2Corpus(
       }
     }
 
-    const canonical = await readCanonicalR2Work(context, artifacts, chunkRows.get(gutenbergId) ?? []);
-    const actualChunkCount = Number(work?.chunk_count ?? 0);
-    if (actualChunkCount !== canonical.chunks.length) {
-      chunkCountMismatches.push({
-        gutenbergId,
-        expected: canonical.chunks.length,
-        actual: actualChunkCount,
-      });
-    }
+    const canonical = await readCanonicalR2Work(context, artifacts);
 
     if (vectorize && context.vectorIndexName) {
       const found = await vectorize.getVectorIds(context.vectorIndexName, canonical.chunks.map((chunk) => chunk.id));
@@ -2852,7 +2891,6 @@ async function auditR2Corpus(
     booksMissingInD1,
     booksPresentInD1ButMissingCanonicalArtifacts,
     booksMissingArtifactsInD1,
-    chunkCountMismatches,
     booksMissingVectors,
   };
 
@@ -2868,7 +2906,6 @@ async function rebuildCanonicalR2Work(
   context: IngestContext,
   canonical: CanonicalR2Work,
   existingWork: ExistingCorpusWorkRow | null,
-  existingChunkRows: ExistingChunkRow[],
 ) {
   const workId = (
     await upsertIngestedWork(
@@ -2895,12 +2932,48 @@ async function rebuildCanonicalR2Work(
 
   const vectorize = createVectorizeApi(context);
   if (vectorize && context.vectorIndexName) {
-    const existingChunkIds = existingChunkRows.map((row) => row.chunk_id);
-    await vectorize.deleteVectorIds(context.vectorIndexName, existingChunkIds);
+    await vectorize.deleteVectorIds(context.vectorIndexName, canonical.chunks.map((chunk) => chunk.id));
   }
 
   await context.db.query(`DELETE FROM work_files WHERE work_id = $1 AND kind IN ('raw', 'metadata', 'clean', 'chunks', 'book_html')`, [workId]);
-  await context.db.query(`DELETE FROM chunks WHERE work_id = $1`, [workId]);
+
+  const chunkEmbeddings = await embedChunks(canonical.chunks.map((chunk) => chunk.text));
+  if (!chunkEmbeddings) {
+    throw new Error("Embedding generation is required for canonical rebuilds.");
+  }
+  const chunkArtifacts = canonical.chunks.map((chunk, index) => ({
+    id: chunk.id,
+    chunkIndex: chunk.chunkIndex,
+    text: chunk.text,
+    excerpt: createChunkExcerpt(chunk.text),
+    r2Key: chunk.r2Key,
+    metadata: {
+      embeddingProvider: "google",
+      embeddingModel: process.env.GOOGLE_EMBEDDING_MODEL ?? "gemini-embedding-2-preview",
+      embeddingDimensions: chunkEmbeddings[index]?.length ?? null,
+    },
+  } satisfies StoredChunkArtifact));
+  const chunksPayload = serializeChunkManifest(chunkArtifacts, workId);
+
+  await Promise.all([
+    putText(context.r2, context.r2Bucket, canonical.artifactKeys.chunks, chunksPayload, "application/x-ndjson"),
+    ...chunkArtifacts.map((chunk) =>
+      putText(
+        context.r2,
+        context.r2Bucket,
+        chunk.r2Key,
+        JSON.stringify({
+          id: chunk.id,
+          work_id: workId,
+          chunk_index: chunk.chunkIndex,
+          text: chunk.text,
+          excerpt: chunk.excerpt,
+          r2_key: chunk.r2Key,
+          metadata: chunk.metadata,
+        }, null, 2),
+        "application/json; charset=utf-8",
+      )),
+  ]);
 
   await context.db.query(
     `
@@ -2926,32 +2999,6 @@ async function rebuildCanonicalR2Work(
       canonical.artifactKeys.bookHtml,
     ],
   );
-
-  const chunkEmbeddings = await embedChunks(canonical.chunks.map((chunk) => chunk.text));
-  if (!chunkEmbeddings) {
-    throw new Error("Embedding generation is required for canonical rebuilds.");
-  }
-
-  for (const [index, chunk] of canonical.chunks.entries()) {
-    await context.db.query(
-      `
-        INSERT INTO chunks (id, work_id, chunk_index, text, r2_key, metadata_json, created_at)
-        VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
-      `,
-      [
-        chunk.id,
-        workId,
-        chunk.chunkIndex,
-        chunk.text,
-        canonical.artifactKeys.chunks,
-        JSON.stringify({
-          embeddingProvider: "google",
-          embeddingModel: process.env.GOOGLE_EMBEDDING_MODEL ?? "gemini-embedding-2-preview",
-          embeddingDimensions: chunkEmbeddings[index]?.length ?? null,
-        }),
-      ],
-    );
-  }
 
   await syncAuthors(context, workId, canonical.authors);
   await syncSubjects(context, workId, canonical.subjects);
@@ -2991,7 +3038,6 @@ async function rebuildR2Corpus(
     .filter((id) => (startAfterId ? Number(id) > Number(startAfterId) : true))
     .slice(0, options.limit);
   const existingWorks = await listExistingCorpusWorkRows(context, selectedCanonicalIds);
-  const existingChunks = await listExistingChunkRows(context, selectedCanonicalIds);
 
   const results: Array<Record<string, unknown>> = [];
   const errors: Array<Record<string, unknown>> = [];
@@ -3004,12 +3050,11 @@ async function rebuildR2Corpus(
       if (!artifacts) {
         throw new Error(`Canonical R2 artifacts missing for Gutenberg ${gutenbergId}.`);
       }
-      const canonical = await readCanonicalR2Work(context, artifacts, existingChunks.get(gutenbergId) ?? []);
+      const canonical = await readCanonicalR2Work(context, artifacts);
       const result = await rebuildCanonicalR2Work(
         context,
         canonical,
         existingWorks.get(gutenbergId) ?? null,
-        existingChunks.get(gutenbergId) ?? [],
       );
       results.push(result);
     } catch (error) {
@@ -3053,9 +3098,7 @@ async function auditCloudflareCorpus(
     .slice(0, options.limit ?? scan.ids.length);
 
   const workRows = await listExistingCorpusWorkRows(context, selectedCanonicalIds);
-  const chunkRows = await listExistingChunkRows(context, selectedCanonicalIds);
   const allWorkRows = await listAllExistingWorkReferences(context);
-  const allChunkRows = await listAllExistingChunkReferences(context);
   const vectorize = createVectorizeApi(context);
   const expectedChunkIds = new Set<string>();
 
@@ -3063,7 +3106,6 @@ async function auditCloudflareCorpus(
   const rebuildableBooks: string[] = [];
   const missingInD1: string[] = [];
   const missingVectors: Array<{ gutenbergId: string; missingCount: number }> = [];
-  const chunkCountMismatches: Array<{ gutenbergId: string; expected: number; actual: number }> = [];
   const formatErrors: Array<{ gutenbergId: string; issues: string[] }> = [];
   const booksMissingArtifactsInD1: Array<{ gutenbergId: string; missingKinds: string[] }> = [];
 
@@ -3078,7 +3120,7 @@ async function auditCloudflareCorpus(
       continue;
     }
 
-    const inspected = await inspectCanonicalR2Work(context, artifacts, chunkRows.get(gutenbergId) ?? []);
+    const inspected = await inspectCanonicalR2Work(context, artifacts);
     if (!inspected.canonical) {
       formatErrors.push({
         gutenbergId,
@@ -3111,15 +3153,6 @@ async function auditCloudflareCorpus(
       booksMissingArtifactsInD1.push({ gutenbergId, missingKinds });
     }
 
-    const actualChunkCount = Number(work.chunk_count ?? 0);
-    if (actualChunkCount !== canonical.chunks.length) {
-      chunkCountMismatches.push({
-        gutenbergId,
-        expected: canonical.chunks.length,
-        actual: actualChunkCount,
-      });
-    }
-
     const foundVectorIds = vectorize && context.vectorIndexName
       ? await vectorize.getVectorIds(context.vectorIndexName, canonical.chunks.map((chunk) => chunk.id))
       : new Set<string>();
@@ -3131,7 +3164,7 @@ async function auditCloudflareCorpus(
       });
     }
 
-    if (missingKinds.length === 0 && actualChunkCount === canonical.chunks.length && missingVectorIds.length === 0) {
+    if (missingKinds.length === 0 && missingVectorIds.length === 0) {
       completeBooks.push(gutenbergId);
     } else {
       rebuildableBooks.push(gutenbergId);
@@ -3145,13 +3178,6 @@ async function auditCloudflareCorpus(
       workId: row.work_id,
       gutenbergId: row.gutenberg_id,
       title: row.title,
-    }));
-  const orphanedChunksInD1 = allChunkRows
-    .filter((row) => row.gutenberg_id && !canonicalIdSet.has(String(row.gutenberg_id)))
-    .map((row) => ({
-      workId: row.work_id ?? null,
-      gutenbergId: row.gutenberg_id,
-      chunkId: row.chunk_id,
     }));
   const vectorIds = vectorize && context.vectorIndexName && options.includeOrphanVectorScan !== false
     ? await vectorize.listVectorIds(context.vectorIndexName)
@@ -3173,11 +3199,9 @@ async function auditCloudflareCorpus(
     orphanedR2Keys: scan.orphanedKeys,
     missingInD1,
     booksMissingArtifactsInD1,
-    chunkCountMismatches,
     missingVectors,
     formatErrors,
     orphanedWorksInD1,
-    orphanedChunksInD1,
     orphanedVectorIds,
     summary: {
       completeBooks,
@@ -3202,7 +3226,6 @@ async function validateCorpusIntegrity(
     report.idsMissingRequiredArtifacts.length
     + report.missingInD1.length
     + report.booksMissingArtifactsInD1.length
-    + report.chunkCountMismatches.length
     + report.missingVectors.length
     + report.formatErrors.length
   );
