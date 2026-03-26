@@ -106,9 +106,13 @@ function normalizeSpriteIntensity(value: unknown): "normal" | "high" | "maximum"
   return value === "high" || value === "maximum" || value === "normal" ? value : "normal";
 }
 
-function spriteConcurrencyForIntensity(intensity: "normal" | "high" | "maximum", shardCount: number): number {
-  void intensity;
-  return Math.max(1, shardCount);
+export function spriteConcurrencyForIntensity(intensity: "normal" | "high" | "maximum", shardCount: number): number {
+  const cap = intensity === "maximum"
+    ? 8
+    : intensity === "high"
+      ? 4
+      : 2;
+  return Math.max(1, Math.min(shardCount, cap));
 }
 
 function shardLabel(shard: SpriteShardManifest): string {

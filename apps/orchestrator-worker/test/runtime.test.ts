@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { estimateSpritePrepareTimeoutMs, isStaleSpriteMachine, spriteGuestConfig } from "../src/runtime";
+import {
+  estimateSpritePrepareTimeoutMs,
+  isStaleSpriteMachine,
+  spriteConcurrencyForIntensity,
+  spriteGuestConfig,
+} from "../src/runtime";
 
 test("estimateSpritePrepareTimeoutMs scales up for larger shard hydration", () => {
   const small = estimateSpritePrepareTimeoutMs({
@@ -50,6 +55,13 @@ test("spriteGuestConfig preserves larger configured machine sizes", () => {
       memory_mb: 16_384,
     },
   );
+});
+
+test("spriteConcurrencyForIntensity caps broad fanout shard launches", () => {
+  assert.equal(spriteConcurrencyForIntensity("normal", 25), 2);
+  assert.equal(spriteConcurrencyForIntensity("high", 25), 4);
+  assert.equal(spriteConcurrencyForIntensity("maximum", 25), 8);
+  assert.equal(spriteConcurrencyForIntensity("maximum", 3), 3);
 });
 
 test("isStaleSpriteMachine ignores current-session shard machines", () => {
