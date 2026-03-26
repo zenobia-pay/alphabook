@@ -880,7 +880,28 @@ ToolFallback.Trigger = ToolFallbackTrigger;
 ToolFallback.Content = ToolFallbackContent;
 ToolFallback.Error = ToolFallbackError;
 
+const SemanticSearchToolUI: ToolCallMessagePartComponent = ({
+  argsText,
+  result,
+  status,
+}) => {
+  const args = useMemo(() => parseArgs(argsText), [argsText]);
+  const safeResultObject = useMemo(() => safeObject(result), [result]);
+  const alphaloopEvents = useMemo(() => getAlphaloopEvents(args, safeResultObject), [args, safeResultObject]);
+  const alphaloopChunks = useMemo(() => getAlphaloopChunks(safeResultObject), [safeResultObject]);
+
+  return (
+    <div className="py-2">
+      <AlphaloopSearchProgress events={alphaloopEvents} isRunning={status?.type === "running"} />
+      <AlphaloopCitations chunks={alphaloopChunks} />
+    </div>
+  );
+};
+
+SemanticSearchToolUI.displayName = "SemanticSearchToolUI";
+
 export {
+  SemanticSearchToolUI,
   ToolFallback,
   ToolFallbackRoot,
   ToolFallbackTrigger,

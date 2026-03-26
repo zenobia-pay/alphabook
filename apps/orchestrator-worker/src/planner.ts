@@ -740,7 +740,7 @@ export class FallbackPlanner implements Planner {
       return {
         type: "tool_call",
         tool_name: "semantic_deep_search",
-        rationale: "I’m running the semantic retrieval loop directly against the vector index and writing the answer from the strongest passages.",
+        rationale: "Run AlphaLoop directly against the semantic index and answer from the strongest passages.",
         args: {
           query: context.userMessage,
           ...(context.workScope?.length ? { workIds: context.workScope.slice(0, 80) } : {}),
@@ -948,7 +948,7 @@ export class OpenAIPlanner implements Planner {
       return {
         type: "tool_call",
         tool_name: "semantic_deep_search",
-        rationale: "I’m running the semantic retrieval loop directly against the vector index and writing the answer from the strongest passages.",
+        rationale: "Run AlphaLoop directly against the semantic index and answer from the strongest passages.",
         args: {
           query: context.userMessage,
           ...(context.workScope?.length ? { workIds: context.workScope.slice(0, 80) } : {}),

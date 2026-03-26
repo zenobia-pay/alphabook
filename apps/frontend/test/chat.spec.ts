@@ -1808,11 +1808,11 @@ test("semantic search shows AlphaLoop progress and citations instead of a static
 
   await page.goto(`/?view=assistant&session=${sessionId}`);
 
-  await page.getByRole("button", { name: /Semantic Search/ }).click();
   await expect(page.getByText('Searching for "grief and consolation"')).toBeVisible();
   await expect(page.getByText("Re-ranking")).toBeVisible();
   await expect(page.getByText("Sources (1)")).toBeVisible();
   await expect(page.getByText("91% match")).toBeVisible();
+  await expect(page.getByRole("button", { name: /Semantic Search/ })).toHaveCount(0);
 });
 
 test("recovered tool traces keep friendly log lines after refresh", async ({ page }) => {

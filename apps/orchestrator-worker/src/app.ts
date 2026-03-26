@@ -5785,8 +5785,8 @@ function describePlannerAction(
   switch (toolName) {
     case "semantic_deep_search":
       return normalizedMessage
-        ? `I’m running the semantic loop for “${normalizedMessage}” and writing from the strongest passages it finds.`
-        : "I’m running the semantic loop now and writing from the strongest passages it finds.";
+        ? `I’m running AlphaLoop for “${normalizedMessage}” and writing from the strongest passages it finds.`
+        : "I’m running AlphaLoop now and writing from the strongest passages it finds.";
     case "estimate_research_scope":
       return normalizedMessage
         ? `I’m estimating how broad “${normalizedMessage}” is so I can choose the right time budget and search intensity.`
@@ -5825,6 +5825,13 @@ function initialAssistantPlan(userMessage: string) {
   return normalizedMessage
     ? `I’m going to search broadly for “${normalizedMessage},” pull the strongest passages, and bring back a quoted briefing.`
     : "I’m going to search broadly, pull the strongest passages, and bring back a quoted briefing.";
+}
+
+function initialSemanticAssistantPlan(userMessage: string) {
+  const normalizedMessage = userMessage.trim();
+  return normalizedMessage
+    ? `I’m running AlphaLoop for “${normalizedMessage}” and will answer from the strongest passages it finds.`
+    : "I’m running AlphaLoop now and will answer from the strongest passages it finds.";
 }
 
 function isTextArtifact(filename: string, mimeType: string) {
@@ -9528,7 +9535,9 @@ async function runOrchestrator(
       return;
     }
     ensureResearchDocumentShell(routedQuery);
-    const planText = initialAssistantPlan(routedQuery);
+    const planText = requestedAssistantMode(input) === "semantic"
+      ? initialSemanticAssistantPlan(routedQuery)
+      : initialAssistantPlan(routedQuery);
     const planMessage = await deps.store.appendMessage(activeSession.id, "assistant", planText, {
       phase: "plan",
       runId: run.id,
