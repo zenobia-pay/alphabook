@@ -598,7 +598,7 @@ function createBookSectionId(title: string, index: number) {
   return `section-${slugify(title)}-${index + 1}`;
 }
 
-const STATIC_BOOK_CONTENT_VERSION = "20260326e";
+const STATIC_BOOK_CONTENT_VERSION = "20260326f";
 
 function withBookVersion(href: string, fragment?: string | null) {
   const separator = href.includes("?") ? "&" : "?";
@@ -640,13 +640,13 @@ function renderBookStaticStyles() {
         color: var(--link-visited);
       }
       .page-shell {
-        width: min(52rem, calc(100vw - 24px));
+        width: min(76rem, calc(100vw - 24px));
         margin: 0 auto;
-        padding: 12px 0 112px;
+        padding: 0 0 112px;
       }
       .page-surface {
         background: var(--surface);
-        padding: 0;
+        padding: clamp(18px, 3vw, 34px) clamp(18px, 3.8vw, 42px) 112px;
       }
       .article-header {
         display: grid;
@@ -702,6 +702,45 @@ function renderBookStaticStyles() {
         position: sticky;
         top: 16px;
       }
+      .contents-page .page-surface {
+        padding-top: clamp(16px, 2.8vw, 28px);
+      }
+      .contents-page .reader-body {
+        margin: 0 auto;
+      }
+      .contents-page .reader-body h1,
+      .contents-page .reader-body h2,
+      .contents-page .reader-body h3,
+      .contents-page .reader-body h4,
+      .contents-page .reader-body h5,
+      .contents-page .reader-body h6 {
+        border-bottom: none;
+        padding-bottom: 0;
+        margin: 0 0 0.85em;
+      }
+      .contents-page .reader-body p {
+        margin-bottom: 0.85em;
+      }
+      .contents-page .contents-list {
+        list-style: none;
+        margin: 2rem 0 0;
+        padding: 0;
+        display: grid;
+        gap: 0.7rem;
+      }
+      .contents-page .contents-list li {
+        margin: 0;
+      }
+      .contents-page .contents-link {
+        display: inline-flex;
+        align-items: baseline;
+        gap: 0.55rem;
+        text-decoration: none;
+      }
+      .contents-page .contents-link .page-number {
+        color: var(--muted);
+        font-size: 0.95rem;
+      }
       .toc-link, .page-link, .nav-link {
         text-decoration: none;
       }
@@ -709,7 +748,8 @@ function renderBookStaticStyles() {
         font-family: "Linux Libertine", "Georgia", "Times New Roman", serif;
         font-size: 1.12rem;
         line-height: 1.72;
-        max-width: 46rem;
+        max-width: 66ch;
+        margin: 0 auto;
       }
       .reader-body h1, .reader-body h2, .reader-body h3, .reader-body h4, .reader-body h5, .reader-body h6 {
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -784,7 +824,7 @@ function renderBookStaticStyles() {
         bottom: 18px;
         transform: translateX(-50%);
         z-index: 20;
-        width: min(calc(100vw - 24px), 44rem);
+        width: min(calc(100vw - 24px), 66ch);
         display: flex;
         justify-content: space-between;
         align-items: center;
@@ -822,10 +862,10 @@ function renderBookStaticStyles() {
       @media (max-width: 780px) {
         .page-shell {
           width: min(100vw - 12px, 100%);
-          padding: 6px 0 96px;
+          padding: 0 0 96px;
         }
         .page-surface {
-          padding: 0;
+          padding: 14px 18px 96px;
         }
         .article-layout.has-toc {
           grid-template-columns: minmax(0, 1fr);
@@ -1407,32 +1447,28 @@ function buildPaginatedBookArtifactBundle(input: {
     <meta name="robots" content="noindex,nofollow" />
     <style>${renderBookStaticStyles()}</style>
   </head>
-  <body>
+  <body class="contents-page">
     <main class="page-shell">
       <div class="page-surface">
-        <header class="article-header">
-          ${meta ? `<p class="eyebrow">${escapeHtml(meta)}</p>` : ""}
+        <div class="reader-body">
+          ${meta ? `<p class="page-meta">${escapeHtml(meta)}</p>` : ""}
           <h1>${escapeHtml(input.title)}</h1>
           ${input.subtitle ? `<p class="article-subtitle">${escapeHtml(input.subtitle)}</p>` : ""}
           ${byline ? `<p class="byline">${escapeHtml(byline)}</p>` : ""}
           ${input.summary ? `<p class="summary">${escapeHtml(input.summary)}</p>` : ""}
           ${renderTagList(input.bookshelves)}
-        </header>
-        <div class="article-layout${sections.length > 0 ? " has-toc" : ""}">
-          <div class="article-main">
-            ${pages[0] ? `<p><a class="page-link" href="${withBookVersion(pages[0].href)}"><strong>Read from the beginning</strong></a></p>` : ""}
-          </div>
+          ${pages[0] ? `<p><a class="page-link" href="${withBookVersion(pages[0].href)}"><strong>Read from the beginning</strong></a></p>` : ""}
           ${sections.length > 0 ? `
-            <aside class="toc-panel">
-              <p class="toc-title">Contents</p>
-              <ul class="toc-list">
-                ${sections.map((section) => `
-                  <li>
-                    <a class="toc-link" href="${withBookVersion(section.href, section.passageId)}">${escapeHtml(section.title)}</a>
-                  </li>
-                `).join("")}
-              </ul>
-            </aside>
+            <ul class="contents-list">
+              ${sections.map((section) => `
+                <li>
+                  <a class="contents-link" href="${withBookVersion(section.href, section.passageId)}">
+                    <span>${escapeHtml(section.title)}</span>
+                    <span class="page-number">Page ${section.pageNumber}</span>
+                  </a>
+                </li>
+              `).join("")}
+            </ul>
           ` : ""}
         </div>
     </main>
