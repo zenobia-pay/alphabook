@@ -9,7 +9,7 @@ import {
 import { createApp, reapExpiredRuntimeInstances, reapStaleRuns } from "./app";
 import { WorkOSAuth } from "./auth";
 import { createBillingService } from "./billing";
-import { OpenAIEmbedder } from "./embeddings";
+import { GoogleAIEmbedder, OpenAIEmbedder } from "./embeddings";
 import { OpenAIPlanner } from "./planner";
 import { CloudflareR2Store } from "./r2";
 import { OpenAIRouter } from "./router";
@@ -27,11 +27,16 @@ export interface WorkersAiBinding {
 
 export interface Env {
   DATABASE_URL: string;
+  APP_DB?: D1Database;
   AI?: WorkersAiBinding;
   OPENAI_API_KEY?: string;
   OPENAI_MODEL?: string;
   OPENAI_SYNTH_MODEL?: string;
   OPENAI_EMBEDDING_MODEL?: string;
+  EMBEDDING_PROVIDER?: string;
+  GOOGLE_AI_API_KEY?: string;
+  GOOGLE_EMBEDDING_MODEL?: string;
+  GOOGLE_EMBEDDING_DIMENSIONS?: string;
   TOOL_STREAM_CLEANUP_MODEL?: string;
   BILLING_MONTHLY_LIMIT_USD?: string;
   BILLING_MODEL_PRICING_JSON?: string;
@@ -67,6 +72,7 @@ export interface Env {
   IMPLEMENTATION_ID?: string;
   SITE_ORIGIN?: string;
   API_ORIGIN?: string;
+  SEMANTIC_BACKEND?: string;
   X402_ENABLED?: string;
   X402_PAY_TO?: string;
   X402_NETWORK?: string;
@@ -78,6 +84,7 @@ export interface Env {
   CORPUS_BUCKET: R2Bucket;
   INGEST_QUEUE: Queue;
   JOBS_QUEUE: Queue;
+  VECTOR_INDEX?: VectorizeIndex;
 }
 
 function resolveRuntimeGateway(env: Env, store: NeonAppStore, blobStore: CloudflareR2Store) {
@@ -119,6 +126,25 @@ function resolveRuntimeGateway(env: Env, store: NeonAppStore, blobStore: Cloudfl
     return new HttpRuntimeGateway(env.RUNTIME_SERVICE_URL, env.RUNTIME_SERVICE_TOKEN);
   }
   throw new Error("Runtime gateway is not configured.");
+}
+
+function resolveEmbedder(env: Env, billing: ReturnType<typeof createBillingService>) {
+  if (env.EMBEDDING_PROVIDER === "google" && env.GOOGLE_AI_API_KEY) {
+    return new GoogleAIEmbedder(
+      env.GOOGLE_AI_API_KEY,
+      env.GOOGLE_EMBEDDING_MODEL ?? "gemini-embedding-2-preview",
+      env.GOOGLE_EMBEDDING_DIMENSIONS ? Number(env.GOOGLE_EMBEDDING_DIMENSIONS) : 1536,
+    );
+  }
+  if (!env.OPENAI_API_KEY) {
+    throw new Error("OPENAI_API_KEY is required unless EMBEDDING_PROVIDER=google with GOOGLE_AI_API_KEY configured.");
+  }
+  return new OpenAIEmbedder(
+    env.OPENAI_API_KEY,
+    env.OPENAI_EMBEDDING_MODEL ?? "text-embedding-3-small",
+    undefined,
+    billing,
+  );
 }
 
 function buildFetchHandler(env: Env) {
@@ -165,12 +191,7 @@ function buildFetchHandler(env: Env) {
     billing,
     buildPlannerPrompt(implementation),
   );
-  const embedder = new OpenAIEmbedder(
-    env.OPENAI_API_KEY,
-    env.OPENAI_EMBEDDING_MODEL ?? "text-embedding-3-small",
-    undefined,
-    billing,
-  );
+  const embedder = resolveEmbedder(env, billing);
   const synthesizer = new OpenAISynthesizer(
     env.OPENAI_API_KEY,
     env.OPENAI_SYNTH_MODEL ?? env.OPENAI_MODEL ?? "gpt-5.2",
@@ -273,12 +294,7 @@ async function runScheduledJanitor(env: Env) {
       : undefined,
   });
   const planner = new OpenAIPlanner(env.OPENAI_API_KEY, env.OPENAI_MODEL ?? "gpt-5.2", undefined, billing);
-  const embedder = new OpenAIEmbedder(
-    env.OPENAI_API_KEY,
-    env.OPENAI_EMBEDDING_MODEL ?? "text-embedding-3-small",
-    undefined,
-    billing,
-  );
+  const embedder = resolveEmbedder(env, billing);
   const synthesizer = new OpenAISynthesizer(
     env.OPENAI_API_KEY,
     env.OPENAI_SYNTH_MODEL ?? env.OPENAI_MODEL ?? "gpt-5.2",

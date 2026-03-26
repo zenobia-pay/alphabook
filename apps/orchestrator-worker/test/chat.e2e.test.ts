@@ -7,7 +7,7 @@ import { decodePaymentRequiredHeader, encodePaymentSignatureHeader } from "@x402
 import { createApp, reapExpiredRuntimeInstances, reapStaleRuns } from "../src/app";
 import { WorkOSAuth } from "../src/auth";
 import { createBillingService } from "../src/billing";
-import { HashEmbedder, OpenAIEmbedder } from "../src/embeddings";
+import { GoogleAIEmbedder, HashEmbedder, OpenAIEmbedder } from "../src/embeddings";
 import { MemoryBlobStore } from "../src/r2";
 import { FallbackPlanner, ScriptedPlanner } from "../src/planner";
 import { ScriptedRouter } from "../src/router";
@@ -5410,6 +5410,31 @@ test("OpenAIEmbedder requests 1536 dimensions for text-embedding-3 models", asyn
   const embedding = await embedder.embedQuery("anger");
   assert.deepEqual(embedding, [0.1, 0.2, 0.3]);
   assert.equal(requestBody ? requestBody["dimensions"] : undefined, 1536);
+});
+
+test("GoogleAIEmbedder requests the configured model and output dimensionality", async () => {
+  let requestUrl = "";
+  let requestBody = "";
+  const embedder = new GoogleAIEmbedder(
+    "google-key",
+    "gemini-embedding-2-preview",
+    1536,
+    async (input, init) => {
+      requestUrl = String(input);
+      requestBody = String(init?.body ?? "");
+      return Response.json({
+        embedding: {
+          values: [3, 4],
+        },
+      });
+    },
+  );
+
+  const embedding = await embedder.embedQuery("grief");
+  assert.equal(requestUrl, "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-2-preview:embedContent");
+  assert.match(requestBody, /"model":"models\/gemini-embedding-2-preview"/);
+  assert.match(requestBody, /"output_dimensionality":1536/);
+  assert.deepEqual(embedding, [0.6, 0.8]);
 });
 
 test("billing gate rejects chat requests once monthly spend exceeds limit", async () => {

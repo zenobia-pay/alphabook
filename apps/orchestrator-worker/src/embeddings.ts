@@ -1,4 +1,4 @@
-import { hashTextToVector } from "@alphabook/corpus-text";
+import { hashTextToVector, normalizeVector } from "@alphabook/corpus-text";
 
 import { openAIUsageFromResponse, type BillingContext, type BillingService } from "./billing";
 
@@ -75,5 +75,51 @@ export class OpenAIEmbedder implements Embedder {
       throw new Error("Embedding response was empty.");
     }
     return embedding;
+  }
+}
+
+export class GoogleAIEmbedder implements Embedder {
+  constructor(
+    private readonly apiKey: string,
+    private readonly model: string = "gemini-embedding-2-preview",
+    private readonly outputDimensionality: number = 1536,
+    private readonly fetchImpl: FetchLike = (input, init) => fetch(input, init),
+  ) {}
+
+  async embedQuery(text: string): Promise<number[]> {
+    const body = {
+      model: `models/${this.model}`,
+      content: {
+        parts: [{ text }],
+      },
+      output_dimensionality: this.outputDimensionality,
+    };
+
+    const response = await this.fetchImpl(
+      `https://generativelanguage.googleapis.com/v1beta/models/${this.model}:embedContent`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-goog-api-key": this.apiKey,
+        },
+        body: JSON.stringify(body),
+      },
+    );
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error(`Google embedding request failed: ${detail}`);
+    }
+
+    const payload = (await response.json()) as {
+      embedding?: {
+        values?: number[];
+      };
+    };
+    const embedding = payload.embedding?.values;
+    if (!embedding?.length) {
+      throw new Error("Google embedding response was empty.");
+    }
+    return normalizeVector(embedding);
   }
 }
