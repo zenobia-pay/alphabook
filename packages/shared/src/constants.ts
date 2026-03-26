@@ -9,6 +9,7 @@ export const R2_PREFIXES = {
 } as const;
 
 export const TOOL_LABELS = {
+  semantic_deep_search: "Semantic Search",
   estimate_research_scope: "Scope Estimate",
   search_works: "Metadata Search",
   get_work_metadata: "Book Context",

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { OpenAIPlanner, type PlannerContext } from "../src/planner";
 
-test("OpenAIPlanner starts with workspace creation before later retrieval steps", async () => {
+test("OpenAIPlanner sizes the work first once semantic retrieval has already run", async () => {
   const planner = new OpenAIPlanner(
     "test-key",
     "test-model",
@@ -66,8 +66,8 @@ test("OpenAIPlanner starts with workspace creation before later retrieval steps"
   const decision = await planner.decide(context);
 
   assert.equal(decision.type, "tool_call");
-  assert.equal(decision.tool_name, "create_workspace");
-  assert.match(decision.rationale ?? "", /starting the codex workspace/i);
+  assert.equal(decision.tool_name, "estimate_research_scope");
+  assert.match(decision.rationale ?? "", /sizing the vetted evidence set/i);
 });
 
 test("OpenAIPlanner does not force create_workspace again while it is pending", async () => {
@@ -130,5 +130,53 @@ test("OpenAIPlanner does not force create_workspace again while it is pending", 
 
   assert.equal(decision.type, "tool_call");
   assert.equal(decision.tool_name, "search_works");
-  assert.match(decision.rationale ?? "", /retrieval moving/i);
+  assert.match(decision.rationale ?? "", /surfacing likely books immediately/i);
+});
+
+test("OpenAIPlanner routes semantic mode straight to semantic_deep_search", async () => {
+  const planner = new OpenAIPlanner(
+    "test-key",
+    "test-model",
+    async () =>
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  type: "tool_call",
+                  tool_name: "search_works",
+                  rationale: "ignored",
+                  args: {
+                    query: "ignored",
+                  },
+                }),
+              },
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+          },
+        },
+      ),
+  );
+
+  const decision = await planner.decide({
+    mode: "semantic",
+    userMessage: "find passages where mourning becomes consolation",
+    conversationHistory: [
+      {
+        role: "user",
+        content: "find passages where mourning becomes consolation",
+      },
+    ],
+    turns: 1,
+    toolHistory: [],
+  });
+
+  assert.equal(decision.type, "tool_call");
+  assert.equal(decision.tool_name, "semantic_deep_search");
 });

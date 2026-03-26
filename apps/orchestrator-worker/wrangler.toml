@@ -16,7 +16,7 @@ crons = ["* * * * *"]
 [vars]
 OPENAI_MODEL = "gpt-5.2"
 OPENAI_SYNTH_MODEL = "gpt-5.2"
-EMBEDDING_PROVIDER = "openai"
+EMBEDDING_PROVIDER = "google"
 OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
 GOOGLE_EMBEDDING_MODEL = "gemini-embedding-2-preview"
 GOOGLE_EMBEDDING_DIMENSIONS = "1536"
@@ -62,9 +62,9 @@ binding = "APP_DB"
 database_name = "alphabook-app"
 database_id = "3d6ba6c9-25bf-4473-a1e8-1ee10e9174f1"
 
-#[[vectorize]]
-#binding = "VECTOR_INDEX"
-#index_name = "alphabook-semantic"
+[[vectorize]]
+binding = "VECTOR_INDEX"
+index_name = "alphabook-semantic"
 
 [ai]
 binding = "AI"

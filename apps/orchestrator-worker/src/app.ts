@@ -24,6 +24,7 @@ import { MemoryBlobStore, type BlobStore } from "./r2";
 import type { Planner, PlannerContext } from "./planner";
 import { FallbackPlanner, parseToolCall } from "./planner";
 import type { Router } from "./router";
+import type { SemanticSearchService } from "./semantic-search";
 import { cleanupToolStreamWithWorkersAi, type ToolStreamCleanupLine } from "./tool-stream-cleanup";
 import type { Synthesizer, ToolHistoryEntry } from "./synthesizer";
 import type { AgentIdentityRecord, AnalyticsEventRecord, AppStore, MessageRecord, NotificationRecord, PassageSearchFilters, RunRecord, RuntimeInstanceRecord, SessionRecord, ToolCallRecord, UserRecord, WorkDetailRecord } from "./store";
@@ -53,6 +54,7 @@ export interface AppDeps {
   billing: BillingService;
   router?: Router;
   planner: Planner;
+  semanticSearch?: SemanticSearchService;
   embedder: Embedder;
   synthesizer: Synthesizer;
   blobStore: BlobStore;
@@ -867,6 +869,10 @@ function extractCandidateWorkIds(
   result: Record<string, unknown>,
 ) {
   switch (toolName) {
+    case "semantic_deep_search": {
+      const chunks = Array.isArray(result.chunks) ? result.chunks as Array<Record<string, unknown>> : [];
+      return uniqueWorkIds(chunks.map((chunk) => (typeof chunk.workId === "string" ? chunk.workId : null)));
+    }
     case "estimate_research_scope":
       return [];
     case "search_works": {
@@ -1999,6 +2005,20 @@ function normalizeMetadataSearchQuery(query: unknown, filters: Record<string, un
 function normalizeToolArgs(toolName: ToolName, args: Record<string, unknown>): Record<string, unknown> {
   const normalized = { ...args };
   switch (toolName) {
+    case "semantic_deep_search":
+      if (normalized.workIds === null) {
+        delete normalized.workIds;
+      }
+      if (normalized.workIds === undefined && normalized.work_ids !== undefined) {
+        normalized.workIds = normalized.work_ids;
+      }
+      if (normalized.maxResults === undefined && normalized.max_results !== undefined) {
+        normalized.maxResults = normalized.max_results;
+      }
+      if (typeof normalized.maxResults === "number") {
+        normalized.maxResults = Math.max(1, Math.min(12, Math.trunc(normalized.maxResults)));
+      }
+      break;
     case "estimate_research_scope":
     case "search_works":
       if (toolName === "estimate_research_scope") {
@@ -2528,6 +2548,25 @@ async function executeTool(
 ): Promise<Record<string, unknown>> {
   const normalizedArgs = normalizeToolArgs(toolName, args);
   switch (toolName) {
+    case "semantic_deep_search": {
+      if (!deps.semanticSearch) {
+        throw new Error("Semantic search is not configured.");
+      }
+      const parsed = ToolArgsSchemas.semantic_deep_search.parse(normalizedArgs);
+      const result = await deps.semanticSearch.search({
+        query: parsed.query,
+        workIds: parsed.workIds,
+        maxResults: parsed.maxResults ?? 8,
+        billingContext: {
+          userId: context.userId,
+          sessionId: context.sessionId,
+          runId: context.runId,
+          source: "semantic_search",
+        },
+        onProgress: context.progressReporter,
+      });
+      return structuredClone(result) as Record<string, unknown>;
+    }
     case "estimate_research_scope": {
       const parsed = ToolArgsSchemas.estimate_research_scope.parse(normalizedArgs);
       if ((Array.isArray(parsed.workIds) && parsed.workIds.length > 0) || (Array.isArray(parsed.chunkIds) && parsed.chunkIds.length > 0)) {
@@ -4342,6 +4381,17 @@ function extractCompletedBriefing(
   result: Record<string, unknown>,
 ): { answer: string; citations: Citation[] } | null {
   if (
+    toolName === "semantic_deep_search"
+    && typeof result.briefing === "string"
+    && result.briefing.trim().length > 0
+  ) {
+    return {
+      answer: result.briefing.trim(),
+      citations: Array.isArray(result.citations) ? result.citations as Citation[] : [],
+    };
+  }
+
+  if (
     toolName === "run_workspace_task"
     && typeof result.briefing === "string"
     && result.briefing.trim().length > 0
@@ -5189,6 +5239,36 @@ function labelForToolCall(toolName: ToolName, args: Record<string, unknown>) {
 }
 
 function clientSafeToolResult(toolName: ToolName, result: Record<string, unknown>): Record<string, unknown> {
+  if (toolName === "semantic_deep_search") {
+    const chunks = Array.isArray(result.chunks) ? result.chunks : [];
+    return {
+      chunkCount: chunks.length,
+      totalChunksConsidered: typeof result.totalChunksConsidered === "number" ? result.totalChunksConsidered : undefined,
+      chunks: chunks.slice(0, 12).map((candidate) => {
+        if (!candidate || typeof candidate !== "object") {
+          return candidate;
+        }
+        const chunk = candidate as Record<string, unknown>;
+        return {
+          id: typeof chunk.id === "string" ? chunk.id : undefined,
+          workId: typeof chunk.workId === "string" ? chunk.workId : undefined,
+          chunkIndex: typeof chunk.chunkIndex === "number" ? chunk.chunkIndex : undefined,
+          score: typeof chunk.score === "number" ? chunk.score : undefined,
+          excerpt:
+            typeof chunk.excerpt === "string"
+              ? chunk.excerpt
+              : typeof chunk.text === "string"
+                ? chunk.text.slice(0, 280)
+                : undefined,
+          r2Key: typeof chunk.r2Key === "string" ? chunk.r2Key : undefined,
+        };
+      }),
+      citations: sanitizeCitationRecords(result.citations),
+      briefing: typeof result.briefing === "string" ? result.briefing : undefined,
+      error: typeof result.error === "string" ? result.error : undefined,
+    };
+  }
+
   if (toolName === "estimate_research_scope") {
     const probeWorks = Array.isArray(result.probeWorks) ? result.probeWorks : [];
     const metadataWorkEstimate = typeof result.metadataWorkEstimate === "number" ? result.metadataWorkEstimate : undefined;
@@ -5688,6 +5768,10 @@ function describePlannerAction(
 ) {
   const normalizedMessage = userMessage.trim();
   switch (toolName) {
+    case "semantic_deep_search":
+      return normalizedMessage
+        ? `I’m running the semantic loop for “${normalizedMessage}” and writing from the strongest passages it finds.`
+        : "I’m running the semantic loop now and writing from the strongest passages it finds.";
     case "estimate_research_scope":
       return normalizedMessage
         ? `I’m estimating how broad “${normalizedMessage}” is so I can choose the right time budget and search intensity.`
@@ -10158,6 +10242,7 @@ async function runOrchestrator(
 
       const plannerContext: PlannerContext = {
         userMessage: routedQuery,
+        mode: requestedAssistantMode(input),
         conversationHistory,
         turns: turn,
         toolHistory,
@@ -11989,6 +12074,72 @@ export function createApp(inputDeps: CreateAppInput) {
   app.get("/sessions/:sessionId/messages", handleListMessages);
   app.get("/api/v1/sessions/:sessionId/messages", handleListMessages);
 
+  const buildRunStatePayload = async (sessionId: string, runId: string) => {
+    const run = await deps.store.getRun(runId);
+    if (!run || run.sessionId !== sessionId) {
+      return null;
+    }
+    const toolCalls = await deps.store.listToolCalls(runId);
+    const [{ runtimeInstances, runEvents, runtimeIds }, persistedPlanState] = await Promise.all([
+      resolveRunRuntimeContext(deps, sessionId, run, toolCalls),
+      readPersistedPlanMessageStateForRun(deps, sessionId, runId),
+    ]);
+    const artifacts = await loadRunArtifactSummaries(deps, sessionId, runId, runtimeIds);
+    const toolTrace = runEvents.length > 0
+      ? persistedPlanState.toolTrace
+      : mergeRecoveredTraceWithExisting(
+          persistedPlanState.toolTrace,
+          buildRecoveredToolTrace(toolCalls),
+        );
+
+    return {
+      run,
+      toolCalls,
+      runEvents,
+      toolTrace,
+      runtimeInstances,
+      artifacts,
+    };
+  };
+
+  const handleAssistantSessionBootstrap = async (c: Context) => {
+    const sessionId = c.req.param("sessionId") ?? "";
+    const session = await deps.store.getSession(sessionId);
+    if (!session) {
+      return c.json({ error: "Session not found." }, 404);
+    }
+    if (!(await canAccessSession(c, session))) {
+      return c.json({ error: "Not authorized for this session." }, 403);
+    }
+
+    const user = await resolveUser(c);
+    if (!user) {
+      return c.json({ error: "Authentication required." }, deps.auth?.isConfigured() ? 401 : 400);
+    }
+
+    const [sessions, messages, runs] = await Promise.all([
+      deps.store.listSessions(user.id),
+      deps.store.listMessages(sessionId),
+      deps.store.listRuns(sessionId),
+    ]);
+    const preferredRun =
+      runs.find((run) => run.status === "running" || run.status === "queued")
+      ?? [...runs].sort((left, right) => right.startedAt.localeCompare(left.startedAt))[0]
+      ?? null;
+    const runState = preferredRun ? await buildRunStatePayload(sessionId, preferredRun.id) : null;
+
+    return c.json({
+      sessionId,
+      sessions,
+      messages,
+      runs,
+      runState: runState ?? undefined,
+    });
+  };
+
+  app.get("/sessions/:sessionId/bootstrap", handleAssistantSessionBootstrap);
+  app.get("/api/v1/sessions/:sessionId/bootstrap", handleAssistantSessionBootstrap);
+
   app.get("/sessions/:sessionId/runs", async (c) => {
     const sessionId = c.req.param("sessionId");
     const session = await deps.store.getSession(sessionId);
@@ -12026,31 +12177,11 @@ export function createApp(inputDeps: CreateAppInput) {
       return c.json({ error: "Not authorized for this session." }, 403);
     }
 
-    const run = await deps.store.getRun(runId);
-    if (!run || run.sessionId !== sessionId) {
+    const payload = await buildRunStatePayload(sessionId, runId);
+    if (!payload) {
       return c.json({ error: "Run not found." }, 404);
     }
-    const toolCalls = await deps.store.listToolCalls(runId);
-    const [{ runtimeInstances, runEvents, runtimeIds }, persistedPlanState] = await Promise.all([
-      resolveRunRuntimeContext(deps, sessionId, run, toolCalls),
-      readPersistedPlanMessageStateForRun(deps, sessionId, runId),
-    ]);
-    const artifacts = await loadRunArtifactSummaries(deps, sessionId, runId, runtimeIds);
-    const toolTrace = runEvents.length > 0
-      ? persistedPlanState.toolTrace
-      : mergeRecoveredTraceWithExisting(
-          persistedPlanState.toolTrace,
-          buildRecoveredToolTrace(toolCalls),
-        );
-
-    return c.json({
-      run,
-      toolCalls,
-      runEvents,
-      toolTrace,
-      runtimeInstances,
-      artifacts,
-    });
+    return c.json(payload);
   });
 
   app.get("/sessions/:sessionId/runs/:runId/document", async (c) => {
@@ -12101,31 +12232,11 @@ export function createApp(inputDeps: CreateAppInput) {
       return c.json({ error: "Not authorized for this session." }, 403);
     }
 
-    const run = await deps.store.getRun(runId);
-    if (!run || run.sessionId !== sessionId) {
+    const payload = await buildRunStatePayload(sessionId, runId);
+    if (!payload) {
       return c.json({ error: "Run not found." }, 404);
     }
-    const toolCalls = await deps.store.listToolCalls(runId);
-    const [{ runtimeInstances, runEvents, runtimeIds }, persistedPlanState] = await Promise.all([
-      resolveRunRuntimeContext(deps, sessionId, run, toolCalls),
-      readPersistedPlanMessageStateForRun(deps, sessionId, runId),
-    ]);
-    const artifacts = await loadRunArtifactSummaries(deps, sessionId, runId, runtimeIds);
-    const toolTrace = runEvents.length > 0
-      ? persistedPlanState.toolTrace
-      : mergeRecoveredTraceWithExisting(
-          persistedPlanState.toolTrace,
-          buildRecoveredToolTrace(toolCalls),
-        );
-
-    return c.json({
-      run,
-      toolCalls,
-      runEvents,
-      toolTrace,
-      runtimeInstances,
-      artifacts,
-    });
+    return c.json(payload);
   });
 
   app.get("/api/v1/sessions/:sessionId/runs/:runId/document", async (c) => {

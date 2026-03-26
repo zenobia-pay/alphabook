@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 export const PlatformToolNameSchema = z.enum([
+  "semantic_deep_search",
   "estimate_research_scope",
   "search_documents",
   "get_document_metadata",
@@ -151,6 +152,11 @@ export const CreateDocumentWorkspaceArgsSchema = z.object({
 });
 
 export const PlatformToolArgsSchemas = {
+  semantic_deep_search: z.object({
+    query: z.string().min(1),
+    documentIds: z.array(z.string()).max(80).optional(),
+    maxResults: z.number().int().positive().max(12).optional(),
+  }),
   estimate_research_scope: EstimateResearchScopeDocumentArgsSchema,
   search_documents: SearchDocumentsArgsSchema,
   get_document_metadata: GetDocumentMetadataArgsSchema,
@@ -171,6 +177,7 @@ export function toLegacyToolName(toolName: PlatformToolName): string {
 
 export function toPlatformToolName(toolName: string): PlatformToolName | null {
   switch (toolName) {
+    case "semantic_deep_search":
     case "estimate_research_scope":
     case "create_workspace":
     case "run_workspace_task":
@@ -191,6 +198,13 @@ export function toPlatformToolName(toolName: string): PlatformToolName | null {
 
 export function toPlatformToolArgs(toolName: string, args: Record<string, unknown>) {
   switch (toolName) {
+    case "semantic_deep_search": {
+      const { workIds, ...rest } = args;
+      return PlatformToolArgsSchemas.semantic_deep_search.parse({
+        ...rest,
+        documentIds: workIds,
+      });
+    }
     case "search_works":
       return SearchDocumentsArgsSchema.parse(args);
     case "get_work_metadata": {
@@ -235,6 +249,13 @@ export function toPlatformToolArgs(toolName: string, args: Record<string, unknow
 
 export function toLegacyToolArgs(toolName: string, args: Record<string, unknown>) {
   switch (toolName) {
+    case "semantic_deep_search": {
+      const { documentIds, ...rest } = PlatformToolArgsSchemas.semantic_deep_search.parse(args);
+      return {
+        ...rest,
+        ...(documentIds ? { workIds: documentIds } : {}),
+      };
+    }
     case "search_documents":
       return SearchDocumentsArgsSchema.parse(args);
     case "get_document_metadata": {

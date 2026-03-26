@@ -399,19 +399,6 @@ async function loadAssistantDocumentBootstrap(request: Request, env: Env, url: U
   };
 }
 
-function pickPreferredRun(runs: unknown[]) {
-  const normalized = runs.filter((run): run is Record<string, unknown> => Boolean(run) && typeof run === "object");
-  const active = normalized.find((run) => run.status === "running" || run.status === "queued");
-  if (active) {
-    return active;
-  }
-  return [...normalized].sort((left, right) => {
-    const leftStartedAt = typeof left.startedAt === "string" ? left.startedAt : "";
-    const rightStartedAt = typeof right.startedAt === "string" ? right.startedAt : "";
-    return rightStartedAt.localeCompare(leftStartedAt);
-  })[0] ?? null;
-}
-
 async function loadAssistantSessionBootstrap(request: Request, env: Env, url: URL): Promise<AssistantSessionBootstrapPayload | null> {
   if (url.searchParams.get("view") !== "assistant") {
     return null;
@@ -421,64 +408,36 @@ async function loadAssistantSessionBootstrap(request: Request, env: Env, url: UR
     return null;
   }
 
-  const [sessionsResponse, messagesResponse, runsResponse] = await Promise.all([
-    fetchApiJson(request, env, "/sessions"),
-    fetchApiJson(request, env, `/sessions/${encodeURIComponent(sessionId)}/messages`),
-    fetchApiJson(request, env, `/sessions/${encodeURIComponent(sessionId)}/runs`),
-  ]);
-
-  const firstError = !messagesResponse.ok
-    ? messagesResponse
-    : !runsResponse.ok
-      ? runsResponse
-      : !sessionsResponse.ok
-        ? sessionsResponse
-        : null;
-  if (firstError) {
+  const bootstrapResponse = await fetchApiJson(request, env, `/sessions/${encodeURIComponent(sessionId)}/bootstrap`);
+  if (!bootstrapResponse.ok) {
     const errorText =
-      firstError.json && typeof firstError.json === "object" && typeof (firstError.json as { error?: unknown }).error === "string"
-        ? (firstError.json as { error: string }).error
+      bootstrapResponse.json && typeof bootstrapResponse.json === "object" && typeof (bootstrapResponse.json as { error?: unknown }).error === "string"
+        ? (bootstrapResponse.json as { error: string }).error
         : "We couldn't load this conversation.";
     return {
       sessionId,
       error: errorText,
-      errorStatus: firstError.status,
+      errorStatus: bootstrapResponse.status,
     };
   }
 
-  const runs =
-    runsResponse.json && typeof runsResponse.json === "object" && Array.isArray((runsResponse.json as { runs?: unknown[] }).runs)
-      ? (runsResponse.json as { runs: unknown[] }).runs
-      : [];
-  const preferredRun = pickPreferredRun(runs);
-  const preferredRunId = preferredRun && typeof preferredRun.id === "string" ? preferredRun.id : null;
-  const runStateResponse = preferredRunId
-    ? await fetchApiJson(request, env, `/sessions/${encodeURIComponent(sessionId)}/runs/${encodeURIComponent(preferredRunId)}`)
-    : null;
-  if (runStateResponse && !runStateResponse.ok) {
-    const errorText =
-      runStateResponse.json && typeof runStateResponse.json === "object" && typeof (runStateResponse.json as { error?: unknown }).error === "string"
-        ? (runStateResponse.json as { error: string }).error
-        : "We couldn't load this conversation.";
-    return {
-      sessionId,
-      error: errorText,
-      errorStatus: runStateResponse.status,
-    };
-  }
+  const payload = bootstrapResponse.json && typeof bootstrapResponse.json === "object"
+    ? bootstrapResponse.json as {
+      sessionId?: unknown;
+      sessions?: unknown[];
+      messages?: unknown[];
+      runs?: unknown[];
+      runState?: unknown;
+    }
+    : {};
+  const runs = Array.isArray(payload.runs) ? payload.runs : [];
 
   return {
     sessionId,
-    sessions:
-      sessionsResponse.json && typeof sessionsResponse.json === "object" && Array.isArray((sessionsResponse.json as { sessions?: unknown[] }).sessions)
-        ? (sessionsResponse.json as { sessions: unknown[] }).sessions
-        : [],
-    messages:
-      messagesResponse.json && typeof messagesResponse.json === "object" && Array.isArray((messagesResponse.json as { messages?: unknown[] }).messages)
-        ? (messagesResponse.json as { messages: unknown[] }).messages
-        : [],
+    sessions: Array.isArray(payload.sessions) ? payload.sessions : [],
+    messages: Array.isArray(payload.messages) ? payload.messages : [],
     runs,
-    runState: runStateResponse?.json ?? undefined,
+    runState: payload.runState,
   };
 }
 

@@ -1,8 +1,11 @@
 import process from "node:process";
 import crypto from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { Agent as HttpsAgent } from "node:https";
-import { dirname } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 
 import { DeleteObjectsCommand, GetObjectCommand, S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
@@ -35,6 +38,8 @@ interface IngestContext {
   db: DbClient;
   r2: S3Client;
   r2Bucket: string;
+  vectorIndexName: string | null;
+  vectorWranglerConfig: string;
 }
 
 interface MirrorBackfillOptions {
@@ -122,6 +127,8 @@ type BookArtifactBundle = {
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+const execFileAsync = promisify(execFile);
 
 function normalizeEmbedding(values: number[]): number[] {
   const magnitude = Math.sqrt(values.reduce((sum, value) => sum + value * value, 0));
@@ -274,6 +281,44 @@ async function embedChunksWithGoogle(chunks: string[]): Promise<number[][] | nul
   }
 
   return embeddings;
+}
+
+async function upsertChunkVectors(
+  context: IngestContext,
+  vectors: Array<{
+    id: string;
+    values: number[];
+    metadata: Record<string, unknown>;
+  }>,
+) {
+  if (!context.vectorIndexName || vectors.length === 0) {
+    return;
+  }
+  const tempDir = await mkdtemp(join(tmpdir(), "alphabook-vectorize-"));
+  const payloadPath = join(tempDir, "vectors.ndjson");
+  try {
+    await writeFile(
+      payloadPath,
+      `${vectors.map((vector) => JSON.stringify(vector)).join("\n")}\n`,
+      "utf8",
+    );
+    await execFileAsync("npx", [
+      "wrangler",
+      "vectorize",
+      "upsert",
+      context.vectorIndexName,
+      "--file",
+      payloadPath,
+      "--config",
+      context.vectorWranglerConfig,
+    ], {
+      cwd: process.cwd(),
+      env: process.env,
+      maxBuffer: 20 * 1024 * 1024,
+    });
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
 }
 
 function uniqueStrings(values: Array<string | null | undefined>) {
@@ -1605,6 +1650,7 @@ async function persistIngestedWork(
   const cleanText = prepared.cleanText;
   const chunks = prepared.chunks;
   const chunkEmbeddings = await embedChunks(chunks);
+  const chunkIds = chunks.map(() => crypto.randomUUID());
   const authors = prepared.authors;
   const subjects = prepared.subjects;
 
@@ -1627,7 +1673,7 @@ async function persistIngestedWork(
   const chunksPayload = chunks
     .map((chunk, index) =>
       JSON.stringify({
-        id: crypto.randomUUID(),
+        id: chunkIds[index],
         work_id: workId,
         chunk_index: index,
         text: chunk,
@@ -1719,7 +1765,7 @@ async function persistIngestedWork(
           metadata_json = EXCLUDED.metadata_json
       `,
       [
-        crypto.randomUUID(),
+        chunkIds[index]!,
         workId,
         index,
         chunk,
@@ -1734,6 +1780,24 @@ async function persistIngestedWork(
       ],
     );
   }
+
+  await upsertChunkVectors(
+    context,
+    chunkEmbeddings
+      ? chunkEmbeddings.map((values, index) => ({
+          id: chunkIds[index]!,
+          values,
+          metadata: {
+            workId,
+            chunkIndex: index,
+            adapterId: source.adapterId,
+            externalId: source.externalId,
+            language: source.language ?? null,
+            rightsStatus: source.rightsStatus ?? null,
+          },
+        }))
+      : [],
+  );
 
   await syncAuthors(context, workId, authors);
   await syncSubjects(context, workId, subjects);
@@ -2733,6 +2797,8 @@ async function buildContext(): Promise<IngestContext> {
       databaseName: process.env.D1_DATABASE_NAME ?? "alphabook-app",
       wranglerConfig: process.env.D1_WRANGLER_CONFIG ?? "apps/orchestrator-worker/wrangler.toml",
     }),
+    vectorIndexName: process.env.VECTOR_INDEX_NAME ?? "alphabook-semantic",
+    vectorWranglerConfig: process.env.D1_WRANGLER_CONFIG ?? "apps/orchestrator-worker/wrangler.toml",
     r2Bucket,
     r2: new S3Client({
       region: "auto",

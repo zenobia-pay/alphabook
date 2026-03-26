@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 export const ToolNameSchema = z.enum([
+  "semantic_deep_search",
   "estimate_research_scope",
   "search_works",
   "get_work_metadata",
@@ -24,6 +25,12 @@ export const CitationSchema = z.object({
 });
 
 export type Citation = z.infer<typeof CitationSchema>;
+
+export const SemanticDeepSearchArgsSchema = z.object({
+  query: z.string().min(1),
+  workIds: z.array(z.string()).max(80).optional(),
+  maxResults: z.number().int().positive().max(12).optional(),
+});
 
 export const EstimateResearchScopeArgsSchema = z.object({
   query: z.string().min(1),
@@ -103,6 +110,7 @@ export const DestroyWorkspaceArgsSchema = z.object({
 });
 
 export const ToolArgsSchemas = {
+  semantic_deep_search: SemanticDeepSearchArgsSchema,
   estimate_research_scope: EstimateResearchScopeArgsSchema,
   search_works: SearchWorksArgsSchema,
   get_work_metadata: GetWorkMetadataArgsSchema,

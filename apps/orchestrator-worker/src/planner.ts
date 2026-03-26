@@ -14,6 +14,7 @@ import { parseModelJsonObject } from "./json";
 
 export interface PlannerContext {
   userMessage: string;
+  mode?: "semantic" | "comprehensive";
   conversationHistory: Array<{
     role: "user" | "assistant" | "system" | "tool";
     content: string;
@@ -45,6 +46,7 @@ type ResearchIntent =
   | "counterexample_search";
 
 const VALID_TOOL_NAMES = new Set<ToolName>([
+  "semantic_deep_search",
   "estimate_research_scope",
   "search_works",
   "get_work_metadata",
@@ -87,6 +89,20 @@ function summarizePlannerValue(value: unknown, depth = 0): unknown {
 
 function summarizePlannerToolResult(toolName: ToolName, result: Record<string, unknown>) {
   switch (toolName) {
+    case "semantic_deep_search": {
+      const chunks = Array.isArray(result.chunks) ? result.chunks as Array<Record<string, unknown>> : [];
+      return {
+        chunkCount: chunks.length,
+        totalChunksConsidered: typeof result.totalChunksConsidered === "number" ? result.totalChunksConsidered : null,
+        briefingPreview: typeof result.briefing === "string" ? truncateForModel(result.briefing, 220) : null,
+        chunks: chunks.slice(0, 6).map((chunk) => ({
+          id: typeof chunk.id === "string" ? chunk.id : null,
+          workId: typeof chunk.workId === "string" ? chunk.workId : null,
+          chunkIndex: typeof chunk.chunkIndex === "number" ? chunk.chunkIndex : null,
+          excerpt: typeof chunk.excerpt === "string" ? truncateForModel(chunk.excerpt, 180) : null,
+        })),
+      };
+    }
     case "estimate_research_scope":
       return {
         scopeMode: typeof result.scopeMode === "string" ? result.scopeMode : null,
@@ -205,6 +221,7 @@ function summarizePlannerToolResult(toolName: ToolName, result: Record<string, u
 function summarizePlannerContext(context: PlannerContext) {
   return {
     userMessage: truncateForModel(context.userMessage, 500),
+    mode: context.mode ?? "semantic",
     turns: context.turns,
     workScope: context.workScope?.slice(0, 12) ?? [],
     conversationHistory: context.conversationHistory.map((entry) => ({
@@ -719,6 +736,18 @@ function buildWorkspaceTaskSpec(context: PlannerContext, workIds: string[], chun
 
 export class FallbackPlanner implements Planner {
   async decide(context: PlannerContext): Promise<PlannerDecision> {
+    if (context.mode === "semantic") {
+      return {
+        type: "tool_call",
+        tool_name: "semantic_deep_search",
+        rationale: "I’m running the semantic retrieval loop directly against the vector index and writing the answer from the strongest passages.",
+        args: {
+          query: context.userMessage,
+          ...(context.workScope?.length ? { workIds: context.workScope.slice(0, 80) } : {}),
+          maxResults: 8,
+        },
+      };
+    }
     const broadCorpusQuery = isBroadCorpusQuery(context);
     const classifyFailure = classifyFailureMessage(context);
     const estimate = scopeEstimate(context);
@@ -915,6 +944,18 @@ export class OpenAIPlanner implements Planner {
   ) {}
 
   async decide(context: PlannerContext): Promise<PlannerDecision> {
+    if (context.mode === "semantic") {
+      return {
+        type: "tool_call",
+        tool_name: "semantic_deep_search",
+        rationale: "I’m running the semantic retrieval loop directly against the vector index and writing the answer from the strongest passages.",
+        args: {
+          query: context.userMessage,
+          ...(context.workScope?.length ? { workIds: context.workScope.slice(0, 80) } : {}),
+          maxResults: 8,
+        },
+      };
+    }
     const modelContext = summarizePlannerContext(context);
     const broadCorpusQuery = isBroadCorpusQuery(context);
     const classifyFailure = classifyFailureMessage(context);

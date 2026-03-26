@@ -12,6 +12,7 @@ import {
   WorkListResponseSchema,
   WorkSourceResponseSchema,
   type Citation,
+  type ChatSessionSummary,
   type CurrentUserResponse,
   type FollowProfileResponse,
   type MessageRecord,
@@ -148,6 +149,19 @@ export type RunStateRecord = {
   artifacts?: RunArtifactRecord[];
 };
 
+export type HydratedMessageRecord = MessageRecord & {
+  citations: Citation[];
+  toolCalls?: Array<Record<string, unknown>>;
+};
+
+export type AssistantSessionBootstrapRecord = {
+  sessionId: string;
+  sessions?: ChatSessionSummary[];
+  messages?: HydratedMessageRecord[];
+  runs?: SessionRunRecord[];
+  runState?: RunStateRecord;
+};
+
 async function ensureOk(response: Response): Promise<Response> {
   if (!response.ok) {
     const fallback = response.status >= 500
@@ -177,6 +191,21 @@ export async function fetchMessages(sessionId: string) {
     }),
   );
   return MessageListResponseSchema.parse(await response.json()).messages.map(hydrateMessage);
+}
+
+export async function fetchAssistantSessionBootstrap(sessionId: string): Promise<AssistantSessionBootstrapRecord> {
+  const response = await ensureOk(
+    await fetch(`${API_BASE}/sessions/${sessionId}/bootstrap`, {
+      credentials: "include",
+    }),
+  );
+  const payload = await response.json() as AssistantSessionBootstrapRecord;
+  return {
+    ...payload,
+    messages: Array.isArray(payload.messages) ? payload.messages.map(hydrateMessage) : [],
+    sessions: Array.isArray(payload.sessions) ? payload.sessions : [],
+    runs: Array.isArray(payload.runs) ? payload.runs : [],
+  };
 }
 
 export async function fetchRuns(sessionId: string): Promise<SessionRunRecord[]> {

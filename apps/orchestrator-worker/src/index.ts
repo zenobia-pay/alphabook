@@ -14,8 +14,10 @@ import { OpenAIPlanner } from "./planner";
 import { CloudflareR2Store } from "./r2";
 import { OpenAIRouter } from "./router";
 import { FlyMachinesRuntimeGateway, HttpRuntimeGateway } from "./runtime";
+import { AlphaloopSemanticSearchService } from "./semantic-search";
 import { D1AppStore } from "./d1-store";
 import { OpenAISynthesizer } from "./synthesizer";
+import { CloudflareVectorizeIndex } from "./vectorize";
 
 export interface WorkersAiBinding {
   run<ModelInput extends Record<string, unknown>, ModelOutput = unknown>(
@@ -192,6 +194,16 @@ function buildFetchHandler(env: Env) {
     buildPlannerPrompt(implementation),
   );
   const embedder = resolveEmbedder(env, billing);
+  const semanticSearch = env.VECTOR_INDEX
+    ? new AlphaloopSemanticSearchService({
+        store,
+        embedder,
+        vectorIndex: new CloudflareVectorizeIndex(env.VECTOR_INDEX as never),
+        openAIApiKey: env.OPENAI_API_KEY,
+        openAIModel: env.OPENAI_SYNTH_MODEL ?? env.OPENAI_MODEL ?? "gpt-5.2",
+        googleAIApiKey: env.GOOGLE_AI_API_KEY,
+      })
+    : undefined;
   const synthesizer = new OpenAISynthesizer(
     env.OPENAI_API_KEY,
     env.OPENAI_SYNTH_MODEL ?? env.OPENAI_MODEL ?? "gpt-5.2",
@@ -205,6 +217,7 @@ function buildFetchHandler(env: Env) {
     billing,
     router,
     planner,
+    semanticSearch,
     embedder,
     synthesizer,
     blobStore,

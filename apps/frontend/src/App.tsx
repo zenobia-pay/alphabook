@@ -9,7 +9,7 @@ import { ChevronsLeft, ChevronsRight, Link2, LoaderCircle, MessageSquarePlus, X 
 
 import { ChatSessionSummarySchema, getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type NotificationRecord, type ProfileBookStat, type ProfileFacetStat, type ProfileQueryStat, type PublicProfileResponse, type UserProfile, type UserProfileStats, type WorkDetail, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
-import { ApiError, buildSignInUrl, buildSignOutUrl, cancelRun, claimGuestProfile, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchAssistantDocumentState, fetchCurrentUser, fetchMessages, fetchNotifications, fetchProfile, fetchProfileStats, fetchRunState, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, getErrorMessage, markNotificationRead, queryAdminAnalytics, sendAnalyticsEvent, streamChat, streamRun, unfollowProfile, type PersistedRunEventRecord, type RunArtifactRecord, type SessionRunRecord } from "./api";
+import { ApiError, buildSignInUrl, buildSignOutUrl, cancelRun, claimGuestProfile, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchAssistantDocumentState, fetchAssistantSessionBootstrap, fetchCurrentUser, fetchMessages, fetchNotifications, fetchProfile, fetchProfileStats, fetchRunState, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, getErrorMessage, markNotificationRead, queryAdminAnalytics, sendAnalyticsEvent, streamChat, streamRun, unfollowProfile, type PersistedRunEventRecord, type RunArtifactRecord, type SessionRunRecord } from "./api";
 import { Thread } from "./components/assistant-ui/thread";
 import { Avatar, AvatarFallback, AvatarImage } from "./components/ui/avatar";
 import { Button } from "./components/ui/button";
@@ -2168,6 +2168,19 @@ function summarizeToolSentence({
       : 0;
 
   switch (toolName) {
+    case "semantic_deep_search":
+      if (state === "running") {
+        return query
+          ? `Running the semantic loop for ${query}.`
+          : "Running the semantic loop.";
+      }
+      if (state === "error") {
+        return `Semantic search failed${errorMessage ? `: ${errorMessage}` : "."}`;
+      }
+      if (resultChunkCount === 0) {
+        return "Semantic search did not find strong passages yet.";
+      }
+      return `Semantic search found ${pluralize(resultChunkCount, "ranked passage")}.`;
     case "search_works":
       {
         const searchIntent = describeMetadataSearchIntent(args);
@@ -6094,9 +6107,33 @@ export default function App() {
     void (async () => {
       try {
         setMessagesLoading(true);
-        const nextMessages = await fetchMessages(selectedSessionId);
-        const hydrated = nextMessages.map(hydrateStoredMessage);
-        setMessages((current) => mergeFetchedMessages(current, hydrated, selectedSessionId));
+        const bootstrap = await fetchAssistantSessionBootstrap(selectedSessionId);
+        const nextRuns = Array.isArray(bootstrap.runs) ? bootstrap.runs : [];
+        const preferredRun =
+          nextRuns.find((run) => run.status === "running" || run.status === "queued")
+          ?? [...nextRuns].sort((left, right) => right.startedAt.localeCompare(left.startedAt))[0]
+          ?? null;
+        const nextRunId = preferredRun?.id ?? null;
+        const hydrated = Array.isArray(bootstrap.messages)
+          ? bootstrap.messages.map(hydrateStoredMessage)
+          : [];
+        const withTrace =
+          bootstrap.runState && Array.isArray(bootstrap.runState.toolTrace) && nextRunId
+            ? mergePersistedToolTrace(hydrated, nextRunId, bootstrap.runState.toolTrace)
+            : hydrated;
+        const merged =
+          bootstrap.runState && Array.isArray(bootstrap.runState.runEvents) && bootstrap.runState.runEvents.length > 0 && nextRunId
+            ? mergePersistedRunEvents(withTrace, nextRunId, bootstrap.runState.runEvents)
+            : withTrace;
+        setSessions((current) => (
+          Array.isArray(bootstrap.sessions) && bootstrap.sessions.length > 0
+            ? bootstrap.sessions
+            : current
+        ));
+        setSessionRuns(nextRuns);
+        setRecoveredActiveRunId(nextRunId);
+        setRunArtifacts(Array.isArray(bootstrap.runState?.artifacts) ? bootstrap.runState.artifacts : []);
+        setMessages((current) => mergeFetchedMessages(current, merged, selectedSessionId));
       } catch (error) {
         setLoadError(getErrorMessage(error, "We couldn't load this conversation."));
       } finally {
