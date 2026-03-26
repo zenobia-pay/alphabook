@@ -4957,7 +4957,13 @@ async function finalizeStaleRun(
   const activeRun = activeRuns?.get(run.id) ?? null;
   if ((!runtimeId || !deps.runtimeGateway.getWorkspaceTaskStatus) && !activeRun) {
     const runningDurationMs = Date.now() - Date.parse(runningToolCall.startedAt);
-    if (runningDurationMs > ORPHANED_RUN_GRACE_MS) {
+    const persistedRawLog = await loadPersistedRawRunLog(deps, session.id, run.id);
+    const latestRawActivityMs = persistedRawLog.reduce<number>((latest, entry) => {
+      const ts = typeof entry?.timestamp === "string" ? Date.parse(entry.timestamp) : Number.NaN;
+      return Number.isFinite(ts) ? Math.max(latest, ts) : latest;
+    }, 0);
+    const rawLogIdleMs = latestRawActivityMs > 0 ? Date.now() - latestRawActivityMs : Number.POSITIVE_INFINITY;
+    if (runningDurationMs > ORPHANED_RUN_GRACE_MS && rawLogIdleMs > ORPHANED_RUN_GRACE_MS) {
       const failedResult = {
         ok: false,
         error: `${labelForToolCall(runningToolCall.toolName, runningToolCall.argsJson)} stopped unexpectedly before it finished.`,
