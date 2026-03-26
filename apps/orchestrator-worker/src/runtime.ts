@@ -190,6 +190,13 @@ function normalizeSpriteProgressMessage(event: Record<string, unknown>, shard: S
   ) {
     return null;
   }
+  if (
+    /^[\w./-]+\.(?:mjs|json|jsonl|txt|md)$/iu.test(rawMessage)
+    || /^(?:exec|search|load|cat|rg|grep|sed|awk|jq|node|python3)$/iu.test(rawMessage)
+    || /^[0-9a-f]{8}(?:[-\s][0-9a-f]{4}){3}[-\s][0-9a-f]{12}$/iu.test(rawMessage)
+  ) {
+    return null;
+  }
   if (/ready to run\.$/iu.test(rawMessage)) {
     return null;
   }
@@ -469,6 +476,10 @@ export class StubRuntimeGateway implements RuntimeToolGateway {
   async cleanupStaleSpriteMachines() {
     return 0;
   }
+
+  async listSpriteSessionMachines() {
+    return [];
+  }
 }
 
 export class HttpRuntimeGateway implements RuntimeToolGateway {
@@ -483,6 +494,10 @@ export class HttpRuntimeGateway implements RuntimeToolGateway {
 
   async cleanupStaleSpriteMachines() {
     return 0;
+  }
+
+  async listSpriteSessionMachines() {
+    return [];
   }
 
   private async request(path: string, init: RequestInit = {}) {
@@ -1334,6 +1349,24 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     });
 
     return deletedIds.size;
+  }
+
+  async listSpriteSessionMachines(sessionId: string) {
+    const machines = await this.listMachines(true).catch(() => [] as FlyMachine[]);
+    return machines
+      .filter((machine) => isMachineForSession(machine, sessionId) && isSpriteRuntimeMachine(machine))
+      .map((machine) => {
+        const metadata = flyMachineMetadata(machine);
+        return {
+          machineId: machine.id,
+          name: machine.name ?? null,
+          state: machine.state ?? null,
+          updatedAt: machine.updated_at ?? null,
+          runtimeMode: metadata["alphabook.runtime_mode"] ?? null,
+          shardId: metadata["alphabook.shard_id"] ?? null,
+          implementationId: metadata["alphabook.implementation_id"] ?? null,
+        };
+      });
   }
 
   private async buildWorkspacePlan(

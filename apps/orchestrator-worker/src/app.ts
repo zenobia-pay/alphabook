@@ -40,6 +40,7 @@ export interface RuntimeToolGateway {
   runWorkspaceTask(args: Record<string, unknown>): Promise<Record<string, unknown>>;
   runSpriteFanoutResearch?(args: Record<string, unknown>): Promise<Record<string, unknown>>;
   cleanupStaleSpriteMachines?(sessionId?: string): Promise<number>;
+  listSpriteSessionMachines?(sessionId: string): Promise<Array<Record<string, unknown>>>;
   cancelWorkspaceTask?(args: Record<string, unknown>): Promise<Record<string, unknown>>;
   getWorkspaceTaskStatus?(args: Record<string, unknown>): Promise<Record<string, unknown>>;
   readWorkspaceFile(args: Record<string, unknown>): Promise<Record<string, unknown>>;
@@ -130,6 +131,7 @@ const VERIFICATION_CODE_WORDS = [
 const DEFAULT_SESSION_TITLE_MODEL = "@cf/zai-org/glm-4.7-flash";
 const ORPHANED_RUN_GRACE_MS = 30_000;
 const PLANNER_STALL_GRACE_MS = HARD_LIMITS.MAX_TOOL_TIMEOUT_SECONDS * 1000 + 30_000;
+const SPRITE_ORPHANED_RUN_GRACE_MS = 90_000;
 
 function randomToken(length = 24) {
   const bytes = crypto.getRandomValues(new Uint8Array(length));
@@ -4844,6 +4846,18 @@ async function finalizeStaleRun(
   }
 
   const runtimeId = runtimeIdFromToolCall(runningToolCall);
+  if (runningToolCall.toolName === "run_workspace_task" && toolCallUsesSpriteFanout(runningToolCall)) {
+    const reconciledSpriteRun = await reconcileOrphanedSpriteFanoutRun(
+      deps,
+      session,
+      run,
+      runningToolCall,
+      cancelLiveExecution,
+    );
+    if (reconciledSpriteRun) {
+      return reconciledSpriteRun;
+    }
+  }
   if (!runtimeId || !deps.runtimeGateway.getWorkspaceTaskStatus) {
     return run;
   }
@@ -5785,6 +5799,221 @@ function toolCallUsesSpriteFanout(toolCall: Awaited<ReturnType<AppStore["listToo
       || (taskSpec as Record<string, unknown>).mode === "sprite_aggregate"
     ),
   );
+}
+
+function spriteShardLifecycleTerminal(state: string | null | undefined) {
+  return state === "completed" || state === "failed";
+}
+
+function runtimeLifecycleTerminal(status: string | null | undefined) {
+  return status === "destroyed" || status === "failed" || status === "expired";
+}
+
+type SpriteShardLifecycleSummary = {
+  shardId: string;
+  label: string;
+  shardIndex: number | null;
+  totalShards: number | null;
+  bookCount: number | null;
+  runtimeId: string | null;
+  state: string;
+};
+
+export function summarizeSpriteFanoutLifecycle(
+  runEvents: Awaited<ReturnType<AppStore["listRunEvents"]>>,
+  runtimeInstances: Awaited<ReturnType<AppStore["listRuntimeInstances"]>>,
+  runStartedAt: string,
+) {
+  const shardStates = new Map<string, SpriteShardLifecycleSummary>();
+  let aggregateState: "idle" | "starting" | "completed" | "failed" = "idle";
+
+  for (const event of runEvents) {
+    if (event.event === "sprite.aggregate.started") {
+      aggregateState = "starting";
+      continue;
+    }
+    if (event.event === "sprite.aggregate.completed") {
+      aggregateState = "completed";
+      continue;
+    }
+    if (event.event === "sprite.aggregate.failed") {
+      aggregateState = "failed";
+      continue;
+    }
+    if (!event.event.startsWith("sprite.shard.")) {
+      continue;
+    }
+    const payload = event.dataJson ?? {};
+    const shardId = typeof payload.shardId === "string" ? payload.shardId : null;
+    if (!shardId) {
+      continue;
+    }
+    const previous = shardStates.get(shardId);
+    shardStates.set(shardId, {
+      shardId,
+      label:
+        typeof payload.label === "string" && payload.label.trim().length > 0
+          ? payload.label
+          : previous?.label ?? shardId,
+      shardIndex:
+        typeof payload.shardIndex === "number"
+          ? payload.shardIndex
+          : previous?.shardIndex ?? null,
+      totalShards:
+        typeof payload.totalShards === "number"
+          ? payload.totalShards
+          : previous?.totalShards ?? null,
+      bookCount:
+        typeof payload.bookCount === "number"
+          ? payload.bookCount
+          : previous?.bookCount ?? null,
+      runtimeId:
+        typeof payload.runtimeId === "string"
+          ? payload.runtimeId
+          : previous?.runtimeId ?? null,
+      state:
+        typeof payload.state === "string" && payload.state.trim().length > 0
+          ? payload.state
+          : previous?.state ?? event.event.replace(/^sprite\.shard\./u, ""),
+    });
+  }
+
+  const spriteRuntimes = runtimeInstances.filter((instance) =>
+    createdWithinRunWindow(instance.createdAt, runStartedAt) && runtimeLooksSpriteRelated(instance),
+  );
+  const runtimesById = new Map(spriteRuntimes.map((instance) => [instance.runtimeId, instance] as const));
+  for (const instance of spriteRuntimes) {
+    const manifestTaskContext = instance.manifestJson && typeof instance.manifestJson === "object"
+      ? (instance.manifestJson as Record<string, unknown>).taskContext
+      : null;
+    const spriteShard = manifestTaskContext && typeof manifestTaskContext === "object"
+      ? (manifestTaskContext as Record<string, unknown>).spriteShard
+      : null;
+    if (!spriteShard || typeof spriteShard !== "object") {
+      continue;
+    }
+    const shardRecord = spriteShard as Record<string, unknown>;
+    const shardId = typeof shardRecord.shardId === "string" ? shardRecord.shardId : null;
+    if (!shardId || shardStates.has(shardId)) {
+      continue;
+    }
+    shardStates.set(shardId, {
+      shardId,
+      label:
+        typeof shardRecord.label === "string" && shardRecord.label.trim().length > 0
+          ? shardRecord.label
+          : shardId,
+      shardIndex: typeof shardRecord.index === "number" ? shardRecord.index : null,
+      totalShards: typeof shardRecord.totalShards === "number" ? shardRecord.totalShards : null,
+      bookCount: typeof shardRecord.bookCount === "number" ? shardRecord.bookCount : null,
+      runtimeId: instance.runtimeId,
+      state:
+        typeof shardRecord.lifecycleState === "string" && shardRecord.lifecycleState.trim().length > 0
+          ? shardRecord.lifecycleState
+          : instance.status,
+    });
+  }
+
+  return {
+    aggregateState,
+    shardStates: [...shardStates.values()].sort((left, right) =>
+      (left.shardIndex ?? Number.MAX_SAFE_INTEGER) - (right.shardIndex ?? Number.MAX_SAFE_INTEGER),
+    ),
+    runtimesById,
+    pendingShards: [...shardStates.values()].filter((state) => !spriteShardLifecycleTerminal(state.state)),
+  };
+}
+
+async function reconcileOrphanedSpriteFanoutRun(
+  deps: AppDeps,
+  session: SessionRecord,
+  run: RunRecord,
+  runningToolCall: Awaited<ReturnType<AppStore["listToolCalls"]>>[number],
+  cancelLiveExecution: (toolCalls: Awaited<ReturnType<AppStore["listToolCalls"]>>) => Promise<void>,
+) {
+  const runAgeMs = Date.now() - Date.parse(run.startedAt);
+  if (runAgeMs < SPRITE_ORPHANED_RUN_GRACE_MS) {
+    return null;
+  }
+
+  const [runEvents, runtimeInstances, liveMachines] = await Promise.all([
+    deps.store.listRunEvents(run.id),
+    deps.store.listRuntimeInstances(session.id),
+    deps.runtimeGateway.listSpriteSessionMachines?.(session.id) ?? Promise.resolve([]),
+  ]);
+  const lifecycle = summarizeSpriteFanoutLifecycle(runEvents, runtimeInstances, run.startedAt);
+  if (lifecycle.aggregateState === "completed" || lifecycle.aggregateState === "failed") {
+    return null;
+  }
+
+  const liveMachineIds = new Set(
+    liveMachines
+      .map((machine) => typeof machine.machineId === "string" ? machine.machineId : null)
+      .filter((machineId): machineId is string => Boolean(machineId)),
+  );
+  const activeLiveMachines = liveMachines.filter((machine) => {
+    const state = typeof machine.state === "string" ? machine.state : "";
+    return state === "created" || state === "started" || state === "starting";
+  });
+  if (activeLiveMachines.length > 0) {
+    return null;
+  }
+
+  if (lifecycle.pendingShards.length === 0) {
+    return null;
+  }
+
+  const failureMessage = "This broad search stopped before every part of the library finished searching.";
+  for (const shard of lifecycle.pendingShards) {
+    const runtimeRecord = shard.runtimeId ? lifecycle.runtimesById.get(shard.runtimeId) ?? null : null;
+    if (runtimeRecord && !runtimeLifecycleTerminal(runtimeRecord.status)) {
+      await deps.store.updateRuntimeInstance(runtimeRecord.runtimeId, {
+        status: "failed",
+        lastUsedAt: new Date().toISOString(),
+        expiresAt: new Date().toISOString(),
+      });
+    }
+    await deps.store.appendRunEvent(run.id, session.id, "sprite.shard.failed", {
+      shardId: shard.shardId,
+      label: shard.label,
+      state: "failed",
+      shardIndex: shard.shardIndex,
+      totalShards: shard.totalShards,
+      bookCount: shard.bookCount,
+      runtimeId: shard.runtimeId,
+      error: liveMachineIds.size === 0
+        ? "This part stopped before it finished searching."
+        : "This part lost contact with its search worker.",
+    });
+  }
+
+  await deps.store.appendRunEvent(run.id, session.id, "sprite.aggregate.failed", {
+    state: "failed",
+    shardCount: lifecycle.shardStates.length,
+    successfulShardCount: lifecycle.shardStates.filter((state) => state.state === "completed").length,
+    error: failureMessage,
+  });
+  await deps.store.finishToolCall(runningToolCall.id, "failed", {
+    ok: false,
+    error: failureMessage,
+    runtimeId: runtimeIdFromToolCall(runningToolCall) ?? undefined,
+  });
+  const refreshedToolCalls = await deps.store.listToolCalls(run.id);
+  await persistRecoveredPlanToolTrace(deps, session.id, run.id, refreshedToolCalls);
+  await deps.store.updateRun(run.id, {
+    status: "failed",
+    completedAt: new Date().toISOString(),
+  });
+  const persistedPlanState = readPersistedPlanMessageState(await deps.store.listMessages(session.id), run.id);
+  await appendRunErrorMessageOnce(deps, session.id, run.id, failureMessage, {
+    runId: run.id,
+    phase: "error",
+    toolCalls: persistedPlanState.toolTrace,
+    researchLog: persistedPlanState.toolTrace,
+    recoveredFromSpriteFanoutOrphan: true,
+  });
+  await cancelLiveExecution(refreshedToolCalls);
+  return deps.store.getRun(run.id);
 }
 
 function addRuntimeIdsFromValue(runtimeIds: Set<string>, value: unknown, depth = 0) {

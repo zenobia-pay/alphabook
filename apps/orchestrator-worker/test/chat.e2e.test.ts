@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { artifactKeys } from "@alphabook/corpus-core";
 import { decodePaymentRequiredHeader, encodePaymentSignatureHeader } from "@x402/core/http";
 
-import { createApp, reapExpiredRuntimeInstances } from "../src/app";
+import { createApp, reapExpiredRuntimeInstances, reapStaleRuns } from "../src/app";
 import { WorkOSAuth } from "../src/auth";
 import { createBillingService } from "../src/billing";
 import { HashEmbedder, OpenAIEmbedder } from "../src/embeddings";
@@ -197,7 +197,7 @@ test("sprite fanout mode bypasses router and runs the distributed runtime lane",
   assert.equal(spriteRuns, 1);
   assert.doesNotMatch(body, /event: router\.completed/);
   assert.match(body, /toolName":"run_workspace_task"/);
-  assert.match(body, /fanning out the search across fixed Sprite shards/i);
+  assert.match(body, /running a broad search across many parts of the library/i);
   assert.match(body, /Sprite aggregate briefing with shard evidence\./);
   const [run] = await store.listRuns((await store.listSessions("11111111-1111-1111-1111-111111111111"))[0]!.id);
   const toolCalls = await store.listToolCalls(run!.id);
@@ -257,6 +257,105 @@ test("sprite fanout mode fails loudly when no shard search succeeds", async () =
   assert.match(body, /no shard searches completed successfully/i);
   assert.match(body, /event: run\.completed/);
   assert.match(body, /"status":"failed"/);
+});
+
+test("reapStaleRuns fails orphaned sprite fanout runs when no shard machines remain", async () => {
+  const store = new InMemoryAppStore([], []);
+  const session = await store.createSession("11111111-1111-1111-1111-111111111111", "Sprite orphan");
+  await store.appendMessage(session.id, "user", "Find grief across the corpus.");
+  const run = await store.createRun(session.id);
+  const toolCall = await store.startToolCall(run.id, "run_workspace_task", {
+    runtimeId: `sprite-fanout:${run.id}`,
+    taskSpec: {
+      kind: "sprite_fanout_research",
+      mode: "sprite_fanout",
+      phase: "collect_and_brief",
+      question: "Find grief across the corpus.",
+    },
+  });
+  await store.appendRunEvent(run.id, session.id, "sprite.shard.started", {
+    shardId: "books-1",
+    label: "Part 1 of 25",
+    state: "starting",
+    shardIndex: 0,
+    totalShards: 25,
+    bookCount: 1000,
+    runtimeId: "sprite-shard-1",
+  });
+  await store.appendRunEvent(run.id, session.id, "sprite.shard.searching", {
+    shardId: "books-1",
+    label: "Part 1 of 25",
+    state: "searching",
+    shardIndex: 0,
+    totalShards: 25,
+    bookCount: 1000,
+    runtimeId: "sprite-shard-1",
+  });
+  await store.saveRuntimeInstance({
+    sessionId: session.id,
+    runtimeId: "sprite-shard-1",
+    provider: "fly-sprites",
+    providerMachineId: "sprite-shard-1",
+    status: "busy",
+    manifestJson: {
+      taskContext: {
+        researchMode: "sprite_fanout",
+        spriteShard: {
+          shardId: "books-1",
+          index: 0,
+          totalShards: 25,
+          bookCount: 1000,
+          lifecycleState: "searching",
+        },
+      },
+    },
+    lastUsedAt: run.startedAt,
+    expiresAt: run.startedAt,
+  });
+
+  const originalNow = Date.now;
+  Date.now = () => Date.parse(run.startedAt) + 5 * 60_000;
+  try {
+    await reapStaleRuns({
+      store,
+      billing: createBillingService(store),
+      embedder: new HashEmbedder(),
+      synthesizer: new EchoSynthesizer(),
+      blobStore: new MemoryBlobStore(),
+      runtimeGateway: {
+        async createWorkspace() { return { ok: false }; },
+        async runWorkspaceTask() { return { ok: false }; },
+        async runSpriteFanoutResearch() { return { ok: false }; },
+        async cleanupStaleSpriteMachines() { return 0; },
+        async listSpriteSessionMachines() { return []; },
+        async cancelWorkspaceTask() { return { ok: true }; },
+        async getWorkspaceTaskStatus() { return { ok: false, error: "missing" }; },
+        async readWorkspaceFile() { return { ok: false }; },
+        async listWorkspaceFiles() { return { ok: false }; },
+        async destroyWorkspace() { return { ok: true }; },
+      },
+      planner: new FallbackPlanner(),
+      queues: {
+        ingestName: "alphabook-ingest",
+        jobsName: "alphabook-jobs",
+      },
+    }, {
+      runId: "janitor-test",
+    });
+  } finally {
+    Date.now = originalNow;
+  }
+
+  const updatedRun = await store.getRun(run.id);
+  const updatedToolCalls = await store.listToolCalls(run.id);
+  const updatedRuntime = await store.getRuntimeInstance("sprite-shard-1");
+  const events = await store.listRunEvents(run.id);
+  assert.equal(updatedRun?.status, "failed");
+  assert.equal(updatedToolCalls[0]?.id, toolCall.id);
+  assert.equal(updatedToolCalls[0]?.status, "failed");
+  assert.equal(updatedRuntime?.status, "failed");
+  assert.ok(events.some((event) => event.event === "sprite.shard.failed"));
+  assert.ok(events.some((event) => event.event === "sprite.aggregate.failed"));
 });
 
 test("orchestrator streams retrieval tool calls and final answer", async () => {

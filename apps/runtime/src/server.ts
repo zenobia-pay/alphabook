@@ -369,7 +369,15 @@ async function downloadFiles(
     }
     return (right.byteSize ?? 0) - (left.byteSize ?? 0);
   });
-  const concurrency = Math.max(1, Math.min(8, orderedDownloads.length));
+  const cleanDownloadCount = orderedDownloads.filter((item) => item.kind === "clean").length;
+  const chunkDownloadCount = orderedDownloads.filter((item) => item.kind === "chunks").length;
+  const concurrency = Math.max(
+    1,
+    Math.min(
+      chunkDownloadCount === 0 ? 24 : 12,
+      cleanDownloadCount > 0 && chunkDownloadCount === 0 ? orderedDownloads.length : Math.max(12, orderedDownloads.length),
+    ),
+  );
   let nextIndex = 0;
 
   const worker = async () => {
