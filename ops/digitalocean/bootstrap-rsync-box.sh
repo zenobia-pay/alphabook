@@ -24,6 +24,12 @@ install -m 0755 "$SCRIPT_DIR/bin/gutenberg-rsync-epub.sh" "$ALPHABOOK_ROOT/bin/g
 install -m 0755 "$SCRIPT_DIR/bin/gutenberg-upload.sh" "$ALPHABOOK_ROOT/bin/gutenberg-upload.sh"
 install -m 0755 "$SCRIPT_DIR/bin/freeze-gutenberg-ingest.sh" "$ALPHABOOK_ROOT/bin/freeze-gutenberg-ingest.sh"
 install -m 0755 "$SCRIPT_DIR/bin/resume-gutenberg-ingest.sh" "$ALPHABOOK_ROOT/bin/resume-gutenberg-ingest.sh"
+install -m 0755 "$SCRIPT_DIR/bin/audit-cloudflare-corpus.sh" "$ALPHABOOK_ROOT/bin/audit-cloudflare-corpus.sh"
+install -m 0755 "$SCRIPT_DIR/bin/validate-corpus-integrity.sh" "$ALPHABOOK_ROOT/bin/validate-corpus-integrity.sh"
+install -m 0755 "$SCRIPT_DIR/bin/rebuild-r2-corpus-all.sh" "$ALPHABOOK_ROOT/bin/rebuild-r2-corpus-all.sh"
+install -m 0755 "$SCRIPT_DIR/bin/prune-orphan-vectors.sh" "$ALPHABOOK_ROOT/bin/prune-orphan-vectors.sh"
+install -m 0755 "$SCRIPT_DIR/bin/prune-orphan-d1-records.sh" "$ALPHABOOK_ROOT/bin/prune-orphan-d1-records.sh"
+install -m 0755 "$SCRIPT_DIR/bin/prune-orphan-r2-keys.sh" "$ALPHABOOK_ROOT/bin/prune-orphan-r2-keys.sh"
 install -m 0644 "$SCRIPT_DIR/systemd/alphabook-gutenberg-rsync.service" /etc/systemd/system/alphabook-gutenberg-rsync.service
 install -m 0644 "$SCRIPT_DIR/systemd/alphabook-gutenberg-rsync.timer" /etc/systemd/system/alphabook-gutenberg-rsync.timer
 install -m 0644 "$SCRIPT_DIR/systemd/alphabook-gutenberg-rsync-epub.service" /etc/systemd/system/alphabook-gutenberg-rsync-epub.service
@@ -40,6 +46,9 @@ Mirror root: $GUTENBERG_MIRROR_ROOT
 Runner: $ALPHABOOK_ROOT/bin/gutenberg-rsync.sh
 EPUB runner: $ALPHABOOK_ROOT/bin/gutenberg-rsync-epub.sh
 Uploader: $ALPHABOOK_ROOT/bin/gutenberg-upload.sh
+Audit: $ALPHABOOK_ROOT/bin/audit-cloudflare-corpus.sh
+Validate: $ALPHABOOK_ROOT/bin/validate-corpus-integrity.sh
+Rebuild: $ALPHABOOK_ROOT/bin/rebuild-r2-corpus-all.sh
 Useful commands:
   systemctl status alphabook-gutenberg-rsync.timer
   systemctl status alphabook-gutenberg-rsync-epub.timer

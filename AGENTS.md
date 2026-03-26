@@ -24,7 +24,14 @@
 - The repo on that box may contain project files without a usable `.git` checkout. If a targeted ops fix is needed, copy the changed files over with `scp` instead of assuming `git pull` will work.
 - For corpus cutover/rebuild work on the droplet:
   - freeze recurring timers first with `sudo /srv/alphabook/bin/freeze-gutenberg-ingest.sh`
-  - run the needed ingest/rebuild command from `/srv/alphabook/repo`
+  - audit with `sudo /srv/alphabook/bin/audit-cloudflare-corpus.sh`
+  - rebuild D1 + Vectorize with `sudo /srv/alphabook/bin/rebuild-r2-corpus-all.sh`
+  - regenerate static pages with `sudo /srv/alphabook/bin/rebuild-book-html-all.sh`
+  - validate with `sudo /srv/alphabook/bin/validate-corpus-integrity.sh`
+  - prune only after reviewing dry-run reports:
+    - `sudo APPLY_FLAG=--apply /srv/alphabook/bin/prune-orphan-vectors.sh`
+    - `sudo APPLY_FLAG=--apply /srv/alphabook/bin/prune-orphan-d1-records.sh`
+    - `sudo APPLY_FLAG=--apply /srv/alphabook/bin/prune-orphan-r2-keys.sh`
   - resume timers with `sudo /srv/alphabook/bin/resume-gutenberg-ingest.sh`
 - For a targeted static-book rebuild on a single Gutenberg ID `N`, use:
   - `npx tsx apps/ingest/src/index.ts rebuild-book-html $((N-1)) 1 1`

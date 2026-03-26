@@ -19,7 +19,14 @@ import {
   type CorpusIngestSourceInput,
   type RenderedArtifactBundle,
 } from "./corpus-ingest";
-import { getMissingRequiredArtifacts, parseChunkPayload, scanGutenbergR2Keys, type GutenbergR2Artifacts } from "./rebuild";
+import {
+  getMissingRequiredArtifacts,
+  parseChunkPayload,
+  scanGutenbergR2Keys,
+  validateChunkPayload,
+  type ChunkPayloadIssue,
+  type GutenbergR2Artifacts,
+} from "./rebuild";
 import { CloudflareVectorizeApi } from "./vectorize-api";
 import {
   fixtureCorpusAdapter,
@@ -68,6 +75,17 @@ interface CorpusRebuildOptions {
   startAfterId?: string | null;
   limit: number;
   checkpointPath?: string | null;
+}
+
+interface CorpusFullAuditOptions {
+  startAfterId?: string | null;
+  limit?: number | null;
+  outputPath?: string | null;
+}
+
+interface CorpusPruneOptions {
+  apply: boolean;
+  outputPath?: string | null;
 }
 
 interface SupremeCourtBackfillOptions {
@@ -1494,6 +1512,10 @@ function createVectorizeApi(context: IngestContext): CloudflareVectorizeApi | nu
   return new CloudflareVectorizeApi(context.cloudflareAccountId, process.env.CLOUDFLARE_API_TOKEN);
 }
 
+function isApplyFlag(value?: string | null) {
+  return value === "--apply" || value === "apply";
+}
+
 async function listCanonicalCorpusIds(context: IngestContext): Promise<{ ids: string[]; orphanedKeys: string[]; idsMissingRequiredArtifacts: string[]; byId?: Map<string, GutenbergR2Artifacts> }> {
   const explicitIdListPath = process.env.CANONICAL_CORPUS_IDS_PATH;
   if (explicitIdListPath) {
@@ -2458,9 +2480,16 @@ type ExistingCorpusWorkRow = {
 };
 
 type ExistingChunkRow = {
-  gutenberg_id: string;
+  work_id?: string;
+  gutenberg_id: string | null;
   chunk_id: string;
   chunk_index: number | string;
+};
+
+type ExistingWorkReferenceRow = {
+  work_id: string;
+  gutenberg_id: string | null;
+  title: string;
 };
 
 type CanonicalR2Work = {
@@ -2487,6 +2516,11 @@ type CanonicalR2Work = {
     chunkIndex: number;
     text: string;
   }>;
+};
+
+type CanonicalR2WorkInspection = {
+  canonical: CanonicalR2Work | null;
+  issues: Array<ChunkPayloadIssue | { code: "missing_required_artifact" | "invalid_metadata"; message: string; chunkId?: null; chunkIndex?: null }>;
 };
 
 function sqlPlaceholders(values: string[]) {
@@ -2525,6 +2559,7 @@ async function listExistingChunkRows(context: IngestContext, gutenbergIds: strin
   const rows = await context.db.query<ExistingChunkRow>(
     `
       SELECT
+        c.work_id AS work_id,
         CAST(w.gutenberg_id AS TEXT) AS gutenberg_id,
         c.id AS chunk_id,
         c.chunk_index AS chunk_index
@@ -2543,6 +2578,35 @@ async function listExistingChunkRows(context: IngestContext, gutenbergIds: strin
     grouped.set(key, bucket);
   }
   return grouped;
+}
+
+async function listAllExistingWorkReferences(context: IngestContext) {
+  const rows = await context.db.query<ExistingWorkReferenceRow>(
+    `
+      SELECT
+        id AS work_id,
+        CASE WHEN gutenberg_id IS NULL THEN NULL ELSE CAST(gutenberg_id AS TEXT) END AS gutenberg_id,
+        title
+      FROM works
+    `,
+  );
+  return rows.rows;
+}
+
+async function listAllExistingChunkReferences(context: IngestContext) {
+  const rows = await context.db.query<ExistingChunkRow>(
+    `
+      SELECT
+        c.work_id AS work_id,
+        CASE WHEN w.gutenberg_id IS NULL THEN NULL ELSE CAST(w.gutenberg_id AS TEXT) END AS gutenberg_id,
+        c.id AS chunk_id,
+        c.chunk_index AS chunk_index
+      FROM chunks c
+      INNER JOIN works w ON w.id = c.work_id
+      ORDER BY c.id ASC
+    `,
+  );
+  return rows.rows;
 }
 
 async function readCanonicalR2Work(
@@ -2627,6 +2691,61 @@ async function readCanonicalR2Work(
       bookHtml: bookHtmlKey,
     },
     chunks,
+  };
+}
+
+async function inspectCanonicalR2Work(
+  context: IngestContext,
+  artifacts: GutenbergR2Artifacts,
+  existingChunkRows: ExistingChunkRow[] = [],
+): Promise<CanonicalR2WorkInspection> {
+  const missingArtifacts = getMissingRequiredArtifacts(artifacts);
+  if (missingArtifacts.length > 0) {
+    return {
+      canonical: null,
+      issues: [{
+        code: "missing_required_artifact",
+        message: `Missing required artifacts: ${missingArtifacts.join(", ")}`,
+      }],
+    };
+  }
+
+  const metadataKey = firstArtifactKey(artifacts, "metadata");
+  const chunksKey = firstArtifactKey(artifacts, "chunks");
+  if (!metadataKey || !chunksKey) {
+    return {
+      canonical: null,
+      issues: [{
+        code: "missing_required_artifact",
+        message: "Missing metadata or chunk artifact.",
+      }],
+    };
+  }
+
+  const metadataPayload = await getJson<Record<string, unknown>>(context.r2, context.r2Bucket, metadataKey);
+  if (!metadataPayload || typeof metadataPayload !== "object") {
+    return {
+      canonical: null,
+      issues: [{
+        code: "invalid_metadata",
+        message: `Metadata payload missing or invalid for Gutenberg ${artifacts.id}.`,
+      }],
+    };
+  }
+
+  const rawChunkPayload = await getText(context.r2, context.r2Bucket, chunksKey) ?? "";
+  const chunkPayload = parseChunkPayload(rawChunkPayload);
+  const issues = validateChunkPayload(chunkPayload);
+  if (issues.length > 0) {
+    return {
+      canonical: null,
+      issues,
+    };
+  }
+
+  return {
+    canonical: await readCanonicalR2Work(context, artifacts, existingChunkRows),
+    issues: [],
   };
 }
 
@@ -2902,6 +3021,254 @@ async function rebuildR2Corpus(
     nextStartAfterId: lastProcessedId,
     results,
   };
+}
+
+async function auditCloudflareCorpus(
+  context: IngestContext,
+  options: CorpusFullAuditOptions,
+) {
+  const scan = await listCanonicalCorpusIds(context);
+  const startAfter = options.startAfterId ? Number(options.startAfterId) : null;
+  const selectedCanonicalIds = scan.ids
+    .filter((id) => (startAfter ? Number(id) > startAfter : true))
+    .slice(0, options.limit ?? scan.ids.length);
+
+  const workRows = await listExistingCorpusWorkRows(context, selectedCanonicalIds);
+  const chunkRows = await listExistingChunkRows(context, selectedCanonicalIds);
+  const allWorkRows = await listAllExistingWorkReferences(context);
+  const allChunkRows = await listAllExistingChunkReferences(context);
+  const vectorize = createVectorizeApi(context);
+  const vectorIds = vectorize && context.vectorIndexName ? await vectorize.listVectorIds(context.vectorIndexName) : [];
+  const vectorIdSet = new Set(vectorIds);
+  const expectedChunkIds = new Set<string>();
+
+  const completeBooks: string[] = [];
+  const rebuildableBooks: string[] = [];
+  const missingInD1: string[] = [];
+  const missingVectors: Array<{ gutenbergId: string; missingCount: number }> = [];
+  const chunkCountMismatches: Array<{ gutenbergId: string; expected: number; actual: number }> = [];
+  const formatErrors: Array<{ gutenbergId: string; issues: string[] }> = [];
+  const booksMissingArtifactsInD1: Array<{ gutenbergId: string; missingKinds: string[] }> = [];
+
+  for (const gutenbergId of selectedCanonicalIds) {
+    const artifacts = await resolveCanonicalArtifactsForId(context, gutenbergId, scan.byId);
+    if (!artifacts) {
+      formatErrors.push({
+        gutenbergId,
+        issues: [`Canonical R2 artifacts missing for Gutenberg ${gutenbergId}.`],
+      });
+      rebuildableBooks.push(gutenbergId);
+      continue;
+    }
+
+    const inspected = await inspectCanonicalR2Work(context, artifacts, chunkRows.get(gutenbergId) ?? []);
+    if (!inspected.canonical) {
+      formatErrors.push({
+        gutenbergId,
+        issues: inspected.issues.map((issue) => issue.message),
+      });
+      rebuildableBooks.push(gutenbergId);
+      continue;
+    }
+
+    const canonical = inspected.canonical;
+    for (const chunk of canonical.chunks) {
+      expectedChunkIds.add(chunk.id);
+    }
+
+    const work = workRows.get(gutenbergId);
+    if (!work) {
+      missingInD1.push(gutenbergId);
+      rebuildableBooks.push(gutenbergId);
+      continue;
+    }
+
+    const missingKinds = [
+      Number(work.has_raw) ? null : "raw",
+      Number(work.has_metadata) ? null : "metadata",
+      Number(work.has_clean) ? null : "clean",
+      Number(work.has_chunks) ? null : "chunks",
+      Number(work.has_book_html) ? null : "book_html",
+    ].filter((value): value is string => Boolean(value));
+    if (missingKinds.length > 0) {
+      booksMissingArtifactsInD1.push({ gutenbergId, missingKinds });
+    }
+
+    const actualChunkCount = Number(work.chunk_count ?? 0);
+    if (actualChunkCount !== canonical.chunks.length) {
+      chunkCountMismatches.push({
+        gutenbergId,
+        expected: canonical.chunks.length,
+        actual: actualChunkCount,
+      });
+    }
+
+    const missingVectorIds = canonical.chunks.filter((chunk) => !vectorIdSet.has(chunk.id)).map((chunk) => chunk.id);
+    if (missingVectorIds.length > 0) {
+      missingVectors.push({
+        gutenbergId,
+        missingCount: missingVectorIds.length,
+      });
+    }
+
+    if (missingKinds.length === 0 && actualChunkCount === canonical.chunks.length && missingVectorIds.length === 0) {
+      completeBooks.push(gutenbergId);
+    } else {
+      rebuildableBooks.push(gutenbergId);
+    }
+  }
+
+  const canonicalIdSet = new Set(scan.ids);
+  const orphanedWorksInD1 = allWorkRows
+    .filter((row) => row.gutenberg_id && !canonicalIdSet.has(String(row.gutenberg_id)))
+    .map((row) => ({
+      workId: row.work_id,
+      gutenbergId: row.gutenberg_id,
+      title: row.title,
+    }));
+  const orphanedChunksInD1 = allChunkRows
+    .filter((row) => row.gutenberg_id && !canonicalIdSet.has(String(row.gutenberg_id)))
+    .map((row) => ({
+      workId: row.work_id ?? null,
+      gutenbergId: row.gutenberg_id,
+      chunkId: row.chunk_id,
+    }));
+  const orphanedVectorIds = vectorIds.filter((id) => !expectedChunkIds.has(id));
+
+  const report = {
+    generatedAt: new Date().toISOString(),
+    r2Bucket: context.r2Bucket,
+    vectorIndexName: context.vectorIndexName,
+    canonicalBookCount: scan.ids.length,
+    scannedCanonicalBookCount: selectedCanonicalIds.length,
+    completeBookCount: completeBooks.length,
+    rebuildableBookCount: rebuildableBooks.length,
+    idsMissingRequiredArtifacts: scan.idsMissingRequiredArtifacts.map((id) => ({
+      gutenbergId: id,
+      missingKinds: scan.byId?.get(id) ? getMissingRequiredArtifacts(scan.byId.get(id)!).map(String) : ["raw", "metadata", "clean", "chunks", "book_html"],
+    })),
+    orphanedR2Keys: scan.orphanedKeys,
+    missingInD1,
+    booksMissingArtifactsInD1,
+    chunkCountMismatches,
+    missingVectors,
+    formatErrors,
+    orphanedWorksInD1,
+    orphanedChunksInD1,
+    orphanedVectorIds,
+    summary: {
+      completeBooks,
+      rebuildableBooks,
+    },
+  };
+
+  if (options.outputPath) {
+    await mkdir(dirname(options.outputPath), { recursive: true });
+    await writeFile(options.outputPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+  }
+
+  return report;
+}
+
+async function validateCorpusIntegrity(
+  context: IngestContext,
+  options: CorpusFullAuditOptions,
+) {
+  const report = await auditCloudflareCorpus(context, options);
+  const blockingIssues = (
+    report.idsMissingRequiredArtifacts.length
+    + report.missingInD1.length
+    + report.booksMissingArtifactsInD1.length
+    + report.chunkCountMismatches.length
+    + report.missingVectors.length
+    + report.formatErrors.length
+  );
+  return {
+    ok: blockingIssues === 0,
+    blockingIssueCount: blockingIssues,
+    report,
+  };
+}
+
+async function pruneOrphanVectors(
+  context: IngestContext,
+  options: CorpusPruneOptions,
+) {
+  const audit = await auditCloudflareCorpus(context, {});
+  const orphanedVectorIds = audit.orphanedVectorIds;
+  if (options.apply && orphanedVectorIds.length > 0) {
+    const vectorize = createVectorizeApi(context);
+    if (!vectorize || !context.vectorIndexName) {
+      throw new Error("Cloudflare Vectorize API credentials are required to prune orphan vectors.");
+    }
+    await vectorize.deleteVectorIds(context.vectorIndexName, orphanedVectorIds);
+  }
+  const report = {
+    generatedAt: new Date().toISOString(),
+    applied: options.apply,
+    vectorIndexName: context.vectorIndexName,
+    orphanedVectorCount: orphanedVectorIds.length,
+    orphanedVectorIds,
+  };
+  if (options.outputPath) {
+    await mkdir(dirname(options.outputPath), { recursive: true });
+    await writeFile(options.outputPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+  }
+  return report;
+}
+
+async function pruneOrphanD1Records(
+  context: IngestContext,
+  options: CorpusPruneOptions,
+) {
+  const scan = await listCanonicalCorpusIds(context);
+  const canonicalIdSet = new Set(scan.ids);
+  const allWorks = await listAllExistingWorkReferences(context);
+  const orphanedWorks = allWorks.filter((row) => row.gutenberg_id && !canonicalIdSet.has(String(row.gutenberg_id)));
+  if (options.apply && orphanedWorks.length > 0) {
+    const ids = orphanedWorks.map((row) => row.work_id);
+    const placeholders = sqlPlaceholders(ids);
+    await context.db.query(`DELETE FROM works WHERE id IN (${placeholders})`, ids);
+    await context.db.query(`DELETE FROM authors WHERE NOT EXISTS (SELECT 1 FROM work_authors WHERE author_id = authors.id)`);
+    await context.db.query(`DELETE FROM subjects WHERE NOT EXISTS (SELECT 1 FROM work_subjects WHERE subject_id = subjects.id)`);
+  }
+  const report = {
+    generatedAt: new Date().toISOString(),
+    applied: options.apply,
+    orphanedWorkCount: orphanedWorks.length,
+    orphanedWorks: orphanedWorks.map((row) => ({
+      workId: row.work_id,
+      gutenbergId: row.gutenberg_id,
+      title: row.title,
+    })),
+  };
+  if (options.outputPath) {
+    await mkdir(dirname(options.outputPath), { recursive: true });
+    await writeFile(options.outputPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+  }
+  return report;
+}
+
+async function pruneOrphanR2Keys(
+  context: IngestContext,
+  options: CorpusPruneOptions,
+) {
+  const scan = await listCanonicalCorpusIds(context);
+  const orphanedKeys = scan.orphanedKeys;
+  if (options.apply && orphanedKeys.length > 0) {
+    await deleteKeys(context.r2, context.r2Bucket, orphanedKeys);
+  }
+  const report = {
+    generatedAt: new Date().toISOString(),
+    applied: options.apply,
+    orphanedKeyCount: orphanedKeys.length,
+    orphanedKeys,
+  };
+  if (options.outputPath) {
+    await mkdir(dirname(options.outputPath), { recursive: true });
+    await writeFile(options.outputPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+  }
+  return report;
 }
 
 async function listWorksMissingBookHtml(context: IngestContext, limit: number, startAfterGutenbergId?: string | null) {
@@ -3661,6 +4028,60 @@ async function main() {
       return;
     }
 
+    if (command === "audit-cloudflare-corpus") {
+      const [startAfterId, limitValue, outputPath] = args;
+      const limit = limitValue && limitValue !== "-" ? Number(limitValue) : null;
+      const result = await auditCloudflareCorpus(requireContext(context), {
+        startAfterId: startAfterId && startAfterId !== "-" ? startAfterId : null,
+        limit: Number.isFinite(limit ?? NaN) ? limit : null,
+        outputPath: outputPath && outputPath !== "-" ? outputPath : null,
+      });
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
+    if (command === "validate-corpus-integrity") {
+      const [startAfterId, limitValue, outputPath] = args;
+      const limit = limitValue && limitValue !== "-" ? Number(limitValue) : null;
+      const result = await validateCorpusIntegrity(requireContext(context), {
+        startAfterId: startAfterId && startAfterId !== "-" ? startAfterId : null,
+        limit: Number.isFinite(limit ?? NaN) ? limit : null,
+        outputPath: outputPath && outputPath !== "-" ? outputPath : null,
+      });
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
+    if (command === "prune-orphan-vectors") {
+      const [applyFlag, outputPath] = args;
+      const result = await pruneOrphanVectors(requireContext(context), {
+        apply: isApplyFlag(applyFlag),
+        outputPath: outputPath && outputPath !== "-" ? outputPath : null,
+      });
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
+    if (command === "prune-orphan-d1-records") {
+      const [applyFlag, outputPath] = args;
+      const result = await pruneOrphanD1Records(requireContext(context), {
+        apply: isApplyFlag(applyFlag),
+        outputPath: outputPath && outputPath !== "-" ? outputPath : null,
+      });
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
+    if (command === "prune-orphan-r2-keys") {
+      const [applyFlag, outputPath] = args;
+      const result = await pruneOrphanR2Keys(requireContext(context), {
+        apply: isApplyFlag(applyFlag),
+        outputPath: outputPath && outputPath !== "-" ? outputPath : null,
+      });
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
     if (command === "backfill-book-html") {
       const [startAfterId, limitValue, concurrencyValue] = args;
       const result = await backfillBookHtml(requireContext(context), {
@@ -3720,6 +4141,11 @@ async function main() {
     console.log("  backfill-mirror-parallel [startAfterId|-] [limit] [concurrency]");
     console.log("  audit-r2-corpus [startAfterId|-] [limit] [outputPath|-]");
     console.log("  rebuild-r2-corpus [startAfterId|-] [limit]");
+    console.log("  audit-cloudflare-corpus [startAfterId|-] [limit|-] [outputPath|-]");
+    console.log("  validate-corpus-integrity [startAfterId|-] [limit|-] [outputPath|-]");
+    console.log("  prune-orphan-vectors [--apply|-] [outputPath|-]");
+    console.log("  prune-orphan-d1-records [--apply|-] [outputPath|-]");
+    console.log("  prune-orphan-r2-keys [--apply|-] [outputPath|-]");
     console.log("  backfill-book-html [startAfterId|-] [limit] [concurrency]");
     console.log("  rebuild-book-html [startAfterId|-] [limit] [concurrency]");
     console.log("  rebuild-book-html-created-at <createdAtFrom> <createdAtTo> [startAfterId|-] [limit] [concurrency]");

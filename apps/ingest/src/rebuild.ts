@@ -22,6 +22,13 @@ export interface RebuildChunkRecord {
   embedding_dimensions?: number | null;
 }
 
+export interface ChunkPayloadIssue {
+  code: "missing_text" | "empty_text" | "duplicate_chunk_id" | "duplicate_chunk_index";
+  chunkId: string | null;
+  chunkIndex: number | null;
+  message: string;
+}
+
 const REQUIRED_CANONICAL_ARTIFACTS: GutenbergArtifactKind[] = ["raw", "metadata", "clean", "chunks", "book_html"];
 
 function ensureArtifacts(result: Map<string, GutenbergR2Artifacts>, id: string) {
@@ -106,6 +113,59 @@ export function parseChunkPayload(raw: string): RebuildChunkRecord[] {
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => JSON.parse(line) as RebuildChunkRecord);
+}
+
+export function validateChunkPayload(records: RebuildChunkRecord[]): ChunkPayloadIssue[] {
+  const issues: ChunkPayloadIssue[] = [];
+  const seenIds = new Set<string>();
+  const seenIndexes = new Set<number>();
+
+  for (const [fallbackIndex, record] of records.entries()) {
+    const chunkIndex = typeof record.chunk_index === "number" ? record.chunk_index : fallbackIndex;
+    const chunkId = typeof record.id === "string" && record.id.trim().length > 0 ? record.id.trim() : null;
+    const text = typeof record.text === "string" ? record.text : null;
+    if (text === null) {
+      issues.push({
+        code: "missing_text",
+        chunkId,
+        chunkIndex,
+        message: `Chunk ${chunkIndex} is missing text.`,
+      });
+    } else if (text.trim().length === 0) {
+      issues.push({
+        code: "empty_text",
+        chunkId,
+        chunkIndex,
+        message: `Chunk ${chunkIndex} text was empty.`,
+      });
+    }
+
+    if (chunkId) {
+      if (seenIds.has(chunkId)) {
+        issues.push({
+          code: "duplicate_chunk_id",
+          chunkId,
+          chunkIndex,
+          message: `Duplicate chunk id ${chunkId}.`,
+        });
+      } else {
+        seenIds.add(chunkId);
+      }
+    }
+
+    if (seenIndexes.has(chunkIndex)) {
+      issues.push({
+        code: "duplicate_chunk_index",
+        chunkId,
+        chunkIndex,
+        message: `Duplicate chunk index ${chunkIndex}.`,
+      });
+    } else {
+      seenIndexes.add(chunkIndex);
+    }
+  }
+
+  return issues;
 }
 
 export function getMissingRequiredArtifacts(artifacts: GutenbergR2Artifacts): GutenbergArtifactKind[] {

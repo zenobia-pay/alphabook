@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { getMissingRequiredArtifacts, parseChunkPayload, scanGutenbergR2Keys } from "../src/rebuild";
+import { getMissingRequiredArtifacts, parseChunkPayload, scanGutenbergR2Keys, validateChunkPayload } from "../src/rebuild";
 
 test("scanGutenbergR2Keys identifies canonical ids and orphaned keys", () => {
   const result = scanGutenbergR2Keys([
@@ -31,4 +31,17 @@ test("parseChunkPayload parses ndjson chunk payloads", () => {
   assert.equal(result.length, 2);
   assert.equal(result[0]?.id, "chunk-1");
   assert.equal(result[1]?.text, "Beta");
+});
+
+test("validateChunkPayload finds duplicate ids, duplicate indexes, and empty text", () => {
+  const issues = validateChunkPayload([
+    { id: "chunk-1", chunk_index: 0, text: "Alpha" },
+    { id: "chunk-1", chunk_index: 1, text: "Beta" },
+    { id: "chunk-3", chunk_index: 1, text: "   " },
+  ]);
+
+  assert.deepEqual(
+    issues.map((issue) => issue.code).sort(),
+    ["duplicate_chunk_id", "duplicate_chunk_index", "empty_text"],
+  );
 });

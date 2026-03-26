@@ -11,6 +11,12 @@ Target layout on the VM:
 - `/srv/alphabook/bin/gutenberg-upload.sh`
 - `/srv/alphabook/bin/freeze-gutenberg-ingest.sh`
 - `/srv/alphabook/bin/resume-gutenberg-ingest.sh`
+- `/srv/alphabook/bin/audit-cloudflare-corpus.sh`
+- `/srv/alphabook/bin/validate-corpus-integrity.sh`
+- `/srv/alphabook/bin/rebuild-r2-corpus-all.sh`
+- `/srv/alphabook/bin/prune-orphan-vectors.sh`
+- `/srv/alphabook/bin/prune-orphan-d1-records.sh`
+- `/srv/alphabook/bin/prune-orphan-r2-keys.sh`
 - `/srv/alphabook/bin/backfill-book-html-all.sh`
 - `/srv/alphabook/bin/rebuild-book-html-all.sh`
 - `/etc/systemd/system/alphabook-gutenberg-rsync.service`
@@ -35,6 +41,8 @@ That script:
 - installs the EPUB/RDF rsync runner into `/srv/alphabook/bin`
 - installs the upload runner into `/srv/alphabook/bin`
 - installs freeze/resume helpers for the recurring ingest timers
+- installs Cloudflare audit/validate/prune helpers
+- installs the full D1 + Vectorize rebuild runner
 - installs the full book HTML backfill runner into `/srv/alphabook/bin`
 - installs the full book HTML rebuild runner into `/srv/alphabook/bin`
 - installs the systemd services and timers
@@ -91,6 +99,22 @@ Notes:
 - The live repo still requires `D1_DATABASE_NAME` today because ingest persists corpus metadata and chunk rows into the existing relational store.
 - The embedding provider is now configurable. For the Cloudflare migration path, use Google embeddings with `GOOGLE_EMBEDDING_DIMENSIONS=1536`.
 - For rebuild/cutover, freeze the timers first with `sudo /srv/alphabook/bin/freeze-gutenberg-ingest.sh`, run `audit-r2-corpus` and `rebuild-r2-corpus`, then resume with `sudo /srv/alphabook/bin/resume-gutenberg-ingest.sh`.
+- For the full Cloudflare cleanup + rebuild path, use:
+  - `sudo /srv/alphabook/bin/freeze-gutenberg-ingest.sh`
+  - `sudo /srv/alphabook/bin/audit-cloudflare-corpus.sh`
+  - `sudo /srv/alphabook/bin/rebuild-r2-corpus-all.sh`
+  - `sudo /srv/alphabook/bin/rebuild-book-html-all.sh`
+  - `sudo /srv/alphabook/bin/validate-corpus-integrity.sh`
+  - dry-run prune:
+    - `sudo /srv/alphabook/bin/prune-orphan-vectors.sh`
+    - `sudo /srv/alphabook/bin/prune-orphan-d1-records.sh`
+    - `sudo /srv/alphabook/bin/prune-orphan-r2-keys.sh`
+  - apply prune only after reviewing the reports:
+    - `sudo APPLY_FLAG=--apply /srv/alphabook/bin/prune-orphan-vectors.sh`
+    - `sudo APPLY_FLAG=--apply /srv/alphabook/bin/prune-orphan-d1-records.sh`
+    - `sudo APPLY_FLAG=--apply /srv/alphabook/bin/prune-orphan-r2-keys.sh`
+  - `sudo /srv/alphabook/bin/validate-corpus-integrity.sh`
+  - `sudo /srv/alphabook/bin/resume-gutenberg-ingest.sh`
 
 Then you can run:
 
@@ -166,6 +190,13 @@ npx tsx apps/ingest/src/index.ts rebuild-book-html 17 1 1
 ```
 
 That rebuilds Gutenberg `18` only.
+
+- For full-corpus Cloudflare validation and cleanup, the ingest CLI now exposes:
+  - `audit-cloudflare-corpus [startAfterId|-] [limit|-] [outputPath|-]`
+  - `validate-corpus-integrity [startAfterId|-] [limit|-] [outputPath|-]`
+  - `prune-orphan-vectors [--apply|-] [outputPath|-]`
+  - `prune-orphan-d1-records [--apply|-] [outputPath|-]`
+  - `prune-orphan-r2-keys [--apply|-] [outputPath|-]`
 
 - If `rebuild-book-html` is run locally from a developer machine, be careful with `.dev.vars`:
   - the ingest CLI auto-loads `.dev.vars`
