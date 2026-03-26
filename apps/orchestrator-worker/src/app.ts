@@ -9977,157 +9977,20 @@ async function runOrchestrator(
       },
     });
     const rationale = "I’m running a broad search across many parts of the library and combining the strongest passages into one answer.";
-    const toolRecord = await deps.store.startToolCall(run.id, "run_workspace_task", normalizedToolArgs);
-    await ensureInitialPlanSent(input.message);
-    recordRawLog("tool.started.raw", {
-      runId: run.id,
-      toolCallId: toolRecord.id,
-      toolName: "run_workspace_task",
-      rationale,
-      args: normalizedToolArgs,
-    });
-    if (normalizedToolArgs.taskSpec && typeof normalizedToolArgs.taskSpec === "object") {
-      captureTaskSpecRunMetrics(normalizedToolArgs.taskSpec as Record<string, unknown>);
-    }
-    liveToolTrace = [
-      ...liveToolTrace,
-      {
-        id: toolRecord.id,
-        toolName: "run_workspace_task",
-        label: labelForToolCall("run_workspace_task", normalizedToolArgs),
-        rationale: rationale,
-        progress: [rationale],
-        args: {},
-        state: "running",
-      },
-    ];
-    await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
-    await send("tool.started", {
-      runId: run.id,
-      toolCallId: toolRecord.id,
-      toolName: "run_workspace_task",
-      label: labelForToolCall("run_workspace_task", normalizedToolArgs),
-      rationale,
-      args: {},
-    });
-    const progressEmitter = genericProgressEmitter(send, run.id, toolRecord.id, "run_workspace_task", normalizedToolArgs);
-
-    let result: Record<string, unknown> = {};
-    let status: "completed" | "failed" = "completed";
-    try {
-      result = await executeTool(deps, "run_workspace_task", normalizedToolArgs, {
-        userId: activeSession.userId,
-        sessionId: activeSession.id,
-        runId: run.id,
-        auditLog: recordRawLog,
-        progressReporter: async (text, detail) => {
-          queueToolProgress(
-            {
-              runId: run.id,
-              toolCallId: toolRecord.id,
-              toolName: "run_workspace_task",
-              text,
-              detail,
-            },
-            async (progressText, emittedDetail) => {
-              liveToolTrace = liveToolTrace.map((entry) =>
-                entry.id === toolRecord.id
-                  ? appendToolProgress(entry, progressText, emittedDetail)
-                  : entry,
-              );
-              await appendResearchDocumentProgress(toolRecord.id, progressText, emittedDetail);
-              await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
-              await send("tool.progress", {
-                runId: run.id,
-                toolCallId: toolRecord.id,
-                toolName: "run_workspace_task",
-                text: progressText,
-                researchDocumentHtml: liveResearchDocumentHtml,
-                ...(emittedDetail ? { detail: emittedDetail } : {}),
-              });
-            },
-          );
-        },
-      });
-      addRuntimeIds(runtimeIdsToCleanup, normalizedToolArgs, result);
-      await trackRuntimeBillingEvents(deps, activeSession, run, result.billingEvents);
-      runtimeTasks += 1;
-      const resultRuntimeId = typeof result.runtimeId === "string" ? result.runtimeId : null;
-      if (resultRuntimeId) {
-        activeRuns.get(run.id)?.runtimeIds.add(resultRuntimeId);
-      }
-    } catch (error) {
-      addRuntimeIds(runtimeIdsToCleanup, normalizedToolArgs);
-      status = "failed";
-      result = {
-        ok: false,
-        error: formatToolExecutionError("run_workspace_task", error),
-      };
-      try {
-        await recordUnexpectedError(deps, error, {
-          request,
-          route: "/chat",
-          method: "POST",
-          source: "tool_execution",
-          toolName: "run_workspace_task",
-          runId: run.id,
-          sessionId: activeSession.id,
-          userId: activeSession.userId,
-          extra: {
-            toolArgs: normalizedToolArgs,
-            researchMode: "sprite_fanout",
-          },
-        });
-      } catch {
-        // Error reporting should not block the user-facing run result.
-      }
-    } finally {
-      await progressEmitter.stop();
-      await flushToolProgress(
-        toolRecord.id,
-        {
-          runId: run.id,
-          toolName: "run_workspace_task",
-        },
-        async (progressText, detail) => {
-          liveToolTrace = liveToolTrace.map((entry) =>
-            entry.id === toolRecord.id
-              ? appendToolProgress(entry, progressText, detail)
-              : entry,
-          );
-          await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
-          await send("tool.progress", {
-            runId: run.id,
-            toolCallId: toolRecord.id,
-            toolName: "run_workspace_task",
-            text: progressText,
-            ...(detail ? { detail } : {}),
-          });
-        },
-      );
-    }
-
-    await finalizeToolExecution(
-      toolRecord.id,
-      "run_workspace_task",
-      normalizedToolArgs,
-      rationale,
-      status,
-      result,
-    );
-
-    const completedBriefing = status === "completed"
-      ? extractCompletedBriefing("run_workspace_task", normalizedToolArgs, result)
-      : null;
-    if (completedBriefing) {
-      await completeRunFromBriefing(completedBriefing, "standard");
+    await startBackgroundTool("run_workspace_task", normalizedToolArgs, rationale);
+    const completed = await harvestPendingWorkspace(true);
+    if (completed || runFinalized) {
       return;
     }
-    throw new Error(
-      typeof result.error === "string" && result.error.trim().length > 0
-        ? result.error
-        : "Sprite fanout research did not return a usable briefing.",
-    );
+    const latestToolCalls = await deps.store.listToolCalls(run.id);
+    const latestRunWorkspaceTask = [...latestToolCalls]
+      .reverse()
+      .find((toolCall) => toolCall.toolName === "run_workspace_task");
+    const latestError =
+      typeof latestRunWorkspaceTask?.resultJson?.error === "string" && latestRunWorkspaceTask.resultJson.error.trim().length > 0
+        ? latestRunWorkspaceTask.resultJson.error.trim()
+        : null;
+    throw new Error(latestError ?? "Sprite fanout research did not return a usable briefing.");
   };
   try {
     if (requestedAssistantMode(input) === "comprehensive") {
