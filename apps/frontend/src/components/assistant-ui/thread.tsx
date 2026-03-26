@@ -45,7 +45,7 @@ import { useAuiState } from "@assistant-ui/store";
 import type { RunArtifactRecord } from "@/api";
 import { resolveFrontendImplementation } from "@/implementation";
 
-type AssistantEffortLevel = "normal" | "high" | "maximum" | "comprehensive";
+type AssistantEffortLevel = "semantic" | "comprehensive";
 
 const IMPLEMENTATION = resolveFrontendImplementation();
 const SITE_ORIGIN = IMPLEMENTATION.siteOrigin;
@@ -560,9 +560,7 @@ const ComposerAction: FC<{
           onChange={(event) => onEffortLevelChange(event.target.value as AssistantEffortLevel)}
           disabled={isRunning || disabled}
         >
-          <option value="normal">Low</option>
-          <option value="high">Medium</option>
-          <option value="maximum">High</option>
+          <option value="semantic">Semantic</option>
           <option value="comprehensive">Comprehensive</option>
         </select>
       </label>

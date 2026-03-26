@@ -1096,6 +1096,27 @@ function searchPlanFromEstimate(
   };
 }
 
+function requestedAssistantMode(input: {
+  mode?: "semantic" | "comprehensive";
+  researchMode?: "default" | "sprite_fanout";
+}): "semantic" | "comprehensive" {
+  if (input.mode === "comprehensive" || input.researchMode === "sprite_fanout") {
+    return "comprehensive";
+  }
+  return "semantic";
+}
+
+function requestedIntensityOverride(input: {
+  mode?: "semantic" | "comprehensive";
+  intensityOverride?: "normal" | "high" | "maximum";
+  researchMode?: "default" | "sprite_fanout";
+}): "normal" | "high" | "maximum" | undefined {
+  if (requestedAssistantMode(input) === "comprehensive") {
+    return "maximum";
+  }
+  return undefined;
+}
+
 async function deriveScopeEstimateFromSearchResult(
   deps: AppDeps,
   query: string,
@@ -9427,7 +9448,7 @@ async function runOrchestrator(
   const buildBackgroundWorkspaceTaskSpec = (runtimeId: string) => {
     const broadCorpusQuery = isBroadCorpusResearchQuery(routedQueryRef.current, Array.isArray(input.workIds) ? input.workIds.length : 0);
     const estimate = latestScopeEstimateFromHistory(toolHistory);
-    const searchPlan = searchPlanFromEstimate(estimate, broadCorpusQuery, input.intensityOverride);
+    const searchPlan = searchPlanFromEstimate(estimate, broadCorpusQuery, requestedIntensityOverride(input));
     const workLimit = Math.max(broadCorpusQuery ? (searchPlan.intensity === "normal" ? 48 : 40) : 12, Math.min(72, searchPlan.frontierWorks));
     const candidateLimit = broadCorpusQuery
       ? searchPlan.intensity === "normal"
@@ -9898,7 +9919,7 @@ async function runOrchestrator(
     if (!estimate) {
       return;
     }
-    const searchPlan = searchPlanFromEstimate(estimate, broadCorpusQuery, input.intensityOverride);
+    const searchPlan = searchPlanFromEstimate(estimate, broadCorpusQuery, requestedIntensityOverride(input));
     const prewarmWorkLimit = broadCorpusQuery ? 24 : 12;
     const prewarmCandidateWorkIds = (
       candidateWorkIds.length > 0
@@ -9951,7 +9972,7 @@ async function runOrchestrator(
         phase: "collect_and_brief",
         question: input.message,
         researchObjective: input.message,
-        intensity: input.intensityOverride ?? "normal",
+        intensity: requestedAssistantMode(input) === "comprehensive" ? "maximum" : "normal",
         workIds: Array.isArray(input.workIds) ? input.workIds : [],
       },
     });
@@ -10109,7 +10130,7 @@ async function runOrchestrator(
     );
   };
   try {
-    if (input.researchMode === "sprite_fanout") {
+    if (requestedAssistantMode(input) === "comprehensive") {
       recordRawLog("research_mode.selected", {
         runId: run.id,
         sessionId: session.id,
@@ -10218,7 +10239,7 @@ async function runOrchestrator(
     const currentTimeBudgetMs = () => {
       const estimate = latestScopeEstimateFromHistory(toolHistory);
       const broadCorpusQuery = isBroadCorpusResearchQuery(routedQueryRef.current, Array.isArray(input.workIds) ? input.workIds.length : 0);
-      const searchPlan = searchPlanFromEstimate(estimate, broadCorpusQuery, input.intensityOverride);
+      const searchPlan = searchPlanFromEstimate(estimate, broadCorpusQuery, requestedIntensityOverride(input));
       return Math.min(
         HARD_LIMITS.MAX_RUN_WALL_CLOCK_SECONDS * 1000,
         Math.max(60_000, searchPlan.wallClockMinutes * 60_000),

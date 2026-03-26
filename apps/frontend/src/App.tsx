@@ -160,7 +160,7 @@ type ThreadSuggestion = {
   prompt: string;
 };
 
-type AssistantEffortLevel = "normal" | "high" | "maximum" | "comprehensive";
+type AssistantEffortLevel = "semantic" | "comprehensive";
 
 type ReaderPassageKind = "heading" | "paragraph" | "quote" | "list-item" | "preformatted";
 
@@ -184,21 +184,20 @@ const BOOK_ASSISTANT_WIDTH_STORAGE_KEY = "alphabook.bookAssistantWidth";
 const ASSISTANT_EFFORT_STORAGE_KEY = "alphabook.assistantEffort";
 
 function normalizeAssistantEffort(value: string | null): AssistantEffortLevel {
-  return value === "normal" || value === "high" || value === "maximum" || value === "comprehensive" ? value : "high";
+  return value === "semantic" || value === "comprehensive" ? value : "semantic";
 }
 
 function resolveResearchMode(
   effort: AssistantEffortLevel,
-): { intensityOverride: "normal" | "high" | "maximum"; researchMode?: "sprite_fanout" } {
+): { mode: "semantic" | "comprehensive" } {
   if (effort === "comprehensive") {
     return {
-      intensityOverride: "maximum",
-      researchMode: "sprite_fanout",
+      mode: "comprehensive",
     };
   }
 
   return {
-    intensityOverride: effort,
+    mode: "semantic",
   };
 }
 const RECENT_SESSIONS_STORAGE_KEY = "alphabook.recentSessions";
@@ -5157,7 +5156,7 @@ export default function App() {
   const [streamConnected, setStreamConnected] = useState(false);
   const [assistantEffort, setAssistantEffort] = useState<AssistantEffortLevel>(() => {
     if (typeof window === "undefined") {
-      return "high";
+      return "semantic";
     }
     return normalizeAssistantEffort(window.localStorage.getItem(ASSISTANT_EFFORT_STORAGE_KEY));
   });
@@ -6759,8 +6758,7 @@ export default function App() {
           userId: authState.authConfigured ? undefined : currentUserId,
           message: transportQuestion,
           workIds: options.workIdsOverride,
-          intensityOverride: researchConfig.intensityOverride,
-          researchMode: researchConfig.researchMode,
+          mode: researchConfig.mode,
         },
         {
           onEvent: (event) => {

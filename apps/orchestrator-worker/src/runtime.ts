@@ -16,6 +16,7 @@ interface ToolExecutionContext {
 type RuntimeToolArgs = Record<string, unknown> & Partial<ToolExecutionContext>;
 type ProgressReporter = (text: string, detail?: Record<string, unknown>) => Promise<void>;
 const PROGRESS_REPORT_TIMEOUT_MS = 1_500;
+const SPRITE_RUN_EVENT_TIMEOUT_MS = 1_500;
 
 interface WorkspaceDownload {
   r2Key: string;
@@ -170,6 +171,21 @@ async function safeReportProgress(
     progressReporter(text, detail).catch(() => {}),
     new Promise<void>((resolve) => {
       setTimeout(resolve, PROGRESS_REPORT_TIMEOUT_MS);
+    }),
+  ]);
+}
+
+async function safeAppendRunEvent(
+  store: AppStore,
+  runId: string,
+  sessionId: string,
+  event: string,
+  dataJson: Record<string, unknown>,
+) {
+  await Promise.race([
+    store.appendRunEvent(runId, sessionId, event, dataJson).catch(() => {}),
+    new Promise<void>((resolve) => {
+      setTimeout(resolve, SPRITE_RUN_EVENT_TIMEOUT_MS);
     }),
   ]);
 }
@@ -856,7 +872,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
       implementationId,
     });
     const catalog = await this.loadSpriteShardCatalog(implementationId);
-    await this.store.appendRunEvent(runId, sessionId, "sprite.catalog.loaded", {
+    await safeAppendRunEvent(this.store, runId, sessionId, "sprite.catalog.loaded", {
       implementationId,
       shardCount: catalog.shardCount,
       shardSize: catalog.shardSize,
@@ -891,7 +907,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     );
     for (const shard of selectedShards) {
       const label = shardLabel(shard);
-      await this.store.appendRunEvent(runId, sessionId, "sprite.shard.queued", {
+      await safeAppendRunEvent(this.store, runId, sessionId, "sprite.shard.queued", {
         implementationId,
         shardId: shard.shardId,
         label,
@@ -914,7 +930,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
 
     const shardResults = await this.mapWithConcurrency(selectedShards, concurrency, async (shard) => {
       const label = shardLabel(shard);
-      await this.store.appendRunEvent(runId, sessionId, "sprite.shard.started", {
+      await safeAppendRunEvent(this.store, runId, sessionId, "sprite.shard.started", {
         implementationId,
         shardId: shard.shardId,
         label,
@@ -939,7 +955,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
         intensity,
         progressReporter,
       });
-      await this.store.appendRunEvent(runId, sessionId, `sprite.shard.${result.ok ? "completed" : "failed"}`, {
+      await safeAppendRunEvent(this.store, runId, sessionId, `sprite.shard.${result.ok ? "completed" : "failed"}`, {
         implementationId,
         shardId: shard.shardId,
         label,
@@ -983,7 +999,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
       shardCount: shardResults.length,
       state: "starting",
     });
-    await this.store.appendRunEvent(runId, sessionId, "sprite.aggregate.started", {
+    await safeAppendRunEvent(this.store, runId, sessionId, "sprite.aggregate.started", {
       implementationId,
       successfulShardCount: successfulShards.length,
       shardCount: shardResults.length,
@@ -997,7 +1013,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
       }) as Record<string, unknown>;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Sprite aggregation failed.";
-      await this.store.appendRunEvent(runId, sessionId, "sprite.aggregate.failed", {
+      await safeAppendRunEvent(this.store, runId, sessionId, "sprite.aggregate.failed", {
         implementationId,
         shardCount: shardResults.length,
         successfulShardCount: successfulShards.length,
@@ -1020,7 +1036,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     const aggregateRuntimeId = typeof aggregateResult.runtimeId === "string" ? aggregateResult.runtimeId : "";
     const aggregateBriefing = typeof aggregateResult.briefing === "string" ? aggregateResult.briefing : "";
     const aggregateArtifacts = Array.isArray(aggregateResult.artifacts) ? aggregateResult.artifacts : [];
-    await this.store.appendRunEvent(runId, sessionId, "sprite.aggregate.completed", {
+    await safeAppendRunEvent(this.store, runId, sessionId, "sprite.aggregate.completed", {
       implementationId,
       shardCount: shardResults.length,
       successfulShardCount: successfulShards.length,
@@ -1203,7 +1219,6 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
             RUNTIME_WORKSPACE_ROOT: "/workspace",
             RUNTIME_SHARED_TOKEN: this.config.runtimeSharedToken ?? "",
             RUNTIME_AGENT_COMMAND: "/app/apps/runtime/bin/run-agent.mjs",
-            DATABASE_URL: this.config.databaseUrl ?? "",
             OPENAI_API_KEY: this.config.openAIApiKey ?? "",
             OPENAI_BASE_URL: this.config.codexOpenAIBaseUrl ?? "http://127.0.0.1:8080/openai-proxy/v1",
             RUNTIME_OPENAI_PROXY_UPSTREAM_BASE_URL: this.config.codexProxyUpstreamBaseUrl ?? "https://api.openai.com/v1",
@@ -2026,7 +2041,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
           attemptInstance = await this.requireRuntime(runtimeId);
           machineId = machine.id;
           instance = attemptInstance;
-          await this.store.appendRunEvent(options.runId, sessionId, "sprite.shard.hydrating", {
+          await safeAppendRunEvent(this.store, options.runId, sessionId, "sprite.shard.hydrating", {
             implementationId: options.implementationId,
             shardId: shard.shardId,
             label: shardLabel(shard),
@@ -2062,7 +2077,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
             downloads: workspacePlan.downloads,
           }, { timeoutMs: prepareTimeoutMs });
           await persistShardLifecycle(runtimeId, "ready");
-          await this.store.appendRunEvent(options.runId, sessionId, "sprite.shard.ready", {
+          await safeAppendRunEvent(this.store, options.runId, sessionId, "sprite.shard.ready", {
             implementationId: options.implementationId,
             shardId: shard.shardId,
             label: shardLabel(shard),
@@ -2144,7 +2159,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
         shard,
         progressReporter,
       );
-      await this.store.appendRunEvent(options.runId, sessionId, "sprite.shard.searching", {
+      await safeAppendRunEvent(this.store, options.runId, sessionId, "sprite.shard.searching", {
         implementationId: options.implementationId,
         shardId: shard.shardId,
         label: shardLabel(shard),

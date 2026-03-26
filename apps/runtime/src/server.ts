@@ -471,10 +471,6 @@ async function writeWorkspaceHelpers(paths: ReturnType<typeof createPaths>) {
       filename: "hydrate-files.mjs",
       targetPath: "/app/apps/runtime/bin/hydrate-files.mjs",
     },
-    {
-      filename: "search-db.mjs",
-      targetPath: "/app/apps/runtime/bin/search-db.mjs",
-    },
   ];
 
   await Promise.all(
