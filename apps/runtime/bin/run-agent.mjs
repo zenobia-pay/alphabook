@@ -824,6 +824,88 @@ async function listChunkFiles(chunksRoot) {
   return files;
 }
 
+async function listCleanTextFiles(booksRoot) {
+  const entries = await readdir(booksRoot, { withFileTypes: true }).catch(() => []);
+  const files = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+    const candidate = join(booksRoot, entry.name, "clean.txt");
+    if (await fileExists(candidate)) {
+      files.push({
+        workId: entry.name,
+        path: candidate,
+      });
+    }
+  }
+  return files;
+}
+
+function sliceLocalCleanExcerpt(text, tokenMatches = []) {
+  const normalized = String(text || "").replace(/\r\n/gu, "\n");
+  const needle = tokenMatches.find((token) => typeof token === "string" && token.length > 0);
+  const start = needle
+    ? Math.max(0, normalized.toLowerCase().indexOf(needle.toLowerCase()) - 220)
+    : 0;
+  const excerpt = normalized.slice(start, start + 720).trim();
+  return normalizeWhitespace(excerpt);
+}
+
+async function searchLocalCleanTexts(booksRoot, question, tokens, phrases, families, workById) {
+  const cleanFiles = await listCleanTextFiles(booksRoot);
+  const hits = [];
+
+  for (const file of cleanFiles) {
+    const content = await readFile(file.path, "utf8").catch(() => "");
+    if (!content.trim()) {
+      continue;
+    }
+    const paragraphs = content
+      .split(/\n\s*\n/gu)
+      .map((paragraph) => normalizeWhitespace(paragraph))
+      .filter(Boolean);
+    for (let index = 0; index < paragraphs.length; index += 1) {
+      const paragraph = paragraphs[index];
+      const haystack = paragraph.toLowerCase();
+      let score = scoreText(paragraph, tokens, phrases);
+      const matchedConcepts = [];
+      const matchedPatterns = [];
+      for (const family of families) {
+        const familySignals = scoreFamilySignals(haystack, family);
+        score += familySignals.score;
+        matchedConcepts.push(...familySignals.matchedConcepts);
+        matchedPatterns.push(...familySignals.matchedPatterns);
+      }
+      score += workScoreAdjustment(question, workById.get(file.workId), families);
+      if (score <= 0) {
+        continue;
+      }
+      hits.push({
+        id: `local-clean:${file.workId}:${index + 1}`,
+        work_id: file.workId,
+        workId: file.workId,
+        chunk_index: index + 1,
+        chunkIndex: index + 1,
+        text: sliceLocalCleanExcerpt(paragraph, tokens),
+        excerpt: sliceLocalCleanExcerpt(paragraph, tokens),
+        r2Key: `books/${file.workId}/clean.txt`,
+        matched_concepts: Array.from(new Set(matchedConcepts)),
+        matched_patterns: Array.from(new Set(matchedPatterns)),
+        score,
+      });
+    }
+  }
+
+  hits.sort((left, right) => right.score - left.score || left.work_id.localeCompare(right.work_id) || left.chunk_index - right.chunk_index);
+  return {
+    name: "local-clean-search",
+    tokens,
+    phrases,
+    hits: hits.slice(0, 48),
+  };
+}
+
 async function parseChunkJsonl(path) {
   const content = await readFile(path, "utf8");
   return content
@@ -838,17 +920,15 @@ async function readJsonIfPresent(path, fallback) {
 }
 
 function buildSearchEvidence(question, selectedChunks, runtimeChunks, workById) {
-  return {
-    question,
-    selectedChunks: selectedChunks.slice(0, 8).map((chunk) => ({
+  const normalizedSelectedChunks = selectedChunks.slice(0, 8).map((chunk) => ({
       id: String(chunk.id || ""),
       workId: String(chunk.work_id || chunk.workId || ""),
       title: String(workById.get(String(chunk.work_id || chunk.workId || ""))?.title || ""),
       chunkIndex: Number(chunk.chunk_index || chunk.chunkIndex || 0),
       excerpt: normalizeWhitespace(String(chunk.excerpt || chunk.text || "")).slice(0, 500),
       r2Key: chunk.r2Key ?? chunk.r2_key ?? null,
-    })),
-    runtimeHits: runtimeChunks.slice(0, 10).map((chunk) => ({
+    }));
+  const normalizedRuntimeHits = runtimeChunks.slice(0, 10).map((chunk) => ({
       id: String(chunk.id || ""),
       workId: String(chunk.work_id || chunk.workId || ""),
       title: String(workById.get(String(chunk.work_id || chunk.workId || ""))?.title || ""),
@@ -858,7 +938,12 @@ function buildSearchEvidence(question, selectedChunks, runtimeChunks, workById) 
       matchedIterations: Array.isArray(chunk.matched_iterations) ? chunk.matched_iterations : [],
       matchedConcepts: Array.isArray(chunk.matched_concepts) ? chunk.matched_concepts : [],
       r2Key: chunk.r2Key ?? chunk.r2_key ?? null,
-    })),
+    }));
+  return {
+    question,
+    selectedChunks: normalizedSelectedChunks,
+    runtimeHits: normalizedRuntimeHits,
+    items: [...normalizedSelectedChunks, ...normalizedRuntimeHits],
     candidateWorkIds: Array.isArray(runtimeChunks)
       ? Array.from(new Set(runtimeChunks.slice(0, 12).map((chunk) => String(chunk.work_id || chunk.workId || "")))).filter(Boolean)
       : [],
@@ -1815,6 +1900,7 @@ async function main() {
   const contextDir = dirname(taskPath);
   const workspaceRoot = dirname(contextDir);
   const chunksRoot = join(workspaceRoot, "chunks");
+  const booksRoot = join(workspaceRoot, "books");
   const manifestPath = join(contextDir, "manifest.json");
   const selectedChunksPath = join(contextDir, "selected-chunks.json");
   const scratchCorpusDir = join(workspaceRoot, "scratch", "research-corpus");
@@ -1871,7 +1957,7 @@ async function main() {
     ],
   );
   const chunkFiles = await listChunkFiles(chunksRoot);
-  if (chunkFiles.length === 0) {
+  if (chunkFiles.length === 0 && !spriteShardMode) {
     await appendProgressEvent(outputDir, {
       type: "workspace.local_chunks.missing",
       message: "No local chunk files are hydrated yet; starting from seed evidence and remote corpus search.",
@@ -1885,15 +1971,30 @@ async function main() {
   }
 
   const chunkIndex = buildChunkIndex(allChunks);
-  const iterations = [
-    searchCorpus(allChunks, question, searchTokens, searchPhrases, expansions.families, workById, "family-search"),
-  ];
-  if (expansions.families.some((family) => family.id === "reunion")) {
-    iterations.push(searchReunionWindows(chunkIndex, workById, question));
+  let iterations = [];
+  let topRuntimeHits = [];
+  if (spriteShardMode && chunkFiles.length === 0) {
+    iterations = [
+      await searchLocalCleanTexts(booksRoot, question, searchTokens, searchPhrases, expansions.families, workById),
+    ];
+    const mergedHits = mergeHits(iterations);
+    topRuntimeHits = diversifyHits(mergedHits, broadCorpusTask ? 24 : 10, broadCorpusTask ? 6 : 3);
+    await appendProgressEvent(outputDir, {
+      type: "workspace.local_clean_search",
+      hitCount: topRuntimeHits.length,
+      message: `Searched the local shard clean text and found ${topRuntimeHits.length} candidate passages.`,
+    });
+  } else {
+    iterations = [
+      searchCorpus(allChunks, question, searchTokens, searchPhrases, expansions.families, workById, "family-search"),
+    ];
+    if (expansions.families.some((family) => family.id === "reunion")) {
+      iterations.push(searchReunionWindows(chunkIndex, workById, question));
+    }
+    const mergedHits = mergeHits(iterations);
+    const filteredHits = prioritizeFamilyHits(filterFamilyHits(mergedHits, chunkIndex, expansions.families), expansions.families);
+    topRuntimeHits = diversifyHits(expandWithNeighbors(filteredHits, chunkIndex), broadCorpusTask ? 24 : 10, broadCorpusTask ? 6 : 3);
   }
-  const mergedHits = mergeHits(iterations);
-  const filteredHits = prioritizeFamilyHits(filterFamilyHits(mergedHits, chunkIndex, expansions.families), expansions.families);
-  const topRuntimeHits = diversifyHits(expandWithNeighbors(filteredHits, chunkIndex), broadCorpusTask ? 24 : 10, broadCorpusTask ? 6 : 3);
   const seedChunks = gatherSeedChunks(task, selectedChunks, workById);
   const evidence = buildSearchEvidence(question, seedChunks.slice(0, seedChunkLimit), topRuntimeHits.slice(0, runtimeHitLimit), workById);
   const seededWorkIds = Array.from(new Set([
