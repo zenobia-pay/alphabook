@@ -105,25 +105,18 @@ export function createWranglerD1Db(options: CreateWranglerD1DbOptions = {}): DbC
   return {
     async query<T>(sql: string, params: unknown[] = []) {
       const command = interpolateSql(sql, params).replace(/\r?\n\s*/gu, " ").trim();
-      const queryDir = await mkdtemp(join(tmpdir(), "alphabook-d1-query-"));
-      const queryFile = join(queryDir, "query.sql");
-      try {
-        await writeFile(queryFile, `${command}\n`, "utf8");
-        const args = ["d1", "execute", databaseName, remoteFlag, "--json", "--file", queryFile];
-        if (options.wranglerConfig) {
-          args.push("--config", options.wranglerConfig);
-        }
-        const output = await runWranglerJson<WranglerStatementResult<T>[]>(args, { cwd });
-        const statement = output.find((entry) => entry.success !== false) ?? output[0];
-        if (!statement || statement.success === false) {
-          throw new Error(`D1 query failed for ${databaseName}.`);
-        }
-        return {
-          rows: Array.isArray(statement.results) ? statement.results : [],
-        };
-      } finally {
-        await rm(queryDir, { recursive: true, force: true });
+      const args = ["d1", "execute", databaseName, remoteFlag, "--json", "--command", command];
+      if (options.wranglerConfig) {
+        args.push("--config", options.wranglerConfig);
       }
+      const output = await runWranglerJson<WranglerStatementResult<T>[]>(args, { cwd });
+      const statement = output.find((entry) => entry.success !== false) ?? output[0];
+      if (!statement || statement.success === false) {
+        throw new Error(`D1 query failed for ${databaseName}.`);
+      }
+      return {
+        rows: Array.isArray(statement.results) ? statement.results : [],
+      };
     },
     async end() {
       return Promise.resolve();
