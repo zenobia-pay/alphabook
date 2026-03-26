@@ -1506,10 +1506,10 @@ function firstArtifactKey(artifacts: GutenbergR2Artifacts, kind: keyof Gutenberg
 }
 
 function createVectorizeApi(context: IngestContext): CloudflareVectorizeApi | null {
-  if (!context.vectorIndexName || !context.cloudflareAccountId || !process.env.CLOUDFLARE_API_TOKEN) {
+  if (!context.vectorIndexName) {
     return null;
   }
-  return new CloudflareVectorizeApi(context.cloudflareAccountId, process.env.CLOUDFLARE_API_TOKEN);
+  return new CloudflareVectorizeApi(context.vectorWranglerConfig, process.cwd());
 }
 
 function isApplyFlag(value?: string | null) {

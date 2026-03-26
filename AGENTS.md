@@ -40,4 +40,5 @@
   - `apps/ingest/src/index.ts` auto-loads `.dev.vars`
   - local `.dev.vars` may contain quoted R2 credentials and a stale Cloudflare API token that breaks Wrangler D1 auth
   - prefer Wrangler OAuth login on the machine and do not rely on `CLOUDFLARE_API_TOKEN`
+  - for Vectorize operations, use Wrangler OAuth via `npx wrangler vectorize ... --config apps/orchestrator-worker/wrangler.toml`; do not build new REST-token codepaths when Wrangler already supports the operation
   - if needed, temporarily move `.dev.vars` out of the way and export only normalized `R2_*` plus embedding vars before running the ingest CLI

@@ -1,9 +1,7 @@
-interface CloudflareEnvelope<T> {
-  success: boolean;
-  errors?: Array<{ code: number; message: string }>;
-  messages?: Array<{ code: number; message: string }>;
-  result: T;
-}
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 interface VectorizeInfoResult {
   dimensions?: number;
@@ -17,49 +15,68 @@ interface VectorizeListResult {
   totalCount?: number;
 }
 
-interface VectorizeGetResult {
-  vectors?: Array<{ id: string }>;
+interface VectorizeGetResultItem {
+  id?: string;
 }
 
 export class CloudflareVectorizeApi {
   constructor(
-    private readonly accountId: string,
-    private readonly apiToken: string,
-    private readonly fetchImpl: typeof fetch = fetch,
+    private readonly wranglerConfigPath: string,
+    private readonly cwd: string = process.cwd(),
   ) {}
 
-  private async request<T>(path: string, init?: RequestInit): Promise<T> {
-    const response = await this.fetchImpl(`https://api.cloudflare.com/client/v4/accounts/${this.accountId}${path}`, {
-      ...init,
-      headers: {
-        authorization: `Bearer ${this.apiToken}`,
-        "content-type": "application/json",
-        ...(init?.headers ?? {}),
-      },
+  private async runWrangler(args: string[]): Promise<string> {
+    const { stdout } = await execFileAsync("npx", ["wrangler", ...args], {
+      cwd: this.cwd,
+      env: process.env,
+      maxBuffer: 20 * 1024 * 1024,
     });
-    const payload = await response.json() as CloudflareEnvelope<T>;
-    if (!response.ok || !payload.success) {
-      const details = payload.errors?.map((error) => `${error.code}: ${error.message}`).join("; ")
-        ?? `${response.status} ${response.statusText}`;
-      throw new Error(`Cloudflare Vectorize request failed: ${details}`);
+    return stdout.trim();
+  }
+
+  private parseJson<T>(stdout: string): T {
+    const objectStart = stdout.indexOf("{");
+    const arrayStart = stdout.indexOf("[");
+    const start = objectStart === -1
+      ? arrayStart
+      : (arrayStart === -1 ? objectStart : Math.min(objectStart, arrayStart));
+    if (start === -1) {
+      throw new Error(`Wrangler Vectorize output did not contain JSON: ${stdout}`);
     }
-    return payload.result;
+    return JSON.parse(stdout.slice(start)) as T;
   }
 
   async getInfo(indexName: string): Promise<VectorizeInfoResult> {
-    return await this.request<VectorizeInfoResult>(`/vectorize/v2/indexes/${indexName}`);
+    const stdout = await this.runWrangler([
+      "vectorize",
+      "info",
+      indexName,
+      "--json",
+      "--config",
+      this.wranglerConfigPath,
+    ]);
+    return this.parseJson<VectorizeInfoResult>(stdout);
   }
 
   async listVectorIds(indexName: string): Promise<string[]> {
     const ids: string[] = [];
     let cursor: string | null = null;
     while (true) {
-      const query = new URLSearchParams();
-      query.set("count", "1000");
+      const args = [
+        "vectorize",
+        "list-vectors",
+        indexName,
+        "--count",
+        "1000",
+        "--json",
+        "--config",
+        this.wranglerConfigPath,
+      ];
       if (cursor) {
-        query.set("cursor", cursor);
+        args.push("--cursor", cursor);
       }
-      const result = await this.request<VectorizeListResult>(`/vectorize/v2/indexes/${indexName}/list?${query.toString()}`);
+      const stdout = await this.runWrangler(args);
+      const result = this.parseJson<VectorizeListResult>(stdout);
       ids.push(...(result.vectors ?? []).map((vector) => vector.id));
       if (!result.isTruncated || !result.nextCursor) {
         break;
@@ -76,12 +93,16 @@ export class CloudflareVectorizeApi {
       if (batch.length === 0) {
         continue;
       }
-      const query = new URLSearchParams();
-      for (const id of batch) {
-        query.append("ids", id);
-      }
-      const result = await this.request<VectorizeGetResult>(`/vectorize/v2/indexes/${indexName}/get_by_ids?${query.toString()}`);
-      for (const vector of result.vectors ?? []) {
+      const stdout = await this.runWrangler([
+        "vectorize",
+        "get-vectors",
+        indexName,
+        ...batch.flatMap((id) => ["--ids", id]),
+        "--config",
+        this.wranglerConfigPath,
+      ]);
+      const result = this.parseJson<VectorizeGetResultItem[]>(stdout);
+      for (const vector of result) {
         if (vector.id) {
           found.add(vector.id);
         }
@@ -96,10 +117,14 @@ export class CloudflareVectorizeApi {
       if (batch.length === 0) {
         continue;
       }
-      await this.request(`/vectorize/v2/indexes/${indexName}/delete_by_ids`, {
-        method: "POST",
-        body: JSON.stringify({ ids: batch }),
-      });
+      await this.runWrangler([
+        "vectorize",
+        "delete-vectors",
+        indexName,
+        ...batch.flatMap((id) => ["--ids", id]),
+        "--config",
+        this.wranglerConfigPath,
+      ]);
     }
   }
 }
