@@ -1,13 +1,13 @@
 # Cloudflare Storage Migration
 
-This document is the implementation plan for removing Neon from AlphaBook and moving the stack to Cloudflare-native storage.
+This document is the implementation plan for removing the legacy Postgres-backed storage path from AlphaBook and moving the stack to Cloudflare-native storage.
 
 ## Goal
 
 Replace the current:
 
-- Neon/Postgres for relational state
-- Neon/pgvector for semantic retrieval
+- the legacy Postgres relational store for application state
+- the legacy pgvector path for semantic retrieval
 
 with:
 
@@ -27,7 +27,7 @@ The current repo relies on Postgres-specific features:
 
 - `vector(1536)` and pgvector similarity in `chunks.embedding`
 - `tsvector` lexical search over chunk and metadata text
-- Postgres casts and array operators throughout `NeonAppStore`
+- Postgres casts and array operators throughout `SqlAppStore`
 
 See:
 
@@ -134,17 +134,17 @@ Dual-write during migration if rollback is required.
 
 ### Phase 4: Relational State Port
 
-Port `NeonAppStore` responsibilities into a D1-backed store.
+Port `SqlAppStore` responsibilities into a D1-backed store.
 
 This is the largest phase because many queries currently assume Postgres syntax and features.
 
-### Phase 5: Neon Removal
+### Phase 5: Legacy Postgres Removal
 
 After D1 and Vectorize are both live and verified:
 
-- disable Neon reads
-- disable Neon writes
-- remove `@neondatabase/serverless`
+- disable legacy Postgres reads
+- disable legacy Postgres writes
+- remove the legacy Postgres driver dependency
 - remove Postgres-specific schema/migration code
 
 ## Rollout Flags
@@ -162,16 +162,16 @@ Recommended rollout controls:
 3. Build a D1 app-store equivalent for sessions/messages/runs/tool calls.
 4. Replace Postgres-only metadata search with D1-compatible indexed lookups.
 5. Add migration/backfill scripts:
-   - Neon -> D1 relational state
+   - Postgres -> D1 relational state
    - OpenAI embeddings -> Google embeddings -> Vectorize
 
 ## Deployment Order
 
 1. Provision D1 database.
 2. Provision Vectorize index.
-3. Deploy worker with abstractions and flags defaulted to current Neon behavior.
+3. Deploy worker with abstractions and flags defaulted to the current legacy SQL behavior.
 4. Backfill Vectorize.
 5. Flip semantic mode to Vectorize.
 6. Backfill D1 relational state.
 7. Flip app-state reads/writes to D1.
-8. Remove Neon.
+8. Remove the legacy Postgres path.

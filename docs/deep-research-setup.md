@@ -29,12 +29,12 @@ The existing examples are:
 You need:
 
 - Node/npm
-- a Postgres database for production-style ingest and retrieval
+- a relational database for production-style ingest and retrieval
 - an R2-compatible object store
 - an OpenAI API key
 - Cloudflare Workers credentials if you plan to deploy the web/API workers
 
-For local validation only, you can skip Postgres and R2 and use the preview-mode ingest commands.
+For local validation only, you can skip the relational DB and R2 and use the preview-mode ingest commands.
 
 ## Step 1: Install And Validate The Repo
 
@@ -182,7 +182,7 @@ There are two useful levels:
 1. local preview mode
    This prepares artifact keys, chunks, and metadata without requiring DB/R2.
 2. persistent ingest mode
-   This writes metadata, chunks, and artifacts into Postgres and R2.
+   This writes metadata, chunks, and artifacts into the relational store and R2.
 
 For a new corpus, get preview mode working first. Then add the production persistence path.
 
@@ -219,7 +219,7 @@ If your new implementation has its own wrappers, also run its app-specific check
 
 To run real deep research over a large corpus, provision:
 
-- Postgres for metadata, chunks, sessions, runs, and runtime state
+- a relational database for metadata, chunks, sessions, runs, and runtime state
 - R2 for raw text, cleaned text, chunk payloads, and rendered artifacts
 - runtime service infrastructure for deep workspace search
 
@@ -237,7 +237,7 @@ Once DB and R2 are configured, run your persistent ingest path.
 
 Your end state should be:
 
-- corpus records in Postgres
+- corpus records in the relational store
 - chunk rows indexed for retrieval
 - artifact files in R2
 - optional rendered HTML/manifests in R2

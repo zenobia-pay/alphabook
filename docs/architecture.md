@@ -33,7 +33,7 @@ AlphaBook is now organized as a core-plus-reference-app monorepo.
 - `apps/runtime`
   - hydrated workspace execution in a bounded environment
 - `apps/ingest`
-  - import path for source adapters into Neon + R2
+  - import path for source adapters into the relational store + R2
 - `apps/frontend`
   - AlphaBook web UI
 

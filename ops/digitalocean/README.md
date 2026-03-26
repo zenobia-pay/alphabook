@@ -74,8 +74,18 @@ R2_BUCKET_NAME=...
 R2_ENDPOINT=...
 R2_ACCESS_KEY_ID=...
 R2_SECRET_ACCESS_KEY=...
-OPENAI_API_KEY=... # optional
+EMBEDDING_PROVIDER=google # or openai
+GOOGLE_AI_API_KEY=... # required when EMBEDDING_PROVIDER=google
+GOOGLE_EMBEDDING_MODEL=gemini-embedding-2-preview
+GOOGLE_EMBEDDING_DIMENSIONS=1536
+# OPENAI_API_KEY=... # required when EMBEDDING_PROVIDER=openai
+# OPENAI_EMBEDDING_MODEL=text-embedding-3-small
 ```
+
+Notes:
+
+- The live repo still requires `DATABASE_URL` today because ingest persists corpus metadata and chunk rows into the existing relational store.
+- The embedding provider is now configurable. For the Cloudflare migration path, use Google embeddings with `GOOGLE_EMBEDDING_DIMENSIONS=1536`.
 
 Then you can run:
 

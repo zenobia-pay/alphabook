@@ -138,7 +138,7 @@ Implement a repository that can return:
 
 For a lightweight setup, use an in-memory or fixture repository first.
 
-For a real deployment, the active path should read from Postgres and R2 through the existing neutral repository/store interfaces in `apps/orchestrator-worker`.
+For a real deployment, the active path should read from the relational store and R2 through the existing neutral repository/store interfaces in `apps/orchestrator-worker`.
 
 ### 6. Add ingest wiring
 
@@ -147,7 +147,7 @@ Add a new ingest command in `apps/ingest/src/index.ts`.
 There are two useful phases:
 
 1. local preview mode
-2. real persistence mode to Postgres and R2
+2. real persistence mode to the relational store and R2
 
 Preview mode is valuable because it lets you validate:
 
@@ -237,7 +237,7 @@ At minimum, the implementation config should define:
 
 For a real deployed corpus, make sure these exist:
 
-- Postgres with the current `packages/db` migrations applied
+- a relational database with the current `packages/db` migrations applied
 - R2 bucket for raw / clean / chunks / rendered artifacts
 - preview R2 bucket
 - implementation-specific Worker queues

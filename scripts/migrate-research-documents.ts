@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { S3Client, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
-import { neon } from "@neondatabase/serverless";
+import { createPostgresDb } from "@alphabook/db";
 import { artifactKeys } from "@alphabook/corpus-core";
 
 type RunRecord = {
@@ -433,7 +433,7 @@ async function main() {
     throw new Error("Missing required credentials in .dev.vars.");
   }
 
-  const sql = neon(databaseUrl);
+  const db = createPostgresDb(databaseUrl);
   const s3 = new S3Client({
     region: "auto",
     endpoint: r2Endpoint,
@@ -447,7 +447,7 @@ async function main() {
 
   if (targetUsers.length > 0 || targetSessionIds.length > 0) {
     for (const target of targetUsers) {
-      const userRuns = await sql`
+      const { rows: userRuns } = await db.query<RunRecord>(`
         with ranked_sessions as (
           select
             cs.id as "sessionId",
@@ -460,18 +460,18 @@ async function main() {
           from chat_sessions cs
           join users u on u.id = cs.user_id
           join runs r on r.session_id = cs.id
-          where lower(u.email) = ${target.email}
+          where lower(u.email) = $1
         )
         select id, "sessionId", "startedAt", title, "userEmail"
         from ranked_sessions
-        where session_run_rank = 1 and overall_rank <= ${target.limit}
+        where session_run_rank = 1 and overall_rank <= $2
         order by "startedAt" desc
-      ` as RunRecord[];
+      `, [target.email, target.limit]);
       runs.push(...userRuns);
     }
 
     if (targetSessionIds.length > 0) {
-      const sessionRuns = await sql`
+      const { rows: sessionRuns } = await db.query<RunRecord>(`
         with ranked_runs as (
           select
             cs.id as "sessionId",
@@ -483,17 +483,17 @@ async function main() {
           from chat_sessions cs
           join users u on u.id = cs.user_id
           join runs r on r.session_id = cs.id
-          where cs.id = any(${targetSessionIds}::uuid[])
+          where cs.id = any($1::uuid[])
         )
         select id, "sessionId", "startedAt", title, "userEmail"
         from ranked_runs
         where session_run_rank = 1
         order by "startedAt" desc
-      ` as RunRecord[];
+      `, [targetSessionIds]);
       runs.push(...sessionRuns);
     }
   } else {
-    const defaultRuns = await sql`
+    const { rows: defaultRuns } = await db.query<RunRecord>(`
       with ranked_sessions as (
         select
           cs.id as "sessionId",
@@ -507,9 +507,9 @@ async function main() {
       )
       select id, "sessionId", "startedAt", title
       from ranked_sessions
-      where session_run_rank = 1 and overall_rank <= ${limit}
+      where session_run_rank = 1 and overall_rank <= $1
       order by "startedAt" desc
-    ` as RunRecord[];
+    `, [limit]);
     runs = defaultRuns;
   }
 
@@ -520,7 +520,7 @@ async function main() {
   const migrated: Array<{ sessionId: string; runId: string; title: string; userEmail: string | null }> = [];
 
   for (const run of dedupedRuns) {
-    const artifacts = await sql`
+    const { rows: artifacts } = await db.query<RunArtifactRecord>(`
       select
         id,
         runtime_id as "runtimeId",
@@ -530,14 +530,14 @@ async function main() {
         metadata_json as metadata,
         created_at as "createdAt"
       from artifacts
-      where session_id = ${run.sessionId}::uuid
+      where session_id = $1::uuid
         and (
-          filename = ${`${run.id}-research-document.html`}
-          or filename = ${`${run.id}-research-document.json`}
-          or (metadata_json->>'runId') = ${run.id}
+          filename = $2
+          or filename = $3
+          or (metadata_json->>'runId') = $4
         )
       order by created_at desc
-    ` as RunArtifactRecord[];
+    `, [run.sessionId, `${run.id}-research-document.html`, `${run.id}-research-document.json`, run.id]);
 
     const htmlArtifact = artifacts.find((artifact) =>
       artifact.metadata?.kind === "research_document" && artifact.filename.endsWith(".html"),
@@ -574,18 +574,27 @@ async function main() {
       ContentType: "text/html; charset=utf-8",
     }));
 
-    await sql`
+    await db.query(`
       INSERT INTO artifacts (id, session_id, runtime_id, r2_key, filename, mime_type, metadata_json, created_at)
-      VALUES (${crypto.randomUUID()}::uuid, ${run.sessionId}::uuid, ${legacyArtifact?.runtimeId ?? toolStreamArtifact?.runtimeId ?? null}, ${r2Key}, ${filename}, ${"text/html"}, ${JSON.stringify({
+      VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::jsonb, $8::timestamptz)
+      ON CONFLICT (r2_key) DO UPDATE
+      SET mime_type = EXCLUDED.mime_type, metadata_json = EXCLUDED.metadata_json
+    `, [
+      crypto.randomUUID(),
+      run.sessionId,
+      legacyArtifact?.runtimeId ?? toolStreamArtifact?.runtimeId ?? null,
+      r2Key,
+      filename,
+      "text/html",
+      JSON.stringify({
         kind: "research_document",
         runId: run.id,
         format: "html",
         ...(legacyArtifact?.id ? { migratedFromArtifactId: legacyArtifact.id } : {}),
         ...(toolStreamArtifact?.id ? { migratedFromToolStreamArtifactId: toolStreamArtifact.id } : {}),
-      })}::jsonb, ${legacyArtifact?.createdAt ?? toolStreamArtifact?.createdAt ?? run.startedAt}::timestamptz)
-      ON CONFLICT (r2_key) DO UPDATE
-      SET mime_type = EXCLUDED.mime_type, metadata_json = EXCLUDED.metadata_json
-    `;
+      }),
+      legacyArtifact?.createdAt ?? toolStreamArtifact?.createdAt ?? run.startedAt,
+    ]);
 
     migrated.push({
       sessionId: run.sessionId,
@@ -600,6 +609,8 @@ async function main() {
     targetedRuns: dedupedRuns.length,
     migrated,
   }, null, 2));
+
+  await db.end();
 }
 
 await main();

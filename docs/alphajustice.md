@@ -72,7 +72,7 @@ The current production source strategy is:
 - one AlphaJustice document per CourtListener opinion cluster
 - all linked sub-opinions combined into the stored case text for that case
 
-The ingest expects `COURTLISTENER_API_TOKEN` plus the usual Postgres and R2 variables from [environment.md](environment.md).
+The ingest expects `COURTLISTENER_API_TOKEN` plus the usual relational-DB and R2 variables from [environment.md](environment.md).
 
 ## Validation
 

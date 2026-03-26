@@ -78,7 +78,7 @@ The repo is structured as a shared core-plus-implementations monorepo:
 - `packages/implementations`: implementation-level branding, origins, and prompt configuration
 - `packages/source-gutenberg`: Project Gutenberg adapter for ingest and storage conventions
 - `packages/source-supreme-court`: Supreme Court corpus adapter and repository fixture for AlphaJustice
-- `packages/db`: Neon schema and migration utilities
+- `packages/db`: database client and migration utilities
 - `packages/shared`: AlphaBook-facing contracts, prompts, and compatibility exports
 - `packages/tooling`: local scripts such as migrations
 
@@ -233,7 +233,7 @@ Core variables include:
 
 ## Local Development
 
-Run Neon migrations:
+Run database migrations:
 
 ```bash
 DATABASE_URL=postgres://... npm run migrate
@@ -289,7 +289,7 @@ Run the Supreme Court demo ingest:
 npx tsx apps/ingest/src/index.ts ingest-supreme-court-demo
 ```
 
-Backfill the local mirror into Neon + R2 in batches:
+Backfill the local mirror into the relational store + R2 in batches:
 
 ```bash
 GUTENBERG_MIRROR_ROOT=/srv/alphabook/gutenberg \
@@ -325,6 +325,6 @@ The request/response contracts are documented in [docs/api-contracts.md](docs/ap
 - The runtime service expects `RUNTIME_SHARED_TOKEN` plus R2 credentials so it can hydrate the workspace directly from R2 keys.
 - The runtime agent now writes `summary.md`, `search-plan.json`, `search-iterations.json`, and `evidence.json` for each long VM search.
 - The ingest service supports single-URL ingestion plus local Gutenberg mirror ingestion through `GUTENBERG_MIRROR_ROOT`.
-- `run-once` now processes a mirror batch, and `backfill-mirror` can drain the rsync mirror into Neon + R2 with chunk embeddings.
+- `run-once` now processes a mirror batch, and `backfill-mirror` can drain the rsync mirror into the relational store + R2 with chunk embeddings.
 - The Gutenberg mirror box bootstrap is documented in [ops/digitalocean/README.md](ops/digitalocean/README.md).
 - Daily feed diffing is still the remaining ingest gap.

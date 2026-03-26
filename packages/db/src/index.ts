@@ -1,4 +1,4 @@
-import { Pool, neonConfig } from "@neondatabase/serverless";
+import postgres from "postgres";
 
 import { MIGRATIONS } from "./sql";
 export * from "./d1";
@@ -9,7 +9,10 @@ export interface DbClient {
   end(): Promise<void>;
 }
 
-type PoolLike = Pick<Pool, "query" | "end">;
+type PoolLike = {
+  query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<{ rows: T[] }>;
+  end(timeout?: number): Promise<void>;
+};
 
 type CreatePostgresDbOptions = {
   poolFactory?: (connectionString: string) => PoolLike;
@@ -28,8 +31,20 @@ const TRANSIENT_DB_ERROR_PATTERNS = [
 ];
 
 function createPool(connectionString: string): PoolLike {
-  neonConfig.poolQueryViaFetch = true;
-  return new Pool({ connectionString });
+  const sql = postgres(connectionString, {
+    idle_timeout: 20,
+    max_lifetime: 60 * 30,
+  });
+
+  return {
+    async query<T>(text: string, params?: unknown[]) {
+      const rows = await sql.unsafe(text, (params ?? []) as never[]) as unknown as T[];
+      return { rows };
+    },
+    async end(timeout = 5) {
+      await sql.end({ timeout });
+    },
+  };
 }
 
 function isTransientDbError(error: unknown) {

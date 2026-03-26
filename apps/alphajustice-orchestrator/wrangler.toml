@@ -1,6 +1,7 @@
 name = "alphajustice-orchestrator-api"
 main = "../orchestrator-worker/src/index.ts"
 compatibility_date = "2026-03-22"
+compatibility_flags = ["nodejs_compat"]
 account_id = "0e1651bc459f3017e816ba2263e0807a"
 workers_dev = true
 upload_source_maps = true

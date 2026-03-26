@@ -56,7 +56,7 @@ PY
 )}"
 ```
 
-To force the same prompt through different intensity plans for an apples-to-apples comparison, include `intensityOverride`:
+To force the same prompt through the current search modes for an apples-to-apples comparison, include `mode`:
 
 ```bash
 curl -sS https://api.alpha-book.org/chat \
@@ -69,39 +69,38 @@ curl -sS https://api.alpha-book.org/chat \
 import json, os
 print(json.dumps(os.environ[\"PROMPT\"]))
 PY
-), \"intensityOverride\": \"normal\"}"
+), \"mode\": \"semantic\"}"
 ```
 
-Valid overrides today are:
+Valid modes today are:
 
-- `normal`
-- `high`
-- `maximum`
+- `semantic`
+- `comprehensive`
 
 Capture:
 
 - `session.created.session.id`
 - `run.started.run.id`
 
-## 2. Query live run timing from Postgres
+## 2. Query live run timing from the relational store
 
 Use the production `DATABASE_URL` from `.dev.vars`.
 
 ```bash
 node --input-type=module <<'JS'
 import fs from 'node:fs';
-import { Pool } from '@neondatabase/serverless';
+import { createPostgresDb } from '@alphabook/db';
 
 const envText = fs.readFileSync('.dev.vars', 'utf8');
 const connectionString = envText.match(/^DATABASE_URL=(.*)$/m)[1].trim().replace(/^"|"$/g, '');
-const pool = new Pool({ connectionString });
+const db = createPostgresDb(connectionString);
 
 const sessionIds = [
   'REPLACE_SESSION_ID_1',
   'REPLACE_SESSION_ID_2'
 ];
 
-const result = await pool.query(`
+const result = await db.query(`
 with run_rows as (
   select id, session_id, status, started_at, completed_at
   from runs
@@ -139,7 +138,7 @@ order by rr.started_at asc
 `, [sessionIds]);
 
 console.log(JSON.stringify(result.rows, null, 2));
-await pool.end();
+await db.end();
 JS
 ```
 
@@ -184,7 +183,7 @@ Read these fields when present:
 
 If a run is still in progress, these may not be present yet. In that case:
 
-- use Postgres for workspace/Codex/start/completion timing
+- use the relational store for workspace/Codex/start/completion timing
 - use the raw log or tool trace for interim book/chunk evidence
 
 ## 4. What good looks like
