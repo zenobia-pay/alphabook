@@ -61,6 +61,9 @@ else
   source "$INGEST_ENV_FILE"
   set +a
 
+  # Prefer the host's Wrangler OAuth session over any stale API token in env files.
+  unset CLOUDFLARE_API_TOKEN CF_API_TOKEN CF_ACCOUNT_ID CLOUDFLARE_ACCOUNT_ID
+
   export GUTENBERG_MIRROR_ROOT
   export MIRROR_BATCH_SIZE
   export MIRROR_BACKFILL_CONCURRENCY
