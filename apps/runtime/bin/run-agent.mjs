@@ -1918,6 +1918,7 @@ async function main() {
   }
 
   const question = String(task.researchObjective || task.question || task.goal || task.prompt || task.task || "Analyze the workspace corpus.");
+  const spriteShardMode = typeof task?.mode === "string" && task.mode === "sprite_shard_search";
   const broadCorpusTask = isBroadCorpusTask(task, false);
   const retrievalWorkLimit = broadCorpusTask ? 24 : 12;
   const seedChunkLimit = broadCorpusTask ? 32 : 16;
