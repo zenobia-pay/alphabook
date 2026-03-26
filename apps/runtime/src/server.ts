@@ -644,6 +644,12 @@ async function proxyOpenAIRequest(
       headers.set(key, value);
     }
   }
+  if (!headers.has("authorization")) {
+    const apiKey = process.env.OPENAI_API_KEY?.trim();
+    if (apiKey) {
+      headers.set("authorization", `Bearer ${apiKey}`);
+    }
+  }
 
   try {
     const upstream = await fetch(upstreamUrl, {

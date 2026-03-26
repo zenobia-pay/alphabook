@@ -248,3 +248,73 @@ test("runtime prefers API key auth over shared Codex auth json", async () => {
     await rm(workspaceRoot, { recursive: true, force: true });
   }
 });
+
+test("runtime OpenAI proxy injects bearer auth from OPENAI_API_KEY when Codex omits it", async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), "alphabook-runtime-proxy-"));
+  const previousApiKey = process.env.OPENAI_API_KEY;
+  const previousProxyBaseUrl = process.env.RUNTIME_OPENAI_PROXY_UPSTREAM_BASE_URL;
+
+  let seenAuthorization = "";
+  let seenPath = "";
+  let seenBody = "";
+  const upstreamServer = createServer(async (request, response) => {
+    seenAuthorization = String(request.headers.authorization ?? "");
+    seenPath = String(request.url ?? "");
+    const chunks = [];
+    for await (const chunk of request) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    seenBody = Buffer.concat(chunks).toString("utf8");
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ id: "resp_123", output: [] }));
+  });
+  await new Promise<void>((resolve) => upstreamServer.listen(0, "127.0.0.1", () => resolve()));
+  const upstreamAddress = upstreamServer.address();
+  assert.ok(upstreamAddress && typeof upstreamAddress === "object");
+  const upstreamBaseUrl = `http://127.0.0.1:${upstreamAddress.port}/v1`;
+
+  process.env.OPENAI_API_KEY = "test-openai-key";
+  process.env.RUNTIME_OPENAI_PROXY_UPSTREAM_BASE_URL = upstreamBaseUrl;
+
+  const runtimeServer = createAlphaBookRuntimeServer({
+    authToken: "test-token",
+    workspaceRoot,
+  });
+  await new Promise<void>((resolve) => runtimeServer.listen(0, "127.0.0.1", () => resolve()));
+  const runtimeAddress = runtimeServer.address();
+  assert.ok(runtimeAddress && typeof runtimeAddress === "object");
+  const runtimeUrl = `http://127.0.0.1:${runtimeAddress.port}`;
+
+  try {
+    const proxyResponse = await fetch(`${runtimeUrl}/openai-proxy/v1/responses`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-5.2-codex",
+        input: "hello",
+      }),
+    });
+    assert.equal(proxyResponse.status, 200);
+    assert.equal(seenAuthorization, "Bearer test-openai-key");
+    assert.equal(seenPath, "/v1/responses");
+    assert.match(seenBody, /"model":"gpt-5\.2-codex"/);
+  } finally {
+    if (previousApiKey === undefined) {
+      delete process.env.OPENAI_API_KEY;
+    } else {
+      process.env.OPENAI_API_KEY = previousApiKey;
+    }
+    if (previousProxyBaseUrl === undefined) {
+      delete process.env.RUNTIME_OPENAI_PROXY_UPSTREAM_BASE_URL;
+    } else {
+      process.env.RUNTIME_OPENAI_PROXY_UPSTREAM_BASE_URL = previousProxyBaseUrl;
+    }
+    await Promise.all([
+      new Promise<void>((resolve, reject) => runtimeServer.close((error) => error ? reject(error) : resolve())),
+      new Promise<void>((resolve, reject) => upstreamServer.close((error) => error ? reject(error) : resolve())),
+    ]);
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
