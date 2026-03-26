@@ -310,7 +310,7 @@ function renderAssistantSessionMarkup(bootstrap: AssistantSessionBootstrapPayloa
 
 function buildWorkContentHref(env: Env, workId: string, gutenbergId?: string | number | null) {
   if (gutenbergId != null && String(gutenbergId).trim().length > 0) {
-    return `${resolveContentOrigin(env)}/${encodeURIComponent(String(gutenbergId))}/?v=${BOOK_CONTENT_VERSION}`;
+    return `${resolveContentOrigin(env)}/${encodeURIComponent(String(gutenbergId))}/pages/page-0001.html?v=${BOOK_CONTENT_VERSION}`;
   }
   return `/api/works/${encodeURIComponent(workId)}/content?v=${BOOK_CONTENT_VERSION}`;
 }

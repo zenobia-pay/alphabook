@@ -4091,7 +4091,7 @@ function readWorkPageBootstrap(workId: string | null | undefined) {
 
 function buildWorkContentHref(workId: string, gutenbergId?: string | number | null) {
   if (gutenbergId != null && String(gutenbergId).trim().length > 0) {
-    return `${BOOK_CONTENT_ORIGIN}/${encodeURIComponent(String(gutenbergId))}/?v=${BOOK_CONTENT_VERSION}`;
+    return `${BOOK_CONTENT_ORIGIN}/${encodeURIComponent(String(gutenbergId))}/pages/page-0001.html?v=${BOOK_CONTENT_VERSION}`;
   }
   return `/api/works/${encodeURIComponent(workId)}/content?v=${BOOK_CONTENT_VERSION}`;
 }
