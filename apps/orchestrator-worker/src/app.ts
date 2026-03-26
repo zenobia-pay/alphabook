@@ -2311,6 +2311,95 @@ function streamResponse(
   });
 }
 
+type QueuedStreamItem =
+  | {
+      type: "event";
+      event: string;
+      data: Record<string, unknown>;
+    }
+  | {
+      type: "error";
+      error: unknown;
+    }
+  | {
+      type: "close";
+    };
+
+function streamQueuedEventsResponse(
+  start: (relaySend: (event: string, data: Record<string, unknown>) => Promise<void>) => Promise<void> | void,
+  onError?: (error: unknown) => Promise<void>,
+) {
+  const queue: QueuedStreamItem[] = [];
+  let pendingResolve: ((item: QueuedStreamItem) => void) | null = null;
+  let streamClosed = false;
+
+  const push = (item: QueuedStreamItem) => {
+    if (streamClosed) {
+      return;
+    }
+    if (pendingResolve) {
+      const resolve = pendingResolve;
+      pendingResolve = null;
+      resolve(item);
+      return;
+    }
+    queue.push(item);
+  };
+
+  const nextItem = async (): Promise<QueuedStreamItem> => {
+    if (queue.length > 0) {
+      return queue.shift()!;
+    }
+    return await new Promise<QueuedStreamItem>((resolve) => {
+      pendingResolve = resolve;
+    });
+  };
+
+  const relaySend = async (event: string, data: Record<string, unknown>) => {
+    push({
+      type: "event",
+      event,
+      data,
+    });
+  };
+
+  void Promise.resolve(start(relaySend))
+    .then(() => {
+      push({
+        type: "close",
+      });
+    })
+    .catch((error) => {
+      push({
+        type: "error",
+        error,
+      });
+    });
+
+  return streamResponse(
+    async (send) => {
+      while (true) {
+        const item = await nextItem();
+        if (item.type === "close") {
+          return;
+        }
+        if (item.type === "error") {
+          throw item.error;
+        }
+        await send(item.event, item.data);
+      }
+    },
+    onError,
+    async () => {
+      streamClosed = true;
+      pendingResolve?.({
+        type: "close",
+      });
+      pendingResolve = null;
+    },
+  );
+}
+
 type ActiveRunState = {
   sessionId: string;
   userId: string;
@@ -11897,16 +11986,28 @@ export function createApp(inputDeps: CreateAppInput) {
       }, 402);
       }
     }
-    const response = streamResponse(
-      (send) => runOrchestrator(
-        deps,
-        c.req.raw,
-        requestPayload,
-        usePlatformChatContract
-          ? async (event, data) => send(event, toPlatformEventPayload(data) as Record<string, unknown>)
-          : send,
-        activeRuns,
-      ),
+    const response = streamQueuedEventsResponse(
+      async (send) => {
+        let executionCtx: ExecutionContext | null = null;
+        try {
+          executionCtx = c.executionCtx;
+        } catch {
+          executionCtx = null;
+        }
+        const runPromise = runOrchestrator(
+          deps,
+          c.req.raw,
+          requestPayload,
+          usePlatformChatContract
+            ? async (event, data) => send(event, toPlatformEventPayload(data) as Record<string, unknown>)
+            : send,
+          activeRuns,
+        );
+        if (executionCtx && typeof executionCtx.waitUntil === "function") {
+          executionCtx.waitUntil(runPromise);
+        }
+        await runPromise;
+      },
       (error) =>
         recordUnexpectedError(deps, error, {
           request: c.req.raw,
