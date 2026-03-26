@@ -9,11 +9,7 @@ export interface D1BindingLike {
     all<T = Record<string, unknown>>(): Promise<{ results?: T[] }>;
     run(): Promise<unknown>;
   };
-  batch<T = unknown>(
-    statements: Array<{
-      run(): Promise<T>;
-    }>,
-  ): Promise<T[]>;
+  batch(statements: unknown[]): Promise<unknown[]>;
 }
 
 function splitMigrationStatements(sql: string): string[] {

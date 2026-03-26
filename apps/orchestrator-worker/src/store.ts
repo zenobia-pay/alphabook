@@ -519,14 +519,14 @@ export interface AppStore {
   healthCheck(): Promise<"ok" | "error">;
 }
 
-type SeedWork = WorkSummary & {
+export type SeedWork = WorkSummary & {
   cleanTextKey?: string;
   chunksKey?: string;
   text?: string;
   metadata?: Record<string, unknown>;
 };
 
-type SeedChunk = ChunkSearchResult & {
+export type SeedChunk = ChunkSearchResult & {
   embedding?: number[];
 };
 

@@ -1,4 +1,4 @@
-import { createPostgresDb } from "@alphabook/db";
+import { createD1Db } from "@alphabook/db";
 import {
   buildPlannerPrompt,
   buildRouterPrompt,
@@ -14,7 +14,7 @@ import { OpenAIPlanner } from "./planner";
 import { CloudflareR2Store } from "./r2";
 import { OpenAIRouter } from "./router";
 import { FlyMachinesRuntimeGateway, HttpRuntimeGateway } from "./runtime";
-import { SqlAppStore } from "./store";
+import { D1AppStore } from "./d1-store";
 import { OpenAISynthesizer } from "./synthesizer";
 
 export interface WorkersAiBinding {
@@ -26,8 +26,7 @@ export interface WorkersAiBinding {
 }
 
 export interface Env {
-  DATABASE_URL: string;
-  APP_DB?: D1Database;
+  APP_DB: D1Database;
   AI?: WorkersAiBinding;
   OPENAI_API_KEY?: string;
   OPENAI_MODEL?: string;
@@ -87,7 +86,7 @@ export interface Env {
   VECTOR_INDEX?: VectorizeIndex;
 }
 
-function resolveRuntimeGateway(env: Env, store: SqlAppStore, blobStore: CloudflareR2Store) {
+function resolveRuntimeGateway(env: Env, store: D1AppStore, blobStore: CloudflareR2Store) {
   if (
     env.FLY_API_TOKEN &&
     env.FLY_RUNTIME_APP_NAME &&
@@ -103,7 +102,6 @@ function resolveRuntimeGateway(env: Env, store: SqlAppStore, blobStore: Cloudfla
       appName: env.FLY_RUNTIME_APP_NAME,
       runtimeAppUrl: env.FLY_RUNTIME_APP_URL,
       openAIApiKey: env.OPENAI_API_KEY,
-      databaseUrl: env.DATABASE_URL,
       codexAuthJson: env.CODEX_AUTH_JSON,
       runtimeAgentModel: env.RUNTIME_AGENT_MODEL,
       image: env.FLY_RUNTIME_IMAGE,
@@ -162,9 +160,9 @@ function buildFetchHandler(env: Env) {
   })();
   const ingestQueueName = env.QUEUE_INGEST_NAME ?? `${implementation.id}-ingest`;
   const jobsQueueName = env.QUEUE_JOBS_NAME ?? `${implementation.id}-jobs`;
-  const db = createPostgresDb(env.DATABASE_URL);
+  const db = createD1Db(env.APP_DB);
   const blobStore = new CloudflareR2Store(env.CORPUS_BUCKET);
-  const store = new SqlAppStore(db, {
+  const store = new D1AppStore(db, {
     adapterId: implementation.adapterId,
     blobStore,
     feedLabels: implementation.feedLabels,
@@ -279,9 +277,9 @@ async function runScheduledJanitor(env: Env) {
   const implementation = getImplementationConfig(env.IMPLEMENTATION_ID);
   const ingestQueueName = env.QUEUE_INGEST_NAME ?? `${implementation.id}-ingest`;
   const jobsQueueName = env.QUEUE_JOBS_NAME ?? `${implementation.id}-jobs`;
-  const db = createPostgresDb(env.DATABASE_URL);
+  const db = createD1Db(env.APP_DB);
   const blobStore = new CloudflareR2Store(env.CORPUS_BUCKET);
-  const store = new SqlAppStore(db, {
+  const store = new D1AppStore(db, {
     adapterId: implementation.adapterId,
     blobStore,
     feedLabels: implementation.feedLabels,

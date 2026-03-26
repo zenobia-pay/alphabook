@@ -1251,7 +1251,7 @@ function buildBriefingPrompt(runtimePrompt, manifest, task, evidence, question) 
       "Constraints:",
       "- Only use local files under /workspace.",
       "- This VM is responsible for one fixed shard of the corpus. Do not widen outside this shard.",
-      "- Do not use the remote Postgres corpus CLI for discovery. Search the hydrated local shard directly.",
+      "- Do not rely on any remote corpus CLI for discovery. Search the hydrated local shard directly.",
       "- Use shell tools like rg, jq, python3, sed, awk, grep, and cat over /workspace/books.",
       `- This shard currently contains about ${shardBookCount} hydrated books.`,
       `- Keep the search bounded but thorough: use at most ${commandBudget} shell commands total.`,
