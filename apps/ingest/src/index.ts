@@ -881,14 +881,26 @@ function renderBookStaticStyles() {
         .floating-page-nav {
           width: calc(100vw - 16px);
           bottom: 8px;
-          padding: 0.7rem 0.85rem;
+          padding: 0.72rem 0.85rem;
           border-radius: 18px;
-          align-items: flex-start;
-          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          gap: 0.65rem;
         }
         .floating-page-nav .page-nav-links {
           width: 100%;
           justify-content: space-between;
+          flex-wrap: nowrap;
+          gap: 0.35rem;
+        }
+        .floating-page-nav .nav-link {
+          min-width: 0;
+          font-size: 0.95rem;
+          white-space: nowrap;
+          padding: 0;
+        }
+        .floating-page-nav .page-position {
+          display: none;
         }
       }
   `;

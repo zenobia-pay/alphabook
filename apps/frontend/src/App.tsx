@@ -5323,6 +5323,7 @@ export default function App() {
   const bookAssistantRafRef = useRef<number | null>(null);
   const bookAssistantPendingWidthRef = useRef<number | null>(null);
   const pendingUrlWriteModeRef = useRef<UrlWriteMode>("replace");
+  const suppressNextUrlWriteRef = useRef(false);
 
   const currentUser = useMemo(
     () => {
@@ -5586,6 +5587,11 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (suppressNextUrlWriteRef.current) {
+      suppressNextUrlWriteRef.current = false;
+      pendingUrlWriteModeRef.current = "replace";
+      return;
+    }
     writeUrlState({
       view: activeView,
       sessionId: selectedSessionId,
@@ -6022,13 +6028,35 @@ export default function App() {
         return;
       }
       lastReaderFrameHrefRef.current = `${BOOK_CONTENT_ORIGIN}${appendBookVersionToReaderPath(normalized)}`;
-      pendingUrlWriteModeRef.current = "replace";
+      suppressNextUrlWriteRef.current = true;
+      writeUrlState({
+        view: activeView,
+        sessionId: selectedSessionId,
+        workId: activeWorkId,
+        readerPath: normalized,
+        chunkId: activeChunkId,
+        profileUserId: activeProfileUserId,
+        runId: selectedAdminRunId,
+        adminSection,
+        debugEnabled,
+      }, "replace");
       setActiveReaderPath(normalized);
     };
 
     window.addEventListener("message", handleReaderLocation);
     return () => window.removeEventListener("message", handleReaderLocation);
-  }, [activeReaderPath, activeWork?.gutenbergId]);
+  }, [
+    activeChunkId,
+    activeProfileUserId,
+    activeReaderPath,
+    activeView,
+    activeWork?.gutenbergId,
+    activeWorkId,
+    adminSection,
+    debugEnabled,
+    selectedAdminRunId,
+    selectedSessionId,
+  ]);
 
   useEffect(() => {
     if (!activeWorkId) {
