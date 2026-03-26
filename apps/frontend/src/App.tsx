@@ -243,7 +243,7 @@ const DEFAULT_READER_NAME = IMPLEMENTATION.defaultReaderName;
 const SEO_SITE_NAME = IMPLEMENTATION.siteName;
 const SEO_SITE_ORIGIN = IMPLEMENTATION.siteOrigin;
 const BOOK_CONTENT_ORIGIN = IMPLEMENTATION.contentOrigin;
-const BOOK_CONTENT_VERSION = "20260326f";
+const BOOK_CONTENT_VERSION = "20260326g";
 const DEFAULT_SEO_DESCRIPTION = IMPLEMENTATION.siteDescription;
 const DEFAULT_OG_IMAGE_PATH = "/social-card.svg";
 const CORPUS_LABEL_PLURAL = IMPLEMENTATION.corpusLabelPlural;
@@ -5252,6 +5252,18 @@ export default function App() {
   const [highlightedPassageExcerpt, setHighlightedPassageExcerpt] = useState<string | null>(null);
   const bookReaderFrameRef = useRef<HTMLIFrameElement | null>(null);
   const lastReaderFrameHrefRef = useRef<string | null>(null);
+  const latestReaderPathRef = useRef<string | null | undefined>(initialUrlState.readerPath);
+  const latestReaderContextRef = useRef({
+    view: initialUrlState.view,
+    sessionId: initialUrlState.sessionId,
+    workId: initialUrlState.workId,
+    chunkId: initialUrlState.chunkId,
+    profileUserId: initialUrlState.profileUserId,
+    runId: initialUrlState.runId,
+    adminSection: initialUrlState.adminSection,
+    debugEnabled: initialUrlState.debugEnabled,
+    gutenbergId: initialWorkPageBootstrap?.work?.gutenbergId ?? null,
+  });
   const [bookAssistantWidth, setBookAssistantWidth] = useState(() => {
     if (typeof window === "undefined") {
       return 420;
@@ -5566,9 +5578,38 @@ export default function App() {
   ]);
 
   useEffect(() => {
+    latestReaderPathRef.current = activeReaderPath;
+  }, [activeReaderPath]);
+
+  useEffect(() => {
+    latestReaderContextRef.current = {
+      view: activeView,
+      sessionId: selectedSessionId,
+      workId: activeWorkId,
+      chunkId: activeChunkId,
+      profileUserId: activeProfileUserId,
+      runId: selectedAdminRunId,
+      adminSection,
+      debugEnabled,
+      gutenbergId: activeWork?.gutenbergId ?? null,
+    };
+  }, [
+    activeChunkId,
+    activeProfileUserId,
+    activeView,
+    activeWork?.gutenbergId,
+    activeWorkId,
+    adminSection,
+    debugEnabled,
+    selectedAdminRunId,
+    selectedSessionId,
+  ]);
+
+  useEffect(() => {
     const handlePopState = () => {
       pendingUrlWriteModeRef.current = "replace";
       const next = readUrlState();
+      latestReaderPathRef.current = next.readerPath;
       setActiveView(next.view);
       setSelectedSessionId(next.sessionId);
       setActiveWorkId(next.workId);
@@ -6023,40 +6064,32 @@ export default function App() {
         return;
       }
       const path = typeof (data as { path?: unknown }).path === "string" ? (data as { path: string }).path : null;
-      const normalized = normalizeReaderPath(path, activeWork?.gutenbergId ?? null);
-      if (!normalized || normalized === activeReaderPath) {
+      const historyMode = (data as { history?: unknown }).history === "push" ? "push" : "replace";
+      const context = latestReaderContextRef.current;
+      const normalized = normalizeReaderPath(path, context.gutenbergId);
+      if (!normalized || normalized === latestReaderPathRef.current) {
         return;
       }
+      latestReaderPathRef.current = normalized;
       lastReaderFrameHrefRef.current = `${BOOK_CONTENT_ORIGIN}${appendBookVersionToReaderPath(normalized)}`;
       suppressNextUrlWriteRef.current = true;
       writeUrlState({
-        view: activeView,
-        sessionId: selectedSessionId,
-        workId: activeWorkId,
+        view: context.view,
+        sessionId: context.sessionId,
+        workId: context.workId,
         readerPath: normalized,
-        chunkId: activeChunkId,
-        profileUserId: activeProfileUserId,
-        runId: selectedAdminRunId,
-        adminSection,
-        debugEnabled,
-      }, "replace");
+        chunkId: context.chunkId,
+        profileUserId: context.profileUserId,
+        runId: context.runId,
+        adminSection: context.adminSection,
+        debugEnabled: context.debugEnabled,
+      }, historyMode);
       setActiveReaderPath(normalized);
     };
 
     window.addEventListener("message", handleReaderLocation);
     return () => window.removeEventListener("message", handleReaderLocation);
-  }, [
-    activeChunkId,
-    activeProfileUserId,
-    activeReaderPath,
-    activeView,
-    activeWork?.gutenbergId,
-    activeWorkId,
-    adminSection,
-    debugEnabled,
-    selectedAdminRunId,
-    selectedSessionId,
-  ]);
+  }, []);
 
   useEffect(() => {
     if (!activeWorkId) {
@@ -7752,7 +7785,6 @@ export default function App() {
                   key={activeWorkId}
                   ref={bookReaderFrameRef}
                   className="book-reader-frame"
-                  src={activeReaderFrameHref ?? undefined}
                   title={activeWork.title ? `${activeWork.title} text` : "Book text"}
                   loading="eager"
                 />

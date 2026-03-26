@@ -598,7 +598,7 @@ function createBookSectionId(title: string, index: number) {
   return `section-${slugify(title)}-${index + 1}`;
 }
 
-const STATIC_BOOK_CONTENT_VERSION = "20260326f";
+const STATIC_BOOK_CONTENT_VERSION = "20260326g";
 
 function withBookVersion(href: string, fragment?: string | null) {
   const separator = href.includes("?") ? "&" : "?";
@@ -919,11 +919,12 @@ function renderBookSelectionScript() {
           : null;
         let activeTarget = null;
 
-        function emitReaderLocation() {
+        function emitReaderLocation(options = {}) {
           try {
             window.parent?.postMessage({
               type: "alphabook-reader-location",
-              path: window.location.pathname + window.location.hash,
+              path: options.path || (window.location.pathname + window.location.search + window.location.hash),
+              history: options.history || "replace",
             }, "*");
           } catch {}
         }
@@ -1114,7 +1115,31 @@ function renderBookSelectionScript() {
           const pageNavLink = target.closest("a[data-reader-nav='page']");
           if (pageNavLink instanceof HTMLAnchorElement) {
             event.preventDefault();
-            window.location.assign(pageNavLink.href);
+            if (window.parent && window.parent !== window) {
+              const url = new URL(pageNavLink.href, window.location.href);
+              emitReaderLocation({
+                path: url.pathname + url.search + url.hash,
+                history: "push",
+              });
+              window.location.replace(pageNavLink.href);
+            } else {
+              window.location.assign(pageNavLink.href);
+            }
+            return;
+          }
+          const contentsNavLink = target.closest("a[data-reader-nav='contents']");
+          if (contentsNavLink instanceof HTMLAnchorElement) {
+            event.preventDefault();
+            if (window.parent && window.parent !== window) {
+              const url = new URL(contentsNavLink.href, window.location.href);
+              emitReaderLocation({
+                path: url.pathname + url.search + url.hash,
+                history: "push",
+              });
+              window.location.replace(contentsNavLink.href);
+            } else {
+              window.location.assign(contentsNavLink.href);
+            }
             return;
           }
           if (target.closest("a[href]")) {
