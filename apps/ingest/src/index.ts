@@ -542,7 +542,7 @@ function createBookSectionId(title: string, index: number) {
   return `section-${slugify(title)}-${index + 1}`;
 }
 
-const STATIC_BOOK_CONTENT_VERSION = "20260326b";
+const STATIC_BOOK_CONTENT_VERSION = "20260326c";
 
 function withBookVersion(href: string, fragment?: string | null) {
   const separator = href.includes("?") ? "&" : "?";
@@ -1320,10 +1320,6 @@ function buildPaginatedBookArtifactBundle(input: {
           <div class="page-nav-links">${navLinks}</div>
           <p class="page-position">Page ${page.pageNumber} of ${pages.length}</p>
         </nav>
-        <section class="hero">
-          <h1>${escapeHtml(page.sectionTitle ?? input.title)}</h1>
-          ${meta ? `<p class="page-meta">${escapeHtml(meta)}</p>` : ""}
-        </section>
         <div class="reader-body">${page.blocks.map((block) => block.html).join("\n")}</div>
         <nav class="page-nav page-nav-bottom">
           <div class="page-nav-links">${navLinks}</div>
