@@ -6190,7 +6190,10 @@ async function buildRunLogsPayload(
       ? await loadRunArtifacts(deps, session.id, run.id, runContext.runtimeIds)
       : await loadRunArtifactSummaries(deps, session.id, run.id, runContext.runtimeIds))
     : [];
-  const rawLog = resolveRunRawLog(activeRuns, run.id, artifacts);
+  const persistedRawLog = await loadPersistedRawRunLog(deps, session.id, run.id);
+  const rawLog = persistedRawLog.length > 0
+    ? persistedRawLog
+    : resolveRunRawLog(activeRuns, run.id, artifacts);
   const metrics = extractRecordedRunMetrics(rawLog);
   const liveRuntime = includeLiveRuntime
     ? await loadLiveRuntimeLogs(deps, session.id, run.id, runContext.runtimeIds)
