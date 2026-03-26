@@ -238,6 +238,26 @@ async function embedChunks(chunks: string[]): Promise<number[][] | null> {
   return embedChunksWithOpenAI(chunks);
 }
 
+function estimateEmbeddingInputTokens(chunks: string[]) {
+  return chunks.reduce((total, chunk) => {
+    const normalized = chunk.replace(/\s+/g, " ").trim();
+    if (!normalized) {
+      return total;
+    }
+    return total + Math.ceil(normalized.length / 4);
+  }, 0);
+}
+
+function embeddingPricePerMillionTokensUsd(provider: string) {
+  if (provider === "google") {
+    return Number(process.env.GOOGLE_EMBEDDING_PRICE_PER_MILLION_TOKENS_USD ?? "0.20");
+  }
+  if (provider === "openai") {
+    return Number(process.env.OPENAI_EMBEDDING_PRICE_PER_MILLION_TOKENS_USD ?? "0.02");
+  }
+  return 0;
+}
+
 async function embedChunksWithOpenAI(chunks: string[]): Promise<number[][] | null> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey || chunks.length === 0) {
@@ -2071,6 +2091,17 @@ async function persistIngestedWork(
   const chunksPayload = serializeChunkManifest(chunkArtifacts, workId);
   const renderedArtifacts = prepared.renderedArtifacts;
   const renderedManifestKey = prepared.renderedManifestKey ?? "";
+  const estimatedEmbeddingInputTokens = estimateEmbeddingInputTokens(chunks);
+  const estimatedEmbeddingPricePerMillionTokensUsd = embeddingPricePerMillionTokensUsd(embeddingProvider);
+  const estimatedEmbeddingCostUsd = Number(
+    ((estimatedEmbeddingInputTokens / 1_000_000) * estimatedEmbeddingPricePerMillionTokensUsd).toFixed(8),
+  );
+  const embeddingBatchSize = embeddingProvider === "google"
+    ? Number(process.env.GOOGLE_EMBEDDING_BATCH_SIZE ?? "32")
+    : 32;
+  const embeddingRequestCount = chunks.length > 0
+    ? Math.ceil(chunks.length / Math.max(1, embeddingBatchSize))
+    : 0;
 
   await Promise.all([
     putText(
@@ -2187,6 +2218,15 @@ async function persistIngestedWork(
     cleanKey,
     chunksKey,
     renderedDocumentKey,
+    embeddingMetrics: {
+      provider: embeddingProvider,
+      model: embeddingModel,
+      batchSize: embeddingBatchSize,
+      requestCount: embeddingRequestCount,
+      estimatedInputTokens: estimatedEmbeddingInputTokens,
+      estimatedPricePerMillionTokensUsd: estimatedEmbeddingPricePerMillionTokensUsd,
+      estimatedCostUsd: estimatedEmbeddingCostUsd,
+    },
     skipped: false,
   };
 }
