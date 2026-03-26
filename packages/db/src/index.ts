@@ -84,7 +84,8 @@ async function runWranglerJson<T>(
     child.on("error", reject);
     child.on("exit", (code) => {
       if (code !== 0) {
-        reject(new Error(stderr.trim() || `wrangler ${args.join(" ")} exited with code ${code ?? -1}`));
+        const details = [stderr.trim(), stdout.trim()].filter(Boolean).join("\n");
+        reject(new Error(details || `wrangler ${args.join(" ")} exited with code ${code ?? -1}`));
         return;
       }
       try {
