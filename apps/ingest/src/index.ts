@@ -81,6 +81,7 @@ interface CorpusFullAuditOptions {
   startAfterId?: string | null;
   limit?: number | null;
   outputPath?: string | null;
+  includeOrphanVectorScan?: boolean;
 }
 
 interface CorpusPruneOptions {
@@ -3056,8 +3057,6 @@ async function auditCloudflareCorpus(
   const allWorkRows = await listAllExistingWorkReferences(context);
   const allChunkRows = await listAllExistingChunkReferences(context);
   const vectorize = createVectorizeApi(context);
-  const vectorIds = vectorize && context.vectorIndexName ? await vectorize.listVectorIds(context.vectorIndexName) : [];
-  const vectorIdSet = new Set(vectorIds);
   const expectedChunkIds = new Set<string>();
 
   const completeBooks: string[] = [];
@@ -3121,7 +3120,10 @@ async function auditCloudflareCorpus(
       });
     }
 
-    const missingVectorIds = canonical.chunks.filter((chunk) => !vectorIdSet.has(chunk.id)).map((chunk) => chunk.id);
+    const foundVectorIds = vectorize && context.vectorIndexName
+      ? await vectorize.getVectorIds(context.vectorIndexName, canonical.chunks.map((chunk) => chunk.id))
+      : new Set<string>();
+    const missingVectorIds = canonical.chunks.filter((chunk) => !foundVectorIds.has(chunk.id)).map((chunk) => chunk.id);
     if (missingVectorIds.length > 0) {
       missingVectors.push({
         gutenbergId,
@@ -3151,6 +3153,9 @@ async function auditCloudflareCorpus(
       gutenbergId: row.gutenberg_id,
       chunkId: row.chunk_id,
     }));
+  const vectorIds = vectorize && context.vectorIndexName && options.includeOrphanVectorScan !== false
+    ? await vectorize.listVectorIds(context.vectorIndexName)
+    : [];
   const orphanedVectorIds = vectorIds.filter((id) => !expectedChunkIds.has(id));
 
   const report = {
