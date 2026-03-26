@@ -1,8 +1,10 @@
 import process from "node:process";
-import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { spawn } from "node:child_process";
 
-import { createNeonDb, runMigrations } from "@alphabook/db";
+import { D1_SCHEMA_SQL } from "@alphabook/db";
 
 async function loadLocalEnvFile() {
   try {
@@ -28,19 +30,37 @@ async function loadLocalEnvFile() {
   }
 }
 
+async function runWrangler(args: string[]) {
+  await new Promise<void>((resolvePromise, reject) => {
+    const child = spawn("npx", ["wrangler", ...args], {
+      stdio: "inherit",
+      shell: process.platform === "win32",
+    });
+    child.on("exit", (code) => {
+      if (code === 0) {
+        resolvePromise();
+        return;
+      }
+      reject(new Error(`wrangler ${args.join(" ")} exited with code ${code ?? -1}`));
+    });
+    child.on("error", reject);
+  });
+}
+
 async function main() {
   await loadLocalEnvFile();
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    throw new Error("DATABASE_URL is required.");
-  }
 
-  const db = createNeonDb(connectionString);
+  const databaseName = process.argv[2] ?? process.env.D1_DATABASE_NAME ?? "alphabook-app";
+  const remoteFlag = process.argv.includes("--local") ? "--local" : "--remote";
+
+  const tempDir = await mkdtemp(join(tmpdir(), "alphabook-d1-migrate-"));
+  const schemaPath = join(tempDir, "schema.sql");
   try {
-    await runMigrations(db);
-    console.log("Applied AlphaBook migrations.");
+    await writeFile(schemaPath, `${D1_SCHEMA_SQL.trim()}\n`, "utf8");
+    await runWrangler(["d1", "execute", databaseName, remoteFlag, "--file", schemaPath]);
+    console.log(`Applied AlphaBook D1 schema to ${databaseName}.`);
   } finally {
-    await db.end();
+    await rm(tempDir, { recursive: true, force: true });
   }
 }
 
