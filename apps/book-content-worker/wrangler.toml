@@ -17,5 +17,5 @@ SITE_ORIGIN = "https://alpha-book.org"
 
 [[r2_buckets]]
 binding = "BOOK_CONTENT_BUCKET"
-bucket_name = "alphabook"
-preview_bucket_name = "alphabook-corpus-preview"
+bucket_name = "alphabook-corpus-live"
+preview_bucket_name = "alphabook-corpus-live-preview"

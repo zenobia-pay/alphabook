@@ -30,8 +30,8 @@ CHEAP_TOOL_TIMEOUT_SECONDS = "120"
 RUNTIME_TOOL_TIMEOUT_SECONDS = "1500"
 QUEUE_INGEST_NAME = "alphabook-ingest"
 QUEUE_JOBS_NAME = "alphabook-jobs"
-R2_BUCKET_NAME = "alphabook"
-RUNTIME_R2_BUCKET_NAME = "alphabook"
+R2_BUCKET_NAME = "alphabook-corpus-live"
+RUNTIME_R2_BUCKET_NAME = "alphabook-corpus-live"
 WORKOS_CLIENT_ID = "client_01KKFCFAAYN6TDY9G9W6HHK4GF"
 ADMIN_ALLOWED_EMAIL = "rprendergast1121@gmail.com"
 RUNTIME_SERVICE_URL = ""
@@ -45,8 +45,8 @@ FLY_RUNTIME_MACHINE_MEMORY_MB = "4096"
 
 [[r2_buckets]]
 binding = "CORPUS_BUCKET"
-bucket_name = "alphabook"
-preview_bucket_name = "alphabook-corpus-preview"
+bucket_name = "alphabook-corpus-live"
+preview_bucket_name = "alphabook-corpus-live-preview"
 
 [[queues.producers]]
 binding = "INGEST_QUEUE"
