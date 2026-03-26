@@ -4064,7 +4064,27 @@ function readWorkPageBootstrap(workId: string | null | undefined) {
   }
   const payload = window.__ALPHABOOK_WORK_PAGE_BOOTSTRAP__;
   if (!payload || payload.workId !== workId) {
-    return null;
+    const meta = document.querySelector('meta[name="alphabook-work-page-bootstrap"]');
+    const metaContent = meta?.getAttribute("content");
+    if (metaContent) {
+      try {
+        const parsed = JSON.parse(decodeURIComponent(metaContent)) as WorkPageBootstrapPayload;
+        return parsed.workId === workId ? parsed : null;
+      } catch {
+        return null;
+      }
+    }
+    const serverRendered = document.getElementById("work-page-ssr");
+    const encoded = serverRendered?.getAttribute("data-bootstrap");
+    if (!encoded) {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(decodeURIComponent(encoded)) as WorkPageBootstrapPayload;
+      return parsed.workId === workId ? parsed : null;
+    } catch {
+      return null;
+    }
   }
   return payload;
 }
@@ -5648,21 +5668,41 @@ export default function App() {
     }
 
     let cancelled = false;
-    void import("./components/assistant-surface")
-      .then((module) => {
-        if (!cancelled) {
-          setAssistantSurfaceComponent(() => module.default);
-        }
-      })
-      .catch((error) => {
-        reportClientIncident(error, {
-          source: "assistant_surface_import",
+    const loadAssistantSurface = () => {
+      void import("./components/assistant-surface")
+        .then((module) => {
+          if (!cancelled) {
+            setAssistantSurfaceComponent(() => module.default);
+          }
+        })
+        .catch((error) => {
+          reportClientIncident(error, {
+            source: "assistant_surface_import",
+          });
+          console.error("Failed to load assistant surface.", error);
         });
-        console.error("Failed to load assistant surface.", error);
-      });
+    };
+
+    if (activeView === "assistant") {
+      loadAssistantSurface();
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const idleCallback = typeof window !== "undefined" && "requestIdleCallback" in window
+      ? window.requestIdleCallback(loadAssistantSurface, { timeout: 1500 })
+      : null;
+    const timeoutId = idleCallback == null ? window.setTimeout(loadAssistantSurface, 500) : null;
 
     return () => {
       cancelled = true;
+      if (idleCallback != null && "cancelIdleCallback" in window) {
+        window.cancelIdleCallback(idleCallback);
+      }
+      if (timeoutId != null) {
+        window.clearTimeout(timeoutId);
+      }
     };
   }, [AssistantSurfaceComponent, activeView]);
 
@@ -5739,6 +5779,12 @@ export default function App() {
       setHighlightedPassageExcerpt(null);
       return;
     }
+    if (hasWorkPageBootstrap) {
+      setActiveWorkLoading(false);
+      setActivePassageId(null);
+      setHighlightedPassageExcerpt(null);
+      return;
+    }
 
     let cancelled = false;
     const timeoutId = window.setTimeout(() => {
@@ -5751,9 +5797,7 @@ export default function App() {
 
     void (async () => {
       try {
-        if (!hasWorkPageBootstrap) {
-          setActiveWorkLoading(true);
-        }
+        setActiveWorkLoading(true);
         const detail = await fetchWorkDetail(activeWorkId);
         if (cancelled) {
           return;

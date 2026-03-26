@@ -315,6 +315,10 @@ function buildWorkContentHref(env: Env, workId: string, gutenbergId?: string | n
   return `/api/works/${encodeURIComponent(workId)}/content?v=${BOOK_CONTENT_VERSION}`;
 }
 
+function encodeBootstrapAttribute(value: unknown) {
+  return escapeHtml(encodeURIComponent(JSON.stringify(value)));
+}
+
 function renderWorkPageMarkup(env: Env, bootstrap: WorkPageBootstrapPayload | null) {
   if (!bootstrap || bootstrap.error || !bootstrap.work || typeof bootstrap.work !== "object") {
     return null;
@@ -541,6 +545,7 @@ export default {
     let injectedAssistantDocumentBootstrap = false;
     let injectedAssistantSessionBootstrap = false;
     let injectedWorkPageBootstrap = false;
+    let injectedWorkPageBootstrapMeta = false;
     const assistantDocumentMarkup = renderAssistantDocumentMarkup(assistantDocumentBootstrap);
     const assistantSessionMarkup = renderAssistantSessionMarkup(assistantSessionBootstrap);
     const workPageMarkup = renderWorkPageMarkup(env, workPageBootstrap);
@@ -584,23 +589,27 @@ export default {
         })
         .on("head", {
           element(element) {
-            const scripts: string[] = [];
+            const snippets: string[] = [];
             if (assistantDocumentBootstrap && !injectedAssistantDocumentBootstrap) {
-              scripts.push(`<script>window.__ALPHABOOK_ASSISTANT_DOCUMENT_BOOTSTRAP__=${escapeInlineJson(assistantDocumentBootstrap)};</script>`);
+              snippets.push(`<script>window.__ALPHABOOK_ASSISTANT_DOCUMENT_BOOTSTRAP__=${escapeInlineJson(assistantDocumentBootstrap)};</script>`);
               injectedAssistantDocumentBootstrap = true;
             }
             if (assistantSessionBootstrap && !injectedAssistantSessionBootstrap) {
-              scripts.push(`<script>window.__ALPHABOOK_ASSISTANT_SESSION_BOOTSTRAP__=${escapeInlineJson(assistantSessionBootstrap)};</script>`);
+              snippets.push(`<script>window.__ALPHABOOK_ASSISTANT_SESSION_BOOTSTRAP__=${escapeInlineJson(assistantSessionBootstrap)};</script>`);
               injectedAssistantSessionBootstrap = true;
             }
             if (workPageBootstrap && !injectedWorkPageBootstrap) {
-              scripts.push(`<script>window.__ALPHABOOK_WORK_PAGE_BOOTSTRAP__=${escapeInlineJson(workPageBootstrap)};</script>`);
+              snippets.push(`<script>window.__ALPHABOOK_WORK_PAGE_BOOTSTRAP__=${escapeInlineJson(workPageBootstrap)};</script>`);
               injectedWorkPageBootstrap = true;
             }
-            if (scripts.length === 0) {
+            if (workPageBootstrap && !injectedWorkPageBootstrapMeta) {
+              snippets.push(`<meta name="alphabook-work-page-bootstrap" content="${encodeBootstrapAttribute(workPageBootstrap)}">`);
+              injectedWorkPageBootstrapMeta = true;
+            }
+            if (snippets.length === 0) {
               return;
             }
-            element.append(scripts.join(""), { html: true });
+            element.append(snippets.join(""), { html: true });
           },
         })
         .on("div#root", {
@@ -613,7 +622,7 @@ export default {
               markup.push(`<div id="assistant-session-ssr">${assistantSessionMarkup}</div>`);
             }
             if (workPageMarkup) {
-              markup.push(`<div id="work-page-ssr">${workPageMarkup}</div>`);
+              markup.push(`<div id="work-page-ssr" data-bootstrap="${encodeBootstrapAttribute(workPageBootstrap)}">${workPageMarkup}</div>`);
             }
             if (markup.length === 0) {
               return;
