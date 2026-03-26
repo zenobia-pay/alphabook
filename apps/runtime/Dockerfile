@@ -10,7 +10,7 @@ COPY package.json package-lock.json* tsconfig.base.json tsconfig.json ./
 COPY apps/runtime ./apps/runtime
 COPY packages ./packages
 
-RUN npm install
+RUN npm ci --legacy-peer-deps
 
 ENV PORT=8080
 ENV RUNTIME_WORKSPACE_ROOT=/workspace
