@@ -39,7 +39,7 @@ This exercises a non-book corpus path through:
 - ingest persistence helpers
 - repository search/chunk/file contracts
 
-If `DATABASE_URL` and the R2 env vars are not set, this command falls back to a local preview mode and prints the prepared artifact keys and metadata payload instead of persisting them.
+If `D1_DATABASE_NAME` and the R2 env vars are not set, this command falls back to a local preview mode and prints the prepared artifact keys and metadata payload instead of persisting them.
 
 ## 4. Run The Supreme Court Demo
 

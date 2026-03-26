@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { createPostgresDb } from "@alphabook/db";
+import { createWranglerD1Db, loadLocalDevVars } from "@alphabook/db";
 
 import type { BenchmarkCorpus } from "@alphabook/benchmark-core";
 
@@ -54,12 +54,12 @@ function parseArgs(argv: string[]): ScriptOptions {
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   await loadDotEnvFile();
-
-  if (!process.env.DATABASE_URL) {
-    throw new Error("DATABASE_URL is required.");
-  }
-
-  const db = createPostgresDb(process.env.DATABASE_URL);
+  await loadLocalDevVars(process.cwd());
+  const db = createWranglerD1Db({
+    cwd: process.cwd(),
+    databaseName: process.env.D1_DATABASE_NAME ?? "alphabook-app",
+    wranglerConfig: process.env.D1_WRANGLER_CONFIG ?? "apps/orchestrator-worker/wrangler.toml",
+  });
   const works = await db.query<Record<string, unknown>>(`
     select
       w.id,
@@ -70,7 +70,7 @@ async function main() {
       w.rights_status,
       w.metadata_json
     from works w
-    order by md5(w.id::text || '${options.seed.replace(/'/gu, "''")}')
+    order by abs(random())
     limit ${Math.trunc(options.sampleSize)}
   `);
 
@@ -96,7 +96,7 @@ async function main() {
   const chunkBatchSize = 10;
   for (let index = 0; index < workIds.length; index += chunkBatchSize) {
     const batchIds = workIds.slice(index, index + chunkBatchSize);
-    const batchLiteral = batchIds.map((id) => `'${id.replace(/'/gu, "''")}'::uuid`).join(", ");
+    const batchLiteral = batchIds.map((id) => `'${id.replace(/'/gu, "''")}'`).join(", ");
     const chunkRows = await db.query<Record<string, unknown>>(`
       select
         c.work_id,

@@ -26,7 +26,6 @@
     "runtime:sync-image": "node --import tsx packages/tooling/scripts/sync-runtime-image-pin.ts",
     "implementation:scaffold": "node --import tsx packages/tooling/scripts/scaffold-implementation.ts",
     "migrate": "tsx packages/tooling/scripts/migrate.ts",
-    "migrate:d1:export": "node --import tsx packages/tooling/scripts/export-postgres-to-d1-sql.ts",
     "migrate:d1:import": "node --import tsx packages/tooling/scripts/import-d1-sql.ts",
     "validate:oss": "npm run typecheck -w @alphabook/implementations && npm run test -w @alphabook/implementations && npm run typecheck -w @alphabook/platform && npm run test -w @alphabook/platform && npm run typecheck -w @alphabook/db && npm run test -w @alphabook/db && npm run typecheck -w @alphabook/source-gutenberg && npm run test -w @alphabook/source-gutenberg && npm run typecheck -w @alphabook/source-fixture && npm run test -w @alphabook/source-fixture && npm run typecheck -w @alphabook/source-supreme-court && npm run test -w @alphabook/source-supreme-court && npm run typecheck -w @alphabook/shared && npm run typecheck -w @alphabook/ingest && npm run test -w @alphabook/ingest && npm run typecheck -w @alphabook/book-content-worker && npm run typecheck -w @alphabook/frontend && npm run typecheck -w @alphabook/alphajustice-frontend && npm run typecheck -w @alphabook/alphajustice-content && npm run typecheck -w @alphabook/orchestrator-worker && npm run typecheck -w @alphabook/alphajustice-orchestrator && node --import tsx --test apps/orchestrator-worker/test/store.test.ts apps/orchestrator-worker/test/platform-repository.test.ts apps/orchestrator-worker/test/db-repository.test.ts apps/orchestrator-worker/test/document-api.test.ts",
     "typecheck": "npm run typecheck --workspaces --if-present",
@@ -69,7 +68,6 @@
     "ai": "^6.0.138",
     "alphaloop": "^0.1.0",
     "hono": "^4.11.10",
-    "postgres": "^3.4.7",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "zod": "^4.1.5"

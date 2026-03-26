@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { createPostgresDb } from "@alphabook/db";
+import { createWranglerD1Db, loadLocalDevVars } from "@alphabook/db";
 
 import type { BenchmarkCorpus } from "@alphabook/benchmark-core";
 
@@ -65,13 +65,18 @@ function parseArgs(argv: string[]): ScriptOptions {
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   await loadDotEnvFile();
-
-  if (!process.env.DATABASE_URL) {
-    throw new Error("DATABASE_URL is required.");
-  }
-
-  const db = createPostgresDb(process.env.DATABASE_URL);
-  const termPatterns = options.terms.map((term) => `%${term.toLowerCase()}%`);
+  await loadLocalDevVars(process.cwd());
+  const db = createWranglerD1Db({
+    cwd: process.cwd(),
+    databaseName: process.env.D1_DATABASE_NAME ?? "alphabook-app",
+    wranglerConfig: process.env.D1_WRANGLER_CONFIG ?? "apps/orchestrator-worker/wrangler.toml",
+  });
+  const whereClause = options.terms
+    .map((term) => {
+      const escaped = term.toLowerCase().replace(/'/gu, "''");
+      return `lower(c.text) like '%${escaped}%'`;
+    })
+    .join(" OR ");
 
   const works = await db.query<Record<string, unknown>>(
     `
@@ -84,7 +89,7 @@ async function main() {
           w.release_date,
           w.rights_status,
           w.metadata_json,
-          array_remove(array_agg(distinct s.label), null) as subjects
+          json_group_array(distinct s.label) as subjects_json
         from works w
         left join work_subjects ws on ws.work_id = w.id
         left join subjects s on s.id = ws.subject_id
@@ -92,16 +97,16 @@ async function main() {
           select 1
           from chunks c
           where c.work_id = w.id
-            and lower(c.text) like any($1::text[])
+            and (${whereClause})
         )
         group by w.id, w.title, w.summary, w.language, w.release_date, w.rights_status, w.metadata_json
       )
       select *
       from topical_works
-      order by md5(id::text || $2::text)
-      limit $3
+      order by abs(random())
+      limit $1
     `,
-    [termPatterns, options.seed, Math.trunc(options.sampleSize)],
+    [Math.trunc(options.sampleSize)],
   );
 
   const documentsById = new Map<string, BenchmarkCorpus["documents"][number]>();
@@ -115,7 +120,20 @@ async function main() {
       publishedAt: row.release_date ? String(row.release_date) : null,
       rightsStatus: typeof row.rights_status === "string" ? row.rights_status : null,
       contributors: [],
-      subjects: Array.isArray(row.subjects) ? row.subjects.map((subject) => String(subject)) : [],
+      subjects: (() => {
+        if (Array.isArray(row.subjects_json)) {
+          return row.subjects_json.map((subject) => String(subject));
+        }
+        if (typeof row.subjects_json === "string") {
+          try {
+            const parsed = JSON.parse(row.subjects_json) as unknown;
+            return Array.isArray(parsed) ? parsed.filter((subject): subject is string => typeof subject === "string") : [];
+          } catch {
+            return [];
+          }
+        }
+        return [];
+      })(),
       metadata: (row.metadata_json as Record<string, unknown> | null) ?? {},
     });
   }
@@ -125,7 +143,8 @@ async function main() {
   const chunkBatchSize = 10;
   for (let index = 0; index < workIds.length; index += chunkBatchSize) {
     const batchIds = workIds.slice(index, index + chunkBatchSize);
-  const chunkRows = await db.query<Record<string, unknown>>(
+    const batchLiteral = batchIds.map((id) => `'${id.replace(/'/gu, "''")}'`).join(", ");
+    const chunkRows = await db.query<Record<string, unknown>>(
       `
         select
           c.work_id,
@@ -134,13 +153,12 @@ async function main() {
           c.text,
           c.metadata_json as chunk_metadata_json
         from chunks c
-        where c.work_id = any($1::uuid[])
+        where c.work_id in (${batchLiteral})
         order by c.work_id, c.chunk_index
-      `,
-      [batchIds],
+      `
     );
 
-  for (const row of chunkRows.rows) {
+    for (const row of chunkRows.rows) {
       const text = String(row.text ?? "");
       passages.push({
         id: String(row.chunk_id),

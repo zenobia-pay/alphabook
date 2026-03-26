@@ -248,7 +248,7 @@ The shared env list lives in `docs/environment.md`.
 
 The practical minimum for ingest persistence is:
 
-- `DATABASE_URL`
+- `D1_DATABASE_NAME`
 - `R2_BUCKET_NAME`
 - `R2_ENDPOINT`
 - `R2_ACCESS_KEY_ID`
@@ -256,7 +256,7 @@ The practical minimum for ingest persistence is:
 
 The practical minimum for the deployed orchestrator is:
 
-- `DATABASE_URL`
+- `D1_DATABASE_NAME`
 - `OPENAI_API_KEY`
 - `OPENAI_MODEL`
 - `OPENAI_SYNTH_MODEL`
@@ -280,7 +280,7 @@ Before deploy, make sure the implementation wrappers and ingest path have the ri
 
 At minimum:
 
-- `DATABASE_URL`
+- `D1_DATABASE_NAME`
 - `OPENAI_API_KEY`
 - `R2_BUCKET_NAME`
 - `R2_ENDPOINT`

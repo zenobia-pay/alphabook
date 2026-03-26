@@ -1,8 +1,5 @@
 import type { DbClient } from "@alphabook/db";
-import type {
-  CorpusDocumentRecord,
-  CorpusFileRecord,
-} from "@alphabook/platform";
+import type { CorpusDocumentRecord, CorpusFileRecord } from "@alphabook/platform";
 
 import type { DocumentTextRecord, WorkFileKind } from "./store";
 
@@ -19,6 +16,23 @@ function normalizeExternalId(value: number | string | null): number | string | n
   return value;
 }
 
+function parseJsonArray(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.map((entry) => String(entry));
+  }
+  if (typeof value !== "string" || !value.trim()) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed)
+      ? parsed.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
 function mapRowToDocument(row: {
   id: string;
   gutenberg_id: number | string | null;
@@ -28,8 +42,8 @@ function mapRowToDocument(row: {
   rights_status: string | null;
   summary: string | null;
   metadata_json: Record<string, unknown>;
-  authors: string[];
-  subjects: string[];
+  authors_json: string | null;
+  subjects_json: string | null;
   score?: number;
 }): CorpusDocumentRecord {
   return {
@@ -40,14 +54,14 @@ function mapRowToDocument(row: {
     publishedAt: row.release_date,
     rightsStatus: row.rights_status,
     summary: row.summary,
-    contributors: row.authors ?? [],
-    subjects: row.subjects ?? [],
+    contributors: parseJsonArray(row.authors_json),
+    subjects: parseJsonArray(row.subjects_json),
     metadata: row.metadata_json ?? {},
     score: row.score,
   };
 }
 
-export class SqlCorpusDbRepository {
+export class D1CorpusDbRepository {
   private readonly adapterId: string | null;
 
   constructor(private readonly db: DbClient, options: { adapterId?: string | null } = {}) {
@@ -62,14 +76,14 @@ export class SqlCorpusDbRepository {
     if (!this.hasScopedCorpus()) {
       return "";
     }
-    return ` AND COALESCE(${alias}.metadata_json->>'corpusAdapterId', '') = '${this.adapterId}'`;
+    return ` AND COALESCE(json_extract(${alias}.metadata_json, '$.corpusAdapterId'), '') = '${this.adapterId}'`;
   }
 
   async countDocuments(): Promise<number> {
-    const result = await this.db.query<{ count: string }>(
-      `SELECT COUNT(*)::text AS count FROM works w WHERE 1 = 1 ${this.adapterWorkClause("w")}`,
+    const result = await this.db.query<{ count: string | number }>(
+      `SELECT COUNT(*) AS count FROM works w WHERE 1 = 1 ${this.adapterWorkClause("w")}`,
     );
-    return Number.parseInt(result.rows[0]?.count ?? "0", 10) || 0;
+    return Number.parseInt(String(result.rows[0]?.count ?? "0"), 10) || 0;
   }
 
   async listDocuments(offset = 0, limit = 50): Promise<CorpusDocumentRecord[]> {
@@ -82,8 +96,8 @@ export class SqlCorpusDbRepository {
       release_date: string | null;
       rights_status: string | null;
       summary: string | null;
-      authors: string[];
-      subjects: string[];
+      authors_json: string | null;
+      subjects_json: string | null;
       score: number;
     }>(
       `
@@ -93,12 +107,12 @@ export class SqlCorpusDbRepository {
           w.title,
           w.metadata_json,
           w.language,
-          w.release_date::text,
+          w.release_date,
           w.rights_status,
           w.summary,
-          ARRAY_REMOVE(ARRAY_AGG(DISTINCT a.name), NULL) AS authors,
-          ARRAY_REMOVE(ARRAY_AGG(DISTINCT s.label), NULL) AS subjects,
-          0::float AS score
+          json_group_array(DISTINCT a.name) AS authors_json,
+          json_group_array(DISTINCT s.label) AS subjects_json,
+          0 AS score
         FROM works w
         LEFT JOIN work_authors wa ON wa.work_id = w.id
         LEFT JOIN authors a ON a.id = wa.author_id
@@ -106,11 +120,10 @@ export class SqlCorpusDbRepository {
         LEFT JOIN subjects s ON s.id = ws.subject_id
         WHERE 1 = 1 ${this.adapterWorkClause("w")}
         GROUP BY w.id, w.gutenberg_id, w.title, w.metadata_json, w.language, w.release_date, w.rights_status, w.summary
-        ORDER BY w.release_date DESC NULLS LAST, w.title ASC
-        OFFSET $1
-        LIMIT $2
+        ORDER BY CASE WHEN w.release_date IS NULL THEN 1 ELSE 0 END, w.release_date DESC, w.title ASC
+        LIMIT $1 OFFSET $2
       `,
-      [offset, limit],
+      [limit, offset],
     );
     return result.rows.map(mapRowToDocument);
   }
@@ -130,8 +143,8 @@ export class SqlCorpusDbRepository {
       release_date: string | null;
       rights_status: string | null;
       summary: string | null;
-      authors: string[];
-      subjects: string[];
+      authors_json: string | null;
+      subjects_json: string | null;
       score: number;
     }>(
       `
@@ -141,18 +154,18 @@ export class SqlCorpusDbRepository {
           w.title,
           w.metadata_json,
           w.language,
-          w.release_date::text,
+          w.release_date,
           w.rights_status,
           w.summary,
-          ARRAY_REMOVE(ARRAY_AGG(DISTINCT a.name), NULL) AS authors,
-          ARRAY_REMOVE(ARRAY_AGG(DISTINCT s.label), NULL) AS subjects,
-          0::float AS score
+          json_group_array(DISTINCT a.name) AS authors_json,
+          json_group_array(DISTINCT s.label) AS subjects_json,
+          0 AS score
         FROM works w
         LEFT JOIN work_authors wa ON wa.work_id = w.id
         LEFT JOIN authors a ON a.id = wa.author_id
         LEFT JOIN work_subjects ws ON ws.work_id = w.id
         LEFT JOIN subjects s ON s.id = ws.subject_id
-        WHERE w.id = ANY($1::uuid[]) ${this.adapterWorkClause("w")}
+        WHERE w.id IN $1 ${this.adapterWorkClause("w")}
         GROUP BY w.id, w.gutenberg_id, w.title, w.metadata_json, w.language, w.release_date, w.rights_status, w.summary
         ORDER BY w.title ASC
       `,
@@ -172,8 +185,8 @@ export class SqlCorpusDbRepository {
       `
         SELECT work_id, kind, r2_key, byte_size, metadata_json
         FROM work_files
-        WHERE work_id = ANY($1::uuid[])
-          AND ($2::text[] IS NULL OR kind = ANY($2::text[]))
+        WHERE work_id IN $1
+          AND ($2 IS NULL OR kind IN $2)
         ORDER BY work_id ASC, kind ASC
       `,
       [documentIds, kinds?.length ? kinds : null],
@@ -192,7 +205,7 @@ export class SqlCorpusDbRepository {
       `
         SELECT work_id, r2_key
         FROM work_files
-        WHERE work_id = $1::uuid AND kind = 'clean'
+        WHERE work_id = $1 AND kind = 'clean'
         LIMIT 1
       `,
       [documentId],

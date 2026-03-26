@@ -1,4 +1,4 @@
-export const GUTENBERG_WORKSPACE_POSTGRES_SCHEMA = {
+export const GUTENBERG_WORKSPACE_SCHEMA = {
   version: 1,
   summary: "AlphaBook corpus metadata and text index schema used by the orchestrator and VM research agent.",
   tables: [
@@ -34,8 +34,8 @@ export const GUTENBERG_WORKSPACE_POSTGRES_SCHEMA = {
     },
     {
       name: "chunks",
-      description: "Chunked text passages with vector embeddings, tsvector search index, and optional R2 key.",
-      columns: ["id", "work_id", "chunk_index", "text", "embedding", "tsv", "r2_key", "metadata_json"],
+      description: "Chunked text passages with optional R2 key and embedding metadata.",
+      columns: ["id", "work_id", "chunk_index", "text", "r2_key", "metadata_json"],
     },
     {
       name: "runtime_instances",

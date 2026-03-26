@@ -2,9 +2,9 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
-import { createPostgresDb } from "@alphabook/db";
+import { createWranglerD1Db, loadLocalDevVars } from "@alphabook/db";
 import { getImplementationConfig } from "@alphabook/implementations";
-import { SqlAppStore } from "../../../apps/orchestrator-worker/src/store";
+import { D1AppStore } from "../../../apps/orchestrator-worker/src/d1-store";
 
 const DEFAULT_SHARD_SIZE = 1000;
 
@@ -17,10 +17,7 @@ function readArg(name: string): string | null {
 }
 
 async function main() {
-  const databaseUrl = process.env.DATABASE_URL;
-  if (!databaseUrl) {
-    throw new Error("DATABASE_URL is required.");
-  }
+  await loadLocalDevVars(process.cwd());
   const implementationId = readArg("--implementation") ?? "alphabook";
   const shardSize = Number(readArg("--shard-size") ?? DEFAULT_SHARD_SIZE);
   if (!Number.isInteger(shardSize) || shardSize <= 0) {
@@ -28,7 +25,11 @@ async function main() {
   }
 
   const implementation = getImplementationConfig(implementationId);
-  const store = new SqlAppStore(createPostgresDb(databaseUrl), {
+  const store = new D1AppStore(createWranglerD1Db({
+    cwd: process.cwd(),
+    databaseName: process.env.D1_DATABASE_NAME ?? "alphabook-app",
+    wranglerConfig: process.env.D1_WRANGLER_CONFIG ?? "apps/orchestrator-worker/wrangler.toml",
+  }), {
     adapterId: implementation.adapterId,
     feedLabels: implementation.feedLabels,
   });

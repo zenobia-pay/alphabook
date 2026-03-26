@@ -1,6 +1,6 @@
 import type { CorpusAdapter } from "@alphabook/corpus-core";
 
-import { GUTENBERG_WORKSPACE_POSTGRES_SCHEMA } from "./schema";
+import { GUTENBERG_WORKSPACE_SCHEMA } from "./schema";
 import { gutenbergCorpusKeys } from "./storage";
 import {
   gutenbergAcceptMetadataResults,
@@ -14,7 +14,7 @@ export const gutenbergCorpusAdapter: CorpusAdapter = {
   id: "gutenberg",
   displayName: "Project Gutenberg",
   description: "Project Gutenberg adapter for AlphaBook's book corpus.",
-  workspaceSchema: GUTENBERG_WORKSPACE_POSTGRES_SCHEMA,
+  workspaceSchema: GUTENBERG_WORKSPACE_SCHEMA,
   capabilities: {
     renderedDocuments: true,
     coverImages: true,

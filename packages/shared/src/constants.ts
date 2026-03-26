@@ -25,4 +25,4 @@ export function getToolLabel(toolName: string) {
   return TOOL_LABELS[toolName as keyof typeof TOOL_LABELS] ?? "Research step";
 }
 
-export const WORKSPACE_POSTGRES_SCHEMA = defaultCorpusAdapter.workspaceSchema;
+export const WORKSPACE_SCHEMA = defaultCorpusAdapter.workspaceSchema;

@@ -20,7 +20,7 @@ fi
 
 if [[ ! -f "$INGEST_ENV_FILE" ]]; then
   echo "[$(date -Is)] Ingest env file not found: $INGEST_ENV_FILE" >&2
-  echo "[$(date -Is)] Expected DATABASE_URL, R2_BUCKET_NAME, R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, and optional OPENAI_API_KEY." >&2
+  echo "[$(date -Is)] Expected D1_DATABASE_NAME, R2_BUCKET_NAME, R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, and embedding credentials (OPENAI_API_KEY or GOOGLE_AI_API_KEY)." >&2
   exit 1
 fi
 

@@ -84,42 +84,43 @@ Capture:
 
 ## 2. Query live run timing from the relational store
 
-Use the production `DATABASE_URL` from `.dev.vars`.
+Use the production `D1_DATABASE_NAME` from `.dev.vars`.
 
 ```bash
 node --input-type=module <<'JS'
 import fs from 'node:fs';
-import { createPostgresDb } from '@alphabook/db';
+import { createWranglerD1Db } from '@alphabook/db';
 
 const envText = fs.readFileSync('.dev.vars', 'utf8');
-const connectionString = envText.match(/^DATABASE_URL=(.*)$/m)[1].trim().replace(/^"|"$/g, '');
-const db = createPostgresDb(connectionString);
+const databaseName = envText.match(/^D1_DATABASE_NAME=(.*)$/m)[1].trim().replace(/^"|"$/g, '');
+const db = createWranglerD1Db({ databaseName, wranglerConfig: 'apps/orchestrator-worker/wrangler.toml' });
 
 const sessionIds = [
   'REPLACE_SESSION_ID_1',
   'REPLACE_SESSION_ID_2'
 ];
+const sessionIdList = `(${sessionIds.map((id) => `'${id.replace(/'/g, "''")}'`).join(', ')})`;
 
 const result = await db.query(`
 with run_rows as (
   select id, session_id, status, started_at, completed_at
   from runs
-  where session_id = any($1::uuid[])
+  where session_id in ${sessionIdList}
 ),
 workspace as (
   select tc.run_id,
-         min(tc.completed_at) filter (where tc.tool_name='create_workspace') as create_workspace_completed_at,
-         min(tc.started_at) filter (where tc.tool_name='run_workspace_task') as run_workspace_task_started_at
+         min(case when tc.tool_name='create_workspace' then tc.completed_at end) as create_workspace_completed_at,
+         min(case when tc.tool_name='run_workspace_task' then tc.started_at end) as run_workspace_task_started_at
   from tool_calls tc
   join run_rows rr on rr.id = tc.run_id
   group by tc.run_id
 ),
 book_counts as (
   select session_id,
-         count(distinct properties_json->>'workId')::int as distinct_books
+         count(distinct json_extract(properties_json, '$.workId')) as distinct_books
   from analytics_events
   where event = 'book_candidate_in_run'
-    and session_id = any($1::uuid[])
+    and session_id in ${sessionIdList}
   group by session_id
 )
 select rr.session_id,
@@ -128,14 +129,14 @@ select rr.session_id,
        rr.started_at,
        rr.completed_at,
        bc.distinct_books,
-       round(extract(epoch from (workspace.create_workspace_completed_at - rr.started_at))*1000)::int as time_to_workspace_ready_ms,
-       round(extract(epoch from (workspace.run_workspace_task_started_at - rr.started_at))*1000)::int as time_to_first_codex_cli_start_ms,
-       round(extract(epoch from (coalesce(rr.completed_at, now()) - rr.started_at))*1000)::int as elapsed_ms
+       cast(round((julianday(workspace.create_workspace_completed_at) - julianday(rr.started_at)) * 86400000) as integer) as time_to_workspace_ready_ms,
+       cast(round((julianday(workspace.run_workspace_task_started_at) - julianday(rr.started_at)) * 86400000) as integer) as time_to_first_codex_cli_start_ms,
+       cast(round((julianday(coalesce(rr.completed_at, CURRENT_TIMESTAMP)) - julianday(rr.started_at)) * 86400000) as integer) as elapsed_ms
 from run_rows rr
 left join workspace on workspace.run_id = rr.id
 left join book_counts bc on bc.session_id = rr.session_id
 order by rr.started_at asc
-`, [sessionIds]);
+`);
 
 console.log(JSON.stringify(result.rows, null, 2));
 await db.end();

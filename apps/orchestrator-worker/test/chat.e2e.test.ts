@@ -12,7 +12,8 @@ import { MemoryBlobStore } from "../src/r2";
 import { FallbackPlanner, ScriptedPlanner } from "../src/planner";
 import { ScriptedRouter } from "../src/router";
 import { FlyMachinesRuntimeGateway } from "../src/runtime";
-import { InMemoryAppStore, SqlAppStore } from "../src/store";
+import { D1AppStore } from "../src/d1-store";
+import { InMemoryAppStore } from "../src/store";
 import type { SynthesisInput, SynthesisResult, Synthesizer } from "../src/synthesizer";
 import type { PlannerContext } from "../src/planner";
 import type { RouterContext } from "../src/router";
@@ -4920,7 +4921,7 @@ test("search_works strips dead and death from fiction grief metadata queries bef
 });
 
 test("sql metadata search fails loudly instead of silently falling back", async () => {
-  const store = new SqlAppStore({
+  const store = new D1AppStore({
     async query() {
       throw new Error("db blew up");
     },
@@ -4939,7 +4940,7 @@ test("sql metadata search fails loudly instead of silently falling back", async 
 
 test("sql metadata search can broaden into chunk-backed work discovery when metadata rows are empty", async () => {
   const queries: string[] = [];
-  const store = new SqlAppStore({
+  const store = new D1AppStore({
     async query<T = Record<string, unknown>>(sql: string) {
       queries.push(sql);
       if (queries.length === 1) {
@@ -4980,7 +4981,7 @@ test("sql metadata search can broaden into chunk-backed work discovery when meta
 
 test("sql metadata search keeps broadening when grief metadata hits are plentiful but low-signal", async () => {
   const queries: string[] = [];
-  const store = new SqlAppStore({
+  const store = new D1AppStore({
     async query<T = Record<string, unknown>>(sql: string) {
       queries.push(sql);
       if (queries.length === 1) {
@@ -5050,7 +5051,7 @@ test("sql metadata search keeps broadening when grief metadata hits are plentifu
 test("sql metadata search relaxes again when grief matches remain low-signal after chunk expansion", async () => {
   const seenParams: unknown[][] = [];
   let queryCount = 0;
-  const store = new SqlAppStore({
+  const store = new D1AppStore({
     async query<T = Record<string, unknown>>(_sql: string, params?: unknown[]) {
       queryCount += 1;
       seenParams.push(params ?? []);
@@ -5113,7 +5114,7 @@ test("sql metadata search relaxes again when grief matches remain low-signal aft
 test("sql metadata search relaxes sparse year and language filters after empty discovery", async () => {
   const seenParams: unknown[][] = [];
   let queryCount = 0;
-  const store = new SqlAppStore({
+  const store = new D1AppStore({
     async query<T = Record<string, unknown>>(_sql: string, params?: unknown[]) {
       queryCount += 1;
       seenParams.push(params ?? []);
@@ -5160,7 +5161,7 @@ test("sql metadata search relaxes sparse year and language filters after empty d
 });
 
 test("sql metadata search downranks juvenile orphan results for grief queries when adult grief matches exist", async () => {
-  const store = new SqlAppStore({
+  const store = new D1AppStore({
     async query<T = Record<string, unknown>>() {
       return {
         rows: [
@@ -5208,7 +5209,7 @@ test("sql metadata search downranks juvenile orphan results for grief queries wh
 
 test("sql metadata search broadens grief queries with additional mourning terms", async () => {
   const queries: Array<{ sql: string; params?: unknown[] }> = [];
-  const store = new SqlAppStore({
+  const store = new D1AppStore({
     async query<T = Record<string, unknown>>(sql: string, params?: unknown[]) {
       queries.push({ sql, params });
       return { rows: [] as T[] };
@@ -5231,7 +5232,7 @@ test("sql metadata search broadens grief queries with additional mourning terms"
 
 test("sql metadata search overfetches and forces chunk expansion for broad survey queries", async () => {
   const queries: Array<{ sql: string; params?: unknown[] }> = [];
-  const store = new SqlAppStore({
+  const store = new D1AppStore({
     async query<T = Record<string, unknown>>(sql: string, params?: unknown[]) {
       queries.push({ sql, params });
       if (queries.length === 1) {
@@ -5273,7 +5274,7 @@ test("sql metadata search overfetches and forces chunk expansion for broad surve
 
 test("sql metadata search strips imperative scaffolding terms from broad survey grief queries", async () => {
   const queries: Array<{ sql: string; params?: unknown[] }> = [];
-  const store = new SqlAppStore({
+  const store = new D1AppStore({
     async query<T = Record<string, unknown>>(sql: string, params?: unknown[]) {
       queries.push({ sql, params });
       return { rows: [] as T[] };
@@ -5301,7 +5302,7 @@ test("sql metadata search strips imperative scaffolding terms from broad survey 
 });
 
 test("sql metadata search downranks death-title matches without stronger grief evidence", async () => {
-  const store = new SqlAppStore({
+  const store = new D1AppStore({
     async query<T = Record<string, unknown>>() {
       return {
         rows: [
@@ -5348,7 +5349,7 @@ test("sql metadata search downranks death-title matches without stronger grief e
 });
 
 test("sql metadata search downranks nonfiction grief-adjacent books when the query asks for fiction", async () => {
-  const store = new SqlAppStore({
+  const store = new D1AppStore({
     async query<T = Record<string, unknown>>() {
       return {
         rows: [
@@ -6150,7 +6151,7 @@ test("in-memory passage retrieval honors year and genre filters", async () => {
 
 test("sql retrieval bounds semantic candidates instead of scanning every embedded chunk", async () => {
   const queries: Array<{ sql: string; params?: unknown[] }> = [];
-  const store = new SqlAppStore({
+  const store = new D1AppStore({
     async query<T = Record<string, unknown>>(sql: string, params?: unknown[]) {
       queries.push({ sql, params });
       return { rows: [] as T[] };

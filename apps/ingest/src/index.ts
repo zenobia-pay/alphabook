@@ -7,7 +7,8 @@ import { dirname } from "node:path";
 import { DeleteObjectsCommand, GetObjectCommand, S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
 import { parseHTML } from "linkedom";
-import { createPostgresDb } from "@alphabook/db";
+import type { DbClient } from "@alphabook/db";
+import { createWranglerD1Db, loadLocalDevVars } from "@alphabook/db";
 import type { CorpusAdapter } from "@alphabook/corpus-core";
 import {
   buildSimpleRenderedArtifactBundle,
@@ -31,7 +32,7 @@ import {
 } from "@alphabook/source-supreme-court";
 
 interface IngestContext {
-  db: ReturnType<typeof createPostgresDb>;
+  db: DbClient;
   r2: S3Client;
   r2Bucket: string;
 }
@@ -273,10 +274,6 @@ async function embedChunksWithGoogle(chunks: string[]): Promise<number[][] | nul
   }
 
   return embeddings;
-}
-
-function vectorLiteral(embedding: number[] | null | undefined) {
-  return embedding?.length ? `[${embedding.join(",")}]` : null;
 }
 
 function uniqueStrings(values: Array<string | null | undefined>) {
@@ -1310,26 +1307,32 @@ async function findExistingWorkStatus(
 ): Promise<ExistingWorkStatus | null> {
   const rows = await context.db.query<{
     work_id: string;
-    file_kind_count: number | string;
-    chunk_count: number | string;
+    file_kind_count: number | string | null;
+    chunk_count: number | string | null;
   }>(
     `
       SELECT
         w.id AS work_id,
-        COUNT(DISTINCT wf.kind) FILTER (WHERE wf.kind IN ('raw', 'metadata', 'clean', 'chunks', 'book_html')) AS file_kind_count,
-        COUNT(c.id) AS chunk_count
+        (
+          SELECT COUNT(DISTINCT wf.kind)
+          FROM work_files wf
+          WHERE wf.work_id = w.id
+            AND wf.kind IN ('raw', 'metadata', 'clean', 'chunks', 'book_html')
+        ) AS file_kind_count,
+        (
+          SELECT COUNT(*)
+          FROM chunks c
+          WHERE c.work_id = w.id
+        ) AS chunk_count
       FROM works w
-      LEFT JOIN work_files wf ON wf.work_id = w.id
-      LEFT JOIN chunks c ON c.work_id = w.id
       WHERE (
-        ($1::bigint IS NOT NULL AND w.gutenberg_id = $1::bigint)
+        ($1 IS NOT NULL AND w.gutenberg_id = $1)
         OR (
-          $1::bigint IS NULL
-          AND w.metadata_json->>'corpusAdapterId' = $2
-          AND w.metadata_json->>'externalId' = $3
+          $1 IS NULL
+          AND json_extract(w.metadata_json, '$.corpusAdapterId') = $2
+          AND json_extract(w.metadata_json, '$.externalId') = $3
         )
       )
-      GROUP BY w.id
       LIMIT 1
     `,
     [source.legacyNumericId ? Number(source.legacyNumericId) : null, source.adapterId, source.externalId],
@@ -1353,7 +1356,7 @@ async function upsertIngestedWork(
     const workResult = await context.db.query<{ id: string }>(
       `
         INSERT INTO works (id, gutenberg_id, title, language, release_date, rights_status, summary, metadata_json)
-        VALUES ($1::uuid, $2::bigint, $3, $4, $5::date, $6, $7, $8::jsonb)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         ON CONFLICT (gutenberg_id) DO UPDATE
         SET
           title = EXCLUDED.title,
@@ -1362,7 +1365,7 @@ async function upsertIngestedWork(
           rights_status = EXCLUDED.rights_status,
           summary = EXCLUDED.summary,
           metadata_json = EXCLUDED.metadata_json,
-          updated_at = now()
+          updated_at = CURRENT_TIMESTAMP
         RETURNING id
       `,
       [
@@ -1384,11 +1387,11 @@ async function upsertIngestedWork(
   }
 
   const existing = await context.db.query<{ id: string }>(
-    `
+      `
       SELECT id
       FROM works
-      WHERE metadata_json->>'corpusAdapterId' = $1
-        AND metadata_json->>'externalId' = $2
+      WHERE json_extract(metadata_json, '$.corpusAdapterId') = $1
+        AND json_extract(metadata_json, '$.externalId') = $2
       LIMIT 1
     `,
     [source.adapterId, source.externalId],
@@ -1401,12 +1404,12 @@ async function upsertIngestedWork(
         SET
           title = $2,
           language = $3,
-          release_date = $4::date,
+          release_date = $4,
           rights_status = $5,
           summary = $6,
-          metadata_json = $7::jsonb,
-          updated_at = now()
-        WHERE id = $1::uuid
+          metadata_json = $7,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1
       `,
       [
         workId,
@@ -1422,7 +1425,7 @@ async function upsertIngestedWork(
     await context.db.query(
       `
         INSERT INTO works (id, gutenberg_id, title, language, release_date, rights_status, summary, metadata_json)
-        VALUES ($1::uuid, NULL, $2, $3, $4::date, $5, $6, $7::jsonb)
+        VALUES ($1, NULL, $2, $3, $4, $5, $6, $7)
       `,
       [
         workId,
@@ -1494,7 +1497,7 @@ async function deleteKeys(r2: S3Client, bucket: string, keys: string[]) {
 
 async function syncAuthors(context: IngestContext, workId: string, authors: string[]) {
   const normalizedAuthors = uniqueStrings(authors);
-  await context.db.query(`DELETE FROM work_authors WHERE work_id = $1::uuid`, [workId]);
+  await context.db.query(`DELETE FROM work_authors WHERE work_id = $1`, [workId]);
 
   for (const authorName of normalizedAuthors) {
     const existing = await context.db.query<{ id: string }>(
@@ -1504,12 +1507,12 @@ async function syncAuthors(context: IngestContext, workId: string, authors: stri
     const authorId = existing.rows[0]?.id ?? crypto.randomUUID();
     if (!existing.rows[0]?.id) {
       await context.db.query(
-        `INSERT INTO authors (id, name, sort_name) VALUES ($1::uuid, $2, $3)`,
+        `INSERT INTO authors (id, name, sort_name, created_at) VALUES ($1, $2, $3, CURRENT_TIMESTAMP)`,
         [authorId, authorName, authorName],
       );
     }
     await context.db.query(
-      `INSERT INTO work_authors (work_id, author_id) VALUES ($1::uuid, $2::uuid) ON CONFLICT DO NOTHING`,
+      `INSERT INTO work_authors (work_id, author_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
       [workId, authorId],
     );
   }
@@ -1517,7 +1520,7 @@ async function syncAuthors(context: IngestContext, workId: string, authors: stri
 
 async function syncSubjects(context: IngestContext, workId: string, subjects: string[]) {
   const normalizedSubjects = uniqueStrings(subjects);
-  await context.db.query(`DELETE FROM work_subjects WHERE work_id = $1::uuid`, [workId]);
+  await context.db.query(`DELETE FROM work_subjects WHERE work_id = $1`, [workId]);
 
   for (const subjectLabel of normalizedSubjects) {
     const existing = await context.db.query<{ id: string }>(
@@ -1527,7 +1530,7 @@ async function syncSubjects(context: IngestContext, workId: string, subjects: st
     const subjectId = existing.rows[0]?.id ?? crypto.randomUUID();
     if (!existing.rows[0]?.id) {
       await context.db.query(
-        `INSERT INTO subjects (id, label) VALUES ($1::uuid, $2) ON CONFLICT (label) DO NOTHING`,
+        `INSERT INTO subjects (id, label) VALUES ($1, $2) ON CONFLICT (label) DO NOTHING`,
         [subjectId, subjectLabel],
       );
     }
@@ -1541,7 +1544,7 @@ async function syncSubjects(context: IngestContext, workId: string, subjects: st
         ).rows[0]?.id;
     if (resolved) {
       await context.db.query(
-        `INSERT INTO work_subjects (work_id, subject_id) VALUES ($1::uuid, $2::uuid) ON CONFLICT DO NOTHING`,
+        `INSERT INTO work_subjects (work_id, subject_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
         [workId, resolved],
       );
     }
@@ -1682,11 +1685,11 @@ async function persistIngestedWork(
     `
       INSERT INTO work_files (id, work_id, kind, r2_key, metadata_json)
       VALUES
-        ($1::uuid, $2::uuid, 'raw', $3, '{}'::jsonb),
-        ($4::uuid, $2::uuid, 'metadata', $5, '{}'::jsonb),
-        ($6::uuid, $2::uuid, 'clean', $7, '{}'::jsonb),
-        ($8::uuid, $2::uuid, 'chunks', $9, '{}'::jsonb),
-        ($10::uuid, $2::uuid, 'book_html', $11, '{}'::jsonb)
+        ($1, $2, 'raw', $3, '{}'),
+        ($4, $2, 'metadata', $5, '{}'),
+        ($6, $2, 'clean', $7, '{}'),
+        ($8, $2, 'chunks', $9, '{}'),
+        ($10, $2, 'book_html', $11, '{}')
       ON CONFLICT (r2_key) DO NOTHING
     `,
     [
@@ -1707,21 +1710,28 @@ async function persistIngestedWork(
   for (const [index, chunk] of chunks.entries()) {
     await context.db.query(
       `
-        INSERT INTO chunks (id, work_id, chunk_index, text, embedding, tsv, r2_key, metadata_json)
-        VALUES (
-          $1::uuid,
-          $2::uuid,
-          $3,
-          $4,
-          CASE WHEN $5::text IS NULL THEN NULL ELSE $5::vector END,
-          to_tsvector('english', $4),
-          $6,
-          '{}'::jsonb
-        )
+        INSERT INTO chunks (id, work_id, chunk_index, text, r2_key, metadata_json, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
         ON CONFLICT (work_id, chunk_index) DO UPDATE
-        SET text = EXCLUDED.text, embedding = EXCLUDED.embedding, tsv = EXCLUDED.tsv, r2_key = EXCLUDED.r2_key
+        SET
+          text = EXCLUDED.text,
+          r2_key = EXCLUDED.r2_key,
+          metadata_json = EXCLUDED.metadata_json
       `,
-      [crypto.randomUUID(), workId, index, chunk, vectorLiteral(chunkEmbeddings?.[index]), chunksKey],
+      [
+        crypto.randomUUID(),
+        workId,
+        index,
+        chunk,
+        chunksKey,
+        JSON.stringify({
+          embeddingProvider: process.env.EMBEDDING_PROVIDER ?? "openai",
+          embeddingModel: process.env.EMBEDDING_PROVIDER === "google"
+            ? (process.env.GOOGLE_EMBEDDING_MODEL ?? "gemini-embedding-2-preview")
+            : (process.env.OPENAI_EMBEDDING_MODEL ?? "text-embedding-3-small"),
+          embeddingDimensions: chunkEmbeddings?.[index]?.length ?? null,
+        }),
+      ],
     );
   }
 
@@ -2113,14 +2123,20 @@ async function deleteGutenbergWorks(context: IngestContext, gutenbergIds: string
     return { deleted: 0, ids: [], r2KeysDeleted: 0 };
   }
 
+  const idList = ids.map((id) => Number(id)).filter((id) => Number.isFinite(id));
+  const placeholders = idList.map((_, index) => `$${index + 1}`).join(", ");
+  if (idList.length === 0) {
+    return { deleted: 0, ids: [], r2KeysDeleted: 0 };
+  }
+
   const rows = await context.db.query<{ gutenberg_id: number | string | null; r2_key: string | null }>(
     `
       SELECT w.gutenberg_id, wf.r2_key
       FROM works w
       LEFT JOIN work_files wf ON wf.work_id = w.id
-      WHERE w.gutenberg_id = ANY($1::bigint[])
+      WHERE w.gutenberg_id IN (${placeholders})
     `,
-    [ids.map((id) => Number(id))],
+    idList,
   );
 
   const r2Keys = uniqueStrings([
@@ -2135,7 +2151,7 @@ async function deleteGutenbergWorks(context: IngestContext, gutenbergIds: string
   ]);
 
   await deleteKeys(context.r2, context.r2Bucket, r2Keys);
-  await context.db.query(`DELETE FROM works WHERE gutenberg_id = ANY($1::bigint[])`, [ids.map((id) => Number(id))]);
+  await context.db.query(`DELETE FROM works WHERE gutenberg_id IN (${placeholders})`, idList);
   await context.db.query(`DELETE FROM authors a WHERE NOT EXISTS (SELECT 1 FROM work_authors wa WHERE wa.author_id = a.id)`);
   await context.db.query(`DELETE FROM subjects s WHERE NOT EXISTS (SELECT 1 FROM work_subjects ws WHERE ws.subject_id = s.id)`);
 
@@ -2159,11 +2175,11 @@ async function listWorksMissingBookHtml(context: IngestContext, limit: number, s
     `
       SELECT
         w.id AS work_id,
-        w.gutenberg_id::bigint::text AS gutenberg_id,
+        CAST(w.gutenberg_id AS TEXT) AS gutenberg_id,
         w.title,
         w.summary,
         w.language,
-        w.release_date::text AS release_date,
+        w.release_date AS release_date,
         w.metadata_json
       FROM works w
       LEFT JOIN work_files html_file
@@ -2171,7 +2187,7 @@ async function listWorksMissingBookHtml(context: IngestContext, limit: number, s
        AND html_file.kind = 'book_html'
       WHERE w.gutenberg_id IS NOT NULL
         AND html_file.id IS NULL
-        AND ($1::bigint IS NULL OR w.gutenberg_id > $1::bigint)
+        AND ($1 IS NULL OR w.gutenberg_id > $1)
       ORDER BY w.gutenberg_id ASC
       LIMIT $2
     `,
@@ -2202,15 +2218,15 @@ async function listBookHtmlWorks(context: IngestContext, limit: number, startAft
     `
       SELECT
         w.id AS work_id,
-        w.gutenberg_id::bigint::text AS gutenberg_id,
+        CAST(w.gutenberg_id AS TEXT) AS gutenberg_id,
         w.title,
         w.summary,
         w.language,
-        w.release_date::text AS release_date,
+        w.release_date AS release_date,
         w.metadata_json
       FROM works w
       WHERE w.gutenberg_id IS NOT NULL
-        AND ($1::bigint IS NULL OR w.gutenberg_id > $1::bigint)
+        AND ($1 IS NULL OR w.gutenberg_id > $1)
       ORDER BY w.gutenberg_id ASC
       LIMIT $2
     `,
@@ -2247,17 +2263,17 @@ async function listBookHtmlWorksByCreatedAt(
     `
       SELECT
         w.id AS work_id,
-        w.gutenberg_id::bigint::text AS gutenberg_id,
+        CAST(w.gutenberg_id AS TEXT) AS gutenberg_id,
         w.title,
         w.summary,
         w.language,
-        w.release_date::text AS release_date,
+        w.release_date AS release_date,
         w.metadata_json
       FROM works w
       WHERE w.gutenberg_id IS NOT NULL
-        AND w.created_at >= $1::timestamptz
-        AND w.created_at < $2::timestamptz
-        AND ($3::bigint IS NULL OR w.gutenberg_id > $3::bigint)
+        AND w.created_at >= $1
+        AND w.created_at < $2
+        AND ($3 IS NULL OR w.gutenberg_id > $3)
       ORDER BY w.gutenberg_id ASC
       LIMIT $4
     `,
@@ -2333,7 +2349,7 @@ async function persistBookHtmlArtifact(
   await context.db.query(
     `
       INSERT INTO work_files (id, work_id, kind, r2_key, metadata_json)
-      VALUES ($1::uuid, $2::uuid, 'book_html', $3, '{}'::jsonb)
+      VALUES ($1, $2, 'book_html', $3, '{}')
       ON CONFLICT (r2_key) DO NOTHING
     `,
     [crypto.randomUUID(), work.workId, bookHtmlKey],
@@ -2583,7 +2599,7 @@ async function backfillMirrorParallel(context: IngestContext, options: MirrorBac
   const allIds = await listMirrorIds(mirrorRoot);
   const existingRows = await context.db.query<{ gutenberg_id: string | number }>(
     `
-      SELECT gutenberg_id::bigint::text AS gutenberg_id
+      SELECT CAST(gutenberg_id AS TEXT) AS gutenberg_id
       FROM works
       WHERE gutenberg_id IS NOT NULL
     `,
@@ -2701,18 +2717,22 @@ async function backfillMirrorParallel(context: IngestContext, options: MirrorBac
 }
 
 async function buildContext(): Promise<IngestContext> {
-  const databaseUrl = process.env.DATABASE_URL;
+  await loadLocalDevVars(process.cwd());
   const r2Bucket = process.env.R2_BUCKET_NAME;
   const r2Endpoint = process.env.R2_ENDPOINT;
   const r2AccessKeyId = process.env.R2_ACCESS_KEY_ID;
   const r2SecretAccessKey = process.env.R2_SECRET_ACCESS_KEY;
 
-  if (!databaseUrl || !r2Bucket || !r2Endpoint || !r2AccessKeyId || !r2SecretAccessKey) {
-    throw new Error("DATABASE_URL, R2_BUCKET_NAME, R2_ENDPOINT, R2_ACCESS_KEY_ID, and R2_SECRET_ACCESS_KEY are required.");
+  if (!r2Bucket || !r2Endpoint || !r2AccessKeyId || !r2SecretAccessKey) {
+    throw new Error("R2_BUCKET_NAME, R2_ENDPOINT, R2_ACCESS_KEY_ID, and R2_SECRET_ACCESS_KEY are required.");
   }
 
   return {
-    db: createPostgresDb(databaseUrl),
+    db: createWranglerD1Db({
+      cwd: process.cwd(),
+      databaseName: process.env.D1_DATABASE_NAME ?? "alphabook-app",
+      wranglerConfig: process.env.D1_WRANGLER_CONFIG ?? "apps/orchestrator-worker/wrangler.toml",
+    }),
     r2Bucket,
     r2: new S3Client({
       region: "auto",
@@ -2734,7 +2754,7 @@ async function buildContext(): Promise<IngestContext> {
 
 function requireContext(context: IngestContext | null): IngestContext {
   if (!context) {
-    throw new Error("DATABASE_URL, R2_BUCKET_NAME, R2_ENDPOINT, R2_ACCESS_KEY_ID, and R2_SECRET_ACCESS_KEY are required.");
+    throw new Error("D1 access plus R2_BUCKET_NAME, R2_ENDPOINT, R2_ACCESS_KEY_ID, and R2_SECRET_ACCESS_KEY are required.");
   }
   return context;
 }

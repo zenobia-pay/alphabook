@@ -1,14 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { SqlCorpusDbRepository } from "../src/db-repository";
+import { D1CorpusDbRepository } from "../src/db-repository";
 
-test("SQL corpus repository maps work rows into neutral document and file records", async () => {
+test("D1 corpus repository maps work rows into neutral document and file records", async () => {
   const queries: string[] = [];
-  const repository = new SqlCorpusDbRepository({
+  const repository = new D1CorpusDbRepository({
     async query(sql: string) {
       queries.push(sql);
-      if (sql.includes("WHERE w.id = ANY")) {
+      if (sql.includes("WHERE w.id IN")) {
         return {
           rows: [{
             id: "work-1",
@@ -19,8 +19,8 @@ test("SQL corpus repository maps work rows into neutral document and file record
             release_date: "1900-01-01",
             rights_status: "public_domain",
             summary: "Sample summary",
-            authors: ["Jane Doe"],
-            subjects: ["testing"],
+            authors_json: JSON.stringify(["Jane Doe"]),
+            subjects_json: JSON.stringify(["testing"]),
             score: 0,
           }],
         };
@@ -44,7 +44,7 @@ test("SQL corpus repository maps work rows into neutral document and file record
           }],
         };
       }
-      if (sql.includes("COUNT(*)::text AS count")) {
+      if (sql.includes("COUNT(*) AS count")) {
         return { rows: [{ count: "1" }] };
       }
       return { rows: [] };

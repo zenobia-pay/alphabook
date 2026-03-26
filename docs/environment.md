@@ -8,7 +8,7 @@ For any new implementation, do not reuse another implementation's bucket, queue,
 
 ## Orchestrator Worker
 
-- `DATABASE_URL`
+- `D1_DATABASE_NAME`
 - `OPENAI_API_KEY`
 - `OPENAI_MODEL`
 - `OPENAI_SYNTH_MODEL`
@@ -59,7 +59,7 @@ Cloudflare bindings:
 
 ## Ingest Service
 
-- `DATABASE_URL`
+- `D1_DATABASE_NAME`
 - `R2_BUCKET_NAME`
 - `R2_ENDPOINT`
 - `R2_ACCESS_KEY_ID`

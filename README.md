@@ -208,7 +208,7 @@ Operational runbooks:
 
 Core variables include:
 
-- `DATABASE_URL`
+- `D1_DATABASE_NAME`
 - `OPENAI_API_KEY`
 - `OPENAI_MODEL`
 - `OPENAI_SYNTH_MODEL`
@@ -236,7 +236,7 @@ Core variables include:
 Run database migrations:
 
 ```bash
-DATABASE_URL=postgres://... npm run migrate
+D1_DATABASE_NAME=alphabook-app npm run migrate
 ```
 
 Run the Worker locally:

@@ -226,7 +226,7 @@ To run real deep research over a large corpus, provision:
 Apply DB migrations:
 
 ```bash
-DATABASE_URL=postgres://... npm run migrate
+D1_DATABASE_NAME=alphabook-app npm run migrate
 ```
 
 Set the environment variables documented in [environment.md](environment.md).

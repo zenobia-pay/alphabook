@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 
 import type { DbClient } from "@alphabook/db";
 
-import { InMemoryAppStore, SqlAppStore } from "../src/store";
+import { D1AppStore } from "../src/d1-store";
+import { InMemoryAppStore } from "../src/store";
 
 test("upsertUserProfile updates the existing user when the auth id is stable", async () => {
   const store = new InMemoryAppStore();
@@ -145,7 +146,7 @@ test("appendRunEvent uses an atomic insert query for sequence allocation", async
     },
     async end() {},
   };
-  const store = new SqlAppStore(db);
+  const store = new D1AppStore(db);
 
   const event = await store.appendRunEvent(
     "11111111-1111-1111-1111-111111111111",
@@ -162,7 +163,7 @@ test("appendRunEvent uses an atomic insert query for sequence allocation", async
   assert.equal(queries.filter((entry) => entry.sql.includes("INSERT INTO run_events")).length, 1);
 });
 
-test("appendRunEvent retries sequence conflicts from Postgres before failing", async () => {
+test("appendRunEvent retries sequence conflicts before failing", async () => {
   let attempts = 0;
   const db: DbClient = {
     async query<T = Record<string, unknown>>(sql: string) {
@@ -187,7 +188,7 @@ test("appendRunEvent retries sequence conflicts from Postgres before failing", a
     },
     async end() {},
   };
-  const store = new SqlAppStore(db);
+  const store = new D1AppStore(db);
 
   const event = await store.appendRunEvent(
     "11111111-1111-1111-1111-111111111111",
