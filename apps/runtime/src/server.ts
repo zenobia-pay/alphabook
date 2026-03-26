@@ -231,6 +231,9 @@ async function fileExists(path: string): Promise<boolean> {
 }
 
 async function ensureCodexAuthConfigured() {
+  if (process.env.OPENAI_API_KEY?.trim()) {
+    return;
+  }
   const authJson = process.env.CODEX_AUTH_JSON;
   if (!authJson || !authJson.trim()) {
     return;
@@ -944,9 +947,6 @@ async function runExternalAgent(
     ALPHABOOK_TASK_PATH: taskPath,
     ALPHABOOK_OUTPUT_DIR: paths.output,
   };
-  delete childEnv.OPENAI_API_KEY;
-  delete childEnv.OPENAI_BASE_URL;
-  delete childEnv.RUNTIME_OPENAI_PROXY_UPSTREAM_BASE_URL;
   const processResult = await runProcess(executable, args, {
     cwd: workspaceRoot,
     env: childEnv,

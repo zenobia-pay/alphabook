@@ -162,3 +162,89 @@ test("runtime task status reports the latest output activity while a task is sti
     await rm(workspaceRoot, { recursive: true, force: true });
   }
 });
+
+test("runtime prefers API key auth over shared Codex auth json", async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), "alphabook-runtime-auth-"));
+  const scriptPath = join(workspaceRoot, "fake-agent-auth.mjs");
+  const fakeHome = join(workspaceRoot, "home");
+  const previousCommand = process.env.RUNTIME_AGENT_COMMAND;
+  const previousHome = process.env.HOME;
+  const previousApiKey = process.env.OPENAI_API_KEY;
+  const previousBaseUrl = process.env.OPENAI_BASE_URL;
+  const previousAuthJson = process.env.CODEX_AUTH_JSON;
+
+  await writeFile(
+    scriptPath,
+    [
+      "import { writeFile } from 'node:fs/promises';",
+      "import { join } from 'node:path';",
+      "const outputDir = process.env.ALPHABOOK_OUTPUT_DIR;",
+      "await writeFile(join(outputDir, 'briefing.md'), '# Done\\n', 'utf8');",
+    ].join("\n"),
+    "utf8",
+  );
+
+  process.env.RUNTIME_AGENT_COMMAND = scriptPath;
+  process.env.HOME = fakeHome;
+  process.env.OPENAI_API_KEY = "test-openai-key";
+  process.env.OPENAI_BASE_URL = "http://127.0.0.1:8080/openai-proxy/v1";
+  process.env.CODEX_AUTH_JSON = JSON.stringify({ refresh_token: "shared-refresh-token" });
+
+  const runtimeServer = createAlphaBookRuntimeServer({
+    authToken: "test-token",
+    workspaceRoot,
+  });
+  await new Promise<void>((resolve) => runtimeServer.listen(0, "127.0.0.1", () => resolve()));
+  const runtimeAddress = runtimeServer.address();
+  assert.ok(runtimeAddress && typeof runtimeAddress === "object");
+  const runtimeUrl = `http://127.0.0.1:${runtimeAddress.port}`;
+
+  try {
+    const runResponse = await fetch(`${runtimeUrl}/run-task`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test-token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        runtimeId: "runtime-auth",
+        taskSpec: { runtimeId: "runtime-auth", kind: "sprite_fanout_research" },
+      }),
+    });
+    assert.equal(runResponse.status, 202);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    assert.equal(await readFile(join(workspaceRoot, "output", "briefing.md"), "utf8"), "# Done\n");
+    await assert.rejects(
+      readFile(join(fakeHome, ".codex", "auth.json"), "utf8"),
+      /ENOENT/,
+    );
+  } finally {
+    if (previousCommand === undefined) {
+      delete process.env.RUNTIME_AGENT_COMMAND;
+    } else {
+      process.env.RUNTIME_AGENT_COMMAND = previousCommand;
+    }
+    if (previousHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = previousHome;
+    }
+    if (previousApiKey === undefined) {
+      delete process.env.OPENAI_API_KEY;
+    } else {
+      process.env.OPENAI_API_KEY = previousApiKey;
+    }
+    if (previousBaseUrl === undefined) {
+      delete process.env.OPENAI_BASE_URL;
+    } else {
+      process.env.OPENAI_BASE_URL = previousBaseUrl;
+    }
+    if (previousAuthJson === undefined) {
+      delete process.env.CODEX_AUTH_JSON;
+    } else {
+      process.env.CODEX_AUTH_JSON = previousAuthJson;
+    }
+    await new Promise<void>((resolve, reject) => runtimeServer.close((error) => error ? reject(error) : resolve()));
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
