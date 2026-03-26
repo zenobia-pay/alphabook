@@ -5790,9 +5790,19 @@ export default function App() {
       setActiveWorkSourceLoading(false);
       return;
     }
+    if (!activeWork) {
+      setActiveWorkSourceLoading(false);
+      return;
+    }
 
     let cancelled = false;
     const usesStaticBookSurface = activeWork?.gutenbergId != null && String(activeWork.gutenbergId).trim().length > 0;
+    const hasPassageHash = typeof window !== "undefined" && window.location.hash.replace(/^#/, "").trim().length > 0;
+    const needsFullWorkSource = !usesStaticBookSurface || activeChunkId != null || pendingCitation != null || hasPassageHash;
+    if (!needsFullWorkSource) {
+      setActiveWorkSourceLoading(false);
+      return;
+    }
     const timeoutId = window.setTimeout(() => {
       if (cancelled) {
         return;
@@ -5829,7 +5839,7 @@ export default function App() {
       cancelled = true;
       window.clearTimeout(timeoutId);
     };
-  }, [activeWorkId, activeWork, hasWorkPageBootstrap]);
+  }, [activeChunkId, activeWork, activeWorkId, hasWorkPageBootstrap, pendingCitation]);
 
   useEffect(() => {
     if (!activeProfileUserId || (currentUserId && activeProfileUserId === currentUserId)) {
