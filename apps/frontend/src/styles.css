@@ -3288,6 +3288,30 @@ button {
     grid-template-rows: minmax(42vh, auto) minmax(0, 1fr);
   }
 
+  .main-panel.is-book {
+    overflow: hidden;
+  }
+
+  .main-panel.is-book .book-page {
+    height: 100%;
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .main-panel.is-book .book-reader-pane,
+  .main-panel.is-book .book-reader-surface {
+    min-height: 0;
+    height: 100%;
+  }
+
+  .main-panel.is-book .book-reader-frame {
+    height: 100%;
+    min-height: 100%;
+  }
+
+  .main-panel.is-book .book-assistant-pane {
+    display: none;
+  }
+
   .book-reader-header {
     padding: 18px 16px 14px;
   }
