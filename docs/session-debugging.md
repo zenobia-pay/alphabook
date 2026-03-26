@@ -4,15 +4,15 @@ Use this runbook when a URL like `https://alpha-book.org/?view=assistant&session
 
 ## Fast Path
 
-1. Load the signed-in session cookie from [`.dev.vars`](../.dev.vars).
+1. Load the signed-in browser session cookie from [`.dev.vars`](../.dev.vars).
 
-Prefer extracting just `ALPHABOOK_API_SESSION_COOKIE` instead of `source`-ing the whole file, because `.dev.vars` may contain unquoted values that are not safe to execute as shell.
+Use `ALPHABOOK_COOKIE` first. It is the cookie that works most reliably against the live owner/admin endpoints when paired with browser-style headers. Prefer extracting the cookie value instead of `source`-ing the whole file, because `.dev.vars` may contain unquoted values that are not safe to execute as shell.
 
 ```bash
 COOKIE=$(python3 - <<'PY'
 from pathlib import Path
 for line in Path('.dev.vars').read_text().splitlines():
-    if line.startswith('ALPHABOOK_API_SESSION_COOKIE='):
+    if line.startswith('ALPHABOOK_COOKIE='):
         print(line.split('=', 1)[1].strip().strip('"'))
         break
 PY
@@ -24,36 +24,71 @@ This should produce a full cookie string that starts with `alphabook_session=`.
 2. Confirm auth works:
 
 ```bash
-curl -sS 'https://api.alpha-book.org/me' -H "Cookie: $COOKIE" | jq .
+curl -sS 'https://api.alpha-book.org/me' \
+  -H "Cookie: $COOKIE" \
+  -H 'Origin: https://alpha-book.org' \
+  -H 'Referer: https://alpha-book.org/' \
+  -H 'User-Agent: Mozilla/5.0' | jq .
 ```
 
 If this fails, stop there and fix auth first. A healthy response should show `"authenticated": true`.
 
-3. Fetch the session transcript:
+3. Resolve the run id from the session:
 
 ```bash
-curl -sS "https://api.alpha-book.org/sessions/<session-id>/messages" -H "Cookie: $COOKIE" | jq .
+curl -sS "https://api.alpha-book.org/sessions/<session-id>/runs" \
+  -H "Cookie: $COOKIE" \
+  -H 'Origin: https://alpha-book.org' \
+  -H 'Referer: https://alpha-book.org/' \
+  -H 'User-Agent: Mozilla/5.0' | jq .
 ```
 
-4. Fetch session runs:
+4. Fetch the full admin payload for the run and save it locally.
+
+This is the default debugging path for production incidents. Do not start with a smaller endpoint if you are trying to answer “what actually happened?” for a broken live run.
 
 ```bash
-curl -sS "https://api.alpha-book.org/sessions/<session-id>/runs" -H "Cookie: $COOKIE" | jq .
+curl -sS "https://api.alpha-book.org/admin/runs/<run-id>/logs" \
+  -H "Cookie: $COOKIE" \
+  -H 'Origin: https://alpha-book.org' \
+  -H 'Referer: https://alpha-book.org/' \
+  -H 'User-Agent: Mozilla/5.0' \
+  -H 'Accept: application/json,text/plain,*/*' \
+  > /tmp/alphabook-run-<run-id>.json
 ```
 
-5. Inspect the failed run:
+5. Inspect the top-level size breakdown before doing anything else.
 
 ```bash
-curl -sS "https://api.alpha-book.org/sessions/<session-id>/runs/<run-id>/logs" -H "Cookie: $COOKIE" | jq .
+node - <<'NODE'
+const fs = require('fs');
+const path = '/tmp/alphabook-run-<run-id>.json';
+const data = JSON.parse(fs.readFileSync(path, 'utf8'));
+const breakdown = Object.fromEntries(
+  Object.entries(data).map(([key, value]) => [key, Buffer.byteLength(JSON.stringify(value))]),
+);
+console.log(JSON.stringify({
+  totalBytes: fs.statSync(path).size,
+  breakdown,
+}, null, 2));
+NODE
 ```
 
-6. If you are an admin, prefer the richer admin log view:
+6. Then inspect the raw tool/runtime failures:
 
 ```bash
-curl -sS "https://api.alpha-book.org/admin/runs/<run-id>/logs" -H "Cookie: $COOKIE" | jq .
+node - <<'NODE'
+const fs = require('fs');
+const data = JSON.parse(fs.readFileSync('/tmp/alphabook-run-<run-id>.json', 'utf8'));
+const interesting = (data.rawLog || []).filter((entry) => {
+  const text = JSON.stringify(entry);
+  return /error|failed|unauthorized|timeout|refresh token|codex_core::auth/i.test(text);
+});
+console.log(JSON.stringify(interesting.slice(-120), null, 2));
+NODE
 ```
 
-This is the most complete log surface. It includes:
+This admin payload is the most complete log surface. It includes:
 
 - session
 - run
@@ -67,6 +102,18 @@ This is the most complete log surface. It includes:
 
 `liveRuntime` is the important extra field when a run actually reached the Fly runtime or other VM-backed execution path.
 
+## Default Rule
+
+When a user says “check the logs” for a live assistant session:
+
+1. read `ALPHABOOK_COOKIE` from `.dev.vars`
+2. confirm `GET /me` works
+3. fetch `GET /admin/runs/:runId/logs`
+4. save the full payload locally
+5. inspect `rawLog`, `runEvents`, `runtimeInstances`, and `artifacts`
+
+Do not rely only on the summarized run state when the admin payload is available.
+
 ## Detailed Endpoints
 
 - `GET /sessions/:sessionId/debug`
@@ -77,6 +124,50 @@ This is the most complete log surface. It includes:
   Best per-run artifact view for non-admin debugging.
 - `GET /admin/runs/:runId/logs`
   Best overall log endpoint. Use this first when admin access is available.
+
+## Why Can The Admin Payload Be Huge?
+
+It is not pulling old runs. It is usually huge because the endpoint currently inlines large per-run payloads:
+
+- `artifacts`
+  This includes full `content` for stored runtime artifacts. For sprite runs, that often means one large `manifest.json` per shard.
+- `runtimeInstances`
+  This includes full `manifestJson` for every runtime instance, and each sprite shard manifest can contain roughly 1,000 works.
+
+In one real sprite run, the size breakdown was approximately:
+
+- `artifacts`: ~46.7 MB
+- `runtimeInstances`: ~28.3 MB
+- `rawLog`: ~0.17 MB
+- `runEvents`: ~0.16 MB
+
+So the payload was about 75 MB because it was repeating the shard manifests twice:
+
+- once in `runtimeInstances[*].manifestJson`
+- again in `artifacts[*].content` for the persisted `manifest.json` files
+
+This means the endpoint is useful, but currently too heavy for routine inspection without saving the payload locally first.
+
+## What To Look At First In A Big Payload
+
+For live failure diagnosis, prioritize these fields:
+
+- `rawLog`
+  Best source for exact runtime/model/tool stderr-style lines.
+- `runEvents`
+  Best source for lifecycle ordering.
+- `toolCalls`
+  Best source for parent tool status.
+- `liveRuntime`
+  Best source for currently running runtime file snapshots.
+
+Only inspect `artifacts` and `runtimeInstances` deeply if you need:
+
+- stored file contents
+- per-runtime manifests
+- exact workspace composition
+
+They are usually the fields causing the payload explosion.
 
 ## How To Read The Failure
 
