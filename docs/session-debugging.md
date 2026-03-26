@@ -6,6 +6,20 @@ Use this runbook when a URL like `https://alpha-book.org/?view=assistant&session
 
 1. Load the signed-in browser session cookie from [`.dev.vars`](../.dev.vars).
 
+The repo now has a saved helper for this. Prefer it over hand-writing curl:
+
+```bash
+npm run debug:session -- --url 'https://alpha-book.org/?view=assistant&session=<session-id>'
+```
+
+This script:
+
+- reads `ALPHABOOK_COOKIE` from `.dev.vars`
+- uses browser-style headers
+- resolves the latest run for the session
+- calls the admin logs endpoint
+- saves the payload to `/tmp/alphabook-run-<run-id>.json`
+
 Use `ALPHABOOK_COOKIE` first. It is the cookie that works most reliably against the live owner/admin endpoints when paired with browser-style headers. Prefer extracting the cookie value instead of `source`-ing the whole file, because `.dev.vars` may contain unquoted values that are not safe to execute as shell.
 
 ```bash
@@ -43,9 +57,25 @@ curl -sS "https://api.alpha-book.org/sessions/<session-id>/runs" \
   -H 'User-Agent: Mozilla/5.0' | jq .
 ```
 
-4. Fetch the full admin payload for the run and save it locally.
+4. Fetch the admin payload for the run and save it locally.
 
-This is the default debugging path for production incidents. Do not start with a smaller endpoint if you are trying to answer “what actually happened?” for a broken live run.
+The saved script now defaults to the lightweight payload and is the preferred first step. Only opt into the heavy payload when needed.
+
+```bash
+npm run debug:session -- --run <run-id>
+```
+
+Escalate when needed:
+
+```bash
+npm run debug:session -- --run <run-id> --include-artifacts
+npm run debug:session -- --run <run-id> --include-artifact-contents
+npm run debug:session -- --run <run-id> --include-runtime-instances
+npm run debug:session -- --run <run-id> --include-live-runtime
+npm run debug:session -- --run <run-id> --full
+```
+
+If you need the raw curl manually, use:
 
 ```bash
 curl -sS "https://api.alpha-book.org/admin/runs/<run-id>/logs" \
@@ -108,7 +138,7 @@ When a user says “check the logs” for a live assistant session:
 
 1. read `ALPHABOOK_COOKIE` from `.dev.vars`
 2. confirm `GET /me` works
-3. fetch `GET /admin/runs/:runId/logs`
+3. run `npm run debug:session -- --url '<session-url>'`
 4. save the full payload locally
 5. inspect `rawLog`, `runEvents`, `runtimeInstances`, and `artifacts`
 
