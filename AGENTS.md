@@ -12,3 +12,25 @@
 - The comprehensive sprite path launches Fly runtime VMs using `FLY_RUNTIME_IMAGE` from [apps/orchestrator-worker/wrangler.toml](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/apps/orchestrator-worker/wrangler.toml).
 - Before any orchestrator deploy, sync that pin to the latest `alphabook-runtime` Fly release image.
 - Prefer the built-in deploy path: `npm --workspace @alphabook/orchestrator-worker run deploy`. It now refreshes the runtime image pin before running `wrangler deploy`.
+
+## DigitalOcean Mirror Workflow
+
+- The primary Gutenberg rsync box is currently reachable as `root@134.209.116.167`.
+- The box layout is:
+  - `/srv/alphabook/.ingest.env`
+  - `/srv/alphabook/gutenberg`
+  - `/srv/alphabook/bin`
+  - `/srv/alphabook/repo`
+- The repo on that box may contain project files without a usable `.git` checkout. If a targeted ops fix is needed, copy the changed files over with `scp` instead of assuming `git pull` will work.
+- For corpus cutover/rebuild work on the droplet:
+  - freeze recurring timers first with `sudo /srv/alphabook/bin/freeze-gutenberg-ingest.sh`
+  - run the needed ingest/rebuild command from `/srv/alphabook/repo`
+  - resume timers with `sudo /srv/alphabook/bin/resume-gutenberg-ingest.sh`
+- For a targeted static-book rebuild on a single Gutenberg ID `N`, use:
+  - `npx tsx apps/ingest/src/index.ts rebuild-book-html $((N-1)) 1 1`
+  - Example for Gutenberg `18`: `npx tsx apps/ingest/src/index.ts rebuild-book-html 17 1 1`
+- For local one-off `rebuild-book-html` runs from this repo:
+  - `apps/ingest/src/index.ts` auto-loads `.dev.vars`
+  - local `.dev.vars` may contain quoted R2 credentials and a stale Cloudflare API token that breaks Wrangler D1 auth
+  - prefer Wrangler OAuth login on the machine and do not rely on `CLOUDFLARE_API_TOKEN`
+  - if needed, temporarily move `.dev.vars` out of the way and export only normalized `R2_*` plus embedding vars before running the ingest CLI

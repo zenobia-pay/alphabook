@@ -141,3 +141,34 @@ The ingest parser now preserves richer browse metadata from the mirror when pres
 - publisher
 - translators, illustrators, and editors
 - cover image path (local mirror path)
+
+## Working Notes
+
+Current operational notes that matter in practice:
+
+- The primary rsync box is currently reachable as `root@134.209.116.167`.
+- The project files live at `/srv/alphabook/repo`, but that directory may not behave like a normal git checkout. For small hotfixes, copy the changed files with `scp` instead of assuming `git pull` will work.
+- The box env is in `/srv/alphabook/.ingest.env`.
+- For single-book static-page fixes after a template change, run the narrow rebuild directly:
+
+```bash
+cd /srv/alphabook/repo
+set -a
+. /srv/alphabook/.ingest.env
+set +a
+npx tsx apps/ingest/src/index.ts rebuild-book-html <gutenbergIdMinusOne> 1 1
+```
+
+Example:
+
+```bash
+npx tsx apps/ingest/src/index.ts rebuild-book-html 17 1 1
+```
+
+That rebuilds Gutenberg `18` only.
+
+- If `rebuild-book-html` is run locally from a developer machine, be careful with `.dev.vars`:
+  - the ingest CLI auto-loads `.dev.vars`
+  - local `.dev.vars` may contain quoted `R2_*` values that must be unwrapped before manual export
+  - local `.dev.vars` may also contain a stale `CLOUDFLARE_API_TOKEN` that breaks Wrangler D1 access even when `wrangler whoami` works
+  - prefer Wrangler OAuth on the machine and unset token overrides when using `wrangler d1 execute --remote`

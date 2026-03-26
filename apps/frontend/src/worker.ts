@@ -52,7 +52,7 @@ type WorkPageBootstrapPayload = {
   errorStatus?: number;
 };
 
-const BOOK_CONTENT_VERSION = "20260326c";
+const BOOK_CONTENT_VERSION = "20260326d";
 
 function resolveImplementation(env: Env) {
   return getImplementationConfig(env.IMPLEMENTATION_ID);

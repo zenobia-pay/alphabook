@@ -542,7 +542,7 @@ function createBookSectionId(title: string, index: number) {
   return `section-${slugify(title)}-${index + 1}`;
 }
 
-const STATIC_BOOK_CONTENT_VERSION = "20260326c";
+const STATIC_BOOK_CONTENT_VERSION = "20260326d";
 
 function withBookVersion(href: string, fragment?: string | null) {
   const separator = href.includes("?") ? "&" : "?";
