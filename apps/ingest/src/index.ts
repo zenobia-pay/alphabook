@@ -439,6 +439,23 @@ async function upsertChunkVectors(
       env: process.env,
       maxBuffer: 20 * 1024 * 1024,
     });
+    const vectorApi = createVectorizeApi(context);
+    if (vectorApi) {
+      const expectedIds = vectors.map((vector) => vector.id);
+      let lastCount = 0;
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        const found = await vectorApi.getVectorIds(context.vectorIndexName, expectedIds);
+        lastCount = found.size;
+        if (found.size === expectedIds.length) {
+          return;
+        }
+        await sleep(1000 * Math.min(5, attempt + 1));
+      }
+      throw new Error(
+        `Vectorize upsert did not become queryable in time for ${context.vectorIndexName}. `
+        + `Found ${lastCount}/${expectedIds.length} vectors after waiting.`,
+      );
+    }
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
