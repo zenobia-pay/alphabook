@@ -2,9 +2,9 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
-import { createNeonDb } from "@alphabook/db";
+import { createPostgresDb } from "@alphabook/db";
 import { getImplementationConfig } from "@alphabook/implementations";
-import { NeonAppStore } from "../../../apps/orchestrator-worker/src/store";
+import { SqlAppStore } from "../../../apps/orchestrator-worker/src/store";
 
 const DEFAULT_SHARD_SIZE = 1000;
 
@@ -28,7 +28,7 @@ async function main() {
   }
 
   const implementation = getImplementationConfig(implementationId);
-  const store = new NeonAppStore(createNeonDb(databaseUrl), {
+  const store = new SqlAppStore(createPostgresDb(databaseUrl), {
     adapterId: implementation.adapterId,
     feedLabels: implementation.feedLabels,
   });

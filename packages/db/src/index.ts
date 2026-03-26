@@ -11,7 +11,7 @@ export interface DbClient {
 
 type PoolLike = Pick<Pool, "query" | "end">;
 
-type CreateNeonDbOptions = {
+type CreatePostgresDbOptions = {
   poolFactory?: (connectionString: string) => PoolLike;
   maxAttempts?: number;
 };
@@ -37,7 +37,7 @@ function isTransientDbError(error: unknown) {
   return TRANSIENT_DB_ERROR_PATTERNS.some((pattern) => pattern.test(message));
 }
 
-export function createNeonDb(connectionString: string, options: CreateNeonDbOptions = {}): DbClient {
+export function createPostgresDb(connectionString: string, options: CreatePostgresDbOptions = {}): DbClient {
   const maxAttempts = Math.max(1, options.maxAttempts ?? 2);
   const poolFactory = options.poolFactory ?? createPool;
   let pool = poolFactory(connectionString);

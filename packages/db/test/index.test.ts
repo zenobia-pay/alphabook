@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createD1Db, createNeonDb, schemaMigrations, splitMigrationStatements } from "../src/index";
+import { createD1Db, createPostgresDb, schemaMigrations, splitMigrationStatements } from "../src/index";
 
-test("createNeonDb retries transient Neon transport errors with a fresh pool", async () => {
+test("createPostgresDb retries transient transport errors with a fresh pool", async () => {
   const calls: string[] = [];
   let poolCount = 0;
   const pools = [
@@ -27,7 +27,7 @@ test("createNeonDb retries transient Neon transport errors with a fresh pool", a
     },
   ];
 
-  const db = createNeonDb("postgres://example", {
+  const db = createPostgresDb("postgres://example", {
     poolFactory: () => pools[poolCount++]!,
   });
 
@@ -36,9 +36,9 @@ test("createNeonDb retries transient Neon transport errors with a fresh pool", a
   assert.deepEqual(calls, ["pool-1.query", "pool-1.end", "pool-2.query"]);
 });
 
-test("createNeonDb does not retry non-transient errors", async () => {
+test("createPostgresDb does not retry non-transient errors", async () => {
   const calls: string[] = [];
-  const db = createNeonDb("postgres://example", {
+  const db = createPostgresDb("postgres://example", {
     poolFactory: () => ({
       async query() {
         calls.push("query");

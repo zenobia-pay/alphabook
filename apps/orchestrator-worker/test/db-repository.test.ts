@@ -1,11 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { NeonCorpusDbRepository } from "../src/db-repository";
+import { SqlCorpusDbRepository } from "../src/db-repository";
 
-test("Neon corpus repository maps work rows into neutral document and file records", async () => {
+test("SQL corpus repository maps work rows into neutral document and file records", async () => {
   const queries: string[] = [];
-  const repository = new NeonCorpusDbRepository({
+  const repository = new SqlCorpusDbRepository({
     async query(sql: string) {
       queries.push(sql);
       if (sql.includes("WHERE w.id = ANY")) {

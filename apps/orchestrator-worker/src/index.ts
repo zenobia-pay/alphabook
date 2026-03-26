@@ -1,4 +1,4 @@
-import { createNeonDb } from "@alphabook/db";
+import { createPostgresDb } from "@alphabook/db";
 import {
   buildPlannerPrompt,
   buildRouterPrompt,
@@ -14,7 +14,7 @@ import { OpenAIPlanner } from "./planner";
 import { CloudflareR2Store } from "./r2";
 import { OpenAIRouter } from "./router";
 import { FlyMachinesRuntimeGateway, HttpRuntimeGateway } from "./runtime";
-import { NeonAppStore } from "./store";
+import { SqlAppStore } from "./store";
 import { OpenAISynthesizer } from "./synthesizer";
 
 export interface WorkersAiBinding {
@@ -87,7 +87,7 @@ export interface Env {
   VECTOR_INDEX?: VectorizeIndex;
 }
 
-function resolveRuntimeGateway(env: Env, store: NeonAppStore, blobStore: CloudflareR2Store) {
+function resolveRuntimeGateway(env: Env, store: SqlAppStore, blobStore: CloudflareR2Store) {
   if (
     env.FLY_API_TOKEN &&
     env.FLY_RUNTIME_APP_NAME &&
@@ -162,9 +162,9 @@ function buildFetchHandler(env: Env) {
   })();
   const ingestQueueName = env.QUEUE_INGEST_NAME ?? `${implementation.id}-ingest`;
   const jobsQueueName = env.QUEUE_JOBS_NAME ?? `${implementation.id}-jobs`;
-  const db = createNeonDb(env.DATABASE_URL);
+  const db = createPostgresDb(env.DATABASE_URL);
   const blobStore = new CloudflareR2Store(env.CORPUS_BUCKET);
-  const store = new NeonAppStore(db, {
+  const store = new SqlAppStore(db, {
     adapterId: implementation.adapterId,
     blobStore,
     feedLabels: implementation.feedLabels,
@@ -279,9 +279,9 @@ async function runScheduledJanitor(env: Env) {
   const implementation = getImplementationConfig(env.IMPLEMENTATION_ID);
   const ingestQueueName = env.QUEUE_INGEST_NAME ?? `${implementation.id}-ingest`;
   const jobsQueueName = env.QUEUE_JOBS_NAME ?? `${implementation.id}-jobs`;
-  const db = createNeonDb(env.DATABASE_URL);
+  const db = createPostgresDb(env.DATABASE_URL);
   const blobStore = new CloudflareR2Store(env.CORPUS_BUCKET);
-  const store = new NeonAppStore(db, {
+  const store = new SqlAppStore(db, {
     adapterId: implementation.adapterId,
     blobStore,
     feedLabels: implementation.feedLabels,

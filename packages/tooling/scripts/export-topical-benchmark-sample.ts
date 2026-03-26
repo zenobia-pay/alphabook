@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { neon } from "@neondatabase/serverless";
+import { createPostgresDb } from "@alphabook/db";
 
 import type { BenchmarkCorpus } from "@alphabook/benchmark-core";
 
@@ -70,10 +70,10 @@ async function main() {
     throw new Error("DATABASE_URL is required.");
   }
 
-  const sql = neon(process.env.DATABASE_URL);
+  const db = createPostgresDb(process.env.DATABASE_URL);
   const termPatterns = options.terms.map((term) => `%${term.toLowerCase()}%`);
 
-  const works = await sql.query(
+  const works = await db.query<Record<string, unknown>>(
     `
       with topical_works as (
         select distinct
@@ -105,7 +105,7 @@ async function main() {
   );
 
   const documentsById = new Map<string, BenchmarkCorpus["documents"][number]>();
-  for (const row of works as Array<Record<string, unknown>>) {
+  for (const row of works.rows) {
     const workId = String(row.id);
     documentsById.set(workId, {
       id: workId,
@@ -125,7 +125,7 @@ async function main() {
   const chunkBatchSize = 10;
   for (let index = 0; index < workIds.length; index += chunkBatchSize) {
     const batchIds = workIds.slice(index, index + chunkBatchSize);
-    const chunkRows = await sql.query(
+  const chunkRows = await db.query<Record<string, unknown>>(
       `
         select
           c.work_id,
@@ -140,7 +140,7 @@ async function main() {
       [batchIds],
     );
 
-    for (const row of chunkRows as Array<Record<string, unknown>>) {
+  for (const row of chunkRows.rows) {
       const text = String(row.text ?? "");
       passages.push({
         id: String(row.chunk_id),

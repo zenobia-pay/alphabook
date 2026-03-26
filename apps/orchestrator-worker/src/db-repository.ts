@@ -47,7 +47,7 @@ function mapRowToDocument(row: {
   };
 }
 
-export class NeonCorpusDbRepository {
+export class SqlCorpusDbRepository {
   private readonly adapterId: string | null;
 
   constructor(private readonly db: DbClient, options: { adapterId?: string | null } = {}) {

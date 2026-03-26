@@ -7,7 +7,7 @@ import { dirname } from "node:path";
 import { DeleteObjectsCommand, GetObjectCommand, S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
 import { parseHTML } from "linkedom";
-import { createNeonDb } from "@alphabook/db";
+import { createPostgresDb } from "@alphabook/db";
 import type { CorpusAdapter } from "@alphabook/corpus-core";
 import {
   buildSimpleRenderedArtifactBundle,
@@ -31,7 +31,7 @@ import {
 } from "@alphabook/source-supreme-court";
 
 interface IngestContext {
-  db: ReturnType<typeof createNeonDb>;
+  db: ReturnType<typeof createPostgresDb>;
   r2: S3Client;
   r2Bucket: string;
 }
@@ -122,12 +122,30 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function normalizeEmbedding(values: number[]): number[] {
+  const magnitude = Math.sqrt(values.reduce((sum, value) => sum + value * value, 0));
+  if (magnitude === 0) {
+    return values;
+  }
+  return values.map((value) => value / magnitude);
+}
+
 async function embedChunks(chunks: string[]): Promise<number[][] | null> {
+  const provider = process.env.EMBEDDING_PROVIDER ?? "openai";
+  if (chunks.length === 0) {
+    return null;
+  }
+  if (provider === "google") {
+    return embedChunksWithGoogle(chunks);
+  }
+  return embedChunksWithOpenAI(chunks);
+}
+
+async function embedChunksWithOpenAI(chunks: string[]): Promise<number[][] | null> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey || chunks.length === 0) {
     return null;
   }
-
   const model = process.env.OPENAI_EMBEDDING_MODEL ?? "text-embedding-3-small";
   const embeddings: number[][] = [];
 
@@ -182,6 +200,76 @@ async function embedChunks(chunks: string[]): Promise<number[][] | null> {
 
   if (embeddings.length !== chunks.length || embeddings.some((vector) => vector.length === 0)) {
     throw new Error("Embedding response length did not match the number of chunks.");
+  }
+
+  return embeddings;
+}
+
+async function embedChunksWithGoogle(chunks: string[]): Promise<number[][] | null> {
+  const apiKey = process.env.GOOGLE_AI_API_KEY;
+  if (!apiKey || chunks.length === 0) {
+    return null;
+  }
+
+  const model = process.env.GOOGLE_EMBEDDING_MODEL ?? "gemini-embedding-2-preview";
+  const outputDimensionality = Number(process.env.GOOGLE_EMBEDDING_DIMENSIONS ?? "1536");
+  const embeddings: number[][] = [];
+
+  for (const chunk of chunks) {
+    let response: Response | null = null;
+    let lastError: string | null = null;
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:embedContent`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-goog-api-key": apiKey,
+          },
+          body: JSON.stringify({
+            model: `models/${model}`,
+            content: {
+              parts: [{ text: chunk }],
+            },
+            output_dimensionality: outputDimensionality,
+          }),
+        });
+        if (response.ok) {
+          break;
+        }
+        const body = await response.text();
+        lastError = `Google embedding request failed: ${response.status} ${body}`;
+        if (response.status !== 429 && response.status < 500) {
+          throw new Error(lastError);
+        }
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error);
+      }
+
+      if (attempt < 4) {
+        await sleep(1000 * 2 ** attempt);
+      }
+    }
+
+    if (!response?.ok) {
+      throw new Error(lastError ?? "Google embedding request failed.");
+    }
+
+    const payload = (await response.json()) as {
+      embedding?: {
+        values?: number[];
+      };
+    };
+    const vector = payload.embedding?.values;
+    if (!vector?.length) {
+      throw new Error("Google embedding response was empty.");
+    }
+    embeddings.push(normalizeEmbedding(vector));
+  }
+
+  if (embeddings.length !== chunks.length || embeddings.some((vector) => vector.length === 0)) {
+    throw new Error("Google embedding response length did not match the number of chunks.");
   }
 
   return embeddings;
@@ -2624,7 +2712,7 @@ async function buildContext(): Promise<IngestContext> {
   }
 
   return {
-    db: createNeonDb(databaseUrl),
+    db: createPostgresDb(databaseUrl),
     r2Bucket,
     r2: new S3Client({
       region: "auto",

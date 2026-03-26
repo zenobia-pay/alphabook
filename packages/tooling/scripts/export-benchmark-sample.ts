@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { neon } from "@neondatabase/serverless";
+import { createPostgresDb } from "@alphabook/db";
 
 import type { BenchmarkCorpus } from "@alphabook/benchmark-core";
 
@@ -59,8 +59,8 @@ async function main() {
     throw new Error("DATABASE_URL is required.");
   }
 
-  const sql = neon(process.env.DATABASE_URL);
-  const works = await sql.query(`
+  const db = createPostgresDb(process.env.DATABASE_URL);
+  const works = await db.query<Record<string, unknown>>(`
     select
       w.id,
       w.title,
@@ -77,7 +77,7 @@ async function main() {
   const documentsById = new Map<string, BenchmarkCorpus["documents"][number]>();
   const passages: BenchmarkCorpus["passages"] = [];
 
-  for (const row of works as Array<Record<string, unknown>>) {
+  for (const row of works.rows) {
     const workId = String(row.id);
     documentsById.set(workId, {
       id: workId,
@@ -97,7 +97,7 @@ async function main() {
   for (let index = 0; index < workIds.length; index += chunkBatchSize) {
     const batchIds = workIds.slice(index, index + chunkBatchSize);
     const batchLiteral = batchIds.map((id) => `'${id.replace(/'/gu, "''")}'::uuid`).join(", ");
-    const chunkRows = await sql.query(`
+    const chunkRows = await db.query<Record<string, unknown>>(`
       select
         c.work_id,
         c.id as chunk_id,
@@ -109,7 +109,7 @@ async function main() {
       order by c.work_id, c.chunk_index
     `);
 
-    for (const row of chunkRows as Array<Record<string, unknown>>) {
+    for (const row of chunkRows.rows) {
       const workId = String(row.work_id);
       const text = String(row.text ?? "");
       passages.push({
@@ -126,7 +126,7 @@ async function main() {
   const corpus: BenchmarkCorpus = {
     id: `random-${options.sampleSize}-books`,
     displayName: `Random ${options.sampleSize}-book sample`,
-    description: `Randomized benchmark sample exported from the live AlphaBook Neon corpus with seed "${options.seed}".`,
+    description: `Randomized benchmark sample exported from the live AlphaBook corpus with seed "${options.seed}".`,
     documents: Array.from(documentsById.values()),
     passages,
   };

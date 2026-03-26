@@ -10,7 +10,7 @@ import type {
   CorpusFileRecord,
 } from "@alphabook/platform";
 import { artifactKeys } from "@alphabook/corpus-core";
-import { NeonCorpusDbRepository } from "./db-repository";
+import { SqlCorpusDbRepository } from "./db-repository";
 import { MemoryBlobStore, type BlobStore } from "./r2";
 
 const PASSAGE_SEARCH_TIMEOUT_MS = 45_000;
@@ -3398,13 +3398,13 @@ export class InMemoryAppStore implements AppStore {
   }
 }
 
-export class NeonAppStore implements AppStore {
+export class SqlAppStore implements AppStore {
   private analyticsSchemaReady: Promise<void> | null = null;
   private exploreFeedSchemaReady: Promise<void> | null = null;
   private runEventsSchemaReady: Promise<void> | null = null;
   private blobStorageSchemaReady: Promise<void> | null = null;
   private workCountCache: { value: number; expiresAt: number } | null = null;
-  private readonly corpusRepository: NeonCorpusDbRepository;
+  private readonly corpusRepository: SqlCorpusDbRepository;
   private readonly adapterId: string | null;
   private readonly feedLabels: {
     summary: string;
@@ -3431,7 +3431,7 @@ export class NeonAppStore implements AppStore {
       taxonomy: "Browse by shelf",
       fallback: "From the stack",
     };
-    this.corpusRepository = new NeonCorpusDbRepository(db, {
+    this.corpusRepository = new SqlCorpusDbRepository(db, {
       adapterId: this.adapterId,
     });
   }
@@ -5004,7 +5004,7 @@ export class NeonAppStore implements AppStore {
     const summaryText = summarizePayload(dataJson, event);
     let insertResult: { rows: Array<{ sequence: number }> } | null = null;
     let lastError: unknown = null;
-    for (let attempt = 1; attempt <= NeonAppStore.RUN_EVENT_INSERT_MAX_ATTEMPTS; attempt += 1) {
+    for (let attempt = 1; attempt <= SqlAppStore.RUN_EVENT_INSERT_MAX_ATTEMPTS; attempt += 1) {
       try {
         insertResult = await this.db.query<{ sequence: number }>(
           `
@@ -5077,7 +5077,7 @@ export class NeonAppStore implements AppStore {
         const isSequenceConflict =
           code === "23505"
           && /idx_run_events_run_id_sequence/i.test(message);
-        if (!isSequenceConflict || attempt === NeonAppStore.RUN_EVENT_INSERT_MAX_ATTEMPTS) {
+        if (!isSequenceConflict || attempt === SqlAppStore.RUN_EVENT_INSERT_MAX_ATTEMPTS) {
           throw error;
         }
       }
@@ -5518,14 +5518,14 @@ export class NeonAppStore implements AppStore {
     let parsed = Number.parseInt(String(row?.value ?? ""), 10);
     const updatedAtMs = row?.updated_at ? new Date(row.updated_at).getTime() : Number.NaN;
     const statIsFresh = Number.isFinite(updatedAtMs)
-      && (Date.now() - updatedAtMs) <= NeonAppStore.WORK_COUNT_STAT_STALE_AFTER_MS;
+      && (Date.now() - updatedAtMs) <= SqlAppStore.WORK_COUNT_STAT_STALE_AFTER_MS;
     if (!Number.isFinite(parsed) || !statIsFresh) {
       const fallback = await this.db.query<{ count: string }>("SELECT COUNT(*)::text AS count FROM works");
       parsed = Number.parseInt(fallback.rows[0]?.count ?? "0", 10) || 0;
     }
     this.workCountCache = {
       value: parsed,
-      expiresAt: Date.now() + NeonAppStore.WORK_COUNT_CACHE_TTL_MS,
+      expiresAt: Date.now() + SqlAppStore.WORK_COUNT_CACHE_TTL_MS,
     };
     return parsed;
   }
@@ -5538,10 +5538,10 @@ export class NeonAppStore implements AppStore {
     return this.corpusRepository.countDocuments();
   }
 
-  async refreshExploreFeedSnapshot(limit = NeonAppStore.EXPLORE_FEED_DEFAULT_LIMIT): Promise<void> {
+  async refreshExploreFeedSnapshot(limit = SqlAppStore.EXPLORE_FEED_DEFAULT_LIMIT): Promise<void> {
     await this.ensureAnalyticsSchema();
     await this.ensureExploreFeedSchema();
-    const safeLimit = Math.max(24, Math.min(5000, Math.trunc(limit) || NeonAppStore.EXPLORE_FEED_DEFAULT_LIMIT));
+    const safeLimit = Math.max(24, Math.min(5000, Math.trunc(limit) || SqlAppStore.EXPLORE_FEED_DEFAULT_LIMIT));
     await this.db.query(
       `
         WITH engagement AS (
