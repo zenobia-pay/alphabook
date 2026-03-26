@@ -42,6 +42,20 @@ type ToolTraceEntry = {
   state: "running" | "completed" | "error";
 };
 
+type AlphaloopProgressEvent = {
+  type: string;
+  query?: string;
+  chunksFound?: number;
+  queries?: string[];
+  newChunksFound?: number;
+  totalUnique?: number;
+  totalChunks?: number;
+  keptChunks?: number;
+  droppedChunks?: number;
+  iteration?: number;
+  newQueries?: string[];
+};
+
 type AssistantDocumentBootstrapPayload = {
   sessionId: string;
   runId: string;
@@ -2062,6 +2076,20 @@ function buildThreadToolArgs(entry: ToolTraceEntry) {
   if (chunkCount > 0) {
     args.candidatePassageCount = chunkCount;
   }
+  const alphaloopEvents = Array.isArray(entry.progressDetails)
+    ? entry.progressDetails
+      .map((detail) => {
+        if (detail.type !== "semantic.alphaloop" || !detail.event || typeof detail.event !== "object") {
+          return null;
+        }
+        return detail.event as Record<string, unknown>;
+      })
+      .filter((value): value is Record<string, unknown> => Boolean(value))
+    : [];
+  if (alphaloopEvents.length > 0) {
+    args.__alphaloopEvents = alphaloopEvents as AlphaloopProgressEvent[];
+  }
+  args.__toolName = entry.toolName;
 
   return args;
 }
@@ -2116,11 +2144,42 @@ function buildThreadToolResult(entry: ToolTraceEntry, entryHasError: boolean) {
   if (typeof result.error === "string" && result.error.trim().length > 0) {
     safe.error = result.error;
   }
+  if (typeof result.briefing === "string" && result.briefing.trim().length > 0) {
+    safe.briefing = result.briefing;
+  }
+  if (Array.isArray(result.alphaloopEvents) && result.alphaloopEvents.length > 0) {
+    safe.__alphaloopEvents = result.alphaloopEvents;
+  }
   if (Array.isArray(result.works) && result.works.length > 0) {
     safe.workCount = typeof safe.workCount === "number" ? safe.workCount : result.works.length;
   }
   if (Array.isArray(result.chunks) && result.chunks.length > 0) {
     safe.chunkCount = typeof safe.chunkCount === "number" ? safe.chunkCount : result.chunks.length;
+    if (entry.toolName === "semantic_deep_search") {
+      safe.chunks = result.chunks
+        .filter((candidate): candidate is Record<string, unknown> => Boolean(candidate) && typeof candidate === "object")
+        .map((chunk) => ({
+          id: typeof chunk.id === "string" ? chunk.id : undefined,
+          text:
+            typeof chunk.text === "string"
+              ? chunk.text
+              : typeof chunk.excerpt === "string"
+                ? chunk.excerpt
+                : "",
+          relevance:
+            typeof chunk.relevance === "number"
+              ? chunk.relevance
+              : typeof chunk.score === "number"
+                ? chunk.score
+                : 0,
+          rationale: typeof chunk.rationale === "string" ? chunk.rationale : undefined,
+          metadata: {
+            workId: typeof chunk.workId === "string" ? chunk.workId : undefined,
+            chunkIndex: typeof chunk.chunkIndex === "number" ? chunk.chunkIndex : undefined,
+            r2Key: typeof chunk.r2Key === "string" ? chunk.r2Key : undefined,
+          },
+        }));
+    }
   }
   if (Object.keys(safe).length === 0) {
     safe.ok = !entryHasError;
@@ -2169,6 +2228,7 @@ function summarizeToolSentence({
 
   switch (toolName) {
     case "semantic_deep_search":
+    case "semantic search":
       if (state === "running") {
         return query
           ? `Running the semantic loop for ${query}.`

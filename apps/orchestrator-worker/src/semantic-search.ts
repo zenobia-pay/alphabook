@@ -16,6 +16,8 @@ type IterationRecord = {
   totalUniqueChunks: number;
 };
 
+type AlphaloopEvent = { type: string } & Record<string, unknown>;
+
 export interface SemanticSearchService {
   search(args: {
     query: string;
@@ -27,6 +29,7 @@ export interface SemanticSearchService {
     briefing: string;
     citations: Citation[];
     chunks: ChunkSearchResult[];
+    alphaloopEvents: AlphaloopEvent[];
     iterations: IterationRecord[];
     totalChunksConsidered: number;
   }>;
@@ -56,20 +59,22 @@ function citationsFromChunks(chunks: ChunkSearchResult[]): Citation[] {
   }));
 }
 
-function progressTextFromEvent(event: { type: string } & Record<string, unknown>) {
+function progressTextFromEvent(event: AlphaloopEvent) {
   switch (event.type) {
     case "embedding_search":
-      return `Searching the semantic index for “${String(event.query ?? "").trim()}”.`;
-    case "query_expansion":
-      return `Expanding the query and merging fresh evidence from the vector index.`;
+      return `Searching the semantic index for “${String(event.query ?? "").trim()}” (${Number(event.chunksFound ?? 0)} matches).`;
+    case "query_expansion": {
+      const variantCount = Number(event.queries && Array.isArray(event.queries) ? event.queries.length : 0);
+      return `Expanded into ${variantCount} follow-up queries and found ${Number(event.newChunksFound ?? 0)} new passages.`;
+    }
     case "rerank":
-      return `Re-ranking the retrieved passages to keep only the strongest evidence.`;
+      return `Re-ranked ${Number(event.totalChunks ?? 0)} passages and kept ${Number(event.keptChunks ?? 0)} of them.`;
     case "iterative_search":
-      return `Running another semantic pass to fill gaps in the evidence.`;
+      return `Finished semantic pass ${Number(event.iteration ?? 0)} and found ${Number(event.newChunksFound ?? 0)} more passages.`;
     case "classifier":
-      return `Filtering weaker semantic matches out of the candidate pool.`;
+      return `Filtered ${Number(event.dropped ?? 0)} weaker matches out of ${Number(event.classified ?? 0)} candidates.`;
     case "complete":
-      return `Semantic retrieval finished. Writing the answer from the strongest passages.`;
+      return `Semantic retrieval finished with ${Number(event.totalChunks ?? 0)} ranked passages. Writing the answer now.`;
     case "error":
       return typeof event.message === "string" ? event.message : "Semantic retrieval failed.";
     default:
@@ -149,6 +154,7 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
     });
 
     const stream = loop.stream(args.query);
+    const alphaloopEvents: AlphaloopEvent[] = [];
     let finalResult: Awaited<ReturnType<typeof loop.run>> | null = null;
     while (true) {
       const next = await stream.next();
@@ -156,11 +162,9 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
         finalResult = next.value;
         break;
       }
-      const event = next.value;
-      if (event.type === "complete") {
-        continue;
-      }
-      const text = progressTextFromEvent(event as { type: string } & Record<string, unknown>);
+      const event = next.value as AlphaloopEvent;
+      alphaloopEvents.push(structuredClone(event));
+      const text = progressTextFromEvent(event);
       if (text) {
         await args.onProgress?.(text, {
           type: "semantic.alphaloop",
@@ -195,6 +199,7 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
         briefing: "I couldn’t find strong semantic matches for that question in the indexed corpus yet.",
         citations: [],
         chunks: [],
+        alphaloopEvents,
         iterations: finalResult.iterations,
         totalChunksConsidered: finalResult.totalChunksConsidered,
       };
@@ -226,6 +231,7 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
       briefing: text.trim(),
       citations: citationsFromChunks(chunks),
       chunks,
+      alphaloopEvents,
       iterations: finalResult.iterations,
       totalChunksConsidered: finalResult.totalChunksConsidered,
     };

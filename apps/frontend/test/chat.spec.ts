@@ -1087,6 +1087,100 @@ test("reloading a session keeps streamed tool progress instead of replacing it w
   const planMessageId = "33333333-3333-4333-8333-333333333334";
   const toolCallId = "tool-progress-1";
 
+  await page.addInitScript((bootstrap) => {
+    (window as Window & {
+      __ALPHABOOK_ASSISTANT_SESSION_BOOTSTRAP__?: unknown;
+    }).__ALPHABOOK_ASSISTANT_SESSION_BOOTSTRAP__ = bootstrap;
+  }, {
+    sessionId,
+    sessions: [
+      {
+        id: sessionId,
+        userId: "local-user",
+        title: "Existing thread",
+        createdAt: "2026-03-16T12:00:00.000Z",
+        lastMessageAt: "2026-03-16T12:00:00.000Z",
+        lastMessagePreview: "Existing thread",
+      },
+    ],
+    messages: [
+      {
+        id: planMessageId,
+        sessionId,
+        role: "assistant",
+        content: "I searched the corpus and deeper workspace.",
+        metadata: {
+          phase: "plan",
+          runId,
+          toolCalls: [
+            {
+              id: toolCallId,
+              toolName: "get_relevant_chunks",
+              label: "Passage Search",
+              rationale: "Looking for grief scenes.",
+              progress: [
+                "Pulled 12 candidate passages.",
+                "Ranked the strongest passages for synthesis.",
+              ],
+              args: {
+                __logLines: [
+                  "Search quote: 'grief scenes in 19th century fiction'",
+                ],
+              },
+              result: {
+                __logLines: [
+                  "Selected 5 passages for the final comparison.",
+                ],
+              },
+              state: "completed",
+            },
+          ],
+        },
+        createdAt: "2026-03-16T12:00:01.000Z",
+      },
+    ],
+    runs: [
+      {
+        id: runId,
+        sessionId,
+        status: "completed",
+        plannerTurns: 4,
+        startedAt: "2026-03-16T12:00:00.000Z",
+        completedAt: "2026-03-16T12:00:10.000Z",
+      },
+    ],
+    runState: {
+      run: {
+        id: runId,
+        sessionId,
+        status: "completed",
+        plannerTurns: 4,
+        startedAt: "2026-03-16T12:00:00.000Z",
+        completedAt: "2026-03-16T12:00:10.000Z",
+      },
+      toolTrace: [
+        {
+          id: toolCallId,
+          toolName: "get_relevant_chunks",
+          label: "Passage Search",
+          progress: [],
+          args: {
+            __logLines: [
+              "Search quote: 'grief scenes in 19th century fiction'",
+            ],
+          },
+          result: {
+            __logLines: [
+              "Selected 5 passages for the final comparison.",
+            ],
+          },
+          state: "completed",
+        },
+      ],
+      artifacts: [],
+    },
+  });
+
   await page.route("**/api/me", async (route) => {
     await route.fulfill({
       status: 200,
@@ -1244,6 +1338,84 @@ test("failed tool calls show a failed status instead of looking completed", asyn
   const sessionId = "11111111-1111-4111-8111-111111111119";
   const runId = "22222222-2222-4222-8222-222222222229";
 
+  await page.addInitScript((bootstrap) => {
+    (window as Window & {
+      __ALPHABOOK_ASSISTANT_SESSION_BOOTSTRAP__?: unknown;
+    }).__ALPHABOOK_ASSISTANT_SESSION_BOOTSTRAP__ = bootstrap;
+  }, {
+    sessionId,
+    sessions: [
+      {
+        id: sessionId,
+        userId: "local-user",
+        title: "Failed retrieval",
+        createdAt: "2026-03-16T12:00:00.000Z",
+        lastMessageAt: "2026-03-16T12:00:00.000Z",
+        lastMessagePreview: "Failed retrieval",
+      },
+    ],
+    messages: [
+      {
+        id: "33333333-3333-4333-8333-333333333339",
+        sessionId,
+        role: "assistant",
+        content: "I searched and one step failed.",
+        metadata: {
+          phase: "plan",
+          runId,
+          toolCalls: [
+            {
+              id: "failed-tool",
+              toolName: "get_relevant_chunks",
+              label: "Passage Search",
+              rationale: "Broadening the search.",
+              progress: ["Broadening the search."],
+              result: {
+                ok: false,
+                error: "Passage search timed out before the database returned chunks.",
+              },
+            },
+          ],
+        },
+        createdAt: "2026-03-16T12:00:01.000Z",
+      },
+    ],
+    runs: [
+      {
+        id: runId,
+        sessionId,
+        status: "failed",
+        plannerTurns: 2,
+        startedAt: "2026-03-16T12:00:00.000Z",
+        completedAt: "2026-03-16T12:00:10.000Z",
+      },
+    ],
+    runState: {
+      run: {
+        id: runId,
+        sessionId,
+        status: "failed",
+        plannerTurns: 2,
+        startedAt: "2026-03-16T12:00:00.000Z",
+        completedAt: "2026-03-16T12:00:10.000Z",
+      },
+      toolTrace: [
+        {
+          id: "failed-tool",
+          toolName: "get_relevant_chunks",
+          label: "Passage Search",
+          progress: ["Broadening the search."],
+          result: {
+            ok: false,
+            error: "Passage search timed out before the database returned chunks.",
+          },
+          state: "error",
+        },
+      ],
+      artifacts: [],
+    },
+  });
+
   await page.route("**/api/me", async (route) => {
     await route.fulfill({
       status: 200,
@@ -1383,6 +1555,264 @@ test("failed tool calls show a failed status instead of looking completed", asyn
   await page.goto(`/?view=assistant&session=${sessionId}`);
 
   await expect(page.getByRole("button", { name: /Passage Search Failed/ })).toBeVisible();
+});
+
+test("semantic search shows AlphaLoop progress and citations instead of a static fallback", async ({ page }) => {
+  const sessionId = "11111111-1111-4111-8111-111111111129";
+  const runId = "22222222-2222-4222-8222-222222222239";
+
+  await page.addInitScript((bootstrap) => {
+    (window as Window & {
+      __ALPHABOOK_ASSISTANT_SESSION_BOOTSTRAP__?: unknown;
+    }).__ALPHABOOK_ASSISTANT_SESSION_BOOTSTRAP__ = bootstrap;
+  }, {
+    sessionId,
+    sessions: [
+      {
+        id: sessionId,
+        userId: "local-user",
+        title: "Semantic thread",
+        createdAt: "2026-03-26T12:00:00.000Z",
+        lastMessageAt: "2026-03-26T12:00:00.000Z",
+        lastMessagePreview: "Semantic thread",
+      },
+    ],
+    messages: [
+      {
+        id: "33333333-3333-4333-8333-333333333349",
+        sessionId,
+        role: "assistant",
+        content: "I ran semantic search.",
+        metadata: {
+          phase: "plan",
+          runId,
+          toolCalls: [
+            {
+              id: "semantic-tool-1",
+              toolName: "semantic_deep_search",
+              label: "Semantic Search",
+              rationale: "Re-ranked 18 passages and kept 6 of them.",
+              progress: [
+                "Searching the semantic index for “grief and consolation” (22 matches).",
+                "Re-ranked 18 passages and kept 6 of them.",
+              ],
+              progressDetails: [
+                {
+                  type: "semantic.alphaloop",
+                  event: {
+                    type: "embedding_search",
+                    query: "grief and consolation",
+                    chunksFound: 22,
+                  },
+                },
+                {
+                  type: "semantic.alphaloop",
+                  event: {
+                    type: "rerank",
+                    totalChunks: 18,
+                    keptChunks: 6,
+                    droppedChunks: 12,
+                  },
+                },
+              ],
+              result: {
+                briefing: "The loop found several strong passages.",
+                chunks: [
+                  {
+                    id: "chunk-1",
+                    text: "She found consolation in the shared ritual of mourning.",
+                    relevance: 0.91,
+                    workId: "work-1",
+                    chunkIndex: 14,
+                  },
+                ],
+              },
+              state: "completed",
+            },
+          ],
+        },
+        createdAt: "2026-03-26T12:00:01.000Z",
+      },
+    ],
+    runs: [
+      {
+        id: runId,
+        sessionId,
+        status: "completed",
+        plannerTurns: 1,
+        startedAt: "2026-03-26T12:00:00.000Z",
+        completedAt: "2026-03-26T12:00:05.000Z",
+      },
+    ],
+    runState: {
+      run: {
+        id: runId,
+        sessionId,
+        status: "completed",
+        plannerTurns: 1,
+        startedAt: "2026-03-26T12:00:00.000Z",
+        completedAt: "2026-03-26T12:00:05.000Z",
+      },
+      toolTrace: [],
+      artifacts: [],
+    },
+  });
+
+  await page.route("**/api/me", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        authConfigured: false,
+        authenticated: false,
+        user: null,
+      }),
+    });
+  });
+
+  await page.route("**/api/admin/access", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        allowed: false,
+        authenticated: false,
+        authConfigured: false,
+        user: null,
+      }),
+    });
+  });
+
+  await page.route("**/api/sessions", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        sessions: [
+          {
+            id: sessionId,
+            userId: "local-user",
+            title: "Semantic thread",
+            createdAt: "2026-03-26T12:00:00.000Z",
+            lastMessageAt: "2026-03-26T12:00:00.000Z",
+            lastMessagePreview: "Semantic thread",
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.route(`**/api/sessions/${sessionId}/messages`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        messages: [
+          {
+            id: "33333333-3333-4333-8333-333333333349",
+            sessionId,
+            role: "assistant",
+            content: "I ran semantic search.",
+            metadata: {
+              phase: "plan",
+              runId,
+              toolCalls: [
+                {
+                  id: "semantic-tool-1",
+                  toolName: "semantic_deep_search",
+                  label: "Semantic Search",
+                  rationale: "Re-ranked 18 passages and kept 6 of them.",
+                  progress: [
+                    "Searching the semantic index for “grief and consolation” (22 matches).",
+                    "Re-ranked 18 passages and kept 6 of them.",
+                  ],
+                  progressDetails: [
+                    {
+                      type: "semantic.alphaloop",
+                      event: {
+                        type: "embedding_search",
+                        query: "grief and consolation",
+                        chunksFound: 22,
+                      },
+                    },
+                    {
+                      type: "semantic.alphaloop",
+                      event: {
+                        type: "rerank",
+                        totalChunks: 18,
+                        keptChunks: 6,
+                        droppedChunks: 12,
+                      },
+                    },
+                  ],
+                  result: {
+                    briefing: "The loop found several strong passages.",
+                    chunks: [
+                      {
+                        id: "chunk-1",
+                        text: "She found consolation in the shared ritual of mourning.",
+                        relevance: 0.91,
+                        workId: "work-1",
+                        chunkIndex: 14,
+                      },
+                    ],
+                  },
+                  state: "completed",
+                },
+              ],
+            },
+            createdAt: "2026-03-26T12:00:01.000Z",
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.route(`**/api/sessions/${sessionId}/runs`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        runs: [
+          {
+            id: runId,
+            sessionId,
+            status: "completed",
+            plannerTurns: 1,
+            startedAt: "2026-03-26T12:00:00.000Z",
+            completedAt: "2026-03-26T12:00:05.000Z",
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.route(`**/api/sessions/${sessionId}/runs/${runId}`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        run: {
+          id: runId,
+          sessionId,
+          status: "completed",
+          plannerTurns: 1,
+          startedAt: "2026-03-26T12:00:00.000Z",
+          completedAt: "2026-03-26T12:00:05.000Z",
+        },
+        toolTrace: [],
+        artifacts: [],
+      }),
+    });
+  });
+
+  await page.goto(`/?view=assistant&session=${sessionId}`);
+
+  await page.getByRole("button", { name: /Semantic Search/ }).click();
+  await expect(page.getByText('Searching for "grief and consolation"')).toBeVisible();
+  await expect(page.getByText("Re-ranking")).toBeVisible();
+  await expect(page.getByText("Sources (1)")).toBeVisible();
+  await expect(page.getByText("91% match")).toBeVisible();
 });
 
 test("recovered tool traces keep friendly log lines after refresh", async ({ page }) => {

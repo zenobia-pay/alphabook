@@ -31,6 +31,143 @@ type ToolLogLine = {
 };
 
 type ToolStatus = ToolCallMessagePartStatus["type"];
+type AlphaloopProgressEvent = {
+  type: string;
+  query?: string;
+  chunksFound?: number;
+  queries?: string[];
+  newChunksFound?: number;
+  totalUnique?: number;
+  totalChunks?: number;
+  keptChunks?: number;
+  droppedChunks?: number;
+  iteration?: number;
+  newQueries?: string[];
+};
+type AlphaloopChunk = {
+  id: string;
+  text: string;
+  relevance: number;
+  rationale?: string;
+  metadata?: Record<string, unknown>;
+};
+
+function alphaloopProgressLabel(event: AlphaloopProgressEvent) {
+  switch (event.type) {
+    case "embedding_search":
+      return `Searching for "${event.query ?? ""}"`;
+    case "query_expansion":
+      return `Expanding query - ${event.queries?.length ?? 0} variants, ${event.newChunksFound ?? 0} new results`;
+    case "rerank":
+      return `Re-ranking - kept ${event.keptChunks ?? 0} of ${event.totalChunks ?? 0}`;
+    case "iterative_search":
+      return `Refining (round ${event.iteration ?? 0}) - ${event.newChunksFound ?? 0} new results`;
+    case "classifier":
+      return "Classifying results";
+    case "complete":
+      return `Found ${event.totalChunks ?? 0} relevant passages`;
+    default:
+      return "Searching...";
+  }
+}
+
+function AlphaloopSearchProgress({
+  events,
+  isRunning,
+}: {
+  events: AlphaloopProgressEvent[];
+  isRunning: boolean;
+}) {
+  if (events.length === 0 && !isRunning) {
+    return null;
+  }
+
+  return (
+    <div className="py-2 text-[13px]">
+      {events.map((event, index) => (
+        <div
+          key={`${event.type}-${index}`}
+          className="flex items-center gap-2 text-[#6b7280]"
+          style={{ lineHeight: "1.8" }}
+        >
+          <span className="h-1 w-1 rounded-full bg-[#d1d5db]" />
+          <span>{alphaloopProgressLabel(event)}</span>
+        </div>
+      ))}
+      {isRunning ? (
+        <div className="flex items-center gap-2 text-[#9ca3af]" style={{ lineHeight: "1.8" }}>
+          <span className="h-1 w-1 animate-pulse rounded-full bg-[#3b82f6]" />
+          <span>Working...</span>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function AlphaloopCitations({
+  chunks,
+}: {
+  chunks: AlphaloopChunk[];
+}) {
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  if (chunks.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="mt-4">
+      <div className="mb-2 text-[12px] font-medium uppercase tracking-[0.05em] text-[#9ca3af]">
+        Sources ({chunks.length})
+      </div>
+      <div className="flex flex-col gap-0.5">
+        {chunks.map((chunk) => {
+          const isExpanded = expandedId === chunk.id;
+          const preview = chunk.text.length > 180 ? `${chunk.text.slice(0, 180)}...` : chunk.text;
+          return (
+            <div key={chunk.id} className="flex items-start gap-0 py-2">
+              <button
+                type="button"
+                onClick={() => setExpandedId(isExpanded ? null : chunk.id)}
+                className="cursor-pointer border-0 bg-transparent px-0 pr-2 text-[10px] leading-[1.6] text-[#9ca3af]"
+                aria-label={isExpanded ? "Collapse" : "Expand"}
+              >
+                <span
+                  className={cn(
+                    "inline-block transition-transform duration-150",
+                    isExpanded ? "rotate-90" : "rotate-0",
+                  )}
+                >
+                  ▶
+                </span>
+              </button>
+              <div className="min-w-0 flex-1">
+                <div
+                  className={cn(
+                    "border-l-2 border-[#e5e7eb] pl-2.5 text-[13px] leading-[1.6] text-[#374151] italic",
+                    !isExpanded && "line-clamp-3 overflow-hidden",
+                  )}
+                >
+                  {isExpanded ? chunk.text : preview}
+                </div>
+                <div className="mt-1 pl-3 text-[12px] leading-[1.5] text-[#9ca3af]">
+                  <span className="text-[#6b7280]">{chunk.id}</span>
+                  <span className="mx-1">·</span>
+                  <span>{Math.round(chunk.relevance * 100)}% match</span>
+                </div>
+                {isExpanded && chunk.rationale ? (
+                  <div className="mt-1.5 pl-3 text-[12px] leading-[1.6] text-[#6b7280]">
+                    {chunk.rationale}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 const statusIconMap: Record<ToolStatus, React.ElementType> = {
   running: LoaderIcon,
@@ -237,6 +374,39 @@ function getProgress(args: JsonRecord | null) {
     return [];
   }
   return progress.filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+}
+
+function getAlphaloopEvents(args: JsonRecord | null, result: JsonRecord | null) {
+  const candidate = Array.isArray(result?.__alphaloopEvents)
+    ? result.__alphaloopEvents
+    : Array.isArray(args?.__alphaloopEvents)
+      ? args.__alphaloopEvents
+      : [];
+  return candidate
+    .filter((value): value is AlphaloopProgressEvent => Boolean(value) && typeof value === "object" && typeof (value as { type?: unknown }).type === "string");
+}
+
+function getAlphaloopChunks(result: JsonRecord | null) {
+  const chunks = Array.isArray(result?.chunks) ? result.chunks : [];
+  return chunks.flatMap((value): AlphaloopChunk[] => {
+    const chunk = safeObject(value);
+    if (!chunk) {
+      return [];
+    }
+    const id = typeof chunk?.id === "string" ? chunk.id : null;
+    const text = typeof chunk?.text === "string" ? chunk.text : null;
+    const relevance = typeof chunk?.relevance === "number" ? chunk.relevance : null;
+    if (!id || !text || relevance === null) {
+      return [];
+    }
+    return [{
+      id,
+      text,
+      relevance,
+      ...(typeof chunk.rationale === "string" ? { rationale: chunk.rationale } : {}),
+      ...(chunk.metadata && typeof chunk.metadata === "object" ? { metadata: chunk.metadata as Record<string, unknown> } : {}),
+    }];
+  });
 }
 
 function getDisplayLogLines(value: unknown) {
@@ -488,6 +658,8 @@ function summarizeTool(toolName: string, args: JsonRecord | null, result: JsonRe
     case "deep research":
     case "corpus briefing":
       return structuredSearchPrompt ? `Deep search: ${structuredSearchPrompt}` : "Deep search";
+    case "semantic search":
+      return structuredSearchPrompt ? `Semantic search: ${structuredSearchPrompt}` : chunkCount ? `Semantic search: ${chunkCount}` : "Semantic search";
     case "search notes":
     case "workspace output":
     case "briefing import":
@@ -721,6 +893,8 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
   const startedLogLines = useMemo(() => getDisplayLogLines(args), [args]);
   const cleanedArgs = useMemo(() => pruneValue(omitInternalKeys(args)), [args]);
   const safeResultObject = useMemo(() => safeObject(result), [result]);
+  const alphaloopEvents = useMemo(() => getAlphaloopEvents(args, safeResultObject), [args, safeResultObject]);
+  const alphaloopChunks = useMemo(() => getAlphaloopChunks(safeResultObject), [safeResultObject]);
   const resultObject = useMemo(() => pruneValue(safeResultObject ?? result), [result, safeResultObject]);
   const suppressStructuredArgsFallback = useMemo(() => hasStructuredSearchPayload(cleanedArgs), [cleanedArgs]);
   const suppressStructuredResultFallback = useMemo(() => hasStructuredSearchPayload(resultObject), [resultObject]);
@@ -775,9 +949,14 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
     () => summarizeTool(toolName, args, safeResultObject, status),
     [toolName, args, safeResultObject, status],
   );
+  const isSemanticTool = useMemo(() => {
+    const internalToolName = typeof args?.__toolName === "string" ? args.__toolName : null;
+    return internalToolName === "semantic_deep_search" || toolName.trim().toLowerCase() === "semantic search";
+  }, [args, toolName]);
+  const hasCustomSemanticUi = isSemanticTool && (alphaloopEvents.length > 0 || alphaloopChunks.length > 0);
 
   return (
-    <ToolFallbackRoot open={open} onOpenChange={setOpen} defaultOpen={status?.type === "running" || progress.length > 0}>
+    <ToolFallbackRoot open={open} onOpenChange={setOpen} defaultOpen={status?.type === "running" || progress.length > 0 || alphaloopEvents.length > 0}>
       <ToolFallbackTrigger
         toolName={toolName}
         summary={summary}
@@ -787,8 +966,14 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
         open={open}
         hasDetailLines={logLines.length > 0}
       />
-      {logLines.length > 0 ? (
+      {hasCustomSemanticUi || logLines.length > 0 ? (
         <ToolFallbackContent>
+          {hasCustomSemanticUi ? (
+            <section className="aui-tool-section">
+              <AlphaloopSearchProgress events={alphaloopEvents} isRunning={status?.type === "running"} />
+              <AlphaloopCitations chunks={alphaloopChunks} />
+            </section>
+          ) : null}
           <ToolLogSection lines={logLines} autoFollow={open} />
         </ToolFallbackContent>
       ) : null}

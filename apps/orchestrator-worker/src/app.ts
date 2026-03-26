@@ -5241,9 +5241,17 @@ function labelForToolCall(toolName: ToolName, args: Record<string, unknown>) {
 function clientSafeToolResult(toolName: ToolName, result: Record<string, unknown>): Record<string, unknown> {
   if (toolName === "semantic_deep_search") {
     const chunks = Array.isArray(result.chunks) ? result.chunks : [];
+    const alphaloopEvents = Array.isArray(result.alphaloopEvents) ? result.alphaloopEvents : [];
+    const iterations = Array.isArray(result.iterations) ? result.iterations : [];
     return {
       chunkCount: chunks.length,
       totalChunksConsidered: typeof result.totalChunksConsidered === "number" ? result.totalChunksConsidered : undefined,
+      alphaloopEvents: alphaloopEvents.slice(0, 24).map((candidate) => (
+        candidate && typeof candidate === "object" ? candidate : null
+      )).filter((candidate): candidate is Record<string, unknown> => Boolean(candidate)),
+      iterations: iterations.slice(0, 6).map((candidate) => (
+        candidate && typeof candidate === "object" ? candidate : null
+      )).filter((candidate): candidate is Record<string, unknown> => Boolean(candidate)),
       chunks: chunks.slice(0, 12).map((candidate) => {
         if (!candidate || typeof candidate !== "object") {
           return candidate;
@@ -5254,10 +5262,17 @@ function clientSafeToolResult(toolName: ToolName, result: Record<string, unknown
           workId: typeof chunk.workId === "string" ? chunk.workId : undefined,
           chunkIndex: typeof chunk.chunkIndex === "number" ? chunk.chunkIndex : undefined,
           score: typeof chunk.score === "number" ? chunk.score : undefined,
+          relevance: typeof chunk.score === "number" ? chunk.score : undefined,
+          text:
+            typeof chunk.text === "string"
+              ? chunk.text
+              : typeof chunk.excerpt === "string"
+                ? chunk.excerpt
+                : undefined,
           excerpt:
             typeof chunk.excerpt === "string"
               ? chunk.excerpt
-              : typeof chunk.text === "string"
+                : typeof chunk.text === "string"
                 ? chunk.text.slice(0, 280)
                 : undefined,
           r2Key: typeof chunk.r2Key === "string" ? chunk.r2Key : undefined,
