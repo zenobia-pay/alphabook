@@ -2248,7 +2248,15 @@ function isTransientResearchDocumentHtml(html: string) {
   if (!html) {
     return false;
   }
-  return /<h2[^>]*>\s*Search Underway\s*<\/h2>/iu.test(html);
+  if (!/<h2[^>]*>\s*Search Underway\s*<\/h2>/iu.test(html)) {
+    return false;
+  }
+  const hasMeaningfulContent =
+    /assistant-document-entry is-log/iu.test(html)
+    || /assistant-document-entry is-chunk/iu.test(html)
+    || /assistant-document-section-title[^>]*>\s*Answer\s*</iu.test(html)
+    || /assistant-document-section-title[^>]*>\s*Semantic Search\s*</iu.test(html);
+  return !hasMeaningfulContent;
 }
 
 function artifactText(artifact: RunArtifactRecord) {
