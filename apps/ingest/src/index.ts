@@ -597,6 +597,7 @@ type ReaderPassageEntry = {
   id: string;
   text: string;
   searchText: string;
+  readerPath: string;
 };
 
 function countWords(value: string) {
@@ -1431,13 +1432,28 @@ function buildChunkPassageCandidates(text: string, excerpt: string) {
 
 function buildReaderPassageEntries(rawSource: string, sourceFormat: "text" | "html"): ReaderPassageEntry[] {
   const blocks = buildPaginatedBookBlocks(rawSource, sourceFormat);
+  const pages = chunkBlocksIntoPaginatedPages(blocks);
+  const passagePathById = new Map<string, string>();
+  for (const page of pages) {
+    for (const block of page.blocks) {
+      for (const passageId of block.passageIds) {
+        passagePathById.set(passageId, `/${page.href.replace(/^\.\//u, "")}#${passageId}`);
+      }
+    }
+  }
   const passages: ReaderPassageEntry[] = [];
   for (const block of blocks) {
     if (block.passageIds.length === 1) {
+      const passageId = block.passageIds[0]!;
+      const readerPath = passagePathById.get(passageId);
+      if (!readerPath) {
+        continue;
+      }
       passages.push({
-        id: block.passageIds[0]!,
+        id: passageId,
         text: block.text,
         searchText: buildNormalizedSearchIndex(block.text),
+        readerPath,
       });
       continue;
     }
@@ -1446,13 +1462,15 @@ function buildReaderPassageEntries(rawSource: string, sourceFormat: "text" | "ht
     for (const item of items) {
       const passageId = item.getAttribute("data-passage-id");
       const text = normalizeReaderText((item.textContent ?? "").replace(/\s+/g, " "));
-      if (!passageId || !text) {
+      const readerPath = passageId ? passagePathById.get(passageId) : null;
+      if (!passageId || !text || !readerPath) {
         continue;
       }
       passages.push({
         id: passageId,
         text,
         searchText: buildNormalizedSearchIndex(text),
+        readerPath,
       });
     }
   }
@@ -1479,11 +1497,11 @@ function resolveChunkReaderPaths(
       }
       if (!resolvedCandidatePassages.has(normalizedCandidate)) {
         const matchingPassage = passages.find((passage) => passage.searchText.includes(normalizedCandidate));
-        resolvedCandidatePassages.set(normalizedCandidate, matchingPassage?.id ?? null);
+        resolvedCandidatePassages.set(normalizedCandidate, matchingPassage?.readerPath ?? null);
       }
-      const passageId = resolvedCandidatePassages.get(normalizedCandidate);
-      if (passageId) {
-        return `/${encodeURIComponent(gutenbergId)}/passages/${encodeURIComponent(passageId)}`;
+      const readerPath = resolvedCandidatePassages.get(normalizedCandidate);
+      if (readerPath) {
+        return readerPath;
       }
     }
     return null;
