@@ -5189,7 +5189,6 @@ export default function App() {
     : [];
   const initialBootstrapPreferredRun =
     initialBootstrapRuns.find((run) => run.status === "running" || run.status === "queued")
-    ?? [...initialBootstrapRuns].sort((left, right) => right.startedAt.localeCompare(left.startedAt))[0]
     ?? null;
   const [guestUserId] = useState(() => ensureLocalUserId());
   const [authState, setAuthState] = useState<AuthState>({
@@ -6307,10 +6306,14 @@ export default function App() {
         setMessagesLoading(true);
         const bootstrap = await fetchAssistantSessionBootstrap(selectedSessionId);
         const nextRuns = Array.isArray(bootstrap.runs) ? bootstrap.runs : [];
-        const preferredRun =
+        const activeRun =
           nextRuns.find((run) => run.status === "running" || run.status === "queued")
+          ?? null;
+        const preferredRun =
+          activeRun
           ?? [...nextRuns].sort((left, right) => right.startedAt.localeCompare(left.startedAt))[0]
           ?? null;
+        const activeRunId = activeRun?.id ?? null;
         const nextRunId = preferredRun?.id ?? null;
         const hydrated = Array.isArray(bootstrap.messages)
           ? bootstrap.messages.map(hydrateStoredMessage)
@@ -6329,7 +6332,7 @@ export default function App() {
             : current
         ));
         setSessionRuns(nextRuns);
-        setRecoveredActiveRunId(nextRunId);
+        setRecoveredActiveRunId(activeRunId);
         setRunArtifacts(Array.isArray(bootstrap.runState?.artifacts) ? bootstrap.runState.artifacts : []);
         setMessages((current) => mergeFetchedMessages(current, merged, selectedSessionId));
       } catch (error) {
