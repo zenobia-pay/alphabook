@@ -309,6 +309,19 @@ function uniqueStrings(values: string[]): string[] {
   return Array.from(new Set(values.filter((value) => value.length > 0)));
 }
 
+function totalBooksInCatalog(catalog: SpriteShardCatalog): number {
+  return catalog.shards.reduce((sum, shard) => sum + shard.bookCount, 0);
+}
+
+export function isSpriteShardCatalogUsable(catalog: SpriteShardCatalog, expectedDocumentCount: number): boolean {
+  if (!Array.isArray(catalog.shards) || catalog.shards.length === 0) {
+    return false;
+  }
+  const expectedShardCount = Math.max(1, Math.ceil(expectedDocumentCount / SPRITE_SHARD_SIZE));
+  return totalBooksInCatalog(catalog) === expectedDocumentCount
+    && catalog.shardCount === expectedShardCount;
+}
+
 function groupDocumentFiles(documentIds: string[], files: DocumentFileRecord[], metadata: WorkSummary[]) {
   return documentIds.map((documentId): CorpusWorkspaceDocument => {
     const documentFiles = files.filter((file) => file.documentId === documentId);
@@ -329,15 +342,15 @@ function groupDocumentFiles(documentIds: string[], files: DocumentFileRecord[], 
 }
 
 async function loadSpriteShardCatalog(store: AppStore, blobStore: BlobStore, implementationId: string): Promise<SpriteShardCatalog> {
+  const totalDocuments = await store.countDocuments();
   const prebuilt = await blobStore.getText(spriteShardCatalogKey(implementationId));
   if (prebuilt) {
     const parsed = JSON.parse(prebuilt) as SpriteShardCatalog;
-    if (Array.isArray(parsed.shards) && parsed.shards.length > 0) {
+    if (isSpriteShardCatalogUsable(parsed, totalDocuments)) {
       return parsed;
     }
   }
 
-  const totalDocuments = await store.countDocuments();
   const documents: Array<{ id: string }> = [];
   for (let offset = 0; offset < totalDocuments; offset += SPRITE_SHARD_SIZE) {
     const batch = await store.listDocuments(offset, SPRITE_SHARD_SIZE);
