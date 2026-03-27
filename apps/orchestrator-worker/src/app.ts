@@ -2400,6 +2400,10 @@ function streamQueuedEventsResponse(
   );
 }
 
+function isTerminalRunStatus(status: string | null | undefined): status is "completed" | "failed" | "timed_out" {
+  return status === "completed" || status === "failed" || status === "timed_out";
+}
+
 type ActiveRunState = {
   sessionId: string;
   userId: string;
@@ -12174,6 +12178,18 @@ export function createApp(inputDeps: CreateAppInput) {
     }
 
     const activeRun = activeRuns.get(runId);
+    const runAlreadyTerminal = isTerminalRunStatus(run.status);
+    if (runAlreadyTerminal) {
+      return c.json({
+        ok: true,
+        runId,
+        cancelled: false,
+        alreadyTerminal: true,
+        status: run.status,
+        active: false,
+        runtimeIds: [],
+      });
+    }
     if (activeRun) {
       activeRun.cancelRequested = true;
     }
@@ -12230,6 +12246,18 @@ export function createApp(inputDeps: CreateAppInput) {
     }
 
     const activeRun = activeRuns.get(runId);
+    const runAlreadyTerminal = isTerminalRunStatus(run.status);
+    if (runAlreadyTerminal) {
+      return c.json({
+        ok: true,
+        runId,
+        cancelled: false,
+        alreadyTerminal: true,
+        status: run.status,
+        active: false,
+        runtimeIds: [],
+      });
+    }
     if (activeRun) {
       activeRun.cancelRequested = true;
     }

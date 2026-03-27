@@ -7281,6 +7281,8 @@ export default function App() {
 
             if (event.event === "run.completed") {
               settleRunUi();
+              activeRunIdRef.current = null;
+              setRecoveredActiveRunId(null);
               setStreamConnected(false);
               if (workingSessionId) {
                 setSessions((current) => current.map((session) =>
