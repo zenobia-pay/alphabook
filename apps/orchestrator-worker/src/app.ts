@@ -2417,7 +2417,6 @@ type AuditLogger = (event: string, payload: Record<string, unknown>) => void;
 
 const RUN_LEASE_MS = 90_000;
 const RUN_HEARTBEAT_INTERVAL_MS = 15_000;
-const WORKER_INSTANCE_ID = crypto.randomUUID();
 
 function decorateWork(c: Context, work: WorkSummary): WorkSummary {
   const metadata = "metadata" in work && work.metadata && typeof work.metadata === "object"
@@ -6969,7 +6968,7 @@ export async function reapStaleRuns(
     }
     try {
       const claimed = await deps.store.claimRunLease(run.id, {
-        ownerInstanceId: WORKER_INSTANCE_ID,
+        ownerInstanceId: `janitor:${context.runId}:${run.id}`,
         heartbeatAt: new Date().toISOString(),
         leaseExpiresAt: new Date(Date.now() + RUN_LEASE_MS).toISOString(),
       });
@@ -9404,8 +9403,9 @@ async function runOrchestrator(
   const conversationHistory = formatConversationHistory(sessionMessages);
   const initialHeartbeatAt = new Date().toISOString();
   const initialLeaseExpiresAt = new Date(Date.now() + RUN_LEASE_MS).toISOString();
+  const runOwnerInstanceId = `run:${activeSession.id}:${Date.now()}:${input.userId}`;
   run = await deps.store.createRun(activeSession.id, {
-    ownerInstanceId: WORKER_INSTANCE_ID,
+    ownerInstanceId: runOwnerInstanceId,
     heartbeatAt: initialHeartbeatAt,
     leaseExpiresAt: initialLeaseExpiresAt,
   });
@@ -9433,7 +9433,7 @@ async function runOrchestrator(
     }
     lastLeaseHeartbeatAtMs = nowMs;
     await deps.store.updateRun(run.id, {
-      ownerInstanceId: WORKER_INSTANCE_ID,
+      ownerInstanceId: runOwnerInstanceId,
       heartbeatAt: new Date(nowMs).toISOString(),
       leaseExpiresAt: new Date(nowMs + RUN_LEASE_MS).toISOString(),
       activeToolCallId: currentActiveToolCallId,
