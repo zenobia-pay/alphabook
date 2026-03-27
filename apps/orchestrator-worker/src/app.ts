@@ -8314,6 +8314,10 @@ async function runOrchestrator(
   let rawLogPersistTimer: ReturnType<typeof setTimeout> | null = null;
   let rawLogPersistScheduled = false;
   let rawLogPersistedLength = 0;
+  let researchDocumentPersistChain = Promise.resolve();
+  let researchDocumentPersistTimer: ReturnType<typeof setTimeout> | null = null;
+  let researchDocumentPersistScheduled = false;
+  let persistedResearchDocumentHtml = "";
   let pendingSessionTitleUpdate: Promise<void> | null = null;
 
   const persistRawLogSnapshot = async () => {
@@ -8345,6 +8349,42 @@ async function runOrchestrator(
       rawLogPersistTimer = null;
       rawLogPersistScheduled = false;
       rawLogPersistChain = rawLogPersistChain.then(persistRawLogSnapshot).catch(() => {});
+    }, 300);
+  };
+
+  const persistResearchDocumentSnapshot = async () => {
+    if (!session || !run) {
+      return;
+    }
+    const html = liveResearchDocumentHtml.trim();
+    if (!html || html === persistedResearchDocumentHtml) {
+      return;
+    }
+    await persistResearchDocumentArtifact(deps, session.id, run.id, liveResearchDocumentHtml);
+    persistedResearchDocumentHtml = html;
+  };
+
+  const scheduleResearchDocumentPersist = (force = false) => {
+    if (!session || !run) {
+      return;
+    }
+    if (force) {
+      if (researchDocumentPersistTimer) {
+        clearTimeout(researchDocumentPersistTimer);
+        researchDocumentPersistTimer = null;
+      }
+      researchDocumentPersistScheduled = false;
+      researchDocumentPersistChain = researchDocumentPersistChain.then(persistResearchDocumentSnapshot).catch(() => {});
+      return;
+    }
+    if (researchDocumentPersistScheduled || researchDocumentPersistTimer) {
+      return;
+    }
+    researchDocumentPersistScheduled = true;
+    researchDocumentPersistTimer = setTimeout(() => {
+      researchDocumentPersistTimer = null;
+      researchDocumentPersistScheduled = false;
+      researchDocumentPersistChain = researchDocumentPersistChain.then(persistResearchDocumentSnapshot).catch(() => {});
     }, 300);
   };
 
@@ -8424,6 +8464,7 @@ async function runOrchestrator(
     }
     appendedResearchDocumentKeys.add(key);
     liveResearchDocumentHtml = appendResearchDocumentFragment(liveResearchDocumentHtml, fragment);
+    scheduleResearchDocumentPersist(false);
   };
 
   const researchDocumentWorkTitleCache = new Map<string, Promise<string | null>>();
@@ -8450,6 +8491,7 @@ async function runOrchestrator(
       buildResearchDocumentRunShell(question),
     );
     appendedResearchDocumentKeys.add("shell:intro");
+    scheduleResearchDocumentPersist(false);
   };
 
   const appendResearchDocumentLogOnce = (toolCallId: string, text: string, suffix = "") => {
@@ -8477,6 +8519,10 @@ async function runOrchestrator(
       return;
     }
     const detailType = typeof detail.type === "string" ? detail.type : "";
+    if (detailType.startsWith("semantic.")) {
+      appendResearchDocumentLogOnce(toolCallId, text);
+      return;
+    }
     if (
       detailType !== "research.work"
       && detailType !== "research.chunk"
@@ -10290,7 +10336,13 @@ async function runOrchestrator(
       clearTimeout(rawLogPersistTimer);
       rawLogPersistTimer = null;
     }
+    if (researchDocumentPersistTimer) {
+      clearTimeout(researchDocumentPersistTimer);
+      researchDocumentPersistTimer = null;
+    }
     await rawLogPersistChain;
+    scheduleResearchDocumentPersist(true);
+    await researchDocumentPersistChain;
     await persistRunStreamArtifact(deps, session.id, run.id, rawRunLog);
     await destroyTrackedRuntimes(deps, { sessionId: session.id, runId: run.id }, runtimeIdsToCleanup);
     await reapExpiredRuntimeInstances(deps, { runId: run.id });
@@ -11453,7 +11505,7 @@ export function createApp(inputDeps: CreateAppInput) {
       resolveRunRuntimeContext(deps, sessionId, run, toolCalls),
       deps.store.getLatestPlanMessageForRun(sessionId, run.id),
     ]);
-    const artifacts = await loadRunArtifactSummaries(deps, sessionId, run.id, runtimeIds);
+    const artifacts = await loadRunDocumentArtifacts(deps, sessionId, run.id, runtimeIds);
     const toolTrace = planMessage?.metadata && typeof planMessage.metadata === "object"
       ? readPersistedPlanToolTrace(planMessage.metadata as Record<string, unknown>)
       : [];

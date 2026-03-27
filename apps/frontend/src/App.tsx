@@ -4468,6 +4468,7 @@ export default function App() {
       }
       const hydrated = nextMessages.map(hydrateStoredMessage);
       setMessages(hydrated);
+      setRunArtifacts(Array.isArray(nextRunState?.artifacts) ? nextRunState.artifacts : []);
     };
 
     void streamRun(
