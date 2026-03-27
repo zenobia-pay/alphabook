@@ -6922,7 +6922,7 @@ async function buildCitationPassageUrl(
   deps: AppDeps,
   sessionId: string,
   citation: Citation,
-  cache?: Map<string, Promise<ResolvedWorkPassageLookup | null>>,
+  cache?: PassageResolutionCache,
 ): Promise<string> {
   if (typeof citation.chunkId === "string" && citation.chunkId.trim().length > 0) {
     const resolvedUrl = await buildChunkIdPassageUrl(deps, sessionId, citation.chunkId, cache);
@@ -6942,7 +6942,7 @@ async function buildChunkIndexPassageUrl(
   sessionId: string,
   workId: string,
   chunkIndex: number,
-  cache?: Map<string, Promise<ResolvedWorkPassageLookup | null>>,
+  cache?: PassageResolutionCache,
 ): Promise<string | null> {
   const chunk = await deps.store.getChunkByWorkAndIndex(workId, chunkIndex);
   if (!chunk) {
@@ -6955,7 +6955,7 @@ async function buildChunkIdPassageUrl(
   deps: AppDeps,
   sessionId: string,
   chunkId: string,
-  cache?: Map<string, Promise<ResolvedWorkPassageLookup | null>>,
+  cache?: PassageResolutionCache,
 ): Promise<string | null> {
   const [chunk] = await deps.store.getChunksByIds([chunkId]);
   if (!chunk) {
@@ -6970,6 +6970,12 @@ type ResolvedWorkPassageLookup = {
     id: string;
     searchText: string;
   }>;
+  resolvedCandidatePassages: Map<string, string | null>;
+};
+
+type PassageResolutionCache = {
+  workLookups: Map<string, Promise<ResolvedWorkPassageLookup | null>>;
+  chunkUrls: Map<string, Promise<string>>;
 };
 
 function buildChunkPassageCandidates(chunk: Pick<ChunkSearchResult, "text" | "excerpt">) {
@@ -7009,27 +7015,28 @@ async function loadResolvedWorkPassageLookup(
   return {
     gutenbergId: work.gutenbergId,
     passages: buildSourceWorkPassages(sourceFormat, content),
+    resolvedCandidatePassages: new Map(),
   };
 }
 
 async function getResolvedWorkPassageLookup(
   deps: AppDeps,
   workId: string,
-  cache?: Map<string, Promise<ResolvedWorkPassageLookup | null>>,
+  cache?: PassageResolutionCache,
 ) {
   if (!cache) {
     return await loadResolvedWorkPassageLookup(deps, workId);
   }
-  let pending = cache.get(workId);
+  let pending = cache.workLookups.get(workId);
   if (!pending) {
     pending = loadResolvedWorkPassageLookup(deps, workId);
-    cache.set(workId, pending);
+    cache.workLookups.set(workId, pending);
   }
   return await pending;
 }
 
 function findResolvedPassageId(
-  passages: Array<{ id: string; searchText: string }>,
+  lookup: ResolvedWorkPassageLookup,
   candidates: string[],
 ) {
   for (const candidate of candidates) {
@@ -7038,23 +7045,48 @@ function findResolvedPassageId(
       continue;
     }
 
-    const matchingPassage = passages.find((passage) => passage.searchText.includes(normalizedCandidate));
-    if (matchingPassage) {
-      return matchingPassage.id;
+    if (lookup.resolvedCandidatePassages.has(normalizedCandidate)) {
+      const cachedPassageId = lookup.resolvedCandidatePassages.get(normalizedCandidate);
+      if (cachedPassageId) {
+        return cachedPassageId;
+      }
+      continue;
+    }
+
+    const matchingPassage = lookup.passages.find((passage) => passage.searchText.includes(normalizedCandidate));
+    const passageId = matchingPassage?.id ?? null;
+    lookup.resolvedCandidatePassages.set(normalizedCandidate, passageId);
+    if (passageId) {
+      return passageId;
     }
   }
   return null;
+}
+
+function buildPassageResolutionCache(): PassageResolutionCache {
+  return {
+    workLookups: new Map(),
+    chunkUrls: new Map(),
+  };
 }
 
 async function buildChunkPassageUrlFromChunk(
   deps: AppDeps,
   sessionId: string,
   chunk: Pick<ChunkSearchResult, "id" | "workId" | "text" | "excerpt">,
-  cache?: Map<string, Promise<ResolvedWorkPassageLookup | null>>,
+  cache?: PassageResolutionCache,
 ): Promise<string> {
+  if (cache) {
+    let pending = cache.chunkUrls.get(chunk.id);
+    if (!pending) {
+      pending = buildChunkPassageUrlFromChunk(deps, sessionId, chunk);
+      cache.chunkUrls.set(chunk.id, pending);
+    }
+    return await pending;
+  }
   const lookup = await getResolvedWorkPassageLookup(deps, chunk.workId, cache);
   const passageId = lookup
-    ? findResolvedPassageId(lookup.passages, buildChunkPassageCandidates(chunk))
+    ? findResolvedPassageId(lookup, buildChunkPassageCandidates(chunk))
     : null;
   const passageUrl = buildResearchDocumentPassageUrl(
     siteOrigin(deps),
@@ -7076,7 +7108,7 @@ async function rewriteAnswerWithCitationLinks(
   citations: Citation[],
 ) {
   const formatPassageLink = (link: string) => `[Open passage](${link})`;
-  const passageLookupCache = new Map<string, Promise<ResolvedWorkPassageLookup | null>>();
+  const passageLookupCache = buildPassageResolutionCache();
   const citationLinks = await Promise.all(citations.map((citation) => buildCitationPassageUrl(deps, sessionId, citation, passageLookupCache)));
   let rewritten = answer;
   let citationIndex = 0;
@@ -8546,6 +8578,7 @@ async function runOrchestrator(
   };
 
   const researchDocumentWorkTitleCache = new Map<string, Promise<string | null>>();
+  const researchDocumentPassageResolutionCache = buildPassageResolutionCache();
   const getResearchDocumentWorkTitle = async (workId: string) => {
     const cached = researchDocumentWorkTitleCache.get(workId);
     if (cached) {
@@ -8659,14 +8692,24 @@ async function runOrchestrator(
         || (workId ? await getResearchDocumentWorkTitle(workId) : null)
         || "Source";
       const href = workId && chunkId
-        ? await buildChunkIdPassageUrl(deps, session!.id, chunkId) ?? buildResearchDocumentWorkUrl(siteOrigin(deps), session!.id, workId)
+        ? await buildChunkPassageUrlFromChunk(
+            deps,
+            session!.id,
+            {
+              id: chunkId,
+              workId,
+              text: typeof detail.text === "string" ? detail.text : excerpt,
+              excerpt,
+            },
+            researchDocumentPassageResolutionCache,
+          ) ?? buildResearchDocumentWorkUrl(siteOrigin(deps), session!.id, workId)
         : workId
           ? await buildCitationPassageUrl(deps, session!.id, {
               workId,
               chunkId: undefined,
               label: workTitle,
               excerpt,
-            })
+            }, researchDocumentPassageResolutionCache)
           : null;
       const sourceLabel = `Source: ${workTitle}, ${persistedPassageLocation(chunkIndex)}`;
       appendResearchDocumentOnce(
@@ -8994,15 +9037,42 @@ async function runOrchestrator(
         });
       }
     }
+    recordRawLog("tool.finalization.completed_result_details.started", {
+      runId: run.id,
+      toolCallId,
+      toolName,
+      rankedChunkCount: Array.isArray(result.rankedChunks) ? result.rankedChunks.length : 0,
+      chunkCount: Array.isArray(result.chunks) ? result.chunks.length : 0,
+    });
     await appendResearchDocumentCompletedResultDetails(toolCallId, result);
+    recordRawLog("tool.finalization.completed_result_details.completed", {
+      runId: run.id,
+      toolCallId,
+      toolName,
+    });
     if (toolName === "run_workspace_task") {
       const briefing = typeof result.briefing === "string" ? result.briefing.trim() : "";
       if (briefing) {
         appendResearchDocumentOnce(`briefing:${toolCallId}`, await renderBriefingHtml(deps, session!.id, briefing));
       }
     }
+    recordRawLog("tool.finalization.plan_trace.started", {
+      runId: run.id,
+      toolCallId,
+      toolName,
+    });
     await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
+    recordRawLog("tool.finalization.plan_trace.completed", {
+      runId: run.id,
+      toolCallId,
+      toolName,
+    });
     const completedRuntimeId = runtimeIdFromToolResult(streamedResult, normalizedArgs);
+    recordRawLog("tool.finalization.send_completed.started", {
+      runId: run.id,
+      toolCallId,
+      toolName,
+    });
     await send("tool.completed", {
       runId: run.id,
       toolCallId,
@@ -9015,6 +9085,11 @@ async function runOrchestrator(
         ok: status !== "failed",
         logLines: completedToolLines.normalizedLines,
       }),
+    });
+    recordRawLog("tool.finalization.send_completed.completed", {
+      runId: run.id,
+      toolCallId,
+      toolName,
     });
     toolHistory.push({
       toolName,
