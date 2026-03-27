@@ -27,7 +27,7 @@ import type { Router } from "./router";
 import type { SemanticSearchService } from "./semantic-search";
 import { cleanupToolStreamWithWorkersAi, type ToolStreamCleanupLine } from "./tool-stream-cleanup";
 import type { Synthesizer, ToolHistoryEntry } from "./synthesizer";
-import type { AgentIdentityRecord, AnalyticsEventRecord, AppStore, MessageRecord, NotificationRecord, PassageSearchFilters, RunRecord, RuntimeInstanceRecord, SessionRecord, ToolCallRecord, UserRecord, WorkDetailRecord } from "./store";
+import type { AgentIdentityRecord, AnalyticsEventRecord, AppStore, MessageRecord, NotificationRecord, PassageSearchFilters, RunEventRecord, RunRecord, RuntimeInstanceRecord, SessionRecord, ToolCallRecord, UserRecord, WorkDetailRecord } from "./store";
 import type { WorkersAiBinding } from "./index";
 import { parseModelJsonObject } from "./json";
 
@@ -4924,6 +4924,9 @@ async function finalizeStaleRun(
         const plannerStallMs = Date.now() - Date.parse(openPlannerStartAt);
         if (plannerStallMs > PLANNER_STALL_GRACE_MS) {
           const failureMessage = "The assistant stalled while choosing the next research step.";
+          if (await shouldSkipInactiveRunFailure(deps, session.id, run.id, PLANNER_STALL_GRACE_MS)) {
+            return deps.store.getRun(run.id);
+          }
           await deps.store.updateRun(run.id, {
             status: "failed",
             completedAt: new Date().toISOString(),
@@ -4971,6 +4974,9 @@ async function finalizeStaleRun(
         return deps.store.getRun(run.id);
       }
       const failureMessage = "This run stopped unexpectedly before it produced an answer.";
+      if (await shouldSkipInactiveRunFailure(deps, session.id, run.id, ORPHANED_RUN_GRACE_MS)) {
+        return deps.store.getRun(run.id);
+      }
       await deps.store.updateRun(run.id, {
         status: "failed",
         completedAt: new Date().toISOString(),
@@ -5051,10 +5057,7 @@ async function finalizeStaleRun(
   if ((!runtimeId || !deps.runtimeGateway.getWorkspaceTaskStatus) && !activeRun) {
     const runningDurationMs = Date.now() - Date.parse(runningToolCall.startedAt);
     const persistedRawLog = await loadPersistedRawRunLog(deps, session.id, run.id);
-    const latestRawActivityMs = persistedRawLog.reduce<number>((latest, entry) => {
-      const ts = typeof entry?.timestamp === "string" ? Date.parse(entry.timestamp) : Number.NaN;
-      return Number.isFinite(ts) ? Math.max(latest, ts) : latest;
-    }, 0);
+    const latestRawActivityMs = latestRawLogActivityMs(persistedRawLog);
     const rawLogIdleMs = latestRawActivityMs > 0 ? Date.now() - latestRawActivityMs : Number.POSITIVE_INFINITY;
     if (runningDurationMs > ORPHANED_RUN_GRACE_MS && rawLogIdleMs > ORPHANED_RUN_GRACE_MS) {
       const failedResult = {
@@ -5062,6 +5065,9 @@ async function finalizeStaleRun(
         error: `${labelForToolCall(runningToolCall.toolName, runningToolCall.argsJson)} stopped unexpectedly before it finished.`,
         runtimeId: runtimeId ?? undefined,
       };
+      if (await shouldSkipInactiveRunFailure(deps, session.id, run.id, ORPHANED_RUN_GRACE_MS)) {
+        return deps.store.getRun(run.id);
+      }
       await deps.store.finishToolCall(runningToolCall.id, "failed", failedResult);
       const refreshedToolCalls = await deps.store.listToolCalls(run.id);
       await persistRecoveredPlanToolTrace(deps, session.id, run.id, refreshedToolCalls);
@@ -5126,6 +5132,9 @@ async function finalizeStaleRun(
             error: "Deep research stalled after shard passage selection and never produced a briefing.",
             runtimeId,
           };
+          if (await shouldSkipInactiveRunFailure(deps, session.id, run.id, 5 * 60_000)) {
+            return deps.store.getRun(run.id);
+          }
           await deps.store.finishToolCall(runningToolCall.id, "failed", failedResult);
           const refreshedToolCalls = await deps.store.listToolCalls(run.id);
           await persistRecoveredPlanToolTrace(deps, session.id, run.id, refreshedToolCalls);
@@ -6868,6 +6877,65 @@ async function loadPersistedRawRunLog(
       }
     })
     .filter((entry): entry is Record<string, unknown> => Boolean(entry));
+}
+
+function latestRawLogActivityMs(rawLog: Array<Record<string, unknown>>) {
+  return rawLog.reduce<number>((latest, entry) => {
+    const ts = typeof entry?.timestamp === "string" ? Date.parse(entry.timestamp) : Number.NaN;
+    return Number.isFinite(ts) ? Math.max(latest, ts) : latest;
+  }, 0);
+}
+
+const persistedLivenessEventNames = new Set([
+  "run.started",
+  "assistant.plan",
+  "tool.started",
+  "tool.progress",
+  "tool.completed",
+  "assistant.completed",
+  "run.completed",
+]);
+
+function latestRunEventActivityMs(runEvents: RunEventRecord[]) {
+  return runEvents.reduce<number>((latest, event) => {
+    if (!persistedLivenessEventNames.has(event.event)) {
+      return latest;
+    }
+    const ts = Date.parse(event.createdAt);
+    return Number.isFinite(ts) ? Math.max(latest, ts) : latest;
+  }, 0);
+}
+
+async function latestPersistedRunActivityMs(
+  deps: AppDeps,
+  sessionId: string,
+  runId: string,
+) {
+  const [persistedRawLog, runEvents] = await Promise.all([
+    loadPersistedRawRunLog(deps, sessionId, runId),
+    deps.store.listRunEvents(runId),
+  ]);
+  return Math.max(
+    latestRawLogActivityMs(persistedRawLog),
+    latestRunEventActivityMs(runEvents),
+  );
+}
+
+async function shouldSkipInactiveRunFailure(
+  deps: AppDeps,
+  sessionId: string,
+  runId: string,
+  idleGraceMs: number,
+) {
+  const latestRun = await deps.store.getRun(runId);
+  if (!latestRun || isTerminalRunStatus(latestRun.status)) {
+    return true;
+  }
+  const latestActivityMs = await latestPersistedRunActivityMs(deps, sessionId, runId);
+  if (latestActivityMs <= 0) {
+    return false;
+  }
+  return (Date.now() - latestActivityMs) < idleGraceMs;
 }
 
 function latestOpenPlannerStartAt(rawLog: Array<Record<string, unknown>>) {
