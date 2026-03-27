@@ -156,8 +156,6 @@ const VERIFICATION_CODE_WORDS = [
 const DEFAULT_SESSION_TITLE_MODEL = "@cf/zai-org/glm-4.7-flash";
 const ORPHANED_RUN_GRACE_MS = 30_000;
 const PLANNER_STALL_GRACE_MS = HARD_LIMITS.MAX_TOOL_TIMEOUT_SECONDS * 1000 + 30_000;
-const SPRITE_ORPHANED_RUN_GRACE_MS = 90_000;
-const SPRITE_ORPHANED_PROGRESS_STALL_MS = 5 * 60_000;
 
 function randomToken(length = 24) {
   const bytes = crypto.getRandomValues(new Uint8Array(length));
@@ -4664,190 +4662,9 @@ function ensureCitationBreadth(
   return dedupeAppCitations(selected).slice(0, 8);
 }
 
-function buildRetrievalFallbackBriefing(
-  userMessage: string,
-  toolHistory: ToolHistoryEntry[],
-): { answer: string; citations: Citation[] } | null {
-  const confirmedWorkIds = new Set(collectConfirmedWorkIds(toolHistory));
-  const availableCitations = collectSynthesisCitations([], toolHistory);
-  const filteredCitations = confirmedWorkIds.size > 0
-    ? availableCitations.filter((citation) => confirmedWorkIds.has(citation.workId))
-    : availableCitations;
-  const distinctWorkIds = uniqueWorkIds(filteredCitations.map((citation) => citation.workId));
-  const broadCorpusQuery = isBroadCorpusResearchQuery(userMessage, distinctWorkIds.length);
-  const minimumCitations = broadCorpusQuery ? 4 : 2;
-  const minimumWorks = broadCorpusQuery ? 2 : 1;
-  if (filteredCitations.length < minimumCitations || distinctWorkIds.length < minimumWorks) {
-    const surfacedWorks = toolHistory
-      .filter((entry) => (entry.toolName === "search_works" || entry.toolName === "get_work_metadata") && Array.isArray(entry.result.works))
-      .flatMap((entry) => (entry.result.works as Array<Record<string, unknown>>).slice(0, 8))
-      .map((work) => {
-        const title = typeof work.title === "string" ? work.title.trim() : "Untitled work";
-        const authors = Array.isArray(work.authors)
-          ? work.authors.filter((author): author is string => typeof author === "string" && author.trim().length > 0).slice(0, 2)
-          : [];
-        return authors.length > 0 ? `${title} by ${authors.join(", ")}` : title;
-      })
-      .filter((value, index, array) => value.length > 0 && array.indexOf(value) === index)
-      .slice(0, 8);
-    if (surfacedWorks.length === 0) {
-      return null;
-    }
-    return {
-      answer: [
-        "The deeper research VM failed before it could extract quoted passages, so this fallback preserves the strongest surfaced candidate books from retrieval.",
-        `Candidate books surfaced: ${surfacedWorks.join("; ")}.`,
-        "Next step: rerun passage retrieval against these books to extract direct grief passages and synthesize the coping categories from primary text.",
-      ].join("\n\n"),
-      citations: [],
-    };
-  }
-
-  const researchDocument = (buildSynthesisResearchDocument(toolHistory) ?? "").trim();
-  const answer = [
-    "The deeper research VM did not finish within the active time budget, so this answer is synthesized from the verified retrieval evidence collected before timeout.",
-    researchDocument.length > 0 ? researchDocument : null,
-  ]
-    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-    .join("\n\n");
-
-  return {
-    answer,
-    citations: ensureCitationBreadth(userMessage, filteredCitations.slice(0, 8), filteredCitations),
-  };
-}
-
-function runtimeIdFromToolCall(toolCall: Awaited<ReturnType<AppStore["listToolCalls"]>>[number]) {
-  const argsRuntimeId = typeof toolCall.argsJson?.runtimeId === "string" ? toolCall.argsJson.runtimeId : null;
-  const resultRuntimeId = typeof toolCall.resultJson?.runtimeId === "string" ? toolCall.resultJson.runtimeId : null;
-  return resultRuntimeId ?? argsRuntimeId;
-}
-
-async function finalizeRunFromCompletedTools(
-  deps: AppDeps,
-  request: Request,
-  session: SessionRecord,
-  run: { id: string; status: string },
-  toolCalls: Awaited<ReturnType<AppStore["listToolCalls"]>>,
-) {
-  const toolHistory = toolCalls
-    .filter((toolCall) => toolCall.resultJson && toolCall.status === "completed")
-    .map((toolCall) => ({
-      toolName: toolCall.toolName,
-      rationale: undefined,
-      args: toolCall.argsJson,
-      result: toolCall.resultJson as Record<string, unknown>,
-    }));
-
-  const completedBriefing = latestCompletedBriefing(toolHistory);
-  if (!completedBriefing) {
-    return false;
-  }
-
-  const messages = await deps.store.listMessages(session.id);
-  const conversationHistory = formatConversationHistory(messages);
-  await persistRecoveredPlanToolTrace(deps, session.id, run.id, toolCalls);
-  await ensureRunAnswerPersisted(
-    deps,
-    request,
-    session,
-    run.id,
-    messages,
-    conversationHistory,
-    completedBriefing,
-    toolHistory,
-  );
-  await deps.store.updateRun(run.id, {
-    ...terminalRunStateUpdate("completed"),
-  });
-  return true;
-}
-
-async function ensureRunAnswerPersisted(
-  deps: AppDeps,
-  request: Request,
-  session: SessionRecord,
-  runId: string,
-  messages: Awaited<ReturnType<AppStore["listMessages"]>>,
-  conversationHistory: Array<{ role: "user" | "assistant" | "system" | "tool"; content: string }>,
-  completedBriefing: { answer: string; citations: Citation[] },
-  toolHistory: ToolHistoryEntry[],
-) {
-  const hasAnswer = messages.some((message) => {
-    if (message.role !== "assistant") {
-      return false;
-    }
-    const metadata = message.metadata as Record<string, unknown> | undefined;
-    return metadata?.runId === runId && metadata?.phase !== "plan" && metadata?.phase !== "error";
-  });
-  if (hasAnswer) {
-    return;
-  }
-
-  const exactCitationLinks = await Promise.all(
-    collectSynthesisCitations(completedBriefing.citations, toolHistory)
-      .slice(0, 16)
-      .map(async (citation) => ({
-        workId: citation.workId,
-        ...(citation.chunkId ? { chunkId: citation.chunkId } : {}),
-        label: citation.label,
-        excerpt: citation.excerpt,
-        url: await buildCitationPassageUrl(deps, session.id, citation),
-      })),
-  );
-  const recoveredSynthesis = await deps.synthesizer.synthesize({
-    userMessage: messages.filter((message) => message.role === "user").at(-1)?.content ?? completedBriefing.answer,
-    conversationHistory,
-    plannerDraft: completedBriefing.answer,
-    plannerCitations: completedBriefing.citations,
-    toolHistory,
-    runtimeBriefing: completedBriefing.answer,
-    runtimeEvidenceNotes: latestWorkspaceFileContent(toolHistory, /evidence-notes\.md$/u),
-    researchDocument: buildSynthesisResearchDocument(toolHistory),
-    exactCitationLinks,
-    billingContext: {
-      userId: session.userId,
-      sessionId: session.id,
-      runId,
-      source: "synthesizer",
-    },
-  });
-  const recoveredAnswer = await rewriteAnswerWithCitationLinks(
-    deps,
-    session.id,
-    recoveredSynthesis.answer,
-    recoveredSynthesis.citations,
-  );
-  const persistedPlanState = readPersistedPlanMessageState(messages, runId);
-  const researchDocumentHtml = await appendFinalAnswerResearchDocumentHtml(
-    deps,
-    session.id,
-    persistedPlanState.researchDocumentHtml,
-    recoveredSynthesis.citations,
-    recoveredAnswer,
-  );
-  const artifactKey = await persistFinalArtifact(
-    deps,
-    session.id,
-    runId,
-    recoveredAnswer,
-    recoveredSynthesis.citations,
-  );
-  await persistResearchDocumentArtifact(deps, session.id, runId, researchDocumentHtml);
-  await deps.store.appendMessage(session.id, "assistant", recoveredAnswer, {
-    runId,
-    phase: "answer",
-    citations: recoveredSynthesis.citations,
-    artifactKey,
-    researchLog: summarizeToolHistory(toolHistory),
-    researchDocumentHtml,
-    recoveredFromBriefing: true,
-  });
-}
-
 async function finalizeStaleRun(
   deps: AppDeps,
-  request: Request,
+  _request: Request,
   run: Awaited<ReturnType<AppStore["getRun"]>>,
   activeRuns?: Map<string, ActiveRunState>,
 ) {
@@ -4859,8 +4676,9 @@ async function finalizeStaleRun(
   if (!session) {
     return run;
   }
+  const runEvents = await deps.store.listRunEvents(run.id);
 
-  const cancelLiveExecution = async (toolCalls: Awaited<ReturnType<AppStore["listToolCalls"]>>) => {
+  const cancelLiveExecution = async () => {
     const activeRun = activeRuns?.get(run.id);
     if (activeRun) {
       activeRun.cancelRequested = true;
@@ -4877,10 +4695,8 @@ async function finalizeStaleRun(
     );
   };
 
-  const closeDanglingToolCalls = async (
-    toolCalls: Awaited<ReturnType<AppStore["listToolCalls"]>>,
-    message: string,
-  ) => {
+  const closeDanglingToolCalls = async (message: string) => {
+    const toolCalls = await deps.store.listToolCalls(run.id);
     const dangling = toolCalls.filter((toolCall) => toolCall.status === "running" || toolCall.status === "queued");
     if (dangling.length === 0) {
       return;
@@ -4889,292 +4705,41 @@ async function finalizeStaleRun(
       dangling.map((toolCall) => deps.store.finishToolCall(toolCall.id, "failed", {
         ok: false,
         error: message,
-        runtimeId: runtimeIdFromToolCall(toolCall) ?? undefined,
+        runtimeId: runtimeIdFromRunEvents(runEvents, toolCall.id) ?? undefined,
       })),
     );
   };
 
-  const toolCalls = await deps.store.listToolCalls(run.id);
   if (run.status === "completed") {
     return run;
   }
   if (run.status !== "running" && run.status !== "queued") {
-    await closeDanglingToolCalls(toolCalls, "The run ended before this step finished.");
-    await cancelLiveExecution(await deps.store.listToolCalls(run.id));
+    await closeDanglingToolCalls("The run ended before this step finished.");
+    await cancelLiveExecution();
     return run;
   }
 
-  if (await finalizeRunFromCompletedTools(deps, request, session, run, toolCalls)) {
+  const terminalRunEvent = terminalRunStatusFromRunEvents(runEvents);
+  if (terminalRunEvent) {
+    await closeDanglingToolCalls("The run reached a terminal state before this step finished.");
+    await deps.store.updateRun(run.id, terminalRunStateUpdate(terminalRunEvent.status, terminalRunEvent.completedAt));
+    await cancelLiveExecution();
     return deps.store.getRun(run.id);
   }
 
-  const runAgeMs = Date.now() - Date.parse(run.startedAt);
-  const recoveredToolHistory = toolCalls
-    .filter((toolCall) => toolCall.resultJson && (toolCall.status === "completed" || toolCall.status === "failed"))
-    .map((toolCall) => ({
-      toolName: toolCall.toolName,
-      rationale: undefined,
-      args: toolCall.argsJson,
-      result: toolCall.resultJson as Record<string, unknown>,
-    }));
-  const runningToolCall = [...toolCalls].reverse().find((toolCall) => toolCall.status === "running");
-  if (!runningToolCall) {
-    if (toolCalls.length > 0 && runAgeMs > ORPHANED_RUN_GRACE_MS) {
-      const messages = await deps.store.listMessages(session.id);
-      const latestUserMessage =
-        [...messages].reverse().find((message) => message.role === "user" && typeof message.content === "string")?.content ?? "";
-      const retrievalFallbackBriefing = buildRetrievalFallbackBriefing(
-        latestUserMessage,
-        recoveredToolHistory,
-      );
-      if (retrievalFallbackBriefing) {
-        await persistRecoveredPlanToolTrace(deps, session.id, run.id, toolCalls);
-        const conversationHistory = formatConversationHistory(messages);
-        await ensureRunAnswerPersisted(
-          deps,
-          request,
-          session,
-          run.id,
-          messages,
-          conversationHistory,
-          retrievalFallbackBriefing,
-          recoveredToolHistory,
-        );
-        await appendRunLifecycleEvent(deps, run, "run.recovery.completed", {
-          reason: "retrieval_fallback",
-        });
-        await writeTerminalRunState(deps, run.id, "completed");
-        await cancelLiveExecution(toolCalls);
-        return deps.store.getRun(run.id);
-      }
-      const failureMessage = "This run stopped unexpectedly before it produced an answer.";
-      await appendRunLifecycleEvent(deps, run, "run.recovery.failed", {
-        reason: "no_running_tool_call",
-        message: failureMessage,
-      });
-      await writeTerminalRunState(deps, run.id, "failed");
-      await persistRecoveredPlanToolTrace(deps, session.id, run.id, toolCalls);
-      const persistedPlanState = readPersistedPlanMessageState(await deps.store.listMessages(session.id), run.id);
-      await appendRunErrorMessageOnce(deps, session.id, run.id, failureMessage, {
-        runId: run.id,
-        phase: "error",
-        toolCalls: persistedPlanState.toolTrace,
-        researchLog: persistedPlanState.toolTrace,
-        recoveredFromStalledRun: true,
-      });
-      await cancelLiveExecution(toolCalls);
-      return deps.store.getRun(run.id);
-    }
-    if (runAgeMs > HARD_LIMITS.MAX_RUN_WALL_CLOCK_SECONDS * 1000) {
-      const messages = await deps.store.listMessages(session.id);
-      const latestUserMessage =
-        [...messages].reverse().find((message) => message.role === "user" && typeof message.content === "string")?.content ?? "";
-      const retrievalFallbackBriefing = buildRetrievalFallbackBriefing(
-        latestUserMessage,
-        recoveredToolHistory,
-      );
-      if (retrievalFallbackBriefing) {
-        await persistRecoveredPlanToolTrace(deps, session.id, run.id, toolCalls);
-        const conversationHistory = formatConversationHistory(messages);
-        await ensureRunAnswerPersisted(
-          deps,
-          request,
-          session,
-          run.id,
-          messages,
-          conversationHistory,
-          retrievalFallbackBriefing,
-          recoveredToolHistory,
-        );
-        await appendRunLifecycleEvent(deps, run, "run.recovery.completed", {
-          reason: "hard_limit_retrieval_fallback",
-        });
-        await writeTerminalRunState(deps, run.id, "completed");
-        await cancelLiveExecution(toolCalls);
-        return deps.store.getRun(run.id);
-      }
-      const failureMessage = "This run timed out before it produced an answer.";
-      await appendRunLifecycleEvent(deps, run, "run.recovery.failed", {
-        reason: "hard_limit_timeout",
-        message: failureMessage,
-      });
-      await writeTerminalRunState(deps, run.id, "failed");
-      await persistRecoveredPlanToolTrace(deps, session.id, run.id, toolCalls);
-      const persistedPlanState = readPersistedPlanMessageState(await deps.store.listMessages(session.id), run.id);
-      await appendRunErrorMessageOnce(deps, session.id, run.id, failureMessage, {
-        runId: run.id,
-        phase: "error",
-        toolCalls: persistedPlanState.toolTrace,
-        researchLog: persistedPlanState.toolTrace,
-      });
-      await cancelLiveExecution(toolCalls);
-      return deps.store.getRun(run.id);
-    }
-    return run;
-  }
-
-  const runtimeId = runtimeIdFromToolCall(runningToolCall);
-  if (runningToolCall.toolName === "run_workspace_task" && toolCallUsesSpriteFanout(runningToolCall)) {
-    const reconciledSpriteRun = await reconcileOrphanedSpriteFanoutRun(
-      deps,
-      session,
-      run,
-      runningToolCall,
-      cancelLiveExecution,
-    );
-    if (reconciledSpriteRun) {
-      return reconciledSpriteRun;
-    }
-  }
-  const activeRun = activeRuns?.get(run.id) ?? null;
-  if ((!runtimeId || !deps.runtimeGateway.getWorkspaceTaskStatus) && !activeRun) {
-    const runningDurationMs = Date.now() - Date.parse(runningToolCall.startedAt);
-    if (runningDurationMs > ORPHANED_RUN_GRACE_MS) {
-      const failedResult = {
-        ok: false,
-        error: `${labelForToolCall(runningToolCall.toolName, runningToolCall.argsJson)} stopped unexpectedly before it finished.`,
-        runtimeId: runtimeId ?? undefined,
-      };
-      await appendRunLifecycleEvent(deps, run, "run.recovery.failed", {
-        reason: "orphaned_foreground_tool",
-        toolCallId: runningToolCall.id,
-        toolName: runningToolCall.toolName,
-        message: failedResult.error,
-      });
-      await deps.store.finishToolCall(runningToolCall.id, "failed", failedResult);
-      const refreshedToolCalls = await deps.store.listToolCalls(run.id);
-      await persistRecoveredPlanToolTrace(deps, session.id, run.id, refreshedToolCalls);
-      await writeTerminalRunState(deps, run.id, "failed");
-      const persistedPlanState = readPersistedPlanMessageState(await deps.store.listMessages(session.id), run.id);
-      await appendRunErrorMessageOnce(deps, session.id, run.id, failedResult.error, {
-        runId: run.id,
-        phase: "error",
-        toolCalls: persistedPlanState.toolTrace,
-        researchLog: persistedPlanState.toolTrace,
-        recoveredFromOrphanedForegroundTool: true,
-      });
-      await cancelLiveExecution(refreshedToolCalls);
-      return deps.store.getRun(run.id);
-    }
-  }
-  if (!runtimeId || !deps.runtimeGateway.getWorkspaceTaskStatus) {
-    return run;
-  }
-
-  let taskStatus: Record<string, unknown>;
-  try {
-    taskStatus = await deps.runtimeGateway.getWorkspaceTaskStatus({
-      runtimeId,
-      sessionId: session.id,
-      runId: run.id,
-    });
-  } catch {
-    return run;
-  }
-
-  if (taskStatus.status === "running" || taskStatus.status === "idle") {
-    if (runningToolCall.toolName === "run_workspace_task") {
-      const runningDurationMs = Date.now() - Date.parse(runningToolCall.startedAt);
-      if (runningDurationMs > 10 * 60_000) {
-        const [artifacts, runtimeInstances] = await Promise.all([
-          deps.store.listArtifacts(session.id),
-          deps.store.listRuntimeInstances(session.id),
-        ]);
-        const recentArtifacts = artifacts.filter((artifact) => Date.parse(artifact.createdAt) >= Date.parse(run.startedAt));
-        const selectedChunkArtifacts = recentArtifacts.filter((artifact) => artifact.filename === "selected-chunks.json");
-        const briefingArtifacts = recentArtifacts.filter((artifact) =>
-          artifact.filename === "briefing.md" || artifact.filename === "briefing.json");
-        const childRuntimes = runtimeInstances.filter((instance) =>
-          instance.runtimeId !== runtimeId && Date.parse(instance.createdAt) >= Date.parse(run.startedAt));
-        const childrenQuiesced = childRuntimes.length > 0
-          && childRuntimes.every((instance) => instance.status !== "busy" && instance.status !== "creating");
-        const latestSelectedChunkAt = selectedChunkArtifacts.reduce<number>((latest, artifact) =>
-          Math.max(latest, Date.parse(artifact.createdAt)), 0);
-        if (
-          selectedChunkArtifacts.length > 0
-          && briefingArtifacts.length === 0
-          && childrenQuiesced
-          && latestSelectedChunkAt > 0
-          && Date.now() - latestSelectedChunkAt > 5 * 60_000
-        ) {
-          const failedResult = {
-            ok: false,
-            error: "Deep research stalled after shard passage selection and never produced a briefing.",
-            runtimeId,
-          };
-          await appendRunLifecycleEvent(deps, run, "run.recovery.failed", {
-            reason: "runtime_briefing_stall",
-            toolCallId: runningToolCall.id,
-            runtimeId,
-            message: failedResult.error,
-          });
-          await deps.store.finishToolCall(runningToolCall.id, "failed", failedResult);
-          const refreshedToolCalls = await deps.store.listToolCalls(run.id);
-          await persistRecoveredPlanToolTrace(deps, session.id, run.id, refreshedToolCalls);
-          await writeTerminalRunState(deps, run.id, "failed");
-          const persistedPlanState = readPersistedPlanMessageState(await deps.store.listMessages(session.id), run.id);
-          await appendRunErrorMessageOnce(deps, session.id, run.id, failedResult.error, {
-            runId: run.id,
-            phase: "error",
-            toolCalls: persistedPlanState.toolTrace,
-            researchLog: persistedPlanState.toolTrace,
-          });
-          await cancelLiveExecution(refreshedToolCalls);
-          return deps.store.getRun(run.id);
-        }
-      }
-    }
-    return run;
-  }
-
-  if (taskStatus.status === "failed") {
-    const failedResult = {
-      ok: false,
-      error:
-        typeof taskStatus.error === "string"
-          ? taskStatus.error
-          : "Deep research failed in the runtime.",
-      billingEvents: Array.isArray(taskStatus.billingEvents) ? taskStatus.billingEvents : undefined,
-      runtimeId,
-    };
-    await appendRunLifecycleEvent(deps, run, "run.recovery.failed", {
-      reason: "runtime_reported_failure",
-      toolCallId: runningToolCall.id,
-      runtimeId,
-      message: failedResult.error,
-    });
-    await deps.store.finishToolCall(runningToolCall.id, "failed", failedResult);
-    const refreshedToolCalls = await deps.store.listToolCalls(run.id);
-    await persistRecoveredPlanToolTrace(deps, session.id, run.id, refreshedToolCalls);
-    await writeTerminalRunState(deps, run.id, "failed");
-    const persistedPlanState = readPersistedPlanMessageState(await deps.store.listMessages(session.id), run.id);
-    await appendRunErrorMessageOnce(deps, session.id, run.id, failedResult.error, {
-      runId: run.id,
-      phase: "error",
-      toolCalls: persistedPlanState.toolTrace,
-      researchLog: persistedPlanState.toolTrace,
-    });
-    await cancelLiveExecution(refreshedToolCalls);
-    return deps.store.getRun(run.id);
-  }
-
-  if (taskStatus.status === "completed" && taskStatus.result && typeof taskStatus.result === "object") {
-    const result: Record<string, unknown> = {
-      ...(taskStatus.result as Record<string, unknown>),
-      runtimeId,
-    };
-    await deps.store.finishToolCall(runningToolCall.id, "completed", result);
-    if (runningToolCall.toolName === "run_workspace_task") {
-      await trackRuntimeBillingEvents(deps, session, run, result.billingEvents);
-    }
-    const refreshedToolCalls = await deps.store.listToolCalls(run.id);
-    await persistRecoveredPlanToolTrace(deps, session.id, run.id, refreshedToolCalls);
-    await finalizeRunFromCompletedTools(deps, request, session, run, refreshedToolCalls);
-    await cancelLiveExecution(refreshedToolCalls);
-    return deps.store.getRun(run.id);
-  }
-
-  return run;
+  const failureMessage = "This run stopped before it wrote a terminal event.";
+  await appendRunLifecycleEvent(deps, run, "run.recovery.failed", {
+    reason: "lease_expired_without_terminal_event",
+    message: failureMessage,
+  });
+  await closeDanglingToolCalls(failureMessage);
+  await writeTerminalRunState(deps, run.id, "failed");
+  await appendRunErrorMessageOnce(deps, session.id, run.id, failureMessage, {
+    runId: run.id,
+    phase: "error",
+  });
+  await cancelLiveExecution();
+  return deps.store.getRun(run.id);
 }
 
 function normalizeGeneratedSessionTitle(value: string): string | null {
@@ -5741,52 +5306,6 @@ function readPersistedPlanToolTrace(metadata: Record<string, unknown> | null | u
   });
 }
 
-function buildRecoveredToolTrace(
-  toolCalls: Awaited<ReturnType<AppStore["listToolCalls"]>>,
-): LiveToolTraceEntry[] {
-  return toolCalls.map((toolCall) => {
-    const normalizedArgs = normalizeToolArgs(toolCall.toolName, toolCall.argsJson);
-    const safeResult = toolCall.resultJson
-      ? clientSafeToolResult(toolCall.toolName, toolCall.resultJson)
-      : undefined;
-    const startedLogLines = flattenValueForCleanup(normalizedArgs).map((line) => ({
-      ...line,
-      toolName: toolCall.toolName,
-    }));
-    const completedLogLines = safeResult
-      ? flattenValueForCleanup(safeResult).map((line) => ({
-          ...line,
-          toolName: toolCall.toolName,
-        }))
-      : [];
-
-    return {
-      id: toolCall.id,
-      toolName: toolCall.toolName,
-      label: labelForToolCall(toolCall.toolName, normalizedArgs),
-      progress: [],
-      progressDetails: [],
-      args: {
-        __logLines: startedLogLines,
-      },
-      result: safeResult
-        ? {
-            ...safeResult,
-            __logLines: completedLogLines,
-            error: typeof safeResult.error === "string" ? safeResult.error : undefined,
-          }
-        : undefined,
-      state:
-        toolCall.status === "failed" || toolCall.status === "timed_out"
-          ? "error"
-          : toolCall.status === "completed"
-            ? "completed"
-            : "running",
-      isError: toolCall.status === "failed" || toolCall.status === "timed_out",
-    };
-  });
-}
-
 function findPlanMessageForRun(messages: MessageRecord[], runId: string) {
   return [...messages].reverse().find((message) => (
     message.role === "assistant"
@@ -5828,41 +5347,50 @@ async function readPersistedPlanMessageStateForRun(
   );
 }
 
-async function persistRecoveredPlanToolTrace(
-  deps: AppDeps,
-  sessionId: string,
-  runId: string,
-  toolCalls: Awaited<ReturnType<AppStore["listToolCalls"]>>,
-) {
-  const messages = await deps.store.listMessages(sessionId);
-  const { planMessage } = readPersistedPlanMessageState(messages, runId);
-  if (!planMessage) {
-    return;
-  }
-  const existingMetadata = planMessage.metadata && typeof planMessage.metadata === "object"
-    ? planMessage.metadata as Record<string, unknown>
-    : {};
-  const existingResearchDocumentHtml =
-    typeof existingMetadata.researchDocumentHtml === "string" && existingMetadata.researchDocumentHtml.trim().length > 0
-      ? existingMetadata.researchDocumentHtml
-      : "";
-  const recoveredToolTrace = buildRecoveredToolTrace(toolCalls);
-  await deps.store.updateMessageMetadata(planMessage.id, {
-    ...existingMetadata,
-    phase: "plan",
-    runId,
-    toolCalls: recoveredToolTrace,
-    researchLog: recoveredToolTrace,
-    researchDocumentHtml: existingResearchDocumentHtml,
-  });
-}
-
 function collectRuntimeIdsFromRunEvents(runEvents: RunEventRecord[]) {
   const runtimeIds = new Set<string>();
   for (const runEvent of runEvents) {
     addRuntimeIdsFromValue(runtimeIds, runEvent.dataJson);
   }
   return runtimeIds;
+}
+
+function terminalRunStatusFromRunEvents(runEvents: RunEventRecord[]) {
+  for (let index = runEvents.length - 1; index >= 0; index -= 1) {
+    const runEvent = runEvents[index];
+    if (runEvent.event !== "run.completed") {
+      continue;
+    }
+    const status = runEvent.dataJson?.status;
+    if (status === "completed" || status === "failed" || status === "timed_out") {
+      return {
+        status: status as "completed" | "failed" | "timed_out",
+        completedAt: runEvent.createdAt,
+      };
+    }
+  }
+  return null;
+}
+
+function runtimeIdFromRunEvents(
+  runEvents: RunEventRecord[],
+  toolCallId: string | null | undefined,
+) {
+  if (!toolCallId) {
+    return null;
+  }
+  for (let index = runEvents.length - 1; index >= 0; index -= 1) {
+    const runEvent = runEvents[index];
+    if (runEvent.toolCallId !== toolCallId) {
+      continue;
+    }
+    const runtimeIds = collectRuntimeIdsFromRunEvents([runEvent]);
+    const firstRuntimeId = runtimeIds.values().next().value;
+    if (typeof firstRuntimeId === "string" && firstRuntimeId.length > 0) {
+      return firstRuntimeId;
+    }
+  }
+  return null;
 }
 
 function summarizeRunFailure(
@@ -6062,245 +5590,6 @@ async function trackRuntimeBillingEvents(
   }
 }
 
-function toolCallUsesSpriteFanout(toolCall: Awaited<ReturnType<AppStore["listToolCalls"]>>[number]) {
-  const taskSpec = toolCall.argsJson?.taskSpec;
-  return Boolean(
-    taskSpec
-    && typeof taskSpec === "object"
-    && (
-      (taskSpec as Record<string, unknown>).mode === "sprite_fanout"
-      || (taskSpec as Record<string, unknown>).mode === "sprite_shard_search"
-      || (taskSpec as Record<string, unknown>).mode === "sprite_aggregate"
-    ),
-  );
-}
-
-function spriteShardLifecycleTerminal(state: string | null | undefined) {
-  return state === "completed" || state === "failed";
-}
-
-function runtimeLifecycleTerminal(status: string | null | undefined) {
-  return status === "destroyed" || status === "failed" || status === "expired";
-}
-
-function runtimeLifecycleStale(
-  instance: Awaited<ReturnType<AppStore["listRuntimeInstances"]>>[number] | null | undefined,
-  thresholdMs: number,
-) {
-  if (!instance) {
-    return false;
-  }
-  if (runtimeLifecycleTerminal(instance.status)) {
-    return true;
-  }
-  const lastUsedCandidate = typeof instance.lastUsedAt === "string"
-    ? Date.parse(instance.lastUsedAt)
-    : typeof instance.createdAt === "string"
-      ? Date.parse(instance.createdAt)
-      : Number.NaN;
-  return Number.isFinite(lastUsedCandidate) && (Date.now() - lastUsedCandidate) >= thresholdMs;
-}
-
-type SpriteShardLifecycleSummary = {
-  shardId: string;
-  label: string;
-  shardIndex: number | null;
-  totalShards: number | null;
-  bookCount: number | null;
-  runtimeId: string | null;
-  state: string;
-};
-
-export function summarizeSpriteFanoutLifecycle(
-  runEvents: Awaited<ReturnType<AppStore["listRunEvents"]>>,
-  runtimeInstances: Awaited<ReturnType<AppStore["listRuntimeInstances"]>>,
-) {
-  const shardStates = new Map<string, SpriteShardLifecycleSummary>();
-  let aggregateState: "idle" | "starting" | "completed" | "failed" = "idle";
-
-  for (const event of runEvents) {
-    if (event.event === "sprite.aggregate.started") {
-      aggregateState = "starting";
-      continue;
-    }
-    if (event.event === "sprite.aggregate.completed") {
-      aggregateState = "completed";
-      continue;
-    }
-    if (event.event === "sprite.aggregate.failed") {
-      aggregateState = "failed";
-      continue;
-    }
-    if (!event.event.startsWith("sprite.shard.")) {
-      continue;
-    }
-    const payload = event.dataJson ?? {};
-    const shardId = typeof payload.shardId === "string" ? payload.shardId : null;
-    if (!shardId) {
-      continue;
-    }
-    const previous = shardStates.get(shardId);
-    shardStates.set(shardId, {
-      shardId,
-      label:
-        typeof payload.label === "string" && payload.label.trim().length > 0
-          ? payload.label
-          : previous?.label ?? shardId,
-      shardIndex:
-        typeof payload.shardIndex === "number"
-          ? payload.shardIndex
-          : previous?.shardIndex ?? null,
-      totalShards:
-        typeof payload.totalShards === "number"
-          ? payload.totalShards
-          : previous?.totalShards ?? null,
-      bookCount:
-        typeof payload.bookCount === "number"
-          ? payload.bookCount
-          : previous?.bookCount ?? null,
-      runtimeId:
-        typeof payload.runtimeId === "string"
-          ? payload.runtimeId
-          : previous?.runtimeId ?? null,
-      state:
-        typeof payload.state === "string" && payload.state.trim().length > 0
-          ? payload.state
-          : previous?.state ?? event.event.replace(/^sprite\.shard\./u, ""),
-    });
-  }
-
-  const runtimeIds = collectRuntimeIdsFromRunEvents(runEvents);
-  const runtimesById = new Map(
-    runtimeInstances
-      .filter((instance) => runtimeIds.has(instance.runtimeId))
-      .map((instance) => [instance.runtimeId, instance] as const),
-  );
-
-  return {
-    aggregateState,
-    shardStates: [...shardStates.values()].sort((left, right) =>
-      (left.shardIndex ?? Number.MAX_SAFE_INTEGER) - (right.shardIndex ?? Number.MAX_SAFE_INTEGER),
-    ),
-    runtimesById,
-    pendingShards: [...shardStates.values()].filter((state) => !spriteShardLifecycleTerminal(state.state)),
-  };
-}
-
-async function reconcileOrphanedSpriteFanoutRun(
-  deps: AppDeps,
-  session: SessionRecord,
-  run: RunRecord,
-  runningToolCall: Awaited<ReturnType<AppStore["listToolCalls"]>>[number],
-  cancelLiveExecution: (toolCalls: Awaited<ReturnType<AppStore["listToolCalls"]>>) => Promise<void>,
-) {
-  const runAgeMs = Date.now() - Date.parse(run.startedAt);
-  if (runAgeMs < SPRITE_ORPHANED_RUN_GRACE_MS) {
-    return null;
-  }
-
-  const [runEvents, runtimeInstances, liveMachines] = await Promise.all([
-    deps.store.listRunEvents(run.id),
-    deps.store.listRuntimeInstances(session.id),
-    deps.runtimeGateway.listSpriteSessionMachines?.(session.id) ?? Promise.resolve([]),
-  ]);
-  const lifecycle = summarizeSpriteFanoutLifecycle(runEvents, runtimeInstances);
-  if (lifecycle.aggregateState === "completed" || lifecycle.aggregateState === "failed") {
-    return null;
-  }
-
-  const liveMachineIds = new Set(
-    liveMachines
-      .map((machine) => typeof machine.machineId === "string" ? machine.machineId : null)
-      .filter((machineId): machineId is string => Boolean(machineId)),
-  );
-  const activeLiveMachines = liveMachines.filter((machine) => {
-    const state = typeof machine.state === "string" ? machine.state : "";
-    return state === "created" || state === "started" || state === "starting";
-  });
-  const latestLifecycleAtMs = runEvents.reduce((latest, event) => {
-    if (!event.event.startsWith("sprite.")) {
-      return latest;
-    }
-    return Math.max(latest, Date.parse(event.createdAt));
-  }, 0);
-  const stalePendingShards = lifecycle.pendingShards.length > 0
-    && lifecycle.pendingShards.every((state) =>
-      runtimeLifecycleStale(state.runtimeId ? lifecycle.runtimesById.get(state.runtimeId) ?? null : null, SPRITE_ORPHANED_PROGRESS_STALL_MS),
-    );
-  const pendingPreSearchOnly = lifecycle.pendingShards.length > 0
-    && lifecycle.pendingShards.every((state) =>
-      state.state === "queued" || state.state === "starting" || state.state === "hydrating",
-    );
-  const stalledWithLiveMachines = activeLiveMachines.length > 0
-    && pendingPreSearchOnly
-    && latestLifecycleAtMs > 0
-    && (Date.now() - latestLifecycleAtMs) >= SPRITE_ORPHANED_PROGRESS_STALL_MS;
-  if (activeLiveMachines.length > 0 && !stalledWithLiveMachines && !stalePendingShards) {
-    return null;
-  }
-
-  if (lifecycle.pendingShards.length === 0) {
-    return null;
-  }
-
-  const failureMessage = "This broad search stopped before every part of the library finished searching.";
-  for (const shard of lifecycle.pendingShards) {
-    const runtimeRecord = shard.runtimeId ? lifecycle.runtimesById.get(shard.runtimeId) ?? null : null;
-    if (runtimeRecord && !runtimeLifecycleTerminal(runtimeRecord.status)) {
-      await deps.store.updateRuntimeInstance(runtimeRecord.runtimeId, {
-        status: "failed",
-        lastUsedAt: new Date().toISOString(),
-        expiresAt: new Date().toISOString(),
-      });
-    }
-    await deps.store.appendRunEvent(run.id, session.id, "sprite.shard.failed", {
-      shardId: shard.shardId,
-      label: shard.label,
-      state: "failed",
-      shardIndex: shard.shardIndex,
-      totalShards: shard.totalShards,
-      bookCount: shard.bookCount,
-      runtimeId: shard.runtimeId,
-      error: runtimeLifecycleStale(runtimeRecord, SPRITE_ORPHANED_PROGRESS_STALL_MS)
-        ? "This part stopped reporting progress while searching."
-        : liveMachineIds.size === 0
-        ? "This part stopped before it finished searching."
-        : stalledWithLiveMachines
-          ? "This part never moved past worker startup."
-          : "This part lost contact with its search worker.",
-    });
-  }
-
-  await deps.store.appendRunEvent(run.id, session.id, "sprite.aggregate.failed", {
-    state: "failed",
-    shardCount: lifecycle.shardStates.length,
-    successfulShardCount: lifecycle.shardStates.filter((state) => state.state === "completed").length,
-    error: failureMessage,
-  });
-  await appendRunLifecycleEvent(deps, run, "run.recovery.failed", {
-    reason: "sprite_fanout_orphaned",
-    message: failureMessage,
-  });
-  await deps.store.finishToolCall(runningToolCall.id, "failed", {
-    ok: false,
-    error: failureMessage,
-    runtimeId: runtimeIdFromToolCall(runningToolCall) ?? undefined,
-  });
-  const refreshedToolCalls = await deps.store.listToolCalls(run.id);
-  await persistRecoveredPlanToolTrace(deps, session.id, run.id, refreshedToolCalls);
-  await writeTerminalRunState(deps, run.id, "failed");
-  const persistedPlanState = readPersistedPlanMessageState(await deps.store.listMessages(session.id), run.id);
-  await appendRunErrorMessageOnce(deps, session.id, run.id, failureMessage, {
-    runId: run.id,
-    phase: "error",
-    toolCalls: persistedPlanState.toolTrace,
-    researchLog: persistedPlanState.toolTrace,
-    recoveredFromSpriteFanoutOrphan: true,
-  });
-  await cancelLiveExecution(refreshedToolCalls);
-  return deps.store.getRun(run.id);
-}
-
 function addRuntimeIdsFromValue(runtimeIds: Set<string>, value: unknown, depth = 0) {
   if (depth > 4 || value === null || value === undefined) {
     return;
@@ -6439,9 +5728,7 @@ async function buildRunLogsPayload(
       : await loadRunArtifactSummaries(deps, session.id, run.id, runContext.runtimeIds))
     : [];
   const persistedRawLog = await loadPersistedRawRunLog(deps, session.id, run.id);
-  const rawLog = persistedRawLog.length > 0
-    ? persistedRawLog
-    : resolveRunRawLog(activeRuns, run.id, artifacts);
+  const rawLog = persistedRawLog;
   const metrics = extractRecordedRunMetrics(rawLog);
   const failureSummary = summarizeRunFailure(runContext.runEvents, rawLog);
   const liveRuntime = includeLiveRuntime
@@ -6830,23 +6117,6 @@ async function loadPersistedRawRunLog(
       }
     })
     .filter((entry): entry is Record<string, unknown> => Boolean(entry));
-}
-
-function resolveRunRawLog(
-  activeRuns: Map<string, ActiveRunState>,
-  runId: string,
-  artifacts: RunArtifactLike[],
-) {
-  const persisted = parseRawRunLogEntries(artifacts);
-  if (persisted.length > 0) {
-    return persisted;
-  }
-  return (activeRuns.get(runId)?.rawLog ?? []).map((entry) => ({
-    seq: entry.seq,
-    timestamp: entry.timestamp,
-    event: entry.event,
-    payload: entry.payload,
-  }));
 }
 
 async function listPersistedRunRuntimeIds(
@@ -11041,11 +10311,6 @@ async function runOrchestrator(
     if (completedBriefing) {
       await completeRunFromBriefing(completedBriefing, "standard");
     } else {
-      const retrievalFallbackBriefing = buildRetrievalFallbackBriefing(input.message, toolHistory);
-      if (retrievalFallbackBriefing) {
-        await completeRunFromBriefing(retrievalFallbackBriefing, "retrieval_fallback");
-        return;
-      }
       await clearRunLease("timed_out");
       const timeoutMessage = "The run hit its hard limits before it produced a valid answer.";
       const timeoutResearchDocumentHtml = await appendFinalAnswerResearchDocumentHtml(
@@ -11111,11 +10376,8 @@ async function runOrchestrator(
         .map((toolCall) => deps.store.finishToolCall(toolCall.id, "failed", {
           ok: false,
           error: error instanceof Error ? error.message : "Unknown orchestrator error",
-          runtimeId: runtimeIdFromToolCall(toolCall) ?? undefined,
         })),
     );
-    const refreshedToolCalls = await deps.store.listToolCalls(run.id);
-    await persistRecoveredPlanToolTrace(deps, session.id, run.id, refreshedToolCalls);
     await clearRunLease("failed");
 
     const failureMessage = userFacingRunFailureMessage(error);
@@ -12227,11 +11489,9 @@ export function createApp(inputDeps: CreateAppInput) {
         .map((toolCall) => deps.store.finishToolCall(toolCall.id, "failed", {
           ok: false,
           error: "Run cancelled by user.",
-          runtimeId: runtimeIdFromToolCall(toolCall) ?? undefined,
         })),
     );
     await writeTerminalRunState(deps, runId, "failed");
-    await persistRecoveredPlanToolTrace(deps, session.id, runId, await deps.store.listToolCalls(runId));
 
     return c.json({
       ok: true,
@@ -12295,11 +11555,9 @@ export function createApp(inputDeps: CreateAppInput) {
         .map((toolCall) => deps.store.finishToolCall(toolCall.id, "failed", {
           ok: false,
           error: "Run cancelled by user.",
-          runtimeId: runtimeIdFromToolCall(toolCall) ?? undefined,
         })),
     );
     await writeTerminalRunState(deps, runId, "failed");
-    await persistRecoveredPlanToolTrace(deps, session.id, runId, await deps.store.listToolCalls(runId));
 
     return c.json({
       ok: true,
@@ -12550,9 +11808,8 @@ export function createApp(inputDeps: CreateAppInput) {
       await Promise.all(
         runs.map(async (run) => {
           const { runtimeIds } = await resolveRunRuntimeContext(deps, sessionId, run, toolCallsByRun[run.id] ?? []);
-          const runArtifacts = await loadRunArtifacts(deps, sessionId, run.id, runtimeIds);
           const persistedRawLog = await loadPersistedRawRunLog(deps, sessionId, run.id);
-          return [run.id, persistedRawLog.length > 0 ? persistedRawLog : resolveRunRawLog(activeRuns, run.id, runArtifacts)];
+          return [run.id, persistedRawLog];
         }),
       ),
     );

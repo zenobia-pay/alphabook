@@ -260,7 +260,7 @@ test("sprite fanout mode fails loudly when no shard search succeeds", async () =
   assert.match(body, /"status":"failed"/);
 });
 
-test("reapStaleRuns fails orphaned sprite fanout runs when no shard machines remain", async () => {
+test("reapStaleRuns fails stale comprehensive runs without a terminal event", async () => {
   const store = new InMemoryAppStore([], []);
   const session = await store.createSession("11111111-1111-1111-1111-111111111111", "Sprite orphan");
   await store.appendMessage(session.id, "user", "Find grief across the corpus.");
@@ -349,12 +349,17 @@ test("reapStaleRuns fails orphaned sprite fanout runs when no shard machines rem
 
   const updatedRun = await store.getRun(run.id);
   const updatedToolCalls = await store.listToolCalls(run.id);
+  const events = await store.listRunEvents(run.id);
   assert.equal(updatedRun?.status, "failed");
   assert.equal(updatedToolCalls[0]?.id, toolCall.id);
   assert.equal(updatedToolCalls[0]?.status, "failed");
+  assert.ok(events.some((event) =>
+    event.event === "run.recovery.failed"
+    && event.dataJson.reason === "lease_expired_without_terminal_event",
+  ));
 });
 
-test("reapStaleRuns fails sprite fanout runs that stall in shard startup even if machines remain live", async () => {
+test("reapStaleRuns does not infer shard startup failure details during stale comprehensive cleanup", async () => {
   const store = new InMemoryAppStore([], []);
   const session = await store.createSession("11111111-1111-1111-1111-111111111111", "Sprite startup stall");
   await store.appendMessage(session.id, "user", "Find grief across the corpus.");
@@ -450,20 +455,18 @@ test("reapStaleRuns fails sprite fanout runs that stall in shard startup even if
 
   const updatedRun = await store.getRun(run.id);
   const updatedToolCalls = await store.listToolCalls(run.id);
-  const updatedRuntime = await store.getRuntimeInstance("sprite-shard-1");
   const events = await store.listRunEvents(run.id);
   assert.equal(updatedRun?.status, "failed");
   assert.equal(updatedToolCalls[0]?.id, toolCall.id);
   assert.equal(updatedToolCalls[0]?.status, "failed");
-  assert.equal(updatedRuntime?.status, "failed");
   assert.ok(events.some((event) =>
-    event.event === "sprite.shard.failed"
-    && typeof event.dataJson.error === "string"
-    && event.dataJson.error.includes("never moved past worker startup"),
+    event.event === "run.recovery.failed"
+    && event.dataJson.reason === "lease_expired_without_terminal_event",
   ));
+  assert.ok(!events.some((event) => event.event === "sprite.shard.failed"));
 });
 
-test("reapStaleRuns fails sprite fanout runs that stop reporting progress during searching", async () => {
+test("reapStaleRuns does not infer shard search failure details during stale comprehensive cleanup", async () => {
   const store = new InMemoryAppStore([], []);
   const session = await store.createSession("11111111-1111-1111-1111-111111111111", "Sprite search stall");
   await store.appendMessage(session.id, "user", "Find grief across the corpus.");
@@ -550,17 +553,15 @@ test("reapStaleRuns fails sprite fanout runs that stop reporting progress during
 
   const updatedRun = await store.getRun(run.id);
   const updatedToolCalls = await store.listToolCalls(run.id);
-  const updatedRuntime = await store.getRuntimeInstance("sprite-shard-1");
   const events = await store.listRunEvents(run.id);
   assert.equal(updatedRun?.status, "failed");
   assert.equal(updatedToolCalls[0]?.id, toolCall.id);
   assert.equal(updatedToolCalls[0]?.status, "failed");
-  assert.equal(updatedRuntime?.status, "failed");
   assert.ok(events.some((event) =>
-    event.event === "sprite.shard.failed"
-    && typeof event.dataJson.error === "string"
-    && event.dataJson.error.includes("stopped reporting progress while searching"),
+    event.event === "run.recovery.failed"
+    && event.dataJson.reason === "lease_expired_without_terminal_event",
   ));
+  assert.ok(!events.some((event) => event.event === "sprite.shard.failed"));
 });
 
 test("orchestrator streams retrieval tool calls and final answer", async () => {
@@ -3494,7 +3495,7 @@ test("admin run logs expose a comprehensive failure summary from persisted run e
   assert.equal(payload.failureSummary.runtimeId, "sprite-shard-1");
 });
 
-test("run details endpoint recovers a completed run answer from a persisted briefing", async () => {
+test("run details endpoint does not reconstruct a completed run answer from tool-call results", async () => {
   const store = new InMemoryAppStore();
   const session = await store.createSession("reader-user", "Recover briefing");
   await store.appendMessage(session.id, "user", "Find grief passages.");
@@ -3554,16 +3555,17 @@ test("run details endpoint recovers a completed run answer from a persisted brie
 
   const repairResponse = await app.request(`/sessions/${session.id}/runs/${run.id}?userId=reader-user`);
   assert.equal(repairResponse.status, 200);
+  const runPayload = await repairResponse.json() as {
+    toolTrace: Array<unknown>;
+  };
+  assert.deepEqual(runPayload.toolTrace, []);
 
   const messagesResponse = await app.request(`/sessions/${session.id}/messages?userId=reader-user`);
   assert.equal(messagesResponse.status, 200);
   const payload = await messagesResponse.json() as {
     messages: Array<{ role: string; content: string; metadata: Record<string, unknown> }>;
   };
-  assert.equal(payload.messages.length, 2);
-  assert.equal(payload.messages[1]?.role, "assistant");
-  assert.equal(payload.messages[1]?.content, "Recovered briefing content.");
-  assert.equal(payload.messages[1]?.metadata.runId, run.id);
+  assert.equal(payload.messages.length, 1);
 });
 
 test("run debug and logs endpoints include child sprite runtime logs and artifacts", async () => {
@@ -4002,7 +4004,7 @@ test("reapStaleRuns fails orphaned foreground tool calls with no runtime id", as
 
   const refreshedToolCall = (await store.listToolCalls(run.id)).find((candidate) => candidate.id === toolCall.id);
   assert.equal(refreshedToolCall?.status, "failed");
-  assert.equal(refreshedToolCall?.resultJson?.error, "Semantic Search stopped unexpectedly before it finished.");
+  assert.equal(refreshedToolCall?.resultJson?.error, "This run stopped before it wrote a terminal event.");
 
   const payload = {
     messages: await store.listMessages(session.id),
@@ -4010,7 +4012,7 @@ test("reapStaleRuns fails orphaned foreground tool calls with no runtime id", as
     messages: Array<{ role: string; content: string; metadata: Record<string, unknown> }>;
   };
   const errorMessage = payload.messages.find((message) => message.metadata?.phase === "error");
-  assert.equal(errorMessage?.content, "Semantic Search stopped unexpectedly before it finished.");
+  assert.equal(errorMessage?.content, "This run stopped before it wrote a terminal event.");
 });
 
 test("run details endpoint does not fail a stale semantic run that still has recent persisted progress", async () => {
