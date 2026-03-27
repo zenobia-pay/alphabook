@@ -8666,7 +8666,7 @@ async function runOrchestrator(
         || (workId ? await getResearchDocumentWorkTitle(workId) : null)
         || "Source";
       const href = workId && chunkId
-        ? buildResearchDocumentChunkUrl(siteOrigin(deps), session!.id, workId, chunkId)
+        ? await buildChunkIdPassageUrl(deps, session!.id, chunkId) ?? buildResearchDocumentChunkUrl(siteOrigin(deps), session!.id, workId, chunkId)
         : workId
           ? await buildCitationPassageUrl(deps, session!.id, {
               workId,
