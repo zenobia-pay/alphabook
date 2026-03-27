@@ -5682,6 +5682,7 @@ export default function App() {
                   key={activeWorkId}
                   ref={bookReaderFrameRef}
                   className="book-reader-frame"
+                  src={activeReaderFrameHref ?? undefined}
                   title={activeWork.title ? `${activeWork.title} text` : "Book text"}
                   loading="eager"
                 />

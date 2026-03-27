@@ -294,18 +294,62 @@ function buildWorkContentHref(env: Env, workId: string, gutenbergId?: string | n
   return `/api/works/${encodeURIComponent(workId)}/content?v=${BOOK_CONTENT_VERSION}`;
 }
 
+function appendBookVersionToReaderPath(env: Env, readerPath: string) {
+  const url = new URL(readerPath, resolveContentOrigin(env));
+  url.searchParams.set("v", BOOK_CONTENT_VERSION);
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
+function normalizeReaderPath(env: Env, readerPath: string | null | undefined, gutenbergId?: string | number | null) {
+  if (!readerPath || gutenbergId == null || String(gutenbergId).trim().length === 0) {
+    return null;
+  }
+  try {
+    const url = new URL(readerPath, resolveContentOrigin(env));
+    if (url.origin !== resolveContentOrigin(env)) {
+      return null;
+    }
+    const prefix = `/${encodeURIComponent(String(gutenbergId))}/`;
+    if (!url.pathname.startsWith(prefix) && url.pathname !== prefix.slice(0, -1)) {
+      return null;
+    }
+    url.searchParams.delete("v");
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return null;
+  }
+}
+
+function buildWorkContentFrameHref(
+  env: Env,
+  workId: string,
+  gutenbergId?: string | number | null,
+  readerPath?: string | null,
+) {
+  const normalizedReaderPath = normalizeReaderPath(env, readerPath, gutenbergId);
+  if (normalizedReaderPath && gutenbergId != null && String(gutenbergId).trim().length > 0) {
+    return `${resolveContentOrigin(env)}${appendBookVersionToReaderPath(env, normalizedReaderPath)}`;
+  }
+  return buildWorkContentHref(env, workId, gutenbergId);
+}
+
 function encodeBootstrapAttribute(value: unknown) {
   return escapeHtml(encodeURIComponent(JSON.stringify(value)));
 }
 
-function renderWorkPageMarkup(env: Env, bootstrap: WorkPageBootstrapPayload | null) {
+function renderWorkPageMarkup(env: Env, bootstrap: WorkPageBootstrapPayload | null, url: URL) {
   if (!bootstrap || bootstrap.error || !bootstrap.work || typeof bootstrap.work !== "object") {
     return null;
   }
   const work = bootstrap.work as { id?: unknown; title?: unknown; gutenbergId?: unknown };
   const workId = typeof work.id === "string" ? work.id : bootstrap.workId;
   const title = typeof work.title === "string" && work.title.trim().length > 0 ? work.title.trim() : "Book text";
-  const frameHref = buildWorkContentHref(env, workId, typeof work.gutenbergId === "string" || typeof work.gutenbergId === "number" ? work.gutenbergId : null);
+  const frameHref = buildWorkContentFrameHref(
+    env,
+    workId,
+    typeof work.gutenbergId === "string" || typeof work.gutenbergId === "number" ? work.gutenbergId : null,
+    url.searchParams.get("reader"),
+  );
   return [
     `<section class="book-page" style="--book-assistant-width:420px" data-ssr="work-page">`,
     `<div class="book-reader-pane">`,
@@ -527,7 +571,7 @@ export default {
     let injectedWorkPageBootstrapMeta = false;
     const assistantDocumentMarkup = renderAssistantDocumentMarkup(assistantDocumentBootstrap);
     const assistantSessionMarkup = renderAssistantSessionMarkup(assistantSessionBootstrap);
-    const workPageMarkup = renderWorkPageMarkup(env, workPageBootstrap);
+    const workPageMarkup = renderWorkPageMarkup(env, workPageBootstrap, url);
     const body = contentType.includes("text/html")
       ? new HTMLRewriter()
         .on("link[rel='canonical']", {
