@@ -5,7 +5,7 @@ import { ChevronsLeft, ChevronsRight, Link2, LoaderCircle, MessageSquarePlus, X 
 
 import { ChatSessionSummarySchema, getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type NotificationRecord, type ProfileBookStat, type ProfileFacetStat, type ProfileQueryStat, type PublicProfileResponse, type UserProfile, type UserProfileStats, type WorkDetail, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
-import { ApiError, buildSignInUrl, buildSignOutUrl, cancelRun, claimGuestProfile, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchAssistantDocumentState, fetchAssistantSessionBootstrap, fetchCurrentUser, fetchMessages, fetchNotifications, fetchProfile, fetchProfileStats, fetchRunState, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, getErrorMessage, markNotificationRead, queryAdminAnalytics, sendAnalyticsEvent, streamChat, streamRun, unfollowProfile, type PersistedRunEventRecord, type RunArtifactRecord, type SessionRunRecord } from "./api";
+import { ApiError, buildSignInUrl, buildSignOutUrl, cancelRun, claimGuestProfile, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchAssistantDocumentState, fetchAssistantSessionBootstrap, fetchCurrentUser, fetchMessages, fetchNotifications, fetchProfile, fetchProfileStats, fetchRunState, fetchRuns, fetchSessions, fetchWorkChunkPassage, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, getErrorMessage, markNotificationRead, queryAdminAnalytics, sendAnalyticsEvent, streamChat, streamRun, unfollowProfile, type PersistedRunEventRecord, type RunArtifactRecord, type SessionRunRecord } from "./api";
 import type { AssistantSurfaceProps } from "./components/assistant-surface";
 import { Avatar, AvatarFallback, AvatarImage } from "./components/ui/avatar";
 import { Button } from "./components/ui/button";
@@ -1013,12 +1013,7 @@ function findPassageForCitation(passages: ReaderPassage[], citation: Citation) {
     }
   }
 
-  return passages[0]
-    ? {
-        passageId: passages[0].id,
-        highlight: null,
-      }
-    : null;
+  return null;
 }
 
 function initialsFromSeed(seed: string) {
@@ -4127,17 +4122,31 @@ export default function App() {
     if (!activeChunkId || !activeWorkId || activeView !== "book") {
       return;
     }
-    setPendingCitation((current) => {
-      if (current?.workId === activeWorkId && current.chunkId === activeChunkId) {
-        return current;
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const resolved = await fetchWorkChunkPassage(activeWorkId, activeChunkId);
+        if (cancelled || !resolved.passageId) {
+          return;
+        }
+
+        setActivePassageId(resolved.passageId);
+        setHighlightedPassageExcerpt(null);
+        setActiveChunkId(null);
+        const url = new URL(window.location.href);
+        url.hash = resolved.passageId;
+        window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+      } catch {
+        if (cancelled) {
+          return;
+        }
       }
-      return {
-        workId: activeWorkId,
-        chunkId: activeChunkId,
-        label: `${activeWorkId}#${activeChunkId}`,
-        excerpt: "",
-      };
-    });
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [activeChunkId, activeWorkId, activeView]);
 
   useEffect(() => {

@@ -510,6 +510,20 @@ export async function fetchWorkSource(workId: string): Promise<WorkSource | null
   return parsed.source;
 }
 
+export async function fetchWorkChunkPassage(workId: string, chunkId: string): Promise<{ passageId: string | null }> {
+  const response = await ensureOk(
+    await fetch(`${API_BASE}/works/${workId}/chunks/${chunkId}/passage`, {
+      credentials: "include",
+    }),
+  );
+  const payload = await response.json() as { passageId?: unknown };
+  return {
+    passageId: typeof payload.passageId === "string" && payload.passageId.trim().length > 0
+      ? payload.passageId
+      : null,
+  };
+}
+
 export function buildSignInUrl(returnTo: string) {
   return `${API_BASE}/auth/sign-in?returnTo=${encodeURIComponent(returnTo)}`;
 }
