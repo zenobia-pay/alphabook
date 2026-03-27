@@ -296,28 +296,6 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
           hydratedCount: hydrated.length,
           expansionQuery,
         });
-        if (expansionQuery) {
-          const nativeExpansionEvent = {
-            type: "query_expansion",
-            queries: [query],
-            newChunksFound: matches.length,
-            totalUnique: candidates.filter((chunk): chunk is NonNullable<typeof chunk> => Boolean(chunk)).length,
-          } satisfies AlphaloopEvent;
-          args.auditLog?.("semantic.search.alphaloop.event", {
-            query: args.query,
-            eventType: nativeExpansionEvent.type,
-            eventIndex: -1,
-            sourceQuery: query,
-            synthetic: true,
-          });
-          const nativeExpansionText = progressTextFromEvent(nativeExpansionEvent);
-          if (nativeExpansionText) {
-            await args.onProgress?.(nativeExpansionText, {
-              type: "semantic.alphaloop",
-              event: nativeExpansionEvent,
-            });
-          }
-        }
         return candidates.filter((chunk): chunk is NonNullable<typeof chunk> => Boolean(chunk));
       },
     });
