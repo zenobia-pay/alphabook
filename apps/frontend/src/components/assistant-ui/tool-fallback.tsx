@@ -261,31 +261,13 @@ function getProgress(args: JsonRecord | null) {
 }
 
 function getAlphaloopEvents(args: JsonRecord | null, result: JsonRecord | null) {
-  const nativeEvents = (
+  return (
     Array.isArray(result?.__alphaloopEvents)
       ? result.__alphaloopEvents
       : Array.isArray(args?.__alphaloopEvents)
         ? args.__alphaloopEvents
         : []
   ).filter((value): value is AlphaloopProgressEvent => Boolean(value) && typeof value === "object" && typeof (value as { type?: unknown }).type === "string");
-  const rawProgressDetails = Array.isArray(args?.__progressDetails) ? args.__progressDetails : [];
-  const hasNativeEmbeddingSearch = nativeEvents.some((event) => event.type === "embedding_search");
-  const syntheticEvents = rawProgressDetails.flatMap((value): AlphaloopProgressEvent[] => {
-    const detail = safeObject(value);
-    if (!detail || detail.type !== "semantic.step") {
-      return [];
-    }
-    const step = typeof detail.step === "string" ? detail.step : null;
-    const query = typeof detail.query === "string" && detail.query.trim().length > 0 ? detail.query.trim() : null;
-    if ((step === "alphaloop_stream_start" || step === "embed_query") && query && !hasNativeEmbeddingSearch) {
-      return [{ type: "embedding_search", query }];
-    }
-    return [];
-  });
-  const events = [...syntheticEvents, ...nativeEvents];
-  return events.filter((value, index) =>
-    !events.slice(0, index).some((candidate) => JSON.stringify(candidate) === JSON.stringify(value))
-  );
 }
 
 function getAlphaloopChunks(result: JsonRecord | null) {

@@ -3161,6 +3161,13 @@ function messageResearchDocumentHtml(message: UiMessage) {
     : "";
 }
 
+function isTransientResearchDocumentHtml(html: string) {
+  if (!html) {
+    return false;
+  }
+  return /<h2[^>]*>\s*Search Underway\s*<\/h2>/iu.test(html);
+}
+
 function artifactText(artifact: RunArtifactRecord) {
   return typeof artifact.content === "string" ? artifact.content.trim() : "";
 }
@@ -3189,6 +3196,7 @@ function currentResearchDocumentHtml(
   runId: string | null,
   options: { fallbackToLatestSessionDocument?: boolean } = {},
 ) {
+  let fallbackCurrentRunHtml = "";
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (message.role !== "assistant") {
@@ -3200,6 +3208,10 @@ function currentResearchDocumentHtml(
     }
     const html = messageResearchDocumentHtml(message);
     if (html) {
+      if (isTransientResearchDocumentHtml(html)) {
+        fallbackCurrentRunHtml = fallbackCurrentRunHtml || html;
+        continue;
+      }
       return html;
     }
   }
@@ -3211,11 +3223,18 @@ function currentResearchDocumentHtml(
       }
       const html = messageResearchDocumentHtml(message);
       if (html) {
+        if (isTransientResearchDocumentHtml(html)) {
+          continue;
+        }
         return html;
       }
     }
   }
-  return persistedResearchDocumentHtml(artifacts);
+  const persistedHtml = persistedResearchDocumentHtml(artifacts);
+  if (persistedHtml && !isTransientResearchDocumentHtml(persistedHtml)) {
+    return persistedHtml;
+  }
+  return fallbackCurrentRunHtml || persistedHtml;
 }
 
 function AssistantSessionToolbar({
@@ -7071,6 +7090,7 @@ export default function App() {
                   role: "assistant",
                   content: event.data.text as string,
                   metadata: {
+                    ...(typeof event.data.runId === "string" ? { runId: event.data.runId } : {}),
                     phase: "plan",
                     ...(researchDocumentHtml ? { researchDocumentHtml } : {}),
                   },
@@ -7085,6 +7105,7 @@ export default function App() {
                     content: nextMessage.content,
                     metadata: {
                       ...copy[existingIndex].metadata,
+                      ...(typeof event.data.runId === "string" ? { runId: event.data.runId } : {}),
                       phase: "plan",
                       ...(researchDocumentHtml ? { researchDocumentHtml } : {}),
                     },
