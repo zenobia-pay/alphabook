@@ -3097,8 +3097,8 @@ async function deleteGutenbergWorks(context: IngestContext, gutenbergIds: string
 
   await deleteKeys(context.r2, context.r2Bucket, r2Keys);
   await context.db.query(`DELETE FROM works WHERE gutenberg_id IN (${placeholders})`, idList);
-  await context.db.query(`DELETE FROM authors a WHERE NOT EXISTS (SELECT 1 FROM work_authors wa WHERE wa.author_id = a.id)`);
-  await context.db.query(`DELETE FROM subjects s WHERE NOT EXISTS (SELECT 1 FROM work_subjects ws WHERE ws.subject_id = s.id)`);
+  await context.db.query(`DELETE FROM authors WHERE NOT EXISTS (SELECT 1 FROM work_authors wa WHERE wa.author_id = authors.id)`);
+  await context.db.query(`DELETE FROM subjects WHERE NOT EXISTS (SELECT 1 FROM work_subjects ws WHERE ws.subject_id = subjects.id)`);
 
   return {
     deleted: ids.length,
