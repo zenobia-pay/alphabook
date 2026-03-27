@@ -24,6 +24,10 @@ interface WorkspaceDownload {
   kind?: "clean" | "chunks";
 }
 
+interface SkippedWorkspaceDownload extends WorkspaceDownload {
+  error: string;
+}
+
 interface PrepareRequest {
   runtimeId: string;
   sessionId: string;
@@ -391,6 +395,8 @@ async function downloadFiles(
   r2Client: S3Client | null,
   r2BucketName: string | null,
 ) {
+  const completed: WorkspaceDownload[] = [];
+  const skippedMissing: SkippedWorkspaceDownload[] = [];
   const orderedDownloads = [...downloads].sort((left, right) => {
     const leftKindRank = left.kind === "clean" ? 0 : 1;
     const rightKindRank = right.kind === "clean" ? 0 : 1;
@@ -422,8 +428,25 @@ async function downloadFiles(
         if (!r2Client || !r2BucketName) {
           throw new Error("R2 hydration requested but runtime R2 credentials are not configured.");
         }
-        const body = await downloadFromR2(r2Client, r2BucketName, item.r2Key);
+        let body: string;
+        try {
+          body = await downloadFromR2(r2Client, r2BucketName, item.r2Key);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Unknown R2 error";
+          const missingObject =
+            item.kind === "clean"
+            && (/The specified key does not exist/iu.test(message) || /NoSuchKey/iu.test(message));
+          if (missingObject) {
+            skippedMissing.push({
+              ...item,
+              error: message,
+            });
+            continue;
+          }
+          throw error;
+        }
         await writeFile(destination, body, "utf8");
+        completed.push(item);
         continue;
       }
 
@@ -433,6 +456,7 @@ async function downloadFiles(
           throw new Error(`Failed to download ${item.sourceUrl}: ${response.status}`);
         }
         await writeFile(destination, await response.text(), "utf8");
+        completed.push(item);
         continue;
       }
 
@@ -441,6 +465,74 @@ async function downloadFiles(
   };
 
   await Promise.all(new Array(concurrency).fill(null).map(() => worker()));
+  return {
+    completed,
+    skippedMissing,
+  };
+}
+
+function workIdentifier(value: unknown): string | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const candidate = value as { workId?: unknown; documentId?: unknown };
+  if (typeof candidate.documentId === "string" && candidate.documentId.length > 0) {
+    return candidate.documentId;
+  }
+  if (typeof candidate.workId === "string" && candidate.workId.length > 0) {
+    return candidate.workId;
+  }
+  return null;
+}
+
+function applySkippedDownloadsToPreparePayload(
+  payload: PrepareRequest,
+  skippedMissing: SkippedWorkspaceDownload[],
+): PrepareRequest {
+  if (skippedMissing.length === 0) {
+    return payload;
+  }
+
+  const skippedKeys = new Set(skippedMissing.map((item) => item.r2Key).filter((value): value is string => typeof value === "string"));
+  const fileCatalog = Array.isArray(payload.fileCatalog)
+    ? payload.fileCatalog.filter((file) => !skippedKeys.has(String((file as { r2Key?: unknown }).r2Key ?? "")))
+    : payload.fileCatalog;
+  const skippedWorkIds = new Set(
+    skippedMissing
+      .filter((item) => item.kind === "clean")
+      .map((item) => item.destinationPath.match(/^books\/([^/]+)\/clean\.txt$/u)?.[1] ?? null)
+      .filter((value): value is string => Boolean(value)),
+  );
+  const works = Array.isArray(payload.works)
+    ? payload.works.filter((work) => {
+      const id = workIdentifier(work);
+      return !id || !skippedWorkIds.has(id);
+    })
+    : payload.works;
+  const selectedChunks = Array.isArray(payload.selectedChunks)
+    ? payload.selectedChunks.filter((chunk) => {
+      const id = workIdentifier(chunk);
+      return !id || !skippedWorkIds.has(id);
+    })
+    : payload.selectedChunks;
+  const taskContext = {
+    ...payload.taskContext,
+    skippedWorkspaceFiles: skippedMissing.map((item) => ({
+      r2Key: item.r2Key ?? null,
+      destinationPath: item.destinationPath,
+      kind: item.kind ?? null,
+      error: item.error,
+    })),
+    skippedWorkspaceWorkIds: Array.from(skippedWorkIds),
+  };
+
+  return {
+    ...payload,
+    works,
+    fileCatalog,
+    selectedChunks,
+    taskContext,
+  };
 }
 
 async function writeManifest(paths: ReturnType<typeof createPaths>, payload: PrepareRequest) {
@@ -1101,6 +1193,7 @@ export function createAlphaBookRuntimeServer(options: RuntimeServerOptions = {})
     runtimeId: string;
     workspaceRoot: string;
     manifestPath: string;
+    skippedDownloads?: SkippedWorkspaceDownload[];
   }>>();
 
   return createServer(async (request, response) => {
@@ -1127,17 +1220,32 @@ export function createAlphaBookRuntimeServer(options: RuntimeServerOptions = {})
         const existingPrepare = activePrepares.get(payload.runtimeId);
         const preparePromise = existingPrepare ?? (async () => {
           await resetWorkspace(paths);
-          await writeManifest(paths, payload);
-          await writeSelectedChunks(paths, payload);
-          await writeWorkspaceHelpers(paths);
+          let skippedMissing: SkippedWorkspaceDownload[] = [];
           if (payload.downloads?.length) {
-            await downloadFiles(payload.downloads, workspaceRoot, r2Client, r2BucketName);
+            const summary = await downloadFiles(payload.downloads, workspaceRoot, r2Client, r2BucketName);
+            skippedMissing = summary.skippedMissing;
+            const requestedCleanDownloads = payload.downloads.filter((item) => item.kind === "clean" && item.r2Key);
+            const completedCleanDownloads = summary.completed.filter((item) => item.kind === "clean" && item.r2Key);
+            if (requestedCleanDownloads.length > 0 && completedCleanDownloads.length === 0) {
+              const missingList = skippedMissing
+                .map((item) => item.r2Key)
+                .filter((value): value is string => typeof value === "string")
+                .slice(0, 5);
+              throw new Error(
+                `Workspace preparation failed because every requested clean text was missing from R2: ${missingList.join(", ")}.`,
+              );
+            }
           }
+          const preparedPayload = applySkippedDownloadsToPreparePayload(payload, skippedMissing);
+          await writeManifest(paths, preparedPayload);
+          await writeSelectedChunks(paths, preparedPayload);
+          await writeWorkspaceHelpers(paths);
           return {
             ok: true as const,
             runtimeId: payload.runtimeId,
             workspaceRoot,
             manifestPath: "context/manifest.json",
+            skippedDownloads: skippedMissing,
           };
         })();
         if (!existingPrepare) {

@@ -95,6 +95,173 @@ test("runtime server deduplicates concurrent prepare requests for the same runti
   }
 });
 
+test("runtime prepare skips missing clean R2 objects when other books are still available", async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), "alphabook-runtime-missing-clean-"));
+  const runtimeServer = createAlphaBookRuntimeServer({
+    authToken: "test-token",
+    workspaceRoot,
+    r2BucketName: "alphabook",
+    r2Client: {
+      async send(command: { input?: { Key?: string } }) {
+        const key = command?.input?.Key;
+        if (key === "gutenberg/clean/1/clean.txt") {
+          throw new Error("The specified key does not exist.");
+        }
+        if (key === "gutenberg/clean/2/clean.txt") {
+          return {
+            Body: {
+              async transformToString() {
+                return "available clean text";
+              },
+            },
+          };
+        }
+        throw new Error(`unexpected key: ${String(key)}`);
+      },
+    } as never,
+  });
+  await new Promise<void>((resolve) => runtimeServer.listen(0, "127.0.0.1", () => resolve()));
+  const runtimeAddress = runtimeServer.address();
+  assert.ok(runtimeAddress && typeof runtimeAddress === "object");
+  const runtimeUrl = `http://127.0.0.1:${runtimeAddress.port}`;
+
+  try {
+    const prepareResponse = await fetch(`${runtimeUrl}/prepare`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test-token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        runtimeId: "runtime-mixed",
+        sessionId: "session-mixed",
+        works: [
+          { workId: "1", title: "Missing Book", cleanTextKey: "gutenberg/clean/1/clean.txt" },
+          { workId: "2", title: "Available Book", cleanTextKey: "gutenberg/clean/2/clean.txt" },
+        ],
+        dataSchema: {},
+        fileCatalog: [
+          {
+            documentId: "1",
+            kind: "clean",
+            r2Key: "gutenberg/clean/1/clean.txt",
+            destinationPath: "books/1/clean.txt",
+          },
+          {
+            documentId: "2",
+            kind: "clean",
+            r2Key: "gutenberg/clean/2/clean.txt",
+            destinationPath: "books/2/clean.txt",
+          },
+        ],
+        selectedChunkIds: [],
+        selectedChunks: [],
+        taskContext: {},
+        downloads: [
+          {
+            r2Key: "gutenberg/clean/1/clean.txt",
+            destinationPath: "books/1/clean.txt",
+            kind: "clean",
+          },
+          {
+            r2Key: "gutenberg/clean/2/clean.txt",
+            destinationPath: "books/2/clean.txt",
+            kind: "clean",
+          },
+        ],
+      }),
+    });
+
+    assert.equal(prepareResponse.status, 200);
+    const preparePayload = await prepareResponse.json() as { skippedDownloads?: Array<{ r2Key?: string }> };
+    assert.deepEqual(
+      preparePayload.skippedDownloads?.map((item) => item.r2Key),
+      ["gutenberg/clean/1/clean.txt"],
+    );
+    assert.equal(
+      await readFile(join(workspaceRoot, "books", "2", "clean.txt"), "utf8"),
+      "available clean text",
+    );
+    await assert.rejects(
+      readFile(join(workspaceRoot, "books", "1", "clean.txt"), "utf8"),
+      /ENOENT/,
+    );
+    const manifest = JSON.parse(await readFile(join(workspaceRoot, "context", "manifest.json"), "utf8")) as {
+      works: Array<{ workId: string }>;
+      fileCatalog: Array<{ documentId: string }>;
+      taskContext: { skippedWorkspaceWorkIds?: string[] };
+    };
+    assert.deepEqual(manifest.works.map((work) => work.workId), ["2"]);
+    assert.deepEqual(manifest.fileCatalog.map((file) => file.documentId), ["2"]);
+    assert.deepEqual(manifest.taskContext.skippedWorkspaceWorkIds, ["1"]);
+  } finally {
+    await new Promise<void>((resolve, reject) => runtimeServer.close((error) => error ? reject(error) : resolve()));
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
+test("runtime prepare fails fast when every requested clean R2 object is missing", async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), "alphabook-runtime-all-missing-clean-"));
+  const runtimeServer = createAlphaBookRuntimeServer({
+    authToken: "test-token",
+    workspaceRoot,
+    r2BucketName: "alphabook",
+    r2Client: {
+      async send() {
+        throw new Error("The specified key does not exist.");
+      },
+    } as never,
+  });
+  await new Promise<void>((resolve) => runtimeServer.listen(0, "127.0.0.1", () => resolve()));
+  const runtimeAddress = runtimeServer.address();
+  assert.ok(runtimeAddress && typeof runtimeAddress === "object");
+  const runtimeUrl = `http://127.0.0.1:${runtimeAddress.port}`;
+
+  try {
+    const prepareResponse = await fetch(`${runtimeUrl}/prepare`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test-token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        runtimeId: "runtime-all-missing",
+        sessionId: "session-all-missing",
+        works: [
+          { workId: "1", title: "Missing Book", cleanTextKey: "gutenberg/clean/1/clean.txt" },
+        ],
+        dataSchema: {},
+        fileCatalog: [
+          {
+            documentId: "1",
+            kind: "clean",
+            r2Key: "gutenberg/clean/1/clean.txt",
+            destinationPath: "books/1/clean.txt",
+          },
+        ],
+        selectedChunkIds: [],
+        selectedChunks: [],
+        taskContext: {},
+        downloads: [
+          {
+            r2Key: "gutenberg/clean/1/clean.txt",
+            destinationPath: "books/1/clean.txt",
+            kind: "clean",
+          },
+        ],
+      }),
+    });
+
+    assert.equal(prepareResponse.status, 500);
+    const payload = await prepareResponse.json() as { error?: string };
+    assert.match(String(payload.error), /every requested clean text was missing from R2/i);
+    assert.match(String(payload.error), /gutenberg\/clean\/1\/clean\.txt/);
+  } finally {
+    await new Promise<void>((resolve, reject) => runtimeServer.close((error) => error ? reject(error) : resolve()));
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
 test("runtime task status reports the latest output activity while a task is still running", async () => {
   const workspaceRoot = await mkdtemp(join(tmpdir(), "alphabook-runtime-status-"));
   const scriptPath = join(workspaceRoot, "fake-agent.mjs");

@@ -146,6 +146,33 @@ function shardLabel(shard: SpriteShardManifest): string {
   return `Part ${shard.index + 1} of ${shard.totalShards}`;
 }
 
+function shouldRetrySpriteShardLaunch(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return !(
+    /every requested clean text was missing from R2/iu.test(message)
+    || /Failed to download .* The specified key does not exist/iu.test(message)
+    || /NoSuchKey/iu.test(message)
+  );
+}
+
+function summarizeSpriteShardFailures(
+  shardResults: Array<{ label: string; error?: string | null }>,
+): string {
+  const failures = shardResults
+    .map((result) => ({
+      label: result.label,
+      error: typeof result.error === "string" ? result.error.trim() : "",
+    }))
+    .filter((result) => result.error.length > 0);
+  if (failures.length === 0) {
+    return "No shard searches completed successfully.";
+  }
+  if (failures.length === 1) {
+    return `${failures[0]!.label} failed: ${failures[0]!.error}`;
+  }
+  return `No shard searches completed successfully. First failure: ${failures[0]!.label} failed: ${failures[0]!.error}`;
+}
+
 function runtimeStatusForShardLifecycle(state: SpriteShardLifecycleState): RuntimeInstanceRecord["status"] {
   if (state === "ready" || state === "completed") {
     return "ready";
@@ -781,7 +808,7 @@ async function runSpriteShard(
         machineId = null;
         instance = null;
         currentManifest = null;
-        if (attempt >= launchAttemptCount) {
+        if (attempt >= launchAttemptCount || !shouldRetrySpriteShardLaunch(error)) {
           throw error;
         }
         await safeReportProgress(
@@ -1148,7 +1175,7 @@ export class SpriteFanoutCoordinator {
 
     const successfulShards = shardResults.filter((result) => result.ok);
     if (successfulShards.length === 0) {
-      throw new Error("This broad search took too long across every part of the library, so it stopped before it could write an answer.");
+      throw new Error(summarizeSpriteShardFailures(shardResults));
     }
 
     await safeReportProgress(progressReporter, "Combining the strongest passages into one answer.", {
