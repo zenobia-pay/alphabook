@@ -140,6 +140,7 @@ export interface FlyRuntimeGatewayConfig {
   machineMemoryMb?: number;
   codexOpenAIBaseUrl?: string;
   codexProxyUpstreamBaseUrl?: string;
+  workspaceDownloadBaseUrl?: string;
 }
 
 function nowIso(): string {
@@ -181,6 +182,18 @@ function isRetryableRuntimeStartupError(error: unknown): boolean {
     message.includes("fetch failed") ||
     message.includes("network connection lost") ||
     message.includes("timed out")
+  );
+}
+
+function isIgnorableMachineCleanupError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const message = error.message.toLowerCase();
+  return (
+    message.includes("unable to start machine from current state: 'destroyed'") ||
+    message.includes("machine not found") ||
+    message.includes("instance not found")
   );
 }
 
@@ -602,12 +615,18 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
         body: JSON.stringify({
           runtimeId: parsed.runtimeId,
         }),
-      });
+      }, { timeoutMs: 5_000 });
     } catch {
       // Best effort cleanup; deleting the Machine is the stronger guarantee.
     }
 
-    await this.deleteMachine(instance.providerMachineId ?? parsed.runtimeId);
+    try {
+      await this.deleteMachine(instance.providerMachineId ?? parsed.runtimeId);
+    } catch (error) {
+      if (!isIgnorableMachineCleanupError(error)) {
+        throw error;
+      }
+    }
     await this.store.updateRuntimeInstance(parsed.runtimeId, {
       status: "destroyed",
       lastUsedAt: nowIso(),
@@ -733,12 +752,36 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     payload: Record<string, unknown>,
     options: { timeoutMs?: number } = {},
   ) {
+    const normalizedDownloads = Array.isArray(payload.downloads)
+      ? (payload.downloads as Array<Record<string, unknown>>).map((download) => {
+        const mapped: Record<string, unknown> = {
+          destinationPath: download.destinationPath,
+          byteSize: download.byteSize ?? null,
+          kind: download.kind,
+        };
+        const sourceUrl = this.runtimeWorkspaceDownloadUrl(
+          typeof download.r2Key === "string" ? download.r2Key : null,
+        );
+        if (sourceUrl) {
+          mapped.sourceUrl = sourceUrl;
+        } else if (typeof download.r2Key === "string") {
+          mapped.r2Key = download.r2Key;
+        } else if (typeof download.sourceUrl === "string") {
+          mapped.sourceUrl = download.sourceUrl;
+        }
+        return mapped;
+      })
+      : [];
+    const preparePayload = {
+      ...payload,
+      downloads: normalizedDownloads,
+    };
     let lastError: unknown = null;
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       try {
         return await this.callRuntime(machineId, "/prepare", {
           method: "POST",
-          body: JSON.stringify(payload),
+          body: JSON.stringify(preparePayload),
         }, { timeoutMs: options.timeoutMs ?? 12_000 });
       } catch (error) {
         lastError = error;
@@ -868,6 +911,16 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     await this.flyRequest(`/apps/${this.config.appName}/machines/${machineId}?force=true`, {
       method: "DELETE",
     });
+  }
+
+  private runtimeWorkspaceDownloadUrl(r2Key: string | null): string | null {
+    if (!r2Key || !this.config.workspaceDownloadBaseUrl || !this.config.runtimeSharedToken) {
+      return null;
+    }
+    const url = new URL("/internal/runtime-file", this.config.workspaceDownloadBaseUrl);
+    url.searchParams.set("key", r2Key);
+    url.searchParams.set("token", this.config.runtimeSharedToken);
+    return url.toString();
   }
 
   private async ensureMachineRunning(instance: RuntimeInstanceRecord): Promise<void> {

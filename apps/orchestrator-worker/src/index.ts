@@ -88,7 +88,12 @@ export interface Env {
   VECTOR_INDEX?: VectorizeIndex;
 }
 
-function resolveRuntimeGateway(env: Env, store: D1AppStore, blobStore: CloudflareR2Store) {
+function resolveRuntimeGateway(
+  env: Env,
+  store: D1AppStore,
+  blobStore: CloudflareR2Store,
+  apiOrigin: string,
+) {
   if (
     env.FLY_API_TOKEN &&
     env.FLY_RUNTIME_APP_NAME &&
@@ -117,6 +122,7 @@ function resolveRuntimeGateway(env: Env, store: D1AppStore, blobStore: Cloudflar
       machineMemoryMb: env.FLY_RUNTIME_MACHINE_MEMORY_MB ? Number(env.FLY_RUNTIME_MACHINE_MEMORY_MB) : undefined,
       codexOpenAIBaseUrl: env.RUNTIME_CODEX_OPENAI_BASE_URL,
       codexProxyUpstreamBaseUrl: env.RUNTIME_OPENAI_PROXY_UPSTREAM_BASE_URL,
+      workspaceDownloadBaseUrl: apiOrigin,
       r2BucketName: env.RUNTIME_R2_BUCKET_NAME ?? env.R2_BUCKET_NAME ?? "alphabook",
       r2Endpoint: env.R2_ENDPOINT,
       r2AccessKeyId: env.R2_ACCESS_KEY_ID,
@@ -169,6 +175,7 @@ function buildFetchHandler(env: Env) {
     blobStore,
     feedLabels: implementation.feedLabels,
   });
+  const runtimeGateway = resolveRuntimeGateway(env, store, blobStore, implementation.apiOrigin);
   const billing = createBillingService(store, {
     monthlyLimitUsd: env.BILLING_MONTHLY_LIMIT_USD ? Number(env.BILLING_MONTHLY_LIMIT_USD) : undefined,
     modelPricing: env.BILLING_MODEL_PRICING_JSON
@@ -221,7 +228,7 @@ function buildFetchHandler(env: Env) {
     embedder,
     synthesizer,
     blobStore,
-    runtimeGateway: resolveRuntimeGateway(env, store, blobStore),
+    runtimeGateway,
     auth:
       env.WORKOS_API_KEY && env.WORKOS_CLIENT_ID && env.AUTH_COOKIE_PASSWORD
         ? new WorkOSAuth(
@@ -244,6 +251,7 @@ function buildFetchHandler(env: Env) {
     adminAllowedEmail: env.ADMIN_ALLOWED_EMAIL,
     openAIApiKey: env.OPENAI_API_KEY,
     openAIModel: env.OPENAI_SYNTH_MODEL ?? env.OPENAI_MODEL ?? "gpt-5.2",
+    runtimeSharedToken: env.FLY_RUNTIME_SHARED_TOKEN,
     ai: env.AI,
     toolStreamCleanupModel: env.TOOL_STREAM_CLEANUP_MODEL,
     errorAlertWebhookUrl: env.ERROR_ALERT_WEBHOOK_URL,
@@ -315,7 +323,7 @@ async function runScheduledJanitor(env: Env) {
     undefined,
     billing,
   );
-  const runtimeGateway = resolveRuntimeGateway(env, store, blobStore);
+  const runtimeGateway = resolveRuntimeGateway(env, store, blobStore, implementation.apiOrigin);
 
   if (typeof runtimeGateway.cleanupStaleSpriteMachines === "function") {
     await runtimeGateway.cleanupStaleSpriteMachines("");

@@ -65,6 +65,7 @@ export interface AppDeps {
   adminAllowedEmail?: string;
   openAIApiKey?: string;
   openAIModel?: string;
+  runtimeSharedToken?: string;
   ai?: WorkersAiBinding;
   toolStreamCleanupModel?: string;
   errorAlertWebhookUrl?: string;
@@ -4782,6 +4783,22 @@ function normalizeWorkersAiText(payload: unknown): string {
   return extract(payload);
 }
 
+function toolNeedsForegroundHeartbeat(toolName: ToolName) {
+  return toolName === "run_workspace_task" || toolName === "semantic_deep_search";
+}
+
+function foregroundHeartbeatText(toolName: ToolName, runStartedAt: string) {
+  const elapsedMinutes = Math.max(1, Math.floor((Date.now() - Date.parse(runStartedAt)) / 60_000));
+  if (toolName === "semantic_deep_search") {
+    return elapsedMinutes <= 1
+      ? "Still reviewing and ranking the strongest passages from the semantic search."
+      : `Still reviewing and ranking passages. About ${elapsedMinutes} minutes have passed so far.`;
+  }
+  return elapsedMinutes <= 1
+    ? "Still loading books and comparing passages across the library."
+    : `Still searching across the library. About ${elapsedMinutes} minutes have passed so far.`;
+}
+
 function normalizedComparisonText(value: string) {
   return value
     .toLowerCase()
@@ -9362,17 +9379,13 @@ async function runOrchestrator(
       lastResearchDocumentActivityAt = Date.now();
     };
     noteResearchDocumentActivity();
-    const heartbeatTimer = toolName === "run_workspace_task"
+    const heartbeatTimer = toolNeedsForegroundHeartbeat(toolName)
       ? setInterval(() => {
           if (Date.now() - lastResearchDocumentActivityAt < 15_000) {
             return;
           }
           lastResearchDocumentActivityAt = Date.now();
-          const elapsedMinutes = Math.max(1, Math.floor((Date.now() - Date.parse(run.startedAt)) / 60_000));
-          const heartbeatText =
-            elapsedMinutes <= 1
-              ? "Still loading books and comparing passages across the library."
-              : `Still searching across the library. About ${elapsedMinutes} minutes have passed so far.`;
+          const heartbeatText = foregroundHeartbeatText(toolName, run.startedAt);
           void emitToolProgress(
             {
               runId: run.id,
@@ -9532,6 +9545,9 @@ async function runOrchestrator(
             // Error reporting should not block the user-facing run result.
           }
         } finally {
+          if (heartbeatTimer) {
+            clearInterval(heartbeatTimer);
+          }
           await progressEmitter.stop();
         }
         if (pendingWorkspaceExecution) {
@@ -10023,17 +10039,13 @@ async function runOrchestrator(
           },
         ),
       );
-      const heartbeatTimer = toolCall.tool_name === "run_workspace_task"
+      const heartbeatTimer = toolNeedsForegroundHeartbeat(toolCall.tool_name)
         ? setInterval(() => {
             if (Date.now() - lastResearchDocumentActivityAt < 15_000) {
               return;
             }
             lastResearchDocumentActivityAt = Date.now();
-            const elapsedMinutes = Math.max(1, Math.floor((Date.now() - Date.parse(run.startedAt)) / 60_000));
-            const heartbeatText =
-              elapsedMinutes <= 1
-                ? "Still loading books and comparing passages across the library."
-                : `Still searching across the library. About ${elapsedMinutes} minutes have passed so far.`;
+            const heartbeatText = foregroundHeartbeatText(toolCall.tool_name, run.startedAt);
             void reportForegroundToolProgress(heartbeatText, {
               type: "research.note",
               note: heartbeatText,
@@ -11123,6 +11135,30 @@ export function createApp(inputDeps: CreateAppInput) {
     }
     const redirectTo = await deps.auth.signOut(c);
     return c.json({ redirectTo });
+  });
+
+  app.get("/internal/runtime-file", async (c) => {
+    const expectedToken = deps.runtimeSharedToken?.trim() ?? "";
+    const bearerToken = bearerTokenFromRequest(c.req.raw);
+    const queryToken = c.req.query("token")?.trim() ?? "";
+    if (!expectedToken || (bearerToken !== expectedToken && queryToken !== expectedToken)) {
+      return c.json({ error: "Unauthorized" }, 401);
+    }
+    const key = c.req.query("key")?.trim() ?? "";
+    if (!key) {
+      return c.json({ error: "key is required." }, 400);
+    }
+    const object = await deps.blobStore.getObject(key);
+    if (!object) {
+      return c.json({ error: "File not found." }, 404);
+    }
+    return new Response(await object.arrayBuffer(), {
+      status: 200,
+      headers: {
+        "content-type": object.contentType ?? "application/octet-stream",
+        "cache-control": "no-store",
+      },
+    });
   });
 
   const handleChatRequest = async (c: Context) => {

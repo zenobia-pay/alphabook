@@ -810,12 +810,7 @@ async function runSpriteShard(
             expiresAt: addMinutesIso(HARD_LIMITS.MAX_RUNTIME_IDLE_MINUTES),
           }).catch(() => {});
         }
-        if (attemptInstance) {
-          await host.destroyWorkspace({
-            runtimeId: attemptInstance.runtimeId,
-            sessionId,
-          }).catch(() => {});
-        } else if (attemptMachineId) {
+        if (attemptMachineId) {
           await host.deleteMachine(attemptMachineId).catch(() => {});
         }
         machineId = null;
