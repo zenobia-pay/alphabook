@@ -7766,39 +7766,19 @@ async function appendFinalAnswerResearchDocumentHtml(
   deps: AppDeps,
   sessionId: string,
   existingHtml: string | null | undefined,
-  citations: Citation[],
+  _citations: Citation[],
   ending: string,
 ) {
   let html = existingHtml ?? "";
-  if (citations.length > 0) {
-    const quoted: string[] = [];
-    for (const citation of citations) {
-      const excerpt = normalizeDocumentText(citation.excerpt).slice(0, 440);
-      if (!isUsefulPersistedExcerpt(excerpt)) {
-        continue;
-      }
-      const href = await buildCitationPassageUrl(deps, sessionId, citation);
-      const sourceLabel = `Source: ${citation.label}`;
-      quoted.push(`<blockquote class="assistant-document-entry is-chunk"><p class="assistant-document-quote">${escapeResearchHtml(excerpt)}</p><footer class="assistant-document-citation">${href ? buildResearchDocumentLink(sourceLabel, href) : escapeResearchHtml(sourceLabel)}</footer></blockquote>`);
-    }
+  const renderedAnswer = await renderBriefingHtml(deps, sessionId, ending);
+  if (renderedAnswer.trim()) {
     html = appendResearchDocumentHtml(
       html,
-      "Quoted Evidence",
-      "Primary-source passages cited in the final answer.",
-      quoted,
+      "Answer",
+      "",
+      [renderedAnswer],
     );
   }
-
-  const normalizedEnding = normalizeDocumentEnding(ending);
-  if (normalizedEnding) {
-    html = appendResearchDocumentHtml(
-      html,
-      "Final Takeaway",
-      "What the run found and how it came together.",
-      [`<p class="assistant-document-entry is-log">${escapeResearchHtml(normalizedEnding)}</p>`],
-    );
-  }
-
   return html;
 }
 
