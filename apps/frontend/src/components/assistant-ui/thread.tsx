@@ -29,6 +29,7 @@ import {
   ArrowDownIcon,
   ArrowUpIcon,
   CheckIcon,
+  ChevronDownIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   CopyIcon,
@@ -160,6 +161,23 @@ const suggestionIconMap = {
   search: SearchIcon,
   heart: HeartIcon,
 } satisfies Record<NonNullable<ThreadSuggestion["icon"]>, typeof SearchIcon>;
+
+const EFFORT_OPTIONS = [
+  {
+    value: "semantic",
+    label: "Fast",
+    description: "Quick semantic retrieval",
+  },
+  {
+    value: "comprehensive",
+    label: "Slow",
+    description: "Broader, deeper search",
+  },
+] satisfies Array<{
+  value: AssistantEffortLevel;
+  label: string;
+  description: string;
+}>;
 
 export const Thread: FC<{
   isRunning?: boolean;
@@ -551,19 +569,106 @@ const ComposerAction: FC<{
   onEffortLevelChange,
   disabled = false,
 }) => {
+  const [isEffortMenuOpen, setIsEffortMenuOpen] = useState(false);
+  const effortMenuRef = useRef<HTMLDivElement | null>(null);
+  const selectedOption = EFFORT_OPTIONS.find((option) => option.value === effortLevel) ?? EFFORT_OPTIONS[0];
+
+  useEffect(() => {
+    if (!isEffortMenuOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!effortMenuRef.current?.contains(event.target as Node)) {
+        setIsEffortMenuOpen(false);
+      }
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setIsEffortMenuOpen(false);
+      }
+    };
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isEffortMenuOpen]);
+
+  useEffect(() => {
+    if (isRunning || disabled) {
+      setIsEffortMenuOpen(false);
+    }
+  }, [disabled, isRunning]);
+
   return (
     <div className="aui-composer-action-wrapper relative flex items-center gap-2">
-      <label className="aui-composer-effort-shell" aria-label="Effort level">
-        <select
-          className="aui-composer-effort-select"
-          value={effortLevel}
-          onChange={(event) => onEffortLevelChange(event.target.value as AssistantEffortLevel)}
+      <div className="aui-composer-effort-shell relative" ref={effortMenuRef}>
+        <Button
+          type="button"
+          variant="ghost"
+          className={cn(
+            "aui-composer-effort-trigger h-auto min-w-36 rounded-2xl border border-border/65 bg-white/88 px-3 py-2 text-left shadow-[0_8px_24px_rgba(15,23,42,0.08)] backdrop-blur-sm transition hover:bg-white disabled:bg-white/70",
+            isEffortMenuOpen && "border-foreground/15 shadow-[0_14px_30px_rgba(15,23,42,0.12)]",
+          )}
+          aria-label="Effort level"
+          aria-haspopup="listbox"
+          aria-expanded={isEffortMenuOpen}
           disabled={isRunning || disabled}
+          onClick={() => setIsEffortMenuOpen((open) => !open)}
         >
-          <option value="semantic">Semantic</option>
-          <option value="comprehensive">Comprehensive</option>
-        </select>
-      </label>
+          <span className="flex items-center gap-3">
+            <span className="flex min-w-0 flex-col">
+              <span className="text-[0.95rem] font-medium leading-5 text-foreground">{selectedOption.label}</span>
+              <span className="text-xs leading-4 text-muted-foreground">{selectedOption.description}</span>
+            </span>
+            <ChevronDownIcon
+              className={cn(
+                "ml-auto size-4 shrink-0 text-muted-foreground transition-transform duration-200",
+                isEffortMenuOpen && "rotate-180",
+              )}
+            />
+          </span>
+        </Button>
+        {isEffortMenuOpen ? (
+          <div
+            className="aui-composer-effort-menu absolute bottom-full left-0 z-30 mb-2 min-w-52 overflow-hidden rounded-2xl border border-border/70 bg-white/96 p-1.5 shadow-[0_20px_48px_rgba(15,23,42,0.16)] backdrop-blur-xl"
+            role="listbox"
+            aria-label="Effort options"
+          >
+            {EFFORT_OPTIONS.map((option) => {
+              const isSelected = option.value === effortLevel;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  role="option"
+                  aria-selected={isSelected}
+                  className={cn(
+                    "flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left transition",
+                    isSelected ? "bg-black text-white" : "text-foreground hover:bg-accent/70",
+                  )}
+                  onClick={() => {
+                    onEffortLevelChange(option.value);
+                    setIsEffortMenuOpen(false);
+                  }}
+                >
+                  <span className="flex min-w-0 flex-1 flex-col">
+                    <span className="text-sm font-medium leading-5">{option.label}</span>
+                    <span className={cn("text-xs leading-4", isSelected ? "text-white/75" : "text-muted-foreground")}>
+                      {option.description}
+                    </span>
+                  </span>
+                  {isSelected ? <CheckIcon className="size-4 shrink-0" /> : null}
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+      </div>
       <AuiIf condition={() => !isRunning}>
         <ComposerPrimitive.Send asChild>
           <TooltipIconButton
