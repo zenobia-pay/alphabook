@@ -3073,11 +3073,7 @@ function SidebarRecents({
 }
 
 function AssistantSurfaceFallback() {
-  return (
-    <div className="assistant-thread-shell" data-testid="thread-loading">
-      <div className="session-loading">Loading assistant…</div>
-    </div>
-  );
+  return <div className="assistant-thread-shell" data-testid="thread-loading" />;
 }
 
 function currentResearchToolTrace(messages: UiMessage[], runId: string | null) {
