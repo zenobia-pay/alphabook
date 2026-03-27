@@ -680,224 +680,6 @@ function hydrateStoredMessage(message: RawUiMessage): UiMessage {
   };
 }
 
-function buildToolTraceFromRunEvents(events: PersistedRunEventRecord[]) {
-  const trace: ToolTraceEntry[] = [];
-  const indexById = new Map<string, number>();
-
-  const ensureEntry = (eventData: Record<string, unknown>) => {
-    const toolCallId = typeof eventData.toolCallId === "string" ? eventData.toolCallId : null;
-    const toolName = typeof eventData.toolName === "string" ? eventData.toolName : "search_works";
-    const resolvedId = toolCallId ?? `${toolName}-${trace.length}`;
-    const existingIndex = indexById.get(resolvedId);
-    if (existingIndex !== undefined) {
-      return { entry: trace[existingIndex]!, index: existingIndex };
-    }
-    const entry: ToolTraceEntry = {
-      id: resolvedId,
-      toolName,
-      label: typeof eventData.label === "string" ? eventData.label : getToolLabel(toolName),
-      rationale: typeof eventData.rationale === "string" ? eventData.rationale : undefined,
-      progress: [],
-      args: eventData.args && typeof eventData.args === "object" ? eventData.args as Record<string, unknown> : {},
-      state: "running",
-    };
-    indexById.set(resolvedId, trace.length);
-    trace.push(entry);
-    return { entry, index: trace.length - 1 };
-  };
-
-  for (const runEvent of [...events].sort((left, right) => left.sequence - right.sequence)) {
-    const eventData = runEvent.dataJson && typeof runEvent.dataJson === "object"
-      ? runEvent.dataJson as Record<string, unknown>
-      : {};
-    if (runEvent.event.startsWith("sprite.shard.")) {
-      const state = progressDetailString(eventData.state) || runEvent.event.split(".").at(-1) || "";
-      const detail = {
-        ...eventData,
-        type: "sprite.shard_state",
-        state,
-      } satisfies Record<string, unknown>;
-      const text =
-        state === "queued"
-          ? `Queued ${spriteLabel(detail).toLowerCase()}.`
-          : state === "starting"
-            ? `Starting ${spriteLabel(detail).toLowerCase()}.`
-            : state === "hydrating"
-              ? `Loading books for ${spriteLabel(detail).toLowerCase()}.`
-              : state === "ready"
-                ? `Loaded books for ${spriteLabel(detail).toLowerCase()}.`
-                : state === "searching"
-                  ? `Searching ${spriteLabel(detail).toLowerCase()}.`
-                  : state === "completed"
-                    ? `Finished ${spriteLabel(detail).toLowerCase()}.`
-                    : `${spriteLabel(detail)} failed.`;
-      const updatedTrace = applySpriteLifecycleDetail(trace, detail, text);
-      trace.length = 0;
-      trace.push(...updatedTrace);
-      continue;
-    }
-    if (runEvent.event.startsWith("sprite.aggregate.")) {
-      const state = progressDetailString(eventData.state) || runEvent.event.split(".").at(-1) || "";
-      const updatedTrace = applySpriteLifecycleDetail(trace, {
-        ...eventData,
-        type: "sprite.aggregate_state",
-        state,
-      }, undefined);
-      trace.length = 0;
-      trace.push(...updatedTrace);
-      continue;
-    }
-    if (runEvent.event === "tool.started") {
-      const { entry, index } = ensureEntry(eventData);
-      const nextProgress =
-        typeof eventData.rationale === "string" && eventData.rationale.trim().length > 0
-          ? entry.progress.includes(eventData.rationale) ? entry.progress : [...entry.progress, eventData.rationale]
-          : entry.progress;
-      const nextRationale = typeof eventData.rationale === "string" ? eventData.rationale : entry.rationale;
-      const nextArgs = eventData.args && typeof eventData.args === "object"
-        ? eventData.args as Record<string, unknown>
-        : entry.args;
-      trace[index] = {
-        ...entry,
-        label: typeof eventData.label === "string" ? eventData.label : entry.label,
-        rationale: nextRationale,
-        progress: nextProgress,
-        args: syncToolDisplayArgs(nextArgs, {
-          toolName: entry.toolName,
-          rationale: nextRationale,
-          progress: nextProgress,
-          progressDetails: entry.progressDetails,
-        }),
-        state: "running",
-      };
-      continue;
-    }
-    if (runEvent.event === "tool.progress") {
-      const { entry, index } = ensureEntry(eventData);
-      const text = typeof eventData.text === "string" ? eventData.text : "";
-      const detail = eventData.detail && typeof eventData.detail === "object"
-        ? eventData.detail as Record<string, unknown>
-        : undefined;
-      const nextProgress = text && !entry.progress.includes(text) ? [...entry.progress, text] : entry.progress;
-      const nextDetails = detail ? appendProgressDetail(entry.progressDetails, detail) : entry.progressDetails;
-      trace[index] = {
-        ...entry,
-        rationale: text || entry.rationale,
-        progress: nextProgress,
-        ...(nextDetails ? { progressDetails: nextDetails } : {}),
-        args: syncToolDisplayArgs(entry.args, {
-          toolName: entry.toolName,
-          rationale: text || entry.rationale,
-          progress: nextProgress,
-          progressDetails: nextDetails,
-        }),
-        state: "running",
-      };
-      continue;
-    }
-    if (runEvent.event === "tool.completed") {
-      const { entry, index } = ensureEntry(eventData);
-      const status = eventData.status === "failed" ? "error" : "completed";
-      const result = eventData.result && typeof eventData.result === "object"
-        ? eventData.result as Record<string, unknown>
-        : entry.result;
-      const rationale = typeof eventData.rationale === "string"
-        ? eventData.rationale
-        : entry.progress[entry.progress.length - 1] ?? entry.rationale;
-      trace[index] = {
-        ...entry,
-        label: typeof eventData.label === "string" ? eventData.label : entry.label,
-        rationale,
-        result,
-        isError: status === "error",
-        state: status,
-      };
-    }
-  }
-
-  return trace;
-}
-
-function mergePersistedRunEvents(messages: UiMessage[], runId: string, events: PersistedRunEventRecord[]) {
-  const normalizedTrace = buildToolTraceFromRunEvents(events);
-  if (normalizedTrace.length === 0) {
-    return messages;
-  }
-  let changed = false;
-  const nextMessages = messages.map((message) => {
-    const messageRunId = typeof message.metadata?.runId === "string" ? message.metadata.runId : null;
-    const phase = typeof message.metadata?.phase === "string" ? message.metadata.phase : null;
-    if (messageRunId !== runId || phase !== "plan") {
-      return message;
-    }
-    changed = true;
-    return {
-      ...message,
-      toolCalls: normalizedTrace,
-    };
-  });
-  return changed ? nextMessages : messages;
-}
-
-function reconcileMessagesWithRunState(messages: UiMessage[], runs: SessionRunRecord[]) {
-  if (messages.length === 0 || runs.length === 0) {
-    return messages;
-  }
-
-  const runStatusById = new Map(runs.map((run) => [run.id, run.status]));
-
-  return messages.map((message) => {
-    const runId = typeof message.metadata?.runId === "string" ? message.metadata.runId : null;
-    if (!runId) {
-      return message;
-    }
-
-    const runStatus = runStatusById.get(runId);
-    if (!runStatus || (runStatus !== "failed" && runStatus !== "timed_out" && runStatus !== "completed")) {
-      return message;
-    }
-
-    let changed = false;
-    const runFailureReason =
-      runStatus === "failed"
-        ? "This research run failed before it could finish."
-        : runStatus === "timed_out"
-          ? "This research run timed out before it could finish."
-          : null;
-    const nextToolCalls = message.toolCalls.map((toolCall) => {
-      if (toolCall.state !== "running") {
-        return toolCall;
-      }
-
-      changed = true;
-      const nextState: ToolTraceEntry["state"] = runStatus === "completed" ? "completed" : "error";
-      return {
-        ...toolCall,
-        state: nextState,
-        isError: runStatus === "failed" || runStatus === "timed_out" ? true : toolCall.isError,
-        result:
-          nextState === "error"
-            ? {
-                ...(toolCall.result ?? {}),
-                ok: false,
-                error:
-                  typeof toolCall.result?.error === "string" && toolCall.result.error.trim()
-                    ? toolCall.result.error
-                    : runFailureReason ?? "This step failed.",
-              }
-            : toolCall.result,
-      };
-    });
-
-    return changed
-      ? {
-          ...message,
-          toolCalls: nextToolCalls,
-        }
-      : message;
-  });
-}
-
 function dedupeAdjacentErrorMessages(messages: UiMessage[]) {
   const deduped: UiMessage[] = [];
   for (const message of messages) {
@@ -915,234 +697,6 @@ function dedupeAdjacentErrorMessages(messages: UiMessage[]) {
     deduped.push(message);
   }
   return deduped;
-}
-
-function hasCanonicalPlanToolTrace(messages: UiMessage[], runId: string) {
-  return messages.some((message) => {
-    const messageRunId = typeof message.metadata?.runId === "string" ? message.metadata.runId : null;
-    const phase = typeof message.metadata?.phase === "string" ? message.metadata.phase : null;
-    return messageRunId === runId && phase === "plan" && message.toolCalls.length > 0;
-  });
-}
-
-function mergePersistedToolTrace(messages: UiMessage[], runId: string, trace: Array<Record<string, unknown>>) {
-  if (hasCanonicalPlanToolTrace(messages, runId)) {
-    return messages;
-  }
-
-  const normalizedTrace = trace.map((entry, index) => normalizeToolTraceEntry(entry, index));
-  if (normalizedTrace.length === 0) {
-    return messages;
-  }
-
-  const nonEmptyLogLineCount = (value: unknown) => {
-    if (!Array.isArray(value)) {
-      return 0;
-    }
-    return value.filter((line) => {
-      if (typeof line === "string") {
-        return line.trim().length > 0;
-      }
-      return Boolean(line) && typeof line === "object";
-    }).length;
-  };
-
-  const arrayLength = (value: unknown) => (Array.isArray(value) ? value.length : 0);
-
-  const payloadArrayRichness = (value: Record<string, unknown> | undefined) => {
-    if (!value) {
-      return 0;
-    }
-    const manifest = value.manifest && typeof value.manifest === "object"
-      ? value.manifest as Record<string, unknown>
-      : null;
-    return (
-      arrayLength(value.works)
-      + arrayLength(value.chunks)
-      + arrayLength(value.progressDetails)
-      + arrayLength(value.citations)
-      + arrayLength(value.artifacts)
-      + arrayLength(value.codexRuns)
-      + (manifest ? arrayLength(manifest.works) : 0)
-    );
-  };
-
-  const payloadRichness = (value: Record<string, unknown> | undefined) => {
-    if (!value) {
-      return -1;
-    }
-    let score = Object.keys(value).length;
-    score += nonEmptyLogLineCount(value.__logLines) * 10;
-    score += payloadArrayRichness(value) * 5;
-    return score;
-  };
-
-  const mergeLogLines = (existingValue: unknown, incomingValue: unknown) => {
-    const existing = Array.isArray(existingValue) ? existingValue : [];
-    const incoming = Array.isArray(incomingValue) ? incomingValue : [];
-    if (existing.length === 0) {
-      return incoming.length > 0 ? incoming : undefined;
-    }
-    if (incoming.length === 0) {
-      return existing;
-    }
-    const seen = new Set<string>();
-    const merged: unknown[] = [];
-    for (const line of [...existing, ...incoming]) {
-      const key = JSON.stringify(line);
-      if (seen.has(key)) {
-        continue;
-      }
-      seen.add(key);
-      merged.push(line);
-    }
-    return merged;
-  };
-
-  const chooseLongerArray = <T,>(existingValue: T[] | undefined, incomingValue: T[] | undefined) => {
-    if (!existingValue || existingValue.length === 0) {
-      return incomingValue;
-    }
-    if (!incomingValue || incomingValue.length === 0) {
-      return existingValue;
-    }
-    return existingValue.length >= incomingValue.length ? existingValue : incomingValue;
-  };
-
-  const mergePayload = (
-    existingValue: Record<string, unknown> | undefined,
-    incomingValue: Record<string, unknown> | undefined,
-  ) => {
-    if (!existingValue) {
-      return incomingValue;
-    }
-    if (!incomingValue) {
-      return existingValue;
-    }
-
-    const existingScore = payloadRichness(existingValue);
-    const incomingScore = payloadRichness(incomingValue);
-    const preferred = existingScore >= incomingScore ? existingValue : incomingValue;
-    const secondary = preferred === existingValue ? incomingValue : existingValue;
-    const merged: Record<string, unknown> = {
-      ...secondary,
-      ...preferred,
-    };
-
-    const mergedLogLines = mergeLogLines(existingValue.__logLines, incomingValue.__logLines);
-    if (mergedLogLines) {
-      merged.__logLines = mergedLogLines;
-    }
-
-    const preferredWorks = chooseLongerArray(
-      Array.isArray(existingValue.works) ? existingValue.works : undefined,
-      Array.isArray(incomingValue.works) ? incomingValue.works : undefined,
-    );
-    if (preferredWorks) {
-      merged.works = preferredWorks;
-    }
-
-    const preferredChunks = chooseLongerArray(
-      Array.isArray(existingValue.chunks) ? existingValue.chunks : undefined,
-      Array.isArray(incomingValue.chunks) ? incomingValue.chunks : undefined,
-    );
-    if (preferredChunks) {
-      merged.chunks = preferredChunks;
-    }
-
-    const existingManifest = existingValue.manifest && typeof existingValue.manifest === "object"
-      ? existingValue.manifest as Record<string, unknown>
-      : null;
-    const incomingManifest = incomingValue.manifest && typeof incomingValue.manifest === "object"
-      ? incomingValue.manifest as Record<string, unknown>
-      : null;
-    if (existingManifest || incomingManifest) {
-      const preferredManifest = payloadRichness(existingManifest ?? undefined) >= payloadRichness(incomingManifest ?? undefined)
-        ? existingManifest
-        : incomingManifest;
-      const secondaryManifest = preferredManifest === existingManifest ? incomingManifest : existingManifest;
-      merged.manifest = {
-        ...(secondaryManifest ?? {}),
-        ...(preferredManifest ?? {}),
-        ...(chooseLongerArray(
-          Array.isArray(existingManifest?.works) ? existingManifest.works : undefined,
-          Array.isArray(incomingManifest?.works) ? incomingManifest.works : undefined,
-        ) ? {
-          works: chooseLongerArray(
-            Array.isArray(existingManifest?.works) ? existingManifest.works : undefined,
-            Array.isArray(incomingManifest?.works) ? incomingManifest.works : undefined,
-          ),
-        } : {}),
-      };
-    }
-
-    return merged;
-  };
-
-  let changed = false;
-  const nextMessages = messages.map((message) => {
-    const messageRunId = typeof message.metadata?.runId === "string" ? message.metadata.runId : null;
-    const phase = typeof message.metadata?.phase === "string" ? message.metadata.phase : null;
-    if (messageRunId !== runId || phase !== "plan") {
-      return message;
-    }
-    const existingById = new Map(message.toolCalls.map((entry) => [entry.id, entry]));
-    const mergedTrace = normalizedTrace.map((entry) => {
-      const existing = existingById.get(entry.id);
-      if (!existing) {
-        changed = true;
-        return entry;
-      }
-
-      const nextProgress = existing.progress.length >= entry.progress.length
-        ? existing.progress
-        : entry.progress;
-      const nextArgs = mergePayload(existing.args, entry.args) ?? {};
-      const nextResult = mergePayload(existing.result, entry.result);
-      const nextState =
-        entry.state !== "running" || existing.state === "running"
-          ? entry.state
-          : existing.state;
-      const nextEntry: ToolTraceEntry = {
-        ...existing,
-        label: existing.label || entry.label,
-        rationale: existing.rationale ?? entry.rationale,
-        progress: nextProgress,
-        progressDetails:
-          Array.isArray(existing.progressDetails) && existing.progressDetails.length >= (entry.progressDetails?.length ?? 0)
-            ? existing.progressDetails
-            : entry.progressDetails,
-        args: nextArgs,
-        result: nextResult,
-        isError: entry.isError || existing.isError,
-        state: nextState,
-      };
-      if (
-        nextEntry.label !== existing.label
-        || nextEntry.rationale !== existing.rationale
-        || nextEntry.state !== existing.state
-        || nextEntry.isError !== existing.isError
-        || nextEntry.progress !== existing.progress
-        || nextEntry.args !== existing.args
-        || nextEntry.result !== existing.result
-      ) {
-        changed = true;
-      }
-      return nextEntry;
-    });
-
-    const mergedIds = new Set(mergedTrace.map((entry) => entry.id));
-    const extraExistingEntries = message.toolCalls.filter((entry) => !mergedIds.has(entry.id));
-    if (extraExistingEntries.length > 0) {
-      changed = true;
-    }
-    return {
-      ...message,
-      toolCalls: [...mergedTrace, ...extraExistingEntries],
-    };
-  });
-
-  return changed ? nextMessages : messages;
 }
 
 function toolPayloadLogLineCount(value: unknown) {
@@ -2917,41 +2471,6 @@ function AssistantSurfaceFallback() {
   return <div className="assistant-thread-shell" data-testid="thread-loading" />;
 }
 
-function currentResearchToolTrace(messages: UiMessage[], runId: string | null) {
-  const planMessages = messages.filter((message) => {
-    if (message.role !== "assistant" || message.toolCalls.length === 0) {
-      return false;
-    }
-    if (message.metadata?.phase !== "plan") {
-      return false;
-    }
-    if (!runId) {
-      return true;
-    }
-    const messageRunId = typeof message.metadata?.runId === "string" ? message.metadata.runId : null;
-    return messageRunId === runId || messageRunId === null;
-  });
-  if (planMessages.length === 0) {
-    return [];
-  }
-
-  const merged = new Map<string, ToolTraceEntry>();
-  const order: string[] = [];
-  for (const message of planMessages) {
-    for (const toolCall of message.toolCalls) {
-      const existing = merged.get(toolCall.id);
-      if (!existing) {
-        merged.set(toolCall.id, toolCall);
-        order.push(toolCall.id);
-        continue;
-      }
-      merged.set(toolCall.id, mergeToolTraceEntries(existing, toolCall));
-    }
-  }
-
-  return order.map((id) => merged.get(id)).filter((entry): entry is ToolTraceEntry => Boolean(entry));
-}
-
 function currentResearchDocumentEnding(messages: UiMessage[], runActive = false) {
   if (runActive || messages.some((message) => message.toolCalls.some((toolCall) => toolCall.state === "running"))) {
     return null;
@@ -3023,10 +2542,7 @@ function artifactCreatedAtTimestamp(artifact: RunArtifactRecord) {
 
 function persistedResearchDocumentHtml(artifacts: RunArtifactRecord[]) {
   const candidate = [...artifacts]
-    .filter((artifact) =>
-      artifact.metadata?.kind === "research_document"
-      || artifact.filename.endsWith("-research-document.html"),
-    )
+    .filter((artifact) => artifact.metadata?.kind === "research_document")
     .sort((left, right) => artifactCreatedAtTimestamp(right) - artifactCreatedAtTimestamp(left))[0];
   return candidate ? artifactText(candidate) : "";
 }
@@ -4607,18 +4123,9 @@ function AssistantDocumentFramePage({
   const bootstrap = useMemo(() => readAssistantDocumentBootstrap(sessionId, runId), [runId, sessionId]);
   const bootstrapHydratedMessages = useMemo(() => {
     const rawMessages = Array.isArray(bootstrap?.messages) ? bootstrap.messages : [];
-    const hydrated = rawMessages.map(hydrateStoredMessage);
-    const bootstrapToolTrace = Array.isArray(bootstrap?.runState?.toolTrace) ? bootstrap.runState.toolTrace : [];
-    const withTrace = bootstrapToolTrace.length > 0
-      ? mergePersistedToolTrace(hydrated, runId, bootstrapToolTrace)
-      : hydrated;
-    const bootstrapRunEvents = Array.isArray(bootstrap?.runState?.runEvents) ? bootstrap.runState.runEvents : [];
-    return bootstrapRunEvents.length > 0
-      ? mergePersistedRunEvents(withTrace, runId, bootstrapRunEvents)
-      : withTrace;
-  }, [bootstrap, runId]);
+    return rawMessages.map(hydrateStoredMessage);
+  }, [bootstrap]);
   const [messages, setMessages] = useState<UiMessage[]>(bootstrapHydratedMessages);
-  const [toolTrace, setToolTrace] = useState<ToolTraceEntry[]>(() => currentResearchToolTrace(bootstrapHydratedMessages, runId));
   const [artifacts, setArtifacts] = useState<RunArtifactRecord[]>(() => (
     Array.isArray(bootstrap?.runState?.artifacts) ? bootstrap.runState.artifacts : []
   ));
@@ -4640,7 +4147,6 @@ function AssistantDocumentFramePage({
 
   useEffect(() => {
     setMessages(bootstrapHydratedMessages);
-    setToolTrace(currentResearchToolTrace(bootstrapHydratedMessages, runId));
     setArtifacts(Array.isArray(bootstrap?.runState?.artifacts) ? bootstrap.runState.artifacts : []);
     setRunStatus(bootstrap?.runState?.run?.status ?? null);
     setSessionTitle(deriveAssistantDocumentTitle(bootstrap?.sessionTitle, bootstrapHydratedMessages));
@@ -4678,15 +4184,8 @@ function AssistantDocumentFramePage({
           window.clearTimeout(loadingTimer);
           loadingTimer = null;
         }
-        const hydrated = nextMessages.map(hydrateStoredMessage);
-        const withTrace = Array.isArray(nextState.toolTrace)
-          ? mergePersistedToolTrace(hydrated, runId, nextState.toolTrace)
-          : hydrated;
-        const merged = Array.isArray(nextState.runEvents) && nextState.runEvents.length > 0
-          ? mergePersistedRunEvents(withTrace, runId, nextState.runEvents)
-          : withTrace;
+        const merged = nextMessages.map(hydrateStoredMessage);
         setMessages(merged);
-        setToolTrace(currentResearchToolTrace(merged, runId));
         setArtifacts(Array.isArray(nextState.artifacts) ? nextState.artifacts : []);
         setRunStatus(nextState.run?.status ?? null);
         setSessionTitle((current) => deriveAssistantDocumentTitle(current, merged));
@@ -6187,14 +5686,6 @@ export default function App() {
         const hydrated = Array.isArray(bootstrap.messages)
           ? bootstrap.messages.map(hydrateStoredMessage)
           : [];
-        const withTrace =
-          bootstrap.runState && Array.isArray(bootstrap.runState.toolTrace) && nextRunId
-            ? mergePersistedToolTrace(hydrated, nextRunId, bootstrap.runState.toolTrace)
-            : hydrated;
-        const merged =
-          bootstrap.runState && Array.isArray(bootstrap.runState.runEvents) && bootstrap.runState.runEvents.length > 0 && nextRunId
-            ? mergePersistedRunEvents(withTrace, nextRunId, bootstrap.runState.runEvents)
-            : withTrace;
         setSessions((current) => (
           Array.isArray(bootstrap.sessions) && bootstrap.sessions.length > 0
             ? bootstrap.sessions
@@ -6203,7 +5694,7 @@ export default function App() {
         setSessionRuns(nextRuns);
         setRecoveredActiveRunId(activeRunId);
         setRunArtifacts(Array.isArray(bootstrap.runState?.artifacts) ? bootstrap.runState.artifacts : []);
-        setMessages((current) => mergeFetchedMessages(current, merged, selectedSessionId));
+        setMessages((current) => mergeFetchedMessages(current, hydrated, selectedSessionId));
       } catch (error) {
         setLoadError(getErrorMessage(error, "We couldn't load this conversation."));
       } finally {
@@ -6267,15 +5758,7 @@ export default function App() {
         return;
       }
       const hydrated = nextMessages.map(hydrateStoredMessage);
-      const withTrace =
-        nextRunState && Array.isArray(nextRunState.toolTrace)
-          ? mergePersistedToolTrace(hydrated, recoveredActiveRunId ?? "", nextRunState.toolTrace)
-          : hydrated;
-      const mergedWithRunEvents =
-        nextRunState && Array.isArray(nextRunState.runEvents) && nextRunState.runEvents.length > 0
-          ? mergePersistedRunEvents(withTrace, recoveredActiveRunId ?? "", nextRunState.runEvents)
-          : withTrace;
-      setMessages((current) => mergeFetchedMessages(current, mergedWithRunEvents, selectedSessionId));
+      setMessages((current) => mergeFetchedMessages(current, hydrated, selectedSessionId));
     };
 
     void streamRun(
@@ -6370,16 +5853,6 @@ export default function App() {
         const nextState = await fetchRunState(selectedSessionId, preferredRun.id);
         if (!cancelled) {
           setRunArtifacts(Array.isArray(nextState.artifacts) ? nextState.artifacts : []);
-          if (!hasCanonicalPlanToolTrace(messagesRef.current, preferredRun.id)) {
-            setMessages((current) => {
-              const withTrace = Array.isArray(nextState.toolTrace)
-                ? mergePersistedToolTrace(current, preferredRun.id, nextState.toolTrace ?? [])
-                : current;
-              return Array.isArray(nextState.runEvents) && nextState.runEvents.length > 0
-                ? mergePersistedRunEvents(withTrace, preferredRun.id, nextState.runEvents ?? [])
-                : withTrace;
-            });
-          }
         }
       } catch {
         if (!cancelled) {
@@ -6450,10 +5923,7 @@ export default function App() {
     };
   }, [activeView, authState.loading, isSending, selectedSessionId]);
 
-  const visibleMessages = useMemo(
-    () => dedupeAdjacentErrorMessages(reconcileMessagesWithRunState(messages, sessionRuns)),
-    [messages, sessionRuns],
-  );
+  const visibleMessages = useMemo(() => dedupeAdjacentErrorMessages(messages), [messages]);
 
   async function loadNotifications(options: { silent?: boolean } = {}) {
     if (!authState.user) {

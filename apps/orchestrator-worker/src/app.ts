@@ -1585,10 +1585,10 @@ function extractPriorRunEvidence(messages: MessageRecord[], currentRunId: string
     if (typeof message.metadata?.runId === "string" && message.metadata.runId === currentRunId) {
       continue;
     }
-    const researchLog = Array.isArray(message.metadata?.toolCalls)
+    const toolCalls = Array.isArray(message.metadata?.toolCalls)
       ? message.metadata.toolCalls as Array<Record<string, unknown>>
       : [];
-    if (researchLog.length === 0) {
+    if (toolCalls.length === 0) {
       continue;
     }
     const frontierWorkIds = new Set<string>();
@@ -1597,7 +1597,7 @@ function extractPriorRunEvidence(messages: MessageRecord[], currentRunId: string
     const citations = Array.isArray(message.metadata?.citations)
       ? sanitizeAppCitations(message.metadata.citations)
       : [];
-    for (const entry of researchLog) {
+    for (const entry of toolCalls) {
       if (!entry || typeof entry !== "object") {
         continue;
       }
@@ -7908,7 +7908,6 @@ async function persistCompletedAssistantAnswer(
     phase: "answer",
     citations: params.citations,
     artifactKey,
-    researchLog: summarizeToolHistory(params.toolHistory),
     researchDocumentHtml,
     ...(params.extraMetadata ?? {}),
   });
@@ -9998,6 +9997,33 @@ async function runOrchestrator(
         lastResearchDocumentActivityAt = Date.now();
       };
       noteResearchDocumentActivity();
+      const startedRuntimeId = runtimeIdFromToolArgs(normalizedToolArgs);
+      const reportForegroundToolProgress = (
+        text: string,
+        detail?: Record<string, unknown>,
+        options: {
+          toolCallId?: string;
+          runtimeId?: string | null;
+        } = {},
+      ) => emitToolProgress(
+        {
+          runId: run.id,
+          toolCallId: options.toolCallId ?? toolRecord.id,
+          toolName: toolCall.tool_name,
+          text,
+          detail,
+        },
+        (progressText, emittedDetail) => persistAndSendToolProgress(
+          options.toolCallId ?? toolRecord.id,
+          toolCall.tool_name,
+          progressText,
+          emittedDetail,
+          {
+            noteResearchDocumentActivity,
+            runtimeId: options.runtimeId ?? startedRuntimeId,
+          },
+        ),
+      );
       const heartbeatTimer = toolCall.tool_name === "run_workspace_task"
         ? setInterval(() => {
             if (Date.now() - lastResearchDocumentActivityAt < 15_000) {
@@ -10009,41 +10035,14 @@ async function runOrchestrator(
               elapsedMinutes <= 1
                 ? "Still loading books and comparing passages across the library."
                 : `Still searching across the library. About ${elapsedMinutes} minutes have passed so far.`;
-            void emitToolProgress(
-              {
-                runId: run.id,
-                toolCallId: toolRecord.id,
-                toolName: toolCall.tool_name,
-                text: heartbeatText,
-                detail: {
-                  type: "research.note",
-                  note: heartbeatText,
-                  phase: "heartbeat",
-                },
-              },
-              async (progressText, detail) => {
-                liveToolTrace = liveToolTrace.map((entry) =>
-                  entry.id === toolRecord.id
-                    ? appendToolProgress(entry, progressText, detail)
-                    : entry,
-                );
-                await appendResearchDocumentProgress(toolRecord.id, progressText, detail);
-                await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
-                await send("tool.progress", {
-                  runId: run.id,
-                  toolCallId: toolRecord.id,
-                  toolName: toolCall.tool_name,
-                  ...(startedRuntimeId ? { runtimeId: startedRuntimeId } : {}),
-                  text: progressText,
-                  researchDocumentHtml: liveResearchDocumentHtml,
-                  ...(detail ? { detail } : {}),
-                });
-              },
-            );
+            void reportForegroundToolProgress(heartbeatText, {
+              type: "research.note",
+              note: heartbeatText,
+              phase: "heartbeat",
+            });
           }, 10_000)
         : null;
       await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
-      const startedRuntimeId = runtimeIdFromToolArgs(normalizedToolArgs);
       await send("tool.started", {
         runId: run.id,
         toolCallId: toolRecord.id,
@@ -10061,37 +10060,15 @@ async function runOrchestrator(
             await send(eventName, data);
             return;
           }
-          await emitToolProgress(
+          await reportForegroundToolProgress(
+            data.text,
+            data.detail && typeof data.detail === "object" ? data.detail as Record<string, unknown> : undefined,
             {
-              runId: typeof data.runId === "string" ? data.runId : run.id,
               toolCallId: data.toolCallId,
-              toolName: toolCall.tool_name,
-              text: data.text,
-              detail: data.detail && typeof data.detail === "object" ? data.detail as Record<string, unknown> : undefined,
-            },
-            async (progressText, detail) => {
-              const emittedToolCallId = typeof data.toolCallId === "string" ? data.toolCallId : toolRecord.id;
-              liveToolTrace = liveToolTrace.map((entry) =>
-                entry.id === emittedToolCallId
-                  ? appendToolProgress(entry, progressText, detail)
-                  : entry,
-              );
-              noteResearchDocumentActivity();
-              await appendResearchDocumentProgress(emittedToolCallId, progressText, detail);
-              await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
-              await send("tool.progress", {
-                runId: run.id,
-                toolCallId: emittedToolCallId,
-                toolName: toolCall.tool_name,
-                ...(typeof data.runtimeId === "string" && data.runtimeId.trim().length > 0
-                  ? { runtimeId: data.runtimeId }
-                  : startedRuntimeId
-                    ? { runtimeId: startedRuntimeId }
-                    : {}),
-                text: progressText,
-                researchDocumentHtml: liveResearchDocumentHtml,
-                ...(detail ? { detail } : {}),
-              });
+              runtimeId:
+                typeof data.runtimeId === "string" && data.runtimeId.trim().length > 0
+                  ? data.runtimeId
+                  : startedRuntimeId,
             },
           );
         },
@@ -10130,34 +10107,7 @@ async function runOrchestrator(
                   runId: run.id,
                   auditLog: recordRawLog,
                   progressReporter: async (text, detail) => {
-                    await emitToolProgress(
-                      {
-                        runId: run.id,
-                        toolCallId: toolRecord.id,
-                        toolName: toolCall.tool_name,
-                        text,
-                        detail,
-                      },
-                      async (progressText, emittedDetail) => {
-                        liveToolTrace = liveToolTrace.map((entry) =>
-                          entry.id === toolRecord.id
-                            ? appendToolProgress(entry, progressText, emittedDetail)
-                            : entry,
-                        );
-                        noteResearchDocumentActivity();
-                        await appendResearchDocumentProgress(toolRecord.id, progressText, emittedDetail);
-                        await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
-                        await send("tool.progress", {
-                          runId: run.id,
-                          toolCallId: toolRecord.id,
-                          toolName: toolCall.tool_name,
-                          ...(startedRuntimeId ? { runtimeId: startedRuntimeId } : {}),
-                          text: progressText,
-                          researchDocumentHtml: liveResearchDocumentHtml,
-                          ...(emittedDetail ? { detail: emittedDetail } : {}),
-                        });
-                      },
-                    );
+                    await reportForegroundToolProgress(text, detail);
                   },
                 });
           } else {
@@ -10167,34 +10117,7 @@ async function runOrchestrator(
               runId: run.id,
               auditLog: recordRawLog,
               progressReporter: async (text, detail) => {
-                await emitToolProgress(
-                  {
-                    runId: run.id,
-                    toolCallId: toolRecord.id,
-                    toolName: toolCall.tool_name,
-                    text,
-                    detail,
-                  },
-                  async (progressText, emittedDetail) => {
-                    liveToolTrace = liveToolTrace.map((entry) =>
-                      entry.id === toolRecord.id
-                        ? appendToolProgress(entry, progressText, emittedDetail)
-                        : entry,
-                    );
-                    noteResearchDocumentActivity();
-                    await appendResearchDocumentProgress(toolRecord.id, progressText, emittedDetail);
-                    await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
-                    await send("tool.progress", {
-                      runId: run.id,
-                      toolCallId: toolRecord.id,
-                      toolName: toolCall.tool_name,
-                      ...(startedRuntimeId ? { runtimeId: startedRuntimeId } : {}),
-                      text: progressText,
-                      researchDocumentHtml: liveResearchDocumentHtml,
-                      ...(emittedDetail ? { detail: emittedDetail } : {}),
-                    });
-                  },
-                );
+                await reportForegroundToolProgress(text, detail);
               },
             });
           }
@@ -10205,34 +10128,7 @@ async function runOrchestrator(
             runId: run.id,
             auditLog: recordRawLog,
             progressReporter: async (text, detail) => {
-              await emitToolProgress(
-                {
-                  runId: run.id,
-                  toolCallId: toolRecord.id,
-                  toolName: toolCall.tool_name,
-                  text,
-                  detail,
-                },
-                async (progressText, emittedDetail) => {
-                  liveToolTrace = liveToolTrace.map((entry) =>
-                    entry.id === toolRecord.id
-                      ? appendToolProgress(entry, progressText, emittedDetail)
-                      : entry,
-                  );
-                  noteResearchDocumentActivity();
-                  await appendResearchDocumentProgress(toolRecord.id, progressText, emittedDetail);
-                  await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
-                  await send("tool.progress", {
-                    runId: run.id,
-                    toolCallId: toolRecord.id,
-                    toolName: toolCall.tool_name,
-                    ...(startedRuntimeId ? { runtimeId: startedRuntimeId } : {}),
-                    text: progressText,
-                    researchDocumentHtml: liveResearchDocumentHtml,
-                    ...(emittedDetail ? { detail: emittedDetail } : {}),
-                  });
-                },
-              );
+              await reportForegroundToolProgress(text, detail);
             },
           });
         }
