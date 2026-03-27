@@ -3568,6 +3568,151 @@ test("run details endpoint does not reconstruct a completed run answer from tool
   assert.equal(payload.messages.length, 1);
 });
 
+test("run details endpoint reads persisted plan trace only from toolCalls metadata", async () => {
+  const store = new InMemoryAppStore();
+  const session = await store.createSession("reader-user", "Plan trace source");
+  await store.appendMessage(session.id, "user", "Find grief passages.");
+  const run = await store.createRun(session.id);
+  await store.appendMessage(session.id, "assistant", "Planning", {
+    phase: "plan",
+    runId: run.id,
+    toolCalls: [
+      {
+        id: "tool-1",
+        toolName: "search_works",
+        label: "Search works",
+        progress: [],
+        args: {},
+        state: "completed",
+      },
+    ],
+    researchLog: [
+      {
+        id: "legacy-tool",
+        toolName: "get_relevant_chunks",
+        label: "Legacy fallback trace",
+        progress: [],
+        args: {},
+        state: "completed",
+      },
+    ],
+  });
+
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    planner: new ScriptedPlanner([
+      {
+        type: "final_answer",
+        answer: "unused",
+        citations: [],
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+      async runWorkspaceTask() {
+        return { ok: false, error: "disabled" };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: true, files: [] };
+      },
+      async destroyWorkspace() {
+        return { ok: true };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const response = await app.request(`/sessions/${session.id}/runs/${run.id}?userId=reader-user`);
+  assert.equal(response.status, 200);
+  const payload = await response.json() as {
+    toolTrace: Array<{ toolName: string }>;
+  };
+  assert.deepEqual(payload.toolTrace.map((entry) => entry.toolName), ["search_works"]);
+});
+
+test("run document endpoint does not infer run-owned artifacts from filenames", async () => {
+  const store = new InMemoryAppStore();
+  const session = await store.createSession("reader-user", "Artifact ownership");
+  await store.appendMessage(session.id, "user", "Find grief passages.");
+  const run = await store.createRun(session.id);
+  await store.saveArtifact({
+    sessionId: session.id,
+    runtimeId: null,
+    r2Key: `runs/${run.id}/research-document.html`,
+    filename: `${run.id}-research-document.html`,
+    mimeType: "text/html",
+    metadata: {
+      kind: "research_document",
+      runId: run.id,
+    },
+  });
+  await store.saveArtifact({
+    sessionId: session.id,
+    runtimeId: null,
+    r2Key: `runs/${run.id}/legacy-tool-stream.jsonl`,
+    filename: `${run.id}-legacy-tool-stream.jsonl`,
+    mimeType: "application/x-ndjson",
+    metadata: {
+      kind: "tool_stream_raw",
+    },
+  });
+
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    planner: new ScriptedPlanner([
+      {
+        type: "final_answer",
+        answer: "unused",
+        citations: [],
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+      async runWorkspaceTask() {
+        return { ok: false, error: "disabled" };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: true, files: [] };
+      },
+      async destroyWorkspace() {
+        return { ok: true };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const response = await app.request(`/sessions/${session.id}/runs/${run.id}/document?userId=reader-user`);
+  assert.equal(response.status, 200);
+  const payload = await response.json() as {
+    artifacts: Array<{ filename: string }>;
+  };
+  assert.deepEqual(payload.artifacts.map((artifact) => artifact.filename), [`${run.id}-research-document.html`]);
+});
+
 test("run debug and logs endpoints include child sprite runtime logs and artifacts", async () => {
   const store = new InMemoryAppStore();
   const blobStore = new MemoryBlobStore();

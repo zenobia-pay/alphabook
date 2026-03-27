@@ -4117,14 +4117,6 @@ function backgroundToolDeadlineMs(toolName: "create_workspace" | "run_workspace_
   };
 }
 
-type ToolProgressBuffer = {
-  toolName: ToolName;
-  lines: ToolStreamCleanupLine[];
-  timer: ReturnType<typeof setTimeout> | null;
-  flushPromise: Promise<void> | null;
-  directEmitChain?: Promise<void>;
-};
-
 function looksSensitiveKey(key: string) {
   return /(secret|token|password|cookie|authorization|api[-_]?key|session[-_]?id)/iu.test(key);
 }
@@ -4381,6 +4373,7 @@ function startRuntimeTaskProgressEmitter(
       runId,
       toolCallId,
       toolName,
+      runtimeId,
       text,
       ...(detail ? { detail } : {}),
     });
@@ -5201,11 +5194,174 @@ type LiveToolTraceEntry = {
   rationale?: string;
   progress: string[];
   progressDetails?: Array<Record<string, unknown>>;
+  sourceArgs: Record<string, unknown>;
   args: Record<string, unknown>;
   result?: Record<string, unknown>;
   state: "running" | "completed" | "error";
   isError?: boolean;
 };
+
+function canonicalToolArgs(
+  toolName: ToolName,
+  sourceArgs: Record<string, unknown>,
+  rationale?: string,
+  progress: string[] = [],
+  progressDetails?: Array<Record<string, unknown>>,
+) {
+  const args: Record<string, unknown> = {
+    __toolName: toolName,
+  };
+  const query = typeof sourceArgs.query === "string" && sourceArgs.query.trim().length > 0 ? sourceArgs.query.trim() : null;
+  const path = typeof sourceArgs.path === "string" && sourceArgs.path.trim().length > 0 ? sourceArgs.path.trim() : null;
+  const workIds = Array.isArray(sourceArgs.workIds) ? sourceArgs.workIds : [];
+  const chunkIds = Array.isArray(sourceArgs.chunkIds) ? sourceArgs.chunkIds : [];
+  const taskSpec = sourceArgs.taskSpec && typeof sourceArgs.taskSpec === "object"
+    ? sourceArgs.taskSpec as Record<string, unknown>
+    : null;
+  const taskQuery = typeof taskSpec?.query === "string" && taskSpec.query.trim().length > 0 ? taskSpec.query.trim() : null;
+  const goal = typeof taskSpec?.goal === "string" && taskSpec.goal.trim().length > 0 ? taskSpec.goal.trim() : null;
+  const phase = typeof taskSpec?.phase === "string" && taskSpec.phase.trim().length > 0 ? taskSpec.phase.trim() : null;
+
+  if (query) {
+    args.query = query;
+  }
+  if (taskQuery && taskQuery !== query) {
+    args.taskQuery = taskQuery;
+  }
+  if (goal) {
+    args.goal = goal;
+  }
+  if (phase) {
+    args.phase = phase;
+  }
+  if (path) {
+    args.path = path;
+  }
+  if (workIds.length > 0) {
+    args.candidateBookCount = workIds.length;
+  }
+  if (chunkIds.length > 0) {
+    args.candidatePassageCount = chunkIds.length;
+  }
+  if (rationale && rationale.trim().length > 0) {
+    args.__rationale = rationale.trim();
+  }
+  if (progress.length > 0) {
+    args.__progress = [...progress];
+  }
+  if (Array.isArray(progressDetails) && progressDetails.length > 0) {
+    const alphaloopEvents = progressDetails
+      .map((detail) => detail.type === "semantic.alphaloop" && detail.event && typeof detail.event === "object" ? detail.event : null)
+      .filter((detail): detail is Record<string, unknown> => Boolean(detail));
+    if (alphaloopEvents.length > 0) {
+      args.__alphaloopEvents = alphaloopEvents;
+    }
+  }
+
+  return args;
+}
+
+function canonicalToolResult(
+  toolName: ToolName,
+  result: Record<string, unknown> | undefined,
+  options: {
+    ok: boolean;
+    logLines?: string[];
+  },
+) {
+  if (!result) {
+    return { ok: options.ok };
+  }
+
+  const safe: Record<string, unknown> = {};
+  const logLines = Array.isArray(options.logLines)
+    ? options.logLines.filter((line): line is string => typeof line === "string" && line.trim().length > 0)
+    : [];
+  if (logLines.length > 0) {
+    safe.__logLines = logLines;
+  }
+
+  const countFields = [
+    "workCount",
+    "chunkCount",
+    "bookCount",
+    "artifactCount",
+    "citationCount",
+    "codexRunCount",
+    "evidenceCount",
+    "briefingLength",
+    "exitCode",
+  ] as const;
+  for (const field of countFields) {
+    const value = result[field];
+    if (typeof value === "number") {
+      safe[field] = value;
+    }
+  }
+  if (typeof result.runtimeId === "string" && result.runtimeId.trim().length > 0) {
+    safe.runtimeId = result.runtimeId.trim();
+  }
+  if (result.usedFallback === true) {
+    safe.usedFallback = true;
+  }
+  if (typeof result.error === "string" && result.error.trim().length > 0) {
+    safe.error = result.error.trim();
+  }
+  if (typeof result.briefing === "string" && result.briefing.trim().length > 0) {
+    safe.briefing = result.briefing.trim();
+  }
+  if (Array.isArray(result.alphaloopEvents) && result.alphaloopEvents.length > 0) {
+    safe.__alphaloopEvents = result.alphaloopEvents;
+  }
+  if (Array.isArray(result.works) && result.works.length > 0) {
+    safe.workCount = typeof safe.workCount === "number" ? safe.workCount : result.works.length;
+  }
+  if (Array.isArray(result.chunks) && result.chunks.length > 0) {
+    safe.chunkCount = typeof safe.chunkCount === "number" ? safe.chunkCount : result.chunks.length;
+    if (toolName === "semantic_deep_search") {
+      safe.chunks = result.chunks
+        .filter((candidate): candidate is Record<string, unknown> => Boolean(candidate) && typeof candidate === "object")
+        .map((chunk) => ({
+          id: typeof chunk.id === "string" ? chunk.id : undefined,
+          text:
+            typeof chunk.text === "string"
+              ? chunk.text
+              : typeof chunk.excerpt === "string"
+                ? chunk.excerpt
+                : "",
+          relevance:
+            typeof chunk.relevance === "number"
+              ? chunk.relevance
+              : typeof chunk.score === "number"
+                ? chunk.score
+                : 0,
+          rationale: typeof chunk.rationale === "string" ? chunk.rationale : undefined,
+          metadata: {
+            workId: typeof chunk.workId === "string" ? chunk.workId : undefined,
+            chunkIndex: typeof chunk.chunkIndex === "number" ? chunk.chunkIndex : undefined,
+            r2Key: typeof chunk.r2Key === "string" ? chunk.r2Key : undefined,
+          },
+        }));
+    }
+  }
+  if (Object.keys(safe).length === 0) {
+    safe.ok = options.ok;
+  }
+  return safe;
+}
+
+function normalizeToolProgressText(toolName: ToolName, text: string) {
+  const sanitized = sanitizeUserFacingToolText(text)?.replace(/\s+/gu, " ").trim() ?? "";
+  if (sanitized) {
+    return sanitized;
+  }
+  const fallback = fallbackNormalizeToolLines([{
+    toolName,
+    key: "progress",
+    value: text,
+  }])[0];
+  return typeof fallback === "string" && fallback.trim().length > 0 ? fallback.trim() : null;
+}
 
 function appendToolProgress(
   entry: LiveToolTraceEntry,
@@ -5221,6 +5377,13 @@ function appendToolProgress(
     rationale: progress[progress.length - 1] ?? entry.rationale,
     progress,
     ...(progressDetails ? { progressDetails } : {}),
+    args: canonicalToolArgs(
+      entry.toolName,
+      entry.sourceArgs,
+      progress[progress.length - 1] ?? entry.rationale,
+      progress,
+      progressDetails,
+    ),
   };
 }
 
@@ -5239,7 +5402,6 @@ async function persistPlanToolTrace(
     phase: "plan",
     runId,
     toolCalls: persistedToolTrace,
-    researchLog: persistedToolTrace,
     researchDocumentHtml,
   });
 }
@@ -5253,17 +5415,14 @@ function cloneLiveToolTraceEntries(toolCalls: LiveToolTraceEntry[]): LiveToolTra
           progressDetails: entry.progressDetails.map((detail) => structuredClone(detail)),
         }
       : {}),
+    sourceArgs: structuredClone(entry.sourceArgs),
     args: structuredClone(entry.args),
     result: entry.result ? structuredClone(entry.result) : undefined,
   }));
 }
 
 function readPersistedPlanToolTrace(metadata: Record<string, unknown> | null | undefined): LiveToolTraceEntry[] {
-  const rawEntries = Array.isArray(metadata?.toolCalls)
-    ? metadata.toolCalls
-    : Array.isArray(metadata?.researchLog)
-      ? metadata.researchLog
-      : [];
+  const rawEntries = Array.isArray(metadata?.toolCalls) ? metadata.toolCalls : [];
   return rawEntries.flatMap((entry, index) => {
     if (!entry || typeof entry !== "object") {
       return [];
@@ -5273,6 +5432,9 @@ function readPersistedPlanToolTrace(metadata: Record<string, unknown> | null | u
     if (!rawToolName) {
       return [];
     }
+    const sourceArgs = record.sourceArgs && typeof record.sourceArgs === "object"
+      ? structuredClone(record.sourceArgs as Record<string, unknown>)
+      : {};
     const args = record.args && typeof record.args === "object" ? structuredClone(record.args as Record<string, unknown>) : {};
     const result = record.result && typeof record.result === "object"
       ? structuredClone(record.result as Record<string, unknown>)
@@ -5298,6 +5460,7 @@ function readPersistedPlanToolTrace(metadata: Record<string, unknown> | null | u
       rationale: typeof record.rationale === "string" && record.rationale.trim().length > 0 ? record.rationale : undefined,
       progress,
       ...(progressDetails.length > 0 ? { progressDetails } : {}),
+      sourceArgs,
       args,
       ...(result ? { result } : {}),
       state,
@@ -5350,7 +5513,9 @@ async function readPersistedPlanMessageStateForRun(
 function collectRuntimeIdsFromRunEvents(runEvents: RunEventRecord[]) {
   const runtimeIds = new Set<string>();
   for (const runEvent of runEvents) {
-    addRuntimeIdsFromValue(runtimeIds, runEvent.dataJson);
+    if (typeof runEvent.runtimeId === "string" && runEvent.runtimeId.length > 0) {
+      runtimeIds.add(runEvent.runtimeId);
+    }
   }
   return runtimeIds;
 }
@@ -5381,14 +5546,10 @@ function runtimeIdFromRunEvents(
   }
   for (let index = runEvents.length - 1; index >= 0; index -= 1) {
     const runEvent = runEvents[index];
-    if (runEvent.toolCallId !== toolCallId) {
+    if (runEvent.toolCallId !== toolCallId || typeof runEvent.runtimeId !== "string" || runEvent.runtimeId.length === 0) {
       continue;
     }
-    const runtimeIds = collectRuntimeIdsFromRunEvents([runEvent]);
-    const firstRuntimeId = runtimeIds.values().next().value;
-    if (typeof firstRuntimeId === "string" && firstRuntimeId.length > 0) {
-      return firstRuntimeId;
-    }
+    return runEvent.runtimeId;
   }
   return null;
 }
@@ -5590,34 +5751,6 @@ async function trackRuntimeBillingEvents(
   }
 }
 
-function addRuntimeIdsFromValue(runtimeIds: Set<string>, value: unknown, depth = 0) {
-  if (depth > 4 || value === null || value === undefined) {
-    return;
-  }
-  if (typeof value === "string") {
-    return;
-  }
-  if (Array.isArray(value)) {
-    for (const entry of value) {
-      addRuntimeIdsFromValue(runtimeIds, entry, depth + 1);
-    }
-    return;
-  }
-  if (typeof value !== "object") {
-    return;
-  }
-  const record = value as Record<string, unknown>;
-  addRuntimeIds(runtimeIds, record);
-  if (typeof record.aggregatorRuntimeId === "string" && record.aggregatorRuntimeId.length > 0) {
-    runtimeIds.add(record.aggregatorRuntimeId);
-  }
-  if (Array.isArray(record.shardResults)) {
-    for (const shardResult of record.shardResults) {
-      addRuntimeIdsFromValue(runtimeIds, shardResult, depth + 1);
-    }
-  }
-}
-
 async function resolveRunRuntimeContext(
   deps: AppDeps,
   sessionId: string,
@@ -5640,6 +5773,19 @@ async function resolveRunRuntimeContext(
   };
 }
 
+function artifactRunId(artifact: RunArtifactLike) {
+  return typeof artifact.metadata?.runId === "string" && artifact.metadata.runId.trim().length > 0
+    ? artifact.metadata.runId
+    : null;
+}
+
+function artifactBelongsToRun(artifact: RunArtifactLike, runId: string, runtimeIdSet: Set<string>) {
+  if (typeof artifact.runtimeId !== "string" || artifact.runtimeId.length === 0) {
+    return artifactRunId(artifact) === runId;
+  }
+  return runtimeIdSet.has(artifact.runtimeId);
+}
+
 async function loadRunArtifacts(
   deps: AppDeps,
   sessionId: string,
@@ -5648,11 +5794,7 @@ async function loadRunArtifacts(
 ) {
   const runtimeIdSet = new Set(runtimeIds);
   const artifacts = await deps.store.listArtifacts(sessionId);
-  const filtered = artifacts.filter((artifact) =>
-    artifact.runtimeId === null
-      ? artifact.filename.includes(runId)
-      : runtimeIdSet.has(artifact.runtimeId),
-  );
+  const filtered = artifacts.filter((artifact) => artifactBelongsToRun(artifact, runId, runtimeIdSet));
   const hydrated = await Promise.all(
     filtered.map(async (artifact) => ({
       ...artifact,
@@ -5672,11 +5814,7 @@ async function loadRunArtifactSummaries(
 ) {
   const runtimeIdSet = new Set(runtimeIds);
   const artifacts = await deps.store.listArtifacts(sessionId);
-  return artifacts.filter((artifact) =>
-    artifact.runtimeId === null
-      ? artifact.filename.includes(runId)
-      : runtimeIdSet.has(artifact.runtimeId),
-  );
+  return artifacts.filter((artifact) => artifactBelongsToRun(artifact, runId, runtimeIdSet));
 }
 
 function queryFlag(value: string | undefined, defaultValue = false): boolean {
@@ -5703,7 +5841,6 @@ function summarizeRuntimeInstances(runtimeInstances: RuntimeInstanceRecord[]) {
 async function buildRunLogsPayload(
   c: Context,
   deps: AppDeps,
-  activeRuns: Map<string, ActiveRunState>,
   session: SessionRecord,
   run: RunRecord,
   toolCalls: ToolCallRecord[],
@@ -7262,6 +7399,20 @@ function normalizeDocumentEnding(text: string | null | undefined) {
     .join("\n\n");
 }
 
+function runtimeIdFromToolArgs(args: Record<string, unknown> | null | undefined) {
+  return typeof args?.runtimeId === "string" && args.runtimeId.trim().length > 0 ? args.runtimeId : null;
+}
+
+function runtimeIdFromToolResult(
+  result: Record<string, unknown> | null | undefined,
+  args?: Record<string, unknown> | null,
+) {
+  if (typeof result?.runtimeId === "string" && result.runtimeId.trim().length > 0) {
+    return result.runtimeId;
+  }
+  return runtimeIdFromToolArgs(args);
+}
+
 function persistedPassageLocation(chunkIndex: number | null) {
   if (chunkIndex === null || !Number.isFinite(chunkIndex)) {
     return "roughly mid-book";
@@ -8222,7 +8373,6 @@ async function runOrchestrator(
     throw new Error("A userId is required to start an orchestrator run.");
   }
   await deps.store.ensureUser(input.userId);
-  const progressBuffers = new Map<string, ToolProgressBuffer>();
   let liveResearchDocumentHtml = "";
   const appendedResearchDocumentKeys = new Set<string>();
   let latestPlanTraceVersion = 0;
@@ -8266,45 +8416,7 @@ async function runOrchestrator(
     }, 300);
   };
 
-  const flushToolProgress = async (
-    toolCallId: string,
-    context: { runId: string; toolName: ToolName },
-    onEmit: (text: string, detail?: Record<string, unknown>) => Promise<void>,
-  ) => {
-    const buffer = progressBuffers.get(toolCallId);
-    if (!buffer) {
-      return;
-    }
-    if (buffer.timer) {
-      clearTimeout(buffer.timer);
-      buffer.timer = null;
-    }
-    if (buffer.flushPromise) {
-      await buffer.flushPromise;
-      return;
-    }
-    const batch = buffer.lines.splice(0, buffer.lines.length);
-    if (batch.length === 0) {
-      return;
-    }
-    buffer.flushPromise = (async () => {
-      const normalizedToolLines = await normalizeToolLinesForUser(deps, {
-        toolName: context.toolName,
-        lines: batch,
-      }, recordRawLog);
-      for (const text of normalizedToolLines.normalizedLines) {
-        await onEmit(text);
-      }
-    })().finally(() => {
-      buffer.flushPromise = null;
-      if (buffer.lines.length === 0 && !buffer.timer) {
-        progressBuffers.delete(toolCallId);
-      }
-    });
-    await buffer.flushPromise;
-  };
-
-  const queueToolProgress = (
+  const emitToolProgress = async (
     payload: {
       runId: string;
       toolCallId: string;
@@ -8315,67 +8427,11 @@ async function runOrchestrator(
     onEmit: (text: string, detail?: Record<string, unknown>) => Promise<void>,
   ) => {
     recordRawLog("tool.progress.raw", payload);
-    const detailType = typeof payload.detail?.type === "string" ? payload.detail.type : null;
-    if (
-      detailType === "research.work"
-      || detailType === "research.chunk"
-      || detailType === "research.briefing_line"
-      || detailType === "semantic.alphaloop"
-      || detailType === "sprite.shard_state"
-      || detailType === "sprite.aggregate_state"
-    ) {
-      const buffer = progressBuffers.get(payload.toolCallId) ?? {
-        toolName: payload.toolName,
-        lines: [],
-        timer: null,
-        flushPromise: null,
-        directEmitChain: Promise.resolve(),
-      };
-      buffer.toolName = payload.toolName;
-      buffer.directEmitChain = (buffer.directEmitChain ?? Promise.resolve())
-        .then(() => onEmit(payload.text, payload.detail))
-        .catch(() => {});
-      progressBuffers.set(payload.toolCallId, buffer);
+    const normalizedText = normalizeToolProgressText(payload.toolName, payload.text);
+    if (!normalizedText) {
       return;
     }
-    const buffer = progressBuffers.get(payload.toolCallId) ?? {
-      toolName: payload.toolName,
-      lines: [],
-      timer: null,
-      flushPromise: null,
-    };
-    buffer.toolName = payload.toolName;
-    buffer.lines.push({
-      toolName: payload.toolName,
-      key: typeof payload.detail?.type === "string" ? payload.detail.type : "progress",
-      value: payload.text,
-    });
-    progressBuffers.set(payload.toolCallId, buffer);
-    if (buffer.lines.length >= 4) {
-      void flushToolProgress(payload.toolCallId, payload, onEmit);
-      return;
-    }
-    if (!buffer.timer) {
-      buffer.timer = setTimeout(() => {
-        buffer.timer = null;
-        void flushToolProgress(payload.toolCallId, payload, onEmit);
-      }, 650);
-    }
-  };
-
-  const flushAllToolProgress = async (
-    onEmit: (toolCallId: string, toolName: ToolName, text: string, detail?: Record<string, unknown>) => Promise<void>,
-  ) => {
-    await Promise.all(
-      Array.from(progressBuffers.entries()).map(async ([toolCallId, buffer]) => {
-        await flushToolProgress(toolCallId, { runId: "", toolName: buffer.toolName }, (text, detail) =>
-          onEmit(toolCallId, buffer.toolName, text, detail)
-        );
-        if (buffer.directEmitChain) {
-          await buffer.directEmitChain;
-        }
-      }),
-    );
+    await onEmit(normalizedText, payload.detail);
   };
 
   const persistLatestPlanToolTrace = async (
@@ -8396,6 +8452,36 @@ async function runOrchestrator(
     });
     planTracePersistChain = queuedWrite.catch(() => {});
     await queuedWrite;
+  };
+
+  const persistAndSendToolProgress = async (
+    toolCallId: string,
+    toolName: ToolName,
+    text: string,
+    detail?: Record<string, unknown>,
+    options: {
+      noteResearchDocumentActivity?: () => void;
+      includeResearchDocumentHtml?: boolean;
+      runtimeId?: string | null;
+    } = {},
+  ) => {
+    liveToolTrace = liveToolTrace.map((entry) =>
+      entry.id === toolCallId
+        ? appendToolProgress(entry, text, detail)
+        : entry,
+    );
+    options.noteResearchDocumentActivity?.();
+    await appendResearchDocumentProgress(toolCallId, text, detail);
+    await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
+    await send("tool.progress", {
+      runId: run.id,
+      toolCallId,
+      toolName,
+      ...(options.runtimeId ? { runtimeId: options.runtimeId } : {}),
+      text,
+      ...(options.includeResearchDocumentHtml !== false ? { researchDocumentHtml: liveResearchDocumentHtml } : {}),
+      ...(detail ? { detail } : {}),
+    });
   };
 
   const appendResearchDocumentOnce = (key: string, fragment: string) => {
@@ -8814,12 +8900,10 @@ async function runOrchestrator(
                 ? entry.progress[entry.progress.length - 1]
                 : sanitizeUserFacingToolText(rationale) ?? entry.rationale,
             progress: entry.progress,
-            result: {
-              ...streamedResult,
-              __logLines: completedToolLines.normalizedLines,
-              __summary: completedToolLines.summary || undefined,
-              error: typeof streamedResult.error === "string" ? streamedResult.error : undefined,
-            },
+            result: canonicalToolResult(toolName, streamedResult, {
+              ok: status !== "failed",
+              logLines: completedToolLines.normalizedLines,
+            }),
             isError: status === "failed",
             state: status === "failed" ? "error" : "completed",
           }
@@ -8855,20 +8939,20 @@ async function runOrchestrator(
       }
     }
     await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
+    const completedRuntimeId = runtimeIdFromToolResult(streamedResult, normalizedArgs);
     await send("tool.completed", {
       runId: run.id,
       toolCallId,
       toolName,
+      ...(completedRuntimeId ? { runtimeId: completedRuntimeId } : {}),
       label: labelForToolCall(toolName, normalizedArgs),
       rationale: sanitizeUserFacingToolText(rationale) ?? null,
       status,
       researchDocumentHtml: liveResearchDocumentHtml,
-      result: {
-        ...streamedResult,
-        __logLines: completedToolLines.normalizedLines,
-        __summary: completedToolLines.summary || undefined,
-        error: typeof streamedResult.error === "string" ? streamedResult.error : undefined,
-      },
+      result: canonicalToolResult(toolName, streamedResult, {
+        ok: status !== "failed",
+        logLines: completedToolLines.normalizedLines,
+      }),
     });
     toolHistory.push({
       toolName,
@@ -8881,7 +8965,7 @@ async function runOrchestrator(
 
   const completeRunFromBriefing = async (
     completedBriefing: { answer: string; citations: Citation[] },
-    completionMode: "standard" | "retrieval_fallback" = "standard",
+    completionMode: "standard" = "standard",
   ) => {
     if (runFinalized) {
       return;
@@ -9260,7 +9344,13 @@ async function runOrchestrator(
         label: labelForToolCall(toolName, normalizedToolArgs),
         rationale: sanitizeUserFacingToolText(rationale) ?? undefined,
         progress: sanitizeUserFacingToolText(rationale) ? [sanitizeUserFacingToolText(rationale)!] : [],
-        args: {},
+        sourceArgs: structuredClone(normalizedToolArgs),
+        args: canonicalToolArgs(
+          toolName,
+          normalizedToolArgs,
+          sanitizeUserFacingToolText(rationale) ?? undefined,
+          sanitizeUserFacingToolText(rationale) ? [sanitizeUserFacingToolText(rationale)!] : [],
+        ),
         state: "running",
       },
     ];
@@ -9282,7 +9372,7 @@ async function runOrchestrator(
             elapsedMinutes <= 1
               ? "Still loading books and comparing passages across the library."
               : `Still searching across the library. About ${elapsedMinutes} minutes have passed so far.`;
-          queueToolProgress(
+          void emitToolProgress(
             {
               runId: run.id,
               toolCallId: toolRecord.id,
@@ -9294,35 +9384,26 @@ async function runOrchestrator(
                 phase: "heartbeat",
               },
             },
-            async (progressText, detail) => {
-              liveToolTrace = liveToolTrace.map((entry) =>
-                entry.id === toolRecord.id
-                  ? appendToolProgress(entry, progressText, detail)
-                  : entry,
-              );
-              await appendResearchDocumentProgress(toolRecord.id, progressText, detail);
-              await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
-              await send("tool.progress", {
-                runId: run.id,
-                toolCallId: toolRecord.id,
-                toolName,
-                text: progressText,
-                researchDocumentHtml: liveResearchDocumentHtml,
-                ...(detail ? { detail } : {}),
-              });
-            },
+            (progressText, detail) => persistAndSendToolProgress(
+              toolRecord.id,
+              toolName,
+              progressText,
+              detail,
+            ),
           );
         }, 10_000)
       : null;
     await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
+    const startedRuntimeId = runtimeIdFromToolArgs(normalizedToolArgs);
     await send("tool.started", {
       runId: run.id,
       toolCallId: toolRecord.id,
       toolName,
+      ...(startedRuntimeId ? { runtimeId: startedRuntimeId } : {}),
       label: labelForToolCall(toolName, normalizedToolArgs),
       rationale: sanitizeUserFacingToolText(rationale) ?? null,
       researchDocumentHtml: liveResearchDocumentHtml,
-      args: {},
+      args: startedEntry.args,
     });
     const progressEmitter = startToolProgressEmitter(
       deps.runtimeGateway,
@@ -9331,7 +9412,7 @@ async function runOrchestrator(
           await send(eventName, data);
           return;
         }
-        queueToolProgress(
+            void emitToolProgress(
           {
             runId: typeof data.runId === "string" ? data.runId : run.id,
             toolCallId: data.toolCallId,
@@ -9339,25 +9420,19 @@ async function runOrchestrator(
             text: data.text,
             detail: data.detail && typeof data.detail === "object" ? data.detail as Record<string, unknown> : undefined,
           },
-          async (progressText, detail) => {
-            const toolCallId = typeof data.toolCallId === "string" ? data.toolCallId : toolRecord.id;
-            liveToolTrace = liveToolTrace.map((entry) =>
-              entry.id === toolCallId
-                ? appendToolProgress(entry, progressText, detail)
-                : entry,
-            );
-            noteResearchDocumentActivity();
-            await appendResearchDocumentProgress(toolCallId, progressText, detail);
-            await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
-            await send("tool.progress", {
-              runId: run.id,
-              toolCallId,
-              toolName,
-              text: progressText,
-              researchDocumentHtml: liveResearchDocumentHtml,
-              ...(detail ? { detail } : {}),
-            });
-          },
+          (progressText, detail) => persistAndSendToolProgress(
+            typeof data.toolCallId === "string" ? data.toolCallId : toolRecord.id,
+            toolName,
+            progressText,
+            detail,
+            {
+              noteResearchDocumentActivity,
+              runtimeId:
+                typeof data.runtimeId === "string" && data.runtimeId.trim().length > 0
+                  ? data.runtimeId
+                  : startedRuntimeId,
+            },
+          ),
         );
       },
       {
@@ -9388,7 +9463,7 @@ async function runOrchestrator(
             runId: run.id,
             auditLog: recordRawLog,
             progressReporter: async (text, detail) => {
-              queueToolProgress(
+              await emitToolProgress(
                 {
                   runId: run.id,
                   toolCallId: toolRecord.id,
@@ -9396,24 +9471,16 @@ async function runOrchestrator(
                   text,
                   detail,
                 },
-                async (progressText, emittedDetail) => {
-                  liveToolTrace = liveToolTrace.map((entry) =>
-                    entry.id === toolRecord.id
-                      ? appendToolProgress(entry, progressText, emittedDetail)
-                      : entry,
-                  );
-                  noteResearchDocumentActivity();
-                  await appendResearchDocumentProgress(toolRecord.id, progressText, emittedDetail);
-                  await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
-                  await send("tool.progress", {
-                    runId: run.id,
-                    toolCallId: toolRecord.id,
-                    toolName,
-                    text: progressText,
-                    researchDocumentHtml: liveResearchDocumentHtml,
-                    ...(emittedDetail ? { detail: emittedDetail } : {}),
-                  });
-                },
+                (progressText, emittedDetail) => persistAndSendToolProgress(
+                  toolRecord.id,
+                  toolName,
+                  progressText,
+                  emittedDetail,
+                  {
+                    noteResearchDocumentActivity,
+                    runtimeId: startedRuntimeId,
+                  },
+                ),
               );
             },
           });
@@ -9466,32 +9533,6 @@ async function runOrchestrator(
           }
         } finally {
           await progressEmitter.stop();
-          await flushToolProgress(
-            toolRecord.id,
-            {
-              runId: run.id,
-              toolName,
-            },
-            async (progressText, detail) => {
-              liveToolTrace = liveToolTrace.map((entry) =>
-                entry.id === toolRecord.id
-                  ? appendToolProgress(entry, progressText, detail)
-                  : entry,
-              );
-              if (detail) {
-                await appendResearchDocumentProgress(toolRecord.id, progressText, detail);
-              }
-              await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
-              await send("tool.progress", {
-                runId: run.id,
-                toolCallId: toolRecord.id,
-                toolName,
-                text: progressText,
-                researchDocumentHtml: liveResearchDocumentHtml,
-                ...(detail ? { detail } : {}),
-              });
-            },
-          );
         }
         if (pendingWorkspaceExecution) {
           pendingWorkspaceExecution.status = backgroundStatus;
@@ -9941,10 +9982,17 @@ async function runOrchestrator(
           label: labelForToolCall(toolCall.tool_name, normalizedToolArgs),
           rationale: sanitizeUserFacingToolText(toolCall.rationale) ?? undefined,
           progress: sanitizeUserFacingToolText(toolCall.rationale) ? [sanitizeUserFacingToolText(toolCall.rationale)!] : [],
-          args: {},
+          sourceArgs: structuredClone(normalizedToolArgs),
+          args: canonicalToolArgs(
+            toolCall.tool_name,
+            normalizedToolArgs,
+            sanitizeUserFacingToolText(toolCall.rationale) ?? undefined,
+            sanitizeUserFacingToolText(toolCall.rationale) ? [sanitizeUserFacingToolText(toolCall.rationale)!] : [],
+          ),
           state: "running",
         },
       ];
+      const startedEntry = liveToolTrace[liveToolTrace.length - 1]!;
       let lastResearchDocumentActivityAt = Date.now();
       const noteResearchDocumentActivity = () => {
         lastResearchDocumentActivityAt = Date.now();
@@ -9961,7 +10009,7 @@ async function runOrchestrator(
               elapsedMinutes <= 1
                 ? "Still loading books and comparing passages across the library."
                 : `Still searching across the library. About ${elapsedMinutes} minutes have passed so far.`;
-            queueToolProgress(
+            void emitToolProgress(
               {
                 runId: run.id,
                 toolCallId: toolRecord.id,
@@ -9985,6 +10033,7 @@ async function runOrchestrator(
                   runId: run.id,
                   toolCallId: toolRecord.id,
                   toolName: toolCall.tool_name,
+                  ...(startedRuntimeId ? { runtimeId: startedRuntimeId } : {}),
                   text: progressText,
                   researchDocumentHtml: liveResearchDocumentHtml,
                   ...(detail ? { detail } : {}),
@@ -9994,14 +10043,16 @@ async function runOrchestrator(
           }, 10_000)
         : null;
       await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
+      const startedRuntimeId = runtimeIdFromToolArgs(normalizedToolArgs);
       await send("tool.started", {
         runId: run.id,
         toolCallId: toolRecord.id,
         toolName: toolCall.tool_name,
+        ...(startedRuntimeId ? { runtimeId: startedRuntimeId } : {}),
         label: labelForToolCall(toolCall.tool_name, normalizedToolArgs),
         rationale: sanitizeUserFacingToolText(toolCall.rationale) ?? null,
         researchDocumentHtml: liveResearchDocumentHtml,
-        args: {},
+        args: startedEntry.args,
       });
       const progressEmitter = startToolProgressEmitter(
         deps.runtimeGateway,
@@ -10010,7 +10061,7 @@ async function runOrchestrator(
             await send(eventName, data);
             return;
           }
-          queueToolProgress(
+          await emitToolProgress(
             {
               runId: typeof data.runId === "string" ? data.runId : run.id,
               toolCallId: data.toolCallId,
@@ -10032,6 +10083,11 @@ async function runOrchestrator(
                 runId: run.id,
                 toolCallId: emittedToolCallId,
                 toolName: toolCall.tool_name,
+                ...(typeof data.runtimeId === "string" && data.runtimeId.trim().length > 0
+                  ? { runtimeId: data.runtimeId }
+                  : startedRuntimeId
+                    ? { runtimeId: startedRuntimeId }
+                    : {}),
                 text: progressText,
                 researchDocumentHtml: liveResearchDocumentHtml,
                 ...(detail ? { detail } : {}),
@@ -10074,7 +10130,7 @@ async function runOrchestrator(
                   runId: run.id,
                   auditLog: recordRawLog,
                   progressReporter: async (text, detail) => {
-                    queueToolProgress(
+                    await emitToolProgress(
                       {
                         runId: run.id,
                         toolCallId: toolRecord.id,
@@ -10095,6 +10151,7 @@ async function runOrchestrator(
                           runId: run.id,
                           toolCallId: toolRecord.id,
                           toolName: toolCall.tool_name,
+                          ...(startedRuntimeId ? { runtimeId: startedRuntimeId } : {}),
                           text: progressText,
                           researchDocumentHtml: liveResearchDocumentHtml,
                           ...(emittedDetail ? { detail: emittedDetail } : {}),
@@ -10110,7 +10167,7 @@ async function runOrchestrator(
               runId: run.id,
               auditLog: recordRawLog,
               progressReporter: async (text, detail) => {
-                queueToolProgress(
+                await emitToolProgress(
                   {
                     runId: run.id,
                     toolCallId: toolRecord.id,
@@ -10131,6 +10188,7 @@ async function runOrchestrator(
                       runId: run.id,
                       toolCallId: toolRecord.id,
                       toolName: toolCall.tool_name,
+                      ...(startedRuntimeId ? { runtimeId: startedRuntimeId } : {}),
                       text: progressText,
                       researchDocumentHtml: liveResearchDocumentHtml,
                       ...(emittedDetail ? { detail: emittedDetail } : {}),
@@ -10147,7 +10205,7 @@ async function runOrchestrator(
             runId: run.id,
             auditLog: recordRawLog,
             progressReporter: async (text, detail) => {
-              queueToolProgress(
+              await emitToolProgress(
                 {
                   runId: run.id,
                   toolCallId: toolRecord.id,
@@ -10168,6 +10226,7 @@ async function runOrchestrator(
                     runId: run.id,
                     toolCallId: toolRecord.id,
                     toolName: toolCall.tool_name,
+                    ...(startedRuntimeId ? { runtimeId: startedRuntimeId } : {}),
                     text: progressText,
                     researchDocumentHtml: liveResearchDocumentHtml,
                     ...(emittedDetail ? { detail: emittedDetail } : {}),
@@ -10242,30 +10301,6 @@ async function runOrchestrator(
           clearInterval(heartbeatTimer);
         }
         await progressEmitter.stop();
-        await flushToolProgress(
-          toolRecord.id,
-          {
-            runId: run.id,
-            toolName: toolCall.tool_name,
-          },
-          async (progressText, detail) => {
-            liveToolTrace = liveToolTrace.map((entry) =>
-              entry.id === toolRecord.id
-                ? appendToolProgress(entry, progressText, detail)
-                : entry,
-            );
-            noteResearchDocumentActivity();
-            await appendResearchDocumentProgress(toolRecord.id, progressText, detail);
-            await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
-            await send("tool.progress", {
-              runId: run.id,
-              toolCallId: toolRecord.id,
-              toolName: toolCall.tool_name,
-              text: progressText,
-              ...(detail ? { detail } : {}),
-            });
-          },
-        );
       }
 
       if (activeRuns.get(run.id)?.cancelRequested) {
@@ -10425,21 +10460,6 @@ async function runOrchestrator(
     if (runFinalized) {
       return;
     }
-    await flushAllToolProgress(async (toolCallId, toolName, text, detail) => {
-      liveToolTrace = liveToolTrace.map((entry) =>
-        entry.id === toolCallId
-          ? appendToolProgress(entry, text, detail)
-          : entry,
-      );
-      await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
-      await send("tool.progress", {
-        runId: run.id,
-        toolCallId,
-        toolName,
-        text,
-        ...(detail ? { detail } : {}),
-      });
-    });
     if (pendingSessionTitleUpdate) {
       await pendingSessionTitleUpdate;
     }
@@ -11841,7 +11861,7 @@ export function createApp(inputDeps: CreateAppInput) {
       return c.json({ error: "Run not found." }, 404);
     }
     const toolCalls = await deps.store.listToolCalls(runId);
-    return c.json(await buildRunLogsPayload(c, deps, activeRuns, session, run, toolCalls));
+    return c.json(await buildRunLogsPayload(c, deps, session, run, toolCalls));
   });
 
   app.get("/sessions/:sessionId/runs/:runId/logs", async (c) => {
@@ -11860,7 +11880,7 @@ export function createApp(inputDeps: CreateAppInput) {
       return c.json({ error: "Run not found." }, 404);
     }
     const toolCalls = await deps.store.listToolCalls(runId);
-    return c.json(await buildRunLogsPayload(c, deps, activeRuns, session, run, toolCalls));
+    return c.json(await buildRunLogsPayload(c, deps, session, run, toolCalls));
   });
 
   app.get("/api/v1/sessions/:sessionId/runs/:runId/logs", async (c) => {
@@ -11879,7 +11899,7 @@ export function createApp(inputDeps: CreateAppInput) {
       return c.json({ error: "Run not found." }, 404);
     }
     const toolCalls = await deps.store.listToolCalls(runId);
-    return c.json(await buildRunLogsPayload(c, deps, activeRuns, session, run, toolCalls));
+    return c.json(await buildRunLogsPayload(c, deps, session, run, toolCalls));
   });
 
   app.get("/admin/runs/:runId/logs", async (c) => {
@@ -11902,7 +11922,7 @@ export function createApp(inputDeps: CreateAppInput) {
       deps.store.listToolCalls(runId),
       deps.store.getUserProfile(session.userId),
     ]);
-    return c.json(await buildRunLogsPayload(c, deps, activeRuns, session, run, toolCalls, {
+    return c.json(await buildRunLogsPayload(c, deps, session, run, toolCalls, {
       owner,
       requestedBy: {
         id: admin.id,
