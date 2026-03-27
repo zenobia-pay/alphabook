@@ -13,7 +13,7 @@ import {
   type ToolCallMessagePartComponent,
   type ToolCallMessagePartStatus,
 } from "@assistant-ui/react";
-import { Citations as AlphaloopCitations, SearchProgress as AlphaloopSearchProgress } from "alphaloop/react";
+import { Citations as AlphaloopCitations } from "alphaloop/react";
 
 import {
   Collapsible,
@@ -185,6 +185,28 @@ function getAlphaloopChunks(result: JsonRecord | null) {
   });
 }
 
+function alphaloopEventLabel(event: AlphaloopProgressEvent) {
+  switch (event.type) {
+    case "embedding_search":
+      return `Searching for "${String(event.query ?? "").trim()}"`;
+    case "query_expansion": {
+      const variants = Array.isArray(event.queries) ? event.queries.length : 0;
+      const newResults = Number(event.newChunksFound ?? 0);
+      return `Expanding query - ${variants} variants, ${newResults} new results`;
+    }
+    case "rerank":
+      return `Re-ranking - kept ${Number(event.keptChunks ?? 0)} of ${Number(event.totalChunks ?? 0)}`;
+    case "iterative_search":
+      return `Refining (round ${Number(event.iteration ?? 0)}) - ${Number(event.newChunksFound ?? 0)} new results`;
+    case "classifier":
+      return "Classifying results";
+    case "complete":
+      return `Found ${Number(event.totalChunks ?? 0)} relevant passages`;
+    default:
+      return "Searching...";
+  }
+}
+
 function summarizeTool(toolName: string, args: JsonRecord | null, result: JsonRecord | null, status?: ToolCallMessagePartStatus) {
   const error = getErrorText(status, result);
   if (error) {
@@ -207,9 +229,11 @@ function summarizeTool(toolName: string, args: JsonRecord | null, result: JsonRe
 function ToolStatusBadge({
   status,
   result,
+  hideLabel = false,
 }: {
   status?: ToolCallMessagePartStatus;
   result: JsonRecord | null;
+  hideLabel?: boolean;
 }) {
   const statusType = status?.type ?? "complete";
   const isCancelled = status?.type === "incomplete" && status.reason === "cancelled";
@@ -222,7 +246,9 @@ function ToolStatusBadge({
       <span className={cn("aui-tool-fallback-status-shell", hasError && "aui-tool-fallback-status-shell-error")}>
         <Icon className={cn("size-3.5", statusType === "running" && "animate-spin")} />
       </span>
-      <span className={cn("aui-tool-fallback-badge", hasError && "aui-tool-fallback-badge-error")}>{label}</span>
+      {hideLabel ? null : (
+        <span className={cn("aui-tool-fallback-badge", hasError && "aui-tool-fallback-badge-error")}>{label}</span>
+      )}
     </>
   );
 }
@@ -338,17 +364,29 @@ const SemanticSearchToolUI: ToolCallMessagePartComponent = ({
   const alphaloopEvents = useMemo(() => getAlphaloopEvents(args, resultObject), [args, resultObject]);
   const alphaloopChunks = useMemo(() => getAlphaloopChunks(resultObject), [resultObject]);
   const errorText = useMemo(() => getErrorText(status, result), [result, status]);
+  const alphaloopLines = useMemo(
+    () => alphaloopEvents.map((event, index) => ({ key: `${event.type}-${index}`, label: alphaloopEventLabel(event) })),
+    [alphaloopEvents],
+  );
 
   return (
     <div className="py-2">
       <div className="mb-2 flex items-start gap-3">
-        <ToolStatusBadge status={status} result={resultObject} />
+        <ToolStatusBadge status={status} result={resultObject} hideLabel />
         <div className="min-w-0">
           <div className="aui-tool-fallback-title">{toolName}</div>
           {errorText ? <p className="aui-tool-error-text">{errorText}</p> : null}
         </div>
       </div>
-      <AlphaloopSearchProgress events={alphaloopEvents} isRunning={status?.type === "running"} />
+      {alphaloopLines.length > 0 ? (
+        <div className="aui-tool-progress-log">
+          {alphaloopLines.map((line) => (
+            <div key={line.key} className="aui-tool-progress-line">
+              <span className="aui-tool-line-value">{line.label}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
       <AlphaloopCitations chunks={alphaloopChunks} />
     </div>
   );
