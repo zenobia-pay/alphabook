@@ -6926,7 +6926,7 @@ async function buildCitationPassageUrl(
 ): Promise<string> {
   if (typeof citation.chunkId === "string" && citation.chunkId.trim().length > 0) {
     const resolvedUrl = await buildChunkIdPassageUrl(deps, sessionId, citation.chunkId, cache);
-    return resolvedUrl ?? buildResearchDocumentChunkUrl(siteOrigin(deps), sessionId, citation.workId, citation.chunkId);
+    return resolvedUrl ?? buildResearchDocumentWorkUrl(siteOrigin(deps), sessionId, citation.workId);
   }
   if (typeof citation.excerpt === "string" && citation.excerpt.trim().length > 0) {
     const matchedChunk = await deps.store.findChunkByWorkAndExcerpt(citation.workId, citation.excerpt);
@@ -7066,7 +7066,7 @@ async function buildChunkPassageUrlFromChunk(
   if (passageUrl) {
     return passageUrl;
   }
-  return buildResearchDocumentChunkUrl(siteOrigin(deps), sessionId, chunk.workId, chunk.id);
+  return buildResearchDocumentWorkUrl(siteOrigin(deps), sessionId, chunk.workId);
 }
 
 async function rewriteAnswerWithCitationLinks(
@@ -7489,13 +7489,6 @@ function persistedPassageLocation(chunkIndex: number | null) {
 function buildResearchDocumentWorkUrl(siteBaseOrigin: string, sessionId: string, workId: string) {
   const url = new URL(`${siteBaseOrigin}/works/${encodeURIComponent(workId)}`);
   url.searchParams.set("session", sessionId);
-  return url.toString();
-}
-
-function buildResearchDocumentChunkUrl(siteBaseOrigin: string, sessionId: string, workId: string, chunkId: string) {
-  const url = new URL(`${siteBaseOrigin}/works/${encodeURIComponent(workId)}`);
-  url.searchParams.set("session", sessionId);
-  url.searchParams.set("chunk", chunkId);
   return url.toString();
 }
 
@@ -8666,7 +8659,7 @@ async function runOrchestrator(
         || (workId ? await getResearchDocumentWorkTitle(workId) : null)
         || "Source";
       const href = workId && chunkId
-        ? await buildChunkIdPassageUrl(deps, session!.id, chunkId) ?? buildResearchDocumentChunkUrl(siteOrigin(deps), session!.id, workId, chunkId)
+        ? await buildChunkIdPassageUrl(deps, session!.id, chunkId) ?? buildResearchDocumentWorkUrl(siteOrigin(deps), session!.id, workId)
         : workId
           ? await buildCitationPassageUrl(deps, session!.id, {
               workId,
@@ -12076,29 +12069,6 @@ export function createApp(inputDeps: CreateAppInput) {
             metadataPath: typeof metadata.metadataPath === "string" ? metadata.metadataPath : null,
           }
         : null,
-    });
-  });
-
-  app.get("/works/:workId/chunks/:chunkId/passage", async (c) => {
-    const workId = c.req.param("workId");
-    const chunkId = c.req.param("chunkId");
-    const [work, [chunk]] = await Promise.all([
-      deps.store.getWorkById(workId),
-      deps.store.getChunksByIds([chunkId]),
-    ]);
-    if (!work || !chunk || chunk.workId !== workId) {
-      return c.json({ error: "Chunk not found." }, 404);
-    }
-
-    const lookup = await loadResolvedWorkPassageLookup(deps, workId);
-    if (!lookup) {
-      return c.json({ passageId: null, readerPath: null });
-    }
-
-    const passageId = findResolvedPassageId(lookup.passages, buildChunkPassageCandidates(chunk));
-    return c.json({
-      passageId,
-      readerPath: passageId ? `/${encodeURIComponent(String(lookup.gutenbergId))}/passages/${encodeURIComponent(passageId)}` : null,
     });
   });
 
