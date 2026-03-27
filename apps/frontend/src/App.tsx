@@ -38,20 +38,6 @@ type ToolTraceEntry = {
   state: "running" | "completed" | "error";
 };
 
-type AlphaloopProgressEvent = {
-  type: string;
-  query?: string;
-  chunksFound?: number;
-  queries?: string[];
-  newChunksFound?: number;
-  totalUnique?: number;
-  totalChunks?: number;
-  keptChunks?: number;
-  droppedChunks?: number;
-  iteration?: number;
-  newQueries?: string[];
-};
-
 type AssistantDocumentBootstrapPayload = {
   sessionId: string;
   runId: string;
@@ -763,15 +749,25 @@ function buildToolTraceFromRunEvents(events: PersistedRunEventRecord[]) {
     }
     if (runEvent.event === "tool.started") {
       const { entry, index } = ensureEntry(eventData);
+      const nextProgress =
+        typeof eventData.rationale === "string" && eventData.rationale.trim().length > 0
+          ? entry.progress.includes(eventData.rationale) ? entry.progress : [...entry.progress, eventData.rationale]
+          : entry.progress;
+      const nextRationale = typeof eventData.rationale === "string" ? eventData.rationale : entry.rationale;
+      const nextArgs = eventData.args && typeof eventData.args === "object"
+        ? eventData.args as Record<string, unknown>
+        : entry.args;
       trace[index] = {
         ...entry,
         label: typeof eventData.label === "string" ? eventData.label : entry.label,
-        rationale: typeof eventData.rationale === "string" ? eventData.rationale : entry.rationale,
-        progress:
-          typeof eventData.rationale === "string" && eventData.rationale.trim().length > 0
-            ? entry.progress.includes(eventData.rationale) ? entry.progress : [...entry.progress, eventData.rationale]
-            : entry.progress,
-        args: eventData.args && typeof eventData.args === "object" ? eventData.args as Record<string, unknown> : entry.args,
+        rationale: nextRationale,
+        progress: nextProgress,
+        args: syncToolDisplayArgs(nextArgs, {
+          toolName: entry.toolName,
+          rationale: nextRationale,
+          progress: nextProgress,
+          progressDetails: entry.progressDetails,
+        }),
         state: "running",
       };
       continue;
@@ -782,11 +778,19 @@ function buildToolTraceFromRunEvents(events: PersistedRunEventRecord[]) {
       const detail = eventData.detail && typeof eventData.detail === "object"
         ? eventData.detail as Record<string, unknown>
         : undefined;
+      const nextProgress = text && !entry.progress.includes(text) ? [...entry.progress, text] : entry.progress;
+      const nextDetails = detail ? appendProgressDetail(entry.progressDetails, detail) : entry.progressDetails;
       trace[index] = {
         ...entry,
         rationale: text || entry.rationale,
-        progress: text && !entry.progress.includes(text) ? [...entry.progress, text] : entry.progress,
-        ...(detail ? { progressDetails: appendProgressDetail(entry.progressDetails, detail) } : {}),
+        progress: nextProgress,
+        ...(nextDetails ? { progressDetails: nextDetails } : {}),
+        args: syncToolDisplayArgs(entry.args, {
+          toolName: entry.toolName,
+          rationale: text || entry.rationale,
+          progress: nextProgress,
+          progressDetails: nextDetails,
+        }),
         state: "running",
       };
       continue;
@@ -2066,154 +2070,6 @@ function getCount(value: unknown) {
   return Array.isArray(value) ? value.length : 0;
 }
 
-function buildThreadToolArgs(entry: ToolTraceEntry) {
-  const args: Record<string, unknown> = {};
-  const query = typeof entry.args.query === "string" && entry.args.query.trim().length > 0 ? entry.args.query.trim() : null;
-  const path = typeof entry.args.path === "string" && entry.args.path.trim().length > 0 ? entry.args.path.trim() : null;
-  const workCount = getCount(entry.args.workIds);
-  const chunkCount = getCount(entry.args.chunkIds);
-  const taskSpec = entry.args.taskSpec && typeof entry.args.taskSpec === "object"
-    ? entry.args.taskSpec as Record<string, unknown>
-    : null;
-  const phase = typeof taskSpec?.phase === "string" && taskSpec.phase.trim().length > 0 ? taskSpec.phase.trim() : null;
-  const goal = typeof taskSpec?.goal === "string" && taskSpec.goal.trim().length > 0 ? taskSpec.goal.trim() : null;
-  const taskQuery = typeof taskSpec?.query === "string" && taskSpec.query.trim().length > 0 ? taskSpec.query.trim() : null;
-
-  if (query) {
-    args.query = query;
-  }
-  if (taskQuery && taskQuery !== query) {
-    args.taskQuery = taskQuery;
-  }
-  if (goal) {
-    args.goal = goal;
-  }
-  if (phase) {
-    args.phase = phase;
-  }
-  if (path) {
-    args.path = path;
-  }
-  if (workCount > 0) {
-    args.candidateBookCount = workCount;
-  }
-  if (chunkCount > 0) {
-    args.candidatePassageCount = chunkCount;
-  }
-  const alphaloopEvents = Array.isArray(entry.progressDetails)
-    ? entry.progressDetails
-      .map((detail) => {
-        if (detail.type !== "semantic.alphaloop" || !detail.event || typeof detail.event !== "object") {
-          return null;
-        }
-        return detail.event as Record<string, unknown>;
-      })
-      .filter((value): value is Record<string, unknown> => Boolean(value))
-    : [];
-  if (alphaloopEvents.length > 0) {
-    args.__alphaloopEvents = alphaloopEvents as AlphaloopProgressEvent[];
-  }
-  if (Array.isArray(entry.progressDetails) && entry.progressDetails.length > 0) {
-    args.__progressDetails = entry.progressDetails;
-  }
-  args.__toolName = entry.toolName;
-
-  return args;
-}
-
-function buildThreadToolResult(entry: ToolTraceEntry, entryHasError: boolean) {
-  if (entry.state === "running") {
-    return undefined;
-  }
-
-  const result = entry.result;
-  if (!result) {
-    return { ok: !entryHasError };
-  }
-
-  const safe: Record<string, unknown> = {};
-  const logLines = Array.isArray(result.__logLines)
-    ? result.__logLines.filter((line) => {
-        if (typeof line === "string") {
-          return line.trim().length > 0;
-        }
-        return Boolean(line) && typeof line === "object";
-      })
-    : [];
-  if (logLines.length > 0) {
-    safe.__logLines = logLines;
-  }
-
-  const countFields = [
-    "workCount",
-    "chunkCount",
-    "bookCount",
-    "artifactCount",
-    "citationCount",
-    "codexRunCount",
-    "evidenceCount",
-    "briefingLength",
-    "exitCode",
-  ] as const;
-  for (const field of countFields) {
-    const value = result[field];
-    if (typeof value === "number") {
-      safe[field] = value;
-    }
-  }
-
-  if (typeof result.runtimeId === "string" && result.runtimeId.trim().length > 0) {
-    safe.runtimeId = result.runtimeId;
-  }
-  if (result.usedFallback === true) {
-    safe.usedFallback = true;
-  }
-  if (typeof result.error === "string" && result.error.trim().length > 0) {
-    safe.error = result.error;
-  }
-  if (typeof result.briefing === "string" && result.briefing.trim().length > 0) {
-    safe.briefing = result.briefing;
-  }
-  if (Array.isArray(result.alphaloopEvents) && result.alphaloopEvents.length > 0) {
-    safe.__alphaloopEvents = result.alphaloopEvents;
-  }
-  if (Array.isArray(result.works) && result.works.length > 0) {
-    safe.workCount = typeof safe.workCount === "number" ? safe.workCount : result.works.length;
-  }
-  if (Array.isArray(result.chunks) && result.chunks.length > 0) {
-    safe.chunkCount = typeof safe.chunkCount === "number" ? safe.chunkCount : result.chunks.length;
-    if (entry.toolName === "semantic_deep_search") {
-      safe.chunks = result.chunks
-        .filter((candidate): candidate is Record<string, unknown> => Boolean(candidate) && typeof candidate === "object")
-        .map((chunk) => ({
-          id: typeof chunk.id === "string" ? chunk.id : undefined,
-          text:
-            typeof chunk.text === "string"
-              ? chunk.text
-              : typeof chunk.excerpt === "string"
-                ? chunk.excerpt
-                : "",
-          relevance:
-            typeof chunk.relevance === "number"
-              ? chunk.relevance
-              : typeof chunk.score === "number"
-                ? chunk.score
-                : 0,
-          rationale: typeof chunk.rationale === "string" ? chunk.rationale : undefined,
-          metadata: {
-            workId: typeof chunk.workId === "string" ? chunk.workId : undefined,
-            chunkIndex: typeof chunk.chunkIndex === "number" ? chunk.chunkIndex : undefined,
-            r2Key: typeof chunk.r2Key === "string" ? chunk.r2Key : undefined,
-          },
-        }));
-    }
-  }
-  if (Object.keys(safe).length === 0) {
-    safe.ok = !entryHasError;
-  }
-  return safe;
-}
-
 function describeMetadataSearchIntent(args: Record<string, unknown>) {
   const query = typeof args.query === "string" && args.query.trim().length > 0
     ? `for ${quoted(args.query)}`
@@ -2571,27 +2427,12 @@ function messageToThreadMessage(
   if (message.role === "assistant") {
     const phase = typeof message.metadata?.phase === "string" ? message.metadata.phase : null;
     const toolParts = message.toolCalls.map((entry) => {
-        const progress = entry.progress.filter((value) => value.trim().length > 0);
         const entryHasError =
           entry.isError
           || entry.state === "error"
           || entry.result?.ok === false
           || (typeof entry.result?.error === "string" && entry.result.error.trim().length > 0);
-        const args = toReadonlyJsonObject(
-          {
-            ...buildThreadToolArgs(entry),
-            ...(entry.rationale
-              ? {
-                  __rationale: entry.rationale,
-                }
-              : {}),
-            ...(progress.length > 0
-              ? {
-                  __progress: progress,
-                }
-              : {}),
-          },
-        );
+        const args = toReadonlyJsonObject(entry.args);
         return {
           type: "tool-call" as const,
           toolCallId: entry.id,
@@ -2614,7 +2455,7 @@ function messageToThreadMessage(
           ...(entry.state === "running"
             ? {}
             : {
-                result: buildThreadToolResult(entry, entryHasError) ?? { ok: !entryHasError },
+                result: entry.result ?? { ok: !entryHasError },
                 isError: entryHasError,
               }),
         };
@@ -3504,6 +3345,40 @@ function appendProgressDetail(
     return existing;
   }
   return [...existing, detail];
+}
+
+function syncToolDisplayArgs(
+  args: Record<string, unknown>,
+  entry: {
+    toolName: string;
+    rationale?: string;
+    progress: string[];
+    progressDetails?: Array<Record<string, unknown>>;
+  },
+) {
+  const nextArgs: Record<string, unknown> = {
+    ...args,
+    __toolName: entry.toolName,
+  };
+  if (entry.rationale && entry.rationale.trim().length > 0) {
+    nextArgs.__rationale = entry.rationale;
+  } else {
+    delete nextArgs.__rationale;
+  }
+  if (entry.progress.length > 0) {
+    nextArgs.__progress = [...entry.progress];
+  } else {
+    delete nextArgs.__progress;
+  }
+  const alphaloopEvents = (entry.progressDetails ?? [])
+    .map((detail) => detail.type === "semantic.alphaloop" && detail.event && typeof detail.event === "object" ? detail.event : null)
+    .filter((detail): detail is Record<string, unknown> => Boolean(detail));
+  if (alphaloopEvents.length > 0) {
+    nextArgs.__alphaloopEvents = alphaloopEvents;
+  } else {
+    delete nextArgs.__alphaloopEvents;
+  }
+  return nextArgs;
 }
 
 type SpriteTraceState = "queued" | "starting" | "hydrating" | "ready" | "searching" | "completed" | "failed";
@@ -7130,7 +7005,16 @@ export default function App() {
                   label,
                   rationale: typeof event.data.rationale === "string" ? event.data.rationale : undefined,
                   progress: [],
-                  args: event.data.args && typeof event.data.args === "object" ? (event.data.args as Record<string, unknown>) : {},
+                  args: syncToolDisplayArgs(
+                    event.data.args && typeof event.data.args === "object" ? (event.data.args as Record<string, unknown>) : {},
+                    {
+                      toolName,
+                      rationale: typeof event.data.rationale === "string" ? event.data.rationale : undefined,
+                      progress: typeof event.data.rationale === "string" && event.data.rationale.trim().length > 0
+                        ? [event.data.rationale]
+                        : [],
+                    },
+                  ),
                   state: "running",
                 },
               ];
@@ -7199,15 +7083,23 @@ export default function App() {
                 : undefined;
               activityLog = activityLog.map((entry): ToolTraceEntry =>
                 (toolCallId ? entry.id === toolCallId : entry.toolName === toolName && entry.state === "running")
-                  ? {
-                      ...entry,
-                      rationale,
-                      progress: entry.progress.includes(rationale) ? entry.progress : [...entry.progress, rationale],
-                      ...(detail
-                        ? { progressDetails: appendProgressDetail(entry.progressDetails, detail) }
-                        : {}),
-                    }
-                      : entry,
+                  ? (() => {
+                      const nextProgress = entry.progress.includes(rationale) ? entry.progress : [...entry.progress, rationale];
+                      const nextDetails = detail ? appendProgressDetail(entry.progressDetails, detail) : entry.progressDetails;
+                      return {
+                        ...entry,
+                        rationale,
+                        progress: nextProgress,
+                        ...(nextDetails ? { progressDetails: nextDetails } : {}),
+                        args: syncToolDisplayArgs(entry.args, {
+                          toolName: entry.toolName,
+                          rationale,
+                          progress: nextProgress,
+                          progressDetails: nextDetails,
+                        }),
+                      };
+                    })()
+                  : entry,
               );
               if (detail) {
                 activityLog = applySpriteLifecycleDetail(activityLog, detail, rationale);
