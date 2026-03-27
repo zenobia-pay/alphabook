@@ -196,6 +196,7 @@ export class D1AppStore implements AppStore {
   private readonly workReferenceById = new Map<string, { adapterId: string; externalId: string }>();
   private readonly workIdByExternalRef = new Map<string, string>();
   private readonly chunkManifestCache = new Map<string, ChunkManifestEntry[]>();
+  private runLifecycleColumnsReady: Promise<void> | null = null;
 
   constructor(
     private readonly db: DbClient,
@@ -219,6 +220,30 @@ export class D1AppStore implements AppStore {
       this.corpusStorePromise = this.loadCorpusStore();
     }
     return this.corpusStorePromise;
+  }
+
+  private async ensureRunLifecycleColumns() {
+    if (!this.runLifecycleColumnsReady) {
+      this.runLifecycleColumnsReady = (async () => {
+        const statements = [
+          "ALTER TABLE runs ADD COLUMN owner_instance_id TEXT",
+          "ALTER TABLE runs ADD COLUMN heartbeat_at TEXT",
+          "ALTER TABLE runs ADD COLUMN lease_expires_at TEXT",
+          "ALTER TABLE runs ADD COLUMN active_tool_call_id TEXT",
+        ];
+        for (const statement of statements) {
+          try {
+            await this.db.query(statement);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (!/duplicate column name|already exists/i.test(message)) {
+              throw error;
+            }
+          }
+        }
+      })();
+    }
+    await this.runLifecycleColumnsReady;
   }
 
   private async loadCorpusStore() {
@@ -737,33 +762,77 @@ export class D1AppStore implements AppStore {
     await this.db.query("UPDATE messages SET metadata_json = ? WHERE id = ?", [JSON.stringify(metadata), messageId]);
   }
 
-  async createRun(sessionId: string): Promise<RunRecord> {
+  async createRun(sessionId: string, options: {
+    ownerInstanceId?: string | null;
+    heartbeatAt?: string | null;
+    leaseExpiresAt?: string | null;
+  } = {}): Promise<RunRecord> {
+    await this.ensureRunLifecycleColumns();
     const id = crypto.randomUUID();
     const startedAt = nowIso();
-    await this.db.query("INSERT INTO runs (id, session_id, status, started_at, completed_at, planner_turns) VALUES (?, ?, 'running', ?, NULL, 0)", [id, sessionId, startedAt]);
-    return { id, sessionId, status: "running", plannerTurns: 0, startedAt, completedAt: null };
+    await this.db.query(
+      "INSERT INTO runs (id, session_id, status, started_at, completed_at, planner_turns, owner_instance_id, heartbeat_at, lease_expires_at, active_tool_call_id) VALUES (?, ?, 'running', ?, NULL, 0, ?, ?, ?, NULL)",
+      [id, sessionId, startedAt, options.ownerInstanceId ?? null, options.heartbeatAt ?? null, options.leaseExpiresAt ?? null],
+    );
+    return {
+      id,
+      sessionId,
+      status: "running",
+      plannerTurns: 0,
+      startedAt,
+      completedAt: null,
+      ownerInstanceId: options.ownerInstanceId ?? null,
+      heartbeatAt: options.heartbeatAt ?? null,
+      leaseExpiresAt: options.leaseExpiresAt ?? null,
+      activeToolCallId: null,
+    };
   }
 
   async getRun(runId: string): Promise<RunRecord | null> {
-    const rows = await this.db.query<{ id: string; session_id: string; status: RunRecord["status"]; started_at: string; completed_at: string | null; planner_turns: number }>(
-      "SELECT id, session_id, status, started_at, completed_at, planner_turns FROM runs WHERE id = ? LIMIT 1",
+    await this.ensureRunLifecycleColumns();
+    const rows = await this.db.query<{ id: string; session_id: string; status: RunRecord["status"]; started_at: string; completed_at: string | null; planner_turns: number; owner_instance_id: string | null; heartbeat_at: string | null; lease_expires_at: string | null; active_tool_call_id: string | null }>(
+      "SELECT id, session_id, status, started_at, completed_at, planner_turns, owner_instance_id, heartbeat_at, lease_expires_at, active_tool_call_id FROM runs WHERE id = ? LIMIT 1",
       [runId],
     );
     const row = rows.rows[0];
-    return row ? { id: row.id, sessionId: row.session_id, status: row.status, startedAt: row.started_at, completedAt: row.completed_at, plannerTurns: Number(row.planner_turns ?? 0) } : null;
+    return row ? {
+      id: row.id,
+      sessionId: row.session_id,
+      status: row.status,
+      startedAt: row.started_at,
+      completedAt: row.completed_at,
+      plannerTurns: Number(row.planner_turns ?? 0),
+      ownerInstanceId: row.owner_instance_id ?? null,
+      heartbeatAt: row.heartbeat_at ?? null,
+      leaseExpiresAt: row.lease_expires_at ?? null,
+      activeToolCallId: row.active_tool_call_id ?? null,
+    } : null;
   }
 
   async listRuns(sessionId: string): Promise<RunRecord[]> {
-    const rows = await this.db.query<{ id: string; session_id: string; status: RunRecord["status"]; started_at: string; completed_at: string | null; planner_turns: number }>(
-      "SELECT id, session_id, status, started_at, completed_at, planner_turns FROM runs WHERE session_id = ? ORDER BY started_at DESC",
+    await this.ensureRunLifecycleColumns();
+    const rows = await this.db.query<{ id: string; session_id: string; status: RunRecord["status"]; started_at: string; completed_at: string | null; planner_turns: number; owner_instance_id: string | null; heartbeat_at: string | null; lease_expires_at: string | null; active_tool_call_id: string | null }>(
+      "SELECT id, session_id, status, started_at, completed_at, planner_turns, owner_instance_id, heartbeat_at, lease_expires_at, active_tool_call_id FROM runs WHERE session_id = ? ORDER BY started_at DESC",
       [sessionId],
     );
-    return rows.rows.map((row) => ({ id: row.id, sessionId: row.session_id, status: row.status, startedAt: row.started_at, completedAt: row.completed_at, plannerTurns: Number(row.planner_turns ?? 0) }));
+    return rows.rows.map((row) => ({
+      id: row.id,
+      sessionId: row.session_id,
+      status: row.status,
+      startedAt: row.started_at,
+      completedAt: row.completed_at,
+      plannerTurns: Number(row.planner_turns ?? 0),
+      ownerInstanceId: row.owner_instance_id ?? null,
+      heartbeatAt: row.heartbeat_at ?? null,
+      leaseExpiresAt: row.lease_expires_at ?? null,
+      activeToolCallId: row.active_tool_call_id ?? null,
+    }));
   }
 
   async listAllRuns(): Promise<AdminRunRecord[]> {
-    const runs = await this.db.query<{ id: string; session_id: string; status: RunRecord["status"]; started_at: string; completed_at: string | null; planner_turns: number }>(
-      "SELECT id, session_id, status, started_at, completed_at, planner_turns FROM runs ORDER BY started_at DESC",
+    await this.ensureRunLifecycleColumns();
+    const runs = await this.db.query<{ id: string; session_id: string; status: RunRecord["status"]; started_at: string; completed_at: string | null; planner_turns: number; owner_instance_id: string | null; heartbeat_at: string | null; lease_expires_at: string | null; active_tool_call_id: string | null }>(
+      "SELECT id, session_id, status, started_at, completed_at, planner_turns, owner_instance_id, heartbeat_at, lease_expires_at, active_tool_call_id FROM runs ORDER BY started_at DESC",
     );
     const sessions = await this.db.query<{ id: string; user_id: string; title: string | null }>("SELECT id, user_id, title FROM chat_sessions");
     const users = await this.queryUsers();
@@ -779,6 +848,10 @@ export class D1AppStore implements AppStore {
         startedAt: row.started_at,
         completedAt: row.completed_at,
         plannerTurns: Number(row.planner_turns ?? 0),
+        ownerInstanceId: row.owner_instance_id ?? null,
+        heartbeatAt: row.heartbeat_at ?? null,
+        leaseExpiresAt: row.lease_expires_at ?? null,
+        activeToolCallId: row.active_tool_call_id ?? null,
         userId: session?.user_id ?? "unknown",
         userEmail: user?.email ?? null,
         userName: user?.name ?? null,
@@ -826,17 +899,44 @@ export class D1AppStore implements AppStore {
       }));
   }
 
-  async updateRun(runId: string, updates: Partial<Pick<RunRecord, "status" | "plannerTurns" | "completedAt">>): Promise<void> {
+  async updateRun(runId: string, updates: Partial<Pick<RunRecord, "status" | "plannerTurns" | "completedAt" | "ownerInstanceId" | "heartbeatAt" | "leaseExpiresAt" | "activeToolCallId">>): Promise<void> {
+    await this.ensureRunLifecycleColumns();
     const run = await this.getRun(runId);
     if (!run) {
       return;
     }
-    await this.db.query("UPDATE runs SET status = ?, planner_turns = ?, completed_at = ? WHERE id = ?", [
+    await this.db.query("UPDATE runs SET status = ?, planner_turns = ?, completed_at = ?, owner_instance_id = ?, heartbeat_at = ?, lease_expires_at = ?, active_tool_call_id = ? WHERE id = ?", [
       updates.status ?? run.status,
       updates.plannerTurns ?? run.plannerTurns,
       updates.completedAt ?? run.completedAt,
+      updates.ownerInstanceId ?? run.ownerInstanceId,
+      updates.heartbeatAt ?? run.heartbeatAt,
+      updates.leaseExpiresAt ?? run.leaseExpiresAt,
+      updates.activeToolCallId ?? run.activeToolCallId,
       runId,
     ]);
+  }
+
+  async claimRunLease(runId: string, options: {
+    ownerInstanceId: string;
+    heartbeatAt: string;
+    leaseExpiresAt: string;
+  }): Promise<boolean> {
+    await this.ensureRunLifecycleColumns();
+    const run = await this.getRun(runId);
+    if (!run || (run.status !== "running" && run.status !== "queued")) {
+      return false;
+    }
+    const leaseExpired = !run.leaseExpiresAt || Date.parse(run.leaseExpiresAt) <= Date.now();
+    const alreadyOwned = run.ownerInstanceId === options.ownerInstanceId;
+    if (!leaseExpired && !alreadyOwned && run.ownerInstanceId) {
+      return false;
+    }
+    await this.db.query(
+      "UPDATE runs SET owner_instance_id = ?, heartbeat_at = ?, lease_expires_at = ? WHERE id = ?",
+      [options.ownerInstanceId, options.heartbeatAt, options.leaseExpiresAt, runId],
+    );
+    return true;
   }
 
   async startToolCall(runId: string, toolName: ToolName, argsJson: Record<string, unknown>): Promise<ToolCallRecord> {

@@ -31,7 +31,11 @@ CREATE TABLE IF NOT EXISTS runs (
   status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'completed', 'failed', 'timed_out')),
   started_at TEXT NOT NULL,
   completed_at TEXT,
-  planner_turns INTEGER NOT NULL DEFAULT 0
+  planner_turns INTEGER NOT NULL DEFAULT 0,
+  owner_instance_id TEXT,
+  heartbeat_at TEXT,
+  lease_expires_at TEXT,
+  active_tool_call_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS tool_calls (

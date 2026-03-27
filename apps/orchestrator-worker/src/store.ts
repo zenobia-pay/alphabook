@@ -202,6 +202,10 @@ export interface RunRecord {
   plannerTurns: number;
   startedAt: string;
   completedAt: string | null;
+  ownerInstanceId: string | null;
+  heartbeatAt: string | null;
+  leaseExpiresAt: string | null;
+  activeToolCallId: string | null;
 }
 
 export interface AdminRunRecord extends RunRecord {
@@ -409,7 +413,11 @@ export interface AppStore {
   getLatestPlanMessageForRun(sessionId: string, runId: string): Promise<MessageRecord | null>;
   appendMessage(sessionId: string, role: MessageRecord["role"], content: string, metadata?: Record<string, unknown>): Promise<MessageRecord>;
   updateMessageMetadata(messageId: string, metadata: Record<string, unknown>): Promise<void>;
-  createRun(sessionId: string): Promise<RunRecord>;
+  createRun(sessionId: string, options?: {
+    ownerInstanceId?: string | null;
+    heartbeatAt?: string | null;
+    leaseExpiresAt?: string | null;
+  }): Promise<RunRecord>;
   getRun(runId: string): Promise<RunRecord | null>;
   listRuns(sessionId: string): Promise<RunRecord[]>;
   listAllRuns(): Promise<AdminRunRecord[]>;
@@ -428,7 +436,12 @@ export interface AppStore {
     content: string;
     createdAt: string;
   }>>;
-  updateRun(runId: string, updates: Partial<Pick<RunRecord, "status" | "plannerTurns" | "completedAt">>): Promise<void>;
+  updateRun(runId: string, updates: Partial<Pick<RunRecord, "status" | "plannerTurns" | "completedAt" | "ownerInstanceId" | "heartbeatAt" | "leaseExpiresAt" | "activeToolCallId">>): Promise<void>;
+  claimRunLease(runId: string, options: {
+    ownerInstanceId: string;
+    heartbeatAt: string;
+    leaseExpiresAt: string;
+  }): Promise<boolean>;
   startToolCall(runId: string, toolName: ToolName, argsJson: Record<string, unknown>): Promise<ToolCallRecord>;
   listToolCalls(runId: string): Promise<ToolCallRecord[]>;
   finishToolCall(toolCallId: string, status: ToolCallRecord["status"], resultJson: Record<string, unknown>): Promise<void>;
@@ -2505,7 +2518,11 @@ export class InMemoryAppStore implements AppStore {
     }
   }
 
-  async createRun(sessionId: string): Promise<RunRecord> {
+  async createRun(sessionId: string, options: {
+    ownerInstanceId?: string | null;
+    heartbeatAt?: string | null;
+    leaseExpiresAt?: string | null;
+  } = {}): Promise<RunRecord> {
     const run: RunRecord = {
       id: crypto.randomUUID(),
       sessionId,
@@ -2513,6 +2530,10 @@ export class InMemoryAppStore implements AppStore {
       plannerTurns: 0,
       startedAt: nowIso(),
       completedAt: null,
+      ownerInstanceId: options.ownerInstanceId ?? null,
+      heartbeatAt: options.heartbeatAt ?? null,
+      leaseExpiresAt: options.leaseExpiresAt ?? null,
+      activeToolCallId: null,
     };
     this.runs.set(run.id, run);
     return run;
@@ -2599,13 +2620,34 @@ export class InMemoryAppStore implements AppStore {
       .slice(0, limit);
   }
 
-  async updateRun(runId: string, updates: Partial<Pick<RunRecord, "status" | "plannerTurns" | "completedAt">>): Promise<void> {
+  async updateRun(runId: string, updates: Partial<Pick<RunRecord, "status" | "plannerTurns" | "completedAt" | "ownerInstanceId" | "heartbeatAt" | "leaseExpiresAt" | "activeToolCallId">>): Promise<void> {
     const run = this.runs.get(runId);
     if (!run) {
       return;
     }
     Object.assign(run, updates);
     this.runs.set(runId, run);
+  }
+
+  async claimRunLease(runId: string, options: {
+    ownerInstanceId: string;
+    heartbeatAt: string;
+    leaseExpiresAt: string;
+  }): Promise<boolean> {
+    const run = this.runs.get(runId);
+    if (!run || (run.status !== "running" && run.status !== "queued")) {
+      return false;
+    }
+    const leaseExpired = !run.leaseExpiresAt || Date.parse(run.leaseExpiresAt) <= Date.now();
+    const alreadyOwned = run.ownerInstanceId === options.ownerInstanceId;
+    if (!leaseExpired && !alreadyOwned && run.ownerInstanceId) {
+      return false;
+    }
+    run.ownerInstanceId = options.ownerInstanceId;
+    run.heartbeatAt = options.heartbeatAt;
+    run.leaseExpiresAt = options.leaseExpiresAt;
+    this.runs.set(runId, run);
+    return true;
   }
 
   async startToolCall(runId: string, toolName: ToolName, argsJson: Record<string, unknown>): Promise<ToolCallRecord> {

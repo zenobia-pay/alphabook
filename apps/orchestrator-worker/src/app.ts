@@ -27,7 +27,7 @@ import type { Router } from "./router";
 import type { SemanticSearchService } from "./semantic-search";
 import { cleanupToolStreamWithWorkersAi, type ToolStreamCleanupLine } from "./tool-stream-cleanup";
 import type { Synthesizer, ToolHistoryEntry } from "./synthesizer";
-import type { AgentIdentityRecord, AnalyticsEventRecord, AppStore, MessageRecord, NotificationRecord, PassageSearchFilters, RunEventRecord, RunRecord, RuntimeInstanceRecord, SessionRecord, ToolCallRecord, UserRecord, WorkDetailRecord } from "./store";
+import type { AgentIdentityRecord, AnalyticsEventRecord, AppStore, MessageRecord, NotificationRecord, PassageSearchFilters, RunRecord, RuntimeInstanceRecord, SessionRecord, ToolCallRecord, UserRecord, WorkDetailRecord } from "./store";
 import type { WorkersAiBinding } from "./index";
 import { parseModelJsonObject } from "./json";
 
@@ -2415,6 +2415,10 @@ type ActiveRunState = {
 
 type AuditLogger = (event: string, payload: Record<string, unknown>) => void;
 
+const RUN_LEASE_MS = 90_000;
+const RUN_HEARTBEAT_INTERVAL_MS = 15_000;
+const WORKER_INSTANCE_ID = crypto.randomUUID();
+
 function decorateWork(c: Context, work: WorkSummary): WorkSummary {
   const metadata = "metadata" in work && work.metadata && typeof work.metadata === "object"
     ? (work.metadata as Record<string, unknown>)
@@ -4757,6 +4761,10 @@ async function finalizeRunFromCompletedTools(
   await deps.store.updateRun(run.id, {
     status: "completed",
     completedAt: new Date().toISOString(),
+    ownerInstanceId: null,
+    heartbeatAt: new Date().toISOString(),
+    leaseExpiresAt: null,
+    activeToolCallId: null,
   });
   return true;
 }
@@ -4917,34 +4925,6 @@ async function finalizeStaleRun(
     }));
   const runningToolCall = [...toolCalls].reverse().find((toolCall) => toolCall.status === "running");
   if (!runningToolCall) {
-    if (toolCalls.length > 0) {
-      const plannerRawLog = await loadPersistedRawRunLog(deps, session.id, run.id);
-      const openPlannerStartAt = latestOpenPlannerStartAt(plannerRawLog);
-      if (openPlannerStartAt) {
-        const plannerStallMs = Date.now() - Date.parse(openPlannerStartAt);
-        if (plannerStallMs > PLANNER_STALL_GRACE_MS) {
-          const failureMessage = "The assistant stalled while choosing the next research step.";
-          if (await shouldSkipInactiveRunFailure(deps, session.id, run.id, PLANNER_STALL_GRACE_MS)) {
-            return deps.store.getRun(run.id);
-          }
-          await deps.store.updateRun(run.id, {
-            status: "failed",
-            completedAt: new Date().toISOString(),
-          });
-          await persistRecoveredPlanToolTrace(deps, session.id, run.id, toolCalls);
-          const persistedPlanState = readPersistedPlanMessageState(await deps.store.listMessages(session.id), run.id);
-          await appendRunErrorMessageOnce(deps, session.id, run.id, failureMessage, {
-            runId: run.id,
-            phase: "error",
-            toolCalls: persistedPlanState.toolTrace,
-            researchLog: persistedPlanState.toolTrace,
-            recoveredFromPlannerTimeout: true,
-          });
-          await cancelLiveExecution(toolCalls);
-          return deps.store.getRun(run.id);
-        }
-      }
-    }
     if (toolCalls.length > 0 && runAgeMs > ORPHANED_RUN_GRACE_MS) {
       const messages = await deps.store.listMessages(session.id);
       const latestUserMessage =
@@ -4974,12 +4954,13 @@ async function finalizeStaleRun(
         return deps.store.getRun(run.id);
       }
       const failureMessage = "This run stopped unexpectedly before it produced an answer.";
-      if (await shouldSkipInactiveRunFailure(deps, session.id, run.id, ORPHANED_RUN_GRACE_MS)) {
-        return deps.store.getRun(run.id);
-      }
       await deps.store.updateRun(run.id, {
         status: "failed",
         completedAt: new Date().toISOString(),
+        ownerInstanceId: null,
+        leaseExpiresAt: null,
+        activeToolCallId: null,
+        heartbeatAt: new Date().toISOString(),
       });
       await persistRecoveredPlanToolTrace(deps, session.id, run.id, toolCalls);
       const persistedPlanState = readPersistedPlanMessageState(await deps.store.listMessages(session.id), run.id);
@@ -5025,6 +5006,10 @@ async function finalizeStaleRun(
       await deps.store.updateRun(run.id, {
         status: "failed",
         completedAt: new Date().toISOString(),
+        ownerInstanceId: null,
+        leaseExpiresAt: null,
+        activeToolCallId: null,
+        heartbeatAt: new Date().toISOString(),
       });
       await persistRecoveredPlanToolTrace(deps, session.id, run.id, toolCalls);
       const persistedPlanState = readPersistedPlanMessageState(await deps.store.listMessages(session.id), run.id);
@@ -5056,24 +5041,22 @@ async function finalizeStaleRun(
   const activeRun = activeRuns?.get(run.id) ?? null;
   if ((!runtimeId || !deps.runtimeGateway.getWorkspaceTaskStatus) && !activeRun) {
     const runningDurationMs = Date.now() - Date.parse(runningToolCall.startedAt);
-    const persistedRawLog = await loadPersistedRawRunLog(deps, session.id, run.id);
-    const latestRawActivityMs = latestRawLogActivityMs(persistedRawLog);
-    const rawLogIdleMs = latestRawActivityMs > 0 ? Date.now() - latestRawActivityMs : Number.POSITIVE_INFINITY;
-    if (runningDurationMs > ORPHANED_RUN_GRACE_MS && rawLogIdleMs > ORPHANED_RUN_GRACE_MS) {
+    if (runningDurationMs > ORPHANED_RUN_GRACE_MS) {
       const failedResult = {
         ok: false,
         error: `${labelForToolCall(runningToolCall.toolName, runningToolCall.argsJson)} stopped unexpectedly before it finished.`,
         runtimeId: runtimeId ?? undefined,
       };
-      if (await shouldSkipInactiveRunFailure(deps, session.id, run.id, ORPHANED_RUN_GRACE_MS)) {
-        return deps.store.getRun(run.id);
-      }
       await deps.store.finishToolCall(runningToolCall.id, "failed", failedResult);
       const refreshedToolCalls = await deps.store.listToolCalls(run.id);
       await persistRecoveredPlanToolTrace(deps, session.id, run.id, refreshedToolCalls);
       await deps.store.updateRun(run.id, {
         status: "failed",
         completedAt: new Date().toISOString(),
+        ownerInstanceId: null,
+        leaseExpiresAt: null,
+        activeToolCallId: null,
+        heartbeatAt: new Date().toISOString(),
       });
       const persistedPlanState = readPersistedPlanMessageState(await deps.store.listMessages(session.id), run.id);
       await appendRunErrorMessageOnce(deps, session.id, run.id, failedResult.error, {
@@ -5132,15 +5115,16 @@ async function finalizeStaleRun(
             error: "Deep research stalled after shard passage selection and never produced a briefing.",
             runtimeId,
           };
-          if (await shouldSkipInactiveRunFailure(deps, session.id, run.id, 5 * 60_000)) {
-            return deps.store.getRun(run.id);
-          }
           await deps.store.finishToolCall(runningToolCall.id, "failed", failedResult);
           const refreshedToolCalls = await deps.store.listToolCalls(run.id);
           await persistRecoveredPlanToolTrace(deps, session.id, run.id, refreshedToolCalls);
           await deps.store.updateRun(run.id, {
             status: "failed",
             completedAt: new Date().toISOString(),
+            ownerInstanceId: null,
+            leaseExpiresAt: null,
+            activeToolCallId: null,
+            heartbeatAt: new Date().toISOString(),
           });
           const persistedPlanState = readPersistedPlanMessageState(await deps.store.listMessages(session.id), run.id);
           await appendRunErrorMessageOnce(deps, session.id, run.id, failedResult.error, {
@@ -5173,6 +5157,10 @@ async function finalizeStaleRun(
     await deps.store.updateRun(run.id, {
       status: "failed",
       completedAt: new Date().toISOString(),
+      ownerInstanceId: null,
+      leaseExpiresAt: null,
+      activeToolCallId: null,
+      heartbeatAt: new Date().toISOString(),
     });
     const persistedPlanState = readPersistedPlanMessageState(await deps.store.listMessages(session.id), run.id);
     await appendRunErrorMessageOnce(deps, session.id, run.id, failedResult.error, {
@@ -6345,6 +6333,10 @@ async function reconcileOrphanedSpriteFanoutRun(
   await deps.store.updateRun(run.id, {
     status: "failed",
     completedAt: new Date().toISOString(),
+    ownerInstanceId: null,
+    heartbeatAt: new Date().toISOString(),
+    leaseExpiresAt: null,
+    activeToolCallId: null,
   });
   const persistedPlanState = readPersistedPlanMessageState(await deps.store.listMessages(session.id), run.id);
   await appendRunErrorMessageOnce(deps, session.id, run.id, failureMessage, {
@@ -6879,80 +6871,6 @@ async function loadPersistedRawRunLog(
     .filter((entry): entry is Record<string, unknown> => Boolean(entry));
 }
 
-function latestRawLogActivityMs(rawLog: Array<Record<string, unknown>>) {
-  return rawLog.reduce<number>((latest, entry) => {
-    const ts = typeof entry?.timestamp === "string" ? Date.parse(entry.timestamp) : Number.NaN;
-    return Number.isFinite(ts) ? Math.max(latest, ts) : latest;
-  }, 0);
-}
-
-const persistedLivenessEventNames = new Set([
-  "run.started",
-  "assistant.plan",
-  "tool.started",
-  "tool.progress",
-  "tool.completed",
-  "assistant.completed",
-  "run.completed",
-]);
-
-function latestRunEventActivityMs(runEvents: RunEventRecord[]) {
-  return runEvents.reduce<number>((latest, event) => {
-    if (!persistedLivenessEventNames.has(event.event)) {
-      return latest;
-    }
-    const ts = Date.parse(event.createdAt);
-    return Number.isFinite(ts) ? Math.max(latest, ts) : latest;
-  }, 0);
-}
-
-async function latestPersistedRunActivityMs(
-  deps: AppDeps,
-  sessionId: string,
-  runId: string,
-) {
-  const [persistedRawLog, runEvents] = await Promise.all([
-    loadPersistedRawRunLog(deps, sessionId, runId),
-    deps.store.listRunEvents(runId),
-  ]);
-  return Math.max(
-    latestRawLogActivityMs(persistedRawLog),
-    latestRunEventActivityMs(runEvents),
-  );
-}
-
-async function shouldSkipInactiveRunFailure(
-  deps: AppDeps,
-  sessionId: string,
-  runId: string,
-  idleGraceMs: number,
-) {
-  const latestRun = await deps.store.getRun(runId);
-  if (!latestRun || isTerminalRunStatus(latestRun.status)) {
-    return true;
-  }
-  const latestActivityMs = await latestPersistedRunActivityMs(deps, sessionId, runId);
-  if (latestActivityMs <= 0) {
-    return false;
-  }
-  return (Date.now() - latestActivityMs) < idleGraceMs;
-}
-
-function latestOpenPlannerStartAt(rawLog: Array<Record<string, unknown>>) {
-  let latestStartAt: string | null = null;
-  for (const entry of rawLog) {
-    const event = typeof entry.event === "string" ? entry.event : null;
-    if (event === "planner.started" && typeof entry.timestamp === "string") {
-      latestStartAt = entry.timestamp;
-      continue;
-    }
-    if (event === "planner.completed" || event === "planner.failed" || event === "run.completed") {
-      latestStartAt = null;
-    }
-  }
-  return latestStartAt;
-}
-
 function resolveRunRawLog(
   activeRuns: Map<string, ActiveRunState>,
   runId: string,
@@ -7045,8 +6963,24 @@ export async function reapStaleRuns(
     if (!runRecord) {
       continue;
     }
+    const leaseExpired = !runRecord.leaseExpiresAt || Date.parse(runRecord.leaseExpiresAt) <= Date.now();
+    if (!leaseExpired) {
+      continue;
+    }
     try {
-      await finalizeStaleRun(deps, janitorRequest, runRecord);
+      const claimed = await deps.store.claimRunLease(run.id, {
+        ownerInstanceId: WORKER_INSTANCE_ID,
+        heartbeatAt: new Date().toISOString(),
+        leaseExpiresAt: new Date(Date.now() + RUN_LEASE_MS).toISOString(),
+      });
+      if (!claimed) {
+        continue;
+      }
+      const claimedRun = await deps.store.getRun(run.id);
+      if (!claimedRun) {
+        continue;
+      }
+      await finalizeStaleRun(deps, janitorRequest, claimedRun);
     } catch {
       // Best-effort janitor pass; the next schedule can retry this run.
     }
@@ -8620,7 +8554,8 @@ async function runOrchestrator(
   let rawLogSequence = 0;
   const rawRunLog: ToolRunRawLogEntry[] = [];
   let session: SessionRecord | null = input.sessionId ? await deps.store.getSession(input.sessionId) : null;
-  let run: Awaited<ReturnType<AppStore["createRun"]>> | null = null;
+  let run!: Awaited<ReturnType<AppStore["createRun"]>>;
+  let runCreated = false;
   const recordRawLog = (event: string, payload: Record<string, unknown>) => {
     rawRunLog.push({
       seq: rawLogSequence,
@@ -8632,7 +8567,7 @@ async function runOrchestrator(
     scheduleRawLogPersist(false);
   };
   async function maybeCreateToolLifecycleNotification(event: string, data: Record<string, unknown>) {
-    if (!session || !run) {
+    if (!session || !runCreated) {
       return;
     }
     if (event !== "tool.started" && event !== "tool.completed") {
@@ -8662,7 +8597,7 @@ async function runOrchestrator(
     );
   }
   async function maybeCreateRunCompletionNotification(data: Record<string, unknown>) {
-    if (!session || !run) {
+    if (!session || !runCreated) {
       return;
     }
     const status =
@@ -8871,6 +8806,19 @@ async function runOrchestrator(
       "assistant.completed",
       "run.completed",
     ]);
+    if (event === "tool.started") {
+      currentActiveToolCallId = typeof data.toolCallId === "string" ? data.toolCallId : currentActiveToolCallId;
+    } else if (event === "tool.completed") {
+      const completedToolCallId = typeof data.toolCallId === "string" ? data.toolCallId : null;
+      if (completedToolCallId && currentActiveToolCallId === completedToolCallId) {
+        currentActiveToolCallId = null;
+      }
+    } else if (event === "run.completed") {
+      currentActiveToolCallId = null;
+    }
+    if (persistableRunEventNames.has(event)) {
+      await renewRunLease();
+    }
     const nowMs = deps.now?.() ?? Date.now();
     if (event === "tool.started") {
       const toolName = typeof data.toolName === "string" ? data.toolName : "";
@@ -9454,7 +9402,14 @@ async function runOrchestrator(
   });
   const sessionMessages = await deps.store.listMessages(activeSession.id);
   const conversationHistory = formatConversationHistory(sessionMessages);
-  run = await deps.store.createRun(activeSession.id);
+  const initialHeartbeatAt = new Date().toISOString();
+  const initialLeaseExpiresAt = new Date(Date.now() + RUN_LEASE_MS).toISOString();
+  run = await deps.store.createRun(activeSession.id, {
+    ownerInstanceId: WORKER_INSTANCE_ID,
+    heartbeatAt: initialHeartbeatAt,
+    leaseExpiresAt: initialLeaseExpiresAt,
+  });
+  runCreated = true;
   activeRuns.set(run.id, {
     sessionId: activeSession.id,
     userId: input.userId,
@@ -9463,6 +9418,53 @@ async function runOrchestrator(
     rawLog: rawRunLog,
     subscribers: new Map(),
   });
+  let currentActiveToolCallId: string | null = null;
+  let lastLeaseHeartbeatAtMs = Date.now();
+  const renewRunLease = async (force = false) => {
+    if (!run) {
+      return;
+    }
+    if (isTerminalRunStatus(run.status)) {
+      return;
+    }
+    const nowMs = Date.now();
+    if (!force && nowMs - lastLeaseHeartbeatAtMs < RUN_HEARTBEAT_INTERVAL_MS / 2) {
+      return;
+    }
+    lastLeaseHeartbeatAtMs = nowMs;
+    await deps.store.updateRun(run.id, {
+      ownerInstanceId: WORKER_INSTANCE_ID,
+      heartbeatAt: new Date(nowMs).toISOString(),
+      leaseExpiresAt: new Date(nowMs + RUN_LEASE_MS).toISOString(),
+      activeToolCallId: currentActiveToolCallId,
+    });
+  };
+  const clearRunLease = async (status: RunRecord["status"]) => {
+    if (!run) {
+      return;
+    }
+    const completedAt = new Date().toISOString();
+    await deps.store.updateRun(run.id, {
+      status,
+      completedAt,
+      ownerInstanceId: null,
+      heartbeatAt: completedAt,
+      leaseExpiresAt: null,
+      activeToolCallId: null,
+    });
+    run = {
+      ...run,
+      status,
+      completedAt,
+      ownerInstanceId: null,
+      heartbeatAt: completedAt,
+      leaseExpiresAt: null,
+      activeToolCallId: null,
+    };
+  };
+  const leaseHeartbeatTimer = setInterval(() => {
+    void renewRunLease(true).catch(() => {});
+  }, RUN_HEARTBEAT_INTERVAL_MS);
   scheduleRawLogPersist(true);
   await send("run.started", {
     runId: run.id,
@@ -9671,10 +9673,7 @@ async function runOrchestrator(
       send,
     );
     runFinalized = true;
-    await deps.store.updateRun(run.id, {
-      status: "completed",
-      completedAt: new Date().toISOString(),
-    });
+    await clearRunLease("completed");
     await send("run.completed", {
       runId: run.id,
       sessionId: activeSession.id,
@@ -10431,10 +10430,7 @@ async function runOrchestrator(
         route: "direct_response",
         researchDocumentHtml: directResearchDocumentHtml,
       });
-      await deps.store.updateRun(run.id, {
-        status: "completed",
-        completedAt: new Date().toISOString(),
-      });
+      await clearRunLease("completed");
       await streamAssistantText(routeDecision.answer, send);
       await send("assistant.completed", {
         answer: routeDecision.answer,
@@ -10569,10 +10565,9 @@ async function runOrchestrator(
 
       if (decision.type === "final_answer") {
         await deps.store.updateRun(run.id, {
-          status: "completed",
           plannerTurns: turn,
-          completedAt: new Date().toISOString(),
         });
+        await clearRunLease("completed");
         await synthesizeAnswer(
           deps,
           {
@@ -11044,10 +11039,7 @@ async function runOrchestrator(
       }
 
       if (activeRuns.get(run.id)?.cancelRequested) {
-        await deps.store.updateRun(run.id, {
-          status: "failed",
-          completedAt: new Date().toISOString(),
-        });
+        await clearRunLease("failed");
         await send("run.completed", {
           runId: run.id,
           sessionId: session.id,
@@ -11094,10 +11086,7 @@ async function runOrchestrator(
         await completeRunFromBriefing(retrievalFallbackBriefing, "retrieval_fallback");
         return;
       }
-      await deps.store.updateRun(run.id, {
-        status: "timed_out",
-        completedAt: new Date().toISOString(),
-      });
+      await clearRunLease("timed_out");
       const timeoutMessage = "The run hit its hard limits before it produced a valid answer.";
       const timeoutResearchDocumentHtml = await appendFinalAnswerResearchDocumentHtml(
         deps,
@@ -11167,10 +11156,7 @@ async function runOrchestrator(
     );
     const refreshedToolCalls = await deps.store.listToolCalls(run.id);
     await persistRecoveredPlanToolTrace(deps, session.id, run.id, refreshedToolCalls);
-    await deps.store.updateRun(run.id, {
-      status: "failed",
-      completedAt: new Date().toISOString(),
-    });
+    await clearRunLease("failed");
 
     const failureMessage = userFacingRunFailureMessage(error);
     const failureResearchDocumentHtml = await appendFinalAnswerResearchDocumentHtml(
@@ -11212,6 +11198,7 @@ async function runOrchestrator(
     });
     return;
   } finally {
+    clearInterval(leaseHeartbeatTimer);
     await harvestPendingWorkspace(true);
     if (runFinalized) {
       return;
@@ -12283,6 +12270,10 @@ export function createApp(inputDeps: CreateAppInput) {
     await deps.store.updateRun(runId, {
       status: "failed",
       completedAt: new Date().toISOString(),
+      ownerInstanceId: null,
+      heartbeatAt: new Date().toISOString(),
+      leaseExpiresAt: null,
+      activeToolCallId: null,
     });
     await persistRecoveredPlanToolTrace(deps, session.id, runId, await deps.store.listToolCalls(runId));
 
@@ -12351,6 +12342,10 @@ export function createApp(inputDeps: CreateAppInput) {
     await deps.store.updateRun(runId, {
       status: "failed",
       completedAt: new Date().toISOString(),
+      ownerInstanceId: null,
+      heartbeatAt: new Date().toISOString(),
+      leaseExpiresAt: null,
+      activeToolCallId: null,
     });
     await persistRecoveredPlanToolTrace(deps, session.id, runId, await deps.store.listToolCalls(runId));
 
@@ -12396,9 +12391,7 @@ export function createApp(inputDeps: CreateAppInput) {
     if (!initialRun || initialRun.sessionId !== sessionId) {
       return null;
     }
-    const run = initialRun.status === "running" || initialRun.status === "queued"
-      ? await finalizeStaleRun(deps, new Request(`${apiOrigin(deps)}/internal/run-state`), initialRun) ?? initialRun
-      : initialRun;
+    const run = initialRun;
     if (!run || run.sessionId !== sessionId) {
       return null;
     }
