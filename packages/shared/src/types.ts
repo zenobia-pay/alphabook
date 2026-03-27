@@ -437,6 +437,8 @@ export type WorkSourceResponse = z.infer<typeof WorkSourceResponseSchema>;
 export const ChunkSearchResultSchema = z.object({
   id: z.string(),
   workId: z.string(),
+  workTitle: z.string().optional(),
+  authors: z.array(z.string()).optional(),
   chunkIndex: z.number(),
   text: z.string(),
   r2Key: z.string().nullable(),

@@ -2210,6 +2210,8 @@ async function deleteKeys(r2: S3Client, bucket: string, keys: string[]) {
 type StoredChunkArtifact = {
   id: string;
   chunkIndex: number;
+  workTitle: string;
+  authors: string[];
   text: string;
   excerpt: string;
   r2Key: string;
@@ -2229,6 +2231,8 @@ function buildStoredChunkArtifacts(args: {
   adapter: CorpusAdapter;
   adapterId: string;
   externalId: string;
+  workTitle: string;
+  authors: string[];
   chunks: string[];
   readerPaths?: Array<string | null>;
   embeddingProvider: string;
@@ -2242,6 +2246,8 @@ function buildStoredChunkArtifacts(args: {
     return {
       id: buildCorpusChunkId(args.adapterId, args.externalId, chunkIndex),
       chunkIndex,
+      workTitle: args.workTitle,
+      authors: args.authors,
       text,
       excerpt: createChunkExcerpt(text),
       r2Key,
@@ -2259,6 +2265,8 @@ function serializeChunkManifest(records: StoredChunkArtifact[], workId: string) 
   return records.map((record) => JSON.stringify({
     id: record.id,
     work_id: workId,
+    work_title: record.workTitle,
+    authors: record.authors,
     chunk_index: record.chunkIndex,
     text: record.text,
     excerpt: record.excerpt,
@@ -2413,6 +2421,8 @@ async function persistIngestedWork(
     adapter,
     adapterId: source.adapterId,
     externalId: source.externalId,
+    workTitle: source.title,
+    authors,
     chunks,
     readerPaths,
     embeddingProvider,
@@ -2459,6 +2469,8 @@ async function persistIngestedWork(
         JSON.stringify({
           id: chunk.id,
           work_id: workId,
+          work_title: chunk.workTitle,
+          authors: chunk.authors,
           chunk_index: chunk.chunkIndex,
           text: chunk.text,
           excerpt: chunk.excerpt,
@@ -3114,6 +3126,8 @@ async function readCanonicalR2Work(
     return {
       id: chunkId,
       chunkIndex,
+      workTitle: typeof chunk.work_title === "string" && chunk.work_title.length > 0 ? chunk.work_title : title,
+      authors: Array.isArray(chunk.authors) ? chunk.authors.filter((value): value is string => typeof value === "string") : authors,
       text: chunk.text,
       readerPath: typeof chunk.reader_path === "string" && chunk.reader_path.length > 0 ? chunk.reader_path : null,
       r2Key: typeof chunk.r2_key === "string" && chunk.r2_key.length > 0
@@ -3344,6 +3358,8 @@ async function rebuildCanonicalR2Work(
   const chunkArtifacts = canonical.chunks.map((chunk, index) => ({
     id: chunk.id,
     chunkIndex: chunk.chunkIndex,
+    workTitle: canonical.title,
+    authors: canonical.authors,
     text: chunk.text,
     excerpt: createChunkExcerpt(chunk.text),
     r2Key: chunk.r2Key,
@@ -3366,6 +3382,8 @@ async function rebuildCanonicalR2Work(
         JSON.stringify({
           id: chunk.id,
           work_id: workId,
+          work_title: chunk.workTitle,
+          authors: chunk.authors,
           chunk_index: chunk.chunkIndex,
           text: chunk.text,
           excerpt: chunk.excerpt,

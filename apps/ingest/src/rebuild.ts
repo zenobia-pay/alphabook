@@ -16,6 +16,8 @@ export interface GutenbergR2ScanResult {
 export interface RebuildChunkRecord {
   id?: string;
   work_id?: string;
+  work_title?: string | null;
+  authors?: string[];
   chunk_index?: number;
   text?: string;
   r2_key?: string | null;

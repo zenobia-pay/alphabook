@@ -50,6 +50,8 @@ function parseJsonArray(value: unknown): string[] {
 
 type ChunkManifestEntry = {
   id?: string;
+  work_title?: string | null;
+  authors?: string[];
   chunk_index?: number;
   text?: string;
   excerpt?: string;
@@ -194,7 +196,7 @@ export class D1AppStore implements AppStore {
   private readonly feedLabels: { summary: string; taxonomy: string; fallback: string };
   private corpusStorePromise: Promise<InMemoryAppStore> | null = null;
   private readonly workChunksKeyById = new Map<string, string>();
-  private readonly workReferenceById = new Map<string, { adapterId: string; externalId: string }>();
+  private readonly workReferenceById = new Map<string, { adapterId: string; externalId: string; title: string; authors: string[] }>();
   private readonly workIdByExternalRef = new Map<string, string>();
   private readonly chunkManifestCache = new Map<string, ChunkManifestEntry[]>();
   private runLifecycleColumnsReady: Promise<void> | null = null;
@@ -311,7 +313,12 @@ export class D1AppStore implements AppStore {
         if (keys.chunksKey) {
           this.workChunksKeyById.set(row.id, keys.chunksKey);
         }
-        this.workReferenceById.set(row.id, { adapterId, externalId });
+        this.workReferenceById.set(row.id, {
+          adapterId,
+          externalId,
+          title: row.title,
+          authors: authorsByWork.get(row.id) ?? [],
+        });
         this.workIdByExternalRef.set(`${adapterId}:${externalId}`, row.id);
         return {
           id: row.id,
@@ -364,6 +371,13 @@ export class D1AppStore implements AppStore {
         ? entry.id
         : buildCorpusChunkId(workRef.adapterId, workRef.externalId, chunkIndex),
       workId,
+      workTitle:
+        typeof entry.work_title === "string" && entry.work_title.trim().length > 0
+          ? entry.work_title
+          : workRef.title,
+      authors: Array.isArray(entry.authors)
+        ? entry.authors.filter((author): author is string => typeof author === "string" && author.trim().length > 0)
+        : workRef.authors,
       chunkIndex,
       text,
       excerpt,
