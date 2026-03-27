@@ -4862,13 +4862,13 @@ async function finalizeStaleRun(
 
   const cancelLiveExecution = async (toolCalls: Awaited<ReturnType<AppStore["listToolCalls"]>>) => {
     const activeRun = activeRuns?.get(run.id);
-    if (!activeRun) {
-      return;
+    if (activeRun) {
+      activeRun.cancelRequested = true;
     }
-    activeRun.cancelRequested = true;
+    const persistedRuntimeIds = await listPersistedRunRuntimeIds(deps, session.id, run.id);
     const runtimeIds = new Set<string>([
-      ...Array.from(activeRun.runtimeIds),
-      ...collectRuntimeIds(toolCalls),
+      ...Array.from(activeRun?.runtimeIds ?? []),
+      ...persistedRuntimeIds,
     ]);
     await Promise.all(
       Array.from(runtimeIds).map((runtimeId) =>
@@ -5741,44 +5741,6 @@ function readPersistedPlanToolTrace(metadata: Record<string, unknown> | null | u
   });
 }
 
-function mergeRecoveredTraceWithExisting(
-  existingTrace: LiveToolTraceEntry[],
-  recoveredTrace: LiveToolTraceEntry[],
-): LiveToolTraceEntry[] {
-  if (existingTrace.length === 0) {
-    return recoveredTrace;
-  }
-  const existingById = new Map(existingTrace.map((entry) => [entry.id, entry]));
-  const merged = recoveredTrace.map((entry) => {
-    const existing = existingById.get(entry.id);
-    if (!existing) {
-      return entry;
-    }
-    return {
-      ...existing,
-      label: existing.label || entry.label,
-      rationale: existing.rationale ?? entry.rationale,
-      progress: existing.progress.length > 0 ? existing.progress : entry.progress,
-      ...(Array.isArray(existing.progressDetails) && existing.progressDetails.length > 0
-        ? { progressDetails: existing.progressDetails }
-        : Array.isArray(entry.progressDetails) && entry.progressDetails.length > 0
-          ? { progressDetails: entry.progressDetails }
-          : {}),
-      args: Object.keys(existing.args).length > 0 ? existing.args : entry.args,
-      ...(entry.result ? { result: entry.result } : existing.result ? { result: existing.result } : {}),
-      state: entry.state,
-      isError: entry.isError ?? existing.isError,
-    } satisfies LiveToolTraceEntry;
-  });
-  const mergedIds = new Set(merged.map((entry) => entry.id));
-  for (const existing of existingTrace) {
-    if (!mergedIds.has(existing.id)) {
-      merged.push(existing);
-    }
-  }
-  return merged;
-}
-
 function buildRecoveredToolTrace(
   toolCalls: Awaited<ReturnType<AppStore["listToolCalls"]>>,
 ): LiveToolTraceEntry[] {
@@ -6100,42 +6062,6 @@ async function trackRuntimeBillingEvents(
   }
 }
 
-function createdWithinRunWindow(
-  createdAt: string | null | undefined,
-  startedAt: string,
-  completedAt?: string | null,
-  nextRunStartedAt?: string | null,
-) {
-  const createdMs = typeof createdAt === "string" ? Date.parse(createdAt) : Number.NaN;
-  const startedMs = Date.parse(startedAt);
-  if (!Number.isFinite(createdMs) || !Number.isFinite(startedMs) || createdMs < startedMs) {
-    return false;
-  }
-  const candidateEnds = [completedAt, nextRunStartedAt]
-    .filter((value): value is string => typeof value === "string" && value.length > 0)
-    .map((value) => Date.parse(value))
-    .filter((value) => Number.isFinite(value));
-  if (candidateEnds.length === 0) {
-    return true;
-  }
-  return createdMs < Math.min(...candidateEnds);
-}
-
-function runtimeLooksSpriteRelated(instance: Awaited<ReturnType<AppStore["listRuntimeInstances"]>>[number]) {
-  const taskContext = instance.manifestJson?.taskContext;
-  if (!taskContext || typeof taskContext !== "object") {
-    return false;
-  }
-  const record = taskContext as Record<string, unknown>;
-  return (
-    typeof record.researchMode === "string" && record.researchMode === "sprite_fanout"
-  ) || (
-    record.spriteShard && typeof record.spriteShard === "object"
-  ) || (
-    record.aggregator === true
-  );
-}
-
 function toolCallUsesSpriteFanout(toolCall: Awaited<ReturnType<AppStore["listToolCalls"]>>[number]) {
   const taskSpec = toolCall.argsJson?.taskSpec;
   return Boolean(
@@ -6188,7 +6114,6 @@ type SpriteShardLifecycleSummary = {
 export function summarizeSpriteFanoutLifecycle(
   runEvents: Awaited<ReturnType<AppStore["listRunEvents"]>>,
   runtimeInstances: Awaited<ReturnType<AppStore["listRuntimeInstances"]>>,
-  runStartedAt: string,
 ) {
   const shardStates = new Map<string, SpriteShardLifecycleSummary>();
   let aggregateState: "idle" | "starting" | "completed" | "failed" = "idle";
@@ -6244,55 +6169,12 @@ export function summarizeSpriteFanoutLifecycle(
     });
   }
 
-  const spriteRuntimes = runtimeInstances.filter((instance) =>
-    createdWithinRunWindow(instance.createdAt, runStartedAt) && runtimeLooksSpriteRelated(instance),
+  const runtimeIds = collectRuntimeIdsFromRunEvents(runEvents);
+  const runtimesById = new Map(
+    runtimeInstances
+      .filter((instance) => runtimeIds.has(instance.runtimeId))
+      .map((instance) => [instance.runtimeId, instance] as const),
   );
-  const runtimesById = new Map(spriteRuntimes.map((instance) => [instance.runtimeId, instance] as const));
-  for (const instance of spriteRuntimes) {
-    const manifestTaskContext = instance.manifestJson && typeof instance.manifestJson === "object"
-      ? (instance.manifestJson as Record<string, unknown>).taskContext
-      : null;
-    const spriteShard = manifestTaskContext && typeof manifestTaskContext === "object"
-      ? (manifestTaskContext as Record<string, unknown>).spriteShard
-      : null;
-    if (!spriteShard || typeof spriteShard !== "object") {
-      continue;
-    }
-    const shardRecord = spriteShard as Record<string, unknown>;
-    const shardId = typeof shardRecord.shardId === "string" ? shardRecord.shardId : null;
-    if (!shardId) {
-      continue;
-    }
-    const existing = shardStates.get(shardId);
-    if (existing) {
-      if (
-        !spriteShardLifecycleTerminal(existing.state)
-        && runtimeLifecycleTerminal(instance.status)
-      ) {
-        shardStates.set(shardId, {
-          ...existing,
-          runtimeId: existing.runtimeId ?? instance.runtimeId,
-          state: "failed",
-        });
-      }
-      continue;
-    }
-    shardStates.set(shardId, {
-      shardId,
-      label:
-        typeof shardRecord.label === "string" && shardRecord.label.trim().length > 0
-          ? shardRecord.label
-          : shardId,
-      shardIndex: typeof shardRecord.index === "number" ? shardRecord.index : null,
-      totalShards: typeof shardRecord.totalShards === "number" ? shardRecord.totalShards : null,
-      bookCount: typeof shardRecord.bookCount === "number" ? shardRecord.bookCount : null,
-      runtimeId: instance.runtimeId,
-      state:
-        typeof shardRecord.lifecycleState === "string" && shardRecord.lifecycleState.trim().length > 0
-          ? shardRecord.lifecycleState
-          : instance.status,
-    });
-  }
 
   return {
     aggregateState,
@@ -6321,7 +6203,7 @@ async function reconcileOrphanedSpriteFanoutRun(
     deps.store.listRuntimeInstances(session.id),
     deps.runtimeGateway.listSpriteSessionMachines?.(session.id) ?? Promise.resolve([]),
   ]);
-  const lifecycle = summarizeSpriteFanoutLifecycle(runEvents, runtimeInstances, run.startedAt);
+  const lifecycle = summarizeSpriteFanoutLifecycle(runEvents, runtimeInstances);
   if (lifecycle.aggregateState === "completed" || lifecycle.aggregateState === "failed") {
     return null;
   }
@@ -6451,36 +6333,14 @@ async function resolveRunRuntimeContext(
   deps: AppDeps,
   sessionId: string,
   run: RunRecord,
-  toolCalls: Awaited<ReturnType<AppStore["listToolCalls"]>>,
+  _toolCalls: Awaited<ReturnType<AppStore["listToolCalls"]>>,
 ) {
-  const [sessionRuns, runtimeInstances, runEvents] = await Promise.all([
-    deps.store.listRuns(sessionId),
+  const [runtimeInstances, runEvents] = await Promise.all([
     deps.store.listRuntimeInstances(sessionId),
     deps.store.listRunEvents(run.id),
   ]);
   const runtimeIds = collectRuntimeIdsFromRunEvents(runEvents);
-  if (runtimeIds.size === 0) {
-    for (const toolCall of toolCalls) {
-      addRuntimeIdsFromValue(runtimeIds, toolCall.argsJson);
-      addRuntimeIdsFromValue(runtimeIds, toolCall.resultJson);
-    }
-  }
-  const nextRunStartedAt = sessionRuns
-    .filter((candidate) => candidate.id !== run.id && Date.parse(candidate.startedAt) > Date.parse(run.startedAt))
-    .sort((left, right) => Date.parse(left.startedAt) - Date.parse(right.startedAt))[0]?.startedAt ?? null;
-  const spriteRun = toolCalls.some(toolCallUsesSpriteFanout) || runEvents.some((event) => event.event.startsWith("sprite."));
-  let relatedRuntimeInstances = runtimeInstances.filter((instance) => runtimeIds.has(instance.runtimeId));
-  if (spriteRun && relatedRuntimeInstances.length === 0) {
-    relatedRuntimeInstances = runtimeInstances.filter((instance) => {
-      if (runtimeIds.has(instance.runtimeId)) {
-        return true;
-      }
-      if (!runtimeLooksSpriteRelated(instance)) {
-        return false;
-      }
-      return createdWithinRunWindow(instance.createdAt, run.startedAt, run.completedAt, nextRunStartedAt);
-    });
-  }
+  const relatedRuntimeInstances = runtimeInstances.filter((instance) => runtimeIds.has(instance.runtimeId));
   for (const runtime of relatedRuntimeInstances) {
     runtimeIds.add(runtime.runtimeId);
   }
@@ -6989,19 +6849,17 @@ function resolveRunRawLog(
   }));
 }
 
-function collectRuntimeIds(toolCalls: Awaited<ReturnType<AppStore["listToolCalls"]>>) {
-  const runtimeIds = new Set<string>();
-  for (const toolCall of toolCalls) {
-    const args = toolCall.argsJson;
-    const result = toolCall.resultJson;
-    if (typeof args?.runtimeId === "string" && args.runtimeId.length > 0) {
-      runtimeIds.add(args.runtimeId);
-    }
-    if (typeof result?.runtimeId === "string" && result.runtimeId.length > 0) {
-      runtimeIds.add(result.runtimeId);
-    }
+async function listPersistedRunRuntimeIds(
+  deps: AppDeps,
+  sessionId: string,
+  runId: string,
+) {
+  const run = await deps.store.getRun(runId);
+  if (!run || run.sessionId !== sessionId) {
+    return [];
   }
-  return Array.from(runtimeIds);
+  const { runtimeIds } = await resolveRunRuntimeContext(deps, sessionId, run, []);
+  return runtimeIds;
 }
 
 function addRuntimeIds(runtimeIds: Set<string>, ...payloads: Array<Record<string, unknown> | undefined>) {
@@ -9192,6 +9050,7 @@ async function runOrchestrator(
       detailType === "research.work"
       || detailType === "research.chunk"
       || detailType === "research.briefing_line"
+      || detailType === "semantic.alphaloop"
       || detailType === "sprite.shard_state"
       || detailType === "sprite.aggregate_state"
     ) {
@@ -12349,10 +12208,13 @@ export function createApp(inputDeps: CreateAppInput) {
     if (activeRun) {
       activeRun.cancelRequested = true;
     }
-    const toolCalls = await deps.store.listToolCalls(runId);
+    const [toolCalls, persistedRuntimeIds] = await Promise.all([
+      deps.store.listToolCalls(runId),
+      listPersistedRunRuntimeIds(deps, session.id, runId),
+    ]);
     const runtimeIds = new Set<string>([
       ...Array.from(activeRun?.runtimeIds ?? []),
-      ...collectRuntimeIds(toolCalls),
+      ...persistedRuntimeIds,
     ]);
     await Promise.all(
       Array.from(runtimeIds).map((runtimeId) =>
@@ -12414,10 +12276,13 @@ export function createApp(inputDeps: CreateAppInput) {
     if (activeRun) {
       activeRun.cancelRequested = true;
     }
-    const toolCalls = await deps.store.listToolCalls(runId);
+    const [toolCalls, persistedRuntimeIds] = await Promise.all([
+      deps.store.listToolCalls(runId),
+      listPersistedRunRuntimeIds(deps, session.id, runId),
+    ]);
     const runtimeIds = new Set<string>([
       ...Array.from(activeRun?.runtimeIds ?? []),
-      ...collectRuntimeIds(toolCalls),
+      ...persistedRuntimeIds,
     ]);
     await Promise.all(
       Array.from(runtimeIds).map((runtimeId) =>
@@ -12488,18 +12353,12 @@ export function createApp(inputDeps: CreateAppInput) {
       readPersistedPlanMessageStateForRun(deps, sessionId, run.id),
     ]);
     const artifacts = await loadRunArtifactSummaries(deps, sessionId, run.id, runtimeIds);
-    const toolTrace = runEvents.length > 0
-      ? persistedPlanState.toolTrace
-      : mergeRecoveredTraceWithExisting(
-          persistedPlanState.toolTrace,
-          buildRecoveredToolTrace(toolCalls),
-        );
 
     return {
       run,
       toolCalls,
       runEvents,
-      toolTrace,
+      toolTrace: persistedPlanState.toolTrace,
       runtimeInstances,
       artifacts,
     };
@@ -12608,17 +12467,11 @@ export function createApp(inputDeps: CreateAppInput) {
       readPersistedPlanMessageStateForRun(deps, sessionId, runId),
     ]);
     const artifacts = await loadRunArtifactSummaries(deps, sessionId, runId, runtimeIds);
-    const toolTrace = runEvents.length > 0
-      ? persistedPlanState.toolTrace
-      : mergeRecoveredTraceWithExisting(
-          persistedPlanState.toolTrace,
-          buildRecoveredToolTrace(toolCalls),
-        );
 
     return c.json({
       run,
       runEvents,
-      toolTrace,
+      toolTrace: persistedPlanState.toolTrace,
       researchDocumentHtml: persistedPlanState.researchDocumentHtml,
       artifacts,
     });
@@ -12663,17 +12516,11 @@ export function createApp(inputDeps: CreateAppInput) {
       readPersistedPlanMessageStateForRun(deps, sessionId, runId),
     ]);
     const artifacts = await loadRunArtifactSummaries(deps, sessionId, runId, runtimeIds);
-    const toolTrace = runEvents.length > 0
-      ? persistedPlanState.toolTrace
-      : mergeRecoveredTraceWithExisting(
-          persistedPlanState.toolTrace,
-          buildRecoveredToolTrace(toolCalls),
-        );
 
     return c.json({
       run,
       runEvents,
-      toolTrace,
+      toolTrace: persistedPlanState.toolTrace,
       researchDocumentHtml: persistedPlanState.researchDocumentHtml,
       artifacts,
     });
