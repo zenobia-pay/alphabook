@@ -603,12 +603,12 @@ const ComposerAction: FC<{
 
   return (
     <div className="aui-composer-action-wrapper relative flex items-center gap-2">
-      <div className="aui-composer-effort-shell relative" ref={effortMenuRef}>
+      <div className="relative ml-1 shrink-0" ref={effortMenuRef}>
         <Button
           type="button"
           variant="ghost"
           className={cn(
-            "aui-composer-effort-trigger h-8 min-w-24 rounded-full border border-transparent bg-neutral-100/95 px-3 text-left shadow-none transition hover:bg-neutral-200/90 disabled:bg-neutral-100/70",
+            "h-8 min-w-24 rounded-full border border-transparent bg-neutral-100/95 px-3 text-left shadow-none transition hover:bg-neutral-200/90 disabled:bg-neutral-100/70",
             isEffortMenuOpen && "bg-neutral-200/95",
           )}
           aria-label="Effort level"
@@ -619,17 +619,12 @@ const ComposerAction: FC<{
         >
           <span className="flex w-full items-center gap-2">
             <span className="truncate text-[0.82rem] font-medium leading-none text-foreground">{selectedOption.label}</span>
-            <ChevronDownIcon
-              className={cn(
-                "ml-auto size-3.5 shrink-0 text-muted-foreground transition-transform duration-200",
-                isEffortMenuOpen && "rotate-180",
-              )}
-            />
+            <ChevronDownIcon className="ml-auto size-3.5 shrink-0 text-muted-foreground" />
           </span>
         </Button>
         {isEffortMenuOpen ? (
           <div
-            className="aui-composer-effort-menu absolute bottom-full left-0 z-30 mb-2 min-w-44 overflow-hidden rounded-3xl border border-black/12 bg-white/98 p-1.5 shadow-[0_14px_36px_rgba(15,23,42,0.12)] backdrop-blur-xl"
+            className="absolute bottom-full left-0 z-30 mb-2 min-w-44 overflow-hidden rounded-3xl border border-black/12 bg-white/98 p-1.5 shadow-[0_14px_36px_rgba(15,23,42,0.12)] backdrop-blur-xl"
             role="listbox"
             aria-label="Effort options"
           >

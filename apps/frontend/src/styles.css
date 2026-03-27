@@ -743,12 +743,6 @@ button {
   padding-bottom: 0.08rem;
 }
 
-.aui-composer-effort-shell {
-  position: relative;
-  flex: 0 0 auto;
-  margin-left: 0.1rem;
-}
-
 .aui-composer-send,
 .aui-composer-cancel,
 .aui-thread-scroll-to-bottom {
