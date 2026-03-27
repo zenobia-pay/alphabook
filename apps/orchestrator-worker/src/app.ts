@@ -5319,6 +5319,10 @@ function canonicalToolResult(
   if (Array.isArray(result.chunks) && result.chunks.length > 0) {
     safe.chunkCount = typeof safe.chunkCount === "number" ? safe.chunkCount : result.chunks.length;
     if (toolName === "semantic_deep_search") {
+      const rankedChunks = Array.isArray(result.rankedChunks) ? result.rankedChunks : [];
+      if (rankedChunks.length > 0) {
+        safe.rankedChunkCount = rankedChunks.length;
+      }
       safe.chunks = result.chunks
         .filter((candidate): candidate is Record<string, unknown> => Boolean(candidate) && typeof candidate === "object")
         .map((chunk) => ({
@@ -8618,7 +8622,12 @@ async function runOrchestrator(
             : (work as Record<string, unknown>).title,
       });
     }
-    const chunks = Array.isArray(result.chunks) ? result.chunks : [];
+    const chunks =
+      Array.isArray(result.rankedChunks)
+        ? result.rankedChunks
+        : Array.isArray(result.chunks)
+          ? result.chunks
+          : [];
     for (const chunk of chunks) {
       if (!chunk || typeof chunk !== "object") {
         continue;

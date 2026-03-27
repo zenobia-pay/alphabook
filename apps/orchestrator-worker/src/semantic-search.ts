@@ -32,6 +32,7 @@ export interface SemanticSearchService {
     briefing: string;
     citations: Citation[];
     chunks: ChunkSearchResult[];
+    rankedChunks: ChunkSearchResult[];
     alphaloopEvents: AlphaloopEvent[];
     iterations: IterationRecord[];
     totalChunksConsidered: number;
@@ -474,7 +475,7 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
       hydratedChunkCount: hydratedChunks.length,
     });
     const hydratedById = new Map(hydratedChunks.map((chunk) => [chunk.id, chunk]));
-    const chunks = finalResult.chunks
+    const rankedChunks = finalResult.chunks
       .map((ranked) => {
         const hydrated = hydratedById.get(ranked.id);
         if (!hydrated) {
@@ -486,7 +487,8 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
           excerpt: excerptForChunk(hydrated),
         };
       })
-      .filter((chunk): chunk is ChunkSearchResult => Boolean(chunk))
+      .filter((chunk): chunk is ChunkSearchResult => Boolean(chunk));
+    const chunks = rankedChunks
       .slice(0, Math.max(4, Math.min(args.maxResults ?? 8, 12)));
 
     if (chunks.length === 0) {
@@ -500,6 +502,7 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
         briefing: "I couldn’t find strong semantic matches for that question in the indexed corpus yet.",
         citations: [],
         chunks: [],
+        rankedChunks: [],
         alphaloopEvents,
         iterations: finalResult.iterations,
         totalChunksConsidered: finalResult.totalChunksConsidered,
@@ -547,6 +550,7 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
       briefing: text.trim(),
       citations: citationsFromChunks(chunks),
       chunks,
+      rankedChunks,
       alphaloopEvents,
       iterations: finalResult.iterations,
       totalChunksConsidered: finalResult.totalChunksConsidered,
