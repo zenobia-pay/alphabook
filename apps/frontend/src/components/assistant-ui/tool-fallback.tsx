@@ -325,6 +325,73 @@ function getDisplayLogLines(value: unknown) {
   });
 }
 
+function getErrorText(status?: ToolCallMessagePartStatus, result?: unknown) {
+  if (status?.type !== "incomplete") {
+    return null;
+  }
+  if (typeof status.error === "string" && status.error.trim()) {
+    return status.error.trim();
+  }
+  if (status.error) {
+    return JSON.stringify(status.error);
+  }
+  const safeResultObject = safeObject(result);
+  return typeof safeResultObject?.error === "string" && safeResultObject.error.trim()
+    ? safeResultObject.error.trim()
+    : null;
+}
+
+function buildToolLogLines(
+  args: JsonRecord | null,
+  result: unknown,
+  options: {
+    includeStructuredArgsFallback?: boolean;
+    includeStructuredResultFallback?: boolean;
+  } = {},
+) {
+  const cleanedArgs = pruneValue(omitInternalKeys(args));
+  const safeResultObject = safeObject(result);
+  const resultObject = pruneValue(safeResultObject ?? result);
+  const startedLogLines = getDisplayLogLines(args);
+  const completedLogLines = getDisplayLogLines(result);
+  const progress = getProgress(args);
+  const suppressStructuredArgsFallback = options.includeStructuredArgsFallback === false
+    ? true
+    : hasStructuredSearchPayload(cleanedArgs);
+  const suppressStructuredResultFallback = options.includeStructuredResultFallback === false
+    ? true
+    : hasStructuredSearchPayload(resultObject);
+  const lines: ToolLogLine[] = [];
+
+  if (startedLogLines.length > 0) {
+    lines.push(...startedLogLines);
+  } else if (!suppressStructuredArgsFallback && cleanedArgs !== undefined && cleanedArgs !== null) {
+    flattenRawLogLines(cleanedArgs, undefined, lines);
+  }
+
+  progress.forEach((item) => {
+    lines.push({
+      key: "",
+      value: item,
+      tone: "muted",
+    });
+  });
+
+  if (completedLogLines.length > 0) {
+    lines.push(...completedLogLines);
+  } else if (!suppressStructuredResultFallback && resultObject !== undefined && resultObject !== null) {
+    flattenRawLogLines(resultObject, undefined, lines);
+  }
+
+  return lines.filter((line, index) => {
+    if (index === 0) {
+      return true;
+    }
+    const previous = lines[index - 1];
+    return previous.key !== line.key || previous.value !== line.value || previous.tone !== line.tone;
+  });
+}
+
 function pruneValue(value: unknown): unknown {
   if (Array.isArray(value)) {
     return value
@@ -773,62 +840,25 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
 }) => {
   const [open, setOpen] = useState(status?.type === "running");
   const args = useMemo(() => parseArgs(argsText), [argsText]);
-  const progress = useMemo(() => getProgress(args), [args]);
-  const startedLogLines = useMemo(() => getDisplayLogLines(args), [args]);
-  const cleanedArgs = useMemo(() => pruneValue(omitInternalKeys(args)), [args]);
   const safeResultObject = useMemo(() => safeObject(result), [result]);
   const alphaloopEvents = useMemo(() => getAlphaloopEvents(args, safeResultObject), [args, safeResultObject]);
   const alphaloopChunks = useMemo(() => getAlphaloopChunks(safeResultObject), [safeResultObject]);
-  const resultObject = useMemo(() => pruneValue(safeResultObject ?? result), [result, safeResultObject]);
-  const suppressStructuredArgsFallback = useMemo(() => hasStructuredSearchPayload(cleanedArgs), [cleanedArgs]);
-  const suppressStructuredResultFallback = useMemo(() => hasStructuredSearchPayload(resultObject), [resultObject]);
-  const completedLogLines = useMemo(() => getDisplayLogLines(result), [result]);
-  const errorText = useMemo(() => {
-    if (status?.type !== "incomplete") {
-      return null;
-    }
-    if (typeof status.error === "string" && status.error.trim()) {
-      return status.error.trim();
-    }
-    if (status.error) {
-      return JSON.stringify(status.error);
-    }
-    return null;
-  }, [status]);
+  const progress = useMemo(() => getProgress(args), [args]);
+  const errorText = useMemo(() => getErrorText(status, result), [result, status]);
   const logLines = useMemo(() => {
-    const lines: ToolLogLine[] = [];
-    if (startedLogLines.length > 0) {
-      lines.push(...startedLogLines);
-    } else if (!suppressStructuredArgsFallback && cleanedArgs !== undefined && cleanedArgs !== null) {
-      flattenRawLogLines(cleanedArgs, undefined, lines);
+    const lines = buildToolLogLines(args, result);
+    if (!errorText) {
+      return lines;
     }
-    progress.forEach((item) => {
-      lines.push({
-        key: "",
-        value: item,
-        tone: "muted",
-      });
-    });
-    if (completedLogLines.length > 0) {
-      lines.push(...completedLogLines);
-    } else if (!suppressStructuredResultFallback && resultObject !== undefined && resultObject !== null) {
-      flattenRawLogLines(resultObject, undefined, lines);
-    }
-    if (errorText) {
-      lines.push({
+    return [
+      ...lines,
+      {
         key: "error",
         value: errorText,
-        tone: "error",
-      });
-    }
-    return lines.filter((line, index) => {
-      if (index === 0) {
-        return true;
-      }
-      const previous = lines[index - 1];
-      return previous.key !== line.key || previous.value !== line.value || previous.tone !== line.tone;
-    });
-  }, [cleanedArgs, completedLogLines, errorText, progress, resultObject, startedLogLines, suppressStructuredArgsFallback, suppressStructuredResultFallback]);
+        tone: "error" as const,
+      },
+    ];
+  }, [args, errorText, result]);
   const summary = useMemo(
     () => summarizeTool(toolName, args, safeResultObject, status),
     [toolName, args, safeResultObject, status],
@@ -887,11 +917,27 @@ const SemanticSearchToolUI: ToolCallMessagePartComponent = ({
 }) => {
   const args = useMemo(() => parseArgs(argsText), [argsText]);
   const safeResultObject = useMemo(() => safeObject(result), [result]);
+  const logLines = useMemo(() => buildToolLogLines(args, result), [args, result]);
+  const errorText = useMemo(() => getErrorText(status, result), [result, status]);
   const alphaloopEvents = useMemo(() => getAlphaloopEvents(args, safeResultObject), [args, safeResultObject]);
   const alphaloopChunks = useMemo(() => getAlphaloopChunks(safeResultObject), [safeResultObject]);
+  const displayLogLines = useMemo(() => {
+    if (!errorText) {
+      return logLines;
+    }
+    return [
+      ...logLines,
+      {
+        key: "error",
+        value: errorText,
+        tone: "error" as const,
+      },
+    ];
+  }, [errorText, logLines]);
 
   return (
     <div className="py-2">
+      <ToolLogSection lines={displayLogLines} autoFollow={status?.type === "running"} />
       <AlphaloopSearchProgress events={alphaloopEvents} isRunning={status?.type === "running"} />
       <AlphaloopCitations chunks={alphaloopChunks} />
     </div>
