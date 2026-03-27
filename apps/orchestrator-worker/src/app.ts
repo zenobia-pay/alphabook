@@ -1585,8 +1585,8 @@ function extractPriorRunEvidence(messages: MessageRecord[], currentRunId: string
     if (typeof message.metadata?.runId === "string" && message.metadata.runId === currentRunId) {
       continue;
     }
-    const researchLog = Array.isArray(message.metadata?.researchLog)
-      ? message.metadata.researchLog as Array<Record<string, unknown>>
+    const researchLog = Array.isArray(message.metadata?.toolCalls)
+      ? message.metadata.toolCalls as Array<Record<string, unknown>>
       : [];
     if (researchLog.length === 0) {
       continue;
@@ -6227,8 +6227,8 @@ async function loadPersistedRawRunLog(
 ) {
   const artifacts = await deps.store.listArtifacts(sessionId);
   const rawArtifact = artifacts.find((artifact) =>
-    (artifact.metadata?.kind === "tool_stream_raw" || artifact.filename === `${runId}-tool-stream.jsonl`)
-    && artifact.filename.includes(runId),
+    artifact.metadata?.kind === "tool_stream_raw"
+    && artifact.metadata?.runId === runId,
   );
   if (!rawArtifact) {
     return [];

@@ -3035,9 +3035,7 @@ function currentResearchDocumentHtml(
   messages: UiMessage[],
   artifacts: RunArtifactRecord[],
   runId: string | null,
-  options: { fallbackToLatestSessionDocument?: boolean } = {},
 ) {
-  let fallbackCurrentRunHtml = "";
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (message.role !== "assistant") {
@@ -3048,34 +3046,15 @@ function currentResearchDocumentHtml(
       continue;
     }
     const html = messageResearchDocumentHtml(message);
-    if (html) {
-      if (isTransientResearchDocumentHtml(html)) {
-        fallbackCurrentRunHtml = fallbackCurrentRunHtml || html;
-        continue;
-      }
+    if (html && !isTransientResearchDocumentHtml(html)) {
       return html;
-    }
-  }
-  if (options.fallbackToLatestSessionDocument) {
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      const message = messages[index];
-      if (message.role !== "assistant") {
-        continue;
-      }
-      const html = messageResearchDocumentHtml(message);
-      if (html) {
-        if (isTransientResearchDocumentHtml(html)) {
-          continue;
-        }
-        return html;
-      }
     }
   }
   const persistedHtml = persistedResearchDocumentHtml(artifacts);
   if (persistedHtml && !isTransientResearchDocumentHtml(persistedHtml)) {
     return persistedHtml;
   }
-  return fallbackCurrentRunHtml || persistedHtml;
+  return "";
 }
 
 function AssistantSessionToolbar({
@@ -7563,7 +7542,6 @@ export default function App() {
       visibleMessages,
       runArtifacts,
       preferredAssistantRun?.id ?? null,
-      { fallbackToLatestSessionDocument: true },
     );
     const showBlankSession =
       !assistantSessionLoading
