@@ -27,7 +27,7 @@ import type { Router } from "./router";
 import type { SemanticSearchService } from "./semantic-search";
 import { cleanupToolStreamWithWorkersAi, type ToolStreamCleanupLine } from "./tool-stream-cleanup";
 import type { Synthesizer, ToolHistoryEntry } from "./synthesizer";
-import type { AgentIdentityRecord, AnalyticsEventRecord, AppStore, MessageRecord, NotificationRecord, PassageSearchFilters, RunRecord, RuntimeInstanceRecord, SessionRecord, ToolCallRecord, UserRecord, WorkDetailRecord } from "./store";
+import type { AgentIdentityRecord, AnalyticsEventRecord, AppStore, MessageRecord, NotificationRecord, PassageSearchFilters, RunEventRecord, RunRecord, RuntimeInstanceRecord, SessionRecord, ToolCallRecord, UserRecord, WorkDetailRecord } from "./store";
 import type { WorkersAiBinding } from "./index";
 import { parseModelJsonObject } from "./json";
 
@@ -5663,15 +5663,18 @@ async function persistPlanToolTrace(
   deps: AppDeps,
   messageId: string | null,
   runId: string,
-  _toolCalls: LiveToolTraceEntry[],
+  toolCalls: LiveToolTraceEntry[],
   researchDocumentHtml: string,
 ) {
   if (!messageId) {
     return;
   }
+  const persistedToolTrace = cloneLiveToolTraceEntries(toolCalls);
   await deps.store.updateMessageMetadata(messageId, {
     phase: "plan",
     runId,
+    toolCalls: persistedToolTrace,
+    researchLog: persistedToolTrace,
     researchDocumentHtml,
   });
 }
@@ -5881,12 +5884,96 @@ async function persistRecoveredPlanToolTrace(
     typeof existingMetadata.researchDocumentHtml === "string" && existingMetadata.researchDocumentHtml.trim().length > 0
       ? existingMetadata.researchDocumentHtml
       : "";
+  const recoveredToolTrace = buildRecoveredToolTrace(toolCalls);
   await deps.store.updateMessageMetadata(planMessage.id, {
     ...existingMetadata,
     phase: "plan",
     runId,
+    toolCalls: recoveredToolTrace,
+    researchLog: recoveredToolTrace,
     researchDocumentHtml: existingResearchDocumentHtml,
   });
+}
+
+function collectRuntimeIdsFromRunEvents(runEvents: RunEventRecord[]) {
+  const runtimeIds = new Set<string>();
+  for (const runEvent of runEvents) {
+    addRuntimeIdsFromValue(runtimeIds, runEvent.dataJson);
+  }
+  return runtimeIds;
+}
+
+function summarizeRunFailure(
+  runEvents: RunEventRecord[],
+  rawLog: Array<ToolRunRawLogEntry | Record<string, unknown>>,
+) {
+  for (let index = runEvents.length - 1; index >= 0; index -= 1) {
+    const runEvent = runEvents[index];
+    const data = runEvent.dataJson ?? {};
+    const failedEvent =
+      /(?:[._])failed$/u.test(runEvent.event)
+      || (runEvent.event === "run.completed" && typeof data.status === "string" && data.status !== "completed")
+      || (typeof data.status === "string" && data.status === "failed")
+      || (typeof data.ok === "boolean" && data.ok === false);
+    if (!failedEvent) {
+      continue;
+    }
+    const message =
+      typeof data.error === "string" && data.error.trim().length > 0
+        ? data.error.trim()
+        : typeof data.message === "string" && data.message.trim().length > 0
+          ? data.message.trim()
+          : null;
+    return {
+      source: "run_event" as const,
+      event: runEvent.event,
+      message,
+      phase: runEvent.phase,
+      status: runEvent.status,
+      toolCallId: runEvent.toolCallId,
+      runtimeId: runEvent.runtimeId,
+      createdAt: runEvent.createdAt,
+    };
+  }
+
+  for (let index = rawLog.length - 1; index >= 0; index -= 1) {
+    const entry = rawLog[index];
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const event = typeof entry.event === "string" ? entry.event : null;
+    const payload = entry.payload && typeof entry.payload === "object"
+      ? entry.payload as Record<string, unknown>
+      : {};
+    if (!event) {
+      continue;
+    }
+    const failedEvent =
+      /(?:[._])failed$/u.test(event)
+      || (typeof payload.status === "string" && payload.status === "failed")
+      || (typeof payload.ok === "boolean" && payload.ok === false);
+    if (!failedEvent) {
+      continue;
+    }
+    const message =
+      typeof payload.error === "string" && payload.error.trim().length > 0
+        ? payload.error.trim()
+        : typeof payload.message === "string" && payload.message.trim().length > 0
+          ? payload.message.trim()
+          : null;
+    return {
+      source: "raw_log" as const,
+      event,
+      message,
+      phase: typeof payload.phase === "string" ? payload.phase : null,
+      status: typeof payload.status === "string" ? payload.status : null,
+      toolCallId: typeof payload.toolCallId === "string" ? payload.toolCallId : null,
+      runtimeId: typeof payload.runtimeId === "string" ? payload.runtimeId : null,
+      createdAt: typeof entry.timestamp === "string" ? entry.timestamp : null,
+    };
+  }
+
+  return null;
 }
 
 async function appendRunErrorMessageOnce(
@@ -6371,27 +6458,29 @@ async function resolveRunRuntimeContext(
     deps.store.listRuntimeInstances(sessionId),
     deps.store.listRunEvents(run.id),
   ]);
-  const runtimeIds = new Set<string>();
-  for (const toolCall of toolCalls) {
-    addRuntimeIdsFromValue(runtimeIds, toolCall.argsJson);
-    addRuntimeIdsFromValue(runtimeIds, toolCall.resultJson);
-  }
-  for (const runEvent of runEvents) {
-    addRuntimeIdsFromValue(runtimeIds, runEvent.dataJson);
+  const runtimeIds = collectRuntimeIdsFromRunEvents(runEvents);
+  if (runtimeIds.size === 0) {
+    for (const toolCall of toolCalls) {
+      addRuntimeIdsFromValue(runtimeIds, toolCall.argsJson);
+      addRuntimeIdsFromValue(runtimeIds, toolCall.resultJson);
+    }
   }
   const nextRunStartedAt = sessionRuns
     .filter((candidate) => candidate.id !== run.id && Date.parse(candidate.startedAt) > Date.parse(run.startedAt))
     .sort((left, right) => Date.parse(left.startedAt) - Date.parse(right.startedAt))[0]?.startedAt ?? null;
   const spriteRun = toolCalls.some(toolCallUsesSpriteFanout) || runEvents.some((event) => event.event.startsWith("sprite."));
-  const relatedRuntimeInstances = runtimeInstances.filter((instance) => {
-    if (runtimeIds.has(instance.runtimeId)) {
-      return true;
-    }
-    if (!spriteRun || !runtimeLooksSpriteRelated(instance)) {
-      return false;
-    }
-    return createdWithinRunWindow(instance.createdAt, run.startedAt, run.completedAt, nextRunStartedAt);
-  });
+  let relatedRuntimeInstances = runtimeInstances.filter((instance) => runtimeIds.has(instance.runtimeId));
+  if (spriteRun && relatedRuntimeInstances.length === 0) {
+    relatedRuntimeInstances = runtimeInstances.filter((instance) => {
+      if (runtimeIds.has(instance.runtimeId)) {
+        return true;
+      }
+      if (!runtimeLooksSpriteRelated(instance)) {
+        return false;
+      }
+      return createdWithinRunWindow(instance.createdAt, run.startedAt, run.completedAt, nextRunStartedAt);
+    });
+  }
   for (const runtime of relatedRuntimeInstances) {
     runtimeIds.add(runtime.runtimeId);
   }
@@ -6494,6 +6583,7 @@ async function buildRunLogsPayload(
     ? persistedRawLog
     : resolveRunRawLog(activeRuns, run.id, artifacts);
   const metrics = extractRecordedRunMetrics(rawLog);
+  const failureSummary = summarizeRunFailure(runContext.runEvents, rawLog);
   const liveRuntime = includeLiveRuntime
     ? await loadLiveRuntimeLogs(deps, session.id, run.id, runContext.runtimeIds)
     : [];
@@ -6507,6 +6597,7 @@ async function buildRunLogsPayload(
     toolCalls,
     runEvents: runContext.runEvents,
     rawLog,
+    ...(failureSummary ? { failureSummary } : {}),
     metrics,
     runtimeIds: runContext.runtimeIds,
     runtimeCount: runContext.runtimeInstances.length,

@@ -3402,9 +3402,96 @@ test("workspace args are normalized and run logs are exposed", async () => {
   const runDebugPayload = (await runDebugResponse.json()) as {
     run: { id: string };
     toolCalls: Array<{ toolName: string }>;
+    toolTrace: Array<{ toolName: string; state: string }>;
   };
   assert.equal(runDebugPayload.run.id, runsPayload.runs[0]?.id);
   assert.equal(runDebugPayload.toolCalls[0]?.toolName, "create_workspace");
+  assert.ok(runDebugPayload.toolTrace.some((toolCall) => toolCall.toolName === "create_workspace"));
+  assert.ok(runDebugPayload.toolTrace.some((toolCall) => toolCall.state === "completed"));
+});
+
+test("admin run logs expose a comprehensive failure summary from persisted run events", async () => {
+  const store = new InMemoryAppStore();
+  const blobStore = new MemoryBlobStore();
+  await store.upsertUserProfile({
+    id: "admin-user",
+    email: "rprendergast1121@gmail.com",
+    name: "Admin",
+  });
+  await store.upsertUserProfile({
+    id: "reader-user",
+    email: "reader@example.com",
+    name: "Reader",
+  });
+  const session = await store.createSession("reader-user", "Comprehensive failure");
+  await store.appendMessage(session.id, "user", "Find grief patterns.");
+  const run = await store.createRun(session.id);
+  await store.appendRunEvent(run.id, session.id, "sprite.shard.launch_failed", {
+    implementationId: "alphabook",
+    shardId: "books-1",
+    label: "Part 1 of 2",
+    state: "starting",
+    runtimeId: "sprite-shard-1",
+    providerMachineId: "machine-1",
+    attempt: 2,
+    error: "Machine never became reachable.",
+  });
+  await store.updateRun(run.id, {
+    status: "failed",
+    completedAt: new Date().toISOString(),
+  });
+
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    planner: new ScriptedPlanner([
+      {
+        type: "final_answer",
+        answer: "ok",
+        citations: [],
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore,
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false };
+      },
+      async runWorkspaceTask() {
+        return { ok: false };
+      },
+      async readWorkspaceFile() {
+        return { ok: false };
+      },
+      async listWorkspaceFiles() {
+        return { ok: true, files: [] };
+      },
+      async destroyWorkspace() {
+        return { ok: true };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+    adminAllowedEmail: "rprendergast1121@gmail.com",
+  });
+
+  const response = await app.request(`/admin/runs/${run.id}/logs?userId=admin-user`);
+  assert.equal(response.status, 200);
+  const payload = await response.json() as {
+    failureSummary: {
+      source: string;
+      event: string;
+      message: string | null;
+      runtimeId: string | null;
+    };
+  };
+  assert.equal(payload.failureSummary.source, "run_event");
+  assert.equal(payload.failureSummary.event, "sprite.shard.launch_failed");
+  assert.equal(payload.failureSummary.message, "Machine never became reachable.");
+  assert.equal(payload.failureSummary.runtimeId, "sprite-shard-1");
 });
 
 test("run details endpoint recovers a completed run answer from a persisted briefing", async () => {
@@ -3498,6 +3585,17 @@ test("run debug and logs endpoints include child sprite runtime logs and artifac
   await store.appendRunEvent(run.id, session.id, "sprite.catalog.loaded", {
     shardCount: 2,
     shardSize: 1000,
+  });
+  await store.appendRunEvent(run.id, session.id, "sprite.shard.ready", {
+    shardId: "books-1",
+    label: "Part 1 of 2",
+    state: "ready",
+    runtimeId: "shard-runtime-1",
+    providerMachineId: "machine-1",
+  });
+  await store.appendRunEvent(run.id, session.id, "sprite.aggregate.completed", {
+    state: "completed",
+    aggregatorRuntimeId: "aggregate-runtime-1",
   });
   const startedAt = new Date(Date.now() + 50).toISOString();
   await store.saveRuntimeInstance({

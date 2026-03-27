@@ -691,6 +691,8 @@ async function runSpriteShard(
           totalShards: shard.totalShards,
           bookCount: shard.bookCount,
           runtimeId,
+          providerMachineId: machine.id,
+          attempt,
         });
         await safeReportProgress(progressReporter, `Loading books for ${shardLabel(shard).toLowerCase()}.`, {
           type: "sprite.shard_state",
@@ -727,6 +729,8 @@ async function runSpriteShard(
           totalShards: shard.totalShards,
           bookCount: shard.bookCount,
           runtimeId,
+          providerMachineId: machine.id,
+          attempt,
         });
         await safeReportProgress(
           progressReporter,
@@ -746,6 +750,19 @@ async function runSpriteShard(
         break;
       } catch (error) {
         lastLaunchError = error;
+        await safeAppendRunEvent(host.store, options.runId, sessionId, "sprite.shard.launch_failed", {
+          implementationId: options.implementationId,
+          shardId: shard.shardId,
+          label: shardLabel(shard),
+          state: "starting",
+          shardIndex: shard.index,
+          totalShards: shard.totalShards,
+          bookCount: shard.bookCount,
+          runtimeId: attemptInstance?.runtimeId ?? attemptMachineId,
+          providerMachineId: attemptMachineId,
+          attempt,
+          error: error instanceof Error ? error.message : "Unknown Sprite shard startup error",
+        });
         if (attemptInstance) {
           await host.store.updateRuntimeInstance(attemptInstance.runtimeId, {
             status: "failed",
@@ -801,6 +818,7 @@ async function runSpriteShard(
       totalShards: shard.totalShards,
       bookCount: shard.bookCount,
       runtimeId: instance.runtimeId,
+      providerMachineId: machineId,
     });
     await persistShardLifecycle(instance.runtimeId, "searching");
     await safeReportProgress(progressReporter, `Searching ${shardLabel(shard).toLowerCase()} now.`, {
@@ -891,6 +909,7 @@ async function runSpriteAggregator(
   query: string,
   shardResults: Array<Record<string, unknown>>,
   options: {
+    runId: string;
     implementationId: string;
     intensity: "normal" | "high" | "maximum";
   },
@@ -939,6 +958,12 @@ async function runSpriteAggregator(
       lastUsedAt: nowIso(),
       expiresAt: addMinutesIso(HARD_LIMITS.MAX_RUNTIME_IDLE_MINUTES),
       manifestJson: workspacePlan.manifest,
+      providerMachineId: machine.id,
+    });
+    await safeAppendRunEvent(host.store, options.runId, sessionId, "sprite.aggregate.ready", {
+      implementationId: options.implementationId,
+      state: "ready",
+      runtimeId,
       providerMachineId: machine.id,
     });
     return await host.executeRuntimeTask(instance, {
@@ -1143,6 +1168,7 @@ export class SpriteFanoutCoordinator {
     let aggregateResult: Record<string, unknown>;
     try {
       aggregateResult = await runSpriteAggregator(this.host, sessionId, query, shardResults, {
+        runId,
         implementationId,
         intensity,
       });
