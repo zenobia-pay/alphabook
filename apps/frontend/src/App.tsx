@@ -842,64 +842,11 @@ function mergeToolPayload(
 }
 
 function mergeFetchedMessages(existingMessages: UiMessage[], incomingMessages: UiMessage[], sessionId: string | null) {
-  const scopedExistingMessages = sessionId
-    ? existingMessages.filter((message) => message.sessionId === sessionId)
-    : existingMessages;
-  const existingById = new Map(scopedExistingMessages.map((message) => [message.id, message]));
-  const consumedOptimisticIds = new Set<string>();
-  const findOptimisticMatch = (incoming: UiMessage) => {
-    if (incoming.role !== "user") {
-      return null;
-    }
-    const incomingContent = incoming.content.trim();
-    if (!incomingContent) {
-      return null;
-    }
-    const incomingCreatedAt = Date.parse(incoming.createdAt);
-    for (const candidate of scopedExistingMessages) {
-      if (consumedOptimisticIds.has(candidate.id)) {
-        continue;
-      }
-      if (candidate.role !== "user") {
-        continue;
-      }
-      if (candidate.metadata?.optimistic !== true) {
-        continue;
-      }
-      if (candidate.content.trim() !== incomingContent) {
-        continue;
-      }
-      if (candidate.sessionId !== incoming.sessionId) {
-        continue;
-      }
-      const candidateCreatedAt = Date.parse(candidate.createdAt);
-      if (!Number.isFinite(incomingCreatedAt) || !Number.isFinite(candidateCreatedAt)) {
-        consumedOptimisticIds.add(candidate.id);
-        return candidate;
-      }
-      if (Math.abs(incomingCreatedAt - candidateCreatedAt) <= 15_000) {
-        consumedOptimisticIds.add(candidate.id);
-        return candidate;
-      }
-    }
-    return null;
-  };
-
-  const merged = incomingMessages.map((incoming) => {
-    const existing = existingById.get(incoming.id) ?? findOptimisticMatch(incoming);
-    if (!existing) {
-      return incoming;
-    }
-    return incoming;
-  });
-
-  const seenIds = new Set(merged.map((message) => message.id));
-  for (const existing of scopedExistingMessages) {
-    if (!seenIds.has(existing.id) && !consumedOptimisticIds.has(existing.id)) {
-      merged.push(existing);
-    }
+  if (!sessionId) {
+    return incomingMessages;
   }
-  return merged;
+  const otherSessionMessages = existingMessages.filter((message) => message.sessionId !== sessionId);
+  return [...otherSessionMessages, ...incomingMessages];
 }
 
 function formatRelativeTime(value: string | null | undefined) {
@@ -6316,7 +6263,6 @@ export default function App() {
 
             if (event.event === "assistant.plan" && typeof event.data.text === "string") {
               const messageId = typeof event.data.messageId === "string" ? event.data.messageId : crypto.randomUUID();
-              const researchDocumentHtml = typeof event.data.researchDocumentHtml === "string" ? event.data.researchDocumentHtml : undefined;
               planMessageId = messageId;
               setMessages((current) => {
                 const existingIndex = current.findIndex((message) => message.id === messageId);
@@ -6328,7 +6274,6 @@ export default function App() {
                   metadata: {
                     ...(typeof event.data.runId === "string" ? { runId: event.data.runId } : {}),
                     phase: "plan",
-                    ...(researchDocumentHtml ? { researchDocumentHtml } : {}),
                   },
                   createdAt: new Date().toISOString(),
                   citations: [],
@@ -6343,7 +6288,6 @@ export default function App() {
                       ...copy[existingIndex].metadata,
                       ...(typeof event.data.runId === "string" ? { runId: event.data.runId } : {}),
                       phase: "plan",
-                      ...(researchDocumentHtml ? { researchDocumentHtml } : {}),
                     },
                     toolCalls: activityLog,
                   };
@@ -6381,12 +6325,6 @@ export default function App() {
               ];
               updatePlanMessage((message) => ({
                 ...message,
-                metadata: {
-                  ...message.metadata,
-                  ...(typeof event.data.researchDocumentHtml === "string"
-                    ? { researchDocumentHtml: event.data.researchDocumentHtml }
-                    : {}),
-                },
                 toolCalls: activityLog,
               }));
               return;
@@ -6424,12 +6362,6 @@ export default function App() {
                 ?? activityLog.find((entry) => entry.toolName === toolName);
               updatePlanMessage((message) => ({
                 ...message,
-                metadata: {
-                  ...message.metadata,
-                  ...(typeof event.data.researchDocumentHtml === "string"
-                    ? { researchDocumentHtml: event.data.researchDocumentHtml }
-                    : {}),
-                },
                 toolCalls: activityLog,
               }));
               return;
@@ -6467,12 +6399,6 @@ export default function App() {
               }
               updatePlanMessage((message) => ({
                 ...message,
-                metadata: {
-                  ...message.metadata,
-                  ...(typeof event.data.researchDocumentHtml === "string"
-                    ? { researchDocumentHtml: event.data.researchDocumentHtml }
-                    : {}),
-                },
                 toolCalls: activityLog,
               }));
               return;
@@ -6513,7 +6439,6 @@ export default function App() {
             if (event.event === "assistant.completed") {
               const completionPhase = typeof event.data.phase === "string" ? event.data.phase : null;
               const completedAnswer = typeof event.data.answer === "string" ? event.data.answer : null;
-              const researchDocumentHtml = typeof event.data.researchDocumentHtml === "string" ? event.data.researchDocumentHtml : undefined;
               if (!finalAssistantMessageId) {
                 finalAssistantMessageId = crypto.randomUUID();
                 setMessages((current) => [
@@ -6525,7 +6450,6 @@ export default function App() {
                     content: completedAnswer ?? "",
                     metadata: {
                       ...(completionPhase ? { phase: completionPhase } : {}),
-                      ...(researchDocumentHtml ? { researchDocumentHtml } : {}),
                     },
                     createdAt: new Date().toISOString(),
                     citations: Array.isArray(event.data.citations) ? (event.data.citations as Citation[]) : [],
@@ -6542,7 +6466,6 @@ export default function App() {
                         metadata: {
                           ...message.metadata,
                           ...(completionPhase ? { phase: completionPhase } : {}),
-                          ...(researchDocumentHtml ? { researchDocumentHtml } : {}),
                         },
                         citations: Array.isArray(event.data.citations) ? (event.data.citations as Citation[]) : [],
                         toolCalls: [],

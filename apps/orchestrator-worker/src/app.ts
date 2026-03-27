@@ -4698,7 +4698,7 @@ async function finalizeStaleRun(
       dangling.map((toolCall) => deps.store.finishToolCall(toolCall.id, "failed", {
         ok: false,
         error: message,
-        runtimeId: runtimeIdFromRunEvents(runEvents, toolCall.id) ?? undefined,
+        runtimeId: runtimeIdFromToolResult(toolCall.resultJson, toolCall.argsJson) ?? undefined,
       })),
     );
   };
@@ -5392,7 +5392,6 @@ async function persistPlanToolTrace(
   messageId: string | null,
   runId: string,
   toolCalls: LiveToolTraceEntry[],
-  researchDocumentHtml: string,
 ) {
   if (!messageId) {
     return;
@@ -5402,7 +5401,6 @@ async function persistPlanToolTrace(
     phase: "plan",
     runId,
     toolCalls: persistedToolTrace,
-    researchDocumentHtml,
   });
 }
 
@@ -5482,17 +5480,12 @@ function readPersistedPlanMessageStateFromPlanMessage(planMessage: MessageRecord
     return {
       planMessage: null,
       toolTrace: [] as LiveToolTraceEntry[],
-      researchDocumentHtml: null as string | null,
     };
   }
   const metadata = planMessage.metadata as Record<string, unknown>;
   return {
     planMessage,
     toolTrace: readPersistedPlanToolTrace(metadata),
-    researchDocumentHtml:
-      typeof metadata.researchDocumentHtml === "string" && metadata.researchDocumentHtml.trim().length > 0
-        ? metadata.researchDocumentHtml
-        : null,
   };
 }
 
@@ -5533,23 +5526,6 @@ function terminalRunStatusFromRunEvents(runEvents: RunEventRecord[]) {
         completedAt: runEvent.createdAt,
       };
     }
-  }
-  return null;
-}
-
-function runtimeIdFromRunEvents(
-  runEvents: RunEventRecord[],
-  toolCallId: string | null | undefined,
-) {
-  if (!toolCallId) {
-    return null;
-  }
-  for (let index = runEvents.length - 1; index >= 0; index -= 1) {
-    const runEvent = runEvents[index];
-    if (runEvent.toolCallId !== toolCallId || typeof runEvent.runtimeId !== "string" || runEvent.runtimeId.length === 0) {
-      continue;
-    }
-    return runEvent.runtimeId;
   }
   return null;
 }
@@ -5815,6 +5791,24 @@ async function loadRunArtifactSummaries(
   const runtimeIdSet = new Set(runtimeIds);
   const artifacts = await deps.store.listArtifacts(sessionId);
   return artifacts.filter((artifact) => artifactBelongsToRun(artifact, runId, runtimeIdSet));
+}
+
+async function loadRunDocumentArtifacts(
+  deps: AppDeps,
+  sessionId: string,
+  runId: string,
+  runtimeIds: string[],
+) {
+  const artifacts = await loadRunArtifactSummaries(deps, sessionId, runId, runtimeIds);
+  return Promise.all(
+    artifacts.map(async (artifact) => ({
+      ...artifact,
+      content:
+        artifact.metadata?.kind === "research_document"
+          ? await deps.blobStore.getText(artifact.r2Key).catch(() => null)
+          : null,
+    })),
+  );
 }
 
 function queryFlag(value: string | undefined, defaultValue = false): boolean {
@@ -6254,6 +6248,26 @@ async function loadPersistedRawRunLog(
       }
     })
     .filter((entry): entry is Record<string, unknown> => Boolean(entry));
+}
+
+async function loadPersistedResearchDocumentHtml(
+  deps: AppDeps,
+  sessionId: string,
+  runId: string,
+) {
+  const artifacts = await deps.store.listArtifacts(sessionId);
+  const researchDocument = [...artifacts]
+    .filter((artifact) => artifact.metadata?.kind === "research_document" && artifact.metadata?.runId === runId)
+    .sort((left, right) => (right.createdAt ?? "").localeCompare(left.createdAt ?? ""))[0];
+  if (!researchDocument) {
+    return null;
+  }
+  try {
+    const content = await deps.blobStore.getText(researchDocument.r2Key);
+    return typeof content === "string" && content.trim().length > 0 ? content : null;
+  } catch {
+    return null;
+  }
 }
 
 async function listPersistedRunRuntimeIds(
@@ -7884,14 +7898,15 @@ async function persistCompletedAssistantAnswer(
     params.answer,
     params.citations,
   );
-  const persistedPlanState = readPersistedPlanMessageState(
-    await deps.store.listMessages(params.sessionId),
+  const existingResearchDocumentHtml = await loadPersistedResearchDocumentHtml(
+    deps,
+    params.sessionId,
     params.runId,
   );
   const researchDocumentHtml = await appendFinalAnswerResearchDocumentHtml(
     deps,
     params.sessionId,
-    persistedPlanState.researchDocumentHtml,
+    existingResearchDocumentHtml,
     params.citations,
     linkedAnswer,
   );
@@ -7908,7 +7923,6 @@ async function persistCompletedAssistantAnswer(
     phase: "answer",
     citations: params.citations,
     artifactKey,
-    researchDocumentHtml,
     ...(params.extraMetadata ?? {}),
   });
   await streamAssistantText(linkedAnswer, params.send);
@@ -7916,7 +7930,6 @@ async function persistCompletedAssistantAnswer(
     answer: linkedAnswer,
     citations: params.citations,
     artifactKey,
-    researchDocumentHtml,
     ...(params.extraMetadata ?? {}),
   });
   params.auditLog?.("assistant.completed", {
@@ -8062,7 +8075,6 @@ async function runOrchestrator(
   }
   const started = deps.now?.() ?? Date.now();
   const runMetrics = createLiveRunMetricsState(started);
-  let lastKnownResearchDocumentHtml = "";
   const captureTaskSpecRunMetrics = (taskSpec: Record<string, unknown>) => {
     const workIds = Array.isArray(taskSpec.workIds) ? taskSpec.workIds : [];
     if (typeof taskSpec.parallelism === "number" && taskSpec.parallelism > 0) {
@@ -8158,30 +8170,7 @@ async function runOrchestrator(
     }
   };
   send = async (event: string, data: Record<string, unknown>) => {
-    const embeddedResearchDocumentHtml =
-      typeof data.researchDocumentHtml === "string" && data.researchDocumentHtml.trim().length > 0
-        ? data.researchDocumentHtml
-        : null;
-    let nextData = embeddedResearchDocumentHtml
-      ? data
-      : (
-        lastKnownResearchDocumentHtml
-        && (
-          event === "assistant.plan"
-          || event === "tool.started"
-          || event === "tool.progress"
-          || event === "tool.completed"
-          || event === "assistant.completed"
-        )
-      )
-        ? {
-            ...data,
-            researchDocumentHtml: lastKnownResearchDocumentHtml,
-          }
-        : data;
-    if (embeddedResearchDocumentHtml) {
-      lastKnownResearchDocumentHtml = embeddedResearchDocumentHtml;
-    }
+    let nextData = data;
     const persistableRunEventNames = new Set([
       "run.started",
       "assistant.plan",
@@ -8319,10 +8308,7 @@ async function runOrchestrator(
         typeof data.status === "string" ? data.status : "completed",
         nowMs,
       );
-      nextData = {
-        ...nextData,
-        metrics,
-      };
+      nextData = { ...nextData, metrics };
       if (!runMetrics.recorded) {
         runMetrics.recorded = true;
         recordRawLog("run.metrics", metrics as unknown as Record<string, unknown>);
@@ -8446,7 +8432,7 @@ async function runOrchestrator(
       if (version <= persistedPlanTraceVersion || version !== latestPlanTraceVersion) {
         return;
       }
-      await persistPlanToolTrace(deps, messageId, run!.id, snapshot, liveResearchDocumentHtml);
+      await persistPlanToolTrace(deps, messageId, run!.id, snapshot);
       persistedPlanTraceVersion = version;
     });
     planTracePersistChain = queuedWrite.catch(() => {});
@@ -8460,7 +8446,6 @@ async function runOrchestrator(
     detail?: Record<string, unknown>,
     options: {
       noteResearchDocumentActivity?: () => void;
-      includeResearchDocumentHtml?: boolean;
       runtimeId?: string | null;
     } = {},
   ) => {
@@ -8478,7 +8463,6 @@ async function runOrchestrator(
       toolName,
       ...(options.runtimeId ? { runtimeId: options.runtimeId } : {}),
       text,
-      ...(options.includeResearchDocumentHtml !== false ? { researchDocumentHtml: liveResearchDocumentHtml } : {}),
       ...(detail ? { detail } : {}),
     });
   };
@@ -8947,7 +8931,6 @@ async function runOrchestrator(
       label: labelForToolCall(toolName, normalizedArgs),
       rationale: sanitizeUserFacingToolText(rationale) ?? null,
       status,
-      researchDocumentHtml: liveResearchDocumentHtml,
       result: canonicalToolResult(toolName, streamedResult, {
         ok: status !== "failed",
         logLines: completedToolLines.normalizedLines,
@@ -9080,7 +9063,6 @@ async function runOrchestrator(
       sessionId: activeSession.id,
       messageId: planMessage.id,
       text: planText,
-      researchDocumentHtml: liveResearchDocumentHtml,
     });
     recordRawLog("assistant.plan", {
       runId: run.id,
@@ -9401,7 +9383,6 @@ async function runOrchestrator(
       ...(startedRuntimeId ? { runtimeId: startedRuntimeId } : {}),
       label: labelForToolCall(toolName, normalizedToolArgs),
       rationale: sanitizeUserFacingToolText(rationale) ?? null,
-      researchDocumentHtml: liveResearchDocumentHtml,
       args: startedEntry.args,
     });
     const progressEmitter = startToolProgressEmitter(
@@ -9698,7 +9679,6 @@ async function runOrchestrator(
       await deps.store.appendMessage(session.id, "assistant", routeDecision.answer, {
         artifactKey,
         route: "direct_response",
-        researchDocumentHtml: directResearchDocumentHtml,
       });
       await clearRunLease("completed");
       await streamAssistantText(routeDecision.answer, send);
@@ -9706,7 +9686,6 @@ async function runOrchestrator(
         answer: routeDecision.answer,
         citations: [],
         artifactKey,
-        researchDocumentHtml: directResearchDocumentHtml,
       });
       recordRawLog("assistant.completed", {
         answer: routeDecision.answer,
@@ -10043,16 +10022,15 @@ async function runOrchestrator(
           }, 10_000)
         : null;
       await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
-      await send("tool.started", {
-        runId: run.id,
-        toolCallId: toolRecord.id,
-        toolName: toolCall.tool_name,
-        ...(startedRuntimeId ? { runtimeId: startedRuntimeId } : {}),
-        label: labelForToolCall(toolCall.tool_name, normalizedToolArgs),
-        rationale: sanitizeUserFacingToolText(toolCall.rationale) ?? null,
-        researchDocumentHtml: liveResearchDocumentHtml,
-        args: startedEntry.args,
-      });
+    await send("tool.started", {
+      runId: run.id,
+      toolCallId: toolRecord.id,
+      toolName: toolCall.tool_name,
+      ...(startedRuntimeId ? { runtimeId: startedRuntimeId } : {}),
+      label: labelForToolCall(toolCall.tool_name, normalizedToolArgs),
+      rationale: sanitizeUserFacingToolText(toolCall.rationale) ?? null,
+      args: startedEntry.args,
+    });
       const progressEmitter = startToolProgressEmitter(
         deps.runtimeGateway,
         async (eventName, data) => {
@@ -10261,7 +10239,6 @@ async function runOrchestrator(
         citations: [],
         artifactKey: null,
         phase: "error",
-        researchDocumentHtml: timeoutResearchDocumentHtml,
       });
       recordRawLog("assistant.completed", {
         answer: timeoutMessage,
@@ -10329,7 +10306,6 @@ async function runOrchestrator(
       citations: [],
       artifactKey: null,
       phase: "error",
-      researchDocumentHtml: failureResearchDocumentHtml,
     });
     recordRawLog("assistant.completed", {
       answer: failureMessage,
@@ -11640,13 +11616,12 @@ export function createApp(inputDeps: CreateAppInput) {
       resolveRunRuntimeContext(deps, sessionId, run, toolCalls),
       readPersistedPlanMessageStateForRun(deps, sessionId, runId),
     ]);
-    const artifacts = await loadRunArtifactSummaries(deps, sessionId, runId, runtimeIds);
+    const artifacts = await loadRunDocumentArtifacts(deps, sessionId, runId, runtimeIds);
 
     return c.json({
       run,
       runEvents,
       toolTrace: persistedPlanState.toolTrace,
-      researchDocumentHtml: persistedPlanState.researchDocumentHtml,
       artifacts,
     });
   });
@@ -11689,13 +11664,12 @@ export function createApp(inputDeps: CreateAppInput) {
       resolveRunRuntimeContext(deps, sessionId, run, toolCalls),
       readPersistedPlanMessageStateForRun(deps, sessionId, runId),
     ]);
-    const artifacts = await loadRunArtifactSummaries(deps, sessionId, runId, runtimeIds);
+    const artifacts = await loadRunDocumentArtifacts(deps, sessionId, runId, runtimeIds);
 
     return c.json({
       run,
       runEvents,
       toolTrace: persistedPlanState.toolTrace,
-      researchDocumentHtml: persistedPlanState.researchDocumentHtml,
       artifacts,
     });
   });
