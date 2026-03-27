@@ -20,8 +20,10 @@ export interface RebuildChunkRecord {
   authors?: string[];
   chunk_index?: number;
   text?: string;
+  excerpt?: string | null;
   r2_key?: string | null;
   reader_path?: string | null;
+  metadata?: Record<string, unknown> | null;
   embedding_dimensions?: number | null;
 }
 

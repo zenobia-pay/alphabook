@@ -1418,7 +1418,12 @@ function buildExcerptCandidates(excerpt: string) {
     .split(/[.;!?]\s+|\s+[—–-]\s+/)
     .map((segment) => segment.trim())
     .filter((segment) => segment.length >= 24);
+  const words = cleanedExcerpt.split(/\s+/).filter(Boolean);
+  const excerptWindows = [8, 12, 16, 24, 32]
+    .filter((size) => words.length >= size)
+    .map((size) => words.slice(0, size).join(" "));
   return [decodedExcerpt, cleanedExcerpt, ...excerptSegments]
+    .concat(excerptWindows)
     .filter((candidate, index, values) => candidate.length >= 12 && values.indexOf(candidate) === index)
     .sort((left, right) => right.length - left.length);
 }
@@ -1496,7 +1501,9 @@ function resolveChunkReaderPaths(
         continue;
       }
       if (!resolvedCandidatePassages.has(normalizedCandidate)) {
-        const matchingPassage = passages.find((passage) => passage.searchText.includes(normalizedCandidate));
+        const matchingPassage = passages.find((passage) =>
+          passage.searchText.includes(normalizedCandidate) || normalizedCandidate.includes(passage.searchText),
+        );
         resolvedCandidatePassages.set(normalizedCandidate, matchingPassage?.readerPath ?? null);
       }
       const readerPath = resolvedCandidatePassages.get(normalizedCandidate);
@@ -2277,6 +2284,65 @@ function serializeChunkManifest(records: StoredChunkArtifact[], workId: string) 
   })).join("\n");
 }
 
+function resolveBookSourceFormat(
+  sourceKey: string,
+  metadata: Record<string, unknown>,
+): "text" | "html" {
+  return sourceKey.endsWith("/raw.txt") && metadata.sourceFormat === "html" ? "html" : "text";
+}
+
+function resolveStoredChunkReaderPaths<T extends StoredChunkArtifact>(
+  gutenbergId: string,
+  rawSource: string,
+  sourceFormat: "text" | "html",
+  chunks: T[],
+): T[] {
+  const readerPaths = resolveChunkReaderPaths(
+    gutenbergId,
+    rawSource,
+    sourceFormat,
+    chunks.map((chunk) => ({
+      text: chunk.text,
+      excerpt: chunk.excerpt,
+    })),
+  );
+  return chunks.map((chunk, index) => ({
+    ...chunk,
+    readerPath: readerPaths[index] ?? null,
+  }));
+}
+
+async function persistChunkArtifacts(
+  context: IngestContext,
+  workId: string,
+  chunksKey: string,
+  chunkArtifacts: StoredChunkArtifact[],
+) {
+  const chunksPayload = serializeChunkManifest(chunkArtifacts, workId);
+  await Promise.all([
+    putText(context.r2, context.r2Bucket, chunksKey, chunksPayload, "application/x-ndjson"),
+    ...chunkArtifacts.map((chunk) =>
+      putText(
+        context.r2,
+        context.r2Bucket,
+        chunk.r2Key,
+        JSON.stringify({
+          id: chunk.id,
+          work_id: workId,
+          work_title: chunk.workTitle,
+          authors: chunk.authors,
+          chunk_index: chunk.chunkIndex,
+          text: chunk.text,
+          excerpt: chunk.excerpt,
+          r2_key: chunk.r2Key,
+          reader_path: chunk.readerPath,
+          metadata: chunk.metadata,
+        }, null, 2),
+        "application/json; charset=utf-8",
+      )),
+  ]);
+}
+
 async function syncAuthors(context: IngestContext, workId: string, authors: string[]) {
   const normalizedAuthors = uniqueStrings(authors);
   await context.db.query(`DELETE FROM work_authors WHERE work_id = $1`, [workId]);
@@ -3027,12 +3093,17 @@ type CanonicalR2Work = {
     chunks: string;
     bookHtml: string;
   };
+  rawSource: string;
+  sourceFormat: "text" | "html";
   chunks: Array<{
     id: string;
     chunkIndex: number;
     text: string;
+    excerpt: string;
+    authors: string[];
     r2Key: string;
     readerPath: string | null;
+    metadata: Record<string, unknown>;
   }>;
 };
 
@@ -3114,6 +3185,24 @@ async function readCanonicalR2Work(
   if (!metadataPayload) {
     throw new Error(`Metadata payload missing for Gutenberg ${gutenbergId}.`);
   }
+  const title = typeof metadataPayload.title === "string" && metadataPayload.title.trim().length > 0
+    ? metadataPayload.title
+    : `Project Gutenberg ${gutenbergId}`;
+  const authors = Array.isArray(metadataPayload.authors)
+    ? metadataPayload.authors.filter((value): value is string => typeof value === "string")
+    : [];
+  const subjects = Array.isArray(metadataPayload.subjects)
+    ? metadataPayload.subjects.filter((value): value is string => typeof value === "string")
+    : [];
+  const bookshelves = Array.isArray(metadataPayload.bookshelves)
+    ? metadataPayload.bookshelves.filter((value): value is string => typeof value === "string")
+    : [];
+  const language = normalizeCorpusLanguage(metadataPayload.language, [...subjects, ...bookshelves]);
+  const rawSource = await getText(context.r2, context.r2Bucket, rawKey);
+  if (!rawSource) {
+    throw new Error(`Raw source missing for Gutenberg ${gutenbergId}.`);
+  }
+  const sourceFormat = resolveBookSourceFormat(rawKey, metadataPayload);
   const chunkPayload = parseChunkPayload(await getText(context.r2, context.r2Bucket, chunksKey) ?? "");
   const chunks = chunkPayload.map((chunk, index) => {
     const chunkIndex = typeof chunk.chunk_index === "number" ? chunk.chunk_index : index;
@@ -3129,26 +3218,16 @@ async function readCanonicalR2Work(
       workTitle: typeof chunk.work_title === "string" && chunk.work_title.length > 0 ? chunk.work_title : title,
       authors: Array.isArray(chunk.authors) ? chunk.authors.filter((value): value is string => typeof value === "string") : authors,
       text: chunk.text,
+      excerpt: typeof chunk.excerpt === "string" && chunk.excerpt.trim().length > 0 ? chunk.excerpt : createChunkExcerpt(chunk.text),
       readerPath: typeof chunk.reader_path === "string" && chunk.reader_path.length > 0 ? chunk.reader_path : null,
       r2Key: typeof chunk.r2_key === "string" && chunk.r2_key.length > 0
         ? chunk.r2_key
         : (gutenbergCorpusAdapter.artifactKeys.chunkObject?.(gutenbergId, chunkIndex) ?? chunksKey),
+      metadata: typeof chunk.metadata === "object" && chunk.metadata && !Array.isArray(chunk.metadata)
+        ? chunk.metadata as Record<string, unknown>
+        : { embeddingDimensions: typeof chunk.embedding_dimensions === "number" ? chunk.embedding_dimensions : null },
     };
   });
-
-  const title = typeof metadataPayload.title === "string" && metadataPayload.title.trim().length > 0
-    ? metadataPayload.title
-    : `Project Gutenberg ${gutenbergId}`;
-  const authors = Array.isArray(metadataPayload.authors)
-    ? metadataPayload.authors.filter((value): value is string => typeof value === "string")
-    : [];
-  const subjects = Array.isArray(metadataPayload.subjects)
-    ? metadataPayload.subjects.filter((value): value is string => typeof value === "string")
-    : [];
-  const bookshelves = Array.isArray(metadataPayload.bookshelves)
-    ? metadataPayload.bookshelves.filter((value): value is string => typeof value === "string")
-    : [];
-  const language = normalizeCorpusLanguage(metadataPayload.language, [...subjects, ...bookshelves]);
 
   return {
     gutenbergId,
@@ -3178,6 +3257,8 @@ async function readCanonicalR2Work(
       chunks: chunksKey,
       bookHtml: bookHtmlKey,
     },
+    rawSource,
+    sourceFormat,
     chunks,
   };
 }
@@ -3355,43 +3436,54 @@ async function rebuildCanonicalR2Work(
   if (!chunkEmbeddings) {
     throw new Error("Embedding generation is required for canonical rebuilds.");
   }
-  const chunkArtifacts = canonical.chunks.map((chunk, index) => ({
-    id: chunk.id,
-    chunkIndex: chunk.chunkIndex,
-    workTitle: canonical.title,
+  const chunkArtifacts = resolveStoredChunkReaderPaths(
+    canonical.gutenbergId,
+    canonical.rawSource,
+    canonical.sourceFormat,
+    canonical.chunks.map((chunk, index) => ({
+      id: chunk.id,
+      chunkIndex: chunk.chunkIndex,
+      workTitle: canonical.title,
+      authors: canonical.authors,
+      text: chunk.text,
+      excerpt: chunk.excerpt,
+      r2Key: chunk.r2Key,
+      readerPath: chunk.readerPath,
+      metadata: {
+        ...chunk.metadata,
+        embeddingProvider: "google",
+        embeddingModel: process.env.GOOGLE_EMBEDDING_MODEL ?? "gemini-embedding-2-preview",
+        embeddingDimensions: chunkEmbeddings[index]?.length ?? null,
+      },
+    } satisfies StoredChunkArtifact)),
+  );
+  const bookBundle = buildPaginatedBookArtifactBundle({
+    gutenbergId: canonical.gutenbergId,
+    title: canonical.title,
+    subtitle: typeof canonical.metadataPayload.subtitle === "string" ? canonical.metadataPayload.subtitle : null,
     authors: canonical.authors,
-    text: chunk.text,
-    excerpt: createChunkExcerpt(chunk.text),
-    r2Key: chunk.r2Key,
-    readerPath: chunk.readerPath ?? null,
-    metadata: {
-      embeddingProvider: "google",
-      embeddingModel: process.env.GOOGLE_EMBEDDING_MODEL ?? "gemini-embedding-2-preview",
-      embeddingDimensions: chunkEmbeddings[index]?.length ?? null,
-    },
-  } satisfies StoredChunkArtifact));
-  const chunksPayload = serializeChunkManifest(chunkArtifacts, workId);
+    bookshelves: Array.isArray(canonical.metadataPayload.bookshelves)
+      ? canonical.metadataPayload.bookshelves.filter((value): value is string => typeof value === "string")
+      : [],
+    summary: canonical.summary ?? null,
+    language: canonical.language ?? null,
+    releaseDate: canonical.releaseDate ?? null,
+    rawSource: canonical.rawSource,
+    sourceFormat: canonical.sourceFormat,
+  });
+  const bookManifestKey = gutenbergCorpusAdapter.artifactKeys.renderedManifest?.(canonical.gutenbergId) ?? "";
 
   await Promise.all([
-    putText(context.r2, context.r2Bucket, canonical.artifactKeys.chunks, chunksPayload, "application/x-ndjson"),
-    ...chunkArtifacts.map((chunk) =>
+    persistChunkArtifacts(context, workId, canonical.artifactKeys.chunks, chunkArtifacts),
+    putText(context.r2, context.r2Bucket, canonical.artifactKeys.bookHtml, bookBundle.landingHtml, "text/html; charset=utf-8"),
+    putText(context.r2, context.r2Bucket, bookManifestKey, bookBundle.manifestJson, "application/json; charset=utf-8"),
+    ...bookBundle.pageFiles.map((page) =>
       putText(
         context.r2,
         context.r2Bucket,
-        chunk.r2Key,
-        JSON.stringify({
-          id: chunk.id,
-          work_id: workId,
-          work_title: chunk.workTitle,
-          authors: chunk.authors,
-          chunk_index: chunk.chunkIndex,
-          text: chunk.text,
-          excerpt: chunk.excerpt,
-          r2_key: chunk.r2Key,
-          reader_path: chunk.readerPath,
-          metadata: chunk.metadata,
-        }, null, 2),
-        "application/json; charset=utf-8",
+        gutenbergCorpusAdapter.artifactKeys.renderedPage?.(canonical.gutenbergId, page.pageNumber) ?? "",
+        page.html,
+        "text/html; charset=utf-8",
       )),
   ]);
 
@@ -3895,6 +3987,7 @@ async function persistBookHtmlArtifact(
     };
   }
   const metadata = work.metadata ?? {};
+  const sourceFormat = resolveBookSourceFormat(resolvedSourceKey, metadata);
   const bookBundle = buildPaginatedBookArtifactBundle({
     gutenbergId: work.gutenbergId,
     title: work.title,
@@ -3905,12 +3998,39 @@ async function persistBookHtmlArtifact(
     language: work.language ?? null,
     releaseDate: work.releaseDate ?? null,
     rawSource,
-    sourceFormat: resolvedSourceKey.endsWith("/raw.txt") && metadata.sourceFormat === "html" ? "html" : "text",
+    sourceFormat,
   });
   const bookHtmlKey = gutenbergCorpusAdapter.artifactKeys.renderedDocument?.(work.gutenbergId) ?? "";
   const bookManifestKey = gutenbergCorpusAdapter.artifactKeys.renderedManifest?.(work.gutenbergId) ?? "";
+  const chunksKey = gutenbergCorpusAdapter.artifactKeys.chunks(work.gutenbergId);
+  const chunkPayload = parseChunkPayload(await getText(context.r2, context.r2Bucket, chunksKey) ?? "");
+  const chunkArtifacts = resolveStoredChunkReaderPaths(
+    work.gutenbergId,
+    rawSource,
+    sourceFormat,
+    chunkPayload
+      .filter((chunk): chunk is typeof chunk & { text: string } => typeof chunk.text === "string" && chunk.text.trim().length > 0)
+      .map((chunk, index) => ({
+        id: typeof chunk.id === "string" && chunk.id.length > 0
+          ? chunk.id
+          : buildCorpusChunkId(gutenbergCorpusAdapter.id, work.gutenbergId, typeof chunk.chunk_index === "number" ? chunk.chunk_index : index),
+        chunkIndex: typeof chunk.chunk_index === "number" ? chunk.chunk_index : index,
+        workTitle: typeof chunk.work_title === "string" && chunk.work_title.length > 0 ? chunk.work_title : work.title,
+        authors: Array.isArray(chunk.authors) ? chunk.authors.filter((value): value is string => typeof value === "string") : [],
+        text: chunk.text,
+        excerpt: typeof chunk.excerpt === "string" && chunk.excerpt.trim().length > 0 ? chunk.excerpt : createChunkExcerpt(chunk.text),
+        r2Key: typeof chunk.r2_key === "string" && chunk.r2_key.length > 0
+          ? chunk.r2_key
+          : (gutenbergCorpusAdapter.artifactKeys.chunkObject?.(work.gutenbergId, typeof chunk.chunk_index === "number" ? chunk.chunk_index : index) ?? chunksKey),
+        readerPath: typeof chunk.reader_path === "string" && chunk.reader_path.length > 0 ? chunk.reader_path : null,
+        metadata: typeof chunk.metadata === "object" && chunk.metadata && !Array.isArray(chunk.metadata)
+          ? chunk.metadata as Record<string, unknown>
+          : { embeddingDimensions: typeof chunk.embedding_dimensions === "number" ? chunk.embedding_dimensions : null },
+      } satisfies StoredChunkArtifact)),
+  );
 
   await Promise.all([
+    persistChunkArtifacts(context, work.workId, chunksKey, chunkArtifacts),
     putText(context.r2, context.r2Bucket, bookHtmlKey, bookBundle.landingHtml, "text/html; charset=utf-8"),
     putText(context.r2, context.r2Bucket, bookManifestKey, bookBundle.manifestJson, "application/json; charset=utf-8"),
     ...bookBundle.pageFiles.map((page) =>
