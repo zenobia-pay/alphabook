@@ -594,7 +594,7 @@ const ComposerAction: FC<{
           type="button"
           variant="ghost"
           className={cn(
-            "h-8 min-w-24 rounded-full border border-transparent bg-neutral-100/95 px-3 text-left shadow-none transition hover:bg-neutral-200/90 disabled:bg-neutral-100/70",
+            "h-8 rounded-full border border-transparent bg-neutral-100/95 px-4 text-left shadow-none transition hover:bg-neutral-200/90 disabled:bg-neutral-100/70",
             isEffortMenuOpen && "bg-neutral-200/95",
           )}
           aria-label="Effort level"
@@ -603,9 +603,9 @@ const ComposerAction: FC<{
           disabled={isRunning || disabled}
           onClick={() => setIsEffortMenuOpen((open) => !open)}
         >
-          <span className="flex w-full items-center gap-2">
+          <span className="flex items-center gap-1.5">
             <span className="truncate text-[0.82rem] font-medium leading-none text-foreground">{selectedOption.label}</span>
-            <ChevronDownIcon className="ml-auto size-3.5 shrink-0 text-muted-foreground" />
+            <ChevronDownIcon className="size-3.5 shrink-0 text-muted-foreground" />
           </span>
         </Button>
         {isEffortMenuOpen ? (
