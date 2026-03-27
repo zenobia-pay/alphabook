@@ -1848,43 +1848,21 @@ async function findExistingWorkStatus(
   };
 }
 
-async function upsertIngestedWork(
+async function resolveIngestedWorkId(
   context: IngestContext,
   source: CorpusIngestSourceInput,
-  metadataPayload: Record<string, unknown>,
 ) {
   if (source.legacyNumericId) {
-    const workResult = await context.db.query<{ id: string }>(
+    const existing = await context.db.query<{ id: string }>(
       `
-        INSERT INTO works (id, gutenberg_id, title, language, release_date, rights_status, summary, metadata_json, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        ON CONFLICT (gutenberg_id) DO UPDATE
-        SET
-          title = EXCLUDED.title,
-          language = EXCLUDED.language,
-          release_date = EXCLUDED.release_date,
-          rights_status = EXCLUDED.rights_status,
-          summary = EXCLUDED.summary,
-          metadata_json = EXCLUDED.metadata_json,
-          updated_at = CURRENT_TIMESTAMP
-        RETURNING id
+        SELECT id
+        FROM works
+        WHERE gutenberg_id = $1
+        LIMIT 1
       `,
-      [
-        crypto.randomUUID(),
-        Number(source.legacyNumericId),
-        source.title,
-        source.language ?? null,
-        source.releaseDate ?? null,
-        source.rightsStatus ?? null,
-        source.summary ?? null,
-        JSON.stringify(metadataPayload),
-      ],
+      [Number(source.legacyNumericId)],
     );
-    const workId = workResult.rows[0]?.id;
-    if (!workId) {
-      throw new Error(`Failed to resolve work id for ${source.adapterId}:${source.externalId}.`);
-    }
-    return workId;
+    return existing.rows[0]?.id ?? crypto.randomUUID();
   }
 
   const existing = await context.db.query<{ id: string }>(
@@ -1897,48 +1875,42 @@ async function upsertIngestedWork(
     `,
     [source.adapterId, source.externalId],
   );
-  const workId = existing.rows[0]?.id ?? crypto.randomUUID();
-  if (existing.rows[0]?.id) {
-    await context.db.query(
-      `
-        UPDATE works
-        SET
-          title = $2,
-          language = $3,
-          release_date = $4,
-          rights_status = $5,
-          summary = $6,
-          metadata_json = $7,
-          updated_at = CURRENT_TIMESTAMP
-        WHERE id = $1
-      `,
-      [
-        workId,
-        source.title,
-        source.language ?? null,
-        source.releaseDate ?? null,
-        source.rightsStatus ?? null,
-        source.summary ?? null,
-        JSON.stringify(metadataPayload),
-      ],
-    );
-  } else {
-    await context.db.query(
-      `
-        INSERT INTO works (id, gutenberg_id, title, language, release_date, rights_status, summary, metadata_json, created_at, updated_at)
-        VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-      `,
-      [
-        workId,
-        source.title,
-        source.language ?? null,
-        source.releaseDate ?? null,
-        source.rightsStatus ?? null,
-        source.summary ?? null,
-        JSON.stringify(metadataPayload),
-      ],
-    );
-  }
+  return existing.rows[0]?.id ?? crypto.randomUUID();
+}
+
+async function upsertIngestedWork(
+  context: IngestContext,
+  source: CorpusIngestSourceInput,
+  metadataPayload: Record<string, unknown>,
+  workId: string,
+) {
+  await context.db.query(
+    `
+      INSERT INTO works (id, gutenberg_id, title, language, release_date, rights_status, summary, metadata_json, created_at, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      ON CONFLICT (id) DO UPDATE
+      SET
+        gutenberg_id = EXCLUDED.gutenberg_id,
+        title = EXCLUDED.title,
+        language = EXCLUDED.language,
+        release_date = EXCLUDED.release_date,
+        rights_status = EXCLUDED.rights_status,
+        summary = EXCLUDED.summary,
+        metadata_json = EXCLUDED.metadata_json,
+        updated_at = CURRENT_TIMESTAMP
+    `,
+    [
+      workId,
+      source.legacyNumericId ? Number(source.legacyNumericId) : null,
+      source.title,
+      source.language ?? null,
+      source.releaseDate ?? null,
+      source.rightsStatus ?? null,
+      source.summary ?? null,
+      JSON.stringify(metadataPayload),
+    ],
+  );
+
   return workId;
 }
 
@@ -2289,7 +2261,7 @@ async function persistIngestedWork(
     subtitle: typeof source.metadata?.subtitle === "string" ? source.metadata.subtitle : null,
     coverImageKey,
   };
-  const workId = await upsertIngestedWork(context, source, metadataPayload);
+  const workId = await resolveIngestedWorkId(context, source);
   const embeddingProvider = process.env.EMBEDDING_PROVIDER ?? "openai";
   const embeddingModel = embeddingProvider === "google"
     ? (process.env.GOOGLE_EMBEDDING_MODEL ?? "gemini-embedding-2-preview")
@@ -2380,6 +2352,8 @@ async function persistIngestedWork(
     await task();
   });
 
+  await upsertIngestedWork(context, source, metadataPayload, workId);
+
   await context.db.query(
     `
       INSERT INTO work_files (id, work_id, kind, r2_key, metadata_json, created_at)
@@ -2389,7 +2363,8 @@ async function persistIngestedWork(
         ($6, $2, 'clean', $7, '{}', CURRENT_TIMESTAMP),
         ($8, $2, 'chunks', $9, '{}', CURRENT_TIMESTAMP),
         ($10, $2, 'book_html', $11, '{}', CURRENT_TIMESTAMP)
-      ON CONFLICT (r2_key) DO NOTHING
+      ON CONFLICT (r2_key) DO UPDATE
+      SET work_id = EXCLUDED.work_id
     `,
     [
       crypto.randomUUID(),
@@ -3190,28 +3165,23 @@ async function rebuildCanonicalR2Work(
   canonical: CanonicalR2Work,
   existingWork: ExistingCorpusWorkRow | null,
 ) {
-  const workId = (
-    await upsertIngestedWork(
-      context,
-      {
-        adapterId: gutenbergCorpusAdapter.id,
-        externalId: canonical.externalId,
-        legacyNumericId: canonical.gutenbergId,
-        title: canonical.title,
-        rawSource: "",
-        rawText: "",
-        sourceFormat: "text",
-        authors: canonical.authors,
-        subjects: canonical.subjects,
-        language: canonical.language,
-        releaseDate: canonical.releaseDate,
-        rightsStatus: canonical.rightsStatus,
-        summary: canonical.summary,
-        metadata: canonical.metadataPayload,
-      },
-      canonical.metadataPayload,
-    )
-  );
+  const source: CorpusIngestSourceInput = {
+    adapterId: gutenbergCorpusAdapter.id,
+    externalId: canonical.externalId,
+    legacyNumericId: canonical.gutenbergId,
+    title: canonical.title,
+    rawSource: "",
+    rawText: "",
+    sourceFormat: "text",
+    authors: canonical.authors,
+    subjects: canonical.subjects,
+    language: canonical.language,
+    releaseDate: canonical.releaseDate,
+    rightsStatus: canonical.rightsStatus,
+    summary: canonical.summary,
+    metadata: canonical.metadataPayload,
+  };
+  const workId = await resolveIngestedWorkId(context, source);
 
   const vectorize = createVectorizeApi(context);
   if (vectorize && context.vectorIndexName) {
@@ -3283,6 +3253,7 @@ async function rebuildCanonicalR2Work(
     ],
   );
 
+  await upsertIngestedWork(context, source, canonical.metadataPayload, workId);
   await syncAuthors(context, workId, canonical.authors);
   await syncSubjects(context, workId, canonical.subjects);
 
