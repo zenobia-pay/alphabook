@@ -841,30 +841,6 @@ function mergeToolPayload(
   return merged;
 }
 
-function mergeToolTraceEntries(existing: ToolTraceEntry, incoming: ToolTraceEntry): ToolTraceEntry {
-  const nextProgress = existing.progress.length >= incoming.progress.length
-    ? existing.progress
-    : incoming.progress;
-  const nextEntry: ToolTraceEntry = {
-    ...existing,
-    label: existing.label || incoming.label,
-    rationale: existing.rationale ?? incoming.rationale,
-    progress: nextProgress,
-    progressDetails:
-      Array.isArray(existing.progressDetails) && existing.progressDetails.length >= (incoming.progressDetails?.length ?? 0)
-        ? existing.progressDetails
-        : incoming.progressDetails,
-    args: mergeToolPayload(existing.args, incoming.args) ?? {},
-    result: mergeToolPayload(existing.result, incoming.result),
-    isError: existing.isError || incoming.isError,
-    state:
-      incoming.state !== "running" || existing.state === "running"
-        ? incoming.state
-        : existing.state,
-  };
-  return nextEntry;
-}
-
 function mergeFetchedMessages(existingMessages: UiMessage[], incomingMessages: UiMessage[], sessionId: string | null) {
   const scopedExistingMessages = sessionId
     ? existingMessages.filter((message) => message.sessionId === sessionId)
@@ -914,51 +890,7 @@ function mergeFetchedMessages(existingMessages: UiMessage[], incomingMessages: U
     if (!existing) {
       return incoming;
     }
-
-    const incomingRunId = typeof incoming.metadata?.runId === "string" ? incoming.metadata.runId : null;
-    const existingRunId = typeof existing.metadata?.runId === "string" ? existing.metadata.runId : null;
-    const incomingPhase = typeof incoming.metadata?.phase === "string" ? incoming.metadata.phase : null;
-    const existingPhase = typeof existing.metadata?.phase === "string" ? existing.metadata.phase : null;
-
-    const mergedToolCalls =
-      incomingRunId
-      && incomingRunId === existingRunId
-      && incomingPhase === "plan"
-      && existingPhase === "plan"
-        ? (() => {
-            const incomingById = new Map(incoming.toolCalls.map((entry) => [entry.id, entry]));
-            const combined: ToolTraceEntry[] = incoming.toolCalls.map((entry) => {
-              const existingEntry = existing.toolCalls.find((candidate) => candidate.id === entry.id);
-              return existingEntry ? mergeToolTraceEntries(existingEntry, entry) : entry;
-            });
-            for (const existingEntry of existing.toolCalls) {
-              if (!incomingById.has(existingEntry.id)) {
-                combined.push(existingEntry);
-              }
-            }
-            return combined;
-          })()
-        : incoming.toolCalls.length > 0
-          ? incoming.toolCalls
-          : existing.toolCalls;
-
-    return {
-      ...incoming,
-      id: incoming.id,
-      content:
-        incoming.content.length >= existing.content.length
-          ? incoming.content
-          : existing.content,
-      citations:
-        incoming.citations.length >= existing.citations.length
-          ? incoming.citations
-          : existing.citations,
-      metadata: {
-        ...(existing.metadata ?? {}),
-        ...(incoming.metadata ?? {}),
-      },
-      toolCalls: mergedToolCalls,
-    };
+    return incoming;
   });
 
   const seenIds = new Set(merged.map((message) => message.id));
@@ -2515,12 +2447,6 @@ function currentResearchDocumentEnding(messages: UiMessage[], runActive = false)
   return null;
 }
 
-function messageResearchDocumentHtml(message: UiMessage) {
-  return typeof message.metadata?.researchDocumentHtml === "string"
-    ? message.metadata.researchDocumentHtml.trim()
-    : "";
-}
-
 function isTransientResearchDocumentHtml(html: string) {
   if (!html) {
     return false;
@@ -2548,24 +2474,10 @@ function persistedResearchDocumentHtml(artifacts: RunArtifactRecord[]) {
 }
 
 function currentResearchDocumentHtml(
-  messages: UiMessage[],
+  _messages: UiMessage[],
   artifacts: RunArtifactRecord[],
-  runId: string | null,
+  _runId: string | null,
 ) {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message.role !== "assistant") {
-      continue;
-    }
-    const messageRunId = typeof message.metadata?.runId === "string" ? message.metadata.runId : null;
-    if (runId && messageRunId && messageRunId !== runId) {
-      continue;
-    }
-    const html = messageResearchDocumentHtml(message);
-    if (html && !isTransientResearchDocumentHtml(html)) {
-      return html;
-    }
-  }
   const persistedHtml = persistedResearchDocumentHtml(artifacts);
   if (persistedHtml && !isTransientResearchDocumentHtml(persistedHtml)) {
     return persistedHtml;

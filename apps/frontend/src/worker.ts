@@ -202,37 +202,16 @@ function renderAssistantDocumentMarkup(bootstrap: AssistantDocumentBootstrapPayl
     if (!artifact || typeof artifact !== "object") {
       continue;
     }
-    const record = artifact as { filename?: unknown; content?: unknown; metadata?: unknown };
+    const record = artifact as { content?: unknown; metadata?: unknown };
     const metadata = record.metadata && typeof record.metadata === "object"
       ? record.metadata as Record<string, unknown>
       : null;
     if (
       typeof record.content === "string"
       && record.content.trim().length > 0
-      && (
-        record.filename === "research-document.html"
-        || (typeof record.filename === "string" && record.filename.endsWith("-research-document.html"))
-        || metadata?.kind === "research_document"
-      )
+      && metadata?.kind === "research_document"
     ) {
       return renderAssistantDocumentHtml(bootstrap, record.content);
-    }
-  }
-  const messages = Array.isArray(bootstrap.messages) ? bootstrap.messages : [];
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (!message || typeof message !== "object") {
-      continue;
-    }
-    const metadata = (message as { metadata?: unknown }).metadata;
-    if (!metadata || typeof metadata !== "object") {
-      continue;
-    }
-    const html = typeof (metadata as { researchDocumentHtml?: unknown }).researchDocumentHtml === "string"
-      ? (metadata as { researchDocumentHtml: string }).researchDocumentHtml
-      : "";
-    if (html.trim()) {
-      return renderAssistantDocumentHtml(bootstrap, html);
     }
   }
   return null;
