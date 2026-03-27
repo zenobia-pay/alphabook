@@ -166,17 +166,14 @@ const EFFORT_OPTIONS = [
   {
     value: "semantic",
     label: "Fast",
-    description: "Quick semantic retrieval",
   },
   {
     value: "comprehensive",
     label: "Slow",
-    description: "Broader, deeper search",
   },
 ] satisfies Array<{
   value: AssistantEffortLevel;
   label: string;
-  description: string;
 }>;
 
 export const Thread: FC<{
@@ -611,8 +608,8 @@ const ComposerAction: FC<{
           type="button"
           variant="ghost"
           className={cn(
-            "aui-composer-effort-trigger h-auto min-w-36 rounded-2xl border border-border/65 bg-white/88 px-3 py-2 text-left shadow-[0_8px_24px_rgba(15,23,42,0.08)] backdrop-blur-sm transition hover:bg-white disabled:bg-white/70",
-            isEffortMenuOpen && "border-foreground/15 shadow-[0_14px_30px_rgba(15,23,42,0.12)]",
+            "aui-composer-effort-trigger h-10 min-w-32 rounded-full border border-transparent bg-neutral-100/95 px-4 text-left shadow-none transition hover:bg-neutral-200/90 disabled:bg-neutral-100/70",
+            isEffortMenuOpen && "bg-neutral-200/95",
           )}
           aria-label="Effort level"
           aria-haspopup="listbox"
@@ -620,11 +617,8 @@ const ComposerAction: FC<{
           disabled={isRunning || disabled}
           onClick={() => setIsEffortMenuOpen((open) => !open)}
         >
-          <span className="flex items-center gap-3">
-            <span className="flex min-w-0 flex-col">
-              <span className="text-[0.95rem] font-medium leading-5 text-foreground">{selectedOption.label}</span>
-              <span className="text-xs leading-4 text-muted-foreground">{selectedOption.description}</span>
-            </span>
+          <span className="flex w-full items-center gap-2">
+            <span className="truncate text-[0.95rem] font-medium leading-none text-foreground">{selectedOption.label}</span>
             <ChevronDownIcon
               className={cn(
                 "ml-auto size-4 shrink-0 text-muted-foreground transition-transform duration-200",
@@ -635,10 +629,13 @@ const ComposerAction: FC<{
         </Button>
         {isEffortMenuOpen ? (
           <div
-            className="aui-composer-effort-menu absolute bottom-full left-0 z-30 mb-2 min-w-52 overflow-hidden rounded-2xl border border-border/70 bg-white/96 p-1.5 shadow-[0_20px_48px_rgba(15,23,42,0.16)] backdrop-blur-xl"
+            className="aui-composer-effort-menu absolute bottom-full left-0 z-30 mb-3 min-w-56 overflow-hidden rounded-[28px] border border-black/12 bg-white/98 p-2 shadow-[0_18px_50px_rgba(15,23,42,0.14)] backdrop-blur-xl"
             role="listbox"
             aria-label="Effort options"
           >
+            <div className="px-3 pb-2 pt-1 text-sm font-medium text-muted-foreground">
+              Select reasoning
+            </div>
             {EFFORT_OPTIONS.map((option) => {
               const isSelected = option.value === effortLevel;
               return (
@@ -648,20 +645,15 @@ const ComposerAction: FC<{
                   role="option"
                   aria-selected={isSelected}
                   className={cn(
-                    "flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left transition",
-                    isSelected ? "bg-black text-white" : "text-foreground hover:bg-accent/70",
+                    "flex w-full items-center gap-3 rounded-2xl px-4 py-3 text-left transition",
+                    isSelected ? "bg-neutral-100 text-foreground" : "text-foreground hover:bg-neutral-50",
                   )}
                   onClick={() => {
                     onEffortLevelChange(option.value);
                     setIsEffortMenuOpen(false);
                   }}
                 >
-                  <span className="flex min-w-0 flex-1 flex-col">
-                    <span className="text-sm font-medium leading-5">{option.label}</span>
-                    <span className={cn("text-xs leading-4", isSelected ? "text-white/75" : "text-muted-foreground")}>
-                      {option.description}
-                    </span>
-                  </span>
+                  <span className="min-w-0 flex-1 text-[1.02rem] font-medium leading-none">{option.label}</span>
                   {isSelected ? <CheckIcon className="size-4 shrink-0" /> : null}
                 </button>
               );
