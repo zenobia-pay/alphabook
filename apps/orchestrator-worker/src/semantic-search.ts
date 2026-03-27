@@ -47,6 +47,10 @@ export interface SemanticSearchOptions {
   googleModel?: string;
 }
 
+function looksLikeExpansionQuery(originalQuery: string, candidateQuery: string) {
+  return candidateQuery.trim().toLowerCase() !== originalQuery.trim().toLowerCase();
+}
+
 function excerptForChunk(chunk: ChunkSearchResult) {
   return chunk.excerpt.trim().length > 0 ? chunk.excerpt.trim() : chunk.text.trim().slice(0, 280);
 }
@@ -151,9 +155,11 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
       maxIterations: 3,
       relevanceThreshold: 0.35,
       search: async (query, { topK }) => {
+        const expansionQuery = looksLikeExpansionQuery(args.query, query);
         args.auditLog?.("semantic.search.embed.started", {
           query,
           scopedWorkCount: Array.isArray(args.workIds) ? args.workIds.length : 0,
+          expansionQuery,
         });
         await args.onProgress?.("Embedding the semantic query.", {
           type: "semantic.step",
@@ -180,6 +186,7 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
           query,
           elapsedMs: elapsedMs(embedStartedAt),
           dimensions: Array.isArray(embedding) ? embedding.length : 0,
+          expansionQuery,
         });
         await args.onProgress?.("Querying the vector index.", {
           type: "semantic.step",
@@ -191,6 +198,7 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
         args.auditLog?.("semantic.search.vector_query.started", {
           query,
           topK: boundedTopK,
+          expansionQuery,
         });
         const vectorQueryStartedAt = Date.now();
         let matches: Awaited<ReturnType<VectorSearchIndex["query"]>>;
@@ -216,6 +224,7 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
           topK: boundedTopK,
           elapsedMs: elapsedMs(vectorQueryStartedAt),
           matchCount: matches.length,
+          expansionQuery,
         });
         const candidateIds = matches.map((match) => match.id);
         await args.onProgress?.(
@@ -256,6 +265,7 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
           candidateCount: candidateIds.length,
           hydratedCount: hydrated.length,
           elapsedMs: elapsedMs(hydrateStartedAt),
+          expansionQuery,
         });
         const hydratedById = new Map(hydrated.map((chunk) => [chunk.id, chunk]));
         const candidates = matches
@@ -284,7 +294,30 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
           candidateCount: candidates.filter((chunk): chunk is NonNullable<typeof chunk> => Boolean(chunk)).length,
           matchCount: matches.length,
           hydratedCount: hydrated.length,
+          expansionQuery,
         });
+        if (expansionQuery) {
+          const nativeExpansionEvent = {
+            type: "query_expansion",
+            queries: [query],
+            newChunksFound: matches.length,
+            totalUnique: candidates.filter((chunk): chunk is NonNullable<typeof chunk> => Boolean(chunk)).length,
+          } satisfies AlphaloopEvent;
+          args.auditLog?.("semantic.search.alphaloop.event", {
+            query: args.query,
+            eventType: nativeExpansionEvent.type,
+            eventIndex: -1,
+            sourceQuery: query,
+            synthetic: true,
+          });
+          const nativeExpansionText = progressTextFromEvent(nativeExpansionEvent);
+          if (nativeExpansionText) {
+            await args.onProgress?.(nativeExpansionText, {
+              type: "semantic.alphaloop",
+              event: nativeExpansionEvent,
+            });
+          }
+        }
         return candidates.filter((chunk): chunk is NonNullable<typeof chunk> => Boolean(chunk));
       },
     });
