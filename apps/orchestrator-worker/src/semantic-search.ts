@@ -64,6 +64,7 @@ function citationsFromChunks(chunks: ChunkSearchResult[]): Citation[] {
     label: `${chunk.workId}#${chunk.chunkIndex}`,
     excerpt: excerptForChunk(chunk),
     ...(chunk.r2Key ? { r2Key: chunk.r2Key } : {}),
+    ...(chunk.readerPath ? { readerPath: chunk.readerPath } : {}),
   }));
 }
 

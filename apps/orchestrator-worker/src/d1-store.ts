@@ -54,6 +54,7 @@ type ChunkManifestEntry = {
   text?: string;
   excerpt?: string;
   r2_key?: string | null;
+  reader_path?: string | null;
   metadata?: Record<string, unknown>;
 };
 
@@ -367,6 +368,7 @@ export class D1AppStore implements AppStore {
       text,
       excerpt,
       r2Key,
+      readerPath: typeof entry.reader_path === "string" && entry.reader_path.length > 0 ? entry.reader_path : null,
       score: 0,
     };
   }

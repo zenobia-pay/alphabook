@@ -1561,6 +1561,7 @@ function sanitizeAppCitations(input: unknown): Citation[] {
       excerpt: record.excerpt,
       ...(typeof record.chunkId === "string" ? { chunkId: record.chunkId } : {}),
       ...(typeof record.r2Key === "string" ? { r2Key: record.r2Key } : {}),
+      ...(typeof record.readerPath === "string" ? { readerPath: record.readerPath } : {}),
     }];
   });
 }
@@ -4565,6 +4566,7 @@ function sanitizeCitationRecords(input: unknown): Citation[] {
       excerpt: record.excerpt,
       ...(typeof record.chunkId === "string" ? { chunkId: record.chunkId } : {}),
       ...(typeof record.r2Key === "string" ? { r2Key: record.r2Key } : {}),
+      ...(typeof record.readerPath === "string" ? { readerPath: record.readerPath } : {}),
     });
   }
   return citations;
@@ -4600,6 +4602,7 @@ function collectSynthesisCitations(
           label: `${chunk.workId}#${chunk.chunkIndex}`,
           excerpt: chunk.excerpt,
           r2Key: chunk.r2Key ?? undefined,
+          readerPath: chunk.readerPath ?? undefined,
         });
       }
     }
@@ -6924,6 +6927,9 @@ async function buildCitationPassageUrl(
   citation: Citation,
   cache?: PassageResolutionCache,
 ): Promise<string> {
+  if (typeof citation.readerPath === "string" && citation.readerPath.trim().length > 0) {
+    return buildResearchDocumentReaderUrl(siteOrigin(deps), sessionId, citation.workId, citation.readerPath);
+  }
   if (typeof citation.chunkId === "string" && citation.chunkId.trim().length > 0) {
     const resolvedUrl = await buildChunkIdPassageUrl(deps, sessionId, citation.chunkId, cache);
     return resolvedUrl ?? buildResearchDocumentWorkUrl(siteOrigin(deps), sessionId, citation.workId);
@@ -7073,9 +7079,12 @@ function buildPassageResolutionCache(): PassageResolutionCache {
 async function buildChunkPassageUrlFromChunk(
   deps: AppDeps,
   sessionId: string,
-  chunk: Pick<ChunkSearchResult, "id" | "workId" | "text" | "excerpt">,
+  chunk: Pick<ChunkSearchResult, "id" | "workId" | "text" | "excerpt" | "readerPath">,
   cache?: PassageResolutionCache,
 ): Promise<string> {
+  if (typeof chunk.readerPath === "string" && chunk.readerPath.trim().length > 0) {
+    return buildResearchDocumentReaderUrl(siteOrigin(deps), sessionId, chunk.workId, chunk.readerPath);
+  }
   if (cache) {
     let pending = cache.chunkUrls.get(chunk.id);
     if (!pending) {
@@ -7521,6 +7530,22 @@ function persistedPassageLocation(chunkIndex: number | null) {
 function buildResearchDocumentWorkUrl(siteBaseOrigin: string, sessionId: string, workId: string) {
   const url = new URL(`${siteBaseOrigin}/works/${encodeURIComponent(workId)}`);
   url.searchParams.set("session", sessionId);
+  return url.toString();
+}
+
+function buildResearchDocumentReaderUrl(
+  siteBaseOrigin: string,
+  sessionId: string,
+  workId: string,
+  readerPath: string | null | undefined,
+) {
+  const normalizedReaderPath = typeof readerPath === "string" ? readerPath.trim() : "";
+  if (!normalizedReaderPath) {
+    return buildResearchDocumentWorkUrl(siteBaseOrigin, sessionId, workId);
+  }
+  const url = new URL(`${siteBaseOrigin}/works/${encodeURIComponent(workId)}`);
+  url.searchParams.set("session", sessionId);
+  url.searchParams.set("reader", normalizedReaderPath);
   return url.toString();
 }
 
@@ -8700,6 +8725,7 @@ async function runOrchestrator(
               workId,
               text: typeof detail.text === "string" ? detail.text : excerpt,
               excerpt,
+              readerPath: typeof detail.readerPath === "string" ? detail.readerPath : null,
             },
             researchDocumentPassageResolutionCache,
           ) ?? buildResearchDocumentWorkUrl(siteOrigin(deps), session!.id, workId)

@@ -19,6 +19,7 @@ export interface RebuildChunkRecord {
   chunk_index?: number;
   text?: string;
   r2_key?: string | null;
+  reader_path?: string | null;
   embedding_dimensions?: number | null;
 }
 

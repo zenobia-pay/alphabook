@@ -593,6 +593,12 @@ type PaginatedBookSection = {
   passageId: string;
 };
 
+type ReaderPassageEntry = {
+  id: string;
+  text: string;
+  searchText: string;
+};
+
 function countWords(value: string) {
   return normalizeWhitespace(value).split(/\s+/).filter(Boolean).length;
 }
@@ -1377,6 +1383,113 @@ function buildPaginatedBookBlocks(rawSource: string, sourceFormat: "text" | "htm
   return sourceFormat === "html" ? buildPaginatedHtmlBlocks(rawSource) : buildPaginatedTextBlocks(rawSource);
 }
 
+function buildNormalizedSearchIndex(raw: string) {
+  let normalized = "";
+  let previousWasSpace = false;
+  const canonicalizeCharacter = (value: string) => {
+    if (/\p{Letter}|\p{Number}/u.test(value)) {
+      return value.toLowerCase();
+    }
+    if (value === "'" || value === "’" || value === "‘") {
+      return "";
+    }
+    return " ";
+  };
+  for (let index = 0; index < raw.length; index += 1) {
+    const next = canonicalizeCharacter(raw[index] ?? "");
+    if (next === " ") {
+      if (previousWasSpace) {
+        continue;
+      }
+      previousWasSpace = true;
+    } else {
+      previousWasSpace = false;
+    }
+    normalized += next;
+  }
+  return normalized.trim();
+}
+
+function buildExcerptCandidates(excerpt: string) {
+  const decodedExcerpt = excerpt.replace(/\s+/g, " ").trim();
+  const cleanedExcerpt = decodedExcerpt.replace(/^[`"'“”‘’]+|[`"'“”‘’.,;:!?]+$/g, "").trim();
+  const excerptSegments = cleanedExcerpt
+    .split(/[.;!?]\s+|\s+[—–-]\s+/)
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length >= 24);
+  return [decodedExcerpt, cleanedExcerpt, ...excerptSegments]
+    .filter((candidate, index, values) => candidate.length >= 12 && values.indexOf(candidate) === index)
+    .sort((left, right) => right.length - left.length);
+}
+
+function buildChunkPassageCandidates(text: string, excerpt: string) {
+  return [
+    ...buildExcerptCandidates(text),
+    ...buildExcerptCandidates(excerpt),
+  ].filter((candidate, index, values) => values.indexOf(candidate) === index);
+}
+
+function buildReaderPassageEntries(rawSource: string, sourceFormat: "text" | "html"): ReaderPassageEntry[] {
+  const blocks = buildPaginatedBookBlocks(rawSource, sourceFormat);
+  const passages: ReaderPassageEntry[] = [];
+  for (const block of blocks) {
+    if (block.passageIds.length === 1) {
+      passages.push({
+        id: block.passageIds[0]!,
+        text: block.text,
+        searchText: buildNormalizedSearchIndex(block.text),
+      });
+      continue;
+    }
+    const { document } = parseHTML(`<!doctype html><html><body>${block.html}</body></html>`);
+    const items = Array.from(document.body.querySelectorAll("[data-passage-id]"));
+    for (const item of items) {
+      const passageId = item.getAttribute("data-passage-id");
+      const text = normalizeReaderText((item.textContent ?? "").replace(/\s+/g, " "));
+      if (!passageId || !text) {
+        continue;
+      }
+      passages.push({
+        id: passageId,
+        text,
+        searchText: buildNormalizedSearchIndex(text),
+      });
+    }
+  }
+  return passages;
+}
+
+function resolveChunkReaderPaths(
+  gutenbergId: string | null,
+  rawSource: string,
+  sourceFormat: "text" | "html",
+  chunks: Array<{ text: string; excerpt: string }>,
+) {
+  if (!gutenbergId) {
+    return chunks.map(() => null);
+  }
+  const passages = buildReaderPassageEntries(rawSource, sourceFormat);
+  const resolvedCandidatePassages = new Map<string, string | null>();
+  return chunks.map((chunk) => {
+    const candidates = buildChunkPassageCandidates(chunk.text, chunk.excerpt);
+    for (const candidate of candidates) {
+      const normalizedCandidate = buildNormalizedSearchIndex(candidate);
+      if (!normalizedCandidate) {
+        continue;
+      }
+      if (!resolvedCandidatePassages.has(normalizedCandidate)) {
+        const matchingPassage = passages.find((passage) => passage.searchText.includes(normalizedCandidate));
+        resolvedCandidatePassages.set(normalizedCandidate, matchingPassage?.id ?? null);
+      }
+      const passageId = resolvedCandidatePassages.get(normalizedCandidate);
+      if (passageId) {
+        return `/${encodeURIComponent(gutenbergId)}/passages/${encodeURIComponent(passageId)}`;
+      }
+    }
+    return null;
+  });
+}
+
 function chunkBlocksIntoPaginatedPages(blocks: PaginatedBookBlock[]) {
   const pages: PaginatedBookPage[] = [];
   let index = 0;
@@ -2082,6 +2195,7 @@ type StoredChunkArtifact = {
   text: string;
   excerpt: string;
   r2Key: string;
+  readerPath: string | null;
   metadata: Record<string, unknown>;
 };
 
@@ -2098,6 +2212,7 @@ function buildStoredChunkArtifacts(args: {
   adapterId: string;
   externalId: string;
   chunks: string[];
+  readerPaths?: Array<string | null>;
   embeddingProvider: string;
   embeddingModel: string;
   embeddingDimensions: Array<number | null>;
@@ -2112,6 +2227,7 @@ function buildStoredChunkArtifacts(args: {
       text,
       excerpt: createChunkExcerpt(text),
       r2Key,
+      readerPath: args.readerPaths?.[index] ?? null,
       metadata: {
         embeddingProvider: args.embeddingProvider,
         embeddingModel: args.embeddingModel,
@@ -2129,6 +2245,7 @@ function serializeChunkManifest(records: StoredChunkArtifact[], workId: string) 
     text: record.text,
     excerpt: record.excerpt,
     r2_key: record.r2Key,
+    reader_path: record.readerPath,
     metadata: record.metadata,
     embedding_dimensions: record.metadata.embeddingDimensions ?? null,
   })).join("\n");
@@ -2266,11 +2383,20 @@ async function persistIngestedWork(
   const embeddingModel = embeddingProvider === "google"
     ? (process.env.GOOGLE_EMBEDDING_MODEL ?? "gemini-embedding-2-preview")
     : (process.env.OPENAI_EMBEDDING_MODEL ?? "text-embedding-3-small");
+  const readerPaths = resolveChunkReaderPaths(
+    source.adapterId === gutenbergCorpusAdapter.id && typeof source.legacyNumericId === "string"
+      ? source.legacyNumericId
+      : null,
+    source.rawSource,
+    source.sourceFormat ?? "text",
+    chunks.map((text) => ({ text, excerpt: createChunkExcerpt(text) })),
+  );
   const chunkArtifacts = buildStoredChunkArtifacts({
     adapter,
     adapterId: source.adapterId,
     externalId: source.externalId,
     chunks,
+    readerPaths,
     embeddingProvider,
     embeddingModel,
     embeddingDimensions: chunks.map((_, index) => chunkEmbeddings?.[index]?.length ?? null),
@@ -2319,6 +2445,7 @@ async function persistIngestedWork(
           text: chunk.text,
           excerpt: chunk.excerpt,
           r2_key: chunk.r2Key,
+          reader_path: chunk.readerPath,
           metadata: chunk.metadata,
         }, null, 2),
         "application/json; charset=utf-8",
@@ -2875,6 +3002,7 @@ type CanonicalR2Work = {
     chunkIndex: number;
     text: string;
     r2Key: string;
+    readerPath: string | null;
   }>;
 };
 
@@ -2969,6 +3097,7 @@ async function readCanonicalR2Work(
       id: chunkId,
       chunkIndex,
       text: chunk.text,
+      readerPath: typeof chunk.reader_path === "string" && chunk.reader_path.length > 0 ? chunk.reader_path : null,
       r2Key: typeof chunk.r2_key === "string" && chunk.r2_key.length > 0
         ? chunk.r2_key
         : (gutenbergCorpusAdapter.artifactKeys.chunkObject?.(gutenbergId, chunkIndex) ?? chunksKey),
@@ -3200,6 +3329,7 @@ async function rebuildCanonicalR2Work(
     text: chunk.text,
     excerpt: createChunkExcerpt(chunk.text),
     r2Key: chunk.r2Key,
+    readerPath: chunk.readerPath ?? null,
     metadata: {
       embeddingProvider: "google",
       embeddingModel: process.env.GOOGLE_EMBEDDING_MODEL ?? "gemini-embedding-2-preview",
@@ -3222,6 +3352,7 @@ async function rebuildCanonicalR2Work(
           text: chunk.text,
           excerpt: chunk.excerpt,
           r2_key: chunk.r2Key,
+          reader_path: chunk.readerPath,
           metadata: chunk.metadata,
         }, null, 2),
         "application/json; charset=utf-8",

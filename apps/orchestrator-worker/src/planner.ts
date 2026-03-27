@@ -278,6 +278,7 @@ function extractCitationsFromChunks(chunks: ChunkSearchResult[]): Citation[] {
     label: `${chunk.workId}#${chunk.chunkIndex}`,
     excerpt: chunk.excerpt,
     r2Key: chunk.r2Key ?? undefined,
+    readerPath: chunk.readerPath ?? undefined,
   }));
 }
 

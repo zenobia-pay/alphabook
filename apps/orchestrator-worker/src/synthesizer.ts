@@ -381,6 +381,7 @@ function sanitizeCitations(input: unknown): Citation[] {
       excerpt,
       ...(typeof record.chunkId === "string" ? { chunkId: record.chunkId } : {}),
       ...(typeof record.r2Key === "string" ? { r2Key: record.r2Key } : {}),
+      ...(typeof record.readerPath === "string" ? { readerPath: record.readerPath } : {}),
     });
   }
   return citations;
@@ -393,6 +394,7 @@ function chunkCitation(chunk: ChunkSearchResult): Citation {
     label: `${chunk.workId}#${chunk.chunkIndex}`,
     excerpt: chunk.excerpt,
     r2Key: chunk.r2Key ?? undefined,
+    readerPath: chunk.readerPath ?? undefined,
   };
 }
 

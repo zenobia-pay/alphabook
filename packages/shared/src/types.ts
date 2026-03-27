@@ -22,6 +22,7 @@ export const CitationSchema = z.object({
   label: z.string(),
   excerpt: z.string(),
   r2Key: z.string().optional(),
+  readerPath: z.string().nullable().optional(),
 });
 
 export type Citation = z.infer<typeof CitationSchema>;
@@ -441,6 +442,7 @@ export const ChunkSearchResultSchema = z.object({
   r2Key: z.string().nullable(),
   score: z.number(),
   excerpt: z.string(),
+  readerPath: z.string().nullable().optional(),
 });
 
 export type ChunkSearchResult = z.infer<typeof ChunkSearchResultSchema>;
