@@ -5387,23 +5387,6 @@ function appendToolProgress(
   };
 }
 
-async function persistPlanToolTrace(
-  deps: AppDeps,
-  messageId: string | null,
-  runId: string,
-  toolCalls: LiveToolTraceEntry[],
-) {
-  if (!messageId) {
-    return;
-  }
-  const persistedToolTrace = cloneLiveToolTraceEntries(toolCalls);
-  await deps.store.updateMessageMetadata(messageId, {
-    phase: "plan",
-    runId,
-    toolCalls: persistedToolTrace,
-  });
-}
-
 function cloneLiveToolTraceEntries(toolCalls: LiveToolTraceEntry[]): LiveToolTraceEntry[] {
   return toolCalls.map((entry) => ({
     ...entry,
@@ -5465,42 +5448,6 @@ function readPersistedPlanToolTrace(metadata: Record<string, unknown> | null | u
       ...(typeof record.isError === "boolean" ? { isError: record.isError } : state === "error" ? { isError: true } : {}),
     }];
   });
-}
-
-function findPlanMessageForRun(messages: MessageRecord[], runId: string) {
-  return [...messages].reverse().find((message) => (
-    message.role === "assistant"
-    && message.metadata?.phase === "plan"
-    && message.metadata?.runId === runId
-  )) ?? null;
-}
-
-function readPersistedPlanMessageStateFromPlanMessage(planMessage: MessageRecord | null) {
-  if (!planMessage || !planMessage.metadata || typeof planMessage.metadata !== "object") {
-    return {
-      planMessage: null,
-      toolTrace: [] as LiveToolTraceEntry[],
-    };
-  }
-  const metadata = planMessage.metadata as Record<string, unknown>;
-  return {
-    planMessage,
-    toolTrace: readPersistedPlanToolTrace(metadata),
-  };
-}
-
-function readPersistedPlanMessageState(messages: MessageRecord[], runId: string) {
-  return readPersistedPlanMessageStateFromPlanMessage(findPlanMessageForRun(messages, runId));
-}
-
-async function readPersistedPlanMessageStateForRun(
-  deps: AppDeps,
-  sessionId: string,
-  runId: string,
-) {
-  return readPersistedPlanMessageStateFromPlanMessage(
-    await deps.store.getLatestPlanMessageForRun(sessionId, runId),
-  );
 }
 
 function collectRuntimeIdsFromRunEvents(runEvents: RunEventRecord[]) {
@@ -8432,7 +8379,11 @@ async function runOrchestrator(
       if (version <= persistedPlanTraceVersion || version !== latestPlanTraceVersion) {
         return;
       }
-      await persistPlanToolTrace(deps, messageId, run!.id, snapshot);
+      await deps.store.updateMessageMetadata(messageId, {
+        phase: "plan",
+        runId: run!.id,
+        toolCalls: snapshot,
+      });
       persistedPlanTraceVersion = version;
     });
     planTracePersistChain = queuedWrite.catch(() => {});
@@ -11498,17 +11449,20 @@ export function createApp(inputDeps: CreateAppInput) {
       return null;
     }
     const toolCalls = await deps.store.listToolCalls(run.id);
-    const [{ runtimeInstances, runEvents, runtimeIds }, persistedPlanState] = await Promise.all([
+    const [{ runtimeInstances, runEvents, runtimeIds }, planMessage] = await Promise.all([
       resolveRunRuntimeContext(deps, sessionId, run, toolCalls),
-      readPersistedPlanMessageStateForRun(deps, sessionId, run.id),
+      deps.store.getLatestPlanMessageForRun(sessionId, run.id),
     ]);
     const artifacts = await loadRunArtifactSummaries(deps, sessionId, run.id, runtimeIds);
+    const toolTrace = planMessage?.metadata && typeof planMessage.metadata === "object"
+      ? readPersistedPlanToolTrace(planMessage.metadata as Record<string, unknown>)
+      : [];
 
     return {
       run,
       toolCalls,
       runEvents,
-      toolTrace: persistedPlanState.toolTrace,
+      toolTrace,
       runtimeInstances,
       artifacts,
     };
@@ -11612,16 +11566,19 @@ export function createApp(inputDeps: CreateAppInput) {
       return c.json({ error: "Run not found." }, 404);
     }
     const toolCalls = await deps.store.listToolCalls(runId);
-    const [{ runEvents, runtimeIds }, persistedPlanState] = await Promise.all([
+    const [{ runEvents, runtimeIds }, planMessage] = await Promise.all([
       resolveRunRuntimeContext(deps, sessionId, run, toolCalls),
-      readPersistedPlanMessageStateForRun(deps, sessionId, runId),
+      deps.store.getLatestPlanMessageForRun(sessionId, runId),
     ]);
     const artifacts = await loadRunDocumentArtifacts(deps, sessionId, runId, runtimeIds);
+    const toolTrace = planMessage?.metadata && typeof planMessage.metadata === "object"
+      ? readPersistedPlanToolTrace(planMessage.metadata as Record<string, unknown>)
+      : [];
 
     return c.json({
       run,
       runEvents,
-      toolTrace: persistedPlanState.toolTrace,
+      toolTrace,
       artifacts,
     });
   });
@@ -11660,16 +11617,19 @@ export function createApp(inputDeps: CreateAppInput) {
       return c.json({ error: "Run not found." }, 404);
     }
     const toolCalls = await deps.store.listToolCalls(runId);
-    const [{ runEvents, runtimeIds }, persistedPlanState] = await Promise.all([
+    const [{ runEvents, runtimeIds }, planMessage] = await Promise.all([
       resolveRunRuntimeContext(deps, sessionId, run, toolCalls),
-      readPersistedPlanMessageStateForRun(deps, sessionId, runId),
+      deps.store.getLatestPlanMessageForRun(sessionId, runId),
     ]);
     const artifacts = await loadRunDocumentArtifacts(deps, sessionId, runId, runtimeIds);
+    const toolTrace = planMessage?.metadata && typeof planMessage.metadata === "object"
+      ? readPersistedPlanToolTrace(planMessage.metadata as Record<string, unknown>)
+      : [];
 
     return c.json({
       run,
       runEvents,
-      toolTrace: persistedPlanState.toolTrace,
+      toolTrace,
       artifacts,
     });
   });

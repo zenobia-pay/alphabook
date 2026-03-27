@@ -699,148 +699,6 @@ function dedupeAdjacentErrorMessages(messages: UiMessage[]) {
   return deduped;
 }
 
-function toolPayloadLogLineCount(value: unknown) {
-  if (!Array.isArray(value)) {
-    return 0;
-  }
-  return value.filter((line) => {
-    if (typeof line === "string") {
-      return line.trim().length > 0;
-    }
-    return Boolean(line) && typeof line === "object";
-  }).length;
-}
-
-function toolPayloadArrayLength(value: unknown) {
-  return Array.isArray(value) ? value.length : 0;
-}
-
-function toolPayloadArrayRichness(value: Record<string, unknown> | undefined) {
-  if (!value) {
-    return 0;
-  }
-  const manifest = value.manifest && typeof value.manifest === "object"
-    ? value.manifest as Record<string, unknown>
-    : null;
-  return (
-    toolPayloadArrayLength(value.works)
-    + toolPayloadArrayLength(value.chunks)
-    + toolPayloadArrayLength(value.progressDetails)
-    + toolPayloadArrayLength(value.citations)
-    + toolPayloadArrayLength(value.artifacts)
-    + toolPayloadArrayLength(value.codexRuns)
-    + (manifest ? toolPayloadArrayLength(manifest.works) : 0)
-  );
-}
-
-function toolPayloadRichness(value: Record<string, unknown> | undefined) {
-  if (!value) {
-    return -1;
-  }
-  let score = Object.keys(value).length;
-  score += toolPayloadLogLineCount(value.__logLines) * 10;
-  score += toolPayloadArrayRichness(value) * 5;
-  return score;
-}
-
-function mergeToolLogLines(existingValue: unknown, incomingValue: unknown) {
-  const existing = Array.isArray(existingValue) ? existingValue : [];
-  const incoming = Array.isArray(incomingValue) ? incomingValue : [];
-  if (existing.length === 0) {
-    return incoming.length > 0 ? incoming : undefined;
-  }
-  if (incoming.length === 0) {
-    return existing;
-  }
-  const seen = new Set<string>();
-  const merged: unknown[] = [];
-  for (const line of [...existing, ...incoming]) {
-    const key = JSON.stringify(line);
-    if (seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    merged.push(line);
-  }
-  return merged;
-}
-
-function chooseLongerToolArray<T>(existingValue: T[] | undefined, incomingValue: T[] | undefined) {
-  if (!existingValue || existingValue.length === 0) {
-    return incomingValue;
-  }
-  if (!incomingValue || incomingValue.length === 0) {
-    return existingValue;
-  }
-  return existingValue.length >= incomingValue.length ? existingValue : incomingValue;
-}
-
-function mergeToolPayload(
-  existingValue: Record<string, unknown> | undefined,
-  incomingValue: Record<string, unknown> | undefined,
-) {
-  if (!existingValue) {
-    return incomingValue;
-  }
-  if (!incomingValue) {
-    return existingValue;
-  }
-
-  const existingScore = toolPayloadRichness(existingValue);
-  const incomingScore = toolPayloadRichness(incomingValue);
-  const preferred = existingScore >= incomingScore ? existingValue : incomingValue;
-  const secondary = preferred === existingValue ? incomingValue : existingValue;
-  const merged: Record<string, unknown> = {
-    ...secondary,
-    ...preferred,
-  };
-
-  const mergedLogLines = mergeToolLogLines(existingValue.__logLines, incomingValue.__logLines);
-  if (mergedLogLines) {
-    merged.__logLines = mergedLogLines;
-  }
-
-  const preferredWorks = chooseLongerToolArray(
-    Array.isArray(existingValue.works) ? existingValue.works : undefined,
-    Array.isArray(incomingValue.works) ? incomingValue.works : undefined,
-  );
-  if (preferredWorks) {
-    merged.works = preferredWorks;
-  }
-
-  const preferredChunks = chooseLongerToolArray(
-    Array.isArray(existingValue.chunks) ? existingValue.chunks : undefined,
-    Array.isArray(incomingValue.chunks) ? incomingValue.chunks : undefined,
-  );
-  if (preferredChunks) {
-    merged.chunks = preferredChunks;
-  }
-
-  const existingManifest = existingValue.manifest && typeof existingValue.manifest === "object"
-    ? existingValue.manifest as Record<string, unknown>
-    : null;
-  const incomingManifest = incomingValue.manifest && typeof incomingValue.manifest === "object"
-    ? incomingValue.manifest as Record<string, unknown>
-    : null;
-  if (existingManifest || incomingManifest) {
-    const preferredManifest = toolPayloadRichness(existingManifest ?? undefined) >= toolPayloadRichness(incomingManifest ?? undefined)
-      ? existingManifest
-      : incomingManifest;
-    const secondaryManifest = preferredManifest === existingManifest ? incomingManifest : existingManifest;
-    const mergedWorks = chooseLongerToolArray(
-      Array.isArray(existingManifest?.works) ? existingManifest.works : undefined,
-      Array.isArray(incomingManifest?.works) ? incomingManifest.works : undefined,
-    );
-    merged.manifest = {
-      ...(secondaryManifest ?? {}),
-      ...(preferredManifest ?? {}),
-      ...(mergedWorks ? { works: mergedWorks } : {}),
-    };
-  }
-
-  return merged;
-}
-
 function formatRelativeTime(value: string | null | undefined) {
   if (!value) {
     return "Just now";
@@ -2467,220 +2325,6 @@ function AssistantSessionToolbar({
   );
 }
 
-type SourceChunkRecord = {
-  key: string;
-  label: string;
-  text: string;
-  note: string;
-};
-
-type ResearchEvidenceTier = "frontier" | "verified" | "quoted";
-
-type ResearchDocumentModel = {
-  title: string;
-  sections: Array<{
-    key: string;
-    anchorId?: string;
-    title: string;
-    summary: string;
-    meta: string;
-    evidenceTier?: ResearchEvidenceTier;
-    items: Array<{
-      key: string;
-      anchorId?: string;
-      kind: Exclude<ResearchDocumentEntryKind, "title">;
-      text: string;
-      citationText?: string;
-      linkLabel?: string;
-      linkHref?: string;
-      workId?: string;
-      citation?: Citation;
-      prefix?: string;
-      suffix?: string;
-      evidenceTier?: ResearchEvidenceTier;
-    }>;
-  }>;
-  ending: string;
-};
-
-type ResearchDocumentItem = {
-  key: string;
-  anchorId?: string;
-  kind: Exclude<ResearchDocumentEntryKind, "title">;
-  text: string;
-  citationText?: string;
-  linkLabel?: string;
-  linkHref?: string;
-  workId?: string;
-  citation?: Citation;
-  prefix?: string;
-  suffix?: string;
-  evidenceTier?: ResearchEvidenceTier;
-};
-
-type ResearchDocumentSection = {
-  key: string;
-  anchorId?: string;
-  title: string;
-  summary: string;
-  meta: string;
-  evidenceTier?: ResearchEvidenceTier;
-  items: ResearchDocumentItem[];
-};
-
-type ResearchDocumentFlatEntry = {
-  sectionKey: string;
-  sectionTitle: string;
-  sectionSummary: string;
-  sectionMeta: string;
-  item: ResearchDocumentItem;
-};
-
-function appendDocumentEntry(
-  entries: ResearchDocumentFlatEntry[],
-  seen: Set<string>,
-  entry: {
-    sectionKey: string;
-    sectionTitle: string;
-    sectionSummary: string;
-    sectionMeta: string;
-    item: ResearchDocumentItem;
-  },
-) {
-  const normalized = entry.item.text.trim();
-  if (!normalized || !isUsefulDocumentItemText(entry.item.kind, normalized) || seen.has(entry.item.key)) {
-    return;
-  }
-  seen.add(entry.item.key);
-  entries.push({
-    ...entry,
-    item: {
-      ...entry.item,
-      text: normalized,
-    },
-  });
-}
-
-function isUsefulDocumentItemText(
-  kind: Exclude<ResearchDocumentEntryKind, "title">,
-  text: string,
-) {
-  const normalized = text.trim();
-  if (!normalized) {
-    return false;
-  }
-  if (
-    /^\d+(?:\s+\d+)+$/u.test(normalized)
-    || /^\d+(?:\.\d+)?$/u.test(normalized)
-    || /^\d+(?:\s*[-–]\s*\d+)+$/u.test(normalized)
-  ) {
-    return false;
-  }
-  if (kind === "log") {
-    if (normalized.length < 24) {
-      return false;
-    }
-    if (/[{}[\]]/u.test(normalized)) {
-      return false;
-    }
-  }
-  return true;
-}
-
-function toSectionTitle(entry: ToolTraceEntry) {
-  return entry.label || getToolLabel(entry.toolName);
-}
-
-function normalizeSectionSummaryText(text: string) {
-  return text
-    .replace(/\s+/g, " ")
-    .replace(/\s+\./g, ".")
-    .trim();
-}
-
-function isLowValueSectionSummary(text: string) {
-  const normalized = text.trim().toLowerCase();
-  if (!normalized) {
-    return true;
-  }
-  if (normalized === "running" || normalized === "done" || normalized === "failed" || normalized === "summary") {
-    return true;
-  }
-  if (
-    /^\d+(?:\.\d+)?$/u.test(normalized)
-    || /^\d+(?:\s+\d+)+$/u.test(normalized)
-    || /^\d+(?:\s*[-–]\s*\d+)+$/u.test(normalized)
-  ) {
-    return true;
-  }
-  return /^\d+\s+(book|books|passage|passages|workspace book|workspace books)$/u.test(normalized);
-}
-
-function toSectionSummary(entry: ToolTraceEntry) {
-  const resultSummary =
-    typeof entry.result?.__summary === "string" ? normalizeSectionSummaryText(entry.result.__summary) : "";
-  if (resultSummary.length > 0 && !isLowValueSectionSummary(resultSummary)) {
-    return resultSummary;
-  }
-  const argsSummary =
-    typeof entry.args.__summary === "string" ? normalizeSectionSummaryText(entry.args.__summary) : "";
-  if (argsSummary.length > 0 && !isLowValueSectionSummary(argsSummary)) {
-    return argsSummary;
-  }
-  const rationale = typeof entry.rationale === "string" ? normalizeSectionSummaryText(entry.rationale) : "";
-  if (rationale.length > 0 && rationale.length <= 260) {
-    return rationale.endsWith(".") ? rationale : `${rationale}.`;
-  }
-  return summarizeToolSentence(entry).trim();
-}
-
-function toSectionMeta(entry: ToolTraceEntry) {
-  if (entry.toolName === "estimate_research_scope") {
-    return "";
-  }
-  if (entry.toolName === "search_works" || entry.toolName === "get_work_metadata") {
-    return "";
-  }
-  const workCount = Array.isArray(entry.result?.works) ? entry.result.works.length : 0;
-  const chunkCount = Array.isArray(entry.result?.chunks) ? entry.result.chunks.length : 0;
-  const workspaceCount =
-    entry.result?.manifest && typeof entry.result.manifest === "object" && Array.isArray((entry.result.manifest as Record<string, unknown>).works)
-      ? ((entry.result.manifest as Record<string, unknown>).works as unknown[]).length
-      : 0;
-  if (chunkCount > 0) {
-    return pluralize(chunkCount, "passage");
-  }
-  if (workCount > 0) {
-    return pluralize(workCount, "book");
-  }
-  if (workspaceCount > 0) {
-    return pluralize(workspaceCount, "workspace book");
-  }
-  if (entry.state === "error") {
-    return "failed";
-  }
-  return "";
-}
-
-function ensureSection(
-  sections: Map<string, ResearchDocumentSection>,
-  entry: ToolTraceEntry,
-) {
-  const existing = sections.get(entry.id);
-  if (existing) {
-    return existing;
-  }
-  const created: ResearchDocumentSection = {
-    key: entry.id,
-    title: toSectionTitle(entry),
-    summary: toSectionSummary(entry),
-    meta: toSectionMeta(entry),
-    items: [],
-  };
-  sections.set(entry.id, created);
-  return created;
-};
-
 function appendProgressDetail(
   details: Array<Record<string, unknown>> | undefined,
   detail: Record<string, unknown>,
@@ -2921,325 +2565,6 @@ function progressDetailNumber(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-function isUsefulDocumentExcerpt(value: string) {
-  const text = value.trim();
-  if (text.length < 40) {
-    return false;
-  }
-  if (/^(Touched|Reviewed|Starting|Seeded|Surfaced)\b/iu.test(text)) {
-    return false;
-  }
-  if (/[{}[\]]/u.test(text)) {
-    return false;
-  }
-  if (/^(error:|exec\b|\/bin\/bash\b|node \/)/iu.test(text)) {
-    return false;
-  }
-  return true;
-}
-
-function isUsefulResearchNote(value: string) {
-  const text = value.trim();
-  if (text.length < 32 || text.length > 180) {
-    return false;
-  }
-  if (/^(Starting|Seeded|Surfaced|Touched|Reviewed|OpenAI deep research|The deeper research pass|Starting from the best current evidence)/iu.test(text)) {
-    return false;
-  }
-  if (/[{}[\]]/u.test(text) || /^(error:|exec\b|\/bin\/bash\b|node \/)/iu.test(text)) {
-    return false;
-  }
-  return true;
-}
-
-function buildProgressChunkCitation(detail: Record<string, unknown>) {
-  const title = progressDetailString(detail.workTitle) || progressDetailString(detail.title) || progressDetailString(detail.workId);
-  const authors = Array.isArray(detail.authors)
-    ? detail.authors.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-    : [];
-  const chunkIndex = progressDetailNumber(detail.chunkIndex);
-  return `${title}${authors.length > 0 ? `, by ${authors.join(", ")}` : ""}, ${formatPassageLocation(chunkIndex)}`;
-}
-
-function researchArtifacts(artifacts: RunArtifactRecord[]) {
-  return artifacts.filter((artifact) => {
-    const kind = typeof artifact.metadata?.kind === "string" ? artifact.metadata.kind : "";
-    return (
-      artifact.filename === "every-single-reference.md"
-      || artifact.filename === "viewed-chunks.json"
-      || artifact.filename === "evidence-notes.md"
-      || kind === "reference_file"
-    );
-  });
-}
-
-function collectSourceChunks(toolTrace: ToolTraceEntry[], artifacts: RunArtifactRecord[]) {
-  const collected = new Map<string, SourceChunkRecord>();
-  const remember = (label: string, text: string, key: string, note: string) => {
-    const normalized = text.trim();
-    if (!normalized || collected.has(key)) {
-      return;
-    }
-    collected.set(key, {
-      key,
-      label,
-      text: normalized,
-      note: note.trim(),
-    });
-  };
-
-  for (const entry of toolTrace) {
-    if (entry.toolName !== "get_relevant_chunks") {
-      continue;
-    }
-    const chunks = recordArray(entry.result?.chunks);
-    for (const chunk of chunks) {
-      const workId = typeof chunk.workId === "string" ? chunk.workId : "work";
-      const chunkIndex = typeof chunk.chunkIndex === "number" ? chunk.chunkIndex : null;
-      const text = typeof chunk.text === "string"
-        ? chunk.text
-        : typeof chunk.excerpt === "string"
-          ? chunk.excerpt
-          : "";
-      const key = typeof chunk.id === "string" ? chunk.id : `${workId}:${chunkIndex ?? collected.size}`;
-      const label = chunkIndex !== null ? `${workId} #${chunkIndex}` : workId;
-      remember(label, text, key, "Surface match from the corpus search. This chunk is an early lead worth carrying into the research artifact.");
-    }
-  }
-
-  for (const artifact of artifacts) {
-    const raw = artifactText(artifact);
-    if (!raw || artifact.filename !== "viewed-chunks.json") {
-      continue;
-    }
-    try {
-      const parsed = JSON.parse(raw) as { chunks?: Array<Record<string, unknown>> };
-      const chunks = recordArray(parsed.chunks);
-      for (const chunk of chunks) {
-        const workId = typeof chunk.workId === "string" ? chunk.workId : "work";
-        const chunkIndex = typeof chunk.chunkIndex === "number" ? chunk.chunkIndex : null;
-        const text = typeof chunk.text === "string"
-          ? chunk.text
-          : typeof chunk.excerpt === "string"
-            ? chunk.excerpt
-            : "";
-        const key = typeof chunk.id === "string" ? chunk.id : `${workId}:${chunkIndex ?? collected.size}`;
-        const workTitle = typeof chunk.workTitle === "string" && chunk.workTitle.trim().length > 0
-          ? chunk.workTitle.trim()
-          : workId;
-        const label = chunkIndex !== null ? `${workTitle} #${chunkIndex}` : workTitle;
-        const viewedIn = Array.isArray(chunk.viewedIn)
-          ? chunk.viewedIn.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
-          : [];
-        const matchedIterations = Array.isArray(chunk.matchedIterations)
-          ? chunk.matchedIterations.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
-          : [];
-        const noteParts = [];
-        if (viewedIn.includes("workspace_selected_chunks")) {
-          noteParts.push("Selected as a seed passage for the deeper research workspace.");
-        }
-        if (viewedIn.includes("briefing_evidence")) {
-          noteParts.push("Used directly in the briefing evidence pass.");
-        }
-        if (viewedIn.includes("search_iteration")) {
-          noteParts.push("Kept because it continued to surface during iterative search.");
-        }
-        if (matchedIterations.length > 0) {
-          noteParts.push(`Matched search iterations: ${matchedIterations.slice(0, 3).join(", ")}.`);
-        }
-        const note = noteParts.join(" ").trim()
-          || "Primary-source passage kept in the research artifact because it remained relevant during retrieval.";
-        remember(label, text, key, note);
-      }
-    } catch {
-      // Ignore malformed JSON and fall back to tool trace chunks.
-    }
-  }
-
-  return [...collected.values()];
-}
-
-function collectResearchSteps(toolTrace: ToolTraceEntry[]) {
-  const lines: string[] = [];
-  const seen = new Set<string>();
-  for (const entry of toolTrace) {
-    const progressLines = entry.progress
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0);
-    if (progressLines.length > 0) {
-      for (const line of progressLines) {
-        const key = `${entry.toolName}:progress:${line}`;
-        if (seen.has(key)) {
-          continue;
-        }
-        seen.add(key);
-        lines.push(line);
-      }
-      continue;
-    }
-    const sentence = summarizeToolSentence(entry).trim();
-    if (!sentence) {
-      continue;
-    }
-    const key = `${entry.toolName}:summary:${sentence}`;
-    if (seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    lines.push(sentence);
-  }
-  return lines;
-}
-
-function collectConfirmedDocumentWorkIds(toolTrace: ToolTraceEntry[]) {
-  const confirmed = new Set<string>();
-  for (const entry of toolTrace) {
-    if (entry.toolName === "get_relevant_chunks" && Array.isArray(entry.result?.verifiedWorkIds)) {
-      for (const workId of entry.result.verifiedWorkIds) {
-        if (typeof workId === "string" && workId.trim().length > 0) {
-          confirmed.add(workId);
-        }
-      }
-    }
-    if (entry.toolName === "get_relevant_chunks") {
-      const chunks = recordArray(entry.result?.chunks);
-      for (const chunk of chunks) {
-        if (typeof chunk.workId === "string" && chunk.workId.trim().length > 0) {
-          confirmed.add(chunk.workId);
-        }
-      }
-    }
-    if (entry.toolName === "run_workspace_task") {
-      const taskSpec = entry.args?.taskSpec && typeof entry.args.taskSpec === "object"
-        ? entry.args.taskSpec as Record<string, unknown>
-        : null;
-      if (Array.isArray(taskSpec?.workIds)) {
-        for (const workId of taskSpec.workIds) {
-          if (typeof workId === "string" && workId.trim().length > 0) {
-            confirmed.add(workId);
-          }
-        }
-      }
-    }
-    for (const detail of entry.progressDetails ?? []) {
-      if (typeof detail?.workId === "string" && detail.workId.trim().length > 0) {
-        confirmed.add(detail.workId);
-      }
-    }
-    if (entry.toolName === "create_workspace") {
-      const manifest = entry.result?.manifest;
-      const works = manifest && typeof manifest === "object"
-        ? recordArray((manifest as Record<string, unknown>).works)
-        : [];
-      for (const work of works) {
-        if (typeof work.workId === "string" && work.workId.trim().length > 0) {
-          confirmed.add(work.workId);
-        }
-      }
-    }
-  }
-  return confirmed;
-}
-
-type SurfacingBook = {
-  key: string;
-  title: string;
-  authors: string[];
-  note: string;
-};
-
-function collectSurfacingBooks(toolTrace: ToolTraceEntry[]) {
-  const books = new Map<string, SurfacingBook>();
-
-  const remember = (title: string, authors: string[], note: string) => {
-    const normalizedTitle = title.trim();
-    if (!normalizedTitle) {
-      return;
-    }
-    const key = normalizedTitle.toLowerCase();
-    const existing = books.get(key);
-    if (existing) {
-      if (existing.authors.length === 0 && authors.length > 0) {
-        existing.authors = authors;
-      }
-      if (!existing.note && note) {
-        existing.note = note;
-      }
-      return;
-    }
-    books.set(key, {
-      key,
-      title: normalizedTitle,
-      authors,
-      note: note.trim(),
-    });
-  };
-
-  for (const entry of toolTrace) {
-    if (entry.toolName === "search_works" || entry.toolName === "get_work_metadata") {
-      const works = recordArray(entry.result?.works);
-      for (const work of works) {
-        const title = typeof work.title === "string" ? work.title : "";
-        const authors = Array.isArray(work.authors)
-          ? work.authors.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-          : [];
-        const note = entry.toolName === "search_works"
-          ? "Surfaced in the corpus search as a likely candidate."
-          : "Pulled forward for more book context.";
-        remember(title, authors, note);
-      }
-    }
-
-    if (entry.toolName === "create_workspace") {
-      const manifest = entry.result?.manifest;
-      const works = manifest && typeof manifest === "object"
-        ? recordArray((manifest as Record<string, unknown>).works)
-        : [];
-      for (const work of works) {
-        const title = typeof work.title === "string" ? work.title : "";
-        const authors = Array.isArray(work.authors)
-          ? work.authors.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-          : [];
-        remember(title, authors, "Included in the deeper research workspace.");
-      }
-    }
-  }
-
-  return [...books.values()];
-}
-
-function hasUsefulSectionItems(section: ResearchDocumentSection) {
-  if (section.items.length === 0) {
-    return false;
-  }
-  if (section.title === "Metadata Search" || section.title === "Book Metadata") {
-    return section.items.some((item) => item.kind === "book" || item.kind === "chunk");
-  }
-  if (section.title === "Corpus Briefing" || section.title === "Passage Search") {
-    return section.items.some((item) => item.kind === "chunk" || item.kind === "book");
-  }
-  return true;
-}
-
-function sectionMetaFromItems(section: ResearchDocumentSection) {
-  const chunkCount = section.items.filter((item) => item.kind === "chunk").length;
-  const bookCount = section.items.filter((item) => item.kind === "book").length;
-  if (section.title === "Metadata Search" || section.title === "Book Metadata") {
-    return bookCount > 0 ? pluralize(bookCount, "book") : "";
-  }
-  if (chunkCount > 0) {
-    return pluralize(chunkCount, "passage");
-  }
-  if (bookCount > 0) {
-    return pluralize(bookCount, "book");
-  }
-  return section.meta;
-}
-
-function artifactSourceChunks(artifacts: RunArtifactRecord[]) {
-  return collectSourceChunks([], artifacts);
-}
-
 function buildWorkHref(workId: string) {
   return `/works/${encodeURIComponent(workId)}`;
 }
@@ -3407,439 +2732,9 @@ function normalizeResearchEnding(text: string | null | undefined) {
   return paragraphs.slice(0, 2).join("\n\n");
 }
 
-function parseResearchDocumentArtifact(
-  artifact: RunArtifactRecord,
-  linkMode: "app" | "iframe",
-): ResearchDocumentModel | null {
-  const raw = artifactText(artifact);
-  if (!raw) {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const sections = Array.isArray(parsed.sections) ? parsed.sections : [];
-    const normalizedSections: ResearchDocumentSection[] = sections.flatMap((section, sectionIndex) => {
-      if (!section || typeof section !== "object") {
-        return [];
-      }
-      const record = section as Record<string, unknown>;
-      const items = Array.isArray(record.items) ? record.items : [];
-      const normalizedItems: ResearchDocumentItem[] = items.flatMap((item, itemIndex) => {
-        if (!item || typeof item !== "object") {
-          return [];
-        }
-        const entry = item as Record<string, unknown>;
-        const kind = entry.kind === "book" || entry.kind === "chunk" || entry.kind === "log" ? entry.kind : null;
-        const text = typeof entry.text === "string" ? entry.text.trim() : "";
-        if (!kind || !text) {
-          return [];
-        }
-        const citation = entry.citation && typeof entry.citation === "object"
-          ? entry.citation as Citation
-          : undefined;
-        const workId = typeof entry.workId === "string" ? entry.workId : citation?.workId;
-        return [{
-          key: typeof entry.key === "string" ? entry.key : `artifact-item-${sectionIndex}-${itemIndex}`,
-          anchorId: typeof entry.anchorId === "string" ? entry.anchorId : undefined,
-          kind,
-          text,
-          citationText: typeof entry.citationText === "string" ? entry.citationText : undefined,
-          linkLabel: typeof entry.linkLabel === "string" ? entry.linkLabel : undefined,
-          linkHref: buildResearchDocumentLinkHref(linkMode, workId, citation),
-          workId,
-          citation,
-          evidenceTier:
-            entry.evidenceTier === "frontier" || entry.evidenceTier === "verified" || entry.evidenceTier === "quoted"
-              ? entry.evidenceTier
-              : undefined,
-        }];
-      });
-      if (normalizedItems.length === 0) {
-        return [];
-      }
-      return [{
-        key: typeof record.key === "string" ? record.key : `artifact-section-${sectionIndex}`,
-        anchorId: typeof record.anchorId === "string" ? record.anchorId : undefined,
-        title: typeof record.title === "string" && record.title.trim().length > 0 ? record.title.trim() : "Evidence",
-        summary: typeof record.summary === "string" ? record.summary.trim() : "",
-        meta: typeof record.meta === "string" ? record.meta.trim() : "",
-        evidenceTier:
-          record.evidenceTier === "frontier" || record.evidenceTier === "verified" || record.evidenceTier === "quoted"
-            ? record.evidenceTier
-            : undefined,
-        items: normalizedItems,
-      }];
-    });
-    return {
-      title: typeof parsed.title === "string" && parsed.title.trim().length > 0 ? parsed.title.trim() : "Research log",
-      sections: normalizedSections,
-      ending: typeof parsed.ending === "string" ? parsed.ending.trim() : "",
-    };
-  } catch {
-    return null;
-  }
-}
-
-function persistedResearchDocument(
-  artifacts: RunArtifactRecord[],
-  linkMode: "app" | "iframe",
-): ResearchDocumentModel | null {
-  const candidate = [...artifacts]
-    .filter((artifact) => artifact.metadata?.kind === "research_document")
-    .sort((left, right) => artifactCreatedAtTimestamp(right) - artifactCreatedAtTimestamp(left))[0];
-  if (!candidate) {
-    return null;
-  }
-  return parseResearchDocumentArtifact(candidate, linkMode);
-}
-
 function isGenericResearchDocumentTitle(value: string | null | undefined) {
   const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
   return normalized === "" || normalized === "research log";
-}
-
-function mergeResearchDocumentModels(
-  primary: ResearchDocumentModel,
-  supplement: ResearchDocumentModel,
-): ResearchDocumentModel {
-  const mergedSections = new Map<string, ResearchDocumentSection>();
-  const sectionKeyByTitle = new Map<string, string>();
-  const itemSeen = new Set<string>();
-
-  const sectionTitleKey = (value: string) => value.trim().toLowerCase();
-  const itemFingerprint = (item: ResearchDocumentItem) =>
-    [
-      item.kind,
-      item.workId ?? "",
-      item.citation?.chunkId ?? "",
-      item.citation?.workId ?? "",
-      item.citationText ?? "",
-      item.text.trim().toLowerCase(),
-    ].join("::");
-
-  const addSection = (section: ResearchDocumentSection) => {
-    const titleKey = sectionTitleKey(section.title);
-    const existingKey = sectionTitleKey(section.title) && sectionKeyByTitle.get(titleKey);
-    if (!existingKey) {
-      const cloned: ResearchDocumentSection = {
-        ...section,
-        items: [],
-      };
-      mergedSections.set(section.key, cloned);
-      sectionKeyByTitle.set(titleKey, section.key);
-      return cloned;
-    }
-    return mergedSections.get(existingKey)!;
-  };
-
-  const mergeFrom = (document: ResearchDocumentModel) => {
-    for (const section of document.sections) {
-      const target = addSection(section);
-      if (!target.anchorId && section.anchorId) {
-        target.anchorId = section.anchorId;
-      }
-      if ((!target.summary || isLowValueSectionSummary(target.summary)) && section.summary) {
-        target.summary = section.summary;
-      }
-      if ((!target.meta || target.meta.trim().length === 0) && section.meta) {
-        target.meta = section.meta;
-      }
-      if (!target.evidenceTier && section.evidenceTier) {
-        target.evidenceTier = section.evidenceTier;
-      }
-      for (const item of section.items) {
-        const fingerprint = itemFingerprint(item);
-        const sectionScopedFingerprint = `${target.key}::${fingerprint}`;
-        if (itemSeen.has(sectionScopedFingerprint)) {
-          continue;
-        }
-        itemSeen.add(sectionScopedFingerprint);
-        target.items.push(item);
-      }
-    }
-  };
-
-  mergeFrom(primary);
-  mergeFrom(supplement);
-
-  const sections = [...mergedSections.values()]
-    .map((section) => ({
-      ...section,
-      meta: sectionMetaFromItems(section),
-    }))
-    .filter((section) => hasUsefulSectionItems(section));
-
-  return {
-    title:
-      !isGenericResearchDocumentTitle(primary.title)
-        ? primary.title
-        : (supplement.title || primary.title),
-    sections,
-    ending: primary.ending || supplement.ending,
-  };
-}
-
-function buildResearchDocument(
-  title: string,
-  toolTrace: ToolTraceEntry[],
-  artifacts: RunArtifactRecord[],
-  ending: string | null,
-  linkMode: "app" | "iframe" = "app",
-): ResearchDocumentModel {
-  const entries: ResearchDocumentFlatEntry[] = [];
-  const sections = new Map<string, ResearchDocumentSection>();
-  const seen = new Set<string>();
-  const confirmedWorkIds = collectConfirmedDocumentWorkIds(toolTrace);
-  const surfacedWorkspaceWorkIds = new Set<string>();
-
-  for (const entry of toolTrace) {
-    const section = ensureSection(sections, entry);
-    for (const [index, detail] of (entry.progressDetails ?? []).entries()) {
-      const detailType = progressDetailString(detail.type);
-      if (detailType === "research.work") {
-        const workId = progressDetailString(detail.workId) || `${entry.id}:progress-work:${index}`;
-        const titleText = progressDetailString(detail.workTitle) || progressDetailString(detail.title) || workId;
-        const authors = Array.isArray(detail.authors)
-          ? detail.authors.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-          : [];
-        appendDocumentEntry(entries, seen, {
-          sectionKey: section.key,
-          sectionTitle: section.title,
-          sectionSummary: section.summary,
-          sectionMeta: section.meta,
-          item: {
-            key: `progress-book:${workId}`,
-            kind: "book",
-            text: `${titleText}${authors.length > 0 ? ` by ${authors.join(", ")}` : ""}`.trim(),
-            linkLabel: titleText,
-            linkHref: buildResearchDocumentLinkHref(linkMode, workId, null),
-            workId,
-            prefix: "",
-            suffix: authors.length > 0 ? `by ${authors.join(", ")}` : "",
-          },
-        });
-        continue;
-      }
-      if (detailType === "research.chunk") {
-        const workId = progressDetailString(detail.workId) || "work";
-        const chunkId = progressDetailString(detail.chunkId) || `${entry.id}:progress-chunk:${index}`;
-        const excerpt = progressDetailString(detail.excerpt).slice(0, 440);
-        if (!isUsefulDocumentExcerpt(excerpt)) {
-          continue;
-        }
-        const citationText = buildProgressChunkCitation(detail);
-        appendDocumentEntry(entries, seen, {
-          sectionKey: section.key,
-          sectionTitle: section.title,
-          sectionSummary: section.summary,
-          sectionMeta: section.meta,
-          item: {
-            key: `progress-chunk:${chunkId}`,
-            kind: "chunk",
-            text: excerpt,
-            citationText,
-            linkLabel: citationText,
-            linkHref: buildResearchDocumentLinkHref(linkMode, workId, {
-              workId,
-              ...(progressDetailString(detail.chunkId) ? { chunkId: progressDetailString(detail.chunkId) } : {}),
-              label: progressDetailString(detail.workTitle) || progressDetailString(detail.title) || workId,
-              excerpt: excerpt || citationText,
-              ...(progressDetailString(detail.r2Key) ? { r2Key: progressDetailString(detail.r2Key) } : {}),
-            }),
-            citation: {
-              workId,
-              ...(progressDetailString(detail.chunkId) ? { chunkId: progressDetailString(detail.chunkId) } : {}),
-              label: progressDetailString(detail.workTitle) || progressDetailString(detail.title) || workId,
-              excerpt: excerpt || citationText,
-              ...(progressDetailString(detail.r2Key) ? { r2Key: progressDetailString(detail.r2Key) } : {}),
-            },
-          },
-        });
-        continue;
-      }
-      if (detailType === "research.note") {
-        const noteText = progressDetailString(detail.note) || progressDetailString(detail.message);
-        if (isUsefulResearchNote(noteText) && (section.summary.length === 0 || isLowValueSectionSummary(section.summary))) {
-          section.summary = noteText;
-        }
-      }
-    }
-
-    if (entry.toolName === "search_works" || entry.toolName === "get_work_metadata") {
-      const works = Array.isArray(entry.result?.works) ? entry.result.works as Array<Record<string, unknown>> : [];
-      const filteredWorks = works.filter((work) => {
-        const workId = typeof work.id === "string" ? work.id : "";
-        return workId.length > 0 && confirmedWorkIds.has(workId);
-      });
-      const displayWorks = filteredWorks;
-      for (const [index, work] of displayWorks.entries()) {
-        const workId = typeof work.id === "string" ? work.id : `${entry.id}:work:${index}`;
-        const titleText = typeof work.title === "string" ? work.title.trim() : "";
-        const authors = Array.isArray(work.authors)
-          ? work.authors.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-          : [];
-        appendDocumentEntry(entries, seen, {
-          sectionKey: section.key,
-          sectionTitle: section.title,
-          sectionSummary: section.summary,
-          sectionMeta: section.meta,
-          item: {
-            key: `book:${workId}`,
-            kind: "book",
-            text: `${titleText} ${authors.length > 0 ? `by ${authors.join(", ")}` : ""}`.trim(),
-            linkLabel: titleText || workId,
-            linkHref: buildResearchDocumentLinkHref(linkMode, workId, null),
-            workId,
-            prefix: "",
-            suffix: authors.length > 0 ? `by ${authors.join(", ")}` : "",
-          },
-        });
-      }
-    }
-
-    if (entry.toolName === "create_workspace") {
-      const manifest = entry.result?.manifest;
-      const works = manifest && typeof manifest === "object" && Array.isArray((manifest as Record<string, unknown>).works)
-        ? (manifest as Record<string, unknown>).works as Array<Record<string, unknown>>
-        : [];
-      for (const [index, work] of works.entries()) {
-        const workId = typeof work.workId === "string" ? work.workId : `${entry.id}:workspace:${index}`;
-        if (typeof work.workId === "string" && confirmedWorkIds.size > 0 && !confirmedWorkIds.has(work.workId)) {
-          continue;
-        }
-        if (surfacedWorkspaceWorkIds.has(workId)) {
-          continue;
-        }
-        const titleText = typeof work.title === "string" ? work.title.trim() : "";
-        const authors = Array.isArray(work.authors)
-          ? work.authors.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-          : [];
-        surfacedWorkspaceWorkIds.add(workId);
-        appendDocumentEntry(entries, seen, {
-          sectionKey: section.key,
-          sectionTitle: section.title,
-          sectionSummary: section.summary,
-          sectionMeta: section.meta,
-          item: {
-            key: `workspace-book:${workId}`,
-            kind: "book",
-            text: `${titleText} ${authors.length > 0 ? `by ${authors.join(", ")}` : ""}`.trim(),
-            linkLabel: titleText || workId,
-            linkHref: buildResearchDocumentLinkHref(linkMode, workId, null),
-            workId,
-            prefix: "",
-            suffix: authors.length > 0 ? `by ${authors.join(", ")}` : "",
-          },
-        });
-      }
-    }
-
-    if (entry.toolName === "get_relevant_chunks") {
-      const verifiedWorkIds = Array.isArray(entry.result?.verifiedWorkIds)
-        ? new Set(entry.result.verifiedWorkIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0))
-        : null;
-      const chunks = recordArray(entry.result?.chunks);
-      for (const [index, chunk] of chunks.entries()) {
-        const workId = typeof chunk.workId === "string" ? chunk.workId : "work";
-        if (verifiedWorkIds && verifiedWorkIds.size > 0 && !verifiedWorkIds.has(workId)) {
-          continue;
-        }
-        const chunkIndex = typeof chunk.chunkIndex === "number" ? chunk.chunkIndex : null;
-        const excerpt = typeof chunk.excerpt === "string"
-          ? chunk.excerpt.trim()
-          : typeof chunk.text === "string"
-            ? chunk.text.trim()
-            : "";
-        if (!isUsefulDocumentExcerpt(excerpt)) {
-          continue;
-        }
-        const key = typeof chunk.id === "string" ? chunk.id : `${entry.id}:chunk:${index}`;
-        const workTitle = typeof chunk.workTitle === "string" && chunk.workTitle.trim() ? chunk.workTitle.trim() : workId;
-        const authors = Array.isArray(chunk.authors)
-          ? chunk.authors.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-          : [];
-        const citationText = `${workTitle}${authors.length > 0 ? `, by ${authors.join(", ")}` : ""}, ${formatPassageLocation(chunkIndex)}`;
-        appendDocumentEntry(entries, seen, {
-          sectionKey: section.key,
-          sectionTitle: section.title,
-          sectionSummary: section.summary,
-          sectionMeta: section.meta,
-          item: {
-            key: `chunk:${key}`,
-            kind: "chunk",
-            text: excerpt.slice(0, 440),
-            citationText,
-            linkLabel: citationText,
-            linkHref: buildResearchDocumentLinkHref(linkMode, workId, {
-              workId,
-              chunkId: typeof chunk.id === "string" ? chunk.id : undefined,
-              label: workTitle,
-              excerpt: excerpt || workTitle,
-              r2Key: typeof chunk.r2Key === "string" ? chunk.r2Key : undefined,
-            }),
-            citation: {
-              workId,
-              chunkId: typeof chunk.id === "string" ? chunk.id : undefined,
-              label: workTitle,
-              excerpt: excerpt || workTitle,
-              r2Key: typeof chunk.r2Key === "string" ? chunk.r2Key : undefined,
-            },
-          },
-        });
-      }
-    }
-  }
-
-  const artifactSection = entries.length > 0 ? null : {
-    key: "artifacts",
-    title: "Evidence",
-    summary: "Primary-source passages carried forward into the final briefing.",
-  };
-  for (const chunk of artifactSourceChunks(artifacts)) {
-    const excerpt = chunk.text.replace(/\s+/g, " ").trim().slice(0, 280);
-    if (!isUsefulDocumentExcerpt(excerpt)) {
-      continue;
-    }
-    appendDocumentEntry(entries, seen, {
-      sectionKey: artifactSection?.key ?? "artifacts",
-      sectionTitle: artifactSection?.title ?? "Evidence",
-      sectionSummary: artifactSection?.summary ?? "Primary-source passages carried forward into the final briefing.",
-      sectionMeta: "evidence",
-      item: {
-        key: `artifact-chunk:${chunk.key}`,
-        kind: "chunk",
-        text: excerpt,
-        citationText: chunk.label,
-        linkLabel: chunk.label,
-      },
-    });
-  }
-
-  const normalizedEnding = normalizeResearchEnding(ending);
-  for (const entry of entries) {
-    const section = sections.get(entry.sectionKey);
-    if (section) {
-      section.items.push(entry.item);
-      continue;
-    }
-    sections.set(entry.sectionKey, {
-      key: entry.sectionKey,
-      title: entry.sectionTitle,
-      summary: entry.sectionSummary,
-      meta: entry.sectionMeta,
-      items: [entry.item],
-    });
-  }
-
-  for (const section of sections.values()) {
-    section.meta = sectionMetaFromItems(section);
-  }
-
-  return {
-    title: title.trim() || "Research log",
-    sections: [...sections.values()].filter((section) => hasUsefulSectionItems(section)),
-    ending: normalizedEnding,
-  };
 }
 
 class ResearchDocumentErrorBoundary extends Component<
@@ -5508,29 +4403,7 @@ export default function App() {
     void (async () => {
       try {
         setMessagesLoading(true);
-        const bootstrap = await fetchAssistantSessionBootstrap(selectedSessionId);
-        const nextRuns = Array.isArray(bootstrap.runs) ? bootstrap.runs : [];
-        const activeRun =
-          nextRuns.find((run) => run.status === "running" || run.status === "queued")
-          ?? null;
-        const preferredRun =
-          activeRun
-          ?? [...nextRuns].sort((left, right) => right.startedAt.localeCompare(left.startedAt))[0]
-          ?? null;
-        const activeRunId = activeRun?.id ?? null;
-        const nextRunId = preferredRun?.id ?? null;
-        const hydrated = Array.isArray(bootstrap.messages)
-          ? bootstrap.messages.map(hydrateStoredMessage)
-          : [];
-        setSessions((current) => (
-          Array.isArray(bootstrap.sessions) && bootstrap.sessions.length > 0
-            ? bootstrap.sessions
-            : current
-        ));
-        setSessionRuns(nextRuns);
-        setRecoveredActiveRunId(activeRunId);
-        setRunArtifacts(Array.isArray(bootstrap.runState?.artifacts) ? bootstrap.runState.artifacts : []);
-        setMessages(hydrated);
+        await refreshAssistantConversation(selectedSessionId);
       } catch (error) {
         setLoadError(getErrorMessage(error, "We couldn't load this conversation."));
       } finally {
@@ -5834,6 +4707,26 @@ export default function App() {
     }
   }
 
+  async function refreshAssistantConversation(sessionId: string) {
+    const bootstrap = await fetchAssistantSessionBootstrap(sessionId);
+    const nextRuns = Array.isArray(bootstrap.runs) ? bootstrap.runs : [];
+    const activeRun =
+      nextRuns.find((run) => run.status === "running" || run.status === "queued")
+      ?? null;
+    const hydratedMessages = Array.isArray(bootstrap.messages)
+      ? bootstrap.messages.map(hydrateStoredMessage)
+      : [];
+    setSessions((current) => (
+      Array.isArray(bootstrap.sessions) && bootstrap.sessions.length > 0
+        ? bootstrap.sessions
+        : current
+    ));
+    setSessionRuns(nextRuns);
+    setRecoveredActiveRunId(activeRun?.id ?? null);
+    setRunArtifacts(Array.isArray(bootstrap.runState?.artifacts) ? bootstrap.runState.artifacts : []);
+    setMessages(hydratedMessages);
+  }
+
   function track(event: string, properties: Record<string, unknown> = {}) {
     sendAnalyticsEvent(event, properties, currentUserId);
   }
@@ -6127,7 +5020,6 @@ export default function App() {
     const runToken = activeRunTokenRef.current + 1;
     activeRunTokenRef.current = runToken;
     let workingSessionId = initialSessionId;
-    let finalAssistantMessageId: string | null = null;
     let runSettled = false;
     let streamIdleTimer: number | null = null;
     const clearStreamIdleTimer = () => {
@@ -6191,7 +5083,7 @@ export default function App() {
               ]);
               setMessages((current) =>
                 current.map((message) =>
-                  message.id === userMessage.id || message.id === finalAssistantMessageId
+                  message.id === userMessage.id
                     ? { ...message, sessionId: createdSessionId }
                     : message,
                 ),
@@ -6223,99 +5115,49 @@ export default function App() {
                     : session,
                 ));
               }
-              void refreshSessions(workingSessionId ?? null);
+              if (workingSessionId) {
+                void refreshAssistantConversation(workingSessionId);
+              }
               return;
             }
 
             if (event.event === "assistant.plan" && typeof event.data.text === "string") {
-              void refreshSessions(workingSessionId ?? null);
+              if (workingSessionId) {
+                void refreshAssistantConversation(workingSessionId);
+              }
               return;
             }
 
             if (event.event === "tool.started" && typeof event.data.toolName === "string") {
-              void refreshSessions(workingSessionId ?? null);
+              if (workingSessionId) {
+                void refreshAssistantConversation(workingSessionId);
+              }
               return;
             }
 
             if (event.event === "tool.completed" && typeof event.data.toolName === "string") {
-              void refreshSessions(workingSessionId ?? null);
+              if (workingSessionId) {
+                void refreshAssistantConversation(workingSessionId);
+              }
               return;
             }
 
             if (event.event === "tool.progress" && typeof event.data.toolName === "string" && typeof event.data.text === "string") {
-              void refreshSessions(workingSessionId ?? null);
+              if (workingSessionId) {
+                void refreshAssistantConversation(workingSessionId);
+              }
               return;
             }
 
             if (event.event === "assistant.delta" && typeof event.data.text === "string") {
-              if (!finalAssistantMessageId) {
-                finalAssistantMessageId = crypto.randomUUID();
-                setStreamingAssistantId(finalAssistantMessageId);
-                setMessages((current) => [
-                  ...current,
-                  {
-                    id: finalAssistantMessageId!,
-                    sessionId: workingSessionId ?? "pending",
-                    role: "assistant",
-                    content: "",
-                    metadata: {},
-                    createdAt: new Date().toISOString(),
-                    citations: [],
-                    toolCalls: [],
-                  },
-                ]);
-              }
-              setMessages((current) =>
-                current.map((message) =>
-                  message.id === finalAssistantMessageId
-                    ? {
-                        ...message,
-                        content: `${message.content}${event.data.text as string}`,
-                      }
-                    : message,
-                ),
-              );
               scheduleStreamIdleSettle();
               return;
             }
 
             if (event.event === "assistant.completed") {
-              const completionPhase = typeof event.data.phase === "string" ? event.data.phase : null;
-              const completedAnswer = typeof event.data.answer === "string" ? event.data.answer : null;
-              if (!finalAssistantMessageId) {
-                finalAssistantMessageId = crypto.randomUUID();
-                setMessages((current) => [
-                  ...current,
-                  {
-                    id: finalAssistantMessageId!,
-                    sessionId: workingSessionId ?? "pending",
-                    role: "assistant",
-                    content: completedAnswer ?? "",
-                    metadata: {
-                      ...(completionPhase ? { phase: completionPhase } : {}),
-                    },
-                    createdAt: new Date().toISOString(),
-                    citations: Array.isArray(event.data.citations) ? (event.data.citations as Citation[]) : [],
-                    toolCalls: [],
-                  },
-                ]);
+              if (workingSessionId) {
+                void refreshAssistantConversation(workingSessionId);
               }
-              setMessages((current) =>
-                current.map((message) =>
-                  message.id === finalAssistantMessageId
-                    ? {
-                        ...message,
-                        content: completedAnswer ?? message.content,
-                        metadata: {
-                          ...message.metadata,
-                          ...(completionPhase ? { phase: completionPhase } : {}),
-                        },
-                        citations: Array.isArray(event.data.citations) ? (event.data.citations as Citation[]) : [],
-                        toolCalls: [],
-                      }
-                    : message,
-                ),
-              );
               settleRunUi();
               setStreamConnected(false);
               return;
@@ -6333,7 +5175,11 @@ export default function App() {
                     : session,
                 ));
               }
-              void refreshSessions(workingSessionId ?? null);
+              if (workingSessionId) {
+                void refreshAssistantConversation(workingSessionId);
+              } else {
+                void refreshSessions(workingSessionId ?? null);
+              }
               return;
             }
 
@@ -6368,7 +5214,11 @@ export default function App() {
         activeRunIdRef.current = null;
         setStreamConnected(false);
         settleRunUi();
-        await refreshSessions(workingSessionId ?? null);
+        if (workingSessionId) {
+          await refreshAssistantConversation(workingSessionId);
+        } else {
+          await refreshSessions(workingSessionId ?? null);
+        }
         if (authState.user) {
           await loadNotifications({ silent: true });
         }
