@@ -901,20 +901,37 @@ export class D1AppStore implements AppStore {
 
   async updateRun(runId: string, updates: Partial<Pick<RunRecord, "status" | "plannerTurns" | "completedAt" | "ownerInstanceId" | "heartbeatAt" | "leaseExpiresAt" | "activeToolCallId">>): Promise<void> {
     await this.ensureRunLifecycleColumns();
-    const run = await this.getRun(runId);
-    if (!run) {
-      return;
-    }
-    await this.db.query("UPDATE runs SET status = ?, planner_turns = ?, completed_at = ?, owner_instance_id = ?, heartbeat_at = ?, lease_expires_at = ?, active_tool_call_id = ? WHERE id = ?", [
-      updates.status ?? run.status,
-      updates.plannerTurns ?? run.plannerTurns,
-      updates.completedAt ?? run.completedAt,
-      updates.ownerInstanceId ?? run.ownerInstanceId,
-      updates.heartbeatAt ?? run.heartbeatAt,
-      updates.leaseExpiresAt ?? run.leaseExpiresAt,
-      updates.activeToolCallId ?? run.activeToolCallId,
-      runId,
-    ]);
+    await this.db.query(
+      `
+        UPDATE runs
+        SET
+          status = CASE WHEN ? THEN ? ELSE status END,
+          planner_turns = CASE WHEN ? THEN ? ELSE planner_turns END,
+          completed_at = CASE WHEN ? THEN ? ELSE completed_at END,
+          owner_instance_id = CASE WHEN ? THEN ? ELSE owner_instance_id END,
+          heartbeat_at = CASE WHEN ? THEN ? ELSE heartbeat_at END,
+          lease_expires_at = CASE WHEN ? THEN ? ELSE lease_expires_at END,
+          active_tool_call_id = CASE WHEN ? THEN ? ELSE active_tool_call_id END
+        WHERE id = ?
+      `,
+      [
+        updates.status !== undefined ? 1 : 0,
+        updates.status ?? null,
+        updates.plannerTurns !== undefined ? 1 : 0,
+        updates.plannerTurns ?? null,
+        updates.completedAt !== undefined ? 1 : 0,
+        updates.completedAt ?? null,
+        updates.ownerInstanceId !== undefined ? 1 : 0,
+        updates.ownerInstanceId ?? null,
+        updates.heartbeatAt !== undefined ? 1 : 0,
+        updates.heartbeatAt ?? null,
+        updates.leaseExpiresAt !== undefined ? 1 : 0,
+        updates.leaseExpiresAt ?? null,
+        updates.activeToolCallId !== undefined ? 1 : 0,
+        updates.activeToolCallId ?? null,
+        runId,
+      ],
+    );
   }
 
   async claimRunLease(runId: string, options: {
@@ -923,20 +940,36 @@ export class D1AppStore implements AppStore {
     leaseExpiresAt: string;
   }): Promise<boolean> {
     await this.ensureRunLifecycleColumns();
-    const run = await this.getRun(runId);
-    if (!run || (run.status !== "running" && run.status !== "queued")) {
-      return false;
-    }
-    const leaseExpired = !run.leaseExpiresAt || Date.parse(run.leaseExpiresAt) <= Date.now();
-    const alreadyOwned = run.ownerInstanceId === options.ownerInstanceId;
-    if (!leaseExpired && !alreadyOwned && run.ownerInstanceId) {
-      return false;
-    }
     await this.db.query(
-      "UPDATE runs SET owner_instance_id = ?, heartbeat_at = ?, lease_expires_at = ? WHERE id = ?",
-      [options.ownerInstanceId, options.heartbeatAt, options.leaseExpiresAt, runId],
+      `
+        UPDATE runs
+        SET owner_instance_id = ?, heartbeat_at = ?, lease_expires_at = ?
+        WHERE id = ?
+          AND status IN ('running', 'queued')
+          AND (
+            owner_instance_id IS NULL
+            OR owner_instance_id = ?
+            OR lease_expires_at IS NULL
+            OR lease_expires_at <= ?
+          )
+      `,
+      [
+        options.ownerInstanceId,
+        options.heartbeatAt,
+        options.leaseExpiresAt,
+        runId,
+        options.ownerInstanceId,
+        options.heartbeatAt,
+      ],
     );
-    return true;
+    const run = await this.getRun(runId);
+    return Boolean(
+      run
+      && (run.status === "running" || run.status === "queued")
+      && run.ownerInstanceId === options.ownerInstanceId
+      && run.heartbeatAt === options.heartbeatAt
+      && run.leaseExpiresAt === options.leaseExpiresAt,
+    );
   }
 
   async startToolCall(runId: string, toolName: ToolName, argsJson: Record<string, unknown>): Promise<ToolCallRecord> {
@@ -1301,18 +1334,65 @@ export class D1AppStore implements AppStore {
   }
 
   async updateRuntimeInstance(runtimeId: string, updates: Partial<Pick<RuntimeInstanceRecord, "status" | "manifestJson" | "lastUsedAt" | "expiresAt" | "providerMachineId">>): Promise<void> {
-    const existing = await this.getRuntimeInstance(runtimeId);
-    if (!existing) {
-      return;
+    const nextManifest = updates.manifestJson;
+    let manifestJsonValue: string | null = null;
+    let manifestRefValue: string | null = null;
+    let selectedWorkIdsValue: string | null = null;
+    let selectedChunkIdsValue: string | null = null;
+    let fileCatalogRefValue: string | null = null;
+
+    if (nextManifest !== undefined) {
+      manifestRefValue = artifactKeys.runtimeArtifact(runtimeId, "manifest.json");
+      await this.blobStore.putJson(manifestRefValue, nextManifest);
+      const compact = compactManifest(nextManifest);
+      manifestJsonValue = JSON.stringify(compact.compactManifest);
+      selectedWorkIdsValue = JSON.stringify(compact.selectedWorkIds);
+      selectedChunkIdsValue = JSON.stringify(compact.selectedChunkIds);
+      fileCatalogRefValue = compact.fileCatalog.length > 0
+        ? artifactKeys.runtimeArtifact(runtimeId, "workspace/file-catalog.json")
+        : null;
+      if (fileCatalogRefValue) {
+        await this.blobStore.putJson(fileCatalogRefValue, { items: compact.fileCatalog });
+      }
     }
-    await this.saveRuntimeInstance({
-      ...existing,
-      ...updates,
-      runtimeId,
-      manifestJson: updates.manifestJson ?? existing.manifestJson,
-      id: existing.id,
-      createdAt: existing.createdAt,
-    });
+
+    await this.db.query(
+      `
+        UPDATE runtime_instances
+        SET
+          status = CASE WHEN ? THEN ? ELSE status END,
+          provider_machine_id = CASE WHEN ? THEN ? ELSE provider_machine_id END,
+          manifest_json = CASE WHEN ? THEN ? ELSE manifest_json END,
+          manifest_ref = CASE WHEN ? THEN ? ELSE manifest_ref END,
+          selected_work_ids_json = CASE WHEN ? THEN ? ELSE selected_work_ids_json END,
+          selected_chunk_ids_json = CASE WHEN ? THEN ? ELSE selected_chunk_ids_json END,
+          file_catalog_ref = CASE WHEN ? THEN ? ELSE file_catalog_ref END,
+          last_used_at = CASE WHEN ? THEN ? ELSE last_used_at END,
+          expires_at = CASE WHEN ? THEN ? ELSE expires_at END
+        WHERE runtime_id = ?
+      `,
+      [
+        updates.status !== undefined ? 1 : 0,
+        updates.status ?? null,
+        updates.providerMachineId !== undefined ? 1 : 0,
+        updates.providerMachineId ?? null,
+        nextManifest !== undefined ? 1 : 0,
+        manifestJsonValue,
+        nextManifest !== undefined ? 1 : 0,
+        manifestRefValue,
+        nextManifest !== undefined ? 1 : 0,
+        selectedWorkIdsValue,
+        nextManifest !== undefined ? 1 : 0,
+        selectedChunkIdsValue,
+        nextManifest !== undefined ? 1 : 0,
+        fileCatalogRefValue,
+        updates.lastUsedAt !== undefined ? 1 : 0,
+        updates.lastUsedAt ?? null,
+        updates.expiresAt !== undefined ? 1 : 0,
+        updates.expiresAt ?? null,
+        runtimeId,
+      ],
+    );
   }
 
   async saveArtifact(input: Omit<ArtifactRecord, "id" | "createdAt"> & { id?: string; createdAt?: string }): Promise<ArtifactRecord> {

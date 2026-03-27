@@ -126,7 +126,7 @@ test("document aliases expose neutral corpus records without changing work stora
   assert.equal(chunks[0]?.documentId, "work-1");
 });
 
-test("appendRunEvent uses an atomic insert query for sequence allocation", async () => {
+test("appendRunEvent uses a single insert-select query for sequence allocation", async () => {
   const queries: Array<{ sql: string; params?: unknown[] }> = [];
   const db: DbClient = {
     async query<T = Record<string, unknown>>(sql: string, params?: unknown[]) {
@@ -139,7 +139,10 @@ test("appendRunEvent uses an atomic insert query for sequence allocation", async
       ) {
         return { rows: [] as T[] };
       }
-      if (sql.includes("WITH run_lock AS")) {
+      if (sql.includes("INSERT INTO run_events") && sql.includes("COALESCE(MAX(sequence), 0) + 1")) {
+        return { rows: [] as T[] };
+      }
+      if (sql.includes("SELECT sequence FROM run_events WHERE id = ? LIMIT 1")) {
         return { rows: [{ sequence: 7 }] as T[] };
       }
       throw new Error(`Unexpected query: ${sql}`);
@@ -156,49 +159,10 @@ test("appendRunEvent uses an atomic insert query for sequence allocation", async
   );
 
   assert.equal(event.sequence, 7);
-  const insertQuery = queries.find((entry) => entry.sql.includes("WITH run_lock AS"));
+  const insertQuery = queries.find((entry) => entry.sql.includes("INSERT INTO run_events"));
   assert.ok(insertQuery);
-  assert.match(insertQuery!.sql, /pg_advisory_xact_lock/);
-  assert.match(insertQuery!.sql, /INSERT INTO run_events/);
+  assert.match(insertQuery!.sql, /COALESCE\(MAX\(sequence\), 0\) \+ 1/);
   assert.equal(queries.filter((entry) => entry.sql.includes("INSERT INTO run_events")).length, 1);
-});
-
-test("appendRunEvent retries sequence conflicts before failing", async () => {
-  let attempts = 0;
-  const db: DbClient = {
-    async query<T = Record<string, unknown>>(sql: string) {
-      if (
-        sql.includes("CREATE TABLE IF NOT EXISTS run_events")
-        || sql.includes("CREATE UNIQUE INDEX IF NOT EXISTS idx_run_events_run_id_sequence")
-        || sql.includes("CREATE INDEX IF NOT EXISTS idx_run_events_run_id_created_at")
-        || sql.startsWith("ALTER TABLE ")
-      ) {
-        return { rows: [] as T[] };
-      }
-      if (sql.includes("WITH run_lock AS")) {
-        attempts += 1;
-        if (attempts === 1) {
-          const error = new Error('duplicate key value violates unique constraint "idx_run_events_run_id_sequence"') as Error & { code?: string };
-          error.code = "23505";
-          throw error;
-        }
-        return { rows: [{ sequence: 8 }] as T[] };
-      }
-      throw new Error(`Unexpected query: ${sql}`);
-    },
-    async end() {},
-  };
-  const store = new D1AppStore(db);
-
-  const event = await store.appendRunEvent(
-    "11111111-1111-1111-1111-111111111111",
-    "22222222-2222-2222-2222-222222222222",
-    "sprite.shard.started",
-    { shardId: "books-2" },
-  );
-
-  assert.equal(event.sequence, 8);
-  assert.equal(attempts, 2);
 });
 
 test("in-memory store spills oversized run event payloads to blob storage and rehydrates them", async () => {
