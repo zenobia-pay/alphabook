@@ -841,14 +841,6 @@ function mergeToolPayload(
   return merged;
 }
 
-function mergeFetchedMessages(existingMessages: UiMessage[], incomingMessages: UiMessage[], sessionId: string | null) {
-  if (!sessionId) {
-    return incomingMessages;
-  }
-  const otherSessionMessages = existingMessages.filter((message) => message.sessionId !== sessionId);
-  return [...otherSessionMessages, ...incomingMessages];
-}
-
 function formatRelativeTime(value: string | null | undefined) {
   if (!value) {
     return "Just now";
@@ -3149,18 +3141,6 @@ function collectConfirmedDocumentWorkIds(toolTrace: ToolTraceEntry[]) {
   return confirmed;
 }
 
-function allowUnverifiedMetadataFallback(toolTrace: ToolTraceEntry[], confirmedWorkIds: Set<string>) {
-  if (confirmedWorkIds.size > 0) {
-    return false;
-  }
-  return toolTrace.some((entry) => {
-    if (entry.toolName !== "search_works" && entry.toolName !== "get_work_metadata") {
-      return false;
-    }
-    return Array.isArray(entry.result?.works) && entry.result.works.length > 0;
-  });
-}
-
 type SurfacingBook = {
   key: string;
   title: string;
@@ -3505,7 +3485,7 @@ function persistedResearchDocument(
   linkMode: "app" | "iframe",
 ): ResearchDocumentModel | null {
   const candidate = [...artifacts]
-    .filter((artifact) => artifact.filename.endsWith("-research-document.json") || artifact.metadata?.kind === "research_document")
+    .filter((artifact) => artifact.metadata?.kind === "research_document")
     .sort((left, right) => artifactCreatedAtTimestamp(right) - artifactCreatedAtTimestamp(left))[0];
   if (!candidate) {
     return null;
@@ -3610,7 +3590,6 @@ function buildResearchDocument(
   const sections = new Map<string, ResearchDocumentSection>();
   const seen = new Set<string>();
   const confirmedWorkIds = collectConfirmedDocumentWorkIds(toolTrace);
-  const allowMetadataFallback = allowUnverifiedMetadataFallback(toolTrace, confirmedWorkIds);
   const surfacedWorkspaceWorkIds = new Set<string>();
 
   for (const entry of toolTrace) {
@@ -3688,9 +3667,7 @@ function buildResearchDocument(
 
     if (entry.toolName === "search_works" || entry.toolName === "get_work_metadata") {
       const works = Array.isArray(entry.result?.works) ? entry.result.works as Array<Record<string, unknown>> : [];
-      const filteredWorks = allowMetadataFallback
-        ? works
-        : works.filter((work) => {
+      const filteredWorks = works.filter((work) => {
         const workId = typeof work.id === "string" ? work.id : "";
         return workId.length > 0 && confirmedWorkIds.has(workId);
       });
@@ -5553,7 +5530,7 @@ export default function App() {
         setSessionRuns(nextRuns);
         setRecoveredActiveRunId(activeRunId);
         setRunArtifacts(Array.isArray(bootstrap.runState?.artifacts) ? bootstrap.runState.artifacts : []);
-        setMessages((current) => mergeFetchedMessages(current, hydrated, selectedSessionId));
+        setMessages(hydrated);
       } catch (error) {
         setLoadError(getErrorMessage(error, "We couldn't load this conversation."));
       } finally {
@@ -5587,7 +5564,7 @@ export default function App() {
         }
         consecutivePollFailures = 0;
         const hydrated = nextMessages.map(hydrateStoredMessage);
-        setMessages((current) => mergeFetchedMessages(current, hydrated, selectedSessionId));
+        setMessages(hydrated);
         pollTimer = window.setTimeout(() => {
           void pollMessages();
         }, 2000);
@@ -5617,7 +5594,7 @@ export default function App() {
         return;
       }
       const hydrated = nextMessages.map(hydrateStoredMessage);
-      setMessages((current) => mergeFetchedMessages(current, hydrated, selectedSessionId));
+      setMessages(hydrated);
     };
 
     void streamRun(
@@ -6150,8 +6127,6 @@ export default function App() {
     const runToken = activeRunTokenRef.current + 1;
     activeRunTokenRef.current = runToken;
     let workingSessionId = initialSessionId;
-    let activityLog: ToolTraceEntry[] = [];
-    let planMessageId: string | null = null;
     let finalAssistantMessageId: string | null = null;
     let runSettled = false;
     let streamIdleTimer: number | null = null;
@@ -6175,15 +6150,6 @@ export default function App() {
       runSettled = true;
       setIsSending(false);
       setStreamingAssistantId(null);
-    };
-    const updatePlanMessage = (updater: (message: UiMessage) => UiMessage) => {
-      setMessages((current) =>
-        current.map((message) =>
-          message.id === planMessageId
-            ? updater(message)
-            : message,
-        ),
-      );
     };
 
     try {
@@ -6225,7 +6191,7 @@ export default function App() {
               ]);
               setMessages((current) =>
                 current.map((message) =>
-                  message.id === userMessage.id || message.id === planMessageId || message.id === finalAssistantMessageId
+                  message.id === userMessage.id || message.id === finalAssistantMessageId
                     ? { ...message, sessionId: createdSessionId }
                     : message,
                 ),
@@ -6262,145 +6228,22 @@ export default function App() {
             }
 
             if (event.event === "assistant.plan" && typeof event.data.text === "string") {
-              const messageId = typeof event.data.messageId === "string" ? event.data.messageId : crypto.randomUUID();
-              planMessageId = messageId;
-              setMessages((current) => {
-                const existingIndex = current.findIndex((message) => message.id === messageId);
-                const nextMessage: UiMessage = {
-                  id: messageId,
-                  sessionId: workingSessionId ?? "pending",
-                  role: "assistant",
-                  content: event.data.text as string,
-                  metadata: {
-                    ...(typeof event.data.runId === "string" ? { runId: event.data.runId } : {}),
-                    phase: "plan",
-                  },
-                  createdAt: new Date().toISOString(),
-                  citations: [],
-                  toolCalls: activityLog,
-                };
-                if (existingIndex >= 0) {
-                  const copy = [...current];
-                  copy[existingIndex] = {
-                    ...copy[existingIndex],
-                    content: nextMessage.content,
-                    metadata: {
-                      ...copy[existingIndex].metadata,
-                      ...(typeof event.data.runId === "string" ? { runId: event.data.runId } : {}),
-                      phase: "plan",
-                    },
-                    toolCalls: activityLog,
-                  };
-                  return copy;
-                }
-                return [...current, nextMessage];
-              });
+              void refreshSessions(workingSessionId ?? null);
               return;
             }
 
             if (event.event === "tool.started" && typeof event.data.toolName === "string") {
-              const toolCallId = typeof event.data.toolCallId === "string" ? event.data.toolCallId : crypto.randomUUID();
-              const toolName = event.data.toolName;
-              const label = typeof event.data.label === "string" ? event.data.label : getToolLabel(toolName);
-              activityLog = [
-                ...activityLog,
-                {
-                  id: toolCallId,
-                  toolName,
-                  label,
-                  rationale: typeof event.data.rationale === "string" ? event.data.rationale : undefined,
-                  progress: [],
-                  args: syncToolDisplayArgs(
-                    event.data.args && typeof event.data.args === "object" ? (event.data.args as Record<string, unknown>) : {},
-                    {
-                      toolName,
-                      rationale: typeof event.data.rationale === "string" ? event.data.rationale : undefined,
-                      progress: typeof event.data.rationale === "string" && event.data.rationale.trim().length > 0
-                        ? [event.data.rationale]
-                        : [],
-                    },
-                  ),
-                  state: "running",
-                },
-              ];
-              updatePlanMessage((message) => ({
-                ...message,
-                toolCalls: activityLog,
-              }));
+              void refreshSessions(workingSessionId ?? null);
               return;
             }
 
             if (event.event === "tool.completed" && typeof event.data.toolName === "string") {
-              const toolCallId = typeof event.data.toolCallId === "string" ? event.data.toolCallId : null;
-              const toolName = event.data.toolName;
-              const label = typeof event.data.label === "string" ? event.data.label : getToolLabel(toolName);
-              activityLog = activityLog.map((entry) =>
-                (toolCallId ? entry.id === toolCallId : entry.toolName === toolName && entry.state === "running")
-                  ? {
-                      ...entry,
-                      label,
-                      rationale:
-                        entry.progress.length > 0
-                          ? entry.progress[entry.progress.length - 1]
-                          : typeof event.data.rationale === "string"
-                            ? event.data.rationale
-                            : entry.rationale,
-                      progress:
-                        typeof event.data.rationale === "string"
-                        && event.data.rationale.trim().length > 0
-                        && entry.progress.length === 0
-                        && !entry.progress.includes(event.data.rationale)
-                          ? [...entry.progress, event.data.rationale]
-                          : entry.progress,
-                      result: event.data.result && typeof event.data.result === "object" ? (event.data.result as Record<string, unknown>) : undefined,
-                      isError: event.data.status === "failed",
-                      state: event.data.status === "failed" ? "error" : "completed",
-                    }
-                  : entry,
-              );
-              const completedEntry = activityLog.find((entry) => entry.id === toolCallId)
-                ?? activityLog.find((entry) => entry.toolName === toolName);
-              updatePlanMessage((message) => ({
-                ...message,
-                toolCalls: activityLog,
-              }));
+              void refreshSessions(workingSessionId ?? null);
               return;
             }
 
             if (event.event === "tool.progress" && typeof event.data.toolName === "string" && typeof event.data.text === "string") {
-              const toolCallId = typeof event.data.toolCallId === "string" ? event.data.toolCallId : null;
-              const toolName = event.data.toolName;
-              const rationale = event.data.text;
-              const detail = event.data.detail && typeof event.data.detail === "object"
-                ? event.data.detail as Record<string, unknown>
-                : undefined;
-              activityLog = activityLog.map((entry): ToolTraceEntry =>
-                (toolCallId ? entry.id === toolCallId : entry.toolName === toolName && entry.state === "running")
-                  ? (() => {
-                      const nextProgress = entry.progress.includes(rationale) ? entry.progress : [...entry.progress, rationale];
-                      const nextDetails = detail ? appendProgressDetail(entry.progressDetails, detail) : entry.progressDetails;
-                      return {
-                        ...entry,
-                        rationale,
-                        progress: nextProgress,
-                        ...(nextDetails ? { progressDetails: nextDetails } : {}),
-                        args: syncToolDisplayArgs(entry.args, {
-                          toolName: entry.toolName,
-                          rationale,
-                          progress: nextProgress,
-                          progressDetails: nextDetails,
-                        }),
-                      };
-                    })()
-                  : entry,
-              );
-              if (detail) {
-                activityLog = applySpriteLifecycleDetail(activityLog, detail, rationale);
-              }
-              updatePlanMessage((message) => ({
-                ...message,
-                toolCalls: activityLog,
-              }));
+              void refreshSessions(workingSessionId ?? null);
               return;
             }
 
