@@ -261,13 +261,31 @@ function getProgress(args: JsonRecord | null) {
 }
 
 function getAlphaloopEvents(args: JsonRecord | null, result: JsonRecord | null) {
-  const candidate = Array.isArray(result?.__alphaloopEvents)
-    ? result.__alphaloopEvents
-    : Array.isArray(args?.__alphaloopEvents)
-      ? args.__alphaloopEvents
-      : [];
-  return candidate
-    .filter((value): value is AlphaloopProgressEvent => Boolean(value) && typeof value === "object" && typeof (value as { type?: unknown }).type === "string");
+  const nativeEvents = (
+    Array.isArray(result?.__alphaloopEvents)
+      ? result.__alphaloopEvents
+      : Array.isArray(args?.__alphaloopEvents)
+        ? args.__alphaloopEvents
+        : []
+  ).filter((value): value is AlphaloopProgressEvent => Boolean(value) && typeof value === "object" && typeof (value as { type?: unknown }).type === "string");
+  const rawProgressDetails = Array.isArray(args?.__progressDetails) ? args.__progressDetails : [];
+  const hasNativeEmbeddingSearch = nativeEvents.some((event) => event.type === "embedding_search");
+  const syntheticEvents = rawProgressDetails.flatMap((value): AlphaloopProgressEvent[] => {
+    const detail = safeObject(value);
+    if (!detail || detail.type !== "semantic.step") {
+      return [];
+    }
+    const step = typeof detail.step === "string" ? detail.step : null;
+    const query = typeof detail.query === "string" && detail.query.trim().length > 0 ? detail.query.trim() : null;
+    if ((step === "alphaloop_stream_start" || step === "embed_query") && query && !hasNativeEmbeddingSearch) {
+      return [{ type: "embedding_search", query }];
+    }
+    return [];
+  });
+  const events = [...syntheticEvents, ...nativeEvents];
+  return events.filter((value, index) =>
+    !events.slice(0, index).some((candidate) => JSON.stringify(candidate) === JSON.stringify(value))
+  );
 }
 
 function getAlphaloopChunks(result: JsonRecord | null) {
@@ -917,27 +935,11 @@ const SemanticSearchToolUI: ToolCallMessagePartComponent = ({
 }) => {
   const args = useMemo(() => parseArgs(argsText), [argsText]);
   const safeResultObject = useMemo(() => safeObject(result), [result]);
-  const logLines = useMemo(() => buildToolLogLines(args, result), [args, result]);
-  const errorText = useMemo(() => getErrorText(status, result), [result, status]);
   const alphaloopEvents = useMemo(() => getAlphaloopEvents(args, safeResultObject), [args, safeResultObject]);
   const alphaloopChunks = useMemo(() => getAlphaloopChunks(safeResultObject), [safeResultObject]);
-  const displayLogLines = useMemo(() => {
-    if (!errorText) {
-      return logLines;
-    }
-    return [
-      ...logLines,
-      {
-        key: "error",
-        value: errorText,
-        tone: "error" as const,
-      },
-    ];
-  }, [errorText, logLines]);
 
   return (
     <div className="py-2">
-      <ToolLogSection lines={displayLogLines} autoFollow={status?.type === "running"} />
       <AlphaloopSearchProgress events={alphaloopEvents} isRunning={status?.type === "running"} />
       <AlphaloopCitations chunks={alphaloopChunks} />
     </div>

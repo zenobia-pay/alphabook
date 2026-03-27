@@ -2113,6 +2113,9 @@ function buildThreadToolArgs(entry: ToolTraceEntry) {
   if (alphaloopEvents.length > 0) {
     args.__alphaloopEvents = alphaloopEvents as AlphaloopProgressEvent[];
   }
+  if (Array.isArray(entry.progressDetails) && entry.progressDetails.length > 0) {
+    args.__progressDetails = entry.progressDetails;
+  }
   args.__toolName = entry.toolName;
 
   return args;
