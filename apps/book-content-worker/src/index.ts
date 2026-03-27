@@ -5,6 +5,7 @@ export interface Env {
   BOOK_CONTENT_BUCKET: R2Bucket;
   IMPLEMENTATION_ID?: string;
   SITE_ORIGIN?: string;
+  R2_UPLOAD_TOKEN?: string;
 }
 
 const CACHE_TTL_SECONDS = 60 * 60 * 4;
@@ -72,6 +73,34 @@ async function getStaticObject(env: Env, key: string) {
   return await env.BOOK_CONTENT_BUCKET.get(key);
 }
 
+async function handleOpsUpload(request: Request, env: Env) {
+  const configuredToken = env.R2_UPLOAD_TOKEN?.trim();
+  const providedToken = request.headers.get("x-upload-token")
+    ?? request.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim()
+    ?? "";
+  if (!configuredToken || providedToken !== configuredToken) {
+    return new Response("Forbidden", { status: 403 });
+  }
+  const url = new URL(request.url);
+  const key = url.searchParams.get("key")?.trim();
+  if (!key) {
+    return new Response("Missing key", { status: 400 });
+  }
+  const body = await request.arrayBuffer();
+  await env.BOOK_CONTENT_BUCKET.put(key, body, {
+    httpMetadata: {
+      contentType: request.headers.get("content-type") ?? undefined,
+    },
+  });
+  return new Response(JSON.stringify({ ok: true, key }), {
+    status: 200,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+    },
+  });
+}
+
 async function serveStaticObject(
   request: Request,
   env: Env,
@@ -114,6 +143,9 @@ async function serveStaticObject(
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+    if (url.pathname === "/__ops/r2-put" && request.method === "POST") {
+      return handleOpsUpload(request, env);
+    }
     const route = parseContentRoute(url.pathname, env);
 
     if (!route) {

@@ -88,8 +88,8 @@ export class CloudflareVectorizeApi {
 
   async getVectorIds(indexName: string, ids: string[]): Promise<Set<string>> {
     const found = new Set<string>();
-    for (let index = 0; index < ids.length; index += 100) {
-      const batch = ids.slice(index, index + 100);
+    for (let index = 0; index < ids.length; index += 20) {
+      const batch = ids.slice(index, index + 20);
       if (batch.length === 0) {
         continue;
       }

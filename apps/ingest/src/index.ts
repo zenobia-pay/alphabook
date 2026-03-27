@@ -7,7 +7,7 @@ import { Agent as HttpsAgent } from "node:https";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { DeleteObjectsCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { DeleteObjectsCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
 import { parseHTML } from "linkedom";
 import type { DbClient } from "@alphabook/db";
@@ -477,6 +477,23 @@ function uniqueStrings(values: Array<string | null | undefined>) {
     normalized.push(next);
   }
   return normalized;
+}
+
+async function runWithConcurrency<T>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<void>,
+) {
+  let cursor = 0;
+  async function runWorker() {
+    while (cursor < items.length) {
+      const index = cursor++;
+      await worker(items[index]!, index);
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(Math.max(1, concurrency), items.length || 1) }, () => runWorker()),
+  );
 }
 
 function escapeHtml(value: string) {
@@ -1926,25 +1943,133 @@ async function upsertIngestedWork(
 }
 
 async function putText(r2: S3Client, bucket: string, key: string, body: string, contentType: string) {
-  await r2.send(
-    new PutObjectCommand({
-      Bucket: bucket,
-      Key: key,
-      Body: body,
-      ContentType: contentType,
-    }),
-  );
+  const uploadBaseUrl = process.env.R2_UPLOAD_URL_BASE?.trim();
+  const uploadToken = process.env.R2_UPLOAD_TOKEN?.trim();
+  if (uploadBaseUrl && uploadToken) {
+    let lastError: unknown = null;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        const url = new URL("/__ops/r2-put", uploadBaseUrl);
+        url.searchParams.set("key", key);
+        const response = await fetch(url, {
+          method: "POST",
+          headers: {
+            "content-type": contentType,
+            "x-upload-token": uploadToken,
+            "x-r2-bucket": bucket,
+          },
+          body: Buffer.from(body),
+        });
+        if (!response.ok) {
+          throw new Error(`Worker R2 upload failed for ${key}: ${response.status} ${await response.text()}`);
+        }
+        return;
+      } catch (error) {
+        lastError = error;
+        await sleep(1000 * (attempt + 1));
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  }
+  void r2;
+  const tempDir = await mkdtemp(join(tmpdir(), "alphabook-r2-put-"));
+  const payloadPath = join(tempDir, "payload");
+  try {
+    await writeFile(payloadPath, body, "utf8");
+    let lastError: unknown = null;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        await execFileAsync("npx", [
+          "wrangler",
+          "r2",
+          "object",
+          "put",
+          `${bucket}/${key}`,
+          "--file",
+          payloadPath,
+          "--content-type",
+          contentType,
+          "--remote",
+        ], {
+          cwd: process.cwd(),
+          env: process.env,
+          maxBuffer: 20 * 1024 * 1024,
+        });
+        return;
+      } catch (error) {
+        lastError = error;
+        await sleep(1000 * (attempt + 1));
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
 }
 
 async function putBytes(r2: S3Client, bucket: string, key: string, body: Uint8Array, contentType: string) {
-  await r2.send(
-    new PutObjectCommand({
-      Bucket: bucket,
-      Key: key,
-      Body: body,
-      ContentType: contentType,
-    }),
-  );
+  const uploadBaseUrl = process.env.R2_UPLOAD_URL_BASE?.trim();
+  const uploadToken = process.env.R2_UPLOAD_TOKEN?.trim();
+  if (uploadBaseUrl && uploadToken) {
+    let lastError: unknown = null;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        const url = new URL("/__ops/r2-put", uploadBaseUrl);
+        url.searchParams.set("key", key);
+        const response = await fetch(url, {
+          method: "POST",
+          headers: {
+            "content-type": contentType,
+            "x-upload-token": uploadToken,
+            "x-r2-bucket": bucket,
+          },
+          body: Buffer.from(body),
+        });
+        if (!response.ok) {
+          throw new Error(`Worker R2 upload failed for ${key}: ${response.status} ${await response.text()}`);
+        }
+        return;
+      } catch (error) {
+        lastError = error;
+        await sleep(1000 * (attempt + 1));
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  }
+  void r2;
+  const tempDir = await mkdtemp(join(tmpdir(), "alphabook-r2-put-"));
+  const payloadPath = join(tempDir, "payload");
+  try {
+    await writeFile(payloadPath, body);
+    let lastError: unknown = null;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        await execFileAsync("npx", [
+          "wrangler",
+          "r2",
+          "object",
+          "put",
+          `${bucket}/${key}`,
+          "--file",
+          payloadPath,
+          "--content-type",
+          contentType,
+          "--remote",
+        ], {
+          cwd: process.cwd(),
+          env: process.env,
+          maxBuffer: 20 * 1024 * 1024,
+        });
+        return;
+      } catch (error) {
+        lastError = error;
+        await sleep(1000 * (attempt + 1));
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
 }
 
 function coverContentType(path: string): string {
@@ -2193,25 +2318,25 @@ async function persistIngestedWork(
     ? Math.ceil(chunks.length / Math.max(1, embeddingBatchSize))
     : 0;
 
-  await Promise.all([
-    putText(
+  const uploadTasks: Array<() => Promise<void>> = [
+    () => putText(
       context.r2,
       context.r2Bucket,
       rawKey,
       source.rawSource,
       source.sourceFormat === "html" ? "text/html; charset=utf-8" : "text/plain; charset=utf-8",
     ),
-    putText(
+    () => putText(
       context.r2,
       context.r2Bucket,
       metadataKey,
       JSON.stringify(metadataPayload, null, 2),
       "application/json",
     ),
-    putText(context.r2, context.r2Bucket, cleanKey, cleanText, "text/plain; charset=utf-8"),
-    putText(context.r2, context.r2Bucket, chunksKey, chunksPayload, "application/x-ndjson"),
+    () => putText(context.r2, context.r2Bucket, cleanKey, cleanText, "text/plain; charset=utf-8"),
+    () => putText(context.r2, context.r2Bucket, chunksKey, chunksPayload, "application/x-ndjson"),
     ...chunkArtifacts.map((chunk) =>
-      putText(
+      () => putText(
         context.r2,
         context.r2Bucket,
         chunk.r2Key,
@@ -2227,14 +2352,14 @@ async function persistIngestedWork(
         "application/json; charset=utf-8",
       )),
     ...(renderedArtifacts && renderedDocumentKey
-      ? [putText(context.r2, context.r2Bucket, renderedDocumentKey, renderedArtifacts.landingHtml, "text/html; charset=utf-8")]
+      ? [() => putText(context.r2, context.r2Bucket, renderedDocumentKey, renderedArtifacts.landingHtml, "text/html; charset=utf-8")]
       : []),
     ...(renderedArtifacts && renderedManifestKey
-      ? [putText(context.r2, context.r2Bucket, renderedManifestKey, renderedArtifacts.manifestJson, "application/json; charset=utf-8")]
+      ? [() => putText(context.r2, context.r2Bucket, renderedManifestKey, renderedArtifacts.manifestJson, "application/json; charset=utf-8")]
       : []),
     ...(renderedArtifacts
       ? renderedArtifacts.pageFiles.map((page) =>
-          putText(
+          () => putText(
             context.r2,
             context.r2Bucket,
             adapter.artifactKeys.renderedPage?.(source.externalId, page.pageNumber) ?? "",
@@ -2244,12 +2369,16 @@ async function persistIngestedWork(
       : []),
     ...(coverImagePath && coverImageKey
       ? [
-          readFile(coverImagePath).then((bytes) =>
-            putBytes(context.r2, context.r2Bucket, coverImageKey, bytes, coverContentType(coverImagePath)),
-          ),
+          async () => {
+            const bytes = await readFile(coverImagePath);
+            await putBytes(context.r2, context.r2Bucket, coverImageKey, bytes, coverContentType(coverImagePath));
+          },
         ]
       : []),
-  ]);
+  ];
+  await runWithConcurrency(uploadTasks, 4, async (task) => {
+    await task();
+  });
 
   await context.db.query(
     `
