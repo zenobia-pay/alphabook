@@ -746,41 +746,7 @@ button {
 .aui-composer-effort-shell {
   position: relative;
   flex: 0 0 auto;
-  margin-left: 0.2rem;
-}
-
-.aui-composer-effort-select {
-  appearance: none;
-  border: 0;
-  background: transparent;
-  color: var(--ink-soft);
-  font-size: 1rem;
-  line-height: 1.2;
-  padding: 0.2rem 1.2rem 0.2rem 0;
-  cursor: pointer;
-}
-
-.aui-composer-effort-select:focus {
-  outline: none;
-}
-
-.aui-composer-effort-shell::after {
-  content: "";
-  position: absolute;
-  right: 0.24rem;
-  top: 50%;
-  width: 0.42rem;
-  height: 0.42rem;
-  border-right: 1.5px solid currentColor;
-  border-bottom: 1.5px solid currentColor;
-  transform: translateY(-62%) rotate(45deg);
-  color: var(--ink-soft);
-  pointer-events: none;
-}
-
-.aui-composer-effort-select:disabled {
-  cursor: default;
-  opacity: 0.55;
+  margin-left: 0.1rem;
 }
 
 .aui-composer-send,
