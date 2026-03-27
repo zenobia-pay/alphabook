@@ -98,6 +98,7 @@ export class CloudflareVectorizeApi {
         "get-vectors",
         indexName,
         ...batch.flatMap((id) => ["--ids", id]),
+        "--json",
         "--config",
         this.wranglerConfigPath,
       ]);
