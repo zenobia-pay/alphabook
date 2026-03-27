@@ -46,6 +46,8 @@ import { useAuiState } from "@assistant-ui/store";
 import type { RunArtifactRecord } from "@/api";
 import { resolveFrontendImplementation } from "@/implementation";
 
+const AUTO_FOLLOW_THRESHOLD_PX = 96;
+
 type AssistantEffortLevel = "semantic" | "comprehensive";
 
 const IMPLEMENTATION = resolveFrontendImplementation();
@@ -62,27 +64,11 @@ type MessagePartRecord = {
   isError?: boolean;
 };
 
-function flattenLogLines(value: unknown, prefix = "", lines: string[] = []) {
-  if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-    lines.push(prefix ? `${prefix}: ${String(value)}` : String(value));
-    return lines;
+function readStringList(value: unknown) {
+  if (!Array.isArray(value)) {
+    return [];
   }
-
-  if (Array.isArray(value)) {
-    value.forEach((entry, index) => {
-      flattenLogLines(entry, prefix ? `${prefix}[${index}]` : `[${index}]`, lines);
-    });
-    return lines;
-  }
-
-  if (!value || typeof value !== "object") {
-    return lines;
-  }
-
-  Object.entries(value).forEach(([key, entry]) => {
-    flattenLogLines(entry, prefix ? `${prefix}.${key}` : key, lines);
-  });
-  return lines;
+  return value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
 }
 
 function assistantMessageToMarkdown(parts: readonly MessagePartRecord[]) {
@@ -94,15 +80,11 @@ function assistantMessageToMarkdown(parts: readonly MessagePartRecord[]) {
     if (part.type === "tool-call") {
       const args = part.args && typeof part.args === "object" ? { ...part.args } : {};
       const rationale = typeof args.__rationale === "string" ? args.__rationale : null;
-      const startedLogLines = Array.isArray(args.__logLines)
-        ? args.__logLines.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-        : [];
+      const startedLogLines = readStringList(args.__logLines);
       if ("__rationale" in args) {
         delete args.__rationale;
       }
-      const progress = Array.isArray(args.__progress)
-        ? args.__progress.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-        : [];
+      const progress = readStringList(args.__progress);
       if ("__progress" in args) {
         delete args.__progress;
       }
@@ -113,31 +95,31 @@ function assistantMessageToMarkdown(parts: readonly MessagePartRecord[]) {
         delete args.__summary;
       }
       const resultRecord = part.result && typeof part.result === "object" ? { ...(part.result as Record<string, unknown>) } : null;
-      const completedLogLines = resultRecord && Array.isArray(resultRecord.__logLines)
-        ? resultRecord.__logLines.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-        : [];
+      const completedLogLines = readStringList(resultRecord?.__logLines);
       if (resultRecord && "__logLines" in resultRecord) {
         delete resultRecord.__logLines;
       }
       if (resultRecord && "__summary" in resultRecord) {
         delete resultRecord.__summary;
       }
+      const errorLine =
+        typeof resultRecord?.error === "string" && resultRecord.error.trim().length > 0
+          ? [resultRecord.error.trim()]
+          : [];
 
       const toolSections = [`### Tool Call: ${part.toolName ?? "Tool"}`];
       if (rationale) {
         toolSections.push(rationale);
       }
+      const toolBody = [
+        ...startedLogLines,
+        ...progress,
+        ...completedLogLines,
+        ...errorLine,
+      ];
       toolSections.push(
         "```text",
-        ...(startedLogLines.length > 0 ? startedLogLines : flattenLogLines(args)),
-        ...progress,
-        ...(completedLogLines.length > 0
-          ? completedLogLines
-          : resultRecord
-            ? flattenLogLines(resultRecord)
-            : part.result !== undefined
-              ? flattenLogLines(part.result)
-              : []),
+        ...(toolBody.length > 0 ? toolBody : ["No tool details recorded."]),
         "```",
       );
 
@@ -213,7 +195,7 @@ export const Thread: FC<{
 
     const handleScroll = () => {
       const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
-      shouldAutoFollowRef.current = distanceFromBottom < 96;
+      shouldAutoFollowRef.current = distanceFromBottom < AUTO_FOLLOW_THRESHOLD_PX;
     };
 
     handleScroll();
@@ -222,13 +204,6 @@ export const Thread: FC<{
       element.removeEventListener("scroll", handleScroll);
     };
   }, []);
-
-  useEffect(() => {
-    if (!isRunning || !viewportRef.current || !shouldAutoFollowRef.current) {
-      return;
-    }
-    viewportRef.current.scrollTop = viewportRef.current.scrollHeight;
-  }, [isRunning]);
 
   return (
     <ThreadPrimitive.Root
@@ -389,6 +364,17 @@ const ThreadAutoFollow: FC<{
 
   return null;
 };
+
+const TOOL_PART_COMPONENTS = {
+  Text: MarkdownText,
+  tools: {
+    by_name: {
+      semantic_deep_search: SemanticSearchToolUI,
+      "Semantic Search": SemanticSearchToolUI,
+    },
+    Fallback: ToolFallback,
+  },
+} as const;
 
 const ThreadScrollToBottom: FC = () => {
   return (
@@ -717,18 +703,7 @@ const AssistantMessage: FC = () => {
       data-error-message={isErrorMessage ? "true" : "false"}
     >
       <div className="aui-assistant-message-content wrap-break-word px-2 text-foreground leading-relaxed">
-        <MessagePrimitive.Parts
-          components={{
-            Text: MarkdownText,
-            tools: {
-              by_name: {
-                semantic_deep_search: SemanticSearchToolUI,
-                "Semantic Search": SemanticSearchToolUI,
-              },
-              Fallback: ToolFallback,
-            },
-          }}
-        />
+        <MessagePrimitive.Parts components={TOOL_PART_COMPONENTS} />
         <MessageError />
       </div>
 
