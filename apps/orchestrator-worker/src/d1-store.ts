@@ -1002,36 +1002,47 @@ export class D1AppStore implements AppStore {
   }
 
   async appendRunEvent(runId: string, sessionId: string, event: string, dataJson: Record<string, unknown>): Promise<RunEventRecord> {
-    const sequenceRow = await this.db.query<{ next_sequence: number }>("SELECT COALESCE(MAX(sequence), 0) + 1 AS next_sequence FROM run_events WHERE run_id = ?", [runId]);
-    const sequence = Number(sequenceRow.rows[0]?.next_sequence ?? 1);
     const id = crypto.randomUUID();
     const createdAt = nowIso();
-    const payloadRef = shouldSpillPayload(dataJson) ? `runs/${runId}/events/${String(sequence).padStart(6, "0")}-${id}.json` : null;
+    const payloadRef = shouldSpillPayload(dataJson) ? `runs/${runId}/events/${id}.json` : null;
+    const summaryText = summarizePayload(dataJson, event);
+    const phase = typeof dataJson.phase === "string" ? dataJson.phase : null;
+    const status = typeof dataJson.status === "string" ? dataJson.status : null;
+    const toolCallId = typeof dataJson.toolCallId === "string" ? dataJson.toolCallId : null;
+    const runtimeId = typeof dataJson.runtimeId === "string" ? dataJson.runtimeId : null;
+    const retentionClass = (payloadRef ? "debug-blob" : "debug-index") as RetentionClass;
     if (payloadRef) {
       await this.blobStore.putJson(payloadRef, dataJson);
     }
     await this.db.query(
       `
         INSERT INTO run_events (id, run_id, session_id, sequence, event, data_json, payload_ref, summary_text, phase, status, tool_call_id, runtime_id, retention_class, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        SELECT ?, ?, ?, COALESCE(MAX(sequence), 0) + 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        FROM run_events
+        WHERE run_id = ?
       `,
       [
         id,
         runId,
         sessionId,
-        sequence,
         event,
         JSON.stringify(payloadRef ? buildInlinePayload(dataJson) : dataJson),
         payloadRef,
-        summarizePayload(dataJson, event),
-        typeof dataJson.phase === "string" ? dataJson.phase : null,
-        typeof dataJson.status === "string" ? dataJson.status : null,
-        typeof dataJson.toolCallId === "string" ? dataJson.toolCallId : null,
-        typeof dataJson.runtimeId === "string" ? dataJson.runtimeId : null,
-        payloadRef ? "debug-blob" : "debug-index",
+        summaryText,
+        phase,
+        status,
+        toolCallId,
+        runtimeId,
+        retentionClass,
         createdAt,
+        runId,
       ],
     );
+    const inserted = await this.db.query<{ sequence: number }>(
+      "SELECT sequence FROM run_events WHERE id = ? LIMIT 1",
+      [id],
+    );
+    const sequence = Number(inserted.rows[0]?.sequence ?? 1);
     return {
       id,
       runId,
@@ -1040,12 +1051,12 @@ export class D1AppStore implements AppStore {
       event,
       dataJson,
       payloadRef,
-      summaryText: summarizePayload(dataJson, event),
-      phase: typeof dataJson.phase === "string" ? dataJson.phase : null,
-      status: typeof dataJson.status === "string" ? dataJson.status : null,
-      toolCallId: typeof dataJson.toolCallId === "string" ? dataJson.toolCallId : null,
-      runtimeId: typeof dataJson.runtimeId === "string" ? dataJson.runtimeId : null,
-      retentionClass: (payloadRef ? "debug-blob" : "debug-index") as RetentionClass,
+      summaryText,
+      phase,
+      status,
+      toolCallId,
+      runtimeId,
+      retentionClass,
       createdAt,
     };
   }
