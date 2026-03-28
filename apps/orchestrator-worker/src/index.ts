@@ -448,6 +448,15 @@ async function runScheduledJanitor(env: Env) {
       runId: `scheduled-janitor-${new Date().toISOString()}`,
     },
   );
+
+  const claimableResearchTasks = await store.listClaimableResearchTasks(100);
+  for (const task of claimableResearchTasks) {
+    await env.JOBS_QUEUE.send({
+      type: "research_task_requested",
+      taskId: task.id,
+      queuedAt: new Date().toISOString(),
+    } satisfies ResearchTaskQueueMessage);
+  }
 }
 
 async function processResearchTaskMessage(env: Env, message: ResearchTaskQueueMessage) {

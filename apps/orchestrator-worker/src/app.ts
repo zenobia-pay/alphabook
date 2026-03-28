@@ -8896,12 +8896,27 @@ async function runOrchestrator(
     toolCallId: string,
   ) => {
     let lastSequence = (await deps.store.listRunEvents(run.id)).at(-1)?.sequence ?? 0;
+    let lastRecoveryEnqueueAt = 0;
     while (true) {
       await renewRunLease();
       lastSequence = await forwardPersistedToolEvents(lastSequence, toolCallId);
       const task = await deps.store.getResearchTask(taskId);
       if (!task) {
         throw new Error("Research task was not found after it was queued.");
+      }
+      const leaseExpired = !task.leaseExpiresAt || Date.parse(task.leaseExpiresAt) <= Date.now();
+      if (
+        deps.enqueueJob
+        && (task.status === "queued" || task.status === "starting" || task.status === "running")
+        && leaseExpired
+        && Date.now() - lastRecoveryEnqueueAt >= 30_000
+      ) {
+        lastRecoveryEnqueueAt = Date.now();
+        await deps.enqueueJob({
+          type: "research_task_requested",
+          taskId: task.id,
+          queuedAt: new Date().toISOString(),
+        });
       }
       const terminalError = terminalResearchTaskError(task);
       if (terminalError && (task.status === "queued" || task.status === "starting" || task.status === "running")) {
@@ -10196,7 +10211,7 @@ async function runOrchestrator(
             runtimeId: options.runtimeId ?? startedRuntimeId,
           },
         ).then(async () => {
-          if (!researchTask) {
+          if (!researchTask || (deps.enqueueJob && toolUsesDurableResearchQueue(toolCall.tool_name))) {
             return;
           }
           const existing = await deps.store.getResearchTask(researchTask.id);
