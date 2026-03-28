@@ -82,6 +82,7 @@ On the rsync box itself, the upload helper expects an env file at `/srv/alphaboo
 
 ```bash
 D1_DATABASE_NAME=...
+CLOUDFLARE_API_TOKEN=...
 R2_BUCKET_NAME=...
 R2_ENDPOINT=...
 R2_ACCESS_KEY_ID=...
@@ -98,6 +99,7 @@ VECTOR_INDEX_NAME=alphabook-semantic
 Notes:
 
 - The live repo still requires `D1_DATABASE_NAME` today because ingest persists corpus metadata and chunk rows into the existing relational store.
+- The droplet ingest path now expects explicit Cloudflare API-token auth via `CLOUDFLARE_API_TOKEN` (or `CF_API_TOKEN`) for Wrangler D1 and Vectorize commands. It no longer relies on a local Wrangler OAuth login.
 - The embedding provider is now configurable. For the Cloudflare migration path, use Google embeddings with `GOOGLE_EMBEDDING_DIMENSIONS=1536`.
 - For rebuild/cutover, freeze the timers first with `sudo /srv/alphabook/bin/freeze-gutenberg-ingest.sh`, run `audit-r2-corpus` and `rebuild-r2-corpus`, then resume with `sudo /srv/alphabook/bin/resume-gutenberg-ingest.sh`.
 - For the full Cloudflare cleanup + rebuild path, use:
@@ -216,5 +218,4 @@ That rebuilds Gutenberg `18` only.
 - If `rebuild-book-html` is run locally from a developer machine, be careful with `.dev.vars`:
   - the ingest CLI auto-loads `.dev.vars`
   - local `.dev.vars` may contain quoted `R2_*` values that must be unwrapped before manual export
-  - local `.dev.vars` may also contain a stale `CLOUDFLARE_API_TOKEN` that breaks Wrangler D1 access even when `wrangler whoami` works
-  - prefer Wrangler OAuth on the machine and unset token overrides when using `wrangler d1 execute --remote`
+  - local `.dev.vars` may contain a stale `CLOUDFLARE_API_TOKEN`; if D1 auth behaves unexpectedly, verify the token rather than assuming Wrangler OAuth will override it

@@ -40,7 +40,7 @@ if ! flock -n 9; then
 fi
 
 if ! command -v "$LOCAL_RUNNER" >/dev/null 2>&1; then
-  echo "[$(date -Is)] $LOCAL_RUNNER is required so the uploader can use the host Wrangler OAuth session." >&2
+  echo "[$(date -Is)] $LOCAL_RUNNER is required so the uploader can invoke Wrangler with the configured Cloudflare API token." >&2
   exit 1
 fi
 
@@ -54,8 +54,10 @@ set -a
 source "$INGEST_ENV_FILE"
 set +a
 
-# Prefer the host's Wrangler OAuth session over any stale API token in env files.
-unset CLOUDFLARE_API_TOKEN CF_API_TOKEN CF_ACCOUNT_ID CLOUDFLARE_ACCOUNT_ID
+if [[ -z "${CLOUDFLARE_API_TOKEN:-${CF_API_TOKEN:-}}" ]]; then
+  echo "[$(date -Is)] CLOUDFLARE_API_TOKEN (or CF_API_TOKEN) is required for D1 and Vectorize access." >&2
+  exit 1
+fi
 
 export GUTENBERG_MIRROR_ROOT
 export MIRROR_BATCH_SIZE

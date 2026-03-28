@@ -29,7 +29,10 @@ set -a
 source "$INGEST_ENV_FILE"
 set +a
 
-unset CLOUDFLARE_API_TOKEN CF_API_TOKEN CF_ACCOUNT_ID CLOUDFLARE_ACCOUNT_ID
+if [[ -z "${CLOUDFLARE_API_TOKEN:-${CF_API_TOKEN:-}}" ]]; then
+  echo "[$(date -Is)] CLOUDFLARE_API_TOKEN (or CF_API_TOKEN) is required for D1 and Vectorize access." >&2
+  exit 1
+fi
 
 export GUTENBERG_MIRROR_ROOT="${GUTENBERG_MIRROR_ROOT:-$ALPHABOOK_ROOT/gutenberg}"
 export MIRROR_CHECKPOINT_PATH="$CHECKPOINT_PATH"
