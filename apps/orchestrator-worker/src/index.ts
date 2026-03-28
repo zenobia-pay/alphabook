@@ -6,7 +6,7 @@ import {
   getImplementationConfig,
 } from "@alphabook/implementations";
 
-import { createApp, reapExpiredRuntimeInstances, reapStaleRuns } from "./app";
+import { createApp, reapExpiredRuntimeInstances, reapStaleRuns, type ResearchTaskQueueMessage } from "./app";
 import { WorkOSAuth } from "./auth";
 import { createBillingService } from "./billing";
 import { GoogleAIEmbedder, OpenAIEmbedder } from "./embeddings";
@@ -229,6 +229,9 @@ function buildFetchHandler(env: Env) {
     synthesizer,
     blobStore,
     runtimeGateway,
+    enqueueJob: async (message) => {
+      await env.JOBS_QUEUE.send(message);
+    },
     auth:
       env.WORKOS_API_KEY && env.WORKOS_CLIENT_ID && env.AUTH_COOKIE_PASSWORD
         ? new WorkOSAuth(
@@ -383,6 +386,200 @@ async function runScheduledJanitor(env: Env) {
   );
 }
 
+async function processResearchTaskMessage(env: Env, message: ResearchTaskQueueMessage) {
+  if (message.type !== "research_task_requested") {
+    return;
+  }
+  if (!env.OPENAI_API_KEY) {
+    throw new Error("OPENAI_API_KEY is required.");
+  }
+  const implementation = (() => {
+    const base = getImplementationConfig(env.IMPLEMENTATION_ID);
+    return {
+      ...base,
+      siteOrigin: env.SITE_ORIGIN ?? base.siteOrigin,
+      apiOrigin: env.API_ORIGIN ?? base.apiOrigin,
+    };
+  })();
+  const db = createD1Db(env.APP_DB);
+  const blobStore = new CloudflareR2Store(env.CORPUS_BUCKET);
+  const store = new D1AppStore(db, {
+    adapterId: implementation.adapterId,
+    blobStore,
+    feedLabels: implementation.feedLabels,
+  });
+  const billing = createBillingService(store, {
+    monthlyLimitUsd: env.BILLING_MONTHLY_LIMIT_USD ? Number(env.BILLING_MONTHLY_LIMIT_USD) : undefined,
+    modelPricing: env.BILLING_MODEL_PRICING_JSON
+      ? JSON.parse(env.BILLING_MODEL_PRICING_JSON) as Record<string, {
+        inputPerMillionUsd: number;
+        outputPerMillionUsd: number;
+        cachedInputPerMillionUsd?: number;
+      }>
+      : undefined,
+  });
+  const embedder = resolveEmbedder(env, billing);
+  const runtimeGateway = resolveRuntimeGateway(env, store, blobStore, implementation.apiOrigin);
+  const semanticSearch = env.VECTOR_INDEX
+    ? new AlphaloopSemanticSearchService({
+        store,
+        embedder,
+        vectorIndex: new CloudflareVectorizeIndex(env.VECTOR_INDEX as never),
+        openAIApiKey: env.OPENAI_API_KEY,
+        openAIModel: env.OPENAI_SYNTH_MODEL ?? env.OPENAI_MODEL ?? "gpt-5.2",
+        googleAIApiKey: env.GOOGLE_AI_API_KEY,
+      })
+    : null;
+
+  const task = await store.getResearchTask(message.taskId);
+  if (!task) {
+    return;
+  }
+  const heartbeatAt = new Date().toISOString();
+  const leaseExpiresAt = new Date(Date.now() + 90_000).toISOString();
+  const leaseOwner = `queue:${message.taskId}:${Date.now()}`;
+  const claimed = await store.claimResearchTaskLease(task.id, {
+    leaseOwner,
+    lastHeartbeatAt: heartbeatAt,
+    leaseExpiresAt,
+  });
+  if (!claimed) {
+    return;
+  }
+
+  const run = await store.getRun(task.runId);
+  const session = await store.getSession(task.sessionId);
+  if (!run || !session) {
+    await store.updateResearchTask(task.id, {
+      status: "failed",
+      errorJson: { error: "Research task lost its run or session context." },
+      completedAt: new Date().toISOString(),
+    });
+    return;
+  }
+  const toolCall = (await store.listToolCalls(run.id)).find((candidate) => candidate.id === task.toolCallId) ?? null;
+  if (!toolCall) {
+    await store.updateResearchTask(task.id, {
+      status: "failed",
+      errorJson: { error: "Research task lost its tool call context." },
+      completedAt: new Date().toISOString(),
+    });
+    return;
+  }
+
+  let progressSeq = task.progressSeq;
+  const reportProgress = async (
+    toolName: "semantic_deep_search" | "run_workspace_task",
+    text: string,
+    detail?: Record<string, unknown>,
+    runtimeId?: string | null,
+  ) => {
+    progressSeq += 1;
+    const currentHeartbeat = new Date().toISOString();
+    await store.appendRunEvent(run.id, session.id, "tool.progress", {
+      runId: run.id,
+      toolCallId: toolCall.id,
+      toolName,
+      ...(runtimeId ? { runtimeId } : {}),
+      text,
+      ...(detail ? { detail } : {}),
+    });
+    await store.updateResearchTask(task.id, {
+      status: "running",
+      progressSeq,
+      runtimeId: runtimeId ?? task.runtimeId ?? null,
+      lastHeartbeatAt: currentHeartbeat,
+      checkpointJson: detail ?? task.checkpointJson,
+      startedAt: task.startedAt ?? currentHeartbeat,
+      leaseOwner,
+      leaseExpiresAt: new Date(Date.now() + 90_000).toISOString(),
+    });
+  };
+
+  try {
+    await store.updateResearchTask(task.id, {
+      status: "starting",
+      startedAt: task.startedAt ?? new Date().toISOString(),
+      lastHeartbeatAt: new Date().toISOString(),
+      leaseOwner,
+      leaseExpiresAt: new Date(Date.now() + 90_000).toISOString(),
+    });
+
+    let result: Record<string, unknown>;
+    if (task.kind === "workspace_research") {
+      const runtimeId = typeof task.taskSpecJson.runtimeId === "string" ? task.taskSpecJson.runtimeId : null;
+      const taskSpec =
+        task.taskSpecJson.taskSpec && typeof task.taskSpecJson.taskSpec === "object"
+          ? task.taskSpecJson.taskSpec as Record<string, unknown>
+          : {};
+      if (!runtimeId) {
+        throw new Error("Workspace research task is missing its runtime id.");
+      }
+      result = await runtimeGateway.runWorkspaceTask({
+        runtimeId,
+        taskSpec,
+        sessionId: session.id,
+        runId: run.id,
+        __progressReporter: async (text: string, detail?: Record<string, unknown>) => {
+          await reportProgress("run_workspace_task", text, detail, runtimeId);
+        },
+      });
+    } else {
+      if (!semanticSearch) {
+        throw new Error("Semantic search is not configured.");
+      }
+      const query = typeof task.taskSpecJson.query === "string" ? task.taskSpecJson.query : "";
+      const workIds = Array.isArray(task.taskSpecJson.workIds)
+        ? task.taskSpecJson.workIds.filter((value): value is string => typeof value === "string")
+        : undefined;
+      const maxResults = typeof task.taskSpecJson.maxResults === "number" ? task.taskSpecJson.maxResults : 8;
+      result = await semanticSearch.search({
+        query,
+        workIds,
+        maxResults,
+        billingContext: {
+          userId: session.userId,
+          sessionId: session.id,
+          runId: run.id,
+          source: "semantic_search",
+        },
+        onProgress: async (text, detail) => {
+          await reportProgress("semantic_deep_search", text, detail);
+        },
+      });
+    }
+
+    await store.finishToolCall(toolCall.id, "completed", result);
+    await store.updateResearchTask(task.id, {
+      status: "succeeded",
+      runtimeId: typeof result.runtimeId === "string" ? result.runtimeId : task.runtimeId ?? null,
+      resultArtifactKey:
+        Array.isArray(result.artifacts)
+          ? ((result.artifacts as Array<Record<string, unknown>>).find((artifact) => typeof artifact.r2Key === "string")?.r2Key as string | undefined) ?? null
+          : null,
+      errorJson: null,
+      completedAt: new Date().toISOString(),
+      lastHeartbeatAt: new Date().toISOString(),
+      leaseOwner,
+      leaseExpiresAt: null,
+    });
+  } catch (error) {
+    const messageText = error instanceof Error ? error.message : "Durable research task failed.";
+    await store.finishToolCall(toolCall.id, "failed", {
+      ok: false,
+      error: messageText,
+    });
+    await store.updateResearchTask(task.id, {
+      status: "failed",
+      errorJson: { error: messageText },
+      completedAt: new Date().toISOString(),
+      lastHeartbeatAt: new Date().toISOString(),
+      leaseOwner,
+      leaseExpiresAt: null,
+    });
+  }
+}
+
 export default {
   async fetch(request: Request, env: Env, executionCtx: ExecutionContext) {
     return buildFetchHandler(env)(request, env, executionCtx);
@@ -390,9 +587,18 @@ export default {
   async scheduled(_controller: ScheduledController, env: Env, executionCtx: ExecutionContext) {
     executionCtx.waitUntil(runScheduledJanitor(env));
   },
-  async queue(batch: MessageBatch<unknown>) {
+  async queue(batch: MessageBatch<unknown>, env: Env) {
     for (const message of batch.messages) {
-      message.ack();
+      try {
+        const payload = message.body as ResearchTaskQueueMessage;
+        if (payload && typeof payload === "object" && payload.type === "research_task_requested") {
+          await processResearchTaskMessage(env, payload);
+        }
+        message.ack();
+      } catch (error) {
+        console.error("queue processing failed", error);
+        message.retry();
+      }
     }
   },
 };

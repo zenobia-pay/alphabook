@@ -237,6 +237,19 @@ function uniqueStrings(values: string[]): string[] {
   return Array.from(new Set(values.filter((value) => value.length > 0)));
 }
 
+function normalizeRuntimeProgressEvent(event: Record<string, unknown>) {
+  const message = typeof event.message === "string"
+    ? event.message.trim()
+    : typeof event.note === "string"
+      ? event.note.trim()
+      : "";
+  if (message) {
+    return message;
+  }
+  const type = typeof event.type === "string" ? event.type : "runtime.progress";
+  return type.replace(/[._-]+/g, " ").trim() || "Runtime progress updated.";
+}
+
 export class StubRuntimeGateway implements RuntimeToolGateway {
   async createWorkspace() {
     return {
@@ -492,7 +505,13 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
   async runWorkspaceTask(args: RuntimeToolArgs) {
     const parsed = ToolArgsSchemas.run_workspace_task.parse(args);
     const instance = await this.requireRuntime(parsed.runtimeId);
-    return this.executeRuntimeTask(instance, parsed.taskSpec);
+    const progressReporter =
+      typeof (args as { __progressReporter?: unknown }).__progressReporter === "function"
+        ? (args as { __progressReporter?: (text: string, detail?: Record<string, unknown>) => Promise<void> }).__progressReporter
+        : undefined;
+    return this.executeRuntimeTask(instance, parsed.taskSpec, {
+      onProgress: progressReporter,
+    });
   }
 
   async cancelWorkspaceTask(args: RuntimeToolArgs) {
@@ -1214,6 +1233,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
       skipMachineStartupCheck?: boolean;
       quietTimeoutMs?: number;
       quietTimeoutMessage?: string;
+      onProgress?: (text: string, detail?: Record<string, unknown>) => Promise<void>;
     } = {},
   ) {
     if (!options.skipMachineStartupCheck) {
@@ -1226,6 +1246,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     });
 
     const machineId = instance.providerMachineId ?? instance.runtimeId;
+    let seenProgressEvents = 0;
     await this.callRuntime(machineId, "/run-task", {
       method: "POST",
       body: JSON.stringify({
@@ -1241,6 +1262,16 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
       const status = await this.callRuntime(machineId, "/task-status", {
         method: "GET",
       });
+      if (options.onProgress && Array.isArray(status.progressEvents)) {
+        const progressEvents = status.progressEvents.filter((event): event is Record<string, unknown> =>
+          Boolean(event) && typeof event === "object",
+        );
+        for (let index = seenProgressEvents; index < progressEvents.length; index += 1) {
+          const event = progressEvents[index]!;
+          await options.onProgress(normalizeRuntimeProgressEvent(event), event);
+        }
+        seenProgressEvents = progressEvents.length;
+      }
       const outputAtCandidate =
         typeof status.lastOutputAt === "string"
           ? Date.parse(status.lastOutputAt)

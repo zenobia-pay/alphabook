@@ -36,6 +36,12 @@ export interface WorkerQueues {
   jobsName: string;
 }
 
+export interface ResearchTaskQueueMessage {
+  type: "research_task_requested";
+  taskId: string;
+  queuedAt: string;
+}
+
 export interface RuntimeToolGateway {
   createWorkspace(args: Record<string, unknown>): Promise<Record<string, unknown>>;
   runWorkspaceTask(args: Record<string, unknown>): Promise<Record<string, unknown>>;
@@ -60,6 +66,7 @@ export interface AppDeps {
   blobStore: BlobStore;
   runtimeGateway: RuntimeToolGateway;
   queues: WorkerQueues;
+  enqueueJob?: (message: ResearchTaskQueueMessage) => Promise<void>;
   auth?: WorkOSAuth;
   now?: () => number;
   adminAllowedEmail?: string;
@@ -4787,6 +4794,10 @@ function toolNeedsForegroundHeartbeat(toolName: ToolName) {
   return toolName === "run_workspace_task" || toolName === "semantic_deep_search";
 }
 
+function toolUsesDurableResearchQueue(toolName: ToolName) {
+  return toolName === "run_workspace_task" || toolName === "semantic_deep_search";
+}
+
 function foregroundHeartbeatText(toolName: ToolName, runStartedAt: string) {
   const elapsedMinutes = Math.max(1, Math.floor((Date.now() - Date.parse(runStartedAt)) / 60_000));
   if (toolName === "semantic_deep_search") {
@@ -8842,6 +8853,56 @@ async function runOrchestrator(
     return persistedToolCalls.some((toolCall) => toolCall.toolName === toolName);
   };
   let runFinalized = false;
+  const forwardPersistedToolEvents = async (
+    afterSequence: number,
+    toolCallId: string,
+  ) => {
+    const runEvents = await deps.store.listRunEvents(run.id);
+    let latestSequence = afterSequence;
+    for (const runEvent of runEvents) {
+      if (runEvent.sequence <= afterSequence || runEvent.event !== "tool.progress") {
+        continue;
+      }
+      const eventToolCallId = typeof runEvent.dataJson.toolCallId === "string" ? runEvent.dataJson.toolCallId : null;
+      if (eventToolCallId !== toolCallId) {
+        continue;
+      }
+      latestSequence = runEvent.sequence;
+      await originalSend(runEvent.event, runEvent.dataJson);
+    }
+    return latestSequence;
+  };
+
+  const waitForDurableResearchTask = async (
+    taskId: string,
+    toolCallId: string,
+  ) => {
+    let lastSequence = (await deps.store.listRunEvents(run.id)).at(-1)?.sequence ?? 0;
+    while (true) {
+      await renewRunLease();
+      lastSequence = await forwardPersistedToolEvents(lastSequence, toolCallId);
+      const task = await deps.store.getResearchTask(taskId);
+      if (!task) {
+        throw new Error("Research task was not found after it was queued.");
+      }
+      if (task.status === "queued" || task.status === "starting" || task.status === "running") {
+        await new Promise((resolve) => setTimeout(resolve, 750));
+        continue;
+      }
+      const toolCall = (await deps.store.listToolCalls(run.id)).find((candidate) => candidate.id === toolCallId) ?? null;
+      if (toolCall?.resultJson && (toolCall.status === "completed" || toolCall.status === "failed")) {
+        return {
+          status: toolCall.status,
+          result: toolCall.resultJson,
+        };
+      }
+      return {
+        status: task.status === "succeeded" ? "completed" : "failed",
+        result: task.errorJson ?? { ok: false, error: "Durable research task finished without a tool result." },
+      } as const;
+    }
+  };
+
   const completedForegroundRetrievalCount = () =>
     toolHistory.filter((entry) => entry.toolName !== "create_workspace" && entry.toolName !== "run_workspace_task").length;
 
@@ -9362,6 +9423,23 @@ async function runOrchestrator(
     }
     runtimeTasks += 1;
     const toolRecord = await deps.store.startToolCall(run.id, toolName, normalizedToolArgs);
+    const researchTask = toolUsesDurableResearchQueue(toolName)
+      ? await deps.store.createResearchTask({
+          runId: run.id,
+          sessionId: activeSession.id,
+          toolCallId: toolRecord.id,
+          runtimeId: typeof normalizedToolArgs.runtimeId === "string" ? normalizedToolArgs.runtimeId : null,
+          kind: "workspace_research",
+          taskSpecJson: toolName === "run_workspace_task"
+            ? {
+                runtimeId: normalizedToolArgs.runtimeId,
+                taskSpec: normalizedToolArgs.taskSpec && typeof normalizedToolArgs.taskSpec === "object"
+                  ? normalizedToolArgs.taskSpec as Record<string, unknown>
+                  : {},
+              }
+            : { query: normalizedToolArgs.query, workIds: normalizedToolArgs.workIds, maxResults: normalizedToolArgs.maxResults },
+        })
+      : null;
     await ensureInitialPlanSent(routedQueryRef.current);
     ensureResearchDocumentShell(routedQueryRef.current);
     recordRawLog("tool.started.raw", {
@@ -9490,46 +9568,57 @@ async function runOrchestrator(
         let backgroundResult: Record<string, unknown>;
         let backgroundStatus: "completed" | "failed" = "completed";
         try {
-          const executionPromise = executeTool(deps, toolName, normalizedToolArgs, {
-            userId: activeSession.userId,
-            sessionId: activeSession.id,
-            runId: run.id,
-            auditLog: recordRawLog,
-            progressReporter: async (text, detail) => {
-              await emitToolProgress(
-                {
-                  runId: run.id,
-                  toolCallId: toolRecord.id,
-                  toolName,
-                  text,
-                  detail,
-                },
-                (progressText, emittedDetail) => persistAndSendToolProgress(
-                  toolRecord.id,
-                  toolName,
-                  progressText,
-                  emittedDetail,
+          if (researchTask && deps.enqueueJob) {
+            await deps.enqueueJob({
+              type: "research_task_requested",
+              taskId: researchTask.id,
+              queuedAt: new Date().toISOString(),
+            });
+            const durableResult = await waitForDurableResearchTask(researchTask.id, toolRecord.id);
+            backgroundStatus = durableResult.status;
+            backgroundResult = durableResult.result;
+          } else {
+            const executionPromise = executeTool(deps, toolName, normalizedToolArgs, {
+              userId: activeSession.userId,
+              sessionId: activeSession.id,
+              runId: run.id,
+              auditLog: recordRawLog,
+              progressReporter: async (text, detail) => {
+                await emitToolProgress(
                   {
-                    noteResearchDocumentActivity,
-                    runtimeId: startedRuntimeId,
+                    runId: run.id,
+                    toolCallId: toolRecord.id,
+                    toolName,
+                    text,
+                    detail,
                   },
-                ),
-              );
-            },
-          });
-          const deadline = backgroundToolDeadlineMs(toolName, normalizedToolArgs);
-          backgroundResult = await withToolExecutionDeadline(
-            executionPromise,
-            deadline.timeoutMs,
-            deadline.message,
-          );
-          addRuntimeIds(runtimeIdsToCleanup, normalizedToolArgs, backgroundResult);
-          if (toolName === "run_workspace_task") {
-            await trackRuntimeBillingEvents(deps, activeSession, run, backgroundResult.billingEvents);
-          }
-          const resultRuntimeId = typeof backgroundResult.runtimeId === "string" ? backgroundResult.runtimeId : null;
-          if (resultRuntimeId) {
-            activeRuns.get(run.id)?.runtimeIds.add(resultRuntimeId);
+                  (progressText, emittedDetail) => persistAndSendToolProgress(
+                    toolRecord.id,
+                    toolName,
+                    progressText,
+                    emittedDetail,
+                    {
+                      noteResearchDocumentActivity,
+                      runtimeId: startedRuntimeId,
+                    },
+                  ),
+                );
+              },
+            });
+            const deadline = backgroundToolDeadlineMs(toolName, normalizedToolArgs);
+            backgroundResult = await withToolExecutionDeadline(
+              executionPromise,
+              deadline.timeoutMs,
+              deadline.message,
+            );
+            addRuntimeIds(runtimeIdsToCleanup, normalizedToolArgs, backgroundResult);
+            if (toolName === "run_workspace_task") {
+              await trackRuntimeBillingEvents(deps, activeSession, run, backgroundResult.billingEvents);
+            }
+            const resultRuntimeId = typeof backgroundResult.runtimeId === "string" ? backgroundResult.runtimeId : null;
+            if (resultRuntimeId) {
+              activeRuns.get(run.id)?.runtimeIds.add(resultRuntimeId);
+            }
           }
         } catch (error) {
           addRuntimeIds(runtimeIdsToCleanup, normalizedToolArgs);
@@ -10146,7 +10235,16 @@ async function runOrchestrator(
       let result: Record<string, unknown>;
       let status: "completed" | "failed" = "completed";
       try {
-        if (
+        if (researchTask && deps.enqueueJob && toolUsesDurableResearchQueue(toolCall.tool_name)) {
+          await deps.enqueueJob({
+            type: "research_task_requested",
+            taskId: researchTask.id,
+            queuedAt: new Date().toISOString(),
+          });
+          const durableResult = await waitForDurableResearchTask(researchTask.id, toolRecord.id);
+          status = durableResult.status;
+          result = durableResult.result;
+        } else if (
           toolCall.tool_name === "estimate_research_scope"
           && typeof normalizedToolArgs.query === "string"
           && !(
