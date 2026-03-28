@@ -19,6 +19,14 @@ interface VectorizeGetResultItem {
   id?: string;
 }
 
+function isNoMatchingVectorWarning(stdout: string) {
+  return /does not contain vectors corresponding to the provided identifiers/iu.test(stdout);
+}
+
+function hasJsonPayload(stdout: string) {
+  return stdout.includes("{") || stdout.includes("[");
+}
+
 export class CloudflareVectorizeApi {
   constructor(
     private readonly wranglerConfigPath: string,
@@ -101,6 +109,9 @@ export class CloudflareVectorizeApi {
         "--config",
         this.wranglerConfigPath,
       ]);
+      if (isNoMatchingVectorWarning(stdout) || !hasJsonPayload(stdout)) {
+        continue;
+      }
       const result = this.parseJson<VectorizeGetResultItem[]>(stdout);
       for (const vector of result) {
         if (vector.id) {

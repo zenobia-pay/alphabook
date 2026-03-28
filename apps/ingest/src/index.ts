@@ -4710,6 +4710,7 @@ async function main() {
         startAfterId: startAfterId && startAfterId !== "-" ? startAfterId : null,
         limit: Number.isFinite(limit ?? NaN) ? limit : null,
         outputPath: outputPath && outputPath !== "-" ? outputPath : null,
+        includeOrphanVectorScan: process.env.CANONICAL_CORPUS_IDS_PATH ? false : undefined,
       });
       console.log(JSON.stringify(result, null, 2));
       return;
@@ -4722,6 +4723,7 @@ async function main() {
         startAfterId: startAfterId && startAfterId !== "-" ? startAfterId : null,
         limit: Number.isFinite(limit ?? NaN) ? limit : null,
         outputPath: outputPath && outputPath !== "-" ? outputPath : null,
+        includeOrphanVectorScan: process.env.CANONICAL_CORPUS_IDS_PATH ? false : undefined,
       });
       console.log(JSON.stringify(result, null, 2));
       return;
