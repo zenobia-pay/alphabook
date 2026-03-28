@@ -19,7 +19,7 @@ type IterationRecord = {
 type AlphaloopEvent = { type: string } & Record<string, unknown>;
 const SEMANTIC_SEARCH_STEP_TIMEOUT_MS = 30_000;
 const SEMANTIC_SEARCH_MAX_PARALLEL_SUBQUERIES = 2;
-const SEMANTIC_ALPHALOOP_NEXT_TIMEOUT_MS = 45_000;
+const SEMANTIC_ALPHALOOP_NEXT_TIMEOUT_MS = 120_000;
 
 export interface SemanticSearchService {
   search(args: {
@@ -196,7 +196,7 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
       rerankModel: this.model,
       initialTopK: Math.max(40, Math.min(200, (args.maxResults ?? 8) * 10)),
       maxExpandedQueries: 6,
-      maxIterations: 3,
+      maxIterations: 2,
       relevanceThreshold: 0.35,
       search: async (query, { topK }) => {
         const expansionQuery = looksLikeExpansionQuery(args.query, query);
