@@ -34,7 +34,16 @@ export interface ChunkPayloadIssue {
   message: string;
 }
 
-const REQUIRED_CANONICAL_ARTIFACTS: GutenbergArtifactKind[] = ["raw", "metadata", "clean", "chunks", "book_html"];
+const REQUIRED_CANONICAL_ARTIFACTS: GutenbergArtifactKind[] = [
+  "raw",
+  "metadata",
+  "clean",
+  "chunks",
+  "chunk_object",
+  "book_html",
+  "book_manifest",
+  "book_page",
+];
 
 function ensureArtifacts(result: Map<string, GutenbergR2Artifacts>, id: string) {
   const existing = result.get(id);

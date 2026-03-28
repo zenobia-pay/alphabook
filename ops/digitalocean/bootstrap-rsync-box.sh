@@ -22,6 +22,7 @@ mkdir -p "$ALPHABOOK_ROOT/logs"
 install -m 0755 "$SCRIPT_DIR/bin/gutenberg-rsync.sh" "$ALPHABOOK_ROOT/bin/gutenberg-rsync.sh"
 install -m 0755 "$SCRIPT_DIR/bin/gutenberg-rsync-epub.sh" "$ALPHABOOK_ROOT/bin/gutenberg-rsync-epub.sh"
 install -m 0755 "$SCRIPT_DIR/bin/gutenberg-upload.sh" "$ALPHABOOK_ROOT/bin/gutenberg-upload.sh"
+install -m 0755 "$SCRIPT_DIR/bin/backfill-gutenberg-bulk-safe.sh" "$ALPHABOOK_ROOT/bin/backfill-gutenberg-bulk-safe.sh"
 install -m 0755 "$SCRIPT_DIR/bin/freeze-gutenberg-ingest.sh" "$ALPHABOOK_ROOT/bin/freeze-gutenberg-ingest.sh"
 install -m 0755 "$SCRIPT_DIR/bin/resume-gutenberg-ingest.sh" "$ALPHABOOK_ROOT/bin/resume-gutenberg-ingest.sh"
 install -m 0755 "$SCRIPT_DIR/bin/audit-cloudflare-corpus.sh" "$ALPHABOOK_ROOT/bin/audit-cloudflare-corpus.sh"
@@ -46,6 +47,7 @@ Mirror root: $GUTENBERG_MIRROR_ROOT
 Runner: $ALPHABOOK_ROOT/bin/gutenberg-rsync.sh
 EPUB runner: $ALPHABOOK_ROOT/bin/gutenberg-rsync-epub.sh
 Uploader: $ALPHABOOK_ROOT/bin/gutenberg-upload.sh
+Safe bulk backfill: $ALPHABOOK_ROOT/bin/backfill-gutenberg-bulk-safe.sh
 Audit: $ALPHABOOK_ROOT/bin/audit-cloudflare-corpus.sh
 Validate: $ALPHABOOK_ROOT/bin/validate-corpus-integrity.sh
 Rebuild: $ALPHABOOK_ROOT/bin/rebuild-r2-corpus-all.sh

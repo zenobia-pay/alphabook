@@ -1929,26 +1929,10 @@ async function resolveCanonicalArtifactsForId(
   if (fromScan) {
     return fromScan;
   }
-  const artifacts: GutenbergR2Artifacts = {
-    id: gutenbergId,
-    keys: {
-      raw: [gutenbergCorpusAdapter.artifactKeys.rawText(gutenbergId)],
-      metadata: [gutenbergCorpusAdapter.artifactKeys.rawMetadata(gutenbergId)],
-      clean: [gutenbergCorpusAdapter.artifactKeys.cleanText(gutenbergId)],
-      chunks: [gutenbergCorpusAdapter.artifactKeys.chunks(gutenbergId)],
-      book_html: [gutenbergCorpusAdapter.artifactKeys.renderedDocument?.(gutenbergId) ?? ""],
-    },
-    unknownKeys: [],
-  };
-  const requiredKeys = [
-    artifacts.keys.raw?.[0],
-    artifacts.keys.metadata?.[0],
-    artifacts.keys.clean?.[0],
-    artifacts.keys.chunks?.[0],
-    artifacts.keys.book_html?.[0],
-  ].filter((value): value is string => Boolean(value));
-  const exists = await Promise.all(requiredKeys.map((key) => r2ObjectExists(context.r2, context.r2Bucket, key)));
-  return exists.every(Boolean) ? artifacts : null;
+  const rawKeys = await listR2Keys(context.r2, context.r2Bucket, `gutenberg/raw/${gutenbergId}/`);
+  const cleanKeys = await listR2Keys(context.r2, context.r2Bucket, `gutenberg/clean/${gutenbergId}/`);
+  const scan = scanGutenbergR2Keys([...rawKeys, ...cleanKeys]);
+  return scan.byId.get(gutenbergId) ?? null;
 }
 
 function shouldSkipExistingWork() {
@@ -1989,9 +1973,28 @@ async function findExistingWorkStatus(
   if (!row) {
     return null;
   }
+
+  let complete = Number(row.file_kind_count) >= 5;
+  if (complete && source.adapterId === gutenbergCorpusAdapter.id && source.legacyNumericId) {
+    const artifacts = await resolveCanonicalArtifactsForId(context, source.legacyNumericId);
+    if (!artifacts || getMissingRequiredArtifacts(artifacts).length > 0) {
+      complete = false;
+    } else {
+      const canonical = await readCanonicalR2Work(context, artifacts);
+      const vectorize = createVectorizeApi(context);
+      if (vectorize && context.vectorIndexName) {
+        const foundVectorIds = await vectorize.getVectorIds(
+          context.vectorIndexName,
+          canonical.chunks.map((chunk) => chunk.id),
+        );
+        complete = foundVectorIds.size === canonical.chunks.length;
+      }
+    }
+  }
+
   return {
     workId: row.work_id,
-    complete: Number(row.file_kind_count) >= 5,
+    complete,
   };
 }
 
@@ -3084,18 +3087,29 @@ async function deleteGutenbergWorks(context: IngestContext, gutenbergIds: string
     idList,
   );
 
+  const prefixKeyLists = await Promise.all(ids.flatMap((id) => [
+    listR2Keys(context.r2, context.r2Bucket, `gutenberg/raw/${id}/`),
+    listR2Keys(context.r2, context.r2Bucket, `gutenberg/clean/${id}/`),
+  ]));
   const r2Keys = uniqueStrings([
     ...rows.rows.map((row) => (row.r2_key ? String(row.r2_key) : null)),
-    ...ids.flatMap((id) => [
-      gutenbergCorpusAdapter.artifactKeys.rawText(id),
-      gutenbergCorpusAdapter.artifactKeys.rawMetadata(id),
-      gutenbergCorpusAdapter.artifactKeys.cleanText(id),
-      gutenbergCorpusAdapter.artifactKeys.chunks(id),
-      gutenbergCorpusAdapter.artifactKeys.renderedDocument?.(id) ?? "",
-    ]),
+    ...prefixKeyLists.flat(),
   ]);
 
+  const vectorIdsByBook = await Promise.all(ids.map(async (id) => {
+    const artifacts = await resolveCanonicalArtifactsForId(context, id);
+    if (!artifacts || getMissingRequiredArtifacts(artifacts).length > 0) {
+      return [];
+    }
+    const canonical = await readCanonicalR2Work(context, artifacts);
+    return canonical.chunks.map((chunk) => chunk.id);
+  }));
+
   await deleteKeys(context.r2, context.r2Bucket, r2Keys);
+  const vectorize = createVectorizeApi(context);
+  if (vectorize && context.vectorIndexName) {
+    await vectorize.deleteVectorIds(context.vectorIndexName, vectorIdsByBook.flat());
+  }
   await context.db.query(`DELETE FROM works WHERE gutenberg_id IN (${placeholders})`, idList);
   await context.db.query(`DELETE FROM authors WHERE NOT EXISTS (SELECT 1 FROM work_authors wa WHERE wa.author_id = authors.id)`);
   await context.db.query(`DELETE FROM subjects WHERE NOT EXISTS (SELECT 1 FROM work_subjects ws WHERE ws.subject_id = subjects.id)`);
@@ -3440,7 +3454,9 @@ async function auditR2Corpus(
     scannedCanonicalBookCount: selectedCanonicalIds.length,
     idsMissingRequiredArtifacts: scan.idsMissingRequiredArtifacts.map((id) => ({
       gutenbergId: id,
-      missingKinds: scan.byId?.get(id) ? getMissingRequiredArtifacts(scan.byId.get(id)!).map(String) : ["raw", "metadata", "clean", "chunks", "book_html"],
+      missingKinds: scan.byId?.get(id)
+        ? getMissingRequiredArtifacts(scan.byId.get(id)!).map(String)
+        : ["raw", "metadata", "clean", "chunks", "chunk_object", "book_html", "book_manifest", "book_page"],
     })),
     orphanedKeys: scan.orphanedKeys,
     booksMissingInD1,
@@ -3767,7 +3783,9 @@ async function auditCloudflareCorpus(
     rebuildableBookCount: rebuildableBooks.length,
     idsMissingRequiredArtifacts: scan.idsMissingRequiredArtifacts.map((id) => ({
       gutenbergId: id,
-      missingKinds: scan.byId?.get(id) ? getMissingRequiredArtifacts(scan.byId.get(id)!).map(String) : ["raw", "metadata", "clean", "chunks", "book_html"],
+      missingKinds: scan.byId?.get(id)
+        ? getMissingRequiredArtifacts(scan.byId.get(id)!).map(String)
+        : ["raw", "metadata", "clean", "chunks", "chunk_object", "book_html", "book_manifest", "book_page"],
     })),
     orphanedR2Keys: scan.orphanedKeys,
     missingInD1,

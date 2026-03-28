@@ -25,6 +25,15 @@ type WranglerStatementResult<T> = {
   meta?: Record<string, unknown>;
 };
 
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryableD1Error(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /code:\s*971/u.test(message) || /consider throttling your request speed/iu.test(message);
+}
+
 function sqliteLiteral(value: unknown): string {
   if (value === null || value === undefined) {
     return "NULL";
@@ -109,7 +118,23 @@ export function createWranglerD1Db(options: CreateWranglerD1DbOptions = {}): DbC
       if (options.wranglerConfig) {
         args.push("--config", options.wranglerConfig);
       }
-      const output = await runWranglerJson<WranglerStatementResult<T>[]>(args, { cwd });
+      let output: WranglerStatementResult<T>[] | null = null;
+      let lastError: unknown = null;
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        try {
+          output = await runWranglerJson<WranglerStatementResult<T>[]>(args, { cwd });
+          break;
+        } catch (error) {
+          lastError = error;
+          if (!isRetryableD1Error(error) || attempt === 4) {
+            throw error;
+          }
+          await sleep(1000 * 2 ** attempt);
+        }
+      }
+      if (!output) {
+        throw lastError instanceof Error ? lastError : new Error(String(lastError));
+      }
       const statement = output.find((entry) => entry.success !== false) ?? output[0];
       if (!statement || statement.success === false) {
         throw new Error(`D1 query failed for ${databaseName}.`);

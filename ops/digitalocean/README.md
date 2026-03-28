@@ -9,6 +9,7 @@ Target layout on the VM:
 - `/srv/alphabook/bin/gutenberg-rsync.sh`
 - `/srv/alphabook/bin/gutenberg-rsync-epub.sh`
 - `/srv/alphabook/bin/gutenberg-upload.sh`
+- `/srv/alphabook/bin/backfill-gutenberg-bulk-safe.sh`
 - `/srv/alphabook/bin/freeze-gutenberg-ingest.sh`
 - `/srv/alphabook/bin/resume-gutenberg-ingest.sh`
 - `/srv/alphabook/bin/audit-cloudflare-corpus.sh`
@@ -121,6 +122,20 @@ Then you can run:
 ```bash
 sudo /srv/alphabook/bin/gutenberg-upload.sh
 ```
+
+For a bounded 2000-book backfill with frozen timers, a persisted checkpoint, conservative concurrency, and per-batch validation:
+
+```bash
+sudo TARGET_COUNT=2000 BATCH_SIZE=100 CONCURRENCY=4 VALIDATE_EVERY_BATCHES=1 /srv/alphabook/bin/backfill-gutenberg-bulk-safe.sh
+```
+
+That runner:
+
+- freezes timers before any ingest work
+- writes a target preview and batch reports under `/srv/alphabook/logs/gutenberg-bulk/<run-id>/`
+- uses the shared checkpoint at `/srv/alphabook/.alphabook/ingest-checkpoint.json`
+- validates each completed batch before continuing
+- leaves timers frozen at the end so the operator can review the reports before resuming
 
 To backfill missing static book HTML for existing works without re-running full ingest:
 
