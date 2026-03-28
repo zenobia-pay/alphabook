@@ -4810,6 +4810,24 @@ function foregroundHeartbeatText(toolName: ToolName, runStartedAt: string) {
     : `Still searching across the library. About ${elapsedMinutes} minutes have passed so far.`;
 }
 
+function terminalResearchTaskError(task: { checkpointJson?: unknown; errorJson?: unknown }): string | null {
+  const checkpoint = task.checkpointJson;
+  if (checkpoint && typeof checkpoint === "object" && !Array.isArray(checkpoint)) {
+    const record = checkpoint as Record<string, unknown>;
+    if (record.type === "semantic.error" && typeof record.error === "string" && record.error.trim().length > 0) {
+      return record.error.trim();
+    }
+  }
+  const errorJson = task.errorJson;
+  if (errorJson && typeof errorJson === "object" && !Array.isArray(errorJson)) {
+    const record = errorJson as Record<string, unknown>;
+    if (typeof record.error === "string" && record.error.trim().length > 0) {
+      return record.error.trim();
+    }
+  }
+  return null;
+}
+
 function normalizedComparisonText(value: string) {
   return value
     .toLowerCase()
@@ -8884,6 +8902,20 @@ async function runOrchestrator(
       const task = await deps.store.getResearchTask(taskId);
       if (!task) {
         throw new Error("Research task was not found after it was queued.");
+      }
+      const terminalError = terminalResearchTaskError(task);
+      if (terminalError && (task.status === "queued" || task.status === "starting" || task.status === "running")) {
+        await deps.store.updateResearchTask(task.id, {
+          status: "failed",
+          errorJson: { error: terminalError },
+          completedAt: new Date().toISOString(),
+          lastHeartbeatAt: new Date().toISOString(),
+          leaseExpiresAt: null,
+        });
+        return {
+          status: "failed",
+          result: { ok: false, error: terminalError },
+        } as const;
       }
       if (task.status === "queued" || task.status === "starting" || task.status === "running") {
         await new Promise((resolve) => setTimeout(resolve, 750));

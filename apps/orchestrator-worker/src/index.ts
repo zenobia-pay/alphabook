@@ -38,6 +38,7 @@ export interface Env {
   GOOGLE_AI_API_KEY?: string;
   GOOGLE_EMBEDDING_MODEL?: string;
   GOOGLE_EMBEDDING_DIMENSIONS?: string;
+  RUNTIME_TOOL_TIMEOUT_SECONDS?: string;
   TOOL_STREAM_CLEANUP_MODEL?: string;
   BILLING_MONTHLY_LIMIT_USD?: string;
   BILLING_MODEL_PRICING_JSON?: string;
@@ -86,6 +87,24 @@ export interface Env {
   INGEST_QUEUE: Queue;
   JOBS_QUEUE: Queue;
   VECTOR_INDEX?: VectorizeIndex;
+}
+
+async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(new Error(`${label} timed out after ${Math.round(ms / 1000)}s.`));
+        }, ms);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
 }
 
 function resolveRuntimeGateway(
@@ -420,6 +439,10 @@ async function processResearchTaskMessage(env: Env, message: ResearchTaskQueueMe
   });
   const embedder = resolveEmbedder(env, billing);
   const runtimeGateway = resolveRuntimeGateway(env, store, blobStore, implementation.apiOrigin);
+  const researchTaskTimeoutMs = Math.max(
+    30_000,
+    Number(env.RUNTIME_TOOL_TIMEOUT_SECONDS ?? "1500") * 1000,
+  );
   const semanticSearch = env.VECTOR_INDEX
     ? new AlphaloopSemanticSearchService({
         store,
@@ -533,20 +556,24 @@ async function processResearchTaskMessage(env: Env, message: ResearchTaskQueueMe
         ? task.taskSpecJson.workIds.filter((value): value is string => typeof value === "string")
         : undefined;
       const maxResults = typeof task.taskSpecJson.maxResults === "number" ? task.taskSpecJson.maxResults : 8;
-      result = await semanticSearch.search({
-        query,
-        workIds,
-        maxResults,
-        billingContext: {
-          userId: session.userId,
-          sessionId: session.id,
-          runId: run.id,
-          source: "semantic_search",
-        },
-        onProgress: async (text, detail) => {
-          await reportProgress("semantic_deep_search", text, detail);
-        },
-      });
+      result = await withTimeout(
+        semanticSearch.search({
+          query,
+          workIds,
+          maxResults,
+          billingContext: {
+            userId: session.userId,
+            sessionId: session.id,
+            runId: run.id,
+            source: "semantic_search",
+          },
+          onProgress: async (text, detail) => {
+            await reportProgress("semantic_deep_search", text, detail);
+          },
+        }),
+        researchTaskTimeoutMs,
+        "Semantic research task",
+      );
     }
 
     await store.finishToolCall(toolCall.id, "completed", result);

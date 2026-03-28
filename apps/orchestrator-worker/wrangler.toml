@@ -56,6 +56,12 @@ queue = "alphabook-ingest"
 binding = "JOBS_QUEUE"
 queue = "alphabook-jobs"
 
+[[queues.consumers]]
+queue = "alphabook-jobs"
+max_batch_size = 1
+max_batch_timeout = 1
+max_retries = 3
+
 # Cloudflare-native storage bindings.
 [[d1_databases]]
 binding = "APP_DB"
