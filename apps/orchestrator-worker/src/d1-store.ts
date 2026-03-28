@@ -4,7 +4,7 @@ import type { DbClient } from "@alphabook/db";
 import { artifactKeys, buildCorpusChunkId, parseCorpusChunkId } from "@alphabook/corpus-core";
 import type { ChunkSearchResult, NotificationType, ToolName } from "@alphabook/shared";
 
-import { InMemoryAppStore, type AdminRunRecord, type AdminSessionRecord, type AdminUserRecord, type AgentIdentityRecord, type AnalyticsEventRecord, type AppStore, type ArtifactRecord, type BillingEventRecord, type BillingSpendSummary, type DocumentTextRecord, type MessageRecord, type NotificationRecord, type PassageSearchFilters, type ResearchScopeEstimate, type RunEventRecord, type RunRecord, type RuntimeInstanceRecord, type SeedChunk, type SeedWork, type SessionRecord, type SessionSummaryRecord, type ToolCallRecord, type UserProfileStatsRecord, type UserRecord, type WorkDetailRecord, type WorkFileKind, type WorkFileRecord, type WorkSetSizeEstimate } from "./store";
+import { InMemoryAppStore, type AdminRunRecord, type AdminSessionRecord, type AdminUserRecord, type AgentIdentityRecord, type AnalyticsEventRecord, type AppStore, type ArtifactRecord, type BillingEventRecord, type BillingSpendSummary, type DocumentTextRecord, type MessageRecord, type NotificationRecord, type PassageSearchFilters, type ResearchScopeEstimate, type ResearchTaskRecord, type RunEventRecord, type RunRecord, type RuntimeInstanceRecord, type SeedChunk, type SeedWork, type SessionRecord, type SessionSummaryRecord, type ToolCallRecord, type UserProfileStatsRecord, type UserRecord, type WorkDetailRecord, type WorkFileKind, type WorkFileRecord, type WorkSetSizeEstimate } from "./store";
 import { MemoryBlobStore, type BlobStore } from "./r2";
 
 const INLINE_PAYLOAD_MAX_BYTES = 4_096;
@@ -190,6 +190,48 @@ function compactManifest(manifest: Record<string, unknown>) {
   };
 }
 
+function mapResearchTaskRow(row: {
+  id: string;
+  run_id: string;
+  session_id: string;
+  tool_call_id: string | null;
+  runtime_id: string | null;
+  kind: string;
+  status: string;
+  task_spec_json: string | Record<string, unknown>;
+  checkpoint_json: string | Record<string, unknown> | null;
+  progress_seq: number;
+  last_heartbeat_at: string | null;
+  lease_owner: string | null;
+  lease_expires_at: string | null;
+  result_artifact_key: string | null;
+  error_json: string | Record<string, unknown> | null;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+}): ResearchTaskRecord {
+  return {
+    id: row.id,
+    runId: row.run_id,
+    sessionId: row.session_id,
+    toolCallId: row.tool_call_id ?? null,
+    runtimeId: row.runtime_id ?? null,
+    kind: row.kind as ResearchTaskRecord["kind"],
+    status: row.status as ResearchTaskRecord["status"],
+    taskSpecJson: parseJsonObject(row.task_spec_json),
+    checkpointJson: row.checkpoint_json ? parseJsonObject(row.checkpoint_json) : null,
+    progressSeq: Number(row.progress_seq ?? 0),
+    lastHeartbeatAt: row.last_heartbeat_at ?? null,
+    leaseOwner: row.lease_owner ?? null,
+    leaseExpiresAt: row.lease_expires_at ?? null,
+    resultArtifactKey: row.result_artifact_key ?? null,
+    errorJson: row.error_json ? parseJsonObject(row.error_json) : null,
+    createdAt: row.created_at,
+    startedAt: row.started_at ?? null,
+    completedAt: row.completed_at ?? null,
+  };
+}
+
 export class D1AppStore implements AppStore {
   private readonly blobStore: BlobStore;
   private readonly adapterId: string | null;
@@ -200,6 +242,7 @@ export class D1AppStore implements AppStore {
   private readonly workIdByExternalRef = new Map<string, string>();
   private readonly chunkManifestCache = new Map<string, ChunkManifestEntry[]>();
   private runLifecycleColumnsReady: Promise<void> | null = null;
+  private researchTasksTableReady: Promise<void> | null = null;
 
   constructor(
     private readonly db: DbClient,
@@ -247,6 +290,34 @@ export class D1AppStore implements AppStore {
       })();
     }
     await this.runLifecycleColumnsReady;
+  }
+
+  private async ensureResearchTasksTable() {
+    if (!this.researchTasksTableReady) {
+      this.researchTasksTableReady = this.db.query(`
+        CREATE TABLE IF NOT EXISTS research_tasks (
+          id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          session_id TEXT NOT NULL,
+          tool_call_id TEXT,
+          runtime_id TEXT,
+          kind TEXT NOT NULL,
+          status TEXT NOT NULL,
+          task_spec_json TEXT NOT NULL,
+          checkpoint_json TEXT,
+          progress_seq INTEGER NOT NULL DEFAULT 0,
+          last_heartbeat_at TEXT,
+          lease_owner TEXT,
+          lease_expires_at TEXT,
+          result_artifact_key TEXT,
+          error_json TEXT,
+          created_at TEXT NOT NULL,
+          started_at TEXT,
+          completed_at TEXT
+        )
+      `).then(() => undefined);
+    }
+    await this.researchTasksTableReady;
   }
 
   private async loadCorpusStore() {
@@ -1236,6 +1307,192 @@ export class D1AppStore implements AppStore {
       }
     }
     return null;
+  }
+
+  async createResearchTask(input: {
+    runId: string;
+    sessionId: string;
+    toolCallId?: string | null;
+    runtimeId?: string | null;
+    kind: ResearchTaskRecord["kind"];
+    taskSpecJson: Record<string, unknown>;
+    checkpointJson?: Record<string, unknown> | null;
+    leaseOwner?: string | null;
+    leaseExpiresAt?: string | null;
+  }): Promise<ResearchTaskRecord> {
+    await this.ensureResearchTasksTable();
+    const record: ResearchTaskRecord = {
+      id: crypto.randomUUID(),
+      runId: input.runId,
+      sessionId: input.sessionId,
+      toolCallId: input.toolCallId ?? null,
+      runtimeId: input.runtimeId ?? null,
+      kind: input.kind,
+      status: "queued",
+      taskSpecJson: input.taskSpecJson,
+      checkpointJson: input.checkpointJson ?? null,
+      progressSeq: 0,
+      lastHeartbeatAt: null,
+      leaseOwner: input.leaseOwner ?? null,
+      leaseExpiresAt: input.leaseExpiresAt ?? null,
+      resultArtifactKey: null,
+      errorJson: null,
+      createdAt: nowIso(),
+      startedAt: null,
+      completedAt: null,
+    };
+    await this.db.query(
+      `INSERT INTO research_tasks (
+        id, run_id, session_id, tool_call_id, runtime_id, kind, status, task_spec_json, checkpoint_json,
+        progress_seq, last_heartbeat_at, lease_owner, lease_expires_at, result_artifact_key, error_json, created_at, started_at, completed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        record.id,
+        record.runId,
+        record.sessionId,
+        record.toolCallId,
+        record.runtimeId,
+        record.kind,
+        record.status,
+        JSON.stringify(record.taskSpecJson),
+        record.checkpointJson ? JSON.stringify(record.checkpointJson) : null,
+        record.progressSeq,
+        record.lastHeartbeatAt,
+        record.leaseOwner,
+        record.leaseExpiresAt,
+        record.resultArtifactKey,
+        record.errorJson ? JSON.stringify(record.errorJson) : null,
+        record.createdAt,
+        record.startedAt,
+        record.completedAt,
+      ],
+    );
+    return record;
+  }
+
+  async getResearchTask(taskId: string): Promise<ResearchTaskRecord | null> {
+    await this.ensureResearchTasksTable();
+    const rows = await this.db.query<any>("SELECT * FROM research_tasks WHERE id = ? LIMIT 1", [taskId]);
+    return rows.rows[0] ? mapResearchTaskRow(rows.rows[0]) : null;
+  }
+
+  async getLatestResearchTaskForToolCall(toolCallId: string): Promise<ResearchTaskRecord | null> {
+    await this.ensureResearchTasksTable();
+    const rows = await this.db.query<any>(
+      "SELECT * FROM research_tasks WHERE tool_call_id = ? ORDER BY created_at DESC LIMIT 1",
+      [toolCallId],
+    );
+    return rows.rows[0] ? mapResearchTaskRow(rows.rows[0]) : null;
+  }
+
+  async listResearchTasksForRun(runId: string): Promise<ResearchTaskRecord[]> {
+    await this.ensureResearchTasksTable();
+    const rows = await this.db.query<any>("SELECT * FROM research_tasks WHERE run_id = ? ORDER BY created_at ASC", [runId]);
+    return rows.rows.map(mapResearchTaskRow);
+  }
+
+  async listClaimableResearchTasks(limit = 50): Promise<ResearchTaskRecord[]> {
+    await this.ensureResearchTasksTable();
+    const rows = await this.db.query<any>(
+      `SELECT * FROM research_tasks
+       WHERE status IN ('queued', 'starting', 'running')
+         AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
+       ORDER BY created_at ASC
+       LIMIT ?`,
+      [nowIso(), Math.max(0, limit)],
+    );
+    return rows.rows.map(mapResearchTaskRow);
+  }
+
+  async updateResearchTask(
+    taskId: string,
+    updates: Partial<Pick<
+      ResearchTaskRecord,
+      "runtimeId" | "status" | "checkpointJson" | "progressSeq" | "lastHeartbeatAt" | "leaseOwner" | "leaseExpiresAt" | "resultArtifactKey" | "errorJson" | "startedAt" | "completedAt"
+    >>,
+  ): Promise<void> {
+    await this.ensureResearchTasksTable();
+    await this.db.query(
+      `
+        UPDATE research_tasks
+        SET
+          runtime_id = CASE WHEN ? THEN ? ELSE runtime_id END,
+          status = CASE WHEN ? THEN ? ELSE status END,
+          checkpoint_json = CASE WHEN ? THEN ? ELSE checkpoint_json END,
+          progress_seq = CASE WHEN ? THEN ? ELSE progress_seq END,
+          last_heartbeat_at = CASE WHEN ? THEN ? ELSE last_heartbeat_at END,
+          lease_owner = CASE WHEN ? THEN ? ELSE lease_owner END,
+          lease_expires_at = CASE WHEN ? THEN ? ELSE lease_expires_at END,
+          result_artifact_key = CASE WHEN ? THEN ? ELSE result_artifact_key END,
+          error_json = CASE WHEN ? THEN ? ELSE error_json END,
+          started_at = CASE WHEN ? THEN ? ELSE started_at END,
+          completed_at = CASE WHEN ? THEN ? ELSE completed_at END
+        WHERE id = ?
+      `,
+      [
+        updates.runtimeId !== undefined ? 1 : 0,
+        updates.runtimeId ?? null,
+        updates.status !== undefined ? 1 : 0,
+        updates.status ?? null,
+        updates.checkpointJson !== undefined ? 1 : 0,
+        updates.checkpointJson ? JSON.stringify(updates.checkpointJson) : null,
+        updates.progressSeq !== undefined ? 1 : 0,
+        updates.progressSeq ?? null,
+        updates.lastHeartbeatAt !== undefined ? 1 : 0,
+        updates.lastHeartbeatAt ?? null,
+        updates.leaseOwner !== undefined ? 1 : 0,
+        updates.leaseOwner ?? null,
+        updates.leaseExpiresAt !== undefined ? 1 : 0,
+        updates.leaseExpiresAt ?? null,
+        updates.resultArtifactKey !== undefined ? 1 : 0,
+        updates.resultArtifactKey ?? null,
+        updates.errorJson !== undefined ? 1 : 0,
+        updates.errorJson ? JSON.stringify(updates.errorJson) : null,
+        updates.startedAt !== undefined ? 1 : 0,
+        updates.startedAt ?? null,
+        updates.completedAt !== undefined ? 1 : 0,
+        updates.completedAt ?? null,
+        taskId,
+      ],
+    );
+  }
+
+  async claimResearchTaskLease(taskId: string, options: {
+    leaseOwner: string;
+    lastHeartbeatAt: string;
+    leaseExpiresAt: string;
+  }): Promise<boolean> {
+    await this.ensureResearchTasksTable();
+    await this.db.query(
+      `
+        UPDATE research_tasks
+        SET lease_owner = ?, last_heartbeat_at = ?, lease_expires_at = ?
+        WHERE id = ?
+          AND status IN ('queued', 'starting', 'running')
+          AND (
+            lease_owner IS NULL
+            OR lease_owner = ?
+            OR lease_expires_at IS NULL
+            OR lease_expires_at <= ?
+          )
+      `,
+      [
+        options.leaseOwner,
+        options.lastHeartbeatAt,
+        options.leaseExpiresAt,
+        taskId,
+        options.leaseOwner,
+        options.lastHeartbeatAt,
+      ],
+    );
+    const task = await this.getResearchTask(taskId);
+    return Boolean(
+      task
+      && ["queued", "starting", "running"].includes(task.status)
+      && task.leaseOwner === options.leaseOwner
+      && task.lastHeartbeatAt === options.lastHeartbeatAt
+      && task.leaseExpiresAt === options.leaseExpiresAt,
+    );
   }
 
   async listRuntimeInstances(sessionId: string): Promise<RuntimeInstanceRecord[]> {

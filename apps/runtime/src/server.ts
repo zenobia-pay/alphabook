@@ -49,12 +49,18 @@ type RuntimeTaskStatusRecord =
   | {
       status: "idle";
       runtimeId?: string;
+      progressEvents?: Array<Record<string, unknown>>;
+      checkpoint?: Record<string, unknown> | null;
+      lastHeartbeatAt?: string | null;
     }
   | {
       status: "running";
       runtimeId: string;
       startedAt: string;
       updatedAt: string;
+      progressEvents?: Array<Record<string, unknown>>;
+      checkpoint?: Record<string, unknown> | null;
+      lastHeartbeatAt?: string | null;
     }
   | {
       status: "completed";
@@ -63,6 +69,10 @@ type RuntimeTaskStatusRecord =
       completedAt: string;
       updatedAt: string;
       result: RuntimeTaskResult;
+      resultRef?: string | null;
+      progressEvents?: Array<Record<string, unknown>>;
+      checkpoint?: Record<string, unknown> | null;
+      lastHeartbeatAt?: string | null;
     }
   | {
       status: "failed";
@@ -72,6 +82,9 @@ type RuntimeTaskStatusRecord =
       updatedAt: string;
       error: string;
       billingEvents?: Array<Record<string, unknown>>;
+      progressEvents?: Array<Record<string, unknown>>;
+      checkpoint?: Record<string, unknown> | null;
+      lastHeartbeatAt?: string | null;
     };
 
 function requireAuthToken(authToken?: string): string {
@@ -166,8 +179,80 @@ async function writeRuntimeTaskStatus(
   await writeFile(runtimeTaskStatusPath(paths), JSON.stringify(status, null, 2), "utf8");
 }
 
+async function tryWriteRuntimeTaskStatus(
+  paths: ReturnType<typeof createPaths>,
+  status: RuntimeTaskStatusRecord,
+) {
+  try {
+    await writeRuntimeTaskStatus(paths, status);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | null)?.code !== "ENOENT") {
+      throw error;
+    }
+  }
+}
+
 async function readRuntimeTaskStatus(paths: ReturnType<typeof createPaths>): Promise<RuntimeTaskStatusRecord> {
   return readJsonIfPresent<RuntimeTaskStatusRecord>(runtimeTaskStatusPath(paths), { status: "idle" });
+}
+
+async function readProgressEvents(paths: ReturnType<typeof createPaths>, limit = 40): Promise<Array<Record<string, unknown>>> {
+  const progressPath = join(paths.output, "codex-progress.jsonl");
+  if (!await fileExists(progressPath)) {
+    return [];
+  }
+  let fallbackTimestamp: string | null = null;
+  try {
+    fallbackTimestamp = (await stat(progressPath)).mtime.toISOString();
+  } catch {
+    fallbackTimestamp = null;
+  }
+  const lines = (await readFile(progressPath, "utf8"))
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return lines.slice(Math.max(0, lines.length - Math.max(1, limit))).flatMap((line) => {
+    try {
+      const parsed = JSON.parse(line) as Record<string, unknown>;
+      if (!parsed || typeof parsed !== "object") {
+        return [];
+      }
+      if (typeof parsed.timestamp !== "string" && fallbackTimestamp) {
+        parsed.timestamp = fallbackTimestamp;
+      }
+      return [parsed];
+    } catch {
+      return [];
+    }
+  });
+}
+
+function checkpointFromProgress(events: Array<Record<string, unknown>>): Record<string, unknown> | null {
+  const lastSemantic = [...events].reverse().find((event) => {
+    const type = typeof event.type === "string" ? event.type : "";
+    return type.startsWith("semantic.")
+      || type.startsWith("research.")
+      || type.startsWith("codex.")
+      || type.startsWith("runtime.");
+  }) ?? null;
+  if (!lastSemantic) {
+    return null;
+  }
+  return {
+    lastEventType: typeof lastSemantic.type === "string" ? lastSemantic.type : null,
+    lastMessage: typeof lastSemantic.message === "string" ? lastSemantic.message : null,
+    timestamp: typeof lastSemantic.timestamp === "string" ? lastSemantic.timestamp : null,
+  };
+}
+
+function lastHeartbeatAtFromProgress(events: Array<Record<string, unknown>>): string | null {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const timestamp = events[index]?.timestamp;
+    if (typeof timestamp === "string" && timestamp.trim().length > 0) {
+      return timestamp;
+    }
+  }
+  return null;
 }
 
 async function latestOutputActivityAt(
@@ -1139,7 +1224,7 @@ async function startExternalAgentTask(
   const startedAt = nowIso();
   const abortController = new AbortController();
   activeTasks.set(payload.runtimeId, abortController);
-  await writeRuntimeTaskStatus(paths, {
+  await tryWriteRuntimeTaskStatus(paths, {
     status: "running",
     runtimeId: payload.runtimeId,
     startedAt,
@@ -1152,7 +1237,7 @@ async function startExternalAgentTask(
         runtimeId: payload.runtimeId,
         ...payload.taskSpec,
       }, abortController.signal);
-      await writeRuntimeTaskStatus(paths, {
+      await tryWriteRuntimeTaskStatus(paths, {
         status: "completed",
         runtimeId: payload.runtimeId,
         startedAt,
@@ -1161,7 +1246,7 @@ async function startExternalAgentTask(
         result,
       });
     } catch (error) {
-      await writeRuntimeTaskStatus(paths, {
+      await tryWriteRuntimeTaskStatus(paths, {
         status: "failed",
         runtimeId: payload.runtimeId,
         startedAt,
@@ -1273,13 +1358,17 @@ export function createAlphaBookRuntimeServer(options: RuntimeServerOptions = {})
         if (!activeTasks.has(payload.runtimeId)) {
           await startExternalAgentTask(paths, workspaceRoot, payload, activeTasks);
           const taskPoller = async () => {
-            const current = await readRuntimeTaskStatus(paths);
-            if (current.status !== "running") {
+            try {
+              const current = await readRuntimeTaskStatus(paths);
+              if (current.status !== "running") {
+                activeTasks.delete(payload.runtimeId);
+              } else {
+                setTimeout(() => {
+                  void taskPoller();
+                }, 1000).unref();
+              }
+            } catch {
               activeTasks.delete(payload.runtimeId);
-            } else {
-              setTimeout(() => {
-                void taskPoller();
-              }, 1000).unref();
             }
           };
           void taskPoller();
@@ -1305,9 +1394,15 @@ export function createAlphaBookRuntimeServer(options: RuntimeServerOptions = {})
 
       if (request.method === "GET" && request.url === "/task-status") {
         const status = await readRuntimeTaskStatus(paths);
+        const progressEvents = await readProgressEvents(paths);
+        const checkpoint = checkpointFromProgress(progressEvents);
+        const lastHeartbeatAt = lastHeartbeatAtFromProgress(progressEvents);
         const lastOutputAt = await latestOutputActivityAt(paths, workspaceRoot);
         return json(response, 200, {
           ...status,
+          progressEvents,
+          checkpoint,
+          lastHeartbeatAt,
           ...(status.status === "idle" ? {} : { lastOutputAt }),
         });
       }

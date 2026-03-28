@@ -226,3 +226,46 @@ test("in-memory store stores runtime manifests by reference and still returns th
   assert.ok(hydrated);
   assert.deepEqual(hydrated.manifestJson, manifest);
 });
+
+test("research tasks support lease claims and checkpoint updates", async () => {
+  const store = new InMemoryAppStore();
+
+  const task = await store.createResearchTask({
+    runId: "run-1",
+    sessionId: "session-1",
+    toolCallId: "tool-1",
+    kind: "semantic_research",
+    taskSpecJson: { query: "grief and revenge" },
+  });
+
+  assert.equal(task.status, "queued");
+
+  const claimed = await store.claimResearchTaskLease(task.id, {
+    leaseOwner: "worker-1",
+    lastHeartbeatAt: "2026-03-28T03:24:15.366Z",
+    leaseExpiresAt: "2026-03-28T03:25:45.366Z",
+  });
+  assert.equal(claimed, true);
+
+  await store.updateResearchTask(task.id, {
+    status: "running",
+    progressSeq: 3,
+    checkpointJson: {
+      type: "semantic.alphaloop",
+      step: "rerank",
+    },
+  });
+
+  const latest = await store.getLatestResearchTaskForToolCall("tool-1");
+  assert.ok(latest);
+  assert.equal(latest.status, "running");
+  assert.equal(latest.progressSeq, 3);
+  assert.deepEqual(latest.checkpointJson, {
+    type: "semantic.alphaloop",
+    step: "rerank",
+  });
+
+  const runTasks = await store.listResearchTasksForRun("run-1");
+  assert.equal(runTasks.length, 1);
+  assert.equal(runTasks[0]?.leaseOwner, "worker-1");
+});

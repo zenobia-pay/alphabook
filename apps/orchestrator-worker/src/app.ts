@@ -5574,6 +5574,22 @@ function summarizeRunFailure(
   return null;
 }
 
+function checkpointFromToolProgressDetail(detail: Record<string, unknown> | undefined) {
+  if (!detail || typeof detail !== "object") {
+    return null;
+  }
+  return {
+    type: typeof detail.type === "string" ? detail.type : null,
+    step: typeof detail.step === "string" ? detail.step : null,
+    phase: typeof detail.phase === "string" ? detail.phase : null,
+    note: typeof detail.note === "string" ? detail.note : null,
+    event:
+      detail.event && typeof detail.event === "object"
+        ? structuredClone(detail.event as Record<string, unknown>)
+        : null,
+  };
+}
+
 async function appendRunErrorMessageOnce(
   deps: AppDeps,
   sessionId: string,
@@ -5704,9 +5720,10 @@ async function resolveRunRuntimeContext(
   run: RunRecord,
   _toolCalls: Awaited<ReturnType<AppStore["listToolCalls"]>>,
 ) {
-  const [runtimeInstances, runEvents] = await Promise.all([
+  const [runtimeInstances, runEvents, researchTasks] = await Promise.all([
     deps.store.listRuntimeInstances(sessionId),
     deps.store.listRunEvents(run.id),
+    deps.store.listResearchTasksForRun(run.id),
   ]);
   const runtimeIds = collectRuntimeIdsFromRunEvents(runEvents);
   const relatedRuntimeInstances = runtimeInstances.filter((instance) => runtimeIds.has(instance.runtimeId));
@@ -5717,6 +5734,7 @@ async function resolveRunRuntimeContext(
     runEvents,
     runtimeIds: Array.from(runtimeIds),
     runtimeInstances: relatedRuntimeInstances,
+    researchTasks,
   };
 }
 
@@ -5850,7 +5868,9 @@ async function buildRunLogsPayload(
     metrics,
     runtimeIds: runContext.runtimeIds,
     runtimeCount: runContext.runtimeInstances.length,
+    researchTaskCount: runContext.researchTasks.length,
     artifactCount: includeArtifacts ? artifacts.length : (await loadRunArtifactSummaries(deps, session.id, run.id, runContext.runtimeIds)).length,
+    researchTasks: runContext.researchTasks,
     ...(includeRuntimeInstances ? { runtimeInstances: runContext.runtimeInstances } : { runtimeInstances: summarizeRuntimeInstances(runContext.runtimeInstances) }),
     ...(includeArtifacts ? { artifacts } : {}),
     ...(includeLiveRuntime ? { liveRuntime } : {}),
@@ -9972,6 +9992,23 @@ async function runOrchestrator(
         activeRun?.runtimeIds.add(runtimeId);
       }
       const toolRecord = await deps.store.startToolCall(run.id, toolCall.tool_name, normalizedToolArgs);
+      const researchTask = toolCall.tool_name === "semantic_deep_search" || toolCall.tool_name === "run_workspace_task"
+        ? await deps.store.createResearchTask({
+            runId: run.id,
+            sessionId: session.id,
+            toolCallId: toolRecord.id,
+            runtimeId: typeof normalizedToolArgs.runtimeId === "string" ? normalizedToolArgs.runtimeId : null,
+            kind: toolCall.tool_name === "semantic_deep_search" ? "semantic_research" : "workspace_research",
+            taskSpecJson: toolCall.tool_name === "run_workspace_task"
+              ? {
+                  runtimeId: normalizedToolArgs.runtimeId,
+                  taskSpec: normalizedToolArgs.taskSpec && typeof normalizedToolArgs.taskSpec === "object"
+                    ? normalizedToolArgs.taskSpec as Record<string, unknown>
+                    : {},
+                }
+              : { query: normalizedToolArgs.query, workIds: normalizedToolArgs.workIds, maxResults: normalizedToolArgs.maxResults },
+          })
+        : null;
       await ensureInitialPlanSent(routedQuery);
       ensureResearchDocumentShell(routedQueryRef.current);
       recordRawLog("tool.started.raw", {
@@ -10037,7 +10074,21 @@ async function runOrchestrator(
             noteResearchDocumentActivity,
             runtimeId: options.runtimeId ?? startedRuntimeId,
           },
-        ),
+        ).then(async () => {
+          if (!researchTask) {
+            return;
+          }
+          const existing = await deps.store.getResearchTask(researchTask.id);
+          const nextSeq = (existing?.progressSeq ?? 0) + 1;
+          await deps.store.updateResearchTask(researchTask.id, {
+            status: existing?.status === "queued" ? "running" : existing?.status ?? "running",
+            runtimeId: typeof (options.runtimeId ?? startedRuntimeId) === "string" ? options.runtimeId ?? startedRuntimeId : existing?.runtimeId ?? null,
+            progressSeq: nextSeq,
+            lastHeartbeatAt: new Date().toISOString(),
+            checkpointJson: checkpointFromToolProgressDetail(detail),
+            ...(existing?.startedAt ? {} : { startedAt: new Date().toISOString() }),
+          });
+        }),
       );
       const heartbeatTimer = toolNeedsForegroundHeartbeat(toolCall.tool_name)
         ? setInterval(() => {
@@ -10207,6 +10258,31 @@ async function runOrchestrator(
           clearInterval(heartbeatTimer);
         }
         await progressEmitter.stop();
+      }
+
+      if (researchTask) {
+        const runtimeArtifactKey = Array.isArray(result.artifacts)
+          ? (result.artifacts as Array<Record<string, unknown>>).find((artifact) =>
+            artifact && typeof artifact === "object" && typeof artifact.r2Key === "string"
+          )?.r2Key
+          : null;
+        await deps.store.updateResearchTask(researchTask.id, {
+          runtimeId:
+            typeof result.runtimeId === "string"
+              ? result.runtimeId
+              : typeof normalizedToolArgs.runtimeId === "string"
+                ? normalizedToolArgs.runtimeId
+                : null,
+          status: status === "completed" ? "succeeded" : "failed",
+          resultArtifactKey: typeof runtimeArtifactKey === "string" ? runtimeArtifactKey : null,
+          errorJson: status === "completed"
+            ? null
+            : {
+                error: typeof result.error === "string" ? result.error : "Long-running research failed.",
+              },
+          completedAt: new Date().toISOString(),
+          lastHeartbeatAt: new Date().toISOString(),
+        });
       }
 
       if (activeRuns.get(run.id)?.cancelRequested) {

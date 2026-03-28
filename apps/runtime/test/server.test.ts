@@ -306,7 +306,7 @@ test("runtime task status reports the latest output activity while a task is sti
     });
     assert.equal(runResponse.status, 202);
 
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    await new Promise((resolve) => setTimeout(resolve, 250));
 
     const statusResponse = await fetch(`${runtimeUrl}/task-status`, {
       headers: {
@@ -317,6 +317,13 @@ test("runtime task status reports the latest output activity while a task is sti
     const status = await statusResponse.json() as Record<string, unknown>;
     assert.equal(status.status, "running");
     assert.equal(typeof status.lastOutputAt, "string");
+    assert.ok(Array.isArray(status.progressEvents));
+    assert.equal(typeof status.lastHeartbeatAt, "string");
+    assert.deepEqual(status.checkpoint, {
+      lastEventType: "research.note",
+      lastMessage: "started",
+      timestamp: status.lastHeartbeatAt,
+    });
 
     await new Promise((resolve) => setTimeout(resolve, 700));
   } finally {

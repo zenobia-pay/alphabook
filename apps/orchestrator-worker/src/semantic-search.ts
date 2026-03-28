@@ -19,6 +19,7 @@ type IterationRecord = {
 type AlphaloopEvent = { type: string } & Record<string, unknown>;
 const SEMANTIC_SEARCH_STEP_TIMEOUT_MS = 30_000;
 const SEMANTIC_SEARCH_MAX_PARALLEL_SUBQUERIES = 2;
+const SEMANTIC_ALPHALOOP_NEXT_TIMEOUT_MS = 45_000;
 
 export interface SemanticSearchService {
   search(args: {
@@ -418,7 +419,11 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
           query: args.query,
           observedEventCount: alphaloopEvents.length,
         });
-        const next = await stream.next();
+        const next = await withTimeout(
+          stream.next(),
+          SEMANTIC_ALPHALOOP_NEXT_TIMEOUT_MS,
+          "AlphaLoop stopped yielding the next semantic event",
+        );
         if (next.done) {
           finalResult = next.value;
           args.auditLog?.("semantic.search.alphaloop.completed", {
