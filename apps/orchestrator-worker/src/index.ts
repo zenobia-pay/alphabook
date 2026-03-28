@@ -154,6 +154,51 @@ function resolveRuntimeGateway(
   throw new Error("Runtime gateway is not configured.");
 }
 
+export async function runQueuedWorkspaceResearchTask(
+  runtimeGateway: FlyMachinesRuntimeGateway | HttpRuntimeGateway,
+  input: {
+    runtimeId: string;
+    taskSpec: Record<string, unknown>;
+    sessionId: string;
+    runId: string;
+    implementationId: string;
+    progressReporter: (text: string, detail?: Record<string, unknown>) => Promise<void>;
+  },
+) {
+  const taskIntensity = input.taskSpec.intensity === "maximum" || input.taskSpec.intensity === "high" || input.taskSpec.intensity === "normal"
+    ? input.taskSpec.intensity
+    : "normal";
+  if (input.taskSpec.mode === "sprite_fanout") {
+    if (!runtimeGateway.runSpriteFanoutResearch) {
+      throw new Error("Sprite fanout research is not configured for this environment.");
+    }
+    return runtimeGateway.runSpriteFanoutResearch({
+      runtimeId: input.runtimeId,
+      query:
+        typeof input.taskSpec.question === "string" && input.taskSpec.question.trim().length > 0
+          ? input.taskSpec.question
+          : typeof input.taskSpec.researchObjective === "string" && input.taskSpec.researchObjective.trim().length > 0
+            ? input.taskSpec.researchObjective
+            : "",
+      workIds: Array.isArray(input.taskSpec.workIds)
+        ? input.taskSpec.workIds.filter((value): value is string => typeof value === "string")
+        : [],
+      intensity: taskIntensity,
+      implementationId: input.implementationId,
+      sessionId: input.sessionId,
+      runId: input.runId,
+      __progressReporter: input.progressReporter,
+    });
+  }
+  return runtimeGateway.runWorkspaceTask({
+    runtimeId: input.runtimeId,
+    taskSpec: input.taskSpec,
+    sessionId: input.sessionId,
+    runId: input.runId,
+    __progressReporter: input.progressReporter,
+  });
+}
+
 function resolveEmbedder(env: Env, billing: ReturnType<typeof createBillingService>) {
   if (env.EMBEDDING_PROVIDER === "google" && env.GOOGLE_AI_API_KEY) {
     return new GoogleAIEmbedder(
@@ -538,12 +583,13 @@ async function processResearchTaskMessage(env: Env, message: ResearchTaskQueueMe
       if (!runtimeId) {
         throw new Error("Workspace research task is missing its runtime id.");
       }
-      result = await runtimeGateway.runWorkspaceTask({
+      result = await runQueuedWorkspaceResearchTask(runtimeGateway, {
         runtimeId,
         taskSpec,
         sessionId: session.id,
         runId: run.id,
-        __progressReporter: async (text: string, detail?: Record<string, unknown>) => {
+        implementationId: implementation.id,
+        progressReporter: async (text: string, detail?: Record<string, unknown>) => {
           await reportProgress("run_workspace_task", text, detail, runtimeId);
         },
       });
