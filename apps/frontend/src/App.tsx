@@ -3434,6 +3434,7 @@ export default function App() {
   const activeChatAbortControllerRef = useRef<AbortController | null>(null);
   const reconnectRunStreamAbortControllerRef = useRef<AbortController | null>(null);
   const activeRunIdRef = useRef<string | null>(null);
+  const selectedSessionIdRef = useRef<string | null | undefined>(selectedSessionId);
   const bookPageRef = useRef<HTMLElement | null>(null);
   const bookAssistantResizeStartRef = useRef<{ pointerX: number; width: number; maxWidth: number } | null>(null);
   const bookAssistantRafRef = useRef<number | null>(null);
@@ -3530,6 +3531,10 @@ export default function App() {
     ),
     [activePassageId, activeReaderPath, activeWork, activeWorkId],
   );
+
+  useEffect(() => {
+    selectedSessionIdRef.current = selectedSessionId;
+  }, [selectedSessionId]);
 
   useEffect(() => {
     if (activeView !== "assistant" || !selectedSessionId || !sessionNotifications.has(selectedSessionId)) {
@@ -4435,7 +4440,7 @@ export default function App() {
     const pollMessages = async () => {
       try {
         const nextMessages = await fetchMessages(selectedSessionId);
-        if (cancelled) {
+        if (cancelled || selectedSessionIdRef.current !== selectedSessionId) {
           return;
         }
         consecutivePollFailures = 0;
@@ -4466,7 +4471,7 @@ export default function App() {
         fetchMessages(selectedSessionId),
         recoveredActiveRunId ? fetchRunState(selectedSessionId, recoveredActiveRunId).catch(() => null) : Promise.resolve(null),
       ]);
-      if (cancelled) {
+      if (cancelled || selectedSessionIdRef.current !== selectedSessionId) {
         return;
       }
       const hydrated = nextMessages.map(hydrateStoredMessage);
@@ -4564,11 +4569,11 @@ export default function App() {
     void (async () => {
       try {
         const nextState = await fetchRunState(selectedSessionId, preferredRun.id);
-        if (!cancelled) {
+        if (!cancelled && selectedSessionIdRef.current === selectedSessionId) {
           setRunArtifacts(Array.isArray(nextState.artifacts) ? nextState.artifacts : []);
         }
       } catch {
-        if (!cancelled) {
+        if (!cancelled && selectedSessionIdRef.current === selectedSessionId) {
           setRunArtifacts([]);
         }
       }
@@ -4599,7 +4604,7 @@ export default function App() {
     const loadRuns = async () => {
       try {
         const runs = await fetchRuns(selectedSessionId);
-        if (cancelled) {
+        if (cancelled || selectedSessionIdRef.current !== selectedSessionId) {
           return;
         }
         setSessionRuns(runs);
@@ -4618,7 +4623,7 @@ export default function App() {
           }, 4000);
         }
       } catch {
-        if (!cancelled) {
+        if (!cancelled && selectedSessionIdRef.current === selectedSessionId) {
           setSessionRuns([]);
           setRecoveredActiveRunId(null);
           setStreamConnected(false);
@@ -4707,6 +4712,7 @@ export default function App() {
     const nextSessions = await fetchSessions(authState.authConfigured ? undefined : currentUserId);
     setSessions(nextSessions);
     if (preferredSessionId !== undefined) {
+      selectedSessionIdRef.current = preferredSessionId;
       setSelectedSessionId(preferredSessionId);
     }
   }
@@ -4725,10 +4731,25 @@ export default function App() {
         ? bootstrap.sessions
         : current
     ));
+    if (selectedSessionIdRef.current !== sessionId) {
+      return;
+    }
     setSessionRuns(nextRuns);
     setRecoveredActiveRunId(activeRun?.id ?? null);
     setRunArtifacts(Array.isArray(bootstrap.runState?.artifacts) ? bootstrap.runState.artifacts : []);
     setMessages(hydratedMessages);
+  }
+
+  function detachActiveAssistantStreams() {
+    activeRunTokenRef.current += 1;
+    activeChatAbortControllerRef.current?.abort();
+    activeChatAbortControllerRef.current = null;
+    reconnectRunStreamAbortControllerRef.current?.abort();
+    reconnectRunStreamAbortControllerRef.current = null;
+    activeRunIdRef.current = null;
+    setIsSending(false);
+    setStreamingAssistantId(null);
+    setStreamConnected(false);
   }
 
   function track(event: string, properties: Record<string, unknown> = {}) {
@@ -5072,6 +5093,7 @@ export default function App() {
                 workIds: options.workIdsOverride ?? [],
               });
               workingSessionId = createdSessionId;
+              selectedSessionIdRef.current = createdSessionId;
               setSelectedSessionId(createdSessionId);
               setSessions((current) => [
                 {
@@ -5265,24 +5287,28 @@ export default function App() {
 
   function startNewChat() {
     pendingUrlWriteModeRef.current = "push";
-    activeRunTokenRef.current += 1;
+    detachActiveAssistantStreams();
     setMobileNavOpen(false);
+    selectedSessionIdRef.current = null;
     setSelectedSessionId(null);
     setMessages([]);
+    setSessionRuns([]);
+    setRunArtifacts([]);
+    setRecoveredActiveRunId(null);
     setLoadError(null);
-    setIsSending(false);
-    setStreamingAssistantId(null);
     setActiveView("assistant");
   }
 
   function startNewBookChat() {
     pendingUrlWriteModeRef.current = "push";
-    activeRunTokenRef.current += 1;
+    detachActiveAssistantStreams();
+    selectedSessionIdRef.current = null;
     setSelectedSessionId(null);
     setMessages([]);
+    setSessionRuns([]);
+    setRunArtifacts([]);
+    setRecoveredActiveRunId(null);
     setLoadError(null);
-    setIsSending(false);
-    setStreamingAssistantId(null);
     setHighlightedPassageExcerpt(null);
     setActiveView("book");
   }
@@ -5349,6 +5375,7 @@ export default function App() {
       return;
     }
     pendingUrlWriteModeRef.current = "push";
+    detachActiveAssistantStreams();
     setMobileNavOpen(false);
     void handleMarkSessionNotificationsRead(sessionId);
     setMessages([]);
@@ -5357,6 +5384,7 @@ export default function App() {
     setRecoveredActiveRunId(null);
     setStreamingAssistantId(null);
     setLoadError(null);
+    selectedSessionIdRef.current = sessionId;
     setSelectedSessionId(sessionId);
     setActiveWorkId(null);
     setActiveProfileUserId(null);
@@ -5474,14 +5502,14 @@ export default function App() {
 
   function openBookSession(sessionId: string | null) {
     pendingUrlWriteModeRef.current = "push";
+    detachActiveAssistantStreams();
     setMessages([]);
     setSessionRuns([]);
     setRunArtifacts([]);
     setRecoveredActiveRunId(null);
-    setStreamingAssistantId(null);
+    selectedSessionIdRef.current = sessionId;
     setSelectedSessionId(sessionId);
     setLoadError(null);
-    setIsSending(false);
     setActiveView("book");
   }
 
