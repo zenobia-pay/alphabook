@@ -12,6 +12,8 @@ interface ScriptOptions {
   model: string;
   concurrency: number;
   candidateBatchSize: number;
+  maxCandidatesForLlm: number;
+  maxCandidatesPerFile: number;
   contextBefore: number;
   contextAfter: number;
   maxSnippetChars: number;
@@ -33,6 +35,7 @@ interface CandidateSnippet {
   lineEnd: number;
   snippet: string;
   keywordHits: string[];
+  score: number;
 }
 
 interface TriageFinding {
@@ -83,6 +86,8 @@ function parseArgs(argv: string[]): ScriptOptions {
     model: "gpt-5-mini",
     concurrency: 8,
     candidateBatchSize: 8,
+    maxCandidatesForLlm: 5000,
+    maxCandidatesPerFile: 3,
     contextBefore: 4,
     contextAfter: 6,
     maxSnippetChars: 2200,
@@ -107,6 +112,12 @@ function parseArgs(argv: string[]): ScriptOptions {
         break;
       case "--candidate-batch-size":
         options.candidateBatchSize = Number(argv[++index] ?? options.candidateBatchSize);
+        break;
+      case "--max-candidates-for-llm":
+        options.maxCandidatesForLlm = Number(argv[++index] ?? options.maxCandidatesForLlm);
+        break;
+      case "--max-candidates-per-file":
+        options.maxCandidatesPerFile = Number(argv[++index] ?? options.maxCandidatesPerFile);
         break;
       case "--context-before":
         options.contextBefore = Number(argv[++index] ?? options.contextBefore);
@@ -273,11 +284,12 @@ async function buildCandidates(runDir: string, matches: RawMatch[], options: Scr
         lineEnd: range.end + 1,
         snippet,
         keywordHits,
+        score: scoreCandidate(keywordHits, snippet),
       });
     }
   }
 
-  candidates.sort((left, right) => left.filePath.localeCompare(right.filePath) || left.lineStart - right.lineStart);
+  candidates.sort((left, right) => right.score - left.score || left.filePath.localeCompare(right.filePath) || left.lineStart - right.lineStart);
   await writeJsonl(path.join(runDir, "triage", "candidates.jsonl"), candidates);
   await writeJson(path.join(runDir, "triage", "candidates-summary.json"), {
     totalCandidates: candidates.length,
@@ -286,12 +298,74 @@ async function buildCandidates(runDir: string, matches: RawMatch[], options: Scr
   return candidates;
 }
 
+function scoreCandidate(keywordHits: string[], snippet: string): number {
+  const weights = new Map<string, number>([
+    ["grief", 5],
+    ["grieve", 5],
+    ["grieving", 5],
+    ["mourning", 5],
+    ["mourn", 5],
+    ["bereft", 5],
+    ["bereavement", 5],
+    ["bereaved", 5],
+    ["inconsolable", 5],
+    ["heartbroken", 4],
+    ["heart-broken", 4],
+    ["sorrow", 4],
+    ["sorrowful", 4],
+    ["lament", 4],
+    ["lamentation", 4],
+    ["anguish", 4],
+    ["despair", 4],
+    ["despondent", 4],
+    ["consolation", 3],
+    ["comfort", 3],
+    ["comforted", 3],
+    ["comforting", 3],
+    ["weep", 3],
+    ["wept", 3],
+    ["weeping", 3],
+    ["melancholy", 2],
+    ["woe", 2],
+  ]);
+
+  let score = 0;
+  for (const hit of keywordHits) {
+    score += weights.get(hit) ?? 1;
+  }
+  const lower = snippet.toLowerCase();
+  for (const [term, weight] of weights.entries()) {
+    if (lower.includes(term)) {
+      score += weight * 0.5;
+    }
+  }
+  return Number(score.toFixed(2));
+}
+
 function batchCandidates(candidates: CandidateSnippet[], batchSize: number): CandidateSnippet[][] {
   const batches: CandidateSnippet[][] = [];
   for (let index = 0; index < candidates.length; index += batchSize) {
     batches.push(candidates.slice(index, index + batchSize));
   }
   return batches;
+}
+
+function selectCandidatesForLlm(candidates: CandidateSnippet[], options: ScriptOptions): CandidateSnippet[] {
+  const byFile = new Map<string, CandidateSnippet[]>();
+  for (const candidate of candidates) {
+    const list = byFile.get(candidate.filePath) ?? [];
+    if (list.length < options.maxCandidatesPerFile) {
+      list.push(candidate);
+      byFile.set(candidate.filePath, list);
+    }
+  }
+
+  const selected = Array.from(byFile.values())
+    .flat()
+    .sort((left, right) => right.score - left.score || left.filePath.localeCompare(right.filePath) || left.lineStart - right.lineStart)
+    .slice(0, options.maxCandidatesForLlm);
+
+  return selected;
 }
 
 function triageSchema() {
@@ -552,16 +626,25 @@ async function main() {
     totalMatches: rawMatches.length,
   });
   const candidates = await buildCandidates(runDir, rawMatches, options);
-  status.total_candidates = candidates.length;
-  status.detail = `Built ${candidates.length} candidate snippets from ${rawMatches.length} match events`;
+  const selectedCandidates = selectCandidatesForLlm(candidates, options);
+  await writeJsonl(path.join(runDir, "triage", "candidates-ranked.jsonl"), selectedCandidates);
+  await writeJson(path.join(runDir, "triage", "selection-summary.json"), {
+    totalCandidates: candidates.length,
+    selectedForLlm: selectedCandidates.length,
+    maxCandidatesForLlm: options.maxCandidatesForLlm,
+    maxCandidatesPerFile: options.maxCandidatesPerFile,
+  });
+
+  status.total_candidates = selectedCandidates.length;
+  status.detail = `Built ${candidates.length} candidate snippets from ${rawMatches.length} match events; selected ${selectedCandidates.length} for LLM triage`;
   status.updated_at = nowIso();
   await updateStatus(runDir, status);
   await appendRunLog(runDir, status.detail);
 
-  const batches = batchCandidates(candidates, options.candidateBatchSize);
+  const batches = batchCandidates(selectedCandidates, options.candidateBatchSize);
   status.phase = "triage";
   status.total_batches = batches.length;
-  status.detail = `Triaging ${candidates.length} candidates across ${batches.length} batches`;
+  status.detail = `Triaging ${selectedCandidates.length} scored candidates across ${batches.length} batches`;
   status.updated_at = nowIso();
   await updateStatus(runDir, status);
   await appendRunLog(runDir, status.detail);
@@ -611,7 +694,7 @@ async function main() {
     return findings;
   });
 
-  const candidateById = new Map(candidates.map((candidate) => [candidate.candidateId, candidate]));
+  const candidateById = new Map(selectedCandidates.map((candidate) => [candidate.candidateId, candidate]));
   const records: DatasetRecord[] = [];
   for (const finding of batchResults.flat()) {
     const candidate = candidateById.get(finding.candidateId);
@@ -732,7 +815,7 @@ async function main() {
         prompt: buildBriefingPrompt({
           query: options.query,
           chosenScope: String(manifest.chosen_scope ?? "scoped raw-text corpus"),
-          totalCandidates: candidates.length,
+          totalCandidates: selectedCandidates.length,
           totalRecords: deduped.length,
           themeCounts,
           records: deduped.slice(0, 60),
@@ -772,6 +855,7 @@ async function main() {
     ...(manifest.record_counts ?? {}),
     raw_match_events: rawMatches.length,
     candidate_snippets: candidates.length,
+    llm_triage_candidates: selectedCandidates.length,
     dataset_records: deduped.length,
   };
   manifest.status = "completed";
