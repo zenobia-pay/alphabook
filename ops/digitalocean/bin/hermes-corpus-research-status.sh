@@ -33,6 +33,7 @@ launcher_log="$run_dir/launcher.log"
 heartbeat_log="$run_dir/heartbeat.log"
 profile_file="$run_dir/profile.jsonl"
 profile_summary_file="$run_dir/profile-summary.json"
+command_log_file="$run_dir/command-snapshots.jsonl"
 
 echo "run_dir=$run_dir"
 
@@ -67,6 +68,11 @@ fi
 if [[ -f "$profile_file" ]]; then
   echo "--- profile tail ---"
   tail -n "$TAIL_LINES" "$profile_file"
+fi
+
+if [[ -f "$command_log_file" ]]; then
+  echo "--- command snapshots tail ---"
+  tail -n "$TAIL_LINES" "$command_log_file"
 fi
 
 if [[ -f "$profile_summary_file" ]]; then

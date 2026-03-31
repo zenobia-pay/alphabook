@@ -44,6 +44,7 @@ pid_file="$run_dir/hermes.pid"
 status_file="$run_dir/status.json"
 profile_file="$run_dir/profile.jsonl"
 profile_summary_file="$run_dir/profile-summary.json"
+command_log_file="$run_dir/command-snapshots.jsonl"
 
 [[ -f "$pid_file" ]] || { echo "Missing pid file: $pid_file" >&2; exit 1; }
 
@@ -51,10 +52,9 @@ wrapper_pid="$(cat "$pid_file")"
 start_epoch="$(date +%s)"
 
 sample_once() {
-  python3 - "$run_dir" "$inner_root" "$wrapper_pid" "$profile_file" "$status_file" <<'PY'
+  python3 - "$run_dir" "$inner_root" "$wrapper_pid" "$profile_file" "$status_file" "$command_log_file" <<'PY'
 from pathlib import Path
 import json
-import os
 import subprocess
 import sys
 import time
@@ -64,6 +64,7 @@ inner_root = Path(sys.argv[2])
 wrapper_pid = sys.argv[3]
 profile_file = Path(sys.argv[4])
 status_file = Path(sys.argv[5])
+command_log_file = Path(sys.argv[6])
 
 def sh(*args):
     return subprocess.run(args, capture_output=True, text=True, check=False)
@@ -112,6 +113,7 @@ if inner_root.exists():
 
 inner = None
 if inner_dir:
+    manifest = inner_dir / "manifest.json"
     rg_hits = inner_dir / "rg_hits.jsonl"
     run_log = inner_dir / "run.log"
     files = sorted(p.name for p in inner_dir.iterdir() if p.is_file())
@@ -123,12 +125,34 @@ if inner_dir:
         "rg_hits_size": rg_hits.stat().st_size if rg_hits.exists() else None,
         "rg_hits_mtime": rg_hits.stat().st_mtime if rg_hits.exists() else None,
     }
+    if manifest.exists():
+        try:
+            manifest_data = json.loads(manifest.read_text())
+            inner["chosen_scope"] = manifest_data.get("chosen_scope")
+            inner["scope_rationale"] = manifest_data.get("scope_rationale")
+            inner["manifest_status"] = manifest_data.get("status")
+        except Exception:
+            pass
     if rg_hits.exists():
         wc = sh("wc", "-l", str(rg_hits))
         try:
             inner["rg_hits_lines"] = int(wc.stdout.strip().split()[0])
         except Exception:
             inner["rg_hits_lines"] = None
+    if run_log.exists():
+        try:
+            tail = run_log.read_text()[-4000:]
+            inner["run_log_tail"] = tail
+        except Exception:
+            pass
+
+phase = "launching"
+if rg:
+    phase = "ripgrep"
+elif inner and inner.get("rg_hits_lines"):
+    phase = "post-ripgrep"
+if inner and inner.get("chosen_scope"):
+    phase = "scoped"
 
 state = None
 if status_file.exists():
@@ -137,17 +161,56 @@ if status_file.exists():
     except Exception:
         state = None
 
+previous = None
+if profile_file.exists():
+    lines = [line for line in profile_file.read_text().splitlines() if line.strip()]
+    if lines:
+        try:
+            previous = json.loads(lines[-1])
+        except Exception:
+            previous = None
+
+throughput = {}
+if previous and inner and previous.get("inner"):
+    prev_inner = previous["inner"]
+    prev_ts = previous.get("timestamp")
+    try:
+        prev_epoch = int(time.mktime(time.strptime(prev_ts, "%Y-%m-%dT%H:%M:%SZ")))
+        now_epoch = int(time.time())
+        dt = max(now_epoch - prev_epoch, 1)
+        if inner.get("rg_hits_lines") is not None and prev_inner.get("rg_hits_lines") is not None:
+            throughput["lines_delta"] = inner["rg_hits_lines"] - prev_inner["rg_hits_lines"]
+            throughput["lines_per_second"] = throughput["lines_delta"] / dt
+        if inner.get("rg_hits_size") is not None and prev_inner.get("rg_hits_size") is not None:
+            throughput["bytes_delta"] = inner["rg_hits_size"] - prev_inner["rg_hits_size"]
+            throughput["bytes_per_second"] = throughput["bytes_delta"] / dt
+        throughput["sample_interval_seconds"] = dt
+    except Exception:
+        throughput = {}
+
 sample = {
     "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    "phase": phase,
     "wrapper": wrapper,
     "hermes": hermes,
     "ripgrep": rg,
     "inner": inner,
     "wrapper_state": state,
+    "throughput": throughput,
 }
 
 with profile_file.open("a") as f:
     f.write(json.dumps(sample) + "\n")
+
+command_snapshot = {
+    "timestamp": sample["timestamp"],
+    "phase": phase,
+    "hermes_command": hermes["command"] if hermes else None,
+    "ripgrep_command": rg["command"] if rg else None,
+    "chosen_scope": inner.get("chosen_scope") if inner else None,
+}
+with command_log_file.open("a") as f:
+    f.write(json.dumps(command_snapshot) + "\n")
 PY
 }
 
@@ -196,6 +259,11 @@ if samples:
         summary["rg_hits_lines_last"] = last["inner"].get("rg_hits_lines")
         summary["rg_hits_size_first"] = first["inner"].get("rg_hits_size")
         summary["rg_hits_size_last"] = last["inner"].get("rg_hits_size")
+        summary["chosen_scope"] = last["inner"].get("chosen_scope")
+        summary["manifest_status"] = last["inner"].get("manifest_status")
+    summary["last_phase"] = last.get("phase")
+    if last.get("throughput"):
+        summary["last_throughput"] = last["throughput"]
 
 summary_path.write_text(json.dumps(summary, indent=2) + "\n")
 PY
