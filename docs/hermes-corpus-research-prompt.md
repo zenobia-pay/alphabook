@@ -74,6 +74,11 @@ Extraction requirements:
 - Record provenance for every extracted item.
 - Deduplicate repeated/near-duplicate hits where practical.
 
+Process requirements:
+- Avoid long single shell commands that are likely to time out.
+- Prefer bounded terminal commands and append progress updates to `run.log` frequently.
+- If a search step is large, break it into smaller chunks and persist intermediate files in the run directory.
+
 Analysis requirements:
 - Build the structured dataset.
 - Build the citation index.

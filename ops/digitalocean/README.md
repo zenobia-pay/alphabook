@@ -248,3 +248,39 @@ Useful flags:
 - `--max-matches-per-file 8` to cap lexical candidates per file
 - `--max-shard-snippet-chars 24000` to keep shard prompts bounded
 - `--reduce-only` to recompute `reduced.json` from existing shard outputs
+
+## Hermes Corpus Research
+
+For long-running Hermes-driven corpus research, use the dedicated launcher instead of a one-off `hermes chat` shell command. It creates a durable run directory, stores the exact prompt, writes separate launcher/stdout/stderr logs, records a PID, and appends heartbeat entries while the process is alive.
+
+From the droplet repo:
+
+```bash
+cd /srv/alphabook/repo
+ops/digitalocean/bin/run-hermes-corpus-research.sh \
+  --user-prompt "Find me all the different ways that authors deal with grief in 19th century literature."
+```
+
+That command prints the run directory, for example:
+
+```text
+/srv/alphabook/logs/hermes-corpus-research/20260331T201500Z-deadbeef
+```
+
+To check progress:
+
+```bash
+ops/digitalocean/bin/hermes-corpus-research-status.sh \
+  /srv/alphabook/logs/hermes-corpus-research/20260331T201500Z-deadbeef
+```
+
+Artifacts written per run:
+
+- `prompt.txt`
+- `launcher.log`
+- `hermes.stdout.log`
+- `hermes.stderr.log`
+- `heartbeat.log`
+- `status.json`
+- `summary.json`
+- `hermes.pid`
