@@ -31,6 +31,8 @@ stdout_log="$run_dir/hermes.stdout.log"
 stderr_log="$run_dir/hermes.stderr.log"
 launcher_log="$run_dir/launcher.log"
 heartbeat_log="$run_dir/heartbeat.log"
+profile_file="$run_dir/profile.jsonl"
+profile_summary_file="$run_dir/profile-summary.json"
 
 echo "run_dir=$run_dir"
 
@@ -60,6 +62,16 @@ fi
 if [[ -f "$launcher_log" ]]; then
   echo "--- launcher tail ---"
   tail -n "$TAIL_LINES" "$launcher_log"
+fi
+
+if [[ -f "$profile_file" ]]; then
+  echo "--- profile tail ---"
+  tail -n "$TAIL_LINES" "$profile_file"
+fi
+
+if [[ -f "$profile_summary_file" ]]; then
+  echo "--- profile summary ---"
+  cat "$profile_summary_file"
 fi
 
 if [[ -f "$stdout_log" ]]; then

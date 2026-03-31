@@ -281,6 +281,17 @@ Artifacts written per run:
 - `hermes.stdout.log`
 - `hermes.stderr.log`
 - `heartbeat.log`
+- `profile.jsonl`
+- `profile-summary.json`
 - `status.json`
 - `summary.json`
 - `hermes.pid`
+
+The launcher also starts a profiler that samples:
+
+- wrapper PID liveness and elapsed time
+- Hermes PID liveness and elapsed time
+- active `rg --json` process metrics when present
+- inner corpus-run directory discovery
+- `rg_hits.jsonl` line counts and byte growth
+- artifact counts and file sizes

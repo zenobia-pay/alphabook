@@ -109,6 +109,7 @@ stderr_log="$run_dir/hermes.stderr.log"
 heartbeat_log="$run_dir/heartbeat.log"
 pid_file="$run_dir/hermes.pid"
 watcher_pid_file="$run_dir/heartbeat.pid"
+profiler_pid_file="$run_dir/profiler.pid"
 status_file="$run_dir/status.json"
 summary_file="$run_dir/summary.json"
 
@@ -356,6 +357,14 @@ pid="$(cat "$pid_file")"
   printf '%s pid=%s exited\n' "$(date -u +%FT%TZ)" "$pid" >>"$heartbeat_log"
 ) >/dev/null 2>&1 &
 echo $! >"$watcher_pid_file"
+
+profile_script="$ROOT_DIR/ops/digitalocean/bin/profile-hermes-corpus-research.sh"
+if [[ -x "$profile_script" ]]; then
+  (
+    nohup "$profile_script" --run-dir "$run_dir" >>"$launcher_log" 2>&1 &
+    echo $! >"$profiler_pid_file"
+  ) >/dev/null
+fi
 
 python3 - "$status_file" "$pid" "$run_dir" "$(date -u +%FT%TZ)" <<'PY'
 from pathlib import Path
