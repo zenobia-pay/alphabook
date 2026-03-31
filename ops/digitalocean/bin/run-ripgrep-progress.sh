@@ -124,8 +124,47 @@ run_batch() {
     fi
   fi
 
-  cat "$batch_out" >>"$HITS_PATH"
-  batch_lines="$(wc -l < "$batch_out" | tr -d ' ')"
+  python3 - "$batch_out" "$HITS_PATH" <<'PY'
+from pathlib import Path
+import json
+import sys
+
+batch_path = Path(sys.argv[1])
+hits_path = Path(sys.argv[2])
+matches = []
+for raw_line in batch_path.read_text().splitlines():
+    if not raw_line.strip():
+        continue
+    try:
+        payload = json.loads(raw_line)
+    except json.JSONDecodeError:
+        continue
+    if payload.get("type") == "match":
+        matches.append(raw_line)
+
+if matches:
+    with hits_path.open("a") as output:
+        output.write("\n".join(matches) + "\n")
+PY
+  batch_lines="$(
+    python3 - "$batch_out" <<'PY'
+from pathlib import Path
+import json
+import sys
+
+count = 0
+for raw_line in Path(sys.argv[1]).read_text().splitlines():
+    if not raw_line.strip():
+        continue
+    try:
+        payload = json.loads(raw_line)
+    except json.JSONDecodeError:
+        continue
+    if payload.get("type") == "match":
+        count += 1
+print(count)
+PY
+  )"
   total_hit_lines=$((total_hit_lines + batch_lines))
   files_done=$((files_done + batch_count))
   bytes_done=$((bytes_done + batch_bytes))
