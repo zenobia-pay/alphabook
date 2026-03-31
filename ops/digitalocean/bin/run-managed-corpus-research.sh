@@ -204,7 +204,7 @@ scope_files="$(wc -l < "$RUN_DIR/scope-files.tsv" | tr -d ' ')"
 log "scope_selection_complete scope_files=$scope_files"
 update_phase "search" "0" "starting progress-aware ripgrep"
 
-PATTERN='\b(grief|grieve|grieving|grieved|mourning|mourn|mourned|mourner|bereav(?:e|ed|ement)|bereft|sorrow|sorrowful|lament|lamentation|woe|anguish|despair|despondent|heartbroken|heart-broken|weep|wept|weeping|tears|funeral|loss|dead|died|death|consolation|comfort|remember|remembrance)\b'
+PATTERN='\b(grief|grieve|grieving|grieved|mourning|mourn|mourned|mourner|bereav(?:e|ed|ement)|bereft|sorrow|sorrowful|lament|lamentation|woe|anguish|despair|despondent|heartbroken|heart-broken|weep|wept|weeping|consolation|comfort|comforted|comforting|inconsolable|melancholy)\b'
 "$ROOT_DIR/ops/digitalocean/bin/run-ripgrep-progress.sh" \
   --file-list "$RUN_DIR/scope-files.tsv" \
   --pattern "$PATTERN" \
