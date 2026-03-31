@@ -4160,6 +4160,103 @@ test("reapStaleRuns fails orphaned foreground tool calls with no runtime id", as
   assert.equal(errorMessage?.content, "This run stopped before it wrote a terminal event.");
 });
 
+test("reapStaleRuns does not fail a stale semantic run with an active durable research heartbeat", async () => {
+  const store = new InMemoryAppStore();
+  const session = await store.createSession("reader-user", "Active semantic janitor run");
+  await store.appendMessage(session.id, "user", "Find grief passages semantically.");
+  const run = await store.createRun(session.id);
+  const toolCall = await store.startToolCall(run.id, "semantic_deep_search", {
+    query: "grief",
+    maxResults: 8,
+  });
+
+  const staleStartedAt = new Date(Date.now() - 45_000).toISOString();
+  await store.updateRun(run.id, {
+    status: "running",
+    completedAt: null,
+  });
+  const runs = (store as unknown as { runs: Map<string, { startedAt: string }> }).runs;
+  const toolCalls = (store as unknown as { toolCalls: Map<string, { startedAt: string }> }).toolCalls;
+  const storedRun = runs.get(run.id);
+  const storedToolCall = toolCalls.get(toolCall.id);
+  assert.ok(storedRun);
+  assert.ok(storedToolCall);
+  storedRun.startedAt = staleStartedAt;
+  storedToolCall.startedAt = staleStartedAt;
+
+  await store.createResearchTask({
+    runId: run.id,
+    sessionId: session.id,
+    toolCallId: toolCall.id,
+    kind: "semantic_research",
+    taskSpecJson: {
+      query: "grief",
+      maxResults: 8,
+    },
+    leaseOwner: "queue:test-task",
+    leaseExpiresAt: new Date(Date.now() + 30_000).toISOString(),
+  });
+  const researchTask = await store.getLatestResearchTaskForToolCall(toolCall.id);
+  assert.ok(researchTask);
+  await store.updateResearchTask(researchTask.id, {
+    status: "running",
+    startedAt: new Date(Date.now() - 20_000).toISOString(),
+    lastHeartbeatAt: new Date().toISOString(),
+  });
+
+  await reapStaleRuns({
+    store,
+    billing: createBillingService(store),
+    planner: new ScriptedPlanner([
+      {
+        type: "final_answer",
+        answer: "unused",
+        citations: [],
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+      async runWorkspaceTask() {
+        return { ok: false, error: "disabled" };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: true, files: [] };
+      },
+      async destroyWorkspace() {
+        return { ok: true };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  }, {
+    runId: "janitor-test",
+  });
+
+  const refreshedRun = await store.getRun(run.id);
+  assert.equal(refreshedRun?.status, "running");
+
+  const refreshedToolCall = (await store.listToolCalls(run.id)).find((candidate) => candidate.id === toolCall.id);
+  assert.equal(refreshedToolCall?.status, "running");
+
+  const payload = {
+    messages: await store.listMessages(session.id),
+  } as {
+    messages: Array<{ role: string; content: string; metadata: Record<string, unknown> }>;
+  };
+  const errorMessage = payload.messages.find((message) => message.metadata?.phase === "error");
+  assert.equal(errorMessage, undefined);
+});
+
 test("run details endpoint does not fail a stale semantic run that still has recent persisted progress", async () => {
   const store = new InMemoryAppStore();
   const session = await store.createSession("reader-user", "Active semantic run");

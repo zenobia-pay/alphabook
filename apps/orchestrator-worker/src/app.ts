@@ -4681,6 +4681,7 @@ async function finalizeStaleRun(
     return run;
   }
   const runEvents = await deps.store.listRunEvents(run.id);
+  const researchTasks = await deps.store.listResearchTasksForRun(run.id);
 
   const cancelLiveExecution = async () => {
     const activeRun = activeRuns?.get(run.id);
@@ -4729,6 +4730,20 @@ async function finalizeStaleRun(
     await deps.store.updateRun(run.id, terminalRunStateUpdate(terminalRunEvent.status, terminalRunEvent.completedAt));
     await cancelLiveExecution();
     return deps.store.getRun(run.id);
+  }
+
+  const activeResearchTask = researchTasks.some((task) => {
+    if (task.status !== "queued" && task.status !== "starting" && task.status !== "running") {
+      return false;
+    }
+    const taskLeaseActive = Boolean(task.leaseExpiresAt && Date.parse(task.leaseExpiresAt) > Date.now());
+    const taskHeartbeatFresh = Boolean(
+      task.lastHeartbeatAt && (Date.now() - Date.parse(task.lastHeartbeatAt)) < RUN_LEASE_MS,
+    );
+    return taskLeaseActive || taskHeartbeatFresh;
+  });
+  if (activeResearchTask) {
+    return run;
   }
 
   const failureMessage = "This run stopped before it wrote a terminal event.";
