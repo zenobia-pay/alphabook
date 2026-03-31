@@ -219,3 +219,32 @@ That rebuilds Gutenberg `18` only.
   - the ingest CLI auto-loads `.dev.vars`
   - local `.dev.vars` may contain quoted `R2_*` values that must be unwrapped before manual export
   - local `.dev.vars` may contain a stale `CLOUDFLARE_API_TOKEN`; if D1 auth behaves unexpectedly, verify the token rather than assuming Wrangler OAuth will override it
+
+## Agentic Corpus Search
+
+For large one-off semantic scans over the mirrored Gutenberg corpus, use the shard-and-reduce runner instead of a single `rlm` process. It enumerates corpus files locally on the droplet, extracts bounded lexical candidate snippets, fans them out to many small LLM shard workers, and then reduces the shard outputs into one deduped result set.
+
+From the droplet repo:
+
+```bash
+cd /srv/alphabook/repo
+ops/digitalocean/bin/run-gutenberg-agentic-search.sh \
+  --query "Find me every example of grief in all of the books in this database." \
+  --corpus-root /srv/alphabook/gutenberg \
+  --output-dir /srv/alphabook/logs/gutenberg-agentic-search/grief-run \
+  --shard-size 24 \
+  --concurrency 8
+```
+
+Artifacts are written under the chosen output directory:
+
+- `manifest.json`
+- `shards/shard-*.json`
+- `reduced.json`
+
+Useful flags:
+
+- `--max-files 500` for a bounded smoke test
+- `--max-matches-per-file 8` to cap lexical candidates per file
+- `--max-shard-snippet-chars 24000` to keep shard prompts bounded
+- `--reduce-only` to recompute `reduced.json` from existing shard outputs
