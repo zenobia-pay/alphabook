@@ -2865,6 +2865,7 @@ test("fallback planner can create a Fly workspace, run a task, read the briefing
     {
       apiToken: "fly-token",
       appName: "alphabook-runtime",
+      openAIApiKey: "test-openai-key",
       image: "registry.fly.io/alphabook-runtime:phase2",
       region: "iad",
       runtimeSharedToken: "runtime-secret",
@@ -2879,6 +2880,11 @@ test("fallback planner can create a Fly workspace, run a task, read the briefing
       calls.push(`${method} ${url}`);
 
       if (url === "https://api.machines.dev/v1/apps/alphabook-runtime/machines" && method === "POST") {
+        const payload = init?.body ? JSON.parse(String(init.body)) as {
+          config?: { env?: Record<string, string> };
+        } : null;
+        assert.equal(payload?.config?.env?.OPENAI_API_KEY, "test-openai-key");
+        assert.equal(payload?.config?.env?.CODEX_AUTH_JSON, "");
         return Response.json({ id: "machine-1", state: "started" });
       }
       if (url.includes("/machines/machine-1/wait") && method === "GET") {

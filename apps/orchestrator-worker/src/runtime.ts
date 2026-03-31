@@ -843,7 +843,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
             OPENAI_API_KEY: this.config.openAIApiKey ?? "",
             OPENAI_BASE_URL: this.config.codexOpenAIBaseUrl ?? "http://127.0.0.1:8080/openai-proxy/v1",
             RUNTIME_OPENAI_PROXY_UPSTREAM_BASE_URL: this.config.codexProxyUpstreamBaseUrl ?? "https://api.openai.com/v1",
-            CODEX_AUTH_JSON: this.config.openAIApiKey ? "" : (this.config.codexAuthJson ?? ""),
+            CODEX_AUTH_JSON: "",
             RUNTIME_AGENT_MODEL: this.config.runtimeAgentModel ?? "gpt-5-codex",
             R2_BUCKET_NAME: this.config.r2BucketName,
             R2_ENDPOINT: this.config.r2Endpoint,

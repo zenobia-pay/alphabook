@@ -128,7 +128,6 @@ function resolveRuntimeGateway(
       appName: env.FLY_RUNTIME_APP_NAME,
       runtimeAppUrl: env.FLY_RUNTIME_APP_URL,
       openAIApiKey: env.OPENAI_API_KEY,
-      codexAuthJson: env.CODEX_AUTH_JSON,
       runtimeAgentModel: env.RUNTIME_AGENT_MODEL,
       image: env.FLY_RUNTIME_IMAGE,
       region: env.FLY_RUNTIME_REGION,
