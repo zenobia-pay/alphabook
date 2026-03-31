@@ -8919,6 +8919,23 @@ async function runOrchestrator(
       if (!task) {
         throw new Error("Research task was not found after it was queued.");
       }
+      const toolCall = (await deps.store.listToolCalls(run.id)).find((candidate) => candidate.id === toolCallId) ?? null;
+      if (toolCall?.resultJson && (toolCall.status === "completed" || toolCall.status === "failed")) {
+        const completedAt = new Date().toISOString();
+        if (task.status === "queued" || task.status === "starting" || task.status === "running") {
+          await deps.store.updateResearchTask(task.id, {
+            status: toolCall.status === "completed" ? "succeeded" : "failed",
+            errorJson: toolCall.status === "failed" ? toolCall.resultJson : null,
+            completedAt,
+            lastHeartbeatAt: completedAt,
+            leaseExpiresAt: null,
+          });
+        }
+        return {
+          status: toolCall.status,
+          result: toolCall.resultJson,
+        };
+      }
       const leaseExpired = !task.leaseExpiresAt || Date.parse(task.leaseExpiresAt) <= Date.now();
       if (
         deps.enqueueJob
@@ -8951,7 +8968,6 @@ async function runOrchestrator(
         await new Promise((resolve) => setTimeout(resolve, 750));
         continue;
       }
-      const toolCall = (await deps.store.listToolCalls(run.id)).find((candidate) => candidate.id === toolCallId) ?? null;
       if (toolCall?.resultJson && (toolCall.status === "completed" || toolCall.status === "failed")) {
         return {
           status: toolCall.status,

@@ -1581,6 +1581,10 @@ async function runCodexStep({
   let result = null;
   let exitCode = 1;
   const maxAttempts = 3;
+  const isHardQuotaFailure = (output) =>
+    /quota exceeded/i.test(output)
+    || /billing details/i.test(output)
+    || /insufficient_quota/i.test(output);
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     await appendProgressEvent(outputDir, {
@@ -1687,6 +1691,17 @@ async function runCodexStep({
       break;
     }
 
+    if (isHardQuotaFailure(`${result.stderr}\n${result.stdout}`)) {
+      await appendProgressEvent(outputDir, {
+        type: "codex.quota_exceeded",
+        step,
+        attempt,
+        exitCode: result.exitCode,
+        message: "Codex quota was exceeded, so the shard stopped without retrying.",
+      });
+      break;
+    }
+
     if (attempt < maxAttempts) {
       await new Promise((resolve) => setTimeout(resolve, attempt * 2_000));
     }
@@ -1705,14 +1720,21 @@ async function runCodexStep({
   );
 
   if (!result || result.exitCode !== 0) {
+    const quotaExceeded = result ? isHardQuotaFailure(`${result.stderr}\n${result.stdout}`) : false;
     await appendProgressEvent(outputDir, {
       type: "codex.step.failed",
       step,
       exitCode,
       logPath,
-      message: `${codexStepLabel(step)} failed.`,
+      message: quotaExceeded
+        ? `${codexStepLabel(step)} failed because Codex quota was exceeded.`
+        : `${codexStepLabel(step)} failed.`,
     });
-    throw new Error(`Codex step ${step} failed with exit code ${exitCode}.`);
+    throw new Error(
+      quotaExceeded
+        ? `Codex step ${step} failed because Codex quota was exceeded.`
+        : `Codex step ${step} failed with exit code ${exitCode}.`,
+    );
   }
 
   const lastMessage = await readFile(outputPath, "utf8").catch(() => "");

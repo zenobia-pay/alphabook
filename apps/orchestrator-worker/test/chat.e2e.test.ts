@@ -4348,6 +4348,89 @@ test("run details endpoint does not fail a stale semantic run that still has rec
   assert.equal(errorMessage, undefined);
 });
 
+test("durable workspace waits honor a terminal tool call even if the research task row is stale", async () => {
+  const store = new InMemoryAppStore([], []);
+  let queuedOnce = false;
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+      async runWorkspaceTask() {
+        return { ok: false, error: "disabled" };
+      },
+      async runSpriteFanoutResearch() {
+        return { ok: false, error: "disabled" };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: false, error: "disabled" };
+      },
+      async destroyWorkspace() {
+        return { ok: true };
+      },
+    },
+    enqueueJob: async (message) => {
+      if (message.type !== "research_task_requested" || queuedOnce) {
+        return;
+      }
+      queuedOnce = true;
+      const task = await store.getResearchTask(message.taskId);
+      assert.ok(task);
+      await store.updateResearchTask(task.id, {
+        status: "running",
+        startedAt: new Date().toISOString(),
+        lastHeartbeatAt: new Date().toISOString(),
+      });
+      assert.ok(task.toolCallId);
+      await store.finishToolCall(task.toolCallId, "failed", {
+        ok: false,
+        error: "Sprite shard briefing failed because Codex quota was exceeded.",
+      });
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const response = await Promise.race([
+    app.request("/chat", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        userId: "11111111-1111-1111-1111-111111111111",
+        message: "Find grief across the corpus.",
+        researchMode: "sprite_fanout",
+      }),
+    }),
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("chat request timed out")), 5_000)),
+  ]);
+
+  assert.equal(response.status, 200);
+  const body = await response.text();
+  assert.match(body, /quota was exceeded/i);
+  assert.match(body, /event: run\.completed/);
+  assert.match(body, /"status":"failed"/);
+
+  const session = (await store.listSessions("11111111-1111-1111-1111-111111111111"))[0]!;
+  const [run] = await store.listRuns(session.id);
+  assert.ok(run);
+  const toolCall = (await store.listToolCalls(run.id)).find((candidate) => candidate.toolName === "run_workspace_task");
+  assert.ok(toolCall);
+  const researchTask = await store.getLatestResearchTaskForToolCall(toolCall.id);
+  assert.equal(researchTask?.status, "failed");
+});
+
 test("persisted tool traces keep chunk results compact enough for refresh", async () => {
   const store = new InMemoryAppStore(
     [
