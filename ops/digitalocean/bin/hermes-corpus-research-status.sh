@@ -34,6 +34,15 @@ heartbeat_log="$run_dir/heartbeat.log"
 profile_file="$run_dir/profile.jsonl"
 profile_summary_file="$run_dir/profile-summary.json"
 command_log_file="$run_dir/command-snapshots.jsonl"
+latest_inner=""
+latest_ripgrep_status=""
+
+if [[ -d /srv/alphabook/logs/corpus-research ]]; then
+  latest_inner="$(find /srv/alphabook/logs/corpus-research -mindepth 1 -maxdepth 1 -type d | sort | tail -n1)"
+  if [[ -n "$latest_inner" && -f "$latest_inner/search/ripgrep-status.json" ]]; then
+    latest_ripgrep_status="$latest_inner/search/ripgrep-status.json"
+  fi
+fi
 
 echo "run_dir=$run_dir"
 
@@ -78,6 +87,16 @@ fi
 if [[ -f "$profile_summary_file" ]]; then
   echo "--- profile summary ---"
   cat "$profile_summary_file"
+fi
+
+if [[ -n "$latest_inner" ]]; then
+  echo "--- latest inner run ---"
+  echo "$latest_inner"
+fi
+
+if [[ -n "$latest_ripgrep_status" ]]; then
+  echo "--- ripgrep status ---"
+  cat "$latest_ripgrep_status"
 fi
 
 if [[ -f "$stdout_log" ]]; then

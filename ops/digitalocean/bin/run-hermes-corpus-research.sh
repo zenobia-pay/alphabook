@@ -194,6 +194,18 @@ Process requirements:
 - Avoid long single shell commands that are likely to time out.
 - Prefer bounded terminal commands and append progress updates to run.log frequently.
 - If a search step is large, break it into smaller chunks and persist intermediate files in the run directory.
+- Decide and record the chosen scope before starting any ripgrep search.
+- Search raw text only. Do not use HTML, RDF, EPUB metadata, cache files, or other non-text derivatives for the main corpus search.
+- Use the provided helper scripts when available:
+  - ops/digitalocean/bin/prepare-text-corpus-manifest.sh
+  - ops/digitalocean/bin/run-ripgrep-progress.sh
+- The required order is:
+  1. decide scope
+  2. write chosen_scope and scope_rationale into the run manifest
+  3. prepare the text-only manifest
+  4. derive a scoped text-only file list
+  5. run the progress-aware ripgrep helper over that scoped text-only file list
+- Do not run a single raw `rg` command directly over /srv/alphabook/gutenberg.
 
 Analysis requirements:
 - Build the structured dataset.

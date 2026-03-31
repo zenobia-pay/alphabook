@@ -288,6 +288,36 @@ Artifacts written per run:
 - `summary.json`
 - `hermes.pid`
 
+For ripgrep progress-aware corpus scans, the expected helper flow is:
+
+```bash
+ops/digitalocean/bin/prepare-text-corpus-manifest.sh \
+  --corpus-root /srv/alphabook/gutenberg \
+  --output-dir /srv/alphabook/logs/corpus-research/<run-id>/prepared
+```
+
+That writes a sorted text-only TSV manifest:
+
+- `all-text-files.tsv` as `size_bytes<TAB>absolute_path`
+
+Then run the chunked progress-aware ripgrep helper over a scoped TSV file list:
+
+```bash
+ops/digitalocean/bin/run-ripgrep-progress.sh \
+  --file-list /srv/alphabook/logs/corpus-research/<run-id>/scope-files.tsv \
+  --pattern '\\b(grief|mourning|bereaved|bereavement|bereft|sorrow|lament|woe|anguish)\\b' \
+  --output-dir /srv/alphabook/logs/corpus-research/<run-id>/search \
+  --batch-size 500
+```
+
+That writes:
+
+- `search/rg_hits.jsonl`
+- `search/ripgrep-progress.jsonl`
+- `search/ripgrep-status.json`
+- `search/ripgrep.log`
+- `search/batches/batch-*.jsonl`
+
 The launcher also starts a profiler that samples:
 
 - wrapper PID liveness and elapsed time
@@ -297,5 +327,6 @@ The launcher also starts a profiler that samples:
 - active Hermes and ripgrep command snapshots
 - inner corpus-run directory discovery
 - `rg_hits.jsonl` line counts and byte growth
+- ripgrep batch/file/byte progress when the helper script is used
 - per-sample line/byte throughput
 - artifact counts and file sizes

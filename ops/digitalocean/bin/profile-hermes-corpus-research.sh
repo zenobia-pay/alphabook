@@ -116,6 +116,8 @@ if inner_dir:
     manifest = inner_dir / "manifest.json"
     rg_hits = inner_dir / "rg_hits.jsonl"
     run_log = inner_dir / "run.log"
+    ripgrep_status = inner_dir / "search" / "ripgrep-status.json"
+    ripgrep_progress = inner_dir / "search" / "ripgrep-progress.jsonl"
     files = sorted(p.name for p in inner_dir.iterdir() if p.is_file())
     inner = {
         "run_dir": str(inner_dir),
@@ -139,6 +141,18 @@ if inner_dir:
             inner["rg_hits_lines"] = int(wc.stdout.strip().split()[0])
         except Exception:
             inner["rg_hits_lines"] = None
+    if ripgrep_status.exists():
+        try:
+            inner["ripgrep_status"] = json.loads(ripgrep_status.read_text())
+        except Exception:
+            pass
+    if ripgrep_progress.exists():
+        try:
+            lines = [line for line in ripgrep_progress.read_text().splitlines() if line.strip()]
+            if lines:
+                inner["ripgrep_progress_tail"] = json.loads(lines[-1])
+        except Exception:
+            pass
     if run_log.exists():
         try:
             tail = run_log.read_text()[-4000:]
@@ -147,7 +161,9 @@ if inner_dir:
             pass
 
 phase = "launching"
-if rg:
+if inner and inner.get("ripgrep_status") and inner["ripgrep_status"].get("state") == "running":
+    phase = "ripgrep"
+elif rg:
     phase = "ripgrep"
 elif inner and inner.get("rg_hits_lines"):
     phase = "post-ripgrep"
@@ -208,6 +224,7 @@ command_snapshot = {
     "hermes_command": hermes["command"] if hermes else None,
     "ripgrep_command": rg["command"] if rg else None,
     "chosen_scope": inner.get("chosen_scope") if inner else None,
+    "ripgrep_status": inner.get("ripgrep_status") if inner else None,
 }
 with command_log_file.open("a") as f:
     f.write(json.dumps(command_snapshot) + "\n")

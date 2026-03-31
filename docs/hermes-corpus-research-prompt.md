@@ -41,6 +41,7 @@ Required first step:
      - how you approximated it from the locally available data
    - If you choose the full corpus, state that explicitly and explain why.
    - Save the scope decision and rationale in the manifest and briefing.
+   - You must make this scope decision before running any ripgrep search.
 
 Required second step:
 3. Decide the dataset schema before extraction.
@@ -64,6 +65,8 @@ Required second step:
 Extraction requirements:
 - Use terminal tools.
 - Use ripgrep as the primary search and extraction mechanism over the chosen corpus scope.
+- Search raw text only. Do not use HTML, RDF, EPUB metadata, cache files, or other non-text derivatives for the main corpus search.
+- Before any ripgrep phase, prepare a text-only manifest and a scoped text-only file list.
 - Use multiple query terms, variants, and concept clusters, not just one literal phrase.
 - Prefer high recall first, then structure and deduplicate.
 - For every candidate hit found by ripgrep, inspect the matched passage and the relevant text immediately before and after it.
@@ -78,6 +81,15 @@ Process requirements:
 - Avoid long single shell commands that are likely to time out.
 - Prefer bounded terminal commands and append progress updates to `run.log` frequently.
 - If a search step is large, break it into smaller chunks and persist intermediate files in the run directory.
+- Use the provided helper scripts when available:
+  - `ops/digitalocean/bin/prepare-text-corpus-manifest.sh`
+  - `ops/digitalocean/bin/run-ripgrep-progress.sh`
+- The expected sequence is:
+  1. decide and record scope
+  2. build the text-only manifest
+  3. derive the scoped text-only file list
+  4. run progress-aware chunked ripgrep over that scoped text-only file list
+- The ripgrep step must emit measurable progress, including completed batches and percentage complete.
 
 Analysis requirements:
 - Build the structured dataset.
