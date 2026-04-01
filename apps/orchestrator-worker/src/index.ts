@@ -7,7 +7,7 @@ import {
 } from "@alphabook/implementations";
 import type { ChatRequest } from "@alphabook/shared";
 
-import { createApp, reapExpiredRuntimeInstances, reapStaleRuns, runOrchestrator, type ActiveRunState, type AppDeps, type ResearchTaskQueueMessage } from "./app";
+import { createApp, finalizeStaleRun, reapExpiredRuntimeInstances, reapStaleRuns, runOrchestrator, type ActiveRunState, type AppDeps, type ResearchTaskQueueMessage } from "./app";
 import { WorkOSAuth } from "./auth";
 import { createBillingService } from "./billing";
 import { GoogleAIEmbedder, OpenAIEmbedder } from "./embeddings";
@@ -750,11 +750,15 @@ type ComprehensiveJobRecord = {
   chatRequest: ChatRequest;
   state: "queued" | "running" | "completed" | "failed" | "timed_out" | "cancelling" | "cancelled";
   running: boolean;
+  attemptCount: number;
+  previousRunIds: string[];
   createdAt: string;
   startedAt: string | null;
   finishedAt: string | null;
   sessionId: string | null;
   runId: string | null;
+  lastObservedRunEventSeq: number;
+  knownRuntimeIds: string[];
   detail: string | null;
   error: string | null;
   cancelRequestedAt: string | null;
@@ -822,6 +826,7 @@ function artifactBelongsToRun(
 export class ComprehensiveJobDurableObject {
   private executionPromise: Promise<void> | null = null;
   private readonly activeRuns = new Map<string, ActiveRunState>();
+  private static readonly ALARM_INTERVAL_MS = 15_000;
 
   constructor(
     private readonly state: DurableObjectState,
@@ -851,70 +856,196 @@ export class ComprehensiveJobDurableObject {
       data,
     };
     logs.push(entry);
-    await this.state.storage.put("logs", logs.slice(-5_000));
+    await this.state.storage.put("logs", logs.slice(-10_000));
   }
 
-  private async executeJob() {
+  private async ensureAlarm() {
+    const current = await this.state.storage.getAlarm();
+    const target = Date.now() + ComprehensiveJobDurableObject.ALARM_INTERVAL_MS;
+    if (current == null || current > target + 1_000 || current < Date.now()) {
+      await this.state.storage.setAlarm(target);
+    }
+  }
+
+  private async clearAlarm() {
+    await this.state.storage.deleteAlarm();
+  }
+
+  private async mirrorPersistedRunEvents(job: ComprehensiveJobRecord, deps: AppDeps) {
+    if (!job.runId) {
+      return job;
+    }
+    const runEvents = await deps.store.listRunEvents(job.runId);
+    const newEvents = runEvents.filter((event) => event.sequence > job.lastObservedRunEventSeq);
+    if (newEvents.length === 0) {
+      const knownRuntimeIds = Array.from(collectRuntimeIdsFromRunEvents(runEvents));
+      if (knownRuntimeIds.join(",") === job.knownRuntimeIds.join(",")) {
+        return job;
+      }
+      return {
+        ...job,
+        knownRuntimeIds,
+      };
+    }
+    const existingLogs = await this.getLogs();
+    const existingKeys = new Set(existingLogs.map((entry) => `${entry.event}:${entry.createdAt}:${entry.line}`));
+    const appended: ComprehensiveJobLogEntry[] = [];
+    let nextJob = { ...job };
+    for (const runEvent of newEvents) {
+      const line = summarizeComprehensiveJobEvent(runEvent.event, runEvent.dataJson);
+      const dedupeKey = `${runEvent.event}:${runEvent.createdAt}:${line}`;
+      if (!existingKeys.has(dedupeKey)) {
+        appended.push({
+          seq: existingLogs.length + appended.length,
+          createdAt: runEvent.createdAt,
+          event: runEvent.event,
+          line,
+          data: runEvent.dataJson,
+        });
+        existingKeys.add(dedupeKey);
+      }
+      nextJob.lastObservedRunEventSeq = Math.max(nextJob.lastObservedRunEventSeq, runEvent.sequence);
+      nextJob.lastEventAt = runEvent.createdAt;
+      if (runEvent.event === "session.created" && typeof runEvent.dataJson.sessionId === "string") {
+        nextJob.sessionId = runEvent.dataJson.sessionId;
+      }
+      if (runEvent.event === "run.started" && typeof runEvent.dataJson.runId === "string") {
+        nextJob.runId = runEvent.dataJson.runId;
+      }
+      if (runEvent.event === "tool.progress" && typeof runEvent.dataJson.text === "string") {
+        nextJob.detail = runEvent.dataJson.text.slice(0, 500);
+      }
+      if (runEvent.event === "assistant.completed" && typeof runEvent.dataJson.content === "string") {
+        nextJob.detail = runEvent.dataJson.content.slice(0, 500);
+      }
+      if (runEvent.event === "run.completed") {
+        const status = runEvent.dataJson.status === "completed" || runEvent.dataJson.status === "failed" || runEvent.dataJson.status === "timed_out"
+          ? runEvent.dataJson.status
+          : "failed";
+        nextJob.state = nextJob.cancelRequestedAt && status === "failed" ? "cancelled" : status;
+        nextJob.running = false;
+        nextJob.finishedAt = runEvent.createdAt;
+        nextJob.error = typeof runEvent.dataJson.error === "string" ? runEvent.dataJson.error : null;
+        nextJob.detail = typeof runEvent.dataJson.error === "string"
+          ? runEvent.dataJson.error
+          : nextJob.detail;
+      }
+    }
+    nextJob.knownRuntimeIds = Array.from(collectRuntimeIdsFromRunEvents(runEvents));
+    if (appended.length > 0) {
+      await this.state.storage.put("logs", [...existingLogs, ...appended].slice(-10_000));
+    }
+    return nextJob;
+  }
+
+  private async cancelPersistedRun(job: ComprehensiveJobRecord, deps: AppDeps) {
+    if (!job.runId || !job.sessionId) {
+      return;
+    }
+    const run = await deps.store.getRun(job.runId);
+    const session = await deps.store.getSession(job.sessionId);
+    if (!run || !session) {
+      return;
+    }
+    const [toolCalls, runEvents] = await Promise.all([
+      deps.store.listToolCalls(job.runId),
+      deps.store.listRunEvents(job.runId),
+    ]);
+    const runtimeIds = new Set<string>([
+      ...job.knownRuntimeIds,
+      ...Array.from(collectRuntimeIdsFromRunEvents(runEvents)),
+    ]);
+    await Promise.all(
+      Array.from(runtimeIds).map((runtimeId) =>
+        deps.runtimeGateway.cancelWorkspaceTask?.({ runtimeId }).catch(() => {}),
+      ),
+    );
+    await Promise.all(
+      toolCalls
+        .filter((toolCall) => toolCall.status === "running" || toolCall.status === "queued")
+        .map((toolCall) => deps.store.finishToolCall(toolCall.id, "failed", {
+          ok: false,
+          error: "Run cancelled by comprehensive job API.",
+        })),
+    );
+    await finalizeStaleRun(deps, new Request("https://comprehensive-job.internal/cancel"), run, this.activeRuns);
+  }
+
+  private async launchAttempt(job: ComprehensiveJobRecord, options: { recovery: boolean }) {
     if (this.executionPromise) {
       return this.executionPromise;
     }
     this.executionPromise = (async () => {
-      const existingJob = await this.getJob();
-      if (!existingJob) {
-        return;
-      }
-      await this.putJob({
-        ...existingJob,
-        state: "running",
+      const startedAt = new Date().toISOString();
+      let nextJob: ComprehensiveJobRecord = {
+        ...job,
+        state: job.cancelRequestedAt ? "cancelling" : "running",
         running: true,
-        startedAt: existingJob.startedAt ?? new Date().toISOString(),
-        detail: "Starting comprehensive run.",
-      });
+        startedAt: job.startedAt ?? startedAt,
+        finishedAt: null,
+        error: null,
+        detail: options.recovery ? "Recovering comprehensive run after lease expiry." : "Starting comprehensive run.",
+        attemptCount: options.recovery ? job.attemptCount + 1 : Math.max(job.attemptCount, 1),
+      };
+      await this.putJob(nextJob);
+      await this.ensureAlarm();
+      if (options.recovery) {
+        await this.appendLog("job.recovery.restarted", {
+          previousRunId: job.runId,
+          sessionId: job.sessionId,
+          attemptCount: nextJob.attemptCount,
+        });
+      }
       try {
         const deps = buildAppDeps(this.env);
         await runOrchestrator(
           deps,
-          new Request("https://comprehensive-job.internal/run"),
-          existingJob.chatRequest,
+          new Request(options.recovery ? "https://comprehensive-job.internal/recover" : "https://comprehensive-job.internal/run"),
+          {
+            ...job.chatRequest,
+            sessionId: job.sessionId ?? job.chatRequest.sessionId,
+          },
           async (event, data) => {
-            await this.appendLog(event, data);
             const current = await this.getJob();
             if (!current) {
               return;
             }
-            const next: ComprehensiveJobRecord = {
+            let updated: ComprehensiveJobRecord = {
               ...current,
               lastEventAt: new Date().toISOString(),
             };
             if (event === "session.created" && typeof data.sessionId === "string") {
-              next.sessionId = data.sessionId;
+              updated.sessionId = data.sessionId;
             }
             if (event === "run.started" && typeof data.runId === "string") {
-              next.runId = data.runId;
-            }
-            if (event === "assistant.completed" && typeof data.content === "string") {
-              next.detail = data.content.slice(0, 500);
-            }
-            if (event === "tool.progress" && typeof data.text === "string") {
-              next.detail = data.text.slice(0, 500);
+              if (updated.runId && updated.runId !== data.runId && !updated.previousRunIds.includes(updated.runId)) {
+                updated.previousRunIds = [...updated.previousRunIds, updated.runId];
+              }
+              updated.runId = data.runId;
+              updated.detail = options.recovery ? "Recovery attempt started." : updated.detail;
             }
             if (event === "run.completed") {
               const status = data.status === "completed" || data.status === "failed" || data.status === "timed_out"
                 ? data.status
                 : "failed";
-              next.state = status;
-              next.running = false;
-              next.finishedAt = new Date().toISOString();
-              next.error = typeof data.error === "string" ? data.error : null;
-              next.detail = typeof data.error === "string"
-                ? data.error
-                : typeof next.detail === "string" && next.detail.trim().length > 0
-                  ? next.detail
-                  : summarizeComprehensiveJobEvent(event, data);
+              updated.state = updated.cancelRequestedAt && status === "failed" ? "cancelled" : status;
+              updated.running = false;
+              updated.finishedAt = new Date().toISOString();
+              updated.error = typeof data.error === "string" ? data.error : null;
             }
-            await this.putJob(next);
+            await this.putJob(updated);
+            if (updated.running) {
+              await this.ensureAlarm();
+            }
           },
           this.activeRuns,
+          options.recovery
+            ? {
+                recovery: {
+                  skipUserMessageAppend: true,
+                },
+              }
+            : {},
         );
       } catch (error) {
         const current = await this.getJob();
@@ -933,19 +1064,101 @@ export class ComprehensiveJobDurableObject {
         }
       } finally {
         this.executionPromise = null;
+        const current = await this.getJob();
+        if (current?.running) {
+          await this.ensureAlarm();
+        } else {
+          await this.clearAlarm();
+        }
       }
     })();
     return this.executionPromise;
   }
 
-  private async cancelJob() {
+  private async reconcileJobState(reason: "request" | "alarm" | "cancel" = "request") {
     const job = await this.getJob();
+    if (!job) {
+      await this.clearAlarm();
+      return null;
+    }
+    let nextJob = job;
+    const deps = buildAppDeps(this.env);
+    if (nextJob.runId) {
+      nextJob = await this.mirrorPersistedRunEvents(nextJob, deps);
+      const activeRunId = nextJob.runId;
+      if (!activeRunId) {
+        await this.putJob(nextJob);
+        await this.ensureAlarm();
+        return nextJob;
+      }
+      const run = await deps.store.getRun(activeRunId);
+      if (!run) {
+        nextJob = {
+          ...nextJob,
+          state: "failed",
+          running: false,
+          finishedAt: new Date().toISOString(),
+          detail: "The underlying run could not be found.",
+          error: "Underlying run missing.",
+        };
+      } else if (run.status === "completed" || run.status === "failed" || run.status === "timed_out") {
+        nextJob = {
+          ...nextJob,
+          state: nextJob.cancelRequestedAt && run.status === "failed" ? "cancelled" : run.status,
+          running: false,
+          finishedAt: run.completedAt ?? nextJob.finishedAt ?? new Date().toISOString(),
+        };
+      } else {
+        const leaseExpired = !run.leaseExpiresAt || Date.parse(run.leaseExpiresAt) <= Date.now();
+        if (nextJob.cancelRequestedAt) {
+          await this.cancelPersistedRun(nextJob, deps);
+          nextJob = await this.mirrorPersistedRunEvents(nextJob, deps);
+          const refreshedRunId = nextJob.runId;
+          const refreshedRun = refreshedRunId ? await deps.store.getRun(refreshedRunId) : null;
+          if (!refreshedRun || refreshedRun.status === "failed" || refreshedRun.status === "timed_out") {
+            nextJob = {
+              ...nextJob,
+              state: "cancelled",
+              running: false,
+              finishedAt: new Date().toISOString(),
+              detail: "Cancellation completed.",
+            };
+          }
+        } else if (leaseExpired && !this.executionPromise) {
+          if (!nextJob.previousRunIds.includes(activeRunId)) {
+            nextJob = {
+              ...nextJob,
+              previousRunIds: [...nextJob.previousRunIds, activeRunId],
+            };
+          }
+          await this.putJob(nextJob);
+          this.state.waitUntil(this.launchAttempt(nextJob, { recovery: true }));
+          await this.ensureAlarm();
+          return nextJob;
+        }
+      }
+    }
+    await this.putJob(nextJob);
+    if (nextJob.running || nextJob.state === "cancelling") {
+      await this.ensureAlarm();
+    } else {
+      await this.clearAlarm();
+    }
+    if (reason === "request" && nextJob.running && !nextJob.runId && !this.executionPromise) {
+      this.state.waitUntil(this.launchAttempt(nextJob, { recovery: false }));
+    }
+    return nextJob;
+  }
+
+  private async cancelJob() {
+    const job = await this.reconcileJobState("cancel");
     if (!job) {
       return null;
     }
     const nextState: ComprehensiveJobRecord = {
       ...job,
       state: job.running ? "cancelling" : "cancelled",
+      running: job.running,
       cancelRequestedAt: job.cancelRequestedAt ?? new Date().toISOString(),
       detail: "Cancellation requested.",
     };
@@ -954,44 +1167,15 @@ export class ComprehensiveJobDurableObject {
       runId: job.runId,
       sessionId: job.sessionId,
     });
-    if (job.runId) {
-      const activeRun = this.activeRuns.get(job.runId);
+    if (nextState.runId) {
+      const activeRun = this.activeRuns.get(nextState.runId);
       if (activeRun) {
         activeRun.cancelRequested = true;
       }
-      try {
-        const deps = buildAppDeps(this.env);
-        const run = await deps.store.getRun(job.runId);
-        const session = job.sessionId ? await deps.store.getSession(job.sessionId) : null;
-        if (run && session) {
-          const [toolCalls, runEvents] = await Promise.all([
-            deps.store.listToolCalls(job.runId),
-            deps.store.listRunEvents(job.runId),
-          ]);
-          const runtimeIds = collectRuntimeIdsFromRunEvents(runEvents);
-          await Promise.all(
-            Array.from(runtimeIds).map((runtimeId) =>
-              deps.runtimeGateway.cancelWorkspaceTask?.({ runtimeId }).catch(() => {}),
-            ),
-          );
-          await Promise.all(
-            toolCalls
-              .filter((toolCall) => toolCall.status === "running" || toolCall.status === "queued")
-              .map((toolCall) => deps.store.finishToolCall(toolCall.id, "failed", {
-                ok: false,
-                error: "Run cancelled by comprehensive job API.",
-              })),
-          );
-          await deps.store.updateRun(job.runId, {
-            status: "failed",
-            completedAt: new Date().toISOString(),
-          });
-        }
-      } catch {
-        // Best effort cancellation. The live run loop also observes cancelRequested.
-      }
+      const deps = buildAppDeps(this.env);
+      await this.cancelPersistedRun(nextState, deps).catch(() => {});
     }
-    return await this.getJob();
+    return await this.reconcileJobState("cancel");
   }
 
   private async listArtifacts(job: ComprehensiveJobRecord) {
@@ -1024,7 +1208,11 @@ export class ComprehensiveJobDurableObject {
       };
       const existing = await this.getJob();
       if (existing) {
-        return Response.json({ error: "Job already exists." }, { status: 409 });
+        const reconciled = await this.reconcileJobState("request");
+        if (reconciled && reconciled.running && !this.executionPromise && (!reconciled.runId || reconciled.state === "queued")) {
+          this.state.waitUntil(this.launchAttempt(reconciled, { recovery: false }));
+        }
+        return Response.json({ job: reconciled ?? existing });
       }
       const job: ComprehensiveJobRecord = {
         id: payload.jobId,
@@ -1032,31 +1220,36 @@ export class ComprehensiveJobDurableObject {
         prompt: payload.chatRequest.message,
         mode: payload.chatRequest.mode === "semantic" ? "semantic" : "comprehensive",
         chatRequest: payload.chatRequest,
-        state: "queued",
+        state: "running",
         running: true,
+        attemptCount: 0,
+        previousRunIds: [],
         createdAt: new Date().toISOString(),
         startedAt: null,
         finishedAt: null,
         sessionId: payload.chatRequest.sessionId ?? null,
         runId: null,
+        lastObservedRunEventSeq: 0,
+        knownRuntimeIds: [],
         detail: "Queued comprehensive run.",
         error: null,
         cancelRequestedAt: null,
         lastEventAt: null,
       };
       await this.putJob(job);
-      this.state.waitUntil(this.executeJob());
+      await this.ensureAlarm();
+      this.state.waitUntil(this.launchAttempt(job, { recovery: false }));
       return Response.json({ job });
     }
     if (request.method === "GET" && url.pathname === "/job") {
-      const job = await this.getJob();
+      const job = await this.reconcileJobState("request");
       if (!job) {
         return Response.json({ error: "Job not found." }, { status: 404 });
       }
       return Response.json({ job });
     }
     if (request.method === "GET" && url.pathname === "/logs") {
-      const job = await this.getJob();
+      const job = await this.reconcileJobState("request");
       if (!job) {
         return Response.json({ error: "Job not found." }, { status: 404 });
       }
@@ -1074,7 +1267,7 @@ export class ComprehensiveJobDurableObject {
       });
     }
     if (request.method === "GET" && url.pathname === "/artifacts") {
-      const job = await this.getJob();
+      const job = await this.reconcileJobState("request");
       if (!job) {
         return Response.json({ error: "Job not found." }, { status: 404 });
       }
@@ -1082,7 +1275,7 @@ export class ComprehensiveJobDurableObject {
       return Response.json({ artifacts });
     }
     if (request.method === "GET" && url.pathname.startsWith("/artifacts/")) {
-      const job = await this.getJob();
+      const job = await this.reconcileJobState("request");
       if (!job) {
         return Response.json({ error: "Job not found." }, { status: 404 });
       }
@@ -1123,6 +1316,10 @@ export class ComprehensiveJobDurableObject {
       return Response.json({ job });
     }
     return Response.json({ error: "Not found." }, { status: 404 });
+  }
+
+  async alarm() {
+    await this.reconcileJobState("alarm");
   }
 }
 

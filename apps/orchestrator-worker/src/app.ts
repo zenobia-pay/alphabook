@@ -2440,6 +2440,12 @@ export type ActiveRunState = {
   subscribers: Map<string, (event: string, data: Record<string, unknown>) => Promise<void>>;
 };
 
+export type RunOrchestratorOptions = {
+  recovery?: {
+    skipUserMessageAppend?: boolean;
+  };
+};
+
 type AuditLogger = (event: string, payload: Record<string, unknown>) => void;
 
 const RUN_LEASE_MS = 90_000;
@@ -4687,7 +4693,7 @@ function ensureCitationBreadth(
   return dedupeAppCitations(selected).slice(0, 8);
 }
 
-async function finalizeStaleRun(
+export async function finalizeStaleRun(
   deps: AppDeps,
   _request: Request,
   run: Awaited<ReturnType<AppStore["getRun"]>>,
@@ -8996,6 +9002,7 @@ export async function runOrchestrator(
   input: ChatRequest,
   send: (event: string, data: Record<string, unknown>) => Promise<void>,
   activeRuns: Map<string, ActiveRunState>,
+  options: RunOrchestratorOptions = {},
 ): Promise<void> {
   const originalSend = send;
   let rawLogSequence = 0;
@@ -9798,11 +9805,18 @@ export async function runOrchestrator(
   }
   const activeSession = session;
 
-  await deps.store.appendMessage(activeSession.id, "user", input.message);
-  recordRawLog("message.user", {
-    sessionId: activeSession.id,
-    content: input.message,
-  });
+  if (!options.recovery?.skipUserMessageAppend) {
+    await deps.store.appendMessage(activeSession.id, "user", input.message);
+    recordRawLog("message.user", {
+      sessionId: activeSession.id,
+      content: input.message,
+    });
+  } else {
+    recordRawLog("message.user.reused", {
+      sessionId: activeSession.id,
+      content: input.message,
+    });
+  }
   const sessionMessages = await deps.store.listMessages(activeSession.id);
   const conversationHistory = formatConversationHistory(sessionMessages);
   const initialHeartbeatAt = new Date().toISOString();
