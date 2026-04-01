@@ -24,6 +24,7 @@
     "research:gutenberg-agentic-search": "node --import tsx packages/tooling/scripts/run-gutenberg-agentic-search.ts",
     "research:search-plan": "node --import tsx packages/tooling/scripts/build-corpus-research-search-plan.ts",
     "research:corpus-triage": "node --import tsx packages/tooling/scripts/run-corpus-research-triage.ts",
+    "research:hermes": "node --import tsx packages/tooling/scripts/run-hermes-cli.ts",
     "sprite:build-shards": "node --import tsx packages/tooling/scripts/build-sprite-shards.ts",
     "sprite:provision-comprehensive": "node --import tsx packages/tooling/scripts/provision-comprehensive-sprites.ts",
     "sprite:cleanup": "node --import tsx packages/tooling/scripts/cleanup-sprite-machines.ts",
