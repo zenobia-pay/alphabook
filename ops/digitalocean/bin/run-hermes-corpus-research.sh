@@ -6,7 +6,7 @@ RUN_ROOT="${RUN_ROOT:-/srv/alphabook/logs/hermes-corpus-research}"
 ENV_FILE="${ENV_FILE:-$ROOT_DIR/.dev.vars}"
 FALLBACK_ENV_FILE="${FALLBACK_ENV_FILE:-/srv/alphabook/.ingest.env}"
 CORPUS_ROOT="${CORPUS_ROOT:-/srv/alphabook/gutenberg}"
-MODEL="${MODEL:-gpt-5-mini}"
+MODEL="${MODEL:-gpt-5.4}"
 MAX_TURNS="${MAX_TURNS:-60}"
 HEARTBEAT_SECONDS="${HEARTBEAT_SECONDS:-15}"
 
@@ -17,7 +17,7 @@ Usage: run-hermes-corpus-research.sh --user-prompt "Find me all the different wa
 Options:
   --user-prompt TEXT     User research request to insert into the Hermes template.
   --max-turns N          Override Hermes max turns. Default: 60
-  --model NAME           Override Hermes model. Default: gpt-5-mini
+  --model NAME           Override Hermes model. Default: gpt-5.4
   --run-root PATH        Output root. Default: /srv/alphabook/logs/hermes-corpus-research
   --corpus-root PATH     Corpus root. Default: /srv/alphabook/gutenberg
   --root-dir PATH        Repo root. Default: /srv/alphabook/repo
@@ -313,7 +313,7 @@ path.write_text(json.dumps(data, indent=2) + "\n")
 PY
 
 set +e
-hermes chat -q "$(cat "$PROMPT_FILE")" -Q --max-turns "$MAX_TURNS" --yolo > >(stdbuf -oL tee -a "$STDOUT_LOG") 2> >(stdbuf -oL tee -a "$STDERR_LOG" >&2)
+hermes chat -m "$MODEL" -q "$(cat "$PROMPT_FILE")" -Q --max-turns "$MAX_TURNS" --yolo > >(stdbuf -oL tee -a "$STDOUT_LOG") 2> >(stdbuf -oL tee -a "$STDERR_LOG" >&2)
 exit_code=$?
 set -e
 
