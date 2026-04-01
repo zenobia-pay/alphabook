@@ -323,16 +323,7 @@ async function ensureCodexAuthConfigured() {
   const homeDir = process.env.HOME ?? "/root";
   const codexDir = join(homeDir, ".codex");
   const authPath = join(codexDir, "auth.json");
-  if (process.env.OPENAI_API_KEY?.trim()) {
-    await rm(authPath, { force: true }).catch(() => {});
-    return;
-  }
-  const authJson = process.env.CODEX_AUTH_JSON;
-  if (!authJson || !authJson.trim()) {
-    return;
-  }
-  await mkdir(codexDir, { recursive: true });
-  await writeFile(authPath, authJson, { encoding: "utf8", mode: 0o600 });
+  await rm(authPath, { force: true }).catch(() => {});
 }
 
 function safeJoin(root: string, targetPath: string): string {
