@@ -84,13 +84,14 @@ Process requirements:
 - Prefer bounded terminal commands and append progress updates to `run.log` frequently.
 - If a search step is large, break it into smaller chunks and persist intermediate files in the run directory.
 - Use the provided helper scripts when available:
-  - `ops/digitalocean/bin/prepare-text-corpus-manifest.sh`
-  - `ops/digitalocean/bin/run-ripgrep-progress.sh`
+  - `/srv/alphabook/repo/ops/digitalocean/bin/prepare-text-corpus-manifest.sh`
+  - `/srv/alphabook/repo/ops/digitalocean/bin/run-ripgrep-progress.sh`
 - The expected sequence is:
   1. decide and record scope
   2. build the text-only manifest
   3. derive the scoped text-only file list
   4. run progress-aware chunked ripgrep over that scoped text-only file list
+- When invoking repo helpers on this droplet, use the repo-root absolute paths under `/srv/alphabook/repo/...`, not `/srv/alphabook/ops/...`.
 - The ripgrep step must emit measurable progress, including completed batches and percentage complete.
 
 Analysis requirements:
