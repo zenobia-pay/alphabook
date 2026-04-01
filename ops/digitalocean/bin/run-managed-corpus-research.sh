@@ -6,7 +6,9 @@ RUN_ROOT="${RUN_ROOT:-/srv/alphabook/logs/corpus-research}"
 CORPUS_ROOT="${CORPUS_ROOT:-/srv/alphabook/gutenberg}"
 ENV_FILE="${ENV_FILE:-$ROOT_DIR/.dev.vars}"
 FALLBACK_ENV_FILE="${FALLBACK_ENV_FILE:-/srv/alphabook/.ingest.env}"
-MODEL="${MODEL:-gpt-5-mini}"
+NANO_MODEL="${NANO_MODEL:-gpt-5-nano}"
+ESCALATION_MODEL="${ESCALATION_MODEL:-gpt-5-mini}"
+SYNTHESIS_MODEL="${SYNTHESIS_MODEL:-gpt-5-mini}"
 CONCURRENCY="${CONCURRENCY:-8}"
 STREAM_SECONDS="${STREAM_SECONDS:-2}"
 
@@ -40,7 +42,20 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --model)
-      MODEL="$2"
+      ESCALATION_MODEL="$2"
+      SYNTHESIS_MODEL="$2"
+      shift 2
+      ;;
+    --nano-model)
+      NANO_MODEL="$2"
+      shift 2
+      ;;
+    --escalation-model)
+      ESCALATION_MODEL="$2"
+      shift 2
+      ;;
+    --synthesis-model)
+      SYNTHESIS_MODEL="$2"
       shift 2
       ;;
     --concurrency)
@@ -93,7 +108,7 @@ payload = {
 Path(sys.argv[1]).write_text(json.dumps(payload, indent=2) + "\n")
 PY
 
-python3 - "$status_file" "$USER_PROMPT" "$MODEL" <<'PY'
+python3 - "$status_file" "$USER_PROMPT" "$NANO_MODEL -> $ESCALATION_MODEL -> $SYNTHESIS_MODEL" <<'PY'
 from pathlib import Path
 import json
 import sys
@@ -218,16 +233,18 @@ cd "$ROOT_DIR"
 node --import tsx packages/tooling/scripts/run-corpus-research-triage.ts \
   --run-dir "$RUN_DIR" \
   --query "$USER_PROMPT" \
-  --model "$MODEL" \
+  --nano-model "$NANO_MODEL" \
+  --escalation-model "$ESCALATION_MODEL" \
+  --synthesis-model "$SYNTHESIS_MODEL" \
   --concurrency "$CONCURRENCY" \
-  --candidate-batch-size 8
+  --candidate-batch-size 6
 
 log "run_complete"
 EOS
 chmod +x "$run_dir/run.sh"
 
 (
-  export ROOT_DIR CORPUS_ROOT RUN_DIR="$run_dir" USER_PROMPT MODEL CONCURRENCY RUN_LOG="$run_log" STATUS_FILE="$status_file"
+  export ROOT_DIR CORPUS_ROOT RUN_DIR="$run_dir" USER_PROMPT NANO_MODEL ESCALATION_MODEL SYNTHESIS_MODEL CONCURRENCY RUN_LOG="$run_log" STATUS_FILE="$status_file"
   cd "$ROOT_DIR"
   nohup "$run_dir/run.sh" >"$run_dir/stdout.log" 2>"$run_dir/stderr.log" &
   echo $! >"$pid_file"
