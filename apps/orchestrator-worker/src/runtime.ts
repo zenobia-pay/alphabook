@@ -108,6 +108,19 @@ function machineUpdatedAtMs(machine: FlyMachine): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function artifactMimeTypeForPath(path: string): string {
+  if (path.endsWith(".md")) {
+    return "text/markdown";
+  }
+  if (path.endsWith(".txt") || path.endsWith(".log")) {
+    return "text/plain";
+  }
+  if (path.endsWith(".json") || path.endsWith(".jsonl")) {
+    return "application/json";
+  }
+  return "application/octet-stream";
+}
+
 export function isStaleSpriteMachine(machine: FlyMachine, sessionId: string, nowMs = Date.now()): boolean {
   if (!isSpriteRuntimeMachine(machine) || isMachineForSession(machine, sessionId)) {
     return false;
@@ -261,6 +274,25 @@ function normalizeRuntimeProgressEvent(event: Record<string, unknown>) {
   }
   const type = typeof event.type === "string" ? event.type : "runtime.progress";
   return type.replace(/[._-]+/g, " ").trim() || "Runtime progress updated.";
+}
+
+function uniqueArtifactEntries(
+  artifacts: Array<Record<string, unknown>>,
+): Array<Record<string, unknown>> {
+  const seen = new Set<string>();
+  const deduped: Array<Record<string, unknown>> = [];
+  for (const artifact of artifacts) {
+    const r2Key = typeof artifact.r2Key === "string" ? artifact.r2Key : "";
+    const filename = typeof artifact.filename === "string" ? artifact.filename : "";
+    const path = typeof artifact.path === "string" ? artifact.path : "";
+    const key = `${r2Key}::${filename}::${path}`;
+    if (!key || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(artifact);
+  }
+  return deduped;
 }
 
 export class StubRuntimeGateway implements RuntimeToolGateway {
@@ -562,6 +594,8 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     if (status.status === "completed" && status.result && typeof status.result === "object") {
       const result = status.result as Record<string, unknown>;
       const uploadedArtifacts = await this.persistRuntimeArtifacts(instance, result);
+      const streamArtifacts = await this.persistRuntimeResultStreams(instance, result);
+      const workspaceArtifacts = await this.persistRuntimeArtifactsFromWorkspace(instance).catch(() => []);
       await this.store.updateRuntimeInstance(runtimeId, {
         status: "ready",
         lastUsedAt: nowIso(),
@@ -571,7 +605,11 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
         ...status,
         result: {
           ...result,
-          artifacts: uploadedArtifacts,
+          artifacts: uniqueArtifactEntries([
+            ...uploadedArtifacts,
+            ...streamArtifacts,
+            ...workspaceArtifacts,
+          ]),
         },
       };
     }
@@ -1329,6 +1367,78 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     return uploaded;
   }
 
+  private async persistTextArtifact(
+    instance: RuntimeInstanceRecord,
+    filename: string,
+    content: string,
+    mimeType: string,
+    metadata: Record<string, unknown>,
+  ) {
+    const existingArtifacts = await this.store.listArtifacts(instance.sessionId, instance.runtimeId);
+    const existing = existingArtifacts.find((artifact) => artifact.filename === filename) ?? null;
+    if (existing) {
+      return {
+        filename,
+        path: typeof existing.metadata.path === "string" ? existing.metadata.path : filename,
+        mimeType: existing.mimeType,
+        r2Key: existing.r2Key,
+      };
+    }
+
+    const r2Key = artifactKeys.runtimeArtifact(instance.runtimeId, filename);
+    await this.blobStore.putText(r2Key, content, mimeType);
+    await this.store.saveArtifact({
+      sessionId: instance.sessionId,
+      runtimeId: instance.runtimeId,
+      r2Key,
+      filename,
+      mimeType,
+      metadata,
+    });
+    return {
+      filename,
+      path: typeof metadata.path === "string" ? metadata.path : filename,
+      mimeType,
+      r2Key,
+    };
+  }
+
+  private async persistRuntimeResultStreams(instance: RuntimeInstanceRecord, result: Record<string, unknown>) {
+    const inlineArtifacts: Array<Promise<Record<string, unknown> | null>> = [];
+    const stdout = typeof result.stdout === "string" ? result.stdout : "";
+    const stderr = typeof result.stderr === "string" ? result.stderr : "";
+
+    if (stdout.trim()) {
+      inlineArtifacts.push(this.persistTextArtifact(
+        instance,
+        "runtime-stdout.log",
+        stdout,
+        "text/plain",
+        {
+          path: "output/runtime-stdout.log",
+          source: "runtime-result",
+          stream: "stdout",
+        },
+      ));
+    }
+    if (stderr.trim()) {
+      inlineArtifacts.push(this.persistTextArtifact(
+        instance,
+        "runtime-stderr.log",
+        stderr,
+        "text/plain",
+        {
+          path: "output/runtime-stderr.log",
+          source: "runtime-result",
+          stream: "stderr",
+        },
+      ));
+    }
+
+    const resolved = await Promise.all(inlineArtifacts);
+    return resolved.filter(Boolean) as Array<Record<string, unknown>>;
+  }
+
   private async persistRuntimeArtifactsFromWorkspace(instance: RuntimeInstanceRecord) {
     const machineId = instance.providerMachineId ?? instance.runtimeId;
     const listed = await this.callRuntime(machineId, "/files", { method: "GET" }).catch(() => null);
@@ -1342,11 +1452,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
       artifacts: files.map((path) => ({
         path,
         filename: path.split("/").at(-1) ?? path,
-        mimeType: path.endsWith(".md")
-          ? "text/markdown"
-          : path.endsWith(".json") || path.endsWith(".jsonl")
-            ? "application/json"
-            : "application/octet-stream",
+        mimeType: artifactMimeTypeForPath(path),
       })),
     });
   }
@@ -1490,6 +1596,8 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     }
 
     const uploadedArtifacts = await this.persistRuntimeArtifacts(instance, result);
+    const streamArtifacts = await this.persistRuntimeResultStreams(instance, result);
+    const workspaceArtifacts = await this.persistRuntimeArtifactsFromWorkspace(instance).catch(() => []);
     await this.store.updateRuntimeInstance(instance.runtimeId, {
       status: "ready",
       lastUsedAt: nowIso(),
@@ -1498,7 +1606,11 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
 
     return {
       ...result,
-      artifacts: uploadedArtifacts,
+      artifacts: uniqueArtifactEntries([
+        ...uploadedArtifacts,
+        ...streamArtifacts,
+        ...workspaceArtifacts,
+      ]),
     };
   }
 

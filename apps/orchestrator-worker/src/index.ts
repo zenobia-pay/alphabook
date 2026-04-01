@@ -773,6 +773,10 @@ type ComprehensiveJobLogEntry = {
   data: Record<string, unknown>;
 };
 
+type ComprehensiveLogCursor = {
+  sources: Record<string, number>;
+};
+
 function summarizeComprehensiveJobEvent(event: string, data: Record<string, unknown>) {
   switch (event) {
     case "session.created":
@@ -796,6 +800,45 @@ function summarizeComprehensiveJobEvent(event: string, data: Record<string, unkn
     default:
       return JSON.stringify(data);
   }
+}
+
+function isInterestingRuntimeLogPath(path: string) {
+  if (!path.startsWith("output/")) {
+    return false;
+  }
+  return /\.(?:md|txt|json|jsonl|log)$/iu.test(path);
+}
+
+function isInterestingArtifactLogPath(path: string, filename: string) {
+  if (path && isInterestingRuntimeLogPath(path)) {
+    return true;
+  }
+  return /(?:stdout|stderr|progress|usage|stream|briefing|evidence|summary|\.log(?:\.txt)?|\.jsonl)$/iu.test(filename);
+}
+
+function splitLogLines(content: string) {
+  return content
+    .split(/\r?\n/u)
+    .map((line) => line.trimEnd())
+    .filter((line) => line.length > 0);
+}
+
+function decodeLogCursor(raw: string | null): ComprehensiveLogCursor {
+  if (!raw) {
+    return { sources: {} };
+  }
+  try {
+    const decoded = JSON.parse(Buffer.from(raw, "base64url").toString("utf8")) as ComprehensiveLogCursor;
+    return decoded && decoded.sources && typeof decoded.sources === "object"
+      ? { sources: Object.fromEntries(Object.entries(decoded.sources).map(([key, value]) => [key, Number(value) || 0])) }
+      : { sources: {} };
+  } catch {
+    return { sources: {} };
+  }
+}
+
+function encodeLogCursor(cursor: ComprehensiveLogCursor) {
+  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
 }
 
 function isTextArtifact(filename: string, mimeType: string) {
@@ -1195,7 +1238,135 @@ export class ComprehensiveJobDurableObject {
         updatedAt: artifact.createdAt,
         mimeType: artifact.mimeType,
         byteSize: artifact.byteSize ?? null,
+        runtimeId: artifact.runtimeId ?? null,
+        path: typeof artifact.metadata.path === "string" ? artifact.metadata.path : artifact.filename,
       }));
+  }
+
+  private async collectRuntimeLogSources(job: ComprehensiveJobRecord, deps: AppDeps) {
+    if (!job.sessionId || !job.runId) {
+      return [] as Array<{ name: string; lines: string[] }>;
+    }
+    const [artifacts, runEvents, runtimeInstances] = await Promise.all([
+      deps.store.listArtifacts(job.sessionId),
+      deps.store.listRunEvents(job.runId),
+      deps.store.listRuntimeInstances(job.sessionId),
+    ]);
+    const runtimeIds = new Set<string>([
+      ...job.knownRuntimeIds,
+      ...Array.from(collectRuntimeIdsFromRunEvents(runEvents)),
+    ]);
+    const relatedRuntimeIds = new Set(
+      runtimeInstances
+        .filter((instance) => runtimeIds.has(instance.runtimeId))
+        .map((instance) => instance.runtimeId),
+    );
+    for (const runtimeId of runtimeIds) {
+      relatedRuntimeIds.add(runtimeId);
+    }
+
+    const persistedSources = await Promise.all(
+      artifacts
+        .filter((artifact) =>
+          artifactBelongsToRun(artifact, job.runId!, runtimeIds)
+          && isInterestingArtifactLogPath(
+            typeof artifact.metadata.path === "string" ? artifact.metadata.path : "",
+            artifact.filename,
+          )
+          && isTextArtifact(artifact.filename, artifact.mimeType),
+        )
+        .map(async (artifact) => {
+          const content = await deps.blobStore.getText(artifact.r2Key).catch(() => null);
+          if (!content) {
+            return null;
+          }
+          const path = typeof artifact.metadata.path === "string" ? artifact.metadata.path : artifact.filename;
+          return {
+            name: `${artifact.runtimeId ?? "session"}:${path}`,
+            lines: splitLogLines(content),
+          };
+        }),
+    );
+
+    const liveSources = !deps.runtimeGateway.listWorkspaceFiles
+      ? []
+      : await Promise.all(
+          Array.from(relatedRuntimeIds).map(async (runtimeId) => {
+            try {
+              const listing = await deps.runtimeGateway.listWorkspaceFiles!({
+                runtimeId,
+                sessionId: job.sessionId!,
+                runId: job.runId!,
+              });
+              const files = Array.isArray(listing.files)
+                ? listing.files.filter((value): value is string => typeof value === "string" && isInterestingRuntimeLogPath(value))
+                : [];
+              const fileSources = await Promise.all(
+                files.map(async (path) => {
+                  try {
+                    const file = await deps.runtimeGateway.readWorkspaceFile({
+                      runtimeId,
+                      path,
+                      sessionId: job.sessionId!,
+                      runId: job.runId!,
+                    });
+                    const content = typeof file.content === "string" ? file.content : "";
+                    if (!content.trim()) {
+                      return null;
+                    }
+                    return {
+                      name: `${runtimeId}:${path}`,
+                      lines: splitLogLines(content),
+                    };
+                  } catch {
+                    return null;
+                  }
+                }),
+              );
+              return fileSources.filter(Boolean) as Array<{ name: string; lines: string[] }>;
+            } catch {
+              return [];
+            }
+          }),
+        ).then((groups) => groups.flat());
+
+    const merged = new Map<string, { name: string; lines: string[] }>();
+    for (const source of [...persistedSources.filter(Boolean) as Array<{ name: string; lines: string[] }>, ...liveSources]) {
+      const existing = merged.get(source.name);
+      if (!existing || source.lines.length >= existing.lines.length) {
+        merged.set(source.name, source);
+      }
+    }
+    return [...merged.values()].sort((left, right) => left.name.localeCompare(right.name));
+  }
+
+  private async readLogSources(job: ComprehensiveJobRecord, limit: number, cursorRaw: string | null) {
+    const cursor = decodeLogCursor(cursorRaw);
+    const deps = buildAppDeps(this.env);
+    const eventLogs = await this.getLogs();
+    const structuredSource = {
+      name: "events",
+      lines: eventLogs.map((entry) => entry.line),
+    };
+    const runtimeSources = await this.collectRuntimeLogSources(job, deps);
+    const allSources = [structuredSource, ...runtimeSources];
+    const nextCursor: ComprehensiveLogCursor = {
+      sources: { ...cursor.sources },
+    };
+    const responseSources = allSources.map((source) => {
+      const offset = Math.max(0, cursor.sources[source.name] ?? 0);
+      const lines = source.lines.slice(offset, offset + limit);
+      nextCursor.sources[source.name] = offset + lines.length;
+      return {
+        name: source.name,
+        lines,
+      };
+    }).filter((source) => source.lines.length > 0);
+    return {
+      jobId: job.id,
+      sources: responseSources,
+      nextCursor: encodeLogCursor(nextCursor),
+    };
   }
 
   async fetch(request: Request) {
@@ -1253,18 +1424,8 @@ export class ComprehensiveJobDurableObject {
       if (!job) {
         return Response.json({ error: "Job not found." }, { status: 404 });
       }
-      const logs = await this.getLogs();
-      const cursor = Math.max(0, Number.parseInt(url.searchParams.get("cursor") ?? "0", 10) || 0);
       const limit = Math.min(500, Math.max(1, Number.parseInt(url.searchParams.get("limit") ?? "200", 10) || 200));
-      const nextSlice = logs.slice(cursor, cursor + limit);
-      return Response.json({
-        jobId: job.id,
-        sources: [{
-          name: "events",
-          lines: nextSlice.map((entry) => entry.line),
-        }],
-        nextCursor: String(cursor + nextSlice.length),
-      });
+      return Response.json(await this.readLogSources(job, limit, url.searchParams.get("cursor")));
     }
     if (request.method === "GET" && url.pathname === "/artifacts") {
       const job = await this.reconcileJobState("request");
