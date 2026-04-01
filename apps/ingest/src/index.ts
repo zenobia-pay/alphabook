@@ -152,7 +152,6 @@ interface BookHtmlPersistResult {
 interface LocalPreparedBookManifest {
   gutenbergId: string;
   title: string;
-  outputDir: string;
   chunkCount: number;
   chunkIds: string[];
   r2Keys: {
@@ -164,7 +163,6 @@ interface LocalPreparedBookManifest {
     bookManifest: string | null;
     pages: string[];
     coverImage: string | null;
-    chunkObjects: string[];
   };
   d1Records: {
     work: Record<string, unknown>;
@@ -2709,29 +2707,6 @@ async function prepareMirrorArtifactsLocally(
     writeLocalArtifact(outputDir, join("r2", prepared.metadataKey), JSON.stringify(metadataPayload, null, 2)),
     writeLocalArtifact(outputDir, join("r2", prepared.cleanKey), prepared.cleanText),
     writeLocalArtifact(outputDir, join("r2", prepared.chunksKey), chunksPayload),
-    ...chunkArtifacts.flatMap((chunk) => ([
-      writeLocalArtifact(
-        outputDir,
-        join("r2", chunk.r2Key),
-        JSON.stringify({
-          id: chunk.id,
-          work_id: workId,
-          work_title: chunk.workTitle,
-          authors: chunk.authors,
-          chunk_index: chunk.chunkIndex,
-          text: chunk.text,
-          excerpt: chunk.excerpt,
-          r2_key: chunk.r2Key,
-          reader_path: chunk.readerPath,
-          metadata: chunk.metadata,
-        }, null, 2),
-      ),
-      writeLocalArtifact(
-        outputDir,
-        join("books", gutenbergId, "chunk-text", `${String(chunk.chunkIndex).padStart(6, "0")}.txt`),
-        chunk.text,
-      ),
-    ])),
     ...(renderedArtifacts && renderedDocumentKey
       ? [writeLocalArtifact(outputDir, join("r2", renderedDocumentKey), renderedArtifacts.landingHtml)]
       : []),
@@ -2754,7 +2729,6 @@ async function prepareMirrorArtifactsLocally(
   const bookManifest: LocalPreparedBookManifest = {
     gutenbergId,
     title,
-    outputDir: join(outputDir, "books", gutenbergId),
     chunkCount: prepared.chunks.length,
     chunkIds: chunkArtifacts.map((chunk) => chunk.id),
     r2Keys: {
@@ -2768,7 +2742,6 @@ async function prepareMirrorArtifactsLocally(
         ? renderedArtifacts.pageFiles.map((page) => gutenbergCorpusAdapter.artifactKeys.renderedPage?.(gutenbergId, page.pageNumber) ?? "")
         : [],
       coverImage: coverImageKey,
-      chunkObjects: chunkArtifacts.map((chunk) => chunk.r2Key),
     },
     d1Records: {
       work: {
@@ -2798,22 +2771,6 @@ async function prepareMirrorArtifactsLocally(
       outputDir,
       join("books", gutenbergId, "manifest.json"),
       JSON.stringify(bookManifest, null, 2),
-    ),
-    writeLocalArtifact(
-      outputDir,
-      join("books", gutenbergId, "metadata.json"),
-      JSON.stringify(metadataPayload, null, 2),
-    ),
-    writeLocalArtifact(
-      outputDir,
-      join("books", gutenbergId, "chunk-index.json"),
-      JSON.stringify(chunkArtifacts.map((chunk) => ({
-        id: chunk.id,
-        chunkIndex: chunk.chunkIndex,
-        excerpt: chunk.excerpt,
-        readerPath: chunk.readerPath,
-        r2Key: chunk.r2Key,
-      })), null, 2),
     ),
   ]);
 
