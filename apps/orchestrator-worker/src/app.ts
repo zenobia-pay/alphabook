@@ -1145,9 +1145,12 @@ function searchPlanFromEstimate(
 }
 
 function requestedAssistantMode(input: {
-  mode?: "semantic" | "comprehensive";
+  mode?: "semantic" | "comprehensive" | "hermes";
   researchMode?: "default" | "sprite_fanout";
-}): "semantic" | "comprehensive" {
+}): "semantic" | "comprehensive" | "hermes" {
+  if (input.mode === "hermes") {
+    return "hermes";
+  }
   if (input.mode === "comprehensive" || input.researchMode === "sprite_fanout") {
     return "comprehensive";
   }
@@ -1155,7 +1158,7 @@ function requestedAssistantMode(input: {
 }
 
 function requestedIntensityOverride(input: {
-  mode?: "semantic" | "comprehensive";
+  mode?: "semantic" | "comprehensive" | "hermes";
   intensityOverride?: "normal" | "high" | "maximum";
   researchMode?: "default" | "sprite_fanout";
 }): "normal" | "high" | "maximum" | undefined {
@@ -8011,8 +8014,16 @@ type HermesSessionSnapshot = {
   last_updated?: string;
 };
 
-function shouldUseHermesBackend(deps: AppDeps) {
-  return typeof deps.hermesJobApiUrl === "string" && deps.hermesJobApiUrl.trim().length > 0;
+function shouldUseHermesBackend(
+  deps: AppDeps,
+  input: {
+    mode?: "semantic" | "comprehensive" | "hermes";
+    researchMode?: "default" | "sprite_fanout";
+  },
+) {
+  return requestedAssistantMode(input) === "hermes"
+    && typeof deps.hermesJobApiUrl === "string"
+    && deps.hermesJobApiUrl.trim().length > 0;
 }
 
 function normalizeHermesArtifactName(input: string) {
@@ -10665,9 +10676,11 @@ async function runOrchestrator(
         turn,
       });
 
+      const assistantMode = requestedAssistantMode(input);
+      const plannerMode: "semantic" | "comprehensive" = assistantMode === "hermes" ? "semantic" : assistantMode;
       const plannerContext: PlannerContext = {
         userMessage: routedQuery,
-        mode: requestedAssistantMode(input),
+        mode: plannerMode,
         conversationHistory,
         turns: turn,
         toolHistory,
@@ -12165,7 +12178,10 @@ export function createApp(inputDeps: CreateAppInput) {
         } catch {
           executionCtx = null;
         }
-        const runner = shouldUseHermesBackend(deps) ? runHermesConversation : runOrchestrator;
+        if (requestedAssistantMode(requestPayload) === "hermes" && !deps.hermesJobApiUrl) {
+          throw new Error("Hermes mode is not configured for this environment.");
+        }
+        const runner = shouldUseHermesBackend(deps, requestPayload) ? runHermesConversation : runOrchestrator;
         const runPromise = runner(
           deps,
           c.req.raw,

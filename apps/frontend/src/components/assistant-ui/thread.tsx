@@ -48,7 +48,7 @@ import { resolveFrontendImplementation } from "@/implementation";
 
 const AUTO_FOLLOW_THRESHOLD_PX = 96;
 
-type AssistantEffortLevel = "semantic" | "comprehensive";
+type AssistantEffortLevel = "semantic" | "comprehensive" | "hermes";
 
 const IMPLEMENTATION = resolveFrontendImplementation();
 const SITE_ORIGIN = IMPLEMENTATION.siteOrigin;
@@ -151,7 +151,11 @@ const EFFORT_OPTIONS = [
   },
   {
     value: "comprehensive",
-    label: "Slow",
+    label: "Comprehensive",
+  },
+  {
+    value: "hermes",
+    label: "Hermes",
   },
 ] satisfies Array<{
   value: AssistantEffortLevel;
@@ -615,7 +619,7 @@ const ComposerAction: FC<{
             aria-label="Effort options"
           >
             <div className="px-2.5 pb-1.5 pt-1 text-[0.8rem] font-medium text-muted-foreground">
-              Select reasoning
+              Select mode
             </div>
             {EFFORT_OPTIONS.map((option) => {
               const isSelected = option.value === effortLevel;

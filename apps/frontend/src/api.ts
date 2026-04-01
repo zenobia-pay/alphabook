@@ -538,7 +538,7 @@ export async function streamChat(
     sessionId?: string;
     message: string;
     workIds?: string[];
-    mode?: "semantic" | "comprehensive";
+    mode?: "semantic" | "comprehensive" | "hermes";
     intensityOverride?: "normal" | "high" | "maximum";
     researchMode?: "default" | "sprite_fanout";
     semanticBackend?: "alphaloop" | "context1";

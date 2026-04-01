@@ -179,7 +179,7 @@ type ThreadSuggestion = {
   prompt: string;
 };
 
-type AssistantEffortLevel = "semantic" | "comprehensive";
+type AssistantEffortLevel = "semantic" | "comprehensive" | "hermes";
 
 type ReaderPassageKind = "heading" | "paragraph" | "quote" | "list-item" | "preformatted";
 
@@ -203,15 +203,20 @@ const BOOK_ASSISTANT_WIDTH_STORAGE_KEY = "alphabook.bookAssistantWidth";
 const ASSISTANT_EFFORT_STORAGE_KEY = "alphabook.assistantEffort";
 
 function normalizeAssistantEffort(value: string | null): AssistantEffortLevel {
-  return value === "semantic" || value === "comprehensive" ? value : "semantic";
+  return value === "semantic" || value === "comprehensive" || value === "hermes" ? value : "semantic";
 }
 
 function resolveResearchMode(
   effort: AssistantEffortLevel,
-): { mode: "semantic" | "comprehensive" } {
+): { mode: "semantic" | "comprehensive" | "hermes" } {
   if (effort === "comprehensive") {
     return {
       mode: "comprehensive",
+    };
+  }
+  if (effort === "hermes") {
+    return {
+      mode: "hermes",
     };
   }
 

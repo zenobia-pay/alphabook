@@ -30,7 +30,7 @@ type ThreadSuggestion = {
   prompt: string;
 };
 
-type AssistantEffortLevel = "semantic" | "comprehensive";
+type AssistantEffortLevel = "semantic" | "comprehensive" | "hermes";
 
 export type AssistantSurfaceProps = {
   messages: UiMessage[];
