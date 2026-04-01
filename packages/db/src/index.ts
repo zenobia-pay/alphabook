@@ -63,12 +63,23 @@ function sqliteLiteral(value: unknown): string {
 }
 
 function interpolateSql(sql: string, params: unknown[] = []) {
-  let rendered = sql;
-  for (let index = params.length; index >= 1; index -= 1) {
-    const pattern = new RegExp(`\\$${index}(?!\\d)`, "gu");
-    rendered = rendered.replace(pattern, sqliteLiteral(params[index - 1]));
+  if (/\$\d+/u.test(sql)) {
+    let rendered = sql;
+    for (let index = params.length; index >= 1; index -= 1) {
+      const pattern = new RegExp(`\\$${index}(?!\\d)`, "gu");
+      rendered = rendered.replace(pattern, sqliteLiteral(params[index - 1]));
+    }
+    return rendered;
   }
-  return rendered;
+  if (sql.includes("?")) {
+    let paramIndex = 0;
+    return sql.replace(/\?/gu, () => {
+      const value = paramIndex < params.length ? params[paramIndex] : null;
+      paramIndex += 1;
+      return sqliteLiteral(value);
+    });
+  }
+  return sql;
 }
 
 async function runWranglerJson<T>(

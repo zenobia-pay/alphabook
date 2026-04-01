@@ -118,7 +118,7 @@ type SpriteRunHost = {
 
 const PROGRESS_REPORT_TIMEOUT_MS = 1_500;
 const SPRITE_RUN_EVENT_TIMEOUT_MS = 1_500;
-const MAX_SPRITE_SHARD_SIZE = 1000;
+export const MAX_SPRITE_SHARD_SIZE = 1000;
 const MIN_SPRITE_SHARD_SIZE = 25;
 const TARGET_SPRITE_SHARD_COUNT = 12;
 const MAX_SPRITE_WORKSPACE_BYTES = 2 * 1024 * 1024 * 1024;
@@ -315,7 +315,7 @@ function totalBooksInCatalog(catalog: SpriteShardCatalog): number {
   return catalog.shards.reduce((sum, shard) => sum + shard.bookCount, 0);
 }
 
-function spriteShardSizeForDocumentCount(totalDocuments: number): number {
+export function spriteShardSizeForDocumentCount(totalDocuments: number): number {
   if (totalDocuments <= 0) {
     return MAX_SPRITE_SHARD_SIZE;
   }
@@ -355,17 +355,18 @@ function groupDocumentFiles(documentIds: string[], files: DocumentFileRecord[], 
   });
 }
 
-async function loadSpriteShardCatalog(store: AppStore, blobStore: BlobStore, implementationId: string): Promise<SpriteShardCatalog> {
+export async function buildSpriteShardCatalog(
+  store: AppStore,
+  blobStore: BlobStore,
+  implementationId: string,
+  options: {
+    shardSize?: number;
+    persist?: boolean;
+    catalogKey?: string;
+  } = {},
+): Promise<SpriteShardCatalog> {
   const totalDocuments = await store.countDocuments();
-  const shardSize = spriteShardSizeForDocumentCount(totalDocuments);
-  const prebuilt = await blobStore.getText(spriteShardCatalogKey(implementationId));
-  if (prebuilt) {
-    const parsed = JSON.parse(prebuilt) as SpriteShardCatalog;
-    if (isSpriteShardCatalogUsable(parsed, totalDocuments)) {
-      return parsed;
-    }
-  }
-
+  const shardSize = options.shardSize ?? spriteShardSizeForDocumentCount(totalDocuments);
   const documents: Array<{ id: string }> = [];
   for (let offset = 0; offset < totalDocuments; offset += shardSize) {
     const batch = await store.listDocuments(offset, shardSize);
@@ -395,8 +396,23 @@ async function loadSpriteShardCatalog(store: AppStore, blobStore: BlobStore, imp
       totalShards: shards.length,
     })),
   };
-  await blobStore.putJson(spriteShardCatalogKey(implementationId), catalog);
+  if (options.persist !== false) {
+    await blobStore.putJson(options.catalogKey ?? spriteShardCatalogKey(implementationId), catalog);
+  }
   return catalog;
+}
+
+async function loadSpriteShardCatalog(store: AppStore, blobStore: BlobStore, implementationId: string): Promise<SpriteShardCatalog> {
+  const totalDocuments = await store.countDocuments();
+  const shardSize = spriteShardSizeForDocumentCount(totalDocuments);
+  const prebuilt = await blobStore.getText(spriteShardCatalogKey(implementationId));
+  if (prebuilt) {
+    const parsed = JSON.parse(prebuilt) as SpriteShardCatalog;
+    if (isSpriteShardCatalogUsable(parsed, totalDocuments)) {
+      return parsed;
+    }
+  }
+  return buildSpriteShardCatalog(store, blobStore, implementationId, { shardSize });
 }
 
 export function estimateSpritePrepareTimeoutMs(shard: Pick<SpriteShardManifest, "bookCount" | "totalTextBytes">): number {
@@ -405,7 +421,7 @@ export function estimateSpritePrepareTimeoutMs(shard: Pick<SpriteShardManifest, 
   return Math.max(90_000, Math.min(10 * 60_000, 45_000 + byBookCountMs + byBytesMs));
 }
 
-async function buildSpriteWorkspacePlan(
+export async function buildSpriteWorkspacePlan(
   store: AppStore,
   blobStore: BlobStore,
   sessionId: string,

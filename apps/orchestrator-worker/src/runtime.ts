@@ -1,7 +1,12 @@
 import { artifactKeys, HARD_LIMITS, withLegacyWorkAliases, type CorpusWorkspaceDocument } from "@alphabook/corpus-core";
 import { defaultCorpusAdapter, ToolArgsSchemas, type WorkSummary } from "@alphabook/shared";
 import { createPlatformRepository } from "./platform-repository";
-import { SpriteFanoutCoordinator } from "./sprite-fanout";
+import {
+  SpriteFanoutCoordinator,
+  buildSpriteWorkspacePlan,
+  estimateSpritePrepareTimeoutMs,
+  type SpriteShardManifest,
+} from "./sprite-fanout";
 export { estimateSpritePrepareTimeoutMs } from "./sprite-fanout";
 
 import type { RuntimeToolGateway } from "./app";
@@ -45,6 +50,13 @@ interface FlyMachineGuestConfig {
   cpus: number;
   memory_mb: number;
 }
+
+type ProvisionSpriteShardArgs = {
+  sessionId: string;
+  implementationId: string;
+  shard: SpriteShardManifest;
+  expiresMinutes?: number;
+};
 
 const DEFAULT_RUNTIME_AGENT_MODEL = "gpt-5.2-codex";
 const RUNTIME_STATUS_POLL_TIMEOUT_MS = 5_000;
@@ -679,6 +691,129 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
       spriteGuestConfig: (kind) => spriteGuestConfig(kind, this.config),
     });
     return coordinator.run(args);
+  }
+
+  async provisionSpriteShard(args: ProvisionSpriteShardArgs) {
+    const expiresMinutes = Number.isFinite(args.expiresMinutes) && (args.expiresMinutes ?? 0) > 0
+      ? Math.floor(args.expiresMinutes!)
+      : HARD_LIMITS.MAX_RUNTIME_IDLE_MINUTES;
+    const { shard } = args;
+    let machineId: string | null = null;
+    let runtimeId: string | null = null;
+
+    try {
+      const machine = await this.createMachineWithMetadata(args.sessionId, {
+        namePrefix: "alphabook-sprite",
+        metadata: {
+          "alphabook.runtime_mode": "sprite-shard",
+          "alphabook.shard_id": shard.shardId,
+          "alphabook.implementation_id": args.implementationId,
+        },
+        guest: spriteGuestConfig("shard", this.config),
+      });
+      machineId = machine.id;
+      runtimeId = machine.id;
+
+      const workspacePlan = await buildSpriteWorkspacePlan(
+        this.store,
+        this.blobStore,
+        args.sessionId,
+        runtimeId,
+        shard.workIds,
+        {
+          researchMode: "sprite_fanout",
+          spriteShard: {
+            implementationId: args.implementationId,
+            shardId: shard.shardId,
+            index: shard.index,
+            totalShards: shard.totalShards,
+            bookCount: shard.bookCount,
+            totalTextBytes: shard.totalTextBytes,
+            lifecycleState: "hydrating",
+            lastLifecycleAt: nowIso(),
+          },
+        },
+      );
+
+      await this.store.saveRuntimeInstance({
+        sessionId: args.sessionId,
+        runtimeId,
+        provider: "fly-sprites",
+        providerMachineId: machine.id,
+        status: "creating",
+        manifestJson: workspacePlan.manifest,
+        lastUsedAt: nowIso(),
+        expiresAt: addMinutesIso(expiresMinutes),
+      });
+
+      await this.waitForMachine(machine.id, "started");
+      await this.waitForRuntimeHttpReady(machine.id);
+      await this.prepareWorkspace(machine.id, {
+        runtimeId,
+        sessionId: args.sessionId,
+        works: workspacePlan.manifest.works,
+        dataSchema: workspacePlan.manifest.dataSchema,
+        fileCatalog: workspacePlan.manifest.fileCatalog,
+        selectedChunkIds: [],
+        selectedChunks: [],
+        taskContext: workspacePlan.manifest.taskContext,
+        downloads: workspacePlan.downloads,
+      }, {
+        timeoutMs: estimateSpritePrepareTimeoutMs(shard),
+      });
+
+      const readyManifest = {
+        ...workspacePlan.manifest,
+        taskContext: {
+          ...(workspacePlan.manifest.taskContext && typeof workspacePlan.manifest.taskContext === "object"
+            ? workspacePlan.manifest.taskContext
+            : {}),
+          researchMode: "sprite_fanout",
+          spriteShard: {
+            implementationId: args.implementationId,
+            shardId: shard.shardId,
+            index: shard.index,
+            totalShards: shard.totalShards,
+            bookCount: shard.bookCount,
+            totalTextBytes: shard.totalTextBytes,
+            lifecycleState: "ready",
+            lastLifecycleAt: nowIso(),
+          },
+        },
+      };
+
+      await this.store.updateRuntimeInstance(runtimeId, {
+        status: "ready",
+        manifestJson: readyManifest,
+        lastUsedAt: nowIso(),
+        expiresAt: addMinutesIso(expiresMinutes),
+        providerMachineId: machine.id,
+      });
+
+      return {
+        ok: true,
+        sessionId: args.sessionId,
+        runtimeId,
+        machineId: machine.id,
+        shardId: shard.shardId,
+        shardIndex: shard.index,
+        totalShards: shard.totalShards,
+        bookCount: shard.bookCount,
+      };
+    } catch (error) {
+      if (runtimeId) {
+        await this.store.updateRuntimeInstance(runtimeId, {
+          status: "failed",
+          lastUsedAt: nowIso(),
+          expiresAt: nowIso(),
+          ...(machineId ? { providerMachineId: machineId } : {}),
+        }).catch(() => {});
+      }
+      if (machineId) {
+        await this.deleteMachine(machineId).catch(() => {});
+      }
+      throw error;
+    }
   }
 
   private requireSessionId(args: RuntimeToolArgs): string {

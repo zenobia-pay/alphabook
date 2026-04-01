@@ -25,6 +25,7 @@
     "research:search-plan": "node --import tsx packages/tooling/scripts/build-corpus-research-search-plan.ts",
     "research:corpus-triage": "node --import tsx packages/tooling/scripts/run-corpus-research-triage.ts",
     "sprite:build-shards": "node --import tsx packages/tooling/scripts/build-sprite-shards.ts",
+    "sprite:provision-comprehensive": "node --import tsx packages/tooling/scripts/provision-comprehensive-sprites.ts",
     "sprite:cleanup": "node --import tsx packages/tooling/scripts/cleanup-sprite-machines.ts",
     "debug:session": "node --import tsx packages/tooling/scripts/fetch-session-debug.ts",
     "runtime:sync-image": "node --import tsx packages/tooling/scripts/sync-runtime-image-pin.ts",
