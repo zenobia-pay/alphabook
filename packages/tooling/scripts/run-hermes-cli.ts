@@ -59,7 +59,15 @@ type ArtifactResponse = {
   artifact: {
     name: string;
     content: string;
+    updatedAt: string | null;
   };
+};
+
+type ArtifactSummaryResponse = {
+  artifacts: Array<{
+    name: string;
+    updatedAt: string | null;
+  }>;
 };
 
 function usage(): never {
@@ -378,17 +386,50 @@ async function fetchBriefing(apiUrl: string, apiToken: string, jobId: string): P
   }
 }
 
-async function fetchArtifacts(apiUrl: string, apiToken: string, jobId: string): Promise<string[]> {
+async function fetchArtifacts(apiUrl: string, apiToken: string, jobId: string): Promise<ArtifactSummaryResponse["artifacts"]> {
   try {
-    const response = await apiFetch<{ artifacts: Array<{ name: string }> }>(
+    const response = await apiFetch<ArtifactSummaryResponse>(
       apiUrl,
       apiToken,
       `/v1/jobs/${encodeURIComponent(jobId)}/artifacts`,
     );
-    return response.artifacts.map((artifact) => artifact.name);
+    return response.artifacts;
   } catch {
     return [];
   }
+}
+
+function isArtifactFreshForRun(updatedAt: string | null, job: JobSummary): boolean {
+  if (!updatedAt) {
+    return false;
+  }
+  const artifactTime = Date.parse(updatedAt);
+  const runStart = Date.parse(job.launchedAt || job.startedAt || "");
+  if (!Number.isFinite(artifactTime) || !Number.isFinite(runStart)) {
+    return true;
+  }
+  return artifactTime >= runStart - 60_000;
+}
+
+async function waitForBriefingReady(
+  apiUrl: string,
+  apiToken: string,
+  finishedJob: JobSummary,
+): Promise<string | null> {
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    const freshJob = await fetchJob(apiUrl, apiToken, finishedJob.id);
+    const artifacts = await fetchArtifacts(apiUrl, apiToken, finishedJob.id);
+    const briefingArtifact = artifacts.find((artifact) => artifact.name === "briefing.md");
+    if (briefingArtifact && isArtifactFreshForRun(briefingArtifact.updatedAt, freshJob)) {
+      const briefing = await fetchBriefing(apiUrl, apiToken, finishedJob.id);
+      if (briefing) {
+        return briefing;
+      }
+    }
+    await sleep(1500);
+  }
+  return null;
 }
 
 async function cancelJob(apiUrl: string, apiToken: string, jobId: string) {
@@ -455,7 +496,7 @@ async function main() {
     process.stdout.write(`detail=${finishedJob.detail}\n`);
   }
 
-  const briefing = await fetchBriefing(config.apiUrl, config.apiToken, finishedJob.id);
+  const briefing = await waitForBriefingReady(config.apiUrl, config.apiToken, finishedJob);
   if (briefing) {
     printHeader("Briefing");
     process.stdout.write(`${briefing.trim()}\n`);
@@ -466,7 +507,7 @@ async function main() {
   throw new Error(
     [
       `Hermes job ${finishedJob.id} finished without briefing.md.`,
-      artifacts.length > 0 ? `Available artifacts: ${artifacts.join(", ")}` : "No artifacts were available.",
+      artifacts.length > 0 ? `Available artifacts: ${artifacts.map((artifact) => artifact.name).join(", ")}` : "No artifacts were available.",
     ].join(" "),
   );
 }
