@@ -3,6 +3,8 @@ set -euo pipefail
 
 ROOT_DIR="${ROOT_DIR:-/srv/alphabook/repo}"
 RUN_ROOT="${RUN_ROOT:-/srv/alphabook/logs/hermes-corpus-research}"
+HERMES_CONFIG_SOURCE="${HERMES_CONFIG_SOURCE:-/root/.hermes/config.yaml}"
+HERMES_ENV_SOURCE="${HERMES_ENV_SOURCE:-/root/.hermes/.env}"
 ENV_FILE="${ENV_FILE:-$ROOT_DIR/.dev.vars}"
 FALLBACK_ENV_FILE="${FALLBACK_ENV_FILE:-/srv/alphabook/.ingest.env}"
 CORPUS_ROOT="${CORPUS_ROOT:-/srv/alphabook/gutenberg}"
@@ -101,6 +103,9 @@ PY
 )"
 run_dir="$RUN_ROOT/$timestamp-$run_id"
 mkdir -p "$run_dir"
+job_id="$(basename "$run_dir")"
+hermes_home="$run_dir/hermes-home"
+mkdir -p "$hermes_home/.hermes/sessions"
 
 prompt_file="$run_dir/prompt.txt"
 launcher_log="$run_dir/launcher.log"
@@ -112,6 +117,43 @@ watcher_pid_file="$run_dir/heartbeat.pid"
 profiler_pid_file="$run_dir/profiler.pid"
 status_file="$run_dir/status.json"
 summary_file="$run_dir/summary.json"
+index_file="$run_dir/index.json"
+
+if [[ -f "$HERMES_CONFIG_SOURCE" ]]; then
+  cp "$HERMES_CONFIG_SOURCE" "$hermes_home/.hermes/config.yaml"
+else
+  cat >"$hermes_home/.hermes/config.yaml" <<EOF
+model:
+  default: "$MODEL"
+  provider: "custom"
+  base_url: "http://127.0.0.1:8790/runs/$job_id/v1"
+EOF
+fi
+
+if [[ -f "$HERMES_ENV_SOURCE" ]]; then
+  cp "$HERMES_ENV_SOURCE" "$hermes_home/.hermes/.env"
+fi
+
+python3 - "$hermes_home/.hermes/config.yaml" "$MODEL" "$job_id" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+model = sys.argv[2]
+job_id = sys.argv[3]
+
+if re.search(r'^\s*default:\s*".*"$', text, flags=re.MULTILINE):
+    text = re.sub(r'^\s*default:\s*".*"$', f'  default: "{model}"', text, count=1, flags=re.MULTILINE)
+if re.search(r'^\s*provider:\s*".*"$', text, flags=re.MULTILINE):
+    text = re.sub(r'^\s*provider:\s*".*"$', '  provider: "custom"', text, count=1, flags=re.MULTILINE)
+if re.search(r'^\s*base_url:\s*".*"$', text, flags=re.MULTILINE):
+    text = re.sub(r'^\s*base_url:\s*".*"$', f'  base_url: "http://127.0.0.1:8790/runs/{job_id}/v1"', text, count=1, flags=re.MULTILINE)
+else:
+    text += f'\n  base_url: "http://127.0.0.1:8790/runs/{job_id}/v1"\n'
+path.write_text(text)
+PY
 
 python3 - "$prompt_file" "$CORPUS_ROOT" "$USER_PROMPT" <<'PY'
 from pathlib import Path
@@ -273,7 +315,7 @@ At the end:
 prompt_path.write_text(prompt)
 PY
 
-python3 - "$status_file" "$summary_file" "$timestamp" "$run_id" "$ROOT_DIR" "$CORPUS_ROOT" "$MODEL" "$MAX_TURNS" "$USER_PROMPT" <<'PY'
+python3 - "$status_file" "$summary_file" "$timestamp" "$run_id" "$job_id" "$ROOT_DIR" "$CORPUS_ROOT" "$MODEL" "$MAX_TURNS" "$USER_PROMPT" <<'PY'
 from pathlib import Path
 import json
 import sys
@@ -283,12 +325,14 @@ summary_path = Path(sys.argv[2])
 payload = {
     "timestamp": sys.argv[3],
     "run_id": sys.argv[4],
-    "root_dir": sys.argv[5],
-    "corpus_root": sys.argv[6],
-    "model": sys.argv[7],
-    "max_turns": int(sys.argv[8]),
-    "user_prompt": sys.argv[9],
+    "job_id": sys.argv[5],
+    "root_dir": sys.argv[6],
+    "corpus_root": sys.argv[7],
+    "model": sys.argv[8],
+    "max_turns": int(sys.argv[9]),
+    "user_prompt": sys.argv[10],
     "state": "launching",
+    "run_dir": str(status_path.parent),
 }
 status_path.write_text(json.dumps(payload, indent=2) + "\n")
 summary_path.write_text(json.dumps(payload, indent=2) + "\n")
@@ -303,6 +347,8 @@ echo "pwd=$(pwd)"
 echo "model=$MODEL"
 echo "max_turns=$MAX_TURNS"
 echo "prompt_file=$PROMPT_FILE"
+echo "job_id=$JOB_ID"
+echo "hermes_home=$HOME"
 
 python3 - "$STATUS_FILE" "running" "$(date -u +%FT%TZ)" <<'PY'
 from pathlib import Path
@@ -367,6 +413,8 @@ chmod +x "$run_dir/run-hermes.sh"
   export STATUS_FILE="$status_file"
   export SUMMARY_FILE="$summary_file"
   export RUN_DIR="$run_dir"
+  export JOB_ID="$job_id"
+  export HOME="$hermes_home"
   nohup "$run_dir/run-hermes.sh" >>"$launcher_log" 2>&1 &
   echo $! >"$pid_file"
 ) >/dev/null
@@ -390,6 +438,17 @@ if [[ -x "$profile_script" ]]; then
   ) >/dev/null
 fi
 
+materialize_script="$ROOT_DIR/ops/digitalocean/bin/materialize-hermes-run-index.py"
+if [[ -x "$materialize_script" ]]; then
+  (
+    while kill -0 "$pid" 2>/dev/null; do
+      python3 "$materialize_script" --run-dir "$run_dir" >/dev/null 2>&1 || true
+      sleep "$HEARTBEAT_SECONDS"
+    done
+    python3 "$materialize_script" --run-dir "$run_dir" >/dev/null 2>&1 || true
+  ) >/dev/null 2>&1 &
+fi
+
 python3 - "$status_file" "$pid" "$run_dir" "$(date -u +%FT%TZ)" <<'PY'
 from pathlib import Path
 import json
@@ -401,6 +460,7 @@ data["state"] = "running"
 data["pid"] = int(sys.argv[2])
 data["run_dir"] = sys.argv[3]
 data["launched_at"] = sys.argv[4]
+data["index_file"] = str(Path(sys.argv[3]) / "index.json")
 path.write_text(json.dumps(data, indent=2) + "\n")
 PY
 

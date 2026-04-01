@@ -282,6 +282,7 @@ ops/digitalocean/bin/hermes-corpus-research-status.sh \
 
 Artifacts written per run:
 
+- `index.json`
 - `prompt.txt`
 - `launcher.log`
 - `hermes.stdout.log`
@@ -293,6 +294,20 @@ Artifacts written per run:
 - `status.json`
 - `summary.json`
 - `hermes.pid`
+- `hermes-home/.hermes/config.yaml`
+- `hermes-home/.hermes/sessions/*`
+- `hermes.session.json`
+- `openai-requests.jsonl`
+- `openai-proxy/*.request.json`
+- `openai-proxy/*.response.json`
+
+The wrapper run ID is now the canonical handle for a Hermes job. `index.json` explicitly records:
+
+- wrapper run directory
+- inner corpus run directory and inner run ID
+- Hermes session ID and captured session snapshot
+- per-run OpenAI request log and copied request/response JSON
+- primary wrapper and inner artifacts
 
 ## Hermes Job API
 
@@ -357,7 +372,8 @@ Notes:
 
 - The API is a thin wrapper over `/srv/alphabook/logs/hermes-corpus-research/*`.
 - `POST /v1/jobs` launches the existing `run-hermes-corpus-research.sh`.
-- cost fields are exposed when the inner run writes `cost-profile.json` or a compatible `status.json`; otherwise cost remains unavailable instead of guessed.
+- `index.json` is the authoritative per-run pointer to the inner run, Hermes session, and OpenAI request logs.
+- cost fields are exposed when the inner run writes `cost-profile.json` or a compatible `status.json`; otherwise wrapper-level OpenAI proxy totals are exposed when available.
 - `GET /v1/jobs/:jobId/logs` is poll-friendly and returns per-source line tails plus a cursor for incremental fetches.
 - Bootstrap installs the runner, unit, and token file, but you still need the repo present at `/srv/alphabook/repo` before enabling the service.
 

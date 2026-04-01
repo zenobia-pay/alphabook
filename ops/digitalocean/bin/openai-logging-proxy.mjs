@@ -104,7 +104,16 @@ const server = http.createServer(async (req, res) => {
   const requestBody = jsonOrText(requestBodyBuffer);
   const requestPayload = requestBody.parsed;
 
-  const upstreamUrl = new URL(req.url || "/", UPSTREAM_BASE_URL);
+  const originalPath = req.url || "/";
+  let proxyRunId = null;
+  let upstreamPath = originalPath;
+  const runMatch = originalPath.match(/^\/runs\/([^/]+)(\/v1\/.*)$/);
+  if (runMatch) {
+    proxyRunId = decodeURIComponent(runMatch[1]);
+    upstreamPath = runMatch[2];
+  }
+
+  const upstreamUrl = new URL(upstreamPath, UPSTREAM_BASE_URL);
   const requestFile = path.join(LOG_ROOT, `${requestId}.request.json`);
   const responseFile = path.join(LOG_ROOT, `${requestId}.response.json`);
 
@@ -115,7 +124,8 @@ const server = http.createServer(async (req, res) => {
     requestId,
     startedAt,
     method,
-    path: req.url || "/",
+    path: originalPath,
+    proxyRunId,
     upstreamUrl: upstreamUrl.toString(),
     requestHeaders: sanitizedHeaders(req.headers),
     requestBody: requestBody.kind === "json" ? requestPayload : requestBody.text,
@@ -154,7 +164,8 @@ const server = http.createServer(async (req, res) => {
       startedAt,
       finishedAt: responseRecord.finishedAt,
       method,
-      path: req.url || "/",
+      path: originalPath,
+      proxyRunId,
       model: model || responseBody.parsed?.model || null,
       status: upstreamResponse.status,
       usage,
@@ -177,7 +188,8 @@ const server = http.createServer(async (req, res) => {
       startedAt,
       finishedAt: failure.finishedAt,
       method,
-      path: req.url || "/",
+      path: originalPath,
+      proxyRunId,
       model,
       status: 599,
       usage: null,

@@ -18,6 +18,7 @@ const API_TOKEN = loadToken();
 const CORS_ORIGIN = process.env.HERMES_JOB_API_CORS_ORIGIN || "*";
 
 const PRIMARY_ARTIFACTS = [
+  "index.json",
   "manifest.json",
   "briefing.md",
   "dataset.jsonl",
@@ -27,6 +28,8 @@ const PRIMARY_ARTIFACTS = [
   "status.json",
   "run.log",
   "stream.log",
+  "openai-requests.jsonl",
+  "hermes.session.json",
 ];
 
 await fsp.mkdir(API_LOG_ROOT, { recursive: true });
@@ -124,6 +127,10 @@ function listRunDirs() {
 }
 
 function inferInnerRunDir(runDir) {
+  const wrapperIndex = readJson(path.join(runDir, "index.json"));
+  if (wrapperIndex?.inner_run_dir && fs.existsSync(wrapperIndex.inner_run_dir)) {
+    return wrapperIndex.inner_run_dir;
+  }
   const candidateFiles = [
     path.join(runDir, "status.json"),
     path.join(runDir, "summary.json"),
@@ -218,9 +225,10 @@ function getRunSummary(runDir) {
   const jobId = path.basename(runDir);
   const status = readJson(path.join(runDir, "status.json")) || {};
   const summary = readJson(path.join(runDir, "summary.json")) || {};
+  const index = readJson(path.join(runDir, "index.json")) || {};
   const effective = { ...summary, ...status };
   const pid = effective.pid ?? null;
-  const innerRunDir = inferInnerRunDir(runDir);
+  const innerRunDir = index.inner_run_dir || effective.inner_run_dir || inferInnerRunDir(runDir);
   const innerManifest = innerRunDir ? readJson(path.join(innerRunDir, "manifest.json")) : null;
   const innerStatus = innerRunDir ? readJson(path.join(innerRunDir, "status.json")) : null;
   const cost = getCostSummary(innerRunDir);
@@ -232,6 +240,7 @@ function getRunSummary(runDir) {
     id: jobId,
     runDir,
     innerRunDir,
+    innerRunId: index.inner_run_id || effective.inner_run_id || (innerRunDir ? path.basename(innerRunDir) : null),
     state: effectiveState,
     running,
     pid,
@@ -241,6 +250,9 @@ function getRunSummary(runDir) {
     launchedAt: effective.launched_at || null,
     startedAt: effective.started_at || null,
     finishedAt: effective.finished_at || null,
+    indexFile: path.join(runDir, "index.json"),
+    hermesSessionId: index.session?.primary_session_id || effective.hermes_session_id || null,
+    hermesSessionFile: index.session?.session_snapshot_file || effective.hermes_session_file || null,
     exitCode: effective.exit_code ?? null,
     heartbeatAt: parseHeartbeatAt(runDir),
     phase: innerStatus?.phase || null,
@@ -251,6 +263,7 @@ function getRunSummary(runDir) {
     scopeRationale: innerManifest?.scope_rationale || null,
     recordCounts: innerManifest?.record_counts || null,
     cost,
+    openai: index.openai || null,
     artifacts: summarizeArtifacts(innerRunDir),
   };
 }
@@ -267,6 +280,8 @@ function getLogSources(runDir) {
     { name: "heartbeat", path: path.join(runDir, "heartbeat.log") },
     { name: "hermes_stdout", path: path.join(runDir, "hermes.stdout.log") },
     { name: "hermes_stderr", path: path.join(runDir, "hermes.stderr.log") },
+    { name: "wrapper_index", path: path.join(runDir, "index.json") },
+    { name: "openai_requests", path: path.join(runDir, "openai-requests.jsonl") },
   ];
   if (innerRunDir) {
     sources.push(

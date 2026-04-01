@@ -228,6 +228,23 @@ command_snapshot = {
 }
 with command_log_file.open("a") as f:
     f.write(json.dumps(command_snapshot) + "\n")
+
+if status_file.exists():
+    try:
+        status_data = json.loads(status_file.read_text())
+    except Exception:
+        status_data = {}
+    if inner_dir:
+        status_data["inner_run_dir"] = str(inner_dir)
+        status_data["inner_run_id"] = inner_dir.name
+    hermes_home = run_dir / "hermes-home"
+    sessions_dir = hermes_home / ".hermes" / "sessions"
+    session_files = sorted(sessions_dir.glob("session_*.json"), key=lambda p: p.stat().st_mtime)
+    if session_files:
+        latest = session_files[-1]
+        status_data["hermes_session_file"] = str(latest)
+        status_data["hermes_session_id"] = latest.stem.removeprefix("session_")
+    status_file.write_text(json.dumps(status_data, indent=2) + "\n")
 PY
 }
 

@@ -33,6 +33,7 @@ install -m 0755 "$SCRIPT_DIR/bin/prune-orphan-d1-records.sh" "$ALPHABOOK_ROOT/bi
 install -m 0755 "$SCRIPT_DIR/bin/prune-orphan-r2-keys.sh" "$ALPHABOOK_ROOT/bin/prune-orphan-r2-keys.sh"
 install -m 0755 "$SCRIPT_DIR/bin/hermes-job-api.mjs" "$ALPHABOOK_ROOT/bin/hermes-job-api.mjs"
 install -m 0755 "$SCRIPT_DIR/bin/openai-logging-proxy.mjs" "$ALPHABOOK_ROOT/bin/openai-logging-proxy.mjs"
+install -m 0755 "$SCRIPT_DIR/bin/materialize-hermes-run-index.py" "$ALPHABOOK_ROOT/bin/materialize-hermes-run-index.py"
 install -m 0644 "$SCRIPT_DIR/systemd/alphabook-gutenberg-rsync.service" /etc/systemd/system/alphabook-gutenberg-rsync.service
 install -m 0644 "$SCRIPT_DIR/systemd/alphabook-gutenberg-rsync.timer" /etc/systemd/system/alphabook-gutenberg-rsync.timer
 install -m 0644 "$SCRIPT_DIR/systemd/alphabook-gutenberg-rsync-epub.service" /etc/systemd/system/alphabook-gutenberg-rsync-epub.service
@@ -62,6 +63,7 @@ Validate: $ALPHABOOK_ROOT/bin/validate-corpus-integrity.sh
 Rebuild: $ALPHABOOK_ROOT/bin/rebuild-r2-corpus-all.sh
 Hermes job API runner: $ALPHABOOK_ROOT/bin/hermes-job-api.mjs
 OpenAI logging proxy: $ALPHABOOK_ROOT/bin/openai-logging-proxy.mjs
+Run index materializer: $ALPHABOOK_ROOT/bin/materialize-hermes-run-index.py
 Useful commands:
   systemctl status alphabook-gutenberg-rsync.timer
   systemctl status alphabook-gutenberg-rsync-epub.timer

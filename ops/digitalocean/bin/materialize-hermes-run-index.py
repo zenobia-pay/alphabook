@@ -1,0 +1,229 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import shutil
+from pathlib import Path
+from typing import Any
+
+
+PRIMARY_INNER_ARTIFACTS = [
+    "manifest.json",
+    "briefing.md",
+    "dataset.jsonl",
+    "dataset.csv",
+    "citation-index.json",
+    "cost-profile.json",
+    "status.json",
+    "run.log",
+    "stream.log",
+]
+
+
+def read_json(path: Path) -> Any | None:
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return None
+
+
+def stat_payload(path: Path) -> dict[str, Any] | None:
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return None
+    return {
+        "path": str(path),
+        "bytes": stat.st_size,
+        "updated_at": stat.st_mtime,
+    }
+
+
+def infer_inner_run_dir(run_dir: Path) -> Path | None:
+    regex = re.compile(r"/srv/alphabook/logs/corpus-research/[A-Za-z0-9._-]+")
+    candidate_files = [
+        run_dir / "status.json",
+        run_dir / "summary.json",
+        run_dir / "launcher.log",
+        run_dir / "hermes.stdout.log",
+        run_dir / "hermes.stderr.log",
+        run_dir / "profile-summary.json",
+        run_dir / "command-snapshots.jsonl",
+    ]
+    matches: set[str] = set()
+    for file_path in candidate_files:
+        try:
+            text = file_path.read_text()
+        except Exception:
+            continue
+        for match in regex.findall(text):
+            if Path(match).exists():
+                matches.add(match)
+    if not matches:
+        return None
+    return Path(sorted(matches)[-1])
+
+
+def collect_session_info(run_dir: Path) -> dict[str, Any]:
+    hermes_home = run_dir / "hermes-home"
+    sessions_dir = hermes_home / ".hermes" / "sessions"
+    session_files = sorted(sessions_dir.glob("session_*.json"), key=lambda p: p.stat().st_mtime)
+    payload: dict[str, Any] = {
+        "hermes_home": str(hermes_home),
+        "sessions_dir": str(sessions_dir),
+        "session_files": [str(path) for path in session_files],
+    }
+    if session_files:
+        latest = session_files[-1]
+        payload["primary_session_file"] = str(latest)
+        session_id = latest.stem.removeprefix("session_")
+        payload["primary_session_id"] = session_id
+        snapshot_path = run_dir / "hermes.session.json"
+        shutil.copy2(latest, snapshot_path)
+        payload["session_snapshot_file"] = str(snapshot_path)
+    return payload
+
+
+def collect_openai_requests(run_dir: Path, job_id: str) -> dict[str, Any]:
+    proxy_root = Path("/srv/alphabook/logs/openai-proxy")
+    requests_index_path = proxy_root / "requests.jsonl"
+    output_index_path = run_dir / "openai-requests.jsonl"
+    output_dir = run_dir / "openai-proxy"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    matched_records: list[dict[str, Any]] = []
+    if requests_index_path.exists():
+        for line in requests_index_path.read_text().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except Exception:
+                continue
+            if record.get("proxyRunId") != job_id:
+                continue
+            matched_records.append(record)
+
+    with output_index_path.open("w") as handle:
+        for record in matched_records:
+            handle.write(json.dumps(record) + "\n")
+
+    copied_files = []
+    total_cost = 0.0
+    total_cost_known = False
+    for record in matched_records:
+        for key in ("requestFile", "responseFile"):
+            source = record.get(key)
+            if not source:
+                continue
+            source_path = Path(source)
+            if not source_path.exists():
+                continue
+            dest = output_dir / source_path.name
+            shutil.copy2(source_path, dest)
+            copied_files.append(str(dest))
+        if record.get("estimatedCostUsd") is not None:
+            total_cost += float(record["estimatedCostUsd"])
+            total_cost_known = True
+
+    return {
+        "proxy_root": str(proxy_root),
+        "requests_index_file": str(output_index_path),
+        "request_count": len(matched_records),
+        "request_ids": [record["requestId"] for record in matched_records],
+        "copied_files": copied_files,
+        "estimated_total_cost_usd": round(total_cost, 6) if total_cost_known else None,
+    }
+
+
+def collect_inner_artifacts(inner_run_dir: Path | None) -> list[dict[str, Any]]:
+    if inner_run_dir is None:
+        return []
+    artifacts = []
+    for name in PRIMARY_INNER_ARTIFACTS:
+        payload = stat_payload(inner_run_dir / name)
+        if payload:
+            payload["name"] = name
+            artifacts.append(payload)
+    return artifacts
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--run-dir", required=True)
+    args = parser.parse_args()
+
+    run_dir = Path(args.run_dir)
+    job_id = run_dir.name
+    status = read_json(run_dir / "status.json") or {}
+    summary = read_json(run_dir / "summary.json") or {}
+
+    inner_run_dir = infer_inner_run_dir(run_dir)
+    inner_manifest = read_json(inner_run_dir / "manifest.json") if inner_run_dir else None
+    inner_status = read_json(inner_run_dir / "status.json") if inner_run_dir else None
+
+    session_info = collect_session_info(run_dir)
+    openai_info = collect_openai_requests(run_dir, job_id)
+
+    index_payload = {
+        "job_id": job_id,
+        "run_dir": str(run_dir),
+        "status_file": str(run_dir / "status.json"),
+        "summary_file": str(run_dir / "summary.json"),
+        "prompt_file": str(run_dir / "prompt.txt"),
+        "wrapper_state": status.get("state"),
+        "wrapper_pid": status.get("pid"),
+        "launched_at": status.get("launched_at"),
+        "started_at": status.get("started_at"),
+        "finished_at": status.get("finished_at"),
+        "model": status.get("model"),
+        "max_turns": status.get("max_turns"),
+        "user_prompt": status.get("user_prompt"),
+        "inner_run_dir": str(inner_run_dir) if inner_run_dir else None,
+        "inner_run_id": inner_run_dir.name if inner_run_dir else None,
+        "inner_manifest_status": inner_manifest.get("status") if inner_manifest else None,
+        "inner_phase": inner_status.get("phase") if inner_status else None,
+        "inner_record_counts": inner_manifest.get("record_counts") if inner_manifest else None,
+        "session": session_info,
+        "openai": openai_info,
+        "wrapper_artifacts": {
+            "launcher_log": stat_payload(run_dir / "launcher.log"),
+            "stdout_log": stat_payload(run_dir / "hermes.stdout.log"),
+            "stderr_log": stat_payload(run_dir / "hermes.stderr.log"),
+            "heartbeat_log": stat_payload(run_dir / "heartbeat.log"),
+            "profile_jsonl": stat_payload(run_dir / "profile.jsonl"),
+            "command_snapshots_jsonl": stat_payload(run_dir / "command-snapshots.jsonl"),
+        },
+        "inner_artifacts": collect_inner_artifacts(inner_run_dir),
+    }
+
+    (run_dir / "index.json").write_text(json.dumps(index_payload, indent=2) + "\n")
+
+    status["job_id"] = job_id
+    status["inner_run_dir"] = str(inner_run_dir) if inner_run_dir else None
+    status["inner_run_id"] = inner_run_dir.name if inner_run_dir else None
+    status["hermes_session_id"] = session_info.get("primary_session_id")
+    status["hermes_session_file"] = session_info.get("session_snapshot_file") or session_info.get("primary_session_file")
+    status["openai_requests_file"] = openai_info["requests_index_file"]
+    status["openai_request_count"] = openai_info["request_count"]
+    if openai_info["estimated_total_cost_usd"] is not None:
+        status["estimated_openai_cost_usd"] = openai_info["estimated_total_cost_usd"]
+    (run_dir / "status.json").write_text(json.dumps(status, indent=2) + "\n")
+    if summary:
+        summary.update(
+            {
+                "job_id": job_id,
+                "inner_run_dir": status["inner_run_dir"],
+                "inner_run_id": status["inner_run_id"],
+                "hermes_session_id": status["hermes_session_id"],
+                "openai_request_count": status["openai_request_count"],
+            }
+        )
+        (run_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+
+
+if __name__ == "__main__":
+    main()
