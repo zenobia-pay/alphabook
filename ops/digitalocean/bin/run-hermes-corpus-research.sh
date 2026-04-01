@@ -336,6 +336,11 @@ Process requirements:
 - Use the provided helper scripts when available:
   - /srv/alphabook/repo/ops/digitalocean/bin/prepare-text-corpus-manifest.sh
   - /srv/alphabook/repo/ops/digitalocean/bin/run-ripgrep-progress.sh
+- Use the helpers with their actual CLI syntax. Example invocations:
+  - `/srv/alphabook/repo/ops/digitalocean/bin/prepare-text-corpus-manifest.sh --output-dir "$RUN_DIR/prepared" --corpus-root "{corpus_root}"`
+  - `/srv/alphabook/repo/ops/digitalocean/bin/run-ripgrep-progress.sh --file-list "$RUN_DIR/prepared/scoped-text-files.tsv" --pattern '<regex>' --output-dir "$RUN_DIR/search"`
+- Do not pass `{corpus_root}` as a bare positional argument to helper scripts.
+- The manifest helper writes `all-text-files.tsv` under the output dir; if you derive a scoped subset, write it as another TSV with the same `size_bytes<TAB>absolute_path` format before calling the ripgrep helper.
 - The required order is:
   1. decide scope
   2. write chosen_scope and scope_rationale into the run manifest
