@@ -702,6 +702,18 @@ async function appendUsageEvent(paths: ReturnType<typeof createPaths>, event: Re
   );
 }
 
+async function appendProxyLogEvent(paths: ReturnType<typeof createPaths>, event: Record<string, unknown>) {
+  await mkdir(paths.output, { recursive: true });
+  await appendFile(
+    join(paths.output, "openai-proxy.jsonl"),
+    `${JSON.stringify({
+      timestamp: nowIso(),
+      ...event,
+    })}\n`,
+    "utf8",
+  );
+}
+
 function extractOpenAIUsage(payload: unknown) {
   if (!payload || typeof payload !== "object") {
     return null;
@@ -830,6 +842,23 @@ async function proxyOpenAIRequest(
     }
   }
 
+  const requestHeaders = Object.fromEntries(
+    Array.from(headers.entries()).map(([key, value]) => [
+      key,
+      key.toLowerCase() === "authorization" ? "[redacted]" : value,
+    ]),
+  );
+  await appendProxyLogEvent(paths, {
+    type: "request",
+    method: request.method ?? "GET",
+    path: upstreamPath,
+    upstreamUrl,
+    headers: requestHeaders,
+    requestedModel,
+    promptPreview,
+    body: bodyText || null,
+  });
+
   try {
     const upstream = await fetch(upstreamUrl, {
       method: request.method,
@@ -837,6 +866,7 @@ async function proxyOpenAIRequest(
       body: bodyBuffer.length > 0 ? bodyBuffer : undefined,
     });
     const contentType = upstream.headers.get("content-type") ?? "";
+    const responseBodyPromise = upstream.clone().text().catch(() => "");
     const usagePromise = contentType.includes("application/json")
       ? upstream.clone().text().then(async (body) => {
         try {
@@ -881,8 +911,20 @@ async function proxyOpenAIRequest(
       }
     }
     response.end();
+    const responseBody = await responseBodyPromise;
     await usagePromise;
 
+    await appendProxyLogEvent(paths, {
+      type: "response",
+      method: request.method ?? "GET",
+      path: upstreamPath,
+      upstreamUrl,
+      status: upstream.status,
+      ok: upstream.ok,
+      contentType,
+      headers: Object.fromEntries(upstream.headers.entries()),
+      body: responseBody || null,
+    });
     await appendProgressEvent(paths, {
       type: "codex.proxy.response",
       method: request.method ?? "GET",
@@ -894,6 +936,13 @@ async function proxyOpenAIRequest(
     });
     return undefined;
   } catch (error) {
+    await appendProxyLogEvent(paths, {
+      type: "error",
+      method: request.method ?? "GET",
+      path: upstreamPath,
+      upstreamUrl,
+      error: error instanceof Error ? error.message : String(error),
+    });
     await appendProgressEvent(paths, {
       type: "codex.proxy.error",
       method: request.method ?? "GET",
