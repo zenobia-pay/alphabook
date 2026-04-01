@@ -91,8 +91,8 @@ interface BaseDecision {
   exactQuote: string;
   themeLabel: string;
   reasoning: string;
-  griefMode: string;
-  copingMode: string;
+  primaryFrame: string;
+  responseFrame: string;
   needsEscalation: boolean;
 }
 
@@ -119,8 +119,8 @@ interface ConfirmedPassageRecord {
   line_end: number;
   quote: string;
   theme_label: string;
-  grief_mode: string;
-  coping_mode: string;
+  primary_frame: string;
+  response_frame: string;
   confidence: number;
   lexical_score: number;
   duplicate_count: number;
@@ -132,8 +132,8 @@ interface ConfirmedPassageRecord {
 interface ClusterRecord {
   cluster_id: string;
   dominant_theme: string;
-  grief_mode: string;
-  coping_mode: string;
+  primary_frame: string;
+  response_frame: string;
   canonical_quote: string;
   representative_quote: string;
   cluster_size: number;
@@ -361,49 +361,17 @@ function wordCount(value: string): number {
 }
 
 function scoreLexicalTerms(terms: string[], text: string): number {
-  const weights = new Map<string, number>([
-    ["grief", 5],
-    ["grieve", 5],
-    ["grieving", 5],
-    ["grieved", 5],
-    ["mourning", 5],
-    ["mourn", 5],
-    ["mourned", 5],
-    ["mourner", 5],
-    ["bereft", 5],
-    ["bereavement", 5],
-    ["bereaved", 5],
-    ["inconsolable", 5],
-    ["heartbroken", 4],
-    ["heart-broken", 4],
-    ["sorrow", 4],
-    ["sorrowful", 4],
-    ["lament", 4],
-    ["lamentation", 4],
-    ["anguish", 4],
-    ["despair", 4],
-    ["despondent", 4],
-    ["consolation", 3],
-    ["comfort", 3],
-    ["comforted", 3],
-    ["comforting", 3],
-    ["weep", 3],
-    ["wept", 3],
-    ["weeping", 3],
-    ["melancholy", 2],
-    ["woe", 2],
-  ]);
-
   const lower = text.toLowerCase();
+  const normalizedTerms = [...new Set(terms.map((value) => normalizeWhitespace(value).toLowerCase()).filter(Boolean))];
   let score = 0;
-  for (const term of new Set(terms.map((value) => value.toLowerCase()))) {
-    score += weights.get(term) ?? 1;
-  }
-  for (const [term, weight] of weights.entries()) {
+  for (const term of normalizedTerms) {
+    const specificity = Math.min(4, Math.max(1, Math.ceil(term.length / 6)));
+    score += specificity;
     if (lower.includes(term)) {
-      score += weight * 0.5;
+      score += 0.5;
     }
   }
+  score += Math.log2(1 + normalizedTerms.length);
   return Number(score.toFixed(2));
 }
 
@@ -954,8 +922,8 @@ function triageSchema() {
               "exactQuote",
               "themeLabel",
               "reasoning",
-              "griefMode",
-              "copingMode",
+              "primaryFrame",
+              "responseFrame",
               "needsEscalation",
             ],
             properties: {
@@ -965,8 +933,8 @@ function triageSchema() {
               exactQuote: { type: "string" },
               themeLabel: { type: "string" },
               reasoning: { type: "string" },
-              griefMode: { type: "string" },
-              copingMode: { type: "string" },
+              primaryFrame: { type: "string" },
+              responseFrame: { type: "string" },
               needsEscalation: { type: "boolean" },
             },
           },
@@ -1055,6 +1023,9 @@ function candidateBlock(candidate: CanonicalCandidate): string {
     `candidateId: ${candidate.candidate_id}`,
     `canonicalPassageId: ${candidate.canonical_passage_id}`,
     `sourceFile: ${candidate.source_file}`,
+    `sourceTitle: ${candidate.source_title ?? "(unknown)"}`,
+    `sourceAuthor: ${candidate.source_author ?? "(unknown)"}`,
+    `sourceYearOrPeriod: ${candidate.source_year_or_period ?? "(unknown)"}`,
     `lineStart: ${candidate.line_start}`,
     `lineEnd: ${candidate.line_end}`,
     `matchedTerms: ${candidate.matched_terms.join(", ") || "(none)"}`,
@@ -1068,10 +1039,13 @@ function candidateBlock(candidate: CanonicalCandidate): string {
 function buildNanoPrompt(query: string, batch: CanonicalCandidate[], maxQuoteChars: number): string {
   return [
     "You are doing first-pass semantic triage on literary passages.",
-    "The user is researching how authors deal with grief in 19th century literature.",
     "Judge each passage, not the file as a whole.",
-    "A passage is relevant if it directly depicts grief, mourning, bereavement, remembrance after loss, consolation, or a concrete coping response to loss.",
-    "Reject political rhetoric, ornamental sadness, or generic melancholy unless the passage clearly concerns grief or coping with loss.",
+    "Decide whether each passage is genuinely relevant to the user's research request.",
+    "Use the user query, passage text, and source metadata together.",
+    "Reject lexical noise and superficially similar passages that do not materially address the request.",
+    "themeLabel should be a short descriptive theme grounded in the passage and the query.",
+    "primaryFrame should describe the passage's main interpretive frame.",
+    "responseFrame should describe a secondary or response-oriented frame when relevant; otherwise use other.",
     `Keep exactQuote under ${maxQuoteChars} characters.`,
     "If the passage is ambiguous, set needsEscalation=true.",
     "",
@@ -1083,7 +1057,7 @@ function buildNanoPrompt(query: string, batch: CanonicalCandidate[], maxQuoteCha
 
 function buildMiniPrompt(query: string, batch: Array<{ candidate: CanonicalCandidate; nano: NanoDecision }>, maxQuoteChars: number): string {
   return [
-    "You are the escalation reviewer for literary grief research.",
+    "You are the escalation reviewer for a corpus research run.",
     "Resolve ambiguous cases carefully. Prefer supported judgments over recall-maximizing guesses.",
     `Keep exactQuote under ${maxQuoteChars} characters.`,
     "",
@@ -1106,8 +1080,8 @@ function normalizeDecision(decision: BaseDecision, maxQuoteChars: number): BaseD
     exactQuote: normalizeWhitespace(decision.exactQuote ?? "").slice(0, maxQuoteChars),
     themeLabel: normalizeThemeLabel(decision.themeLabel),
     reasoning: normalizeWhitespace(decision.reasoning ?? ""),
-    griefMode: normalizeThemeLabel(decision.griefMode),
-    copingMode: normalizeThemeLabel(decision.copingMode),
+    primaryFrame: normalizeThemeLabel(decision.primaryFrame),
+    responseFrame: normalizeThemeLabel(decision.responseFrame),
     needsEscalation: Boolean(decision.needsEscalation),
   };
 }
@@ -1246,8 +1220,8 @@ async function runNanoTriage(
       exactQuote: "",
       themeLabel: "other",
       reasoning: "Model returned no decision for this candidate.",
-      griefMode: "other",
-      copingMode: "other",
+      primaryFrame: "other",
+      responseFrame: "other",
       needsEscalation: true,
       stage: "nano" as const,
       escalate: true,
@@ -1288,7 +1262,7 @@ async function runNanoTriage(
 
 function buildConfirmedRecord(candidate: CanonicalCandidate, decision: BaseDecision, corpusScope: string, acceptedBy: "nano" | "mini"): ConfirmedPassageRecord {
   const recordId = createHash("sha1")
-    .update(`${candidate.canonical_passage_id}:${decision.exactQuote}:${decision.themeLabel}:${decision.copingMode}`)
+    .update(`${candidate.canonical_passage_id}:${decision.exactQuote}:${decision.themeLabel}:${decision.responseFrame}`)
     .digest("hex")
     .slice(0, 16);
   return {
@@ -1305,8 +1279,8 @@ function buildConfirmedRecord(candidate: CanonicalCandidate, decision: BaseDecis
     line_end: candidate.line_end,
     quote: decision.exactQuote,
     theme_label: decision.themeLabel,
-    grief_mode: decision.griefMode,
-    coping_mode: decision.copingMode,
+    primary_frame: decision.primaryFrame,
+    response_frame: decision.responseFrame,
     confidence: decision.relevanceConfidence,
     lexical_score: candidate.lexical_score,
     duplicate_count: candidate.duplicate_count,
@@ -1441,7 +1415,7 @@ function noveltyByWork(records: ConfirmedPassageRecord[]): Map<string, number> {
 }
 
 function clusterConfirmedPassages(records: ConfirmedPassageRecord[]): { clusters: ClusterRecord[]; ranked: Array<ConfirmedPassageRecord & { rank_score: number; cluster_id: string }> } {
-  const deduped = Array.from(new Map(records.map((record) => [`${record.canonical_passage_id}:${normalizeQuoteKey(record)}:${record.theme_label}:${record.coping_mode}`, record])).values());
+  const deduped = Array.from(new Map(records.map((record) => [`${record.canonical_passage_id}:${normalizeQuoteKey(record)}:${record.theme_label}:${record.response_frame}`, record])).values());
   const themeCounts = deduped.reduce<Map<string, number>>((map, record) => {
     map.set(record.theme_label, (map.get(record.theme_label) ?? 0) + 1);
     return map;
@@ -1449,7 +1423,7 @@ function clusterConfirmedPassages(records: ConfirmedPassageRecord[]): { clusters
   const workNovelty = noveltyByWork(deduped);
   const clusterMap = new Map<string, ConfirmedPassageRecord[]>();
   for (const record of deduped) {
-    const clusterKey = `${normalizeQuoteKey(record)}::${record.theme_label}::${record.coping_mode}`;
+    const clusterKey = `${normalizeQuoteKey(record)}::${record.theme_label}::${record.response_frame}`;
     const list = clusterMap.get(clusterKey) ?? [];
     list.push(record);
     clusterMap.set(clusterKey, list);
@@ -1465,8 +1439,8 @@ function clusterConfirmedPassages(records: ConfirmedPassageRecord[]): { clusters
     clusters.push({
       cluster_id: clusterId,
       dominant_theme: representative.theme_label,
-      grief_mode: representative.grief_mode,
-      coping_mode: representative.coping_mode,
+      primary_frame: representative.primary_frame,
+      response_frame: representative.response_frame,
       canonical_quote: representative.quote,
       representative_quote: representative.quote,
       cluster_size: items.length,
@@ -1516,7 +1490,7 @@ function buildBriefingPrompt(input: {
   return [
     "Write a concise literary research briefing in Markdown.",
     "Ground every claim in the supplied confirmed findings and clusters.",
-    "Include: method, scope, candidate reduction summary, main grief-response patterns, caveats, and what the dataset suggests.",
+    "Include: method, scope, candidate reduction summary, main thematic patterns, caveats, and what the dataset suggests.",
     "Use short paragraphs and flat bullets.",
     "",
     `User query: ${input.query}`,
@@ -1533,8 +1507,8 @@ function buildBriefingPrompt(input: {
     ...input.topPassages.slice(0, 20).map((passage) => JSON.stringify({
       quote: passage.quote,
       theme: passage.theme_label,
-      grief_mode: passage.grief_mode,
-      coping_mode: passage.coping_mode,
+      primary_frame: passage.primary_frame,
+      response_frame: passage.response_frame,
       confidence: passage.confidence,
       source_file: passage.source_file,
     })),
@@ -1593,8 +1567,8 @@ async function finalizeOutputs(
     "line_end",
     "quote",
     "theme_label",
-    "grief_mode",
-    "coping_mode",
+    "primary_frame",
+    "response_frame",
     "confidence",
     "lexical_score",
     "duplicate_count",
@@ -1617,8 +1591,8 @@ async function finalizeOutputs(
       String(record.line_end),
       csvEscape(record.quote),
       csvEscape(record.theme_label),
-      csvEscape(record.grief_mode),
-      csvEscape(record.coping_mode),
+      csvEscape(record.primary_frame),
+      csvEscape(record.response_frame),
       String(record.confidence),
       String(record.lexical_score),
       String(record.duplicate_count),
@@ -1707,9 +1681,9 @@ async function finalizeOutputs(
     canonical_passage_id: "exact normalized passage hash",
     near_duplicate_group_id: "lightweight near-duplicate passage group",
     quote: "exact extracted quote from the confirmed passage",
-    theme_label: "primary grief-response theme",
-    grief_mode: "grief expression mode",
-    coping_mode: "response/coping mode",
+    theme_label: "primary theme label grounded in the query",
+    primary_frame: "main interpretive frame for the passage",
+    response_frame: "secondary or response-oriented frame for the passage",
     confidence: "0-1 semantic relevance confidence",
     reasoning: "why the quote is relevant to the user query",
   };

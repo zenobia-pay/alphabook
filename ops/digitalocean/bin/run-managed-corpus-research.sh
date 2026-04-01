@@ -14,7 +14,7 @@ STREAM_SECONDS="${STREAM_SECONDS:-2}"
 
 usage() {
   cat >&2 <<'EOF'
-Usage: run-managed-corpus-research.sh --user-prompt "Find me all the different ways that authors deal with grief in 19th century literature."
+Usage: run-managed-corpus-research.sh --user-prompt "<research prompt>"
 EOF
   exit 1
 }
@@ -219,7 +219,35 @@ scope_files="$(wc -l < "$RUN_DIR/scope-files.tsv" | tr -d ' ')"
 log "scope_selection_complete scope_files=$scope_files"
 update_phase "search" "0" "starting progress-aware ripgrep"
 
-PATTERN='\b(grief|grieve|grieving|grieved|mourning|mourn|mourned|mourner|bereav(?:e|ed|ement)|bereft|sorrow|sorrowful|lament|lamentation|woe|anguish|despair|despondent|heartbroken|heart-broken|weep|wept|weeping|consolation|comfort|comforted|comforting|inconsolable|melancholy)\b'
+node --import tsx packages/tooling/scripts/build-corpus-research-search-plan.ts \
+  --query "$USER_PROMPT" \
+  --output "$RUN_DIR/search-plan.json" >/dev/null
+
+python3 - "$RUN_DIR/manifest.json" "$RUN_DIR/search-plan.json" <<'PY'
+from pathlib import Path
+import json
+import sys
+manifest_path = Path(sys.argv[1])
+plan_path = Path(sys.argv[2])
+manifest = json.loads(manifest_path.read_text())
+plan = json.loads(plan_path.read_text())
+manifest["search_strategy_summary"] = f"query-derived retrieval plan: {plan['focusSummary']}"
+manifest["search_plan"] = {
+    "search_terms": plan.get("searchTerms", []),
+    "exclusion_terms": plan.get("exclusionTerms", []),
+    "rationale": plan.get("rationale", ""),
+}
+manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+PY
+
+PATTERN="$(python3 - "$RUN_DIR/search-plan.json" <<'PY'
+from pathlib import Path
+import json
+import sys
+plan = json.loads(Path(sys.argv[1]).read_text())
+print(plan["searchRegex"])
+PY
+)"
 "$ROOT_DIR/ops/digitalocean/bin/run-ripgrep-progress.sh" \
   --file-list "$RUN_DIR/scope-files.tsv" \
   --pattern "$PATTERN" \
