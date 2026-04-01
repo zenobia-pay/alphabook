@@ -217,6 +217,13 @@ Analysis requirements:
   - schema
   - main findings/themes
   - caveats, limits, and likely false positives/false negatives
+- The briefing should read like a polished research memo, not a mechanical report.
+- It should make clear interpretive points, not just dump themes or counts.
+- Prefer findings that are memorable, surprising, or sharply representative.
+- In each main finding section, make a claim, explain why it matters, and support it with exact quotes plus citation markers.
+- Introduce quotes with source context when available, such as title, author, and year.
+- Avoid prose like `sample top matches` or empty label-dump headings.
+- Exclude obvious front matter, tables of contents, legal boilerplate, donation text, and other non-literary noise from the featured briefing examples when better literary evidence exists.
 - Build lightweight visualizations if useful.
   - Markdown tables, CSV summaries, JSON summaries, or SVG charts are fine.
 
@@ -247,6 +254,7 @@ Quality bar:
 - Search the full chosen scope.
 - Use exact quotes in the dataset.
 - Every kept quote must have a reasoning field explaining relevance.
+- The briefing must make synthesized, defensible points from the evidence rather than mechanically sampling records.
 - Prefer a useful, inspectable dataset over a clever but opaque workflow.
 
 At the end:

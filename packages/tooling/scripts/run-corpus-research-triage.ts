@@ -199,6 +199,10 @@ interface OpenAiResponse<T> {
 }
 
 const MODEL_PRICING: Record<string, ModelPricing> = {
+  "gpt-5.4": { inputPerMillion: 2.5, outputPerMillion: 15.0 },
+  "gpt-5": { inputPerMillion: 2.5, outputPerMillion: 15.0 },
+  "gpt-5.4-mini": { inputPerMillion: 0.75, outputPerMillion: 4.5 },
+  "gpt-5.4-nano": { inputPerMillion: 0.2, outputPerMillion: 1.25 },
   "gpt-5-nano": { inputPerMillion: 0.05, outputPerMillion: 0.4 },
   "gpt-5-mini": { inputPerMillion: 0.25, outputPerMillion: 2.0 },
 };
@@ -209,7 +213,7 @@ function parseArgs(argv: string[]): ScriptOptions {
     query: "",
     nanoModel: "gpt-5-nano",
     escalationModel: "gpt-5-mini",
-    synthesisModel: "gpt-5-mini",
+    synthesisModel: "gpt-5.4",
     concurrency: 8,
     candidateBatchSize: 6,
     fallbackChunkWords: 900,
@@ -1487,11 +1491,35 @@ function buildBriefingPrompt(input: {
   topClusters: ClusterRecord[];
   topPassages: Array<ConfirmedPassageRecord & { rank_score: number; cluster_id: string }>;
 }): string {
+  const topThemes = Object.entries(input.themeCounts)
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, 8)
+    .map(([label, count]) => ({ label, count }));
   return [
-    "Write a concise literary research briefing in Markdown.",
+    "Write a polished literary research briefing in Markdown.",
+    "This is a research artifact intended to be read by a human decision-maker, not a raw system dump.",
     "Ground every claim in the supplied confirmed findings and clusters.",
-    "Include: method, scope, candidate reduction summary, main thematic patterns, caveats, and what the dataset suggests.",
-    "Use short paragraphs and flat bullets.",
+    "Do not write a generic theme inventory or headings like 'sample top matches'.",
+    "Make real interpretive points.",
+    "Prioritize findings that are memorable, surprising, or sharply representative.",
+    "Prefer concrete passages from identifiable works over vague fragments, metadata, contents pages, legal boilerplate, or keyword-noise.",
+    "If a supplied passage looks like front matter, index text, Project Gutenberg boilerplate, donation text, or other obvious non-literary noise, do not feature it in the prose briefing.",
+    "Use a confident research-memo voice.",
+    "Structure the briefing like this:",
+    "1. Title",
+    "2. Executive summary: 1 short paragraph with the strongest thesis",
+    "3. Method and scope",
+    "4. Key findings: 3 to 6 claim-driven sections",
+    "5. Caveats and limits",
+    "6. What the dataset suggests overall",
+    "In each key finding section:",
+    "- start with a claim, not a label dump",
+    "- explain why that pattern matters",
+    "- include 2 to 3 exact quotes with inline citation markers [CIT:record_id]",
+    "- introduce each quote with source context when available: title, author, year",
+    "- briefly synthesize across the quotes instead of listing them mechanically",
+    "Do not claim exhaustiveness beyond the supplied data.",
+    "Use short paragraphs and flat bullets only when they improve readability.",
     "",
     `User query: ${input.query}`,
     `Chosen scope: ${input.chosenScope}`,
@@ -1499,17 +1527,22 @@ function buildBriefingPrompt(input: {
     `Confirmed passages: ${input.confirmedCount}`,
     `Clusters: ${input.clusterCount}`,
     `Theme counts: ${JSON.stringify(input.themeCounts)}`,
+    `Top themes by count: ${JSON.stringify(topThemes)}`,
     "",
     "Top clusters:",
     ...input.topClusters.slice(0, 12).map((cluster) => JSON.stringify(cluster)),
     "",
     "Top passages:",
     ...input.topPassages.slice(0, 20).map((passage) => JSON.stringify({
+      record_id: passage.record_id,
       quote: passage.quote,
       theme: passage.theme_label,
       primary_frame: passage.primary_frame,
       response_frame: passage.response_frame,
       confidence: passage.confidence,
+      source_title: passage.source_title,
+      source_author: passage.source_author,
+      source_year_or_period: passage.source_year_or_period,
       source_file: passage.source_file,
     })),
   ].join("\n");

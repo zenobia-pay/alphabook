@@ -103,14 +103,21 @@ Analysis requirements:
   - schema
   - main findings/themes
   - caveats, limits, and likely false positives/false negatives
+- The briefing should read like a polished research memo, not a mechanical report.
+- It should make clear interpretive points, not just dump themes or counts.
+- Prefer findings that are memorable, surprising, or sharply representative.
 - In the main findings/themes section, do not only summarize themes abstractly.
 - For each recurrent way authors handle the topic in the user request that you identify, include:
-  - a short thematic explanation
+  - a claim about what the dataset suggests
+  - a short synthesis explaining why that pattern matters
   - at least 2 exact representative quotes from the dataset
   - inline citation markers for those quotes, such as `[CIT:record_id]`
+- Introduce quotes with source context when available, such as title, author, and year.
 - Those citation markers must resolve to entries in the citation index and the dataset.
 - The briefing should make it easy for a reader to go from a claim, to a quote, to the exact source passage.
 - Prefer representative quotes that are concrete and legible, not just isolated keyword hits.
+- Avoid prose like `sample top matches` or empty label-dump headings.
+- Exclude obvious front matter, tables of contents, legal boilerplate, donation text, and other non-literary noise from the featured briefing examples when better literary evidence exists.
 - Build lightweight visualizations if useful.
   - Markdown tables, CSV summaries, JSON summaries, or SVG charts are fine.
 
@@ -142,6 +149,7 @@ Quality bar:
 - Use exact quotes in the dataset.
 - Every kept quote must have a reasoning field explaining relevance.
 - The briefing must include exact quotes plus citation markers, not just prose summaries.
+- The briefing must make synthesized, defensible points from the evidence rather than mechanically sampling records.
 - Prefer a useful, inspectable dataset over a clever but opaque workflow.
 
 At the end:
