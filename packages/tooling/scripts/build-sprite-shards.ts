@@ -6,7 +6,9 @@ import { createWranglerD1Db, loadLocalDevVars } from "@alphabook/db";
 import { getImplementationConfig } from "@alphabook/implementations";
 import { D1AppStore } from "../../../apps/orchestrator-worker/src/d1-store";
 
-const DEFAULT_SHARD_SIZE = 1000;
+const DEFAULT_MAX_SHARD_SIZE = 1000;
+const DEFAULT_MIN_SHARD_SIZE = 25;
+const DEFAULT_TARGET_SHARDS = 12;
 
 function readArg(name: string): string | null {
   const index = process.argv.indexOf(name);
@@ -16,13 +18,17 @@ function readArg(name: string): string | null {
   return process.argv[index + 1] ?? null;
 }
 
+function defaultShardSize(totalDocuments: number): number {
+  return Math.min(
+    DEFAULT_MAX_SHARD_SIZE,
+    Math.max(DEFAULT_MIN_SHARD_SIZE, Math.ceil(Math.max(1, totalDocuments) / DEFAULT_TARGET_SHARDS)),
+  );
+}
+
 async function main() {
   await loadLocalDevVars(process.cwd());
   const implementationId = readArg("--implementation") ?? "alphabook";
-  const shardSize = Number(readArg("--shard-size") ?? DEFAULT_SHARD_SIZE);
-  if (!Number.isInteger(shardSize) || shardSize <= 0) {
-    throw new Error("--shard-size must be a positive integer.");
-  }
+  const requestedShardSize = readArg("--shard-size");
 
   const implementation = getImplementationConfig(implementationId);
   const store = new D1AppStore(createWranglerD1Db({
@@ -35,6 +41,12 @@ async function main() {
   });
 
   const totalDocuments = await store.countDocuments();
+  const shardSize = requestedShardSize
+    ? Number(requestedShardSize)
+    : defaultShardSize(totalDocuments);
+  if (!Number.isInteger(shardSize) || shardSize <= 0) {
+    throw new Error("--shard-size must be a positive integer.");
+  }
   const documents = [];
   for (let offset = 0; offset < totalDocuments; offset += shardSize) {
     const batch = await store.listDocuments(offset, shardSize);

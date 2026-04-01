@@ -46,7 +46,8 @@ interface FlyMachineGuestConfig {
   memory_mb: number;
 }
 
-const SPRITE_SHARD_SIZE = 1000;
+const DEFAULT_RUNTIME_AGENT_MODEL = "gpt-5.2-codex";
+const RUNTIME_STATUS_POLL_TIMEOUT_MS = 5_000;
 const DEFAULT_SPRITE_SHARD_GUEST: FlyMachineGuestConfig = {
   cpu_kind: "performance",
   cpus: 4,
@@ -844,7 +845,7 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
             OPENAI_BASE_URL: this.config.codexOpenAIBaseUrl ?? "http://127.0.0.1:8080/openai-proxy/v1",
             RUNTIME_OPENAI_PROXY_UPSTREAM_BASE_URL: this.config.codexProxyUpstreamBaseUrl ?? "https://api.openai.com/v1",
             CODEX_AUTH_JSON: "",
-            RUNTIME_AGENT_MODEL: this.config.runtimeAgentModel ?? "gpt-5-codex",
+            RUNTIME_AGENT_MODEL: this.config.runtimeAgentModel ?? DEFAULT_RUNTIME_AGENT_MODEL,
             R2_BUCKET_NAME: this.config.r2BucketName,
             R2_ENDPOINT: this.config.r2Endpoint,
             R2_ACCESS_KEY_ID: this.config.r2AccessKeyId,
@@ -1259,9 +1260,34 @@ export class FlyMachinesRuntimeGateway implements RuntimeToolGateway {
     let lastOutputAt = startedAt;
     let result: Record<string, unknown> | null = null;
     while (Date.now() - startedAt < HARD_LIMITS.MAX_RUN_WALL_CLOCK_SECONDS * 1000) {
-      const status = await this.callRuntime(machineId, "/task-status", {
-        method: "GET",
-      });
+      let status: Record<string, unknown>;
+      try {
+        status = await this.callRuntime(machineId, "/task-status", {
+          method: "GET",
+        }, { timeoutMs: RUNTIME_STATUS_POLL_TIMEOUT_MS });
+      } catch (error) {
+        if (options.quietTimeoutMs && Date.now() - lastOutputAt > options.quietTimeoutMs) {
+          await this.callRuntime(machineId, "/cancel-task", {
+            method: "POST",
+            body: JSON.stringify({ runtimeId: instance.runtimeId }),
+          }).catch(() => {});
+          await this.persistRuntimeArtifactsFromWorkspace(instance);
+          const errorMessage = options.quietTimeoutMessage
+            ?? "Deep research stopped making progress before the runtime produced a briefing.";
+          const timeoutError = new Error(errorMessage) as Error & {
+            runtimePayload?: Record<string, unknown>;
+          };
+          timeoutError.runtimePayload = {
+            ok: false,
+            error: errorMessage,
+            cause: error instanceof Error ? error.message : String(error),
+            lastOutputAt: Number.isFinite(lastOutputAt) ? new Date(lastOutputAt).toISOString() : null,
+          };
+          throw timeoutError;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 750));
+        continue;
+      }
       if (options.onProgress && Array.isArray(status.progressEvents)) {
         const progressEvents = status.progressEvents.filter((event): event is Record<string, unknown> =>
           Boolean(event) && typeof event === "object",

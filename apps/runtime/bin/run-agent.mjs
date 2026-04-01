@@ -1903,7 +1903,7 @@ async function main() {
   const taskPath = process.env.ALPHABOOK_TASK_PATH;
   const outputDir = process.env.ALPHABOOK_OUTPUT_DIR;
   const runtimePrompt = process.env.ALPHABOOK_RUNTIME_PROMPT || "";
-  const model = process.env.RUNTIME_AGENT_MODEL || "gpt-5-codex";
+  const model = process.env.RUNTIME_AGENT_MODEL || "gpt-5.2-codex";
 
   if (!taskPath || !outputDir) {
     throw new Error("ALPHABOOK_TASK_PATH and ALPHABOOK_OUTPUT_DIR are required.");

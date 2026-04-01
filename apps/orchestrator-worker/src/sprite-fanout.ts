@@ -118,7 +118,9 @@ type SpriteRunHost = {
 
 const PROGRESS_REPORT_TIMEOUT_MS = 1_500;
 const SPRITE_RUN_EVENT_TIMEOUT_MS = 1_500;
-const SPRITE_SHARD_SIZE = 1000;
+const MAX_SPRITE_SHARD_SIZE = 1000;
+const MIN_SPRITE_SHARD_SIZE = 25;
+const TARGET_SPRITE_SHARD_COUNT = 12;
 const MAX_SPRITE_WORKSPACE_BYTES = 2 * 1024 * 1024 * 1024;
 const SPRITE_SHARD_NO_OUTPUT_TIMEOUT_MS = 150_000;
 
@@ -313,12 +315,24 @@ function totalBooksInCatalog(catalog: SpriteShardCatalog): number {
   return catalog.shards.reduce((sum, shard) => sum + shard.bookCount, 0);
 }
 
+function spriteShardSizeForDocumentCount(totalDocuments: number): number {
+  if (totalDocuments <= 0) {
+    return MAX_SPRITE_SHARD_SIZE;
+  }
+  return Math.min(
+    MAX_SPRITE_SHARD_SIZE,
+    Math.max(MIN_SPRITE_SHARD_SIZE, Math.ceil(totalDocuments / TARGET_SPRITE_SHARD_COUNT)),
+  );
+}
+
 export function isSpriteShardCatalogUsable(catalog: SpriteShardCatalog, expectedDocumentCount: number): boolean {
   if (!Array.isArray(catalog.shards) || catalog.shards.length === 0) {
     return false;
   }
-  const expectedShardCount = Math.max(1, Math.ceil(expectedDocumentCount / SPRITE_SHARD_SIZE));
+  const shardSize = spriteShardSizeForDocumentCount(expectedDocumentCount);
+  const expectedShardCount = Math.max(1, Math.ceil(expectedDocumentCount / shardSize));
   return totalBooksInCatalog(catalog) === expectedDocumentCount
+    && catalog.shardSize === shardSize
     && catalog.shardCount === expectedShardCount;
 }
 
@@ -343,6 +357,7 @@ function groupDocumentFiles(documentIds: string[], files: DocumentFileRecord[], 
 
 async function loadSpriteShardCatalog(store: AppStore, blobStore: BlobStore, implementationId: string): Promise<SpriteShardCatalog> {
   const totalDocuments = await store.countDocuments();
+  const shardSize = spriteShardSizeForDocumentCount(totalDocuments);
   const prebuilt = await blobStore.getText(spriteShardCatalogKey(implementationId));
   if (prebuilt) {
     const parsed = JSON.parse(prebuilt) as SpriteShardCatalog;
@@ -352,19 +367,19 @@ async function loadSpriteShardCatalog(store: AppStore, blobStore: BlobStore, imp
   }
 
   const documents: Array<{ id: string }> = [];
-  for (let offset = 0; offset < totalDocuments; offset += SPRITE_SHARD_SIZE) {
-    const batch = await store.listDocuments(offset, SPRITE_SHARD_SIZE);
+  for (let offset = 0; offset < totalDocuments; offset += shardSize) {
+    const batch = await store.listDocuments(offset, shardSize);
     documents.push(...batch.map((document) => ({ id: document.id })));
   }
   const shards: SpriteShardManifest[] = [];
-  for (let index = 0; index < documents.length; index += SPRITE_SHARD_SIZE) {
-    const workIds = documents.slice(index, index + SPRITE_SHARD_SIZE).map((document) => document.id);
+  for (let index = 0; index < documents.length; index += shardSize) {
+    const workIds = documents.slice(index, index + shardSize).map((document) => document.id);
     const files = await store.getDocumentFiles(workIds, ["clean"]);
     shards.push({
       implementationId,
-      shardId: `books-${Math.floor(index / SPRITE_SHARD_SIZE) + 1}`,
-      index: Math.floor(index / SPRITE_SHARD_SIZE),
-      totalShards: Math.max(1, Math.ceil(documents.length / SPRITE_SHARD_SIZE)),
+      shardId: `books-${Math.floor(index / shardSize) + 1}`,
+      index: Math.floor(index / shardSize),
+      totalShards: Math.max(1, Math.ceil(documents.length / shardSize)),
       bookCount: workIds.length,
       workIds,
       totalTextBytes: files.reduce((sum, file) => sum + (file.byteSize ?? 0), 0),
@@ -373,7 +388,7 @@ async function loadSpriteShardCatalog(store: AppStore, blobStore: BlobStore, imp
   const catalog: SpriteShardCatalog = {
     implementationId,
     generatedAt: nowIso(),
-    shardSize: SPRITE_SHARD_SIZE,
+    shardSize,
     shardCount: shards.length,
     shards: shards.map((shard) => ({
       ...shard,
