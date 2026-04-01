@@ -7,6 +7,8 @@ Use this prompt template when running Hermes over the DigitalOcean Project Guten
 ```text
 You are on a DigitalOcean droplet with a Project Gutenberg mirror at /srv/alphabook/gutenberg.
 
+This mirror is large: on the order of 122 GB, with hundreds of thousands of files, and many raw .txt corpus files. Treat it as a real local corpus, not a hypothetical one.
+
 A user has submitted this research request:
 
 <USER_RESEARCH_PROMPT>
@@ -101,6 +103,14 @@ Analysis requirements:
   - schema
   - main findings/themes
   - caveats, limits, and likely false positives/false negatives
+- In the main findings/themes section, do not only summarize themes abstractly.
+- For each recurrent way authors handle the topic in the user request that you identify, include:
+  - a short thematic explanation
+  - at least 2 exact representative quotes from the dataset
+  - inline citation markers for those quotes, such as `[CIT:record_id]`
+- Those citation markers must resolve to entries in the citation index and the dataset.
+- The briefing should make it easy for a reader to go from a claim, to a quote, to the exact source passage.
+- Prefer representative quotes that are concrete and legible, not just isolated keyword hits.
 - Build lightweight visualizations if useful.
   - Markdown tables, CSV summaries, JSON summaries, or SVG charts are fine.
 
@@ -131,6 +141,7 @@ Quality bar:
 - Search the full chosen scope.
 - Use exact quotes in the dataset.
 - Every kept quote must have a reasoning field explaining relevance.
+- The briefing must include exact quotes plus citation markers, not just prose summaries.
 - Prefer a useful, inspectable dataset over a clever but opaque workflow.
 
 At the end:
@@ -145,5 +156,5 @@ At the end:
 ## Test Case
 
 ```text
-Find me all the different ways that authors deal with grief in 19th century literature.
+Find me all the different ways that authors deal with grief in literature.
 ```
