@@ -293,7 +293,7 @@ function resolveArtifactPath(runDir, artifactName) {
   return null;
 }
 
-function getLogSources(runDir) {
+function getCuratedLogSources(runDir) {
   const innerRunDir = inferInnerRunDir(runDir);
   const sources = [
     { name: "launcher", path: path.join(runDir, "launcher.log") },
@@ -311,6 +311,108 @@ function getLogSources(runDir) {
     );
   }
   return sources.filter((source) => statSafe(source.path)?.isFile());
+}
+
+function isOperationalLogFile(rootDir, filePath) {
+  const relativePath = path.relative(rootDir, filePath).replaceAll(path.sep, "/");
+  const extension = path.extname(filePath).toLowerCase();
+  const baseName = path.basename(filePath).toLowerCase();
+
+  if (
+    relativePath.startsWith("hermes-home/.hermes/skills/") ||
+    relativePath.startsWith("hermes-home/.hermes/plugins/") ||
+    relativePath.startsWith("hermes-home/.hermes/.skills/")
+  ) {
+    return false;
+  }
+
+  if (
+    [
+      ".log",
+      ".jsonl",
+      ".request.json",
+      ".response.json",
+    ].some((suffix) => relativePath.endsWith(suffix))
+  ) {
+    return true;
+  }
+
+  if (![".json", ".txt", ".md", ".csv", ".tsv", ".yaml", ".yml", ".svg"].includes(extension)) {
+    return false;
+  }
+
+  return [
+    "run",
+    "stream",
+    "status",
+    "summary",
+    "index",
+    "manifest",
+    "prompt",
+    "session",
+    "process",
+    "command",
+    "profile",
+    "heartbeat",
+    "request",
+    "response",
+    "briefing",
+    "theme",
+  ].some((token) => baseName.includes(token));
+}
+
+function collectTextFiles(rootDir, prefix) {
+  if (!rootDir || !fs.existsSync(rootDir)) {
+    return [];
+  }
+  const files = [];
+  const walk = (currentDir) => {
+    for (const entry of fs.readdirSync(currentDir, { withFileTypes: true })) {
+      const fullPath = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        walk(fullPath);
+        continue;
+      }
+      if (!entry.isFile() || !isOperationalLogFile(rootDir, fullPath)) {
+        continue;
+      }
+      const relative = path.relative(rootDir, fullPath);
+      files.push({
+        name: `${prefix}/${relative.replaceAll(path.sep, "/")}`,
+        path: fullPath,
+      });
+    }
+  };
+  walk(rootDir);
+  return files;
+}
+
+function getLogSources(runDir, mode = "curated") {
+  if (mode !== "all") {
+    return getCuratedLogSources(runDir);
+  }
+  const innerRunDir = inferInnerRunDir(runDir);
+  const deduped = new Map();
+  for (const source of [
+    ...collectTextFiles(runDir, "wrapper"),
+    ...collectTextFiles(innerRunDir, "inner"),
+  ]) {
+    if (statSafe(source.path)?.isFile()) {
+      deduped.set(source.path, source);
+    }
+  }
+  return [...deduped.values()]
+    .filter((source) => {
+      const normalizedPath = source.path.replaceAll(path.sep, "/");
+      return ![
+        "/hermes-home/.hermes/skills/",
+        "/hermes-home/.hermes/plugins/",
+        "/hermes-home/.hermes/.skills/",
+        "/hermes-home/.hermes/config.yaml",
+        "/hermes-home/.hermes/.skills_prompt_snapshot.json",
+      ].some((needle) => normalizedPath.includes(needle));
+    })
+    .sort((left, right) => left.name.localeCompare(right.name));
 }
 
 function encodeCursor(cursor) {
@@ -333,9 +435,9 @@ function tailLines(text, limit) {
   return lines.slice(-limit);
 }
 
-async function readLogUpdates(runDir, cursorRaw, limit) {
+async function readLogUpdates(runDir, cursorRaw, limit, mode = "curated") {
   const cursor = decodeCursor(cursorRaw);
-  const sources = getLogSources(runDir);
+  const sources = getLogSources(runDir, mode);
   const responseSources = [];
   const nextCursor = {};
 
@@ -622,9 +724,11 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const limit = Math.max(1, Math.min(500, Number.parseInt(requestUrl.searchParams.get("limit") || "100", 10)));
-      const logs = await readLogUpdates(runDir, requestUrl.searchParams.get("cursor"), limit);
+      const mode = requestUrl.searchParams.get("mode") === "all" ? "all" : "curated";
+      const logs = await readLogUpdates(runDir, requestUrl.searchParams.get("cursor"), limit, mode);
       sendJson(res, 200, {
         jobId: logMatch[1],
+        mode,
         ...logs,
       });
       return;

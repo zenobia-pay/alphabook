@@ -18,6 +18,7 @@ type Args = {
   corpusRoot?: string;
   cancelOnSigint: boolean;
   includeMetaSources: boolean;
+  logMode: "all" | "curated";
 };
 
 type JobSummary = {
@@ -51,6 +52,7 @@ type LogSource = {
 
 type LogsResponse = {
   jobId: string;
+  mode?: "all" | "curated";
   sources: LogSource[];
   nextCursor: string;
 };
@@ -85,6 +87,7 @@ function usage(): never {
       "  --max-turns <n>            Override Hermes max turns",
       "  --poll-ms <ms>             Log polling interval (default 3000)",
       "  --log-limit <n>            Max lines per source per poll (default 200)",
+      "  --log-mode <all|curated>   Stream every text log/artifact or the smaller curated subset (default all)",
       "  --previous-job-id <id>     Resume a previous Hermes job thread",
       "  --hermes-session-id <id>   Explicit Hermes session id for resume",
       "  --corpus-root <path>       Override corpus root",
@@ -107,6 +110,7 @@ function parseArgs(argv: string[]): Args {
     logLimit: 200,
     cancelOnSigint: true,
     includeMetaSources: false,
+    logMode: "all",
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -149,6 +153,14 @@ function parseArgs(argv: string[]): Args {
     }
     if (arg === "--log-limit" && next) {
       args.logLimit = Number.parseInt(next, 10);
+      index += 1;
+      continue;
+    }
+    if (arg === "--log-mode" && next) {
+      if (next !== "all" && next !== "curated") {
+        throw new Error(`Invalid --log-mode value: ${next}`);
+      }
+      args.logMode = next;
       index += 1;
       continue;
     }
@@ -279,6 +291,9 @@ function printLogLines(source: LogSource) {
 }
 
 function shouldPrintSource(name: string, includeMetaSources: boolean): boolean {
+  if (name.startsWith("wrapper/") || name.startsWith("inner/")) {
+    return true;
+  }
   if (includeMetaSources) {
     return true;
   }
@@ -356,10 +371,10 @@ async function waitForCompletion(
     const logs = await apiFetch<LogsResponse>(
       apiUrl,
       apiToken,
-      `/v1/jobs/${encodeURIComponent(jobId)}/logs?limit=${args.logLimit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+      `/v1/jobs/${encodeURIComponent(jobId)}/logs?limit=${args.logLimit}&mode=${encodeURIComponent(args.logMode)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
     );
     for (const source of logs.sources) {
-      if (source.lines.length > 0 && shouldPrintSource(source.name, args.includeMetaSources)) {
+      if (source.lines.length > 0 && (args.logMode === "all" || shouldPrintSource(source.name, args.includeMetaSources))) {
         printLogLines(source);
       }
     }
