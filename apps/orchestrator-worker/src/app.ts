@@ -8098,6 +8098,31 @@ function extractHermesThreadMetadata(messages: MessageRecord[]): HermesThreadMet
   return null;
 }
 
+async function buildHermesUserPrompt(
+  deps: AppDeps,
+  input: ChatRequest,
+) {
+  const basePrompt = input.message.trim();
+  if (!Array.isArray(input.workIds) || input.workIds.length === 0) {
+    return basePrompt;
+  }
+  const workMetadata = await deps.store.getWorkMetadata(input.workIds.slice(0, 12)).catch(() => []);
+  if (!Array.isArray(workMetadata) || workMetadata.length === 0) {
+    return basePrompt;
+  }
+  const contextLines = workMetadata.map((work) => {
+    const authors = Array.isArray(work.authors) && work.authors.length > 0 ? work.authors.join(", ") : "Unknown author";
+    return `- ${work.title} by ${authors} (${work.id})`;
+  });
+  return [
+    basePrompt,
+    "",
+    "AlphaBook context:",
+    "The user currently has these works selected. Treat them as a strong prior when deciding scope and evidence:",
+    ...contextLines,
+  ].join("\n");
+}
+
 async function runHermesConversation(
   deps: AppDeps,
   request: Request,
@@ -8247,8 +8272,9 @@ async function runHermesConversation(
     text: planText,
   });
 
+  const hermesUserPrompt = await buildHermesUserPrompt(deps, input);
   const launchPayload = {
-    userPrompt: input.message,
+    userPrompt: hermesUserPrompt,
     model: deps.hermesModel,
     maxTurns: deps.hermesMaxTurns,
   };
@@ -8512,6 +8538,51 @@ async function runHermesConversation(
         : briefingMarkdown
           ? `Hermes completed the run. The full briefing is attached in the research pane.`
           : `Hermes completed the run.`).trim();
+
+    const manifestStatus = typeof job.manifestStatus === "string" ? job.manifestStatus.trim() : "";
+    const runSucceeded =
+      job.state === "completed"
+      && (job.exitCode == null || job.exitCode === 0)
+      && (
+        briefingMarkdown.length > 0
+        || /^completed/iu.test(manifestStatus)
+      );
+
+    if (!runSucceeded) {
+      const failureMessage = finalAnswer && finalAnswer !== "Hermes completed the run."
+        ? finalAnswer
+        : "Hermes finished without producing the expected briefing artifacts.";
+      await deps.store.appendMessage(activeSession.id, "assistant", failureMessage, {
+        phase: "error",
+        runId: run.id,
+        hermes: {
+          jobId: job.id,
+          sessionId: job.hermesSessionId ?? finalSnapshot?.session_id ?? null,
+          model: job.model ?? deps.hermesModel ?? null,
+          innerRunId: job.innerRunId ?? null,
+          innerRunDir: job.innerRunDir ?? null,
+          estimatedCostUsd: job.cost?.estimatedCostUsd ?? null,
+        },
+      });
+      await writeTerminalRunState(deps, run.id, "failed");
+      await emit("run.completed", {
+        runId: run.id,
+        sessionId: activeSession.id,
+        status: "failed",
+        completionMode: "hermes",
+        error: failureMessage,
+        hermes: {
+          jobId: job.id,
+          sessionId: job.hermesSessionId ?? finalSnapshot?.session_id ?? null,
+          model: job.model ?? deps.hermesModel ?? null,
+          innerRunId: job.innerRunId ?? null,
+          innerRunDir: job.innerRunDir ?? null,
+          estimatedCostUsd: job.cost?.estimatedCostUsd ?? null,
+          manifestStatus: manifestStatus || null,
+        },
+      });
+      return;
+    }
 
     await persistCompletedAssistantAnswer(deps, {
       sessionId: activeSession.id,

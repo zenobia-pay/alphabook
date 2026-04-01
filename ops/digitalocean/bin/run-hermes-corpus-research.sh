@@ -204,17 +204,58 @@ else:
 path.write_text(text)
 PY
 
-python3 - "$prompt_file" "$CORPUS_ROOT" "$USER_PROMPT" "$RESUME_SESSION_ID" <<'PY'
+python3 - "$prompt_file" "$CORPUS_ROOT" "$USER_PROMPT" "$RESUME_SESSION_ID" "$RESUME_RUN_DIR" <<'PY'
 from pathlib import Path
 import sys
+import json
 
 prompt_path = Path(sys.argv[1])
 corpus_root = sys.argv[2]
 user_prompt = sys.argv[3]
 resume_session_id = sys.argv[4].strip()
+resume_run_dir = Path(sys.argv[5]) if len(sys.argv) > 5 and sys.argv[5].strip() else None
 
 if resume_session_id:
-    prompt_path.write_text(user_prompt)
+    inner_run_dir = None
+    if resume_run_dir:
+        for candidate in (
+            resume_run_dir / "index.json",
+            resume_run_dir / "status.json",
+            resume_run_dir / "summary.json",
+        ):
+            if not candidate.exists():
+                continue
+            try:
+                payload = json.loads(candidate.read_text())
+            except Exception:
+                continue
+            value = payload.get("inner_run_dir")
+            if isinstance(value, str) and value.strip():
+                inner_run_dir = value.strip()
+                break
+
+    follow_up_prompt = f"""You are continuing an existing Hermes research thread on this droplet.
+
+This is a follow-up user message, not a fresh top-level run.
+
+Resume behavior requirements:
+- Do not restart corpus setup, manifest generation, or broad retrieval if the prior run artifacts already contain what you need.
+- Reuse the existing thread context, prior findings, existing dataset files, and prior briefing artifacts first.
+- Only create a new corpus-research run directory if the follow-up genuinely requires new extraction or a materially different search.
+- If you do need a new run, say why in the new manifest and keep it incremental.
+- Prefer inspecting existing artifacts and answering from them over rerunning broad helper scripts.
+- Treat helper scripts as optional tools, not mandatory first steps on a follow-up.
+
+Prior wrapper run directory:
+- {resume_run_dir if resume_run_dir else "unknown"}
+
+Prior inner corpus run directory:
+- {inner_run_dir or "unknown"}
+
+User follow-up:
+{user_prompt}
+"""
+    prompt_path.write_text(follow_up_prompt)
     raise SystemExit
 
 prompt = f"""You are on a DigitalOcean droplet with a Project Gutenberg mirror at {corpus_root}.
