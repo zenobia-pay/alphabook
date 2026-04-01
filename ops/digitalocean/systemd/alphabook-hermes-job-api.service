@@ -1,0 +1,22 @@
+[Unit]
+Description=AlphaBook Hermes corpus research job API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=ROOT_DIR=/srv/alphabook/repo
+Environment=RUN_ROOT=/srv/alphabook/logs/hermes-corpus-research
+Environment=CORPUS_RUN_ROOT=/srv/alphabook/logs/corpus-research
+Environment=API_LOG_ROOT=/srv/alphabook/logs/hermes-job-api
+Environment=HERMES_JOB_API_HOST=0.0.0.0
+Environment=HERMES_JOB_API_PORT=8788
+Environment=HERMES_JOB_API_TOKEN_FILE=/srv/alphabook/.hermes-job-api-token
+ExecStart=/usr/bin/env node /srv/alphabook/bin/hermes-job-api.mjs
+WorkingDirectory=/srv/alphabook/repo
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target

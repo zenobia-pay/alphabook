@@ -20,10 +20,12 @@ Target layout on the VM:
 - `/srv/alphabook/bin/prune-orphan-r2-keys.sh`
 - `/srv/alphabook/bin/backfill-book-html-all.sh`
 - `/srv/alphabook/bin/rebuild-book-html-all.sh`
+- `/srv/alphabook/bin/hermes-job-api.mjs`
 - `/etc/systemd/system/alphabook-gutenberg-rsync.service`
 - `/etc/systemd/system/alphabook-gutenberg-rsync.timer`
 - `/etc/systemd/system/alphabook-gutenberg-rsync-epub.service`
 - `/etc/systemd/system/alphabook-gutenberg-rsync-epub.timer`
+- `/etc/systemd/system/alphabook-hermes-job-api.service`
 
 ## Bootstrap
 
@@ -46,6 +48,7 @@ That script:
 - installs the full D1 + Vectorize rebuild runner
 - installs the full book HTML backfill runner into `/srv/alphabook/bin`
 - installs the full book HTML rebuild runner into `/srv/alphabook/bin`
+- installs the Hermes job API runner and systemd unit
 - installs the systemd services and timers
 - enables the recurring timers
 
@@ -287,6 +290,73 @@ Artifacts written per run:
 - `status.json`
 - `summary.json`
 - `hermes.pid`
+
+## Hermes Job API
+
+For external products that need to kick off and monitor droplet-side research runs, use the Hermes job API service.
+
+Systemd unit:
+
+```bash
+sudo cp ops/digitalocean/bin/hermes-job-api.mjs /srv/alphabook/bin/hermes-job-api.mjs
+sudo cp ops/digitalocean/systemd/alphabook-hermes-job-api.service /etc/systemd/system/alphabook-hermes-job-api.service
+sudo install -d -m 755 /srv/alphabook/logs/hermes-job-api
+sudo test -f /srv/alphabook/.hermes-job-api-token || openssl rand -hex 24 | sudo tee /srv/alphabook/.hermes-job-api-token >/dev/null
+sudo chmod 600 /srv/alphabook/.hermes-job-api-token
+sudo systemctl daemon-reload
+sudo systemctl enable --now alphabook-hermes-job-api.service
+sudo systemctl status alphabook-hermes-job-api.service --no-pager
+```
+
+Default bind:
+
+- `0.0.0.0:8788`
+- bearer token read from `/srv/alphabook/.hermes-job-api-token`
+
+Endpoints:
+
+- `GET /health`
+- `GET /v1/jobs`
+- `GET /v1/jobs/active`
+- `POST /v1/jobs`
+- `GET /v1/jobs/:jobId`
+- `GET /v1/jobs/:jobId/logs`
+- `GET /v1/jobs/:jobId/artifacts`
+
+Submit a new job:
+
+```bash
+TOKEN="$(sudo cat /srv/alphabook/.hermes-job-api-token)"
+curl -sS \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"userPrompt":"Find me all the different ways that authors deal with grief in literature."}' \
+  http://127.0.0.1:8788/v1/jobs
+```
+
+Poll active jobs:
+
+```bash
+curl -sS \
+  -H "Authorization: Bearer $TOKEN" \
+  http://127.0.0.1:8788/v1/jobs/active
+```
+
+Poll logs:
+
+```bash
+curl -sS \
+  -H "Authorization: Bearer $TOKEN" \
+  "http://127.0.0.1:8788/v1/jobs/<job-id>/logs?limit=100"
+```
+
+Notes:
+
+- The API is a thin wrapper over `/srv/alphabook/logs/hermes-corpus-research/*`.
+- `POST /v1/jobs` launches the existing `run-hermes-corpus-research.sh`.
+- cost fields are exposed when the inner run writes `cost-profile.json` or a compatible `status.json`; otherwise cost remains unavailable instead of guessed.
+- `GET /v1/jobs/:jobId/logs` is poll-friendly and returns per-source line tails plus a cursor for incremental fetches.
+- Bootstrap installs the runner, unit, and token file, but you still need the repo present at `/srv/alphabook/repo` before enabling the service.
 
 For ripgrep progress-aware corpus scans, the expected helper flow is:
 
