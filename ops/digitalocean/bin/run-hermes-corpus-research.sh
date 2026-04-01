@@ -11,6 +11,8 @@ CORPUS_ROOT="${CORPUS_ROOT:-/srv/alphabook/gutenberg}"
 MODEL="${MODEL:-gpt-5.4}"
 MAX_TURNS="${MAX_TURNS:-60}"
 HEARTBEAT_SECONDS="${HEARTBEAT_SECONDS:-15}"
+RESUME_RUN_DIR=""
+RESUME_SESSION_ID=""
 
 usage() {
   cat >&2 <<'EOF'
@@ -23,6 +25,8 @@ Options:
   --run-root PATH        Output root. Default: /srv/alphabook/logs/hermes-corpus-research
   --corpus-root PATH     Corpus root. Default: /srv/alphabook/gutenberg
   --root-dir PATH        Repo root. Default: /srv/alphabook/repo
+  --resume-run-dir PATH  Prior wrapper run dir to resume Hermes thread from
+  --resume-session-id ID Prior Hermes session id to resume
 EOF
   exit 1
 }
@@ -61,6 +65,16 @@ while [[ $# -gt 0 ]]; do
       ROOT_DIR="$2"
       shift 2
       ;;
+    --resume-run-dir)
+      [[ $# -ge 2 ]] || usage
+      RESUME_RUN_DIR="$2"
+      shift 2
+      ;;
+    --resume-session-id)
+      [[ $# -ge 2 ]] || usage
+      RESUME_SESSION_ID="$2"
+      shift 2
+      ;;
     *)
       echo "Unknown argument: $1" >&2
       usage
@@ -70,6 +84,9 @@ done
 
 [[ -n "$USER_PROMPT" ]] || usage
 [[ -d "$ROOT_DIR" ]] || { echo "Missing repo root: $ROOT_DIR" >&2; exit 1; }
+if [[ -n "$RESUME_RUN_DIR" ]]; then
+  [[ -d "$RESUME_RUN_DIR" ]] || { echo "Missing resume run dir: $RESUME_RUN_DIR" >&2; exit 1; }
+fi
 mkdir -p "$RUN_ROOT"
 
 load_key() {
@@ -119,6 +136,38 @@ status_file="$run_dir/status.json"
 summary_file="$run_dir/summary.json"
 index_file="$run_dir/index.json"
 
+if [[ -n "$RESUME_RUN_DIR" && -d "$RESUME_RUN_DIR/hermes-home/.hermes" ]]; then
+  mkdir -p "$hermes_home/.hermes"
+  cp -R "$RESUME_RUN_DIR/hermes-home/.hermes/." "$hermes_home/.hermes/"
+  mkdir -p "$hermes_home/.hermes/sessions"
+fi
+
+if [[ -z "$RESUME_SESSION_ID" && -n "$RESUME_RUN_DIR" ]]; then
+  RESUME_SESSION_ID="$(python3 - "$RESUME_RUN_DIR" <<'PY'
+from pathlib import Path
+import json
+import sys
+
+run_dir = Path(sys.argv[1])
+for candidate in (run_dir / "status.json", run_dir / "hermes.session.json"):
+    if not candidate.exists():
+        continue
+    try:
+        payload = json.loads(candidate.read_text())
+    except Exception:
+        continue
+    session_id = payload.get("hermes_session_id") or payload.get("session_id")
+    if isinstance(session_id, str) and session_id.strip():
+        print(session_id.strip())
+        raise SystemExit
+sessions_dir = run_dir / "hermes-home" / ".hermes" / "sessions"
+session_files = sorted(sessions_dir.glob("session_*.json"))
+if session_files:
+    print(session_files[-1].stem.removeprefix("session_"))
+PY
+)"
+fi
+
 if [[ -f "$HERMES_CONFIG_SOURCE" ]]; then
   cp "$HERMES_CONFIG_SOURCE" "$hermes_home/.hermes/config.yaml"
 else
@@ -155,13 +204,18 @@ else:
 path.write_text(text)
 PY
 
-python3 - "$prompt_file" "$CORPUS_ROOT" "$USER_PROMPT" <<'PY'
+python3 - "$prompt_file" "$CORPUS_ROOT" "$USER_PROMPT" "$RESUME_SESSION_ID" <<'PY'
 from pathlib import Path
 import sys
 
 prompt_path = Path(sys.argv[1])
 corpus_root = sys.argv[2]
 user_prompt = sys.argv[3]
+resume_session_id = sys.argv[4].strip()
+
+if resume_session_id:
+    prompt_path.write_text(user_prompt)
+    raise SystemExit
 
 prompt = f"""You are on a DigitalOcean droplet with a Project Gutenberg mirror at {corpus_root}.
 
@@ -315,7 +369,7 @@ At the end:
 prompt_path.write_text(prompt)
 PY
 
-python3 - "$status_file" "$summary_file" "$timestamp" "$run_id" "$job_id" "$ROOT_DIR" "$CORPUS_ROOT" "$MODEL" "$MAX_TURNS" "$USER_PROMPT" <<'PY'
+python3 - "$status_file" "$summary_file" "$timestamp" "$run_id" "$job_id" "$ROOT_DIR" "$CORPUS_ROOT" "$MODEL" "$MAX_TURNS" "$USER_PROMPT" "$RESUME_RUN_DIR" "$RESUME_SESSION_ID" <<'PY'
 from pathlib import Path
 import json
 import sys
@@ -331,6 +385,8 @@ payload = {
     "model": sys.argv[8],
     "max_turns": int(sys.argv[9]),
     "user_prompt": sys.argv[10],
+    "resumed_from_run_dir": sys.argv[11] or None,
+    "resumed_session_id": sys.argv[12] or None,
     "state": "launching",
     "run_dir": str(status_path.parent),
 }
@@ -349,6 +405,7 @@ echo "max_turns=$MAX_TURNS"
 echo "prompt_file=$PROMPT_FILE"
 echo "job_id=$JOB_ID"
 echo "hermes_home=$HOME"
+echo "resume_session_id=${RESUME_SESSION_ID:-}"
 
 python3 - "$STATUS_FILE" "running" "$(date -u +%FT%TZ)" <<'PY'
 from pathlib import Path
@@ -363,7 +420,11 @@ path.write_text(json.dumps(data, indent=2) + "\n")
 PY
 
 set +e
-hermes chat -m "$MODEL" -q "$(cat "$PROMPT_FILE")" -Q --max-turns "$MAX_TURNS" --yolo > >(stdbuf -oL tee -a "$STDOUT_LOG") 2> >(stdbuf -oL tee -a "$STDERR_LOG" >&2)
+if [[ -n "${RESUME_SESSION_ID:-}" ]]; then
+  hermes chat --resume "$RESUME_SESSION_ID" -m "$MODEL" -q "$(cat "$PROMPT_FILE")" -Q --max-turns "$MAX_TURNS" --yolo > >(stdbuf -oL tee -a "$STDOUT_LOG") 2> >(stdbuf -oL tee -a "$STDERR_LOG" >&2)
+else
+  hermes chat -m "$MODEL" -q "$(cat "$PROMPT_FILE")" -Q --max-turns "$MAX_TURNS" --yolo > >(stdbuf -oL tee -a "$STDOUT_LOG") 2> >(stdbuf -oL tee -a "$STDERR_LOG" >&2)
+fi
 exit_code=$?
 set -e
 
@@ -400,6 +461,8 @@ chmod +x "$run_dir/run-hermes.sh"
   echo "corpus_root=$CORPUS_ROOT"
   echo "model=$MODEL"
   echo "max_turns=$MAX_TURNS"
+  echo "resume_run_dir=$RESUME_RUN_DIR"
+  echo "resume_session_id=$RESUME_SESSION_ID"
 } >"$launcher_log"
 
 (
@@ -414,6 +477,7 @@ chmod +x "$run_dir/run-hermes.sh"
   export SUMMARY_FILE="$summary_file"
   export RUN_DIR="$run_dir"
   export JOB_ID="$job_id"
+  export RESUME_SESSION_ID="$RESUME_SESSION_ID"
   export HOME="$hermes_home"
   nohup "$run_dir/run-hermes.sh" >>"$launcher_log" 2>&1 &
   echo $! >"$pid_file"

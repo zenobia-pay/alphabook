@@ -20,6 +20,15 @@ import { ZodError, z } from "zod";
 import type { WorkOSAuth } from "./auth";
 import type { BillingService } from "./billing";
 import { HashEmbedder, type Embedder } from "./embeddings";
+import {
+  cancelHermesJob,
+  createHermesJob,
+  fetchHermesArtifact,
+  fetchHermesJob,
+  fetchHermesJobLogs,
+  resumeHermesJob,
+  type HermesJobSummary,
+} from "./hermes-job-client";
 import { MemoryBlobStore, type BlobStore } from "./r2";
 import type { Planner, PlannerContext } from "./planner";
 import { FallbackPlanner, parseToolCall } from "./planner";
@@ -72,6 +81,10 @@ export interface AppDeps {
   adminAllowedEmail?: string;
   openAIApiKey?: string;
   openAIModel?: string;
+  hermesJobApiUrl?: string;
+  hermesJobApiToken?: string;
+  hermesModel?: string;
+  hermesMaxTurns?: number;
   runtimeSharedToken?: string;
   ai?: WorkersAiBinding;
   toolStreamCleanupModel?: string;
@@ -7965,6 +7978,594 @@ async function persistCompletedAssistantAnswer(
   return { answer: linkedAnswer, citations: params.citations, artifactKey, researchDocumentHtml };
 }
 
+type HermesThreadMetadata = {
+  jobId: string;
+  sessionId?: string | null;
+  model?: string | null;
+  innerRunId?: string | null;
+  innerRunDir?: string | null;
+  estimatedCostUsd?: number | null;
+};
+
+type HermesSessionMessage = {
+  role?: string;
+  content?: string | null;
+  reasoning?: string | null;
+  finish_reason?: string | null;
+  tool_calls?: Array<{
+    id?: string;
+    call_id?: string;
+    type?: string;
+    function?: {
+      name?: string;
+      arguments?: string;
+    };
+  }>;
+  tool_call_id?: string;
+};
+
+type HermesSessionSnapshot = {
+  session_id?: string;
+  message_count?: number;
+  messages?: HermesSessionMessage[];
+  last_updated?: string;
+};
+
+function shouldUseHermesBackend(deps: AppDeps) {
+  return typeof deps.hermesJobApiUrl === "string" && deps.hermesJobApiUrl.trim().length > 0;
+}
+
+function normalizeHermesArtifactName(input: string) {
+  return input.trim().replace(/^\/+/u, "");
+}
+
+function parseHermesJsonRecord(input: string | null | undefined) {
+  if (typeof input !== "string") {
+    return null;
+  }
+  try {
+    return JSON.parse(input) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function truncateHermesText(input: string, maxChars = 400) {
+  const normalized = input.replace(/\s+/gu, " ").trim();
+  if (normalized.length <= maxChars) {
+    return normalized;
+  }
+  return `${normalized.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
+}
+
+function humanizeHermesToolLabel(name: string) {
+  const cleaned = name.replace(/[_-]+/gu, " ").trim();
+  return cleaned.length > 0
+    ? cleaned.replace(/\b\w/gu, (char) => char.toUpperCase())
+    : "Hermes Step";
+}
+
+function summarizeHermesToolResult(content: string | null | undefined) {
+  if (typeof content !== "string" || content.trim().length === 0) {
+    return { text: null, result: {} as Record<string, unknown> };
+  }
+  const parsed = parseHermesJsonRecord(content);
+  if (!parsed) {
+    return {
+      text: truncateHermesText(content),
+      result: {
+        output: truncateHermesText(content, 800),
+      },
+    };
+  }
+  const preferredText =
+    typeof parsed.stdout === "string" && parsed.stdout.trim().length > 0
+      ? parsed.stdout
+      : typeof parsed.stderr === "string" && parsed.stderr.trim().length > 0
+        ? parsed.stderr
+        : typeof parsed.content === "string" && parsed.content.trim().length > 0
+          ? parsed.content
+          : typeof parsed.text === "string" && parsed.text.trim().length > 0
+            ? parsed.text
+            : typeof parsed.summary === "string" && parsed.summary.trim().length > 0
+              ? parsed.summary
+              : null;
+  return {
+    text: preferredText ? truncateHermesText(preferredText) : truncateHermesText(content),
+    result: parsed,
+  };
+}
+
+function extractHermesThreadMetadata(messages: MessageRecord[]): HermesThreadMetadata | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    const candidate =
+      message.metadata?.hermes && typeof message.metadata.hermes === "object"
+        ? message.metadata.hermes as Record<string, unknown>
+        : null;
+    if (!candidate || typeof candidate.jobId !== "string" || candidate.jobId.trim().length === 0) {
+      continue;
+    }
+    return {
+      jobId: candidate.jobId,
+      sessionId: typeof candidate.sessionId === "string" ? candidate.sessionId : null,
+      model: typeof candidate.model === "string" ? candidate.model : null,
+      innerRunId: typeof candidate.innerRunId === "string" ? candidate.innerRunId : null,
+      innerRunDir: typeof candidate.innerRunDir === "string" ? candidate.innerRunDir : null,
+      estimatedCostUsd: typeof candidate.estimatedCostUsd === "number" ? candidate.estimatedCostUsd : null,
+    };
+  }
+  return null;
+}
+
+async function runHermesConversation(
+  deps: AppDeps,
+  request: Request,
+  input: ChatRequest,
+  send: (event: string, data: Record<string, unknown>) => Promise<void>,
+  activeRuns: Map<string, ActiveRunState>,
+) {
+  if (!input.userId) {
+    throw new Error("A userId is required to start a Hermes run.");
+  }
+  if (!deps.hermesJobApiUrl) {
+    throw new Error("Hermes job API is not configured.");
+  }
+
+  await deps.store.ensureUser(input.userId);
+  let session: SessionRecord | null = input.sessionId ? await deps.store.getSession(input.sessionId) : null;
+  if (session && session.userId !== input.userId) {
+    throw new Error("Not authorized for this session.");
+  }
+
+  if (!session) {
+    session = await deps.store.createSession(input.userId);
+    await send("session.created", {
+      sessionId: session.id,
+      title: session.title,
+    });
+    void (async () => {
+      try {
+        const generatedTitle = await createSessionTitle(deps, input.message);
+        await deps.store.updateSessionTitle(session!.id, generatedTitle);
+        await send("session.updated", {
+          sessionId: session!.id,
+          title: generatedTitle,
+        });
+      } catch {
+        // Ignore title-generation failures for Hermes sessions.
+      }
+    })();
+  }
+
+  const activeSession = session;
+  const sessionMessages = await deps.store.listMessages(activeSession.id);
+  const priorHermesThread = extractHermesThreadMetadata(sessionMessages);
+  let baselineHermesMessageCount = 0;
+  if (priorHermesThread?.jobId) {
+    try {
+      const priorSessionArtifact = await fetchHermesArtifact(
+        deps.hermesJobApiUrl,
+        deps.hermesJobApiToken,
+        priorHermesThread.jobId,
+        normalizeHermesArtifactName("hermes.session.json"),
+      );
+      const priorSnapshot = parseHermesJsonRecord(priorSessionArtifact.artifact.content) as HermesSessionSnapshot | null;
+      baselineHermesMessageCount = Array.isArray(priorSnapshot?.messages) ? priorSnapshot.messages.length : 0;
+    } catch {
+      baselineHermesMessageCount = 0;
+    }
+  }
+  await deps.store.appendMessage(activeSession.id, "user", input.message, {
+    phase: "user",
+  });
+
+  const run = await deps.store.createRun(activeSession.id);
+  activeRuns.set(run.id, {
+    sessionId: activeSession.id,
+    userId: activeSession.userId,
+    runtimeIds: new Set<string>(),
+    cancelRequested: false,
+    rawLog: [],
+    subscribers: new Map(),
+  });
+
+  let planMessageId: string | null = null;
+  let latestPlanTraceVersion = 0;
+  let persistedPlanTraceVersion = 0;
+  let planTracePersistChain = Promise.resolve();
+  let liveToolTrace: LiveToolTraceEntry[] = [];
+  let currentToolCallId: string | null = null;
+
+  const persistLatestPlanToolTrace = async () => {
+    if (!planMessageId) {
+      return;
+    }
+    const version = ++latestPlanTraceVersion;
+    const snapshot = cloneLiveToolTraceEntries(liveToolTrace);
+    const queuedWrite = planTracePersistChain.then(async () => {
+      if (version <= persistedPlanTraceVersion || version !== latestPlanTraceVersion) {
+        return;
+      }
+      await deps.store.updateMessageMetadata(planMessageId!, {
+        phase: "plan",
+        runId: run.id,
+        toolCalls: snapshot,
+      });
+      persistedPlanTraceVersion = version;
+    });
+    planTracePersistChain = queuedWrite.catch(() => {});
+    await queuedWrite;
+  };
+
+  const emit = async (event: string, data: Record<string, unknown>) => {
+    const persistable = new Set([
+      "run.started",
+      "assistant.plan",
+      "tool.started",
+      "tool.progress",
+      "tool.completed",
+      "assistant.completed",
+      "run.completed",
+    ]);
+    if (persistable.has(event)) {
+      await deps.store.appendRunEvent(run.id, activeSession.id, event, data);
+    }
+    await send(event, data);
+    const activeRun = activeRuns.get(run.id);
+    if (!activeRun || activeRun.subscribers.size === 0) {
+      return;
+    }
+    const subscribers = [...activeRun.subscribers.values()];
+    await Promise.all(subscribers.map(async (subscriber) => {
+      try {
+        await subscriber(event, data);
+      } catch {
+        // Ignore subscriber disconnect races.
+      }
+    }));
+  };
+
+  const planText = priorHermesThread
+    ? "Resuming the existing Hermes thread and continuing the research run."
+    : "Starting a Hermes research run on this thread and streaming the tool activity here.";
+  const planMessage = await deps.store.appendMessage(activeSession.id, "assistant", planText, {
+    phase: "plan",
+    runId: run.id,
+  });
+  planMessageId = planMessage.id;
+  await persistLatestPlanToolTrace();
+
+  await emit("run.started", {
+    runId: run.id,
+    sessionId: activeSession.id,
+  });
+  await emit("assistant.plan", {
+    runId: run.id,
+    sessionId: activeSession.id,
+    messageId: planMessage.id,
+    text: planText,
+  });
+
+  const launchPayload = {
+    userPrompt: input.message,
+    model: deps.hermesModel,
+    maxTurns: deps.hermesMaxTurns,
+  };
+  const launchResult = priorHermesThread?.jobId
+    ? await resumeHermesJob(deps.hermesJobApiUrl, deps.hermesJobApiToken, {
+        previousJobId: priorHermesThread.jobId,
+        hermesSessionId: priorHermesThread.sessionId ?? undefined,
+        ...launchPayload,
+      })
+    : await createHermesJob(deps.hermesJobApiUrl, deps.hermesJobApiToken, launchPayload);
+  let job = launchResult.job;
+
+  const updateHermesPlanMetadata = async () => {
+    if (!planMessageId) {
+      return;
+    }
+    await deps.store.updateMessageMetadata(planMessageId, {
+      phase: "plan",
+      runId: run.id,
+      hermes: {
+        jobId: job.id,
+        sessionId: job.hermesSessionId,
+        model: job.model,
+        innerRunId: job.innerRunId,
+        innerRunDir: job.innerRunDir,
+        estimatedCostUsd: job.cost?.estimatedCostUsd ?? null,
+      },
+      toolCalls: cloneLiveToolTraceEntries(liveToolTrace),
+    });
+  };
+
+  await updateHermesPlanMetadata();
+
+  const seenToolCallIds = new Set<string>();
+  const completedToolCallIds = new Set<string>();
+  let logCursor: string | undefined;
+  let lastSessionMessageCount = baselineHermesMessageCount;
+
+  const appendToolProgress = async (text: string, detail?: Record<string, unknown>) => {
+    if (!currentToolCallId) {
+      return;
+    }
+    const toolEntry = liveToolTrace.find((entry) => entry.id === currentToolCallId);
+    if (!toolEntry) {
+      return;
+    }
+    const normalizedText = truncateHermesText(text, 280);
+    if (!normalizedText) {
+      return;
+    }
+    if (toolEntry.progress[toolEntry.progress.length - 1] !== normalizedText) {
+      toolEntry.progress.push(normalizedText);
+    }
+    if (detail) {
+      toolEntry.progressDetails = [...(toolEntry.progressDetails ?? []), detail];
+    }
+    await persistLatestPlanToolTrace();
+    await emit("tool.progress", {
+      runId: run.id,
+      sessionId: activeSession.id,
+      toolCallId: toolEntry.id,
+      toolName: toolEntry.toolName,
+      text: normalizedText,
+      ...(detail ? { detail } : {}),
+    });
+  };
+
+  const syncHermesSessionSnapshot = async () => {
+    let snapshotText: string | null = null;
+    try {
+      const artifact = await fetchHermesArtifact(
+        deps.hermesJobApiUrl!,
+        deps.hermesJobApiToken,
+        job.id,
+        normalizeHermesArtifactName("hermes.session.json"),
+      );
+      snapshotText = artifact.artifact.content;
+    } catch {
+      return;
+    }
+    if (!snapshotText) {
+      return;
+    }
+    const snapshot = parseHermesJsonRecord(snapshotText) as HermesSessionSnapshot | null;
+    const messages = Array.isArray(snapshot?.messages) ? snapshot.messages : [];
+    if (messages.length === 0 || messages.length <= lastSessionMessageCount) {
+      if (typeof snapshot?.session_id === "string" && snapshot.session_id.trim().length > 0 && !job.hermesSessionId) {
+        job = { ...job, hermesSessionId: snapshot.session_id.trim() };
+        await updateHermesPlanMetadata();
+      }
+      return;
+    }
+    const newMessages = messages.slice(lastSessionMessageCount);
+    lastSessionMessageCount = messages.length;
+    if (typeof snapshot?.session_id === "string" && snapshot.session_id.trim().length > 0) {
+      job = { ...job, hermesSessionId: snapshot.session_id.trim() };
+      await updateHermesPlanMetadata();
+    }
+
+    for (const message of newMessages) {
+      if (Array.isArray(message.tool_calls)) {
+        for (const toolCall of message.tool_calls) {
+          const toolCallId = typeof toolCall.call_id === "string" && toolCall.call_id.length > 0
+            ? toolCall.call_id
+            : typeof toolCall.id === "string" && toolCall.id.length > 0
+              ? toolCall.id
+              : null;
+          if (!toolCallId || seenToolCallIds.has(toolCallId)) {
+            continue;
+          }
+          seenToolCallIds.add(toolCallId);
+          currentToolCallId = toolCallId;
+          const functionName = typeof toolCall.function?.name === "string" ? toolCall.function.name : "hermes_step";
+          const sourceArgs = parseHermesJsonRecord(toolCall.function?.arguments ?? "") ?? {};
+          const entry: LiveToolTraceEntry = {
+            id: toolCallId,
+            toolName: "run_workspace_task",
+            label: humanizeHermesToolLabel(functionName),
+            progress: [],
+            sourceArgs,
+            args: canonicalToolArgs("run_workspace_task", sourceArgs),
+            state: "running",
+          };
+          liveToolTrace = [...liveToolTrace, entry];
+          await persistLatestPlanToolTrace();
+          await emit("tool.started", {
+            runId: run.id,
+            sessionId: activeSession.id,
+            toolCallId,
+            toolName: entry.toolName,
+            label: entry.label,
+            args: entry.args,
+          });
+        }
+      }
+      if (message.role === "tool" && typeof message.tool_call_id === "string" && message.tool_call_id.length > 0) {
+        const toolCallId = message.tool_call_id;
+        if (completedToolCallIds.has(toolCallId)) {
+          continue;
+        }
+        const toolEntry = liveToolTrace.find((entry) => entry.id === toolCallId);
+        if (!toolEntry) {
+          continue;
+        }
+        const summarized = summarizeHermesToolResult(message.content);
+        if (summarized.text) {
+          toolEntry.progress.push(summarized.text);
+        }
+        toolEntry.result = summarized.result;
+        toolEntry.state = "completed";
+        currentToolCallId = null;
+        completedToolCallIds.add(toolCallId);
+        await persistLatestPlanToolTrace();
+        if (summarized.text) {
+          await emit("tool.progress", {
+            runId: run.id,
+            sessionId: activeSession.id,
+            toolCallId,
+            toolName: toolEntry.toolName,
+            text: summarized.text,
+          });
+        }
+        await emit("tool.completed", {
+          runId: run.id,
+          sessionId: activeSession.id,
+          toolCallId,
+          toolName: toolEntry.toolName,
+          label: toolEntry.label,
+          status: "completed",
+          result: summarized.result,
+        });
+      }
+    }
+  };
+
+  const heartbeatProgressSources = new Set(["launcher", "heartbeat", "run_log", "stream_log", "hermes_stdout", "hermes_stderr"]);
+
+  try {
+    while (true) {
+      const activeRun = activeRuns.get(run.id);
+      if (activeRun?.cancelRequested) {
+        await cancelHermesJob(deps.hermesJobApiUrl, deps.hermesJobApiToken, job.id).catch(() => {});
+        throw new Error("Hermes run cancelled by user.");
+      }
+      const [jobState, logUpdate] = await Promise.all([
+        fetchHermesJob(deps.hermesJobApiUrl, deps.hermesJobApiToken, job.id),
+        fetchHermesJobLogs(deps.hermesJobApiUrl, deps.hermesJobApiToken, job.id, logCursor, 120),
+      ]);
+      job = jobState.job;
+      logCursor = logUpdate.nextCursor;
+      await updateHermesPlanMetadata();
+
+      for (const source of logUpdate.sources) {
+        if (!heartbeatProgressSources.has(source.name)) {
+          continue;
+        }
+        for (const line of source.lines) {
+          const text = line.trim();
+          if (!text) {
+            continue;
+          }
+          await appendToolProgress(text, {
+            source: source.name,
+            updatedAt: source.updatedAt,
+          });
+        }
+      }
+
+      await syncHermesSessionSnapshot();
+
+      if (!job.running && job.state !== "running" && job.state !== "launching") {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+
+    await syncHermesSessionSnapshot();
+
+    const briefingArtifact = await fetchHermesArtifact(
+      deps.hermesJobApiUrl,
+      deps.hermesJobApiToken,
+      job.id,
+      normalizeHermesArtifactName("briefing.md"),
+    ).catch(() => null);
+
+    const briefingMarkdown = briefingArtifact?.artifact.content?.trim() ?? "";
+    if (briefingMarkdown) {
+      const markdownKey = artifactKeys.sessionArtifact(activeSession.id, `${run.id}-briefing.md`);
+      await deps.blobStore.putText(markdownKey, briefingMarkdown, "text/markdown; charset=utf-8");
+      await deps.store.saveArtifact({
+        sessionId: activeSession.id,
+        runtimeId: null,
+        r2Key: markdownKey,
+        filename: `${run.id}-briefing.md`,
+        mimeType: "text/markdown",
+        metadata: {
+          kind: "briefing_markdown",
+          runId: run.id,
+          hermesJobId: job.id,
+        },
+      });
+      const briefingHtml = await renderBriefingHtml(deps, activeSession.id, briefingMarkdown);
+      await persistResearchDocumentArtifact(deps, activeSession.id, run.id, briefingHtml);
+    }
+
+    const sessionArtifact = await fetchHermesArtifact(
+      deps.hermesJobApiUrl,
+      deps.hermesJobApiToken,
+      job.id,
+      normalizeHermesArtifactName("hermes.session.json"),
+    ).catch(() => null);
+    const finalSnapshot = parseHermesJsonRecord(sessionArtifact?.artifact.content ?? "") as HermesSessionSnapshot | null;
+    const finalMessages = Array.isArray(finalSnapshot?.messages) ? finalSnapshot.messages : [];
+    const finalAssistantMessage = [...finalMessages]
+      .reverse()
+      .find((message) => message.role === "assistant" && typeof message.content === "string" && message.content.trim().length > 0);
+
+    const finalAnswer =
+      (typeof finalAssistantMessage?.content === "string" && finalAssistantMessage.content.trim().length > 0
+        ? finalAssistantMessage.content.trim()
+        : briefingMarkdown
+          ? `Hermes completed the run. The full briefing is attached in the research pane.`
+          : `Hermes completed the run.`).trim();
+
+    await persistCompletedAssistantAnswer(deps, {
+      sessionId: activeSession.id,
+      runId: run.id,
+      answer: finalAnswer,
+      citations: [],
+      toolHistory: [],
+      send: emit,
+      extraMetadata: {
+        hermes: {
+          jobId: job.id,
+          sessionId: job.hermesSessionId ?? finalSnapshot?.session_id ?? null,
+          model: job.model ?? deps.hermesModel ?? null,
+          innerRunId: job.innerRunId ?? null,
+          innerRunDir: job.innerRunDir ?? null,
+          estimatedCostUsd: job.cost?.estimatedCostUsd ?? null,
+        },
+      },
+    });
+
+    await writeTerminalRunState(deps, run.id, "completed");
+    await emit("run.completed", {
+      runId: run.id,
+      sessionId: activeSession.id,
+      status: "completed",
+      completionMode: "hermes",
+      hermes: {
+        jobId: job.id,
+        sessionId: job.hermesSessionId ?? finalSnapshot?.session_id ?? null,
+        model: job.model ?? deps.hermesModel ?? null,
+        innerRunId: job.innerRunId ?? null,
+        innerRunDir: job.innerRunDir ?? null,
+        estimatedCostUsd: job.cost?.estimatedCostUsd ?? null,
+      },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Hermes run failed.";
+    await deps.store.appendMessage(activeSession.id, "assistant", message, {
+      phase: "error",
+      runId: run.id,
+    });
+    await writeTerminalRunState(deps, run.id, "failed");
+    await emit("run.completed", {
+      runId: run.id,
+      sessionId: activeSession.id,
+      status: "failed",
+      completionMode: "hermes",
+      error: message,
+    });
+  } finally {
+    activeRuns.delete(run.id);
+  }
+}
+
 async function runOrchestrator(
   deps: AppDeps,
   request: Request,
@@ -11493,7 +12094,8 @@ export function createApp(inputDeps: CreateAppInput) {
         } catch {
           executionCtx = null;
         }
-        const runPromise = runOrchestrator(
+        const runner = shouldUseHermesBackend(deps) ? runHermesConversation : runOrchestrator;
+        const runPromise = runner(
           deps,
           c.req.raw,
           requestPayload,

@@ -16,6 +16,9 @@ crons = ["* * * * *"]
 [vars]
 OPENAI_MODEL = "gpt-5.2"
 OPENAI_SYNTH_MODEL = "gpt-5.2"
+HERMES_JOB_API_URL = "https://134.209.116.167.sslip.io"
+HERMES_MODEL = "gpt-5.4"
+HERMES_MAX_TURNS = "60"
 EMBEDDING_PROVIDER = "openai"
 OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
 OPENAI_EMBEDDING_DIMENSIONS = "768"

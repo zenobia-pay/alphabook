@@ -273,6 +273,26 @@ function resolveRunDir(jobId) {
   return fs.existsSync(runDir) ? runDir : null;
 }
 
+function resolveArtifactPath(runDir, artifactName) {
+  const safeName = path.basename(String(artifactName || ""));
+  if (!safeName || safeName === "." || safeName === "..") {
+    return null;
+  }
+  const innerRunDir = inferInnerRunDir(runDir);
+  const candidates = [
+    path.join(runDir, safeName),
+    path.join(runDir, "openai-proxy", safeName),
+    innerRunDir ? path.join(innerRunDir, safeName) : null,
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    const stat = statSafe(candidate);
+    if (stat?.isFile()) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
 function getLogSources(runDir) {
   const innerRunDir = inferInnerRunDir(runDir);
   const sources = [
@@ -433,6 +453,96 @@ async function launchJob(payload) {
   });
 }
 
+async function resumeJob(payload) {
+  const userPrompt = String(payload.userPrompt || "").trim();
+  const previousJobId = String(payload.previousJobId || "").trim();
+  if (!userPrompt) {
+    throw new Error("userPrompt is required");
+  }
+  if (!previousJobId) {
+    throw new Error("previousJobId is required");
+  }
+  const previousRunDir = resolveRunDir(previousJobId);
+  if (!previousRunDir) {
+    throw new Error(`previous job not found: ${previousJobId}`);
+  }
+  const previousSummary = getRunSummary(previousRunDir);
+  const resumeSessionId = String(payload.hermesSessionId || previousSummary.hermesSessionId || "").trim();
+  const args = [
+    path.join(ROOT_DIR, "ops/digitalocean/bin/run-hermes-corpus-research.sh"),
+    "--user-prompt",
+    userPrompt,
+    "--resume-run-dir",
+    previousRunDir,
+  ];
+  if (resumeSessionId) {
+    args.push("--resume-session-id", resumeSessionId);
+  }
+  if (payload.model) {
+    args.push("--model", String(payload.model));
+  }
+  if (payload.maxTurns) {
+    args.push("--max-turns", String(payload.maxTurns));
+  }
+  if (payload.corpusRoot) {
+    args.push("--corpus-root", String(payload.corpusRoot));
+  }
+
+  return await new Promise((resolve, reject) => {
+    const child = spawn(args[0], args.slice(1), {
+      cwd: ROOT_DIR,
+      env: {
+        ...process.env,
+        ROOT_DIR,
+        RUN_ROOT,
+      },
+    });
+
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(stderr || stdout || `launcher exited with code ${code}`));
+        return;
+      }
+      const runDir = stdout.trim().split(/\r?\n/).filter(Boolean).at(-1);
+      if (!runDir) {
+        reject(new Error("launcher did not return a run directory"));
+        return;
+      }
+      resolve(getRunSummary(runDir));
+    });
+  });
+}
+
+async function cancelJob(runDir) {
+  const summary = getRunSummary(runDir);
+  const pid = Number(summary.pid || 0);
+  if (!pid) {
+    return { ok: true, cancelled: false, reason: "missing_pid" };
+  }
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch {
+    return { ok: true, cancelled: false, reason: "not_running" };
+  }
+  try {
+    const statusPath = path.join(runDir, "status.json");
+    const current = readJson(statusPath) || {};
+    current.state = "cancelled";
+    current.cancelled_at = nowIso();
+    fs.writeFileSync(statusPath, `${JSON.stringify(current, null, 2)}\n`);
+  } catch {}
+  return { ok: true, cancelled: true, pid };
+}
+
 function checkAuth(req) {
   if (!API_TOKEN) {
     return true;
@@ -485,6 +595,14 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === "POST" && requestUrl.pathname === "/v1/jobs/resume") {
+      const payload = await parseBody(req);
+      const job = await resumeJob(payload);
+      logLine(`job_resumed id=${job.id} previous=${String(payload.previousJobId || "").trim()} prompt_sha=${crypto.createHash("sha1").update(String(payload.userPrompt)).digest("hex").slice(0, 12)}`);
+      sendJson(res, 202, { job });
+      return;
+    }
+
     const jobMatch = requestUrl.pathname.match(/^\/v1\/jobs\/([^/]+)$/);
     if (req.method === "GET" && jobMatch) {
       const runDir = resolveRunDir(jobMatch[1]);
@@ -525,6 +643,48 @@ const server = http.createServer(async (req, res) => {
         runDir,
         innerRunDir: summary.innerRunDir,
         artifacts: summary.artifacts,
+      });
+      return;
+    }
+
+    const artifactMatch = requestUrl.pathname.match(/^\/v1\/jobs\/([^/]+)\/artifacts\/([^/]+)$/);
+    if (req.method === "GET" && artifactMatch) {
+      const runDir = resolveRunDir(artifactMatch[1]);
+      if (!runDir) {
+        sendJson(res, 404, { error: "not_found" });
+        return;
+      }
+      const artifactPath = resolveArtifactPath(runDir, artifactMatch[2]);
+      if (!artifactPath) {
+        sendJson(res, 404, { error: "not_found" });
+        return;
+      }
+      const stat = statSafe(artifactPath);
+      const content = await fsp.readFile(artifactPath, "utf8");
+      sendJson(res, 200, {
+        jobId: artifactMatch[1],
+        artifact: {
+          name: path.basename(artifactPath),
+          path: artifactPath,
+          bytes: stat?.size ?? null,
+          updatedAt: stat?.mtime?.toISOString?.() ?? null,
+          content,
+        },
+      });
+      return;
+    }
+
+    const cancelMatch = requestUrl.pathname.match(/^\/v1\/jobs\/([^/]+)\/cancel$/);
+    if (req.method === "POST" && cancelMatch) {
+      const runDir = resolveRunDir(cancelMatch[1]);
+      if (!runDir) {
+        sendJson(res, 404, { error: "not_found" });
+        return;
+      }
+      const result = await cancelJob(runDir);
+      sendJson(res, 200, {
+        jobId: cancelMatch[1],
+        ...result,
       });
       return;
     }

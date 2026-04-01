@@ -33,6 +33,10 @@ export interface Env {
   OPENAI_API_KEY?: string;
   OPENAI_MODEL?: string;
   OPENAI_SYNTH_MODEL?: string;
+  HERMES_JOB_API_URL?: string;
+  HERMES_JOB_API_TOKEN?: string;
+  HERMES_MODEL?: string;
+  HERMES_MAX_TURNS?: string;
   OPENAI_EMBEDDING_MODEL?: string;
   OPENAI_EMBEDDING_DIMENSIONS?: string;
   EMBEDDING_PROVIDER?: string;
@@ -370,6 +374,10 @@ function buildFetchHandler(env: Env) {
     adminAllowedEmail: env.ADMIN_ALLOWED_EMAIL,
     openAIApiKey: env.OPENAI_API_KEY,
     openAIModel: env.OPENAI_SYNTH_MODEL ?? env.OPENAI_MODEL ?? "gpt-5.2",
+    hermesJobApiUrl: env.HERMES_JOB_API_URL,
+    hermesJobApiToken: env.HERMES_JOB_API_TOKEN,
+    hermesModel: env.HERMES_MODEL ?? "gpt-5.4",
+    hermesMaxTurns: env.HERMES_MAX_TURNS ? Number(env.HERMES_MAX_TURNS) : undefined,
     runtimeSharedToken: env.FLY_RUNTIME_SHARED_TOKEN,
     ai: env.AI,
     toolStreamCleanupModel: env.TOOL_STREAM_CLEANUP_MODEL,
