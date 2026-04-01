@@ -27,6 +27,12 @@ import {
   type ChunkPayloadIssue,
   type GutenbergR2Artifacts,
 } from "./rebuild";
+import {
+  createGoogleEmbeddingBatchFromEnv,
+  downloadGoogleEmbeddingBatchOutputs,
+  getGoogleEmbeddingBatchStatus,
+  submitGoogleEmbeddingBatch,
+} from "./google-batch";
 import { QdrantApi } from "./qdrant-api";
 import { CloudflareVectorizeApi } from "./vectorize-api";
 import {
@@ -4640,10 +4646,15 @@ function requireContext(context: IngestContext | null): IngestContext {
 
 async function main() {
   const [command, ...args] = process.argv.slice(2);
+  await loadLocalDevVars(process.cwd());
   const requiresContext = ![
     "ingest-fixture",
     "ingest-supreme-court-demo",
     "count-supreme-court",
+    "prepare-google-embedding-batch",
+    "submit-google-embedding-batch",
+    "google-embedding-batch-status",
+    "download-google-embedding-batch-output",
   ].includes(command ?? "");
   let context: IngestContext | null = null;
 
@@ -4708,6 +4719,61 @@ async function main() {
         startAfterId && startAfterId !== "-"
           ? Number.parseInt(startAfterId, 10)
           : null,
+      );
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
+    if (command === "prepare-google-embedding-batch") {
+      const [startAfterId, targetCostUsdValue, outputDir, maxFileBytesValue, limitBooksValue] = args;
+      const result = await createGoogleEmbeddingBatchFromEnv({
+        startAfterId: startAfterId && startAfterId !== "-" ? startAfterId : null,
+        targetCostUsd: targetCostUsdValue && targetCostUsdValue !== "-"
+          ? Number(targetCostUsdValue)
+          : 300,
+        outputDir: outputDir && outputDir !== "-" ? outputDir : null,
+        maxFileBytes: maxFileBytesValue && maxFileBytesValue !== "-"
+          ? Number(maxFileBytesValue)
+          : null,
+        limitBooks: limitBooksValue && limitBooksValue !== "-"
+          ? Number(limitBooksValue)
+          : null,
+        chunkTargetSize: getGutenbergChunkTargetSize(),
+        model: process.env.GOOGLE_EMBEDDING_MODEL ?? "gemini-embedding-001",
+        dimensions: Number(process.env.GOOGLE_EMBEDDING_DIMENSIONS ?? "768"),
+      });
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
+    if (command === "submit-google-embedding-batch") {
+      const [manifestPath] = args;
+      if (!manifestPath) {
+        throw new Error("Usage: submit-google-embedding-batch <manifestPath>");
+      }
+      const result = await submitGoogleEmbeddingBatch(manifestPath);
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
+    if (command === "google-embedding-batch-status") {
+      const [nameOrSubmissionPath] = args;
+      if (!nameOrSubmissionPath) {
+        throw new Error("Usage: google-embedding-batch-status <batchJobName|submissionPath>");
+      }
+      const result = await getGoogleEmbeddingBatchStatus(nameOrSubmissionPath);
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
+    if (command === "download-google-embedding-batch-output") {
+      const [submissionPath, outputDir] = args;
+      if (!submissionPath) {
+        throw new Error("Usage: download-google-embedding-batch-output <submissionPath> [outputDir]");
+      }
+      const result = await downloadGoogleEmbeddingBatchOutputs(
+        submissionPath,
+        outputDir && outputDir !== "-" ? outputDir : null,
       );
       console.log(JSON.stringify(result, null, 2));
       return;
@@ -4903,6 +4969,10 @@ async function main() {
     console.log("  ingest-fixture [documentId|-]");
     console.log("  ingest-supreme-court-demo [caseId|-]");
     console.log("  count-supreme-court [startAfterClusterId|-]");
+    console.log("  prepare-google-embedding-batch [startAfterId|-] [targetCostUsd|-] [outputDir|-] [maxFileBytes|-] [limitBooks|-]");
+    console.log("  submit-google-embedding-batch <manifestPath>");
+    console.log("  google-embedding-batch-status <batchJobName|submissionPath>");
+    console.log("  download-google-embedding-batch-output <submissionPath> [outputDir]");
     console.log("  ingest-supreme-court-cluster <clusterId>");
     console.log("  backfill-supreme-court [startAfterClusterId|-] [limit]");
     console.log("  backfill-mirror [startAfterId|-] [limit]");
