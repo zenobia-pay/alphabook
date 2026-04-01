@@ -597,12 +597,34 @@ type Context1RetainedChunk = {
   source: string;
 };
 
+type Context1ObservedChunk = {
+  id: string;
+  workId: string;
+  chunkIndex: number;
+  score: number;
+  excerpt: string;
+  tokenEstimate: number;
+};
+
 function estimateTokenCount(value: string) {
   return Math.max(1, Math.ceil(value.length / 4));
 }
 
 function reciprocalRankFusion(ranks: number[]) {
   return ranks.reduce((sum, rank) => sum + (1 / (60 + rank)), 0);
+}
+
+function lexicalRerankScore(query: string, chunk: ChunkSearchResult, rrfScore: number) {
+  const normalizedQuery = query.trim().toLowerCase();
+  const normalizedExcerpt = excerptForChunk(chunk).trim().toLowerCase();
+  const normalizedText = chunk.text.trim().toLowerCase();
+  const exactPhraseBonus = normalizedQuery.length > 0 && normalizedText.includes(normalizedQuery) ? 2 : 0;
+  const excerptBonus = normalizedQuery.length > 0 && normalizedExcerpt.includes(normalizedQuery) ? 1 : 0;
+  const overlap = normalizedQuery
+    .split(/\s+/u)
+    .filter((token) => token.length >= 4)
+    .reduce((count, token) => (normalizedText.includes(token) ? count + 1 : count), 0);
+  return (rrfScore * 10) + exactPhraseBonus + excerptBonus + overlap;
 }
 
 function parseContext1Action(content: string): Context1Action {
@@ -665,6 +687,7 @@ export class Context1SemanticSearchService implements SemanticSearchService {
   private readonly softTokenBudget: number;
   private readonly hardTokenBudget: number;
   private readonly perToolTokenBudget: number;
+  private readonly responseReserveTokens: number;
   private readonly fetchImpl: typeof fetch;
   private readonly baseUrl: string;
 
@@ -674,6 +697,7 @@ export class Context1SemanticSearchService implements SemanticSearchService {
     this.softTokenBudget = Math.max(2_048, Math.min(this.totalTokenBudget - 512, options.softTokenBudget ?? 24_576));
     this.hardTokenBudget = Math.max(this.softTokenBudget + 256, Math.min(this.totalTokenBudget, options.hardTokenBudget ?? 30_720));
     this.perToolTokenBudget = Math.max(512, options.perToolTokenBudget ?? 4_096);
+    this.responseReserveTokens = Math.max(256, Math.min(1_024, Math.floor(this.totalTokenBudget * 0.05)));
     this.fetchImpl = options.fetchImpl ?? ((input, init) => fetch(input, init));
     this.baseUrl = (options.baseUrl ?? "https://api.openai.com/v1").replace(/\/$/, "");
   }
@@ -698,6 +722,39 @@ export class Context1SemanticSearchService implements SemanticSearchService {
         source,
         excerpt: excerptForChunk(chunk).slice(0, 280),
       }));
+  }
+
+  private formatTokenUsageObservation(retained: Map<string, Context1RetainedChunk>) {
+    const used = this.retainedTokenUsage(retained);
+    return `[Token usage: ${used.toLocaleString()}/${this.totalTokenBudget.toLocaleString()}]`;
+  }
+
+  private truncateChunksToBudget(chunks: ChunkSearchResult[], tokenBudget: number): {
+    chunks: Context1ObservedChunk[];
+    consumedTokens: number;
+    truncated: boolean;
+  } {
+    const observed: Context1ObservedChunk[] = [];
+    let consumedTokens = 0;
+    let truncated = false;
+    for (const chunk of chunks) {
+      const excerpt = excerptForChunk(chunk);
+      const tokenEstimate = estimateTokenCount(excerpt) + 24;
+      if (observed.length > 0 && consumedTokens + tokenEstimate > tokenBudget) {
+        truncated = true;
+        break;
+      }
+      observed.push({
+        id: chunk.id,
+        workId: chunk.workId,
+        chunkIndex: chunk.chunkIndex,
+        score: Number((chunk.score ?? 0).toFixed(4)),
+        excerpt,
+        tokenEstimate,
+      });
+      consumedTokens += tokenEstimate;
+    }
+    return { chunks: observed, consumedTokens, truncated };
   }
 
   private async inferAction(args: {
@@ -803,17 +860,18 @@ export class Context1SemanticSearchService implements SemanticSearchService {
     );
     const [vectorMatches, lexicalMatches] = await Promise.all([
       this.options.vectorIndex.query(embedding, {
-        topK: 32,
+        topK: 50,
       }),
-      this.options.store.getRelevantChunks(query, workIds, 32, undefined),
+      this.options.store.getRelevantChunks(query, workIds, 50, undefined),
     ]);
-    const fused = new Map<string, { id: string; ranks: number[] }>();
+    const fused = new Map<string, { id: string; ranks: number[]; vectorScore?: number; lexicalScore?: number }>();
     for (const [index, match] of vectorMatches.entries()) {
       if (encounteredChunkIds.has(match.id)) {
         continue;
       }
       const entry = fused.get(match.id) ?? { id: match.id, ranks: [] };
       entry.ranks.push(index + 1);
+      entry.vectorScore = match.score;
       fused.set(match.id, entry);
     }
     for (const [index, chunk] of lexicalMatches.entries()) {
@@ -822,6 +880,7 @@ export class Context1SemanticSearchService implements SemanticSearchService {
       }
       const entry = fused.get(chunk.id) ?? { id: chunk.id, ranks: [] };
       entry.ranks.push(index + 1);
+      entry.lexicalScore = chunk.score;
       fused.set(chunk.id, entry);
     }
     const hydrated = await rerankHydratedMatches(
@@ -835,7 +894,12 @@ export class Context1SemanticSearchService implements SemanticSearchService {
         .slice(0, 50),
       workIds,
     );
-    return hydrated.sort((left, right) => (right.score ?? 0) - (left.score ?? 0));
+    return hydrated
+      .map((chunk) => ({
+        ...chunk,
+        score: lexicalRerankScore(query, chunk, chunk.score ?? 0),
+      }))
+      .sort((left, right) => (right.score ?? 0) - (left.score ?? 0));
   }
 
   private async grepCorpus(pattern: string, workIds: string[] | undefined, encounteredChunkIds: Set<string>) {
@@ -888,8 +952,12 @@ export class Context1SemanticSearchService implements SemanticSearchService {
       }
     }
     return hydrated
+      .map((chunk) => ({
+        ...chunk,
+        score: lexicalRerankScore(query, chunk, chunk.score ?? 0),
+      }))
       .sort((left, right) => (right.score ?? 0) - (left.score ?? 0))
-      .slice(0, 8);
+      .slice(0, 16);
   }
 
   async search(args: {
@@ -908,9 +976,16 @@ export class Context1SemanticSearchService implements SemanticSearchService {
     const events: AlphaloopEvent[] = [];
     const iterations: IterationRecord[] = [];
     const maxResults = Math.max(1, Math.min(args.maxResults ?? 8, 12));
+    let finalAction: Extract<Context1Action, { type: "final" }> | null = null;
 
     for (let turn = 1; turn <= this.maxTurns; turn += 1) {
       const usedTokens = this.retainedTokenUsage(retained);
+      observations.push({
+        type: "token_usage",
+        message: this.formatTokenUsageObservation(retained),
+        usedTokens,
+        totalTokens: this.totalTokenBudget,
+      });
       args.auditLog?.("semantic.search.context1.turn.started", {
         query: args.query,
         turn,
@@ -919,6 +994,12 @@ export class Context1SemanticSearchService implements SemanticSearchService {
         usedTokens,
       });
       if (usedTokens >= this.softTokenBudget) {
+        observations.push({
+          type: "soft_threshold",
+          message: "Token usage is above the soft threshold. Prune chunks or conclude if you have enough evidence.",
+          usedTokens,
+          softThreshold: this.softTokenBudget,
+        });
         await args.onProgress?.("Context-1 mode is near its evidence budget and may prune weaker chunks.", {
           type: "semantic.context1",
           event: { type: "token_budget", usedTokens, totalTokens: this.totalTokenBudget },
@@ -935,6 +1016,7 @@ export class Context1SemanticSearchService implements SemanticSearchService {
       });
       events.push({ type: "context1_action", turn, actionType: action.type });
       if (action.type === "final") {
+        finalAction = action;
         break;
       }
       if (usedTokens >= this.hardTokenBudget && action.type !== "prune_chunks") {
@@ -943,6 +1025,7 @@ export class Context1SemanticSearchService implements SemanticSearchService {
           tool: action.type,
           message: "Hard token cutoff reached. Prune chunks or conclude.",
         });
+        events.push({ type: "hard_cutoff_reject", turn, actionType: action.type });
         continue;
       }
       if (action.type === "prune_chunks") {
@@ -986,13 +1069,19 @@ export class Context1SemanticSearchService implements SemanticSearchService {
         freshChunks = await this.readDocument(action.docId, args.query, encounteredChunkIds);
       }
 
-      const remainingBudget = Math.max(0, Math.min(this.perToolTokenBudget, this.totalTokenBudget - this.retainedTokenUsage(retained)));
+      const remainingBudget = Math.max(
+        0,
+        Math.min(
+          this.perToolTokenBudget,
+          this.totalTokenBudget - this.retainedTokenUsage(retained) - this.responseReserveTokens,
+        ),
+      );
+      const truncatedToolResult = this.truncateChunksToBudget(freshChunks, remainingBudget);
       let addedChunks = 0;
-      let addedTokens = 0;
-      for (const chunk of freshChunks) {
-        const chunkTokens = estimateTokenCount(chunk.text);
-        if (addedTokens + chunkTokens > remainingBudget) {
-          break;
+      for (const observed of truncatedToolResult.chunks) {
+        const chunk = freshChunks.find((candidate) => candidate.id === observed.id);
+        if (!chunk) {
+          continue;
         }
         encounteredChunkIds.add(chunk.id);
         trajectoryRecallIds.add(chunk.id);
@@ -1001,14 +1090,21 @@ export class Context1SemanticSearchService implements SemanticSearchService {
           score: chunk.score ?? 0,
           source,
         });
-        addedTokens += chunkTokens;
         addedChunks += 1;
       }
       observations.push({
         type: action.type,
         source,
-        addedChunks,
+        query: action.type === "search_corpus" ? action.query : undefined,
+        pattern: action.type === "grep_corpus" ? action.pattern : undefined,
+        docId: action.type === "read_document" ? action.docId : undefined,
+        returnedChunks: truncatedToolResult.chunks,
         totalRetainedChunks: retained.size,
+        returnedChunkCount: truncatedToolResult.chunks.length,
+        truncated: truncatedToolResult.truncated,
+        consumedTokens: truncatedToolResult.consumedTokens,
+        tokenBudget: remainingBudget,
+        tokenUsage: this.formatTokenUsageObservation(retained),
       });
       iterations.push({
         iteration: turn,
@@ -1021,7 +1117,12 @@ export class Context1SemanticSearchService implements SemanticSearchService {
     const rankedChunks = [...retained.values()]
       .sort((left, right) => right.score - left.score)
       .map((entry) => entry.chunk);
-    const chunks = rankedChunks.slice(0, maxResults);
+    const selectedChunks = Array.isArray(finalAction?.selectedChunkIds) && finalAction.selectedChunkIds.length > 0
+      ? finalAction.selectedChunkIds
+        .map((chunkId) => retained.get(chunkId)?.chunk ?? null)
+        .filter((chunk): chunk is ChunkSearchResult => Boolean(chunk))
+      : [];
+    const chunks = (selectedChunks.length > 0 ? selectedChunks : rankedChunks).slice(0, maxResults);
     if (chunks.length === 0) {
       return {
         briefing: "I couldn’t find strong matches in Context-1 mode yet.",
@@ -1033,10 +1134,12 @@ export class Context1SemanticSearchService implements SemanticSearchService {
         totalChunksConsidered: encounteredChunkIds.size,
       };
     }
-    const briefing = [
-      "Context-1 mode searched iteratively and kept the strongest passages after pruning weaker ones.",
-      `It retained ${chunks.length} top passages across ${new Set(chunks.map((chunk) => chunk.workId)).size} books.`,
-    ].join(" ");
+    const briefing = finalAction?.answer && finalAction.answer.length > 0
+      ? finalAction.answer
+      : [
+          "Context-1 mode searched iteratively and kept the strongest passages after pruning weaker ones.",
+          `It retained ${chunks.length} top passages across ${new Set(chunks.map((chunk) => chunk.workId)).size} books.`,
+        ].join(" ");
     return {
       briefing,
       citations: citationsFromChunks(chunks),
