@@ -378,6 +378,22 @@ async function waitForCompletion(
     cursor = logs.nextCursor;
     const job = await fetchJob(apiBaseUrl, cookie, jobId);
     if (!job.running) {
+      // Drain one final time after the job reaches a terminal state so late
+      // shard run-status/proxy logs are not skipped by the last poll boundary.
+      while (true) {
+        const finalLogs = await fetchLogs(apiBaseUrl, cookie, jobId, cursor, args.logLimit);
+        let printed = 0;
+        for (const source of finalLogs.sources) {
+          for (const line of source.lines) {
+            process.stdout.write(`[${source.name}] ${line}\n`);
+            printed += 1;
+          }
+        }
+        if (finalLogs.nextCursor === cursor || printed === 0) {
+          break;
+        }
+        cursor = finalLogs.nextCursor;
+      }
       return job;
     }
     await sleep(args.pollMs);
@@ -392,7 +408,9 @@ async function waitForBriefing(
   const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
     const artifacts = await fetchArtifacts(apiBaseUrl, cookie, jobId);
-    const briefing = artifacts.find((artifact) => artifact.name.endsWith(".md"));
+    const briefing = artifacts.find((artifact) =>
+      artifact.name === "briefing.md" || artifact.name === "briefing.json",
+    );
     if (briefing) {
       return await fetchArtifact(apiBaseUrl, cookie, jobId, briefing.name);
     }
@@ -455,7 +473,9 @@ async function main() {
     process.stdout.write(`error=${finishedJob.error}\n`);
   }
 
-  const briefing = await waitForBriefing(config.apiBaseUrl, config.cookie, finishedJob.id);
+  const briefing = finishedJob.state === "completed"
+    ? await waitForBriefing(config.apiBaseUrl, config.cookie, finishedJob.id)
+    : null;
   if (briefing) {
     printHeader("Artifact");
     process.stdout.write(`${briefing.trim()}\n`);
