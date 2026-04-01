@@ -27,6 +27,7 @@ import {
   type ChunkPayloadIssue,
   type GutenbergR2Artifacts,
 } from "./rebuild";
+import { QdrantApi } from "./qdrant-api";
 import { CloudflareVectorizeApi } from "./vectorize-api";
 import {
   fixtureCorpusAdapter,
@@ -47,9 +48,21 @@ interface IngestContext {
   db: DbClient;
   r2: S3Client;
   r2Bucket: string;
+  vectorProvider: "vectorize" | "qdrant";
   vectorIndexName: string | null;
   vectorWranglerConfig: string;
   cloudflareAccountId: string | null;
+  qdrantUrl: string | null;
+  qdrantApiKey: string | null;
+  qdrantCollection: string | null;
+  qdrantTimeoutMs: number;
+}
+
+interface VectorAdminApi {
+  getInfo(): Promise<{ dimensions?: number; vectorCount?: number }>;
+  getVectorIds(ids: string[]): Promise<Set<string>>;
+  listVectorIds(): Promise<string[]>;
+  deleteVectorIds(ids: string[]): Promise<void>;
 }
 
 interface MirrorBackfillOptions {
@@ -250,12 +263,16 @@ function estimateEmbeddingInputTokens(chunks: string[]) {
 
 function embeddingPricePerMillionTokensUsd(provider: string) {
   if (provider === "google") {
-    return Number(process.env.GOOGLE_EMBEDDING_PRICE_PER_MILLION_TOKENS_USD ?? "0.20");
+    return Number(process.env.GOOGLE_EMBEDDING_PRICE_PER_MILLION_TOKENS_USD ?? "0.075");
   }
   if (provider === "openai") {
     return Number(process.env.OPENAI_EMBEDDING_PRICE_PER_MILLION_TOKENS_USD ?? "0.02");
   }
   return 0;
+}
+
+function getGutenbergChunkTargetSize() {
+  return Math.max(400, Number(process.env.GUTENBERG_CHUNK_TARGET_SIZE ?? "2800"));
 }
 
 async function embedChunksWithOpenAI(chunks: string[]): Promise<number[][] | null> {
@@ -328,8 +345,8 @@ async function embedChunksWithGoogle(chunks: string[]): Promise<number[][] | nul
     return null;
   }
 
-  const model = process.env.GOOGLE_EMBEDDING_MODEL ?? "gemini-embedding-2-preview";
-  const outputDimensionality = Number(process.env.GOOGLE_EMBEDDING_DIMENSIONS ?? "1536");
+  const model = process.env.GOOGLE_EMBEDDING_MODEL ?? "gemini-embedding-001";
+  const outputDimensionality = Number(process.env.GOOGLE_EMBEDDING_DIMENSIONS ?? "768");
   const batchSize = Number(process.env.GOOGLE_EMBEDDING_BATCH_SIZE ?? "32");
   const embeddings: number[][] = [];
 
@@ -414,7 +431,21 @@ async function upsertChunkVectors(
     metadata: Record<string, unknown>;
   }>,
 ) {
-  if (!context.vectorIndexName || vectors.length === 0) {
+  if (vectors.length === 0) {
+    return;
+  }
+  if (context.vectorProvider === "qdrant") {
+    const qdrant = createQdrantApi(context);
+    if (!qdrant) {
+      throw new Error("Qdrant is selected as the vector provider but QDRANT_URL or QDRANT_COLLECTION is missing.");
+    }
+    const batchSize = Math.max(1, Number(process.env.QDRANT_UPSERT_BATCH_SIZE ?? "256"));
+    for (let index = 0; index < vectors.length; index += batchSize) {
+      await qdrant.upsert(vectors.slice(index, index + batchSize));
+    }
+    return;
+  }
+  if (!context.vectorIndexName) {
     return;
   }
   const tempDir = await mkdtemp(join(tmpdir(), "alphabook-vectorize-"));
@@ -477,6 +508,17 @@ function uniqueStrings(values: Array<string | null | undefined>) {
     normalized.push(next);
   }
   return normalized;
+}
+
+function normalizeGutenbergId(id: string | number | null | undefined) {
+  if (id === null || id === undefined) {
+    return null;
+  }
+  const raw = String(id).trim();
+  if (!/^\d+$/u.test(raw)) {
+    return null;
+  }
+  return String(Number(raw));
 }
 
 async function runWithConcurrency<T>(
@@ -1873,10 +1915,39 @@ function firstArtifactKey(artifacts: GutenbergR2Artifacts, kind: keyof Gutenberg
 }
 
 function createVectorizeApi(context: IngestContext): CloudflareVectorizeApi | null {
-  if (!context.vectorIndexName) {
+  if (context.vectorProvider !== "vectorize" || !context.vectorIndexName) {
     return null;
   }
   return new CloudflareVectorizeApi(context.vectorWranglerConfig, process.cwd());
+}
+
+function createQdrantApi(context: IngestContext): QdrantApi | null {
+  if (context.vectorProvider !== "qdrant" || !context.qdrantUrl || !context.qdrantCollection) {
+    return null;
+  }
+  return new QdrantApi(
+    context.qdrantUrl,
+    context.qdrantCollection,
+    context.qdrantApiKey ?? undefined,
+    context.qdrantTimeoutMs,
+  );
+}
+
+function createVectorAdminApi(context: IngestContext): VectorAdminApi | null {
+  const qdrant = createQdrantApi(context);
+  if (qdrant) {
+    return qdrant;
+  }
+  const vectorize = createVectorizeApi(context);
+  if (!vectorize || !context.vectorIndexName) {
+    return null;
+  }
+  return {
+    getInfo: () => vectorize.getInfo(context.vectorIndexName!),
+    getVectorIds: (ids) => vectorize.getVectorIds(context.vectorIndexName!, ids),
+    listVectorIds: () => vectorize.listVectorIds(context.vectorIndexName!),
+    deleteVectorIds: (ids) => vectorize.deleteVectorIds(context.vectorIndexName!, ids),
+  };
 }
 
 function isApplyFlag(value?: string | null) {
@@ -1981,10 +2052,9 @@ async function findExistingWorkStatus(
       complete = false;
     } else {
       const canonical = await readCanonicalR2Work(context, artifacts);
-      const vectorize = createVectorizeApi(context);
-      if (vectorize && context.vectorIndexName) {
-        const foundVectorIds = await vectorize.getVectorIds(
-          context.vectorIndexName,
+      const vectorApi = createVectorAdminApi(context);
+      if (vectorApi) {
+        const foundVectorIds = await vectorApi.getVectorIds(
           canonical.chunks.map((chunk) => chunk.id),
         );
         complete = foundVectorIds.size === canonical.chunks.length;
@@ -2491,6 +2561,8 @@ async function persistIngestedWork(
   const prepared = prepareCorpusIngest(adapter, {
     ...source,
     renderedArtifacts: buildRenderedArtifactsForSource(source),
+  }, {
+    chunkTargetSize: source.adapterId === gutenbergCorpusAdapter.id ? getGutenbergChunkTargetSize() : undefined,
   });
   const cleanText = prepared.cleanText;
   const chunks = prepared.chunks;
@@ -2515,7 +2587,7 @@ async function persistIngestedWork(
   const workId = await resolveIngestedWorkId(context, source);
   const embeddingProvider = process.env.EMBEDDING_PROVIDER ?? "openai";
   const embeddingModel = embeddingProvider === "google"
-    ? (process.env.GOOGLE_EMBEDDING_MODEL ?? "gemini-embedding-2-preview")
+    ? (process.env.GOOGLE_EMBEDDING_MODEL ?? "gemini-embedding-001")
     : (process.env.OPENAI_EMBEDDING_MODEL ?? "text-embedding-3-small");
   const renderedSource = source.adapterId === gutenbergCorpusAdapter.id && typeof source.legacyNumericId === "string"
     ? selectRenderedBookSource({
@@ -2826,6 +2898,8 @@ function buildLocalPreviewResult(
   const prepared = prepareCorpusIngest(adapter, {
     ...source,
     renderedArtifacts: buildRenderedArtifactsForSource(source),
+  }, {
+    chunkTargetSize: source.adapterId === gutenbergCorpusAdapter.id ? getGutenbergChunkTargetSize() : undefined,
   });
 
   return {
@@ -3106,9 +3180,9 @@ async function deleteGutenbergWorks(context: IngestContext, gutenbergIds: string
   }));
 
   await deleteKeys(context.r2, context.r2Bucket, r2Keys);
-  const vectorize = createVectorizeApi(context);
-  if (vectorize && context.vectorIndexName) {
-    await vectorize.deleteVectorIds(context.vectorIndexName, vectorIdsByBook.flat());
+  const vectorApi = createVectorAdminApi(context);
+  if (vectorApi) {
+    await vectorApi.deleteVectorIds(vectorIdsByBook.flat());
   }
   await context.db.query(`DELETE FROM works WHERE gutenberg_id IN (${placeholders})`, idList);
   await context.db.query(`DELETE FROM authors WHERE NOT EXISTS (SELECT 1 FROM work_authors wa WHERE wa.author_id = authors.id)`);
@@ -3396,7 +3470,7 @@ async function auditR2Corpus(
     .filter((id) => (startAfter ? Number(id) > startAfter : true))
     .slice(0, options.limit);
   const workRows = await listExistingCorpusWorkRows(context, selectedCanonicalIds);
-  const vectorize = createVectorizeApi(context);
+  const vectorApi = createVectorAdminApi(context);
 
   const booksMissingInD1: string[] = [];
   const booksMissingArtifactsInD1: Array<{ gutenbergId: string; missingKinds: string[] }> = [];
@@ -3426,8 +3500,8 @@ async function auditR2Corpus(
 
     const canonical = await readCanonicalR2Work(context, artifacts);
 
-    if (vectorize && context.vectorIndexName) {
-      const found = await vectorize.getVectorIds(context.vectorIndexName, canonical.chunks.map((chunk) => chunk.id));
+    if (vectorApi) {
+      const found = await vectorApi.getVectorIds(canonical.chunks.map((chunk) => chunk.id));
       const missingCount = canonical.chunks.length - found.size;
       if (missingCount > 0) {
         booksMissingVectors.push({ gutenbergId, missingCount });
@@ -3496,9 +3570,9 @@ async function rebuildCanonicalR2Work(
   };
   const workId = await resolveIngestedWorkId(context, source);
 
-  const vectorize = createVectorizeApi(context);
-  if (vectorize && context.vectorIndexName) {
-    await vectorize.deleteVectorIds(context.vectorIndexName, canonical.chunks.map((chunk) => chunk.id));
+  const vectorApi = createVectorAdminApi(context);
+  if (vectorApi) {
+    await vectorApi.deleteVectorIds(canonical.chunks.map((chunk) => chunk.id));
   }
 
   await context.db.query(`DELETE FROM work_files WHERE work_id = $1 AND kind IN ('raw', 'metadata', 'clean', 'chunks', 'book_html')`, [workId]);
@@ -3528,7 +3602,7 @@ async function rebuildCanonicalR2Work(
       metadata: {
         ...chunk.metadata,
         embeddingProvider: "google",
-        embeddingModel: process.env.GOOGLE_EMBEDDING_MODEL ?? "gemini-embedding-2-preview",
+        embeddingModel: process.env.GOOGLE_EMBEDDING_MODEL ?? "gemini-embedding-001",
         embeddingDimensions: chunkEmbeddings[index]?.length ?? null,
       },
     } satisfies StoredChunkArtifact)),
@@ -3688,7 +3762,7 @@ async function auditCloudflareCorpus(
 
   const workRows = await listExistingCorpusWorkRows(context, selectedCanonicalIds);
   const allWorkRows = await listAllExistingWorkReferences(context);
-  const vectorize = createVectorizeApi(context);
+  const vectorApi = createVectorAdminApi(context);
   const expectedChunkIds = new Set<string>();
 
   const completeBooks: string[] = [];
@@ -3742,8 +3816,8 @@ async function auditCloudflareCorpus(
       booksMissingArtifactsInD1.push({ gutenbergId, missingKinds });
     }
 
-    const foundVectorIds = vectorize && context.vectorIndexName
-      ? await vectorize.getVectorIds(context.vectorIndexName, canonical.chunks.map((chunk) => chunk.id))
+    const foundVectorIds = vectorApi
+      ? await vectorApi.getVectorIds(canonical.chunks.map((chunk) => chunk.id))
       : new Set<string>();
     const missingVectorIds = canonical.chunks.filter((chunk) => !foundVectorIds.has(chunk.id)).map((chunk) => chunk.id);
     if (missingVectorIds.length > 0) {
@@ -3768,15 +3842,15 @@ async function auditCloudflareCorpus(
       gutenbergId: row.gutenberg_id,
       title: row.title,
     }));
-  const vectorIds = vectorize && context.vectorIndexName && options.includeOrphanVectorScan !== false
-    ? await vectorize.listVectorIds(context.vectorIndexName)
+  const vectorIds = vectorApi && options.includeOrphanVectorScan !== false
+    ? await vectorApi.listVectorIds()
     : [];
   const orphanedVectorIds = vectorIds.filter((id) => !expectedChunkIds.has(id));
 
   const report = {
     generatedAt: new Date().toISOString(),
     r2Bucket: context.r2Bucket,
-    vectorIndexName: context.vectorIndexName,
+    vectorIndexName: context.vectorProvider === "qdrant" ? context.qdrantCollection : context.vectorIndexName,
     canonicalBookCount: scan.ids.length,
     scannedCanonicalBookCount: selectedCanonicalIds.length,
     completeBookCount: completeBooks.length,
@@ -3834,16 +3908,16 @@ async function pruneOrphanVectors(
   const audit = await auditCloudflareCorpus(context, {});
   const orphanedVectorIds = audit.orphanedVectorIds;
   if (options.apply && orphanedVectorIds.length > 0) {
-    const vectorize = createVectorizeApi(context);
-    if (!vectorize || !context.vectorIndexName) {
-      throw new Error("Cloudflare Vectorize API credentials are required to prune orphan vectors.");
+    const vectorApi = createVectorAdminApi(context);
+    if (!vectorApi) {
+      throw new Error("Vector index API credentials are required to prune orphan vectors.");
     }
-    await vectorize.deleteVectorIds(context.vectorIndexName, orphanedVectorIds);
+    await vectorApi.deleteVectorIds(orphanedVectorIds);
   }
   const report = {
     generatedAt: new Date().toISOString(),
     applied: options.apply,
-    vectorIndexName: context.vectorIndexName,
+    vectorIndexName: context.vectorProvider === "qdrant" ? context.qdrantCollection : context.vectorIndexName,
     orphanedVectorCount: orphanedVectorIds.length,
     orphanedVectorIds,
   };
@@ -4388,10 +4462,19 @@ async function backfillMirrorParallel(context: IngestContext, options: MirrorBac
       WHERE gutenberg_id IS NOT NULL
     `,
   );
-  const existingIds = new Set(existingRows.rows.map((row) => String(row.gutenberg_id)));
+  const existingIds = new Set(
+    existingRows.rows
+      .map((row) => normalizeGutenbergId(row.gutenberg_id))
+      .filter((value): value is string => Boolean(value)),
+  );
   const firstGreaterIndex = startAfterId ? allIds.findIndex((id) => Number(id) > Number(startAfterId)) : -1;
   const startIndex = startAfterId ? (firstGreaterIndex >= 0 ? firstGreaterIndex : allIds.length) : 0;
-  const candidateIds = allIds.slice(startIndex).filter((id) => !existingIds.has(id));
+  const candidateIds = allIds
+    .slice(startIndex)
+    .filter((id) => {
+      const normalized = normalizeGutenbergId(id);
+      return normalized !== null && !existingIds.has(normalized);
+    });
   const concurrency = Math.max(1, Number(options.concurrency ?? process.env.MIRROR_BACKFILL_CONCURRENCY ?? "4"));
   const results: Array<Record<string, unknown>> = [];
   const errors: Array<Record<string, unknown>> = [];
@@ -4512,15 +4595,23 @@ async function buildContext(): Promise<IngestContext> {
     throw new Error("R2_BUCKET_NAME, R2_ENDPOINT, R2_ACCESS_KEY_ID, and R2_SECRET_ACCESS_KEY are required.");
   }
 
+  const vectorProvider = process.env.VECTOR_PROVIDER === "qdrant" ? "qdrant" : "vectorize";
+  const qdrantCollection = process.env.QDRANT_COLLECTION ?? process.env.VECTOR_INDEX_NAME ?? "alphabook-semantic";
+
   return {
     db: createWranglerD1Db({
       cwd: process.cwd(),
       databaseName: process.env.D1_DATABASE_NAME ?? "alphabook-app",
       wranglerConfig,
     }),
+    vectorProvider,
     vectorIndexName: process.env.VECTOR_INDEX_NAME ?? "alphabook-semantic",
     vectorWranglerConfig: wranglerConfig,
     cloudflareAccountId: await resolveCloudflareAccountId(wranglerConfig),
+    qdrantUrl: process.env.QDRANT_URL?.trim() ? process.env.QDRANT_URL.trim() : null,
+    qdrantApiKey: process.env.QDRANT_API_KEY?.trim() ? process.env.QDRANT_API_KEY.trim() : null,
+    qdrantCollection,
+    qdrantTimeoutMs: Math.max(1_000, Number(process.env.QDRANT_TIMEOUT_MS ?? "30000")),
     r2Bucket,
     r2: new S3Client({
       region: "auto",

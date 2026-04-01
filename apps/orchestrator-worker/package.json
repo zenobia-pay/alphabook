@@ -17,7 +17,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "dev:node": "node --import tsx src/dev-server.ts",
-    "deploy": "node --import tsx ../../packages/tooling/scripts/sync-runtime-image-pin.ts --app alphabook-runtime --config wrangler.toml && node --import tsx ../../packages/tooling/scripts/sync-worker-secrets.ts --config wrangler.toml --keys OPENAI_API_KEY,GOOGLE_AI_API_KEY,FLY_API_TOKEN,FLY_RUNTIME_SHARED_TOKEN,R2_ENDPOINT,R2_ACCESS_KEY_ID,R2_SECRET_ACCESS_KEY && wrangler deploy",
+    "deploy": "node --import tsx ../../packages/tooling/scripts/sync-runtime-image-pin.ts --app alphabook-runtime --config wrangler.toml && node --import tsx ../../packages/tooling/scripts/sync-worker-secrets.ts --config wrangler.toml --keys OPENAI_API_KEY,GOOGLE_AI_API_KEY,QDRANT_API_KEY,FLY_API_TOKEN,FLY_RUNTIME_SHARED_TOKEN,R2_ENDPOINT,R2_ACCESS_KEY_ID,R2_SECRET_ACCESS_KEY && wrangler deploy",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --import tsx --test test/**/*.test.ts"
   }

@@ -46,6 +46,10 @@ export interface PreparedCorpusIngest {
   renderedArtifacts: RenderedArtifactBundle | null;
 }
 
+export interface PrepareCorpusIngestOptions {
+  chunkTargetSize?: number;
+}
+
 function escapeHtml(value: string) {
   return value
     .replaceAll("&", "&amp;")
@@ -134,11 +138,12 @@ export function buildSimpleRenderedArtifactBundle(input: {
 export function prepareCorpusIngest(
   adapter: CorpusAdapter,
   source: CorpusIngestSourceInput,
+  options: PrepareCorpusIngestOptions = {},
 ): PreparedCorpusIngest {
   const cleanText = adapter.text.normalizeText(
     adapter.text.stripSourceBoilerplate(source.rawText),
   );
-  const chunks = adapter.text.chunkText(cleanText);
+  const chunks = adapter.text.chunkText(cleanText, options.chunkTargetSize);
   const authors = uniqueStrings(source.authors ?? []);
   const subjects = uniqueStrings(source.subjects ?? []);
   const rawKey = adapter.artifactKeys.rawText(source.externalId);

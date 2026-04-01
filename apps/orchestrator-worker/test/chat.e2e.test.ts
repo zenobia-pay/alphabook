@@ -6113,8 +6113,8 @@ test("GoogleAIEmbedder requests the configured model and output dimensionality",
   let requestBody = "";
   const embedder = new GoogleAIEmbedder(
     "google-key",
-    "gemini-embedding-2-preview",
-    1536,
+    "gemini-embedding-001",
+    768,
     async (input, init) => {
       requestUrl = String(input);
       requestBody = String(init?.body ?? "");
@@ -6127,9 +6127,9 @@ test("GoogleAIEmbedder requests the configured model and output dimensionality",
   );
 
   const embedding = await embedder.embedQuery("grief");
-  assert.equal(requestUrl, "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-2-preview:embedContent");
-  assert.match(requestBody, /"model":"models\/gemini-embedding-2-preview"/);
-  assert.match(requestBody, /"output_dimensionality":1536/);
+  assert.equal(requestUrl, "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent");
+  assert.match(requestBody, /"model":"models\/gemini-embedding-001"/);
+  assert.match(requestBody, /"output_dimensionality":768/);
   assert.deepEqual(embedding, [0.6, 0.8]);
 });
 

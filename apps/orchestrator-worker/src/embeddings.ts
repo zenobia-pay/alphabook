@@ -81,8 +81,8 @@ export class OpenAIEmbedder implements Embedder {
 export class GoogleAIEmbedder implements Embedder {
   constructor(
     private readonly apiKey: string,
-    private readonly model: string = "gemini-embedding-2-preview",
-    private readonly outputDimensionality: number = 1536,
+    private readonly model: string = "gemini-embedding-001",
+    private readonly outputDimensionality: number = 768,
     private readonly fetchImpl: FetchLike = (input, init) => fetch(input, init),
   ) {}
 

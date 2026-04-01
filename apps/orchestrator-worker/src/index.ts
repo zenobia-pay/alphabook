@@ -17,7 +17,7 @@ import { FlyMachinesRuntimeGateway, HttpRuntimeGateway } from "./runtime";
 import { AlphaloopSemanticSearchService } from "./semantic-search";
 import { D1AppStore } from "./d1-store";
 import { OpenAISynthesizer } from "./synthesizer";
-import { CloudflareVectorizeIndex } from "./vectorize";
+import { CloudflareVectorizeIndex, QdrantVectorIndex, type VectorSearchIndex } from "./vectorize";
 
 export interface WorkersAiBinding {
   run<ModelInput extends Record<string, unknown>, ModelOutput = unknown>(
@@ -38,6 +38,11 @@ export interface Env {
   GOOGLE_AI_API_KEY?: string;
   GOOGLE_EMBEDDING_MODEL?: string;
   GOOGLE_EMBEDDING_DIMENSIONS?: string;
+  VECTOR_PROVIDER?: string;
+  QDRANT_URL?: string;
+  QDRANT_API_KEY?: string;
+  QDRANT_COLLECTION?: string;
+  QDRANT_QUERY_TIMEOUT_MS?: string;
   RUNTIME_TOOL_TIMEOUT_SECONDS?: string;
   TOOL_STREAM_CLEANUP_MODEL?: string;
   BILLING_MONTHLY_LIMIT_USD?: string;
@@ -202,8 +207,8 @@ function resolveEmbedder(env: Env, billing: ReturnType<typeof createBillingServi
   if (env.EMBEDDING_PROVIDER === "google" && env.GOOGLE_AI_API_KEY) {
     return new GoogleAIEmbedder(
       env.GOOGLE_AI_API_KEY,
-      env.GOOGLE_EMBEDDING_MODEL ?? "gemini-embedding-2-preview",
-      env.GOOGLE_EMBEDDING_DIMENSIONS ? Number(env.GOOGLE_EMBEDDING_DIMENSIONS) : 1536,
+      env.GOOGLE_EMBEDDING_MODEL ?? "gemini-embedding-001",
+      env.GOOGLE_EMBEDDING_DIMENSIONS ? Number(env.GOOGLE_EMBEDDING_DIMENSIONS) : 768,
     );
   }
   if (!env.OPENAI_API_KEY) {
@@ -215,6 +220,21 @@ function resolveEmbedder(env: Env, billing: ReturnType<typeof createBillingServi
     undefined,
     billing,
   );
+}
+
+function resolveVectorIndex(env: Env): VectorSearchIndex | null {
+  if (env.VECTOR_PROVIDER === "qdrant" && env.QDRANT_URL) {
+    return new QdrantVectorIndex(
+      env.QDRANT_URL,
+      env.QDRANT_COLLECTION ?? "alphabook-semantic",
+      env.QDRANT_API_KEY,
+      env.QDRANT_QUERY_TIMEOUT_MS ? Number(env.QDRANT_QUERY_TIMEOUT_MS) : 10_000,
+    );
+  }
+  if (env.VECTOR_INDEX) {
+    return new CloudflareVectorizeIndex(env.VECTOR_INDEX as never);
+  }
+  return null;
 }
 
 function buildFetchHandler(env: Env) {
@@ -264,11 +284,12 @@ function buildFetchHandler(env: Env) {
     buildPlannerPrompt(implementation),
   );
   const embedder = resolveEmbedder(env, billing);
-  const semanticSearch = env.VECTOR_INDEX
+  const vectorIndex = resolveVectorIndex(env);
+  const semanticSearch = vectorIndex
     ? new AlphaloopSemanticSearchService({
         store,
         embedder,
-        vectorIndex: new CloudflareVectorizeIndex(env.VECTOR_INDEX as never),
+        vectorIndex,
         openAIApiKey: env.OPENAI_API_KEY,
         openAIModel: env.OPENAI_SYNTH_MODEL ?? env.OPENAI_MODEL ?? "gpt-5.2",
         googleAIApiKey: env.GOOGLE_AI_API_KEY,
@@ -496,11 +517,12 @@ async function processResearchTaskMessage(env: Env, message: ResearchTaskQueueMe
     30_000,
     Number(env.RUNTIME_TOOL_TIMEOUT_SECONDS ?? "1500") * 1000,
   );
-  const semanticSearch = env.VECTOR_INDEX
+  const vectorIndex = resolveVectorIndex(env);
+  const semanticSearch = vectorIndex
     ? new AlphaloopSemanticSearchService({
         store,
         embedder,
-        vectorIndex: new CloudflareVectorizeIndex(env.VECTOR_INDEX as never),
+        vectorIndex,
         openAIApiKey: env.OPENAI_API_KEY,
         openAIModel: env.OPENAI_SYNTH_MODEL ?? env.OPENAI_MODEL ?? "gpt-5.2",
         googleAIApiKey: env.GOOGLE_AI_API_KEY,

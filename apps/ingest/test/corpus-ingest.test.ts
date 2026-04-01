@@ -46,3 +46,18 @@ test("buildSimpleRenderedArtifactBundle creates a one-page rendered document bun
   assert.match(bundle.landingHtml, /Incident Memo/);
   assert.match(bundle.manifestJson, /pageCount/);
 });
+
+test("prepareCorpusIngest forwards a configured chunk target size", () => {
+  const prepared = prepareCorpusIngest(fixtureCorpusAdapter, {
+    adapterId: fixtureCorpusAdapter.id,
+    externalId: "memo-2",
+    title: "Long Memo",
+    rawSource: "Alpha beta gamma delta.\n\nEpsilon zeta eta theta.",
+    rawText: "Alpha beta gamma delta.\n\nEpsilon zeta eta theta.",
+    sourceFormat: "text",
+  }, {
+    chunkTargetSize: 10,
+  });
+
+  assert.ok(prepared.chunks.length > 1);
+});
