@@ -21,11 +21,38 @@ interface QdrantPointResult {
   payload?: Record<string, unknown>;
 }
 
+const textEncoder = new TextEncoder();
+
 function normalizePointId(id: string | number | undefined) {
   if (typeof id === "number" || typeof id === "string") {
     return String(id);
   }
   return "";
+}
+
+function sourceIdFromPayload(payload: Record<string, unknown> | undefined) {
+  if (payload && typeof payload.source_id === "string" && payload.source_id.length > 0) {
+    return payload.source_id;
+  }
+  return "";
+}
+
+function stripSourceIdFromPayload(payload: Record<string, unknown> | undefined) {
+  if (!payload) {
+    return undefined;
+  }
+  const metadata = { ...payload };
+  delete metadata.source_id;
+  return Object.keys(metadata).length > 0 ? metadata : undefined;
+}
+
+async function toQdrantPointId(id: string) {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-1", textEncoder.encode(id)));
+  const bytes = Array.from(digest.slice(0, 16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
 
 function toQdrantFilter(filter?: VectorSearchFilter) {
@@ -185,9 +212,9 @@ export class QdrantVectorIndex implements VectorSearchIndex {
     );
     return result
       .map((match) => ({
-        id: normalizePointId(match.id),
+        id: sourceIdFromPayload(match.payload) || normalizePointId(match.id),
         score: typeof match.score === "number" ? match.score : 0,
-        metadata: match.payload,
+        metadata: stripSourceIdFromPayload(match.payload),
       }))
       .filter((match) => match.id.length > 0);
   }
@@ -202,16 +229,20 @@ export class QdrantVectorIndex implements VectorSearchIndex {
     if (vectors.length === 0) {
       return;
     }
+    const points = await Promise.all(vectors.map(async (vector) => ({
+      id: await toQdrantPointId(vector.id),
+      vector: vector.values,
+      payload: {
+        ...(vector.metadata ?? {}),
+        source_id: vector.id,
+      },
+    })));
     await this.request<unknown>(
       `collections/${encodeURIComponent(this.collection)}/points?wait=true`,
       {
         method: "PUT",
         body: JSON.stringify({
-          points: vectors.map((vector) => ({
-            id: vector.id,
-            vector: vector.values,
-            ...(vector.metadata ? { payload: vector.metadata } : {}),
-          })),
+          points,
         }),
       },
       "Qdrant upsert",

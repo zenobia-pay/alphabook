@@ -11,6 +11,7 @@ interface QdrantCollectionInfoResult {
 
 interface QdrantPointRecord {
   id?: string | number;
+  payload?: Record<string, unknown>;
 }
 
 interface QdrantScrollResult {
@@ -24,11 +25,29 @@ type QdrantPointInput = {
   metadata?: Record<string, unknown>;
 };
 
+const textEncoder = new TextEncoder();
+
 function normalizePointId(id: string | number | undefined) {
   if (typeof id === "string" || typeof id === "number") {
     return String(id);
   }
   return null;
+}
+
+function sourceIdFromPayload(payload: Record<string, unknown> | undefined) {
+  if (payload && typeof payload.source_id === "string" && payload.source_id.length > 0) {
+    return payload.source_id;
+  }
+  return null;
+}
+
+async function toQdrantPointId(id: string) {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-1", textEncoder.encode(id)));
+  const bytes = Array.from(digest.slice(0, 16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
 
 export class QdrantApi {
@@ -78,16 +97,20 @@ export class QdrantApi {
     if (points.length === 0) {
       return;
     }
+    const mappedPoints = await Promise.all(points.map(async (point) => ({
+      id: await toQdrantPointId(point.id),
+      vector: point.values,
+      payload: {
+        ...(point.metadata ?? {}),
+        source_id: point.id,
+      },
+    })));
     await this.request(
       `collections/${encodeURIComponent(this.collection)}/points?wait=true`,
       {
         method: "PUT",
         body: JSON.stringify({
-          points: points.map((point) => ({
-            id: point.id,
-            vector: point.values,
-            ...(point.metadata ? { payload: point.metadata } : {}),
-          })),
+          points: mappedPoints,
         }),
       },
       "Qdrant upsert",
@@ -101,20 +124,21 @@ export class QdrantApi {
     const found = new Set<string>();
     for (let index = 0; index < ids.length; index += 256) {
       const batch = ids.slice(index, index + 256);
+      const qdrantIds = await Promise.all(batch.map((id) => toQdrantPointId(id)));
       const result = await this.request<QdrantPointRecord[]>(
         `collections/${encodeURIComponent(this.collection)}/points`,
         {
           method: "POST",
           body: JSON.stringify({
-            ids: batch,
-            with_payload: false,
+            ids: qdrantIds,
+            with_payload: ["source_id"],
             with_vector: false,
           }),
         },
         "Qdrant point lookup",
       );
       for (const point of result) {
-        const id = normalizePointId(point.id);
+        const id = sourceIdFromPayload(point.payload) ?? normalizePointId(point.id);
         if (id) {
           found.add(id);
         }
@@ -133,7 +157,7 @@ export class QdrantApi {
           method: "POST",
           body: JSON.stringify({
             limit: 1000,
-            with_payload: false,
+            with_payload: ["source_id"],
             with_vector: false,
             ...(offset !== null ? { offset } : {}),
           }),
@@ -141,7 +165,7 @@ export class QdrantApi {
         "Qdrant scroll",
       );
       for (const point of result.points ?? []) {
-        const id = normalizePointId(point.id);
+        const id = sourceIdFromPayload(point.payload) ?? normalizePointId(point.id);
         if (id) {
           ids.push(id);
         }
@@ -160,12 +184,13 @@ export class QdrantApi {
       if (batch.length === 0) {
         continue;
       }
+      const qdrantIds = await Promise.all(batch.map((id) => toQdrantPointId(id)));
       await this.request(
         `collections/${encodeURIComponent(this.collection)}/points/delete?wait=true`,
         {
           method: "POST",
           body: JSON.stringify({
-            points: batch,
+            points: qdrantIds,
           }),
         },
         "Qdrant delete",

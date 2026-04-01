@@ -17,9 +17,10 @@ test("QdrantVectorIndex maps search results into vector search matches", async (
       return Response.json({
         result: [
           {
-            id: "chunk-1",
+            id: "8c1b6f3b-a2f7-5b45-b8ca-9f22fe5a6fc5",
             score: 0.91,
             payload: {
+              source_id: "chunk-1",
               work_id: "work-1",
             },
           },
@@ -74,7 +75,8 @@ test("QdrantVectorIndex writes vectors using Qdrant point upserts", async () => 
   }]);
 
   assert.equal(requestUrl, "https://qdrant.example.com/collections/alphabook-semantic/points?wait=true");
-  assert.match(requestBody, /"id":"chunk-2"/);
+  assert.match(requestBody, /"id":"[0-9a-f-]{36}"/);
   assert.match(requestBody, /"vector":\[0.2,0.3\]/);
+  assert.match(requestBody, /"source_id":"chunk-2"/);
   assert.match(requestBody, /"work_id":"work-2"/);
 });
