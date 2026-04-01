@@ -1,30 +1,32 @@
 import process from "node:process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createWriteStream } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
-import { GoogleGenAI, type BatchJob, type File as GoogleFile } from "@google/genai";
 import { buildCorpusChunkId } from "@alphabook/corpus-core";
 import { prepareCorpusIngest } from "./corpus-ingest";
 import { gutenbergCorpusAdapter } from "@alphabook/source-gutenberg/adapter";
 import { listMirrorIds, resolveMirrorSource } from "@alphabook/source-gutenberg/mirror";
 
-const DEFAULT_GOOGLE_BATCH_PRICE_PER_MILLION_TOKENS_USD = 0.075;
-const DEFAULT_GOOGLE_BATCH_MAX_FILE_BYTES = 1_500_000_000;
-const GOOGLE_BATCH_REQUEST_MIME_TYPE = "application/json";
+const DEFAULT_OPENAI_BATCH_PRICE_PER_MILLION_TOKENS_USD = 0.01;
+const DEFAULT_OPENAI_BATCH_MAX_FILE_BYTES = 190_000_000;
+const DEFAULT_OPENAI_BATCH_MAX_REQUESTS_PER_FILE = 50_000;
+const OPENAI_BATCH_COMPLETION_WINDOW = "24h";
+const OPENAI_BATCH_ENDPOINT = "/v1/embeddings";
 
-export interface GoogleEmbeddingBatchRequest {
-  request: {
-    content: {
-      parts: Array<{ text: string }>;
-    };
-    taskType: "RETRIEVAL_DOCUMENT";
-    title?: string;
-    outputDimensionality: number;
+export interface OpenAIEmbeddingBatchRequestLine {
+  custom_id: string;
+  method: "POST";
+  url: "/v1/embeddings";
+  body: {
+    model: string;
+    input: string | string[];
+    dimensions?: number;
+    encoding_format?: "float";
   };
 }
 
-export interface GoogleEmbeddingBatchSidecarRow {
+export interface OpenAIEmbeddingBatchSidecarRow {
   sourceId: string;
   gutenbergId: string;
   chunkIndex: number;
@@ -35,7 +37,7 @@ export interface GoogleEmbeddingBatchSidecarRow {
   estimatedTokens: number;
 }
 
-export interface GoogleEmbeddingBatchPreparedFile {
+export interface OpenAIEmbeddingBatchPreparedFile {
   index: number;
   requestPath: string;
   sidecarPath: string;
@@ -47,13 +49,14 @@ export interface GoogleEmbeddingBatchPreparedFile {
   lastGutenbergId: string | null;
 }
 
-export interface GoogleEmbeddingBatchManifest {
+export interface OpenAIEmbeddingBatchManifest {
   runId: string;
   createdAt: string;
   mirrorRoot: string;
   model: string;
-  dimensions: number;
+  dimensions: number | null;
   chunkTargetSize: number;
+  requestBatchSize: number;
   pricePerMillionTokensUsd: number;
   targetCostUsd: number;
   targetTokens: number;
@@ -64,10 +67,10 @@ export interface GoogleEmbeddingBatchManifest {
   startAfterId: string | null;
   lastIncludedId: string | null;
   outputDir: string;
-  files: GoogleEmbeddingBatchPreparedFile[];
+  files: OpenAIEmbeddingBatchPreparedFile[];
 }
 
-export interface GoogleEmbeddingBatchSubmission {
+export interface OpenAIEmbeddingBatchSubmission {
   manifestPath: string;
   submittedAt: string;
   model: string;
@@ -78,22 +81,25 @@ export interface GoogleEmbeddingBatchSubmission {
     requestCount: number;
     estimatedTokens: number;
     estimatedCostUsd: number;
-    uploadedFileName: string | null;
-    batchJobName: string | null;
-    state: string | null;
-    destFileName: string | null;
+    uploadedFileId: string | null;
+    batchId: string | null;
+    status: string | null;
+    outputFileId: string | null;
+    errorFileId: string | null;
     errorMessage: string | null;
   }>;
 }
 
-export interface PrepareGoogleEmbeddingBatchOptions {
+export interface PrepareOpenAIEmbeddingBatchOptions {
   mirrorRoot: string;
   startAfterId?: string | null;
   targetCostUsd: number;
   outputDir: string;
   maxFileBytes?: number;
+  maxRequestsPerFile?: number;
   chunkTargetSize: number;
-  dimensions: number;
+  requestBatchSize: number;
+  dimensions?: number | null;
   model: string;
   pricePerMillionTokensUsd?: number;
   limitBooks?: number | null;
@@ -109,40 +115,36 @@ export function estimateEmbeddingInputTokensForText(text: string) {
 
 export function estimateEmbeddingCostUsd(
   estimatedTokens: number,
-  pricePerMillionTokensUsd = DEFAULT_GOOGLE_BATCH_PRICE_PER_MILLION_TOKENS_USD,
+  pricePerMillionTokensUsd = DEFAULT_OPENAI_BATCH_PRICE_PER_MILLION_TOKENS_USD,
 ) {
   return Number(((estimatedTokens / 1_000_000) * pricePerMillionTokensUsd).toFixed(8));
 }
 
-export function buildGoogleEmbeddingBatchRequest(
-  text: string,
-  dimensions: number,
-  title?: string | null,
-): GoogleEmbeddingBatchRequest {
+export function buildOpenAIEmbeddingBatchRequest(
+  customId: string,
+  input: string | string[],
+  model: string,
+  dimensions?: number | null,
+): OpenAIEmbeddingBatchRequestLine {
   return {
-    request: {
-      content: {
-        parts: [{ text }],
-      },
-      taskType: "RETRIEVAL_DOCUMENT",
-      ...(title?.trim() ? { title: title.trim() } : {}),
-      outputDimensionality: dimensions,
+    custom_id: customId,
+    method: "POST",
+    url: OPENAI_BATCH_ENDPOINT,
+    body: {
+      model,
+      input,
+      ...(dimensions ? { dimensions } : {}),
+      encoding_format: "float",
     },
   };
 }
 
-function resolveGoogleApiKey() {
-  const apiKey = process.env.GOOGLE_AI_API_KEY?.trim() || process.env.GOOGLE_API_KEY?.trim();
+function resolveOpenAIApiKey() {
+  const apiKey = process.env.OPENAI_API_KEY?.trim();
   if (!apiKey) {
-    throw new Error("GOOGLE_AI_API_KEY or GOOGLE_API_KEY is required for Google Batch embeddings.");
+    throw new Error("OPENAI_API_KEY is required for OpenAI Batch embeddings.");
   }
   return apiKey;
-}
-
-function createGoogleGenAI() {
-  return new GoogleGenAI({
-    apiKey: resolveGoogleApiKey(),
-  });
 }
 
 class BatchFileWriter {
@@ -167,16 +169,14 @@ class BatchFileWriter {
     this.sidecarStream = createWriteStream(this.sidecarPath, { encoding: "utf8" });
   }
 
-  canFit(bytes: number, maxFileBytes: number) {
-    return this.requestCount === 0 || this.totalBytes + bytes <= maxFileBytes;
+  canFit(bytes: number, maxFileBytes: number, maxRequestsPerFile: number) {
+    return (
+      this.requestCount === 0
+      || (this.totalBytes + bytes <= maxFileBytes && this.requestCount < maxRequestsPerFile)
+    );
   }
 
-  async write(
-    requestLine: string,
-    sidecarLine: string,
-    estimatedTokens: number,
-    gutenbergId: string,
-  ) {
+  async write(requestLine: string, sidecarLine: string, estimatedTokens: number, gutenbergId: string) {
     const bytes = Buffer.byteLength(`${requestLine}\n`, "utf8");
     await Promise.all([
       new Promise<void>((resolvePromise, rejectPromise) => {
@@ -237,26 +237,143 @@ function numericIdOrInfinity(value: string | null | undefined) {
   return Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY;
 }
 
-export async function prepareGoogleEmbeddingBatch(
-  options: PrepareGoogleEmbeddingBatchOptions,
-): Promise<{ manifestPath: string; manifest: GoogleEmbeddingBatchManifest }> {
+async function openAIRequest(path: string, init: RequestInit) {
+  const apiKey = resolveOpenAIApiKey();
+  const response = await fetch(`https://api.openai.com${path}`, {
+    ...init,
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+      ...(init.headers ?? {}),
+    },
+  });
+  if (!response.ok) {
+    throw new Error(`OpenAI request failed: ${response.status} ${await response.text()}`);
+  }
+  return response;
+}
+
+async function uploadBatchInputFile(requestPath: string) {
+  const form = new FormData();
+  form.set("purpose", "batch");
+  form.set(
+    "file",
+    new Blob([await readFile(requestPath)], { type: "application/jsonl" }),
+    basename(requestPath),
+  );
+  const response = await openAIRequest("/v1/files", {
+    method: "POST",
+    body: form,
+  });
+  return response.json() as Promise<{ id: string }>;
+}
+
+async function createBatch(inputFileId: string, metadata?: Record<string, string>) {
+  const response = await openAIRequest("/v1/batches", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      input_file_id: inputFileId,
+      endpoint: OPENAI_BATCH_ENDPOINT,
+      completion_window: OPENAI_BATCH_COMPLETION_WINDOW,
+      ...(metadata ? { metadata } : {}),
+    }),
+  });
+  return response.json() as Promise<{
+    id: string;
+    status?: string;
+    output_file_id?: string | null;
+    error_file_id?: string | null;
+    errors?: { data?: Array<{ message?: string }> } | null;
+  }>;
+}
+
+async function getBatch(batchId: string) {
+  const response = await openAIRequest(`/v1/batches/${batchId}`, {
+    method: "GET",
+  });
+  return response.json() as Promise<{
+    id: string;
+    status?: string;
+    output_file_id?: string | null;
+    error_file_id?: string | null;
+    errors?: { data?: Array<{ message?: string }> } | null;
+  }>;
+}
+
+async function downloadFileContent(fileId: string) {
+  const response = await openAIRequest(`/v1/files/${fileId}/content`, {
+    method: "GET",
+  });
+  return response.text();
+}
+
+export async function prepareOpenAIEmbeddingBatch(
+  options: PrepareOpenAIEmbeddingBatchOptions,
+): Promise<{ manifestPath: string; manifest: OpenAIEmbeddingBatchManifest }> {
   const mirrorIds = await listMirrorIds(options.mirrorRoot);
-  const runId = `google-embedding-batch-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+  const runId = `openai-embedding-batch-${new Date().toISOString().replace(/[:.]/g, "-")}`;
   const runDir = resolve(options.outputDir);
-  const maxFileBytes = Math.max(1_000_000, options.maxFileBytes ?? DEFAULT_GOOGLE_BATCH_MAX_FILE_BYTES);
-  const pricePerMillionTokensUsd = options.pricePerMillionTokensUsd ?? DEFAULT_GOOGLE_BATCH_PRICE_PER_MILLION_TOKENS_USD;
+  const maxFileBytes = Math.max(1_000_000, options.maxFileBytes ?? DEFAULT_OPENAI_BATCH_MAX_FILE_BYTES);
+  const maxRequestsPerFile = Math.max(1, options.maxRequestsPerFile ?? DEFAULT_OPENAI_BATCH_MAX_REQUESTS_PER_FILE);
+  const pricePerMillionTokensUsd = options.pricePerMillionTokensUsd ?? DEFAULT_OPENAI_BATCH_PRICE_PER_MILLION_TOKENS_USD;
   const targetTokens = Math.max(1, Math.floor((options.targetCostUsd / pricePerMillionTokensUsd) * 1_000_000));
   const startAfter = numericIdOrInfinity(options.startAfterId ?? null);
   const limitBooks = options.limitBooks ?? null;
+  const requestBatchSize = Math.max(1, options.requestBatchSize);
 
   await mkdir(runDir, { recursive: true });
 
-  const files: GoogleEmbeddingBatchPreparedFile[] = [];
+  const files: OpenAIEmbeddingBatchPreparedFile[] = [];
   let currentFile: BatchFileWriter | null = null;
   let estimatedTokens = 0;
   let requestCount = 0;
   let bookCount = 0;
   let lastIncludedId: string | null = null;
+  let pendingTexts: string[] = [];
+  let pendingSidecars: OpenAIEmbeddingBatchSidecarRow[] = [];
+  let pendingTokens = 0;
+
+  const flushPending = async () => {
+    if (pendingTexts.length === 0) {
+      return;
+    }
+    const customId = `embedding-request-${String(requestCount + 1).padStart(8, "0")}`;
+    const request = buildOpenAIEmbeddingBatchRequest(
+      customId,
+      pendingTexts,
+      options.model,
+      options.dimensions ?? null,
+    );
+    const requestLine = JSON.stringify(request);
+    const sidecarLine = JSON.stringify(pendingSidecars);
+    const requestBytes = Buffer.byteLength(`${requestLine}\n`, "utf8");
+
+    if (!currentFile || !currentFile.canFit(requestBytes, maxFileBytes, maxRequestsPerFile)) {
+      if (currentFile) {
+        await currentFile.close();
+        files.push({
+          index: currentFile.index,
+          requestPath: currentFile.requestPath,
+          sidecarPath: currentFile.sidecarPath,
+          requestCount: currentFile.requestCount,
+          totalBytes: currentFile.totalBytes,
+          estimatedTokens: currentFile.estimatedTokens,
+          estimatedCostUsd: estimateEmbeddingCostUsd(currentFile.estimatedTokens, pricePerMillionTokensUsd),
+          firstGutenbergId: currentFile.firstGutenbergId,
+          lastGutenbergId: currentFile.lastGutenbergId,
+        });
+      }
+      currentFile = new BatchFileWriter(runDir, files.length + 1);
+    }
+
+    await currentFile.write(requestLine, sidecarLine, pendingTokens, pendingSidecars[0]!.gutenbergId);
+    requestCount += 1;
+    pendingTexts = [];
+    pendingSidecars = [];
+    pendingTokens = 0;
+  };
 
   for (const gutenbergId of mirrorIds) {
     const numericId = Number.parseInt(gutenbergId, 10);
@@ -308,11 +425,10 @@ export async function prepareGoogleEmbeddingBatch(
     }
 
     for (const [chunkIndex, chunkText] of prepared.chunks.entries()) {
-      const request = buildGoogleEmbeddingBatchRequest(chunkText, options.dimensions, prepared.metadataPayload.title as string);
-      const requestLine = JSON.stringify(request);
+      const sourceId = buildCorpusChunkId(gutenbergCorpusAdapter.id, gutenbergId, chunkIndex);
       const chunkTokens = estimateEmbeddingInputTokensForText(chunkText);
-      const sidecar: GoogleEmbeddingBatchSidecarRow = {
-        sourceId: buildCorpusChunkId(gutenbergCorpusAdapter.id, gutenbergId, chunkIndex),
+      const sidecar: OpenAIEmbeddingBatchSidecarRow = {
+        sourceId,
         gutenbergId,
         chunkIndex,
         title: String(prepared.metadataPayload.title ?? `Project Gutenberg ${gutenbergId}`),
@@ -321,31 +437,15 @@ export async function prepareGoogleEmbeddingBatch(
         rightsStatus: typeof prepared.metadataPayload.rightsStatus === "string" ? prepared.metadataPayload.rightsStatus : null,
         estimatedTokens: chunkTokens,
       };
-      const sidecarLine = JSON.stringify(sidecar);
-      const requestBytes = Buffer.byteLength(`${requestLine}\n`, "utf8");
-
-      if (!currentFile || !currentFile.canFit(requestBytes, maxFileBytes)) {
-        if (currentFile) {
-          await currentFile.close();
-          files.push({
-            index: currentFile.index,
-            requestPath: currentFile.requestPath,
-            sidecarPath: currentFile.sidecarPath,
-            requestCount: currentFile.requestCount,
-            totalBytes: currentFile.totalBytes,
-            estimatedTokens: currentFile.estimatedTokens,
-            estimatedCostUsd: estimateEmbeddingCostUsd(currentFile.estimatedTokens, pricePerMillionTokensUsd),
-            firstGutenbergId: currentFile.firstGutenbergId,
-            lastGutenbergId: currentFile.lastGutenbergId,
-          });
-        }
-        currentFile = new BatchFileWriter(runDir, files.length + 1);
-      }
-
-      await currentFile.write(requestLine, sidecarLine, chunkTokens, gutenbergId);
       estimatedTokens += chunkTokens;
-      requestCount += 1;
       lastIncludedId = gutenbergId;
+      pendingTexts.push(chunkText);
+      pendingSidecars.push(sidecar);
+      pendingTokens += chunkTokens;
+
+      if (pendingTexts.length >= requestBatchSize) {
+        await flushPending();
+      }
 
       if (estimatedTokens >= targetTokens) {
         break;
@@ -355,28 +455,32 @@ export async function prepareGoogleEmbeddingBatch(
     bookCount += 1;
   }
 
-  if (currentFile) {
-    await currentFile.close();
+  await flushPending();
+
+  if (currentFile !== null) {
+    const finalizedFile = currentFile as BatchFileWriter;
+    await finalizedFile.close();
     files.push({
-      index: currentFile.index,
-      requestPath: currentFile.requestPath,
-      sidecarPath: currentFile.sidecarPath,
-      requestCount: currentFile.requestCount,
-      totalBytes: currentFile.totalBytes,
-      estimatedTokens: currentFile.estimatedTokens,
-      estimatedCostUsd: estimateEmbeddingCostUsd(currentFile.estimatedTokens, pricePerMillionTokensUsd),
-      firstGutenbergId: currentFile.firstGutenbergId,
-      lastGutenbergId: currentFile.lastGutenbergId,
+      index: finalizedFile.index,
+      requestPath: finalizedFile.requestPath,
+      sidecarPath: finalizedFile.sidecarPath,
+      requestCount: finalizedFile.requestCount,
+      totalBytes: finalizedFile.totalBytes,
+      estimatedTokens: finalizedFile.estimatedTokens,
+      estimatedCostUsd: estimateEmbeddingCostUsd(finalizedFile.estimatedTokens, pricePerMillionTokensUsd),
+      firstGutenbergId: finalizedFile.firstGutenbergId,
+      lastGutenbergId: finalizedFile.lastGutenbergId,
     });
   }
 
-  const manifest: GoogleEmbeddingBatchManifest = {
+  const manifest: OpenAIEmbeddingBatchManifest = {
     runId,
     createdAt: new Date().toISOString(),
     mirrorRoot: options.mirrorRoot,
     model: options.model,
-    dimensions: options.dimensions,
+    dimensions: options.dimensions ?? null,
     chunkTargetSize: options.chunkTargetSize,
+    requestBatchSize,
     pricePerMillionTokensUsd,
     targetCostUsd: Number(options.targetCostUsd.toFixed(2)),
     targetTokens,
@@ -394,11 +498,10 @@ export async function prepareGoogleEmbeddingBatch(
   return { manifestPath, manifest };
 }
 
-export async function submitGoogleEmbeddingBatch(manifestPathInput: string) {
+export async function submitOpenAIEmbeddingBatch(manifestPathInput: string) {
   const manifestPath = resolve(manifestPathInput);
-  const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as GoogleEmbeddingBatchManifest;
-  const ai = createGoogleGenAI();
-  const submission: GoogleEmbeddingBatchSubmission = {
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as OpenAIEmbeddingBatchManifest;
+  const submission: OpenAIEmbeddingBatchSubmission = {
     manifestPath,
     submittedAt: new Date().toISOString(),
     model: manifest.model,
@@ -406,20 +509,10 @@ export async function submitGoogleEmbeddingBatch(manifestPathInput: string) {
   };
 
   for (const file of manifest.files) {
-    const uploaded = await ai.files.upload({
-      file: file.requestPath,
-      config: {
-        mimeType: GOOGLE_BATCH_REQUEST_MIME_TYPE,
-      },
-    });
-    const batchJob = await ai.batches.createEmbeddings({
-      model: manifest.model,
-      src: {
-        fileName: uploaded.name!,
-      },
-      config: {
-        displayName: `${manifest.runId}-part-${String(file.index).padStart(4, "0")}`,
-      },
+    const uploaded = await uploadBatchInputFile(file.requestPath);
+    const batch = await createBatch(uploaded.id, {
+      run_id: manifest.runId,
+      part: String(file.index),
     });
     submission.jobs.push({
       index: file.index,
@@ -428,11 +521,12 @@ export async function submitGoogleEmbeddingBatch(manifestPathInput: string) {
       requestCount: file.requestCount,
       estimatedTokens: file.estimatedTokens,
       estimatedCostUsd: file.estimatedCostUsd,
-      uploadedFileName: uploaded.name ?? null,
-      batchJobName: batchJob.name ?? null,
-      state: batchJob.state ?? null,
-      destFileName: batchJob.dest?.fileName ?? null,
-      errorMessage: batchJob.error?.message ?? null,
+      uploadedFileId: uploaded.id ?? null,
+      batchId: batch.id ?? null,
+      status: batch.status ?? null,
+      outputFileId: batch.output_file_id ?? null,
+      errorFileId: batch.error_file_id ?? null,
+      errorMessage: batch.errors?.data?.map((item) => item.message).filter(Boolean).join("; ") || null,
     });
   }
 
@@ -441,25 +535,25 @@ export async function submitGoogleEmbeddingBatch(manifestPathInput: string) {
   return { submissionPath, submission };
 }
 
-export async function getGoogleEmbeddingBatchStatus(nameOrSubmissionPath: string) {
-  const ai = createGoogleGenAI();
-  const resolvedPath = resolve(nameOrSubmissionPath);
+export async function getOpenAIEmbeddingBatchStatus(idOrSubmissionPath: string) {
+  const resolvedPath = resolve(idOrSubmissionPath);
   const maybeJson = await readFile(resolvedPath, "utf8").catch(() => null);
   if (maybeJson) {
-    const submission = JSON.parse(maybeJson) as GoogleEmbeddingBatchSubmission;
+    const submission = JSON.parse(maybeJson) as OpenAIEmbeddingBatchSubmission;
     const jobs = await Promise.all(submission.jobs.map(async (job) => {
-      if (!job.batchJobName) {
+      if (!job.batchId) {
         return job;
       }
-      const batchJob = await ai.batches.get({ name: job.batchJobName });
+      const batch = await getBatch(job.batchId);
       return {
         ...job,
-        state: batchJob.state ?? null,
-        destFileName: batchJob.dest?.fileName ?? null,
-        errorMessage: batchJob.error?.message ?? null,
+        status: batch.status ?? null,
+        outputFileId: batch.output_file_id ?? null,
+        errorFileId: batch.error_file_id ?? null,
+        errorMessage: batch.errors?.data?.map((item) => item.message).filter(Boolean).join("; ") || null,
       };
     }));
-    const updated: GoogleEmbeddingBatchSubmission = {
+    const updated: OpenAIEmbeddingBatchSubmission = {
       ...submission,
       jobs,
     };
@@ -467,40 +561,36 @@ export async function getGoogleEmbeddingBatchStatus(nameOrSubmissionPath: string
     return updated;
   }
 
-  const batchJob = await ai.batches.get({ name: nameOrSubmissionPath });
-  return batchJob;
+  return getBatch(idOrSubmissionPath);
 }
 
-export async function downloadGoogleEmbeddingBatchOutputs(
+export async function downloadOpenAIEmbeddingBatchOutputs(
   submissionPathInput: string,
   outputDirInput?: string | null,
 ) {
   const submissionPath = resolve(submissionPathInput);
-  const submission = JSON.parse(await readFile(submissionPath, "utf8")) as GoogleEmbeddingBatchSubmission;
-  const ai = createGoogleGenAI();
+  const submission = JSON.parse(await readFile(submissionPath, "utf8")) as OpenAIEmbeddingBatchSubmission;
   const outputDir = resolve(outputDirInput ?? join(dirname(submissionPath), "outputs"));
   await mkdir(outputDir, { recursive: true });
 
   const downloads: Array<{
     index: number;
-    batchJobName: string;
-    destFileName: string;
+    batchId: string;
+    outputFileId: string;
     downloadPath: string;
   }> = [];
 
   for (const job of submission.jobs) {
-    if (!job.batchJobName || !job.destFileName) {
+    if (!job.batchId || !job.outputFileId) {
       continue;
     }
     const downloadPath = join(outputDir, `embedding-batch-${String(job.index).padStart(4, "0")}-output.jsonl`);
-    await ai.files.download({
-      file: job.destFileName,
-      downloadPath,
-    });
+    const content = await downloadFileContent(job.outputFileId);
+    await writeFile(downloadPath, content, "utf8");
     downloads.push({
       index: job.index,
-      batchJobName: job.batchJobName,
-      destFileName: job.destFileName,
+      batchId: job.batchId,
+      outputFileId: job.outputFileId,
       downloadPath,
     });
   }
@@ -519,33 +609,38 @@ export async function downloadGoogleEmbeddingBatchOutputs(
   };
 }
 
-export async function createGoogleEmbeddingBatchFromEnv(args: {
+export async function createOpenAIEmbeddingBatchFromEnv(args: {
   startAfterId?: string | null;
   targetCostUsd?: number;
   outputDir?: string | null;
   maxFileBytes?: number | null;
+  maxRequestsPerFile?: number | null;
   limitBooks?: number | null;
   chunkTargetSize: number;
   model: string;
-  dimensions: number;
+  dimensions?: number | null;
 }) {
   const mirrorRoot = process.env.GUTENBERG_MIRROR_ROOT?.trim();
   if (!mirrorRoot) {
-    throw new Error("GUTENBERG_MIRROR_ROOT is required for prepare-google-embedding-batch.");
+    throw new Error("GUTENBERG_MIRROR_ROOT is required for prepare-openai-embedding-batch.");
   }
   const outputDir = args.outputDir?.trim()
     ? resolve(args.outputDir)
-    : resolve(process.cwd(), ".alphabook", "google-embedding-batch");
-  return prepareGoogleEmbeddingBatch({
+    : resolve(process.cwd(), ".alphabook", "openai-embedding-batch");
+  return prepareOpenAIEmbeddingBatch({
     mirrorRoot,
     startAfterId: args.startAfterId ?? null,
     targetCostUsd: args.targetCostUsd ?? 300,
     outputDir,
-    maxFileBytes: args.maxFileBytes ?? DEFAULT_GOOGLE_BATCH_MAX_FILE_BYTES,
+    maxFileBytes: args.maxFileBytes ?? DEFAULT_OPENAI_BATCH_MAX_FILE_BYTES,
+    maxRequestsPerFile: args.maxRequestsPerFile ?? DEFAULT_OPENAI_BATCH_MAX_REQUESTS_PER_FILE,
     chunkTargetSize: args.chunkTargetSize,
-    dimensions: args.dimensions,
+    requestBatchSize: Number(process.env.OPENAI_EMBEDDING_BATCH_SIZE ?? "32"),
+    dimensions: args.dimensions ?? null,
     model: args.model,
-    pricePerMillionTokensUsd: DEFAULT_GOOGLE_BATCH_PRICE_PER_MILLION_TOKENS_USD,
+    pricePerMillionTokensUsd: Number(
+      process.env.OPENAI_BATCH_EMBEDDING_PRICE_PER_MILLION_TOKENS_USD ?? DEFAULT_OPENAI_BATCH_PRICE_PER_MILLION_TOKENS_USD,
+    ),
     limitBooks: args.limitBooks ?? null,
   });
 }

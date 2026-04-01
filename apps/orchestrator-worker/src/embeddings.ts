@@ -18,6 +18,7 @@ export class OpenAIEmbedder implements Embedder {
   constructor(
     private readonly apiKey: string,
     private readonly model: string,
+    private readonly dimensions: number | null = null,
     private readonly fetchImpl: FetchLike = (input, init) => fetch(input, init),
     private readonly billing?: BillingService,
   ) {}
@@ -27,8 +28,8 @@ export class OpenAIEmbedder implements Embedder {
       model: this.model,
       input: text,
     };
-    if (this.model.startsWith("text-embedding-3-")) {
-      body.dimensions = 1536;
+    if (this.model.startsWith("text-embedding-3-") && this.dimensions) {
+      body.dimensions = this.dimensions;
     }
 
     const response = await this.fetchImpl("https://api.openai.com/v1/embeddings", {

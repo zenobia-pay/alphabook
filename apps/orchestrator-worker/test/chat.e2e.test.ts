@@ -6090,9 +6090,9 @@ test("sql metadata search downranks nonfiction grief-adjacent books when the que
   assert.equal(results[1]?.id, "nonfiction-work");
 });
 
-test("OpenAIEmbedder requests 1536 dimensions for text-embedding-3 models", async () => {
+test("OpenAIEmbedder requests the configured dimensions for text-embedding-3 models", async () => {
   let requestBody: Record<string, unknown> | null = null;
-  const embedder = new OpenAIEmbedder("test-key", "text-embedding-3-small", async (_input, init) => {
+  const embedder = new OpenAIEmbedder("test-key", "text-embedding-3-small", 768, async (_input, init) => {
     requestBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
     return Response.json({
       data: [
@@ -6105,7 +6105,7 @@ test("OpenAIEmbedder requests 1536 dimensions for text-embedding-3 models", asyn
 
   const embedding = await embedder.embedQuery("anger");
   assert.deepEqual(embedding, [0.1, 0.2, 0.3]);
-  assert.equal(requestBody ? requestBody["dimensions"] : undefined, 1536);
+  assert.equal(requestBody ? requestBody["dimensions"] : undefined, 768);
 });
 
 test("GoogleAIEmbedder requests the configured model and output dimensionality", async () => {

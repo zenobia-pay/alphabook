@@ -33,6 +33,12 @@ import {
   getGoogleEmbeddingBatchStatus,
   submitGoogleEmbeddingBatch,
 } from "./google-batch";
+import {
+  createOpenAIEmbeddingBatchFromEnv,
+  downloadOpenAIEmbeddingBatchOutputs,
+  getOpenAIEmbeddingBatchStatus,
+  submitOpenAIEmbeddingBatch,
+} from "./openai-batch";
 import { QdrantApi } from "./qdrant-api";
 import { CloudflareVectorizeApi } from "./vectorize-api";
 import {
@@ -287,6 +293,9 @@ async function embedChunksWithOpenAI(chunks: string[]): Promise<number[][] | nul
     return null;
   }
   const model = process.env.OPENAI_EMBEDDING_MODEL ?? "text-embedding-3-small";
+  const dimensions = model.startsWith("text-embedding-3-")
+    ? Number(process.env.OPENAI_EMBEDDING_DIMENSIONS ?? "768")
+    : null;
   const embeddings: number[][] = [];
 
   for (let index = 0; index < chunks.length; index += 32) {
@@ -305,7 +314,7 @@ async function embedChunksWithOpenAI(chunks: string[]): Promise<number[][] | nul
           body: JSON.stringify({
             model,
             input: batch,
-            ...(model.startsWith("text-embedding-3-") ? { dimensions: 1536 } : {}),
+            ...(dimensions ? { dimensions } : {}),
           }),
         });
         if (response.ok) {
@@ -4655,6 +4664,10 @@ async function main() {
     "submit-google-embedding-batch",
     "google-embedding-batch-status",
     "download-google-embedding-batch-output",
+    "prepare-openai-embedding-batch",
+    "submit-openai-embedding-batch",
+    "openai-embedding-batch-status",
+    "download-openai-embedding-batch-output",
   ].includes(command ?? "");
   let context: IngestContext | null = null;
 
@@ -4772,6 +4785,61 @@ async function main() {
         throw new Error("Usage: download-google-embedding-batch-output <submissionPath> [outputDir]");
       }
       const result = await downloadGoogleEmbeddingBatchOutputs(
+        submissionPath,
+        outputDir && outputDir !== "-" ? outputDir : null,
+      );
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
+    if (command === "prepare-openai-embedding-batch") {
+      const [startAfterId, targetCostUsdValue, outputDir, maxFileBytesValue, limitBooksValue] = args;
+      const result = await createOpenAIEmbeddingBatchFromEnv({
+        startAfterId: startAfterId && startAfterId !== "-" ? startAfterId : null,
+        targetCostUsd: targetCostUsdValue && targetCostUsdValue !== "-"
+          ? Number(targetCostUsdValue)
+          : 300,
+        outputDir: outputDir && outputDir !== "-" ? outputDir : null,
+        maxFileBytes: maxFileBytesValue && maxFileBytesValue !== "-"
+          ? Number(maxFileBytesValue)
+          : null,
+        limitBooks: limitBooksValue && limitBooksValue !== "-"
+          ? Number(limitBooksValue)
+          : null,
+        chunkTargetSize: getGutenbergChunkTargetSize(),
+        model: process.env.OPENAI_EMBEDDING_MODEL ?? "text-embedding-3-small",
+        dimensions: Number(process.env.OPENAI_EMBEDDING_DIMENSIONS ?? "768"),
+      });
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
+    if (command === "submit-openai-embedding-batch") {
+      const [manifestPath] = args;
+      if (!manifestPath) {
+        throw new Error("Usage: submit-openai-embedding-batch <manifestPath>");
+      }
+      const result = await submitOpenAIEmbeddingBatch(manifestPath);
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
+    if (command === "openai-embedding-batch-status") {
+      const [idOrSubmissionPath] = args;
+      if (!idOrSubmissionPath) {
+        throw new Error("Usage: openai-embedding-batch-status <batchId|submissionPath>");
+      }
+      const result = await getOpenAIEmbeddingBatchStatus(idOrSubmissionPath);
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
+    if (command === "download-openai-embedding-batch-output") {
+      const [submissionPath, outputDir] = args;
+      if (!submissionPath) {
+        throw new Error("Usage: download-openai-embedding-batch-output <submissionPath> [outputDir]");
+      }
+      const result = await downloadOpenAIEmbeddingBatchOutputs(
         submissionPath,
         outputDir && outputDir !== "-" ? outputDir : null,
       );
@@ -4973,6 +5041,10 @@ async function main() {
     console.log("  submit-google-embedding-batch <manifestPath>");
     console.log("  google-embedding-batch-status <batchJobName|submissionPath>");
     console.log("  download-google-embedding-batch-output <submissionPath> [outputDir]");
+    console.log("  prepare-openai-embedding-batch [startAfterId|-] [targetCostUsd|-] [outputDir|-] [maxFileBytes|-] [limitBooks|-]");
+    console.log("  submit-openai-embedding-batch <manifestPath>");
+    console.log("  openai-embedding-batch-status <batchId|submissionPath>");
+    console.log("  download-openai-embedding-batch-output <submissionPath> [outputDir]");
     console.log("  ingest-supreme-court-cluster <clusterId>");
     console.log("  backfill-supreme-court [startAfterClusterId|-] [limit]");
     console.log("  backfill-mirror [startAfterId|-] [limit]");
