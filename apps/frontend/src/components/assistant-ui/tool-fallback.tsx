@@ -98,6 +98,12 @@ function getRationale(args: JsonRecord | null) {
     : null;
 }
 
+function getSummary(value: JsonRecord | null) {
+  return typeof value?.__summary === "string" && value.__summary.trim().length > 0
+    ? value.__summary.trim()
+    : null;
+}
+
 function getErrorText(status?: ToolCallMessagePartStatus, result?: unknown) {
   if (status?.type === "incomplete") {
     if (typeof status.error === "string" && status.error.trim().length > 0) {
@@ -190,6 +196,14 @@ function summarizeTool(toolName: string, args: JsonRecord | null, result: JsonRe
   if (error) {
     return error;
   }
+  const resultSummary = getSummary(result);
+  if (resultSummary) {
+    return resultSummary;
+  }
+  const argsSummary = getSummary(args);
+  if (argsSummary) {
+    return argsSummary;
+  }
   const progress = getProgressLines(args);
   if (progress.length > 0) {
     return progress[progress.length - 1]!;
@@ -217,14 +231,14 @@ function ToolStatusBadge({
   const isCancelled = status?.type === "incomplete" && status.reason === "cancelled";
   const hasError = Boolean(getErrorText(status, result));
   const Icon = hasError ? XCircleIcon : statusIconMap[statusType];
-  const label = isCancelled ? "Cancelled" : hasError ? "Failed" : statusType === "running" ? "Running" : "Done";
+  const label = isCancelled ? "Cancelled" : hasError ? "Failed" : statusType === "running" ? "Running" : null;
 
   return (
     <>
       <span className={cn("aui-tool-fallback-status-shell", hasError && "aui-tool-fallback-status-shell-error")}>
         <Icon className={cn("size-3.5", statusType === "running" && "animate-spin")} />
       </span>
-      {hideLabel ? null : (
+      {hideLabel || !label ? null : (
         <span className={cn("aui-tool-fallback-badge", hasError && "aui-tool-fallback-badge-error")}>{label}</span>
       )}
     </>

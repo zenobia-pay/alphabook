@@ -8049,26 +8049,295 @@ function truncateHermesText(input: string, maxChars = 400) {
   return `${normalized.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
 }
 
-function humanizeHermesToolLabel(name: string) {
-  const cleaned = name.replace(/[_-]+/gu, " ").trim();
-  return cleaned.length > 0
-    ? cleaned.replace(/\b\w/gu, (char) => char.toUpperCase())
-    : "Hermes Step";
+function summarizeHermesTodos(value: unknown) {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  const todos = value.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object");
+  const inProgress = todos.find((todo) => todo.status === "in_progress" && typeof todo.content === "string");
+  if (typeof inProgress?.content === "string" && inProgress.content.trim().length > 0) {
+    return inProgress.content.trim();
+  }
+  const completed = todos.filter((todo) => todo.status === "completed").length;
+  if (todos.length > 0) {
+    return `${completed} of ${todos.length} planned steps completed.`;
+  }
+  return null;
 }
 
-function summarizeHermesToolResult(content: string | null | undefined) {
+function summarizeHermesCommandIntent(command: string) {
+  const normalized = command.replace(/\s+/gu, " ").trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+  if (normalized.includes("prepare-text-corpus-manifest.sh")) {
+    return {
+      label: "Prepare text manifest",
+      summary: "Preparing the text-only corpus manifest.",
+    };
+  }
+  if (normalized.includes("run-ripgrep-progress.sh") || /\brg\b/u.test(normalized)) {
+    return {
+      label: "Search corpus",
+      summary: "Searching the corpus for relevant passages.",
+    };
+  }
+  if (normalized.includes("briefing.md")) {
+    return {
+      label: "Write briefing",
+      summary: "Writing the briefing.",
+    };
+  }
+  if (normalized.includes("dataset.jsonl") || normalized.includes("citation-index.json")) {
+    return {
+      label: "Build dataset",
+      summary: "Building the dataset and citation index.",
+    };
+  }
+  if (normalized.includes("scoped-text-files.tsv")) {
+    return {
+      label: "Scope corpus files",
+      summary: "Deriving the scoped file list.",
+    };
+  }
+  if (
+    normalized.includes("manifest.json")
+    || normalized.includes("run.log")
+    || normalized.includes("run_dir")
+    || normalized.includes("initialized corpus research run")
+  ) {
+    return {
+      label: "Initialize run",
+      summary: "Creating the run directory and manifest.",
+    };
+  }
+  return null;
+}
+
+function summarizeHermesCodeIntent(code: string) {
+  const normalized = code.replace(/\s+/gu, " ").trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+  if (normalized.includes("manifest.json") || normalized.includes("run.log")) {
+    return {
+      label: "Initialize run",
+      summary: "Creating the run directory and manifest.",
+    };
+  }
+  if (normalized.includes("dataset.jsonl") || normalized.includes("citation-index.json")) {
+    return {
+      label: "Build dataset",
+      summary: "Building the dataset and citation index.",
+    };
+  }
+  if (normalized.includes("briefing.md")) {
+    return {
+      label: "Write briefing",
+      summary: "Writing the briefing.",
+    };
+  }
+  return {
+    label: "Execute code",
+    summary: "Running a scripted processing step.",
+  };
+}
+
+function summarizeHermesOutputText(output: string, sourceArgs: Record<string, unknown>) {
+  const lines = output
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (lines.length === 0) {
+    return null;
+  }
+
+  const tracebackLine = [...lines].reverse().find((line) => /(?:error|exception|traceback|keyerror|valueerror|typeerror|runtimeerror)/iu.test(line));
+  if (tracebackLine) {
+    return truncateHermesText(tracebackLine, 180);
+  }
+
+  const scopedFiles = [...lines].reverse().find((line) => /scoped-text-files\.tsv/iu.test(line));
+  const zeroCount = [...lines].reverse().find((line) => /^0$/u.test(line));
+  if (scopedFiles && zeroCount) {
+    return "Prepared the manifest, but found 0 scoped files.";
+  }
+
+  const helperLine = [...lines].find((line) => /Running prepare-text-corpus-manifest helper/iu.test(line));
+  if (helperLine) {
+    const zeroLine = [...lines].reverse().find((line) => /^\d+$/u.test(line));
+    if (zeroLine) {
+      return `Prepared the text manifest and found ${zeroLine} scoped files.`;
+    }
+    return "Prepared the text-only corpus manifest.";
+  }
+
+  const pathOnly = lines.every((line) => line.startsWith("/"));
+  if (pathOnly) {
+    if (typeof sourceArgs.command === "string") {
+      return summarizeHermesCommandIntent(sourceArgs.command)?.summary ?? "Wrote files for the next step.";
+    }
+    if (typeof sourceArgs.code === "string") {
+      return summarizeHermesCodeIntent(sourceArgs.code)?.summary ?? "Wrote files for the next step.";
+    }
+  }
+
+  const informative = lines.find((line) => !/^<stdin>:/u.test(line) && !line.startsWith("/"));
+  return informative ? truncateHermesText(informative, 180) : truncateHermesText(lines[0]!, 180);
+}
+
+function describeHermesToolCall(name: string, sourceArgs: Record<string, unknown>) {
+  const normalizedName = name.trim().toLowerCase();
+  if (normalizedName === "skills_list") {
+    return {
+      label: "Inspect available tools",
+      summary: "Checking which Hermes tools and skills are available.",
+    };
+  }
+  if (normalizedName === "skill_view") {
+    const skillName = typeof sourceArgs.name === "string" ? sourceArgs.name.trim() : "";
+    return {
+      label: "Read skill guide",
+      summary: skillName ? `Reading the ${skillName} instructions.` : "Reading a skill guide.",
+    };
+  }
+  if (normalizedName === "todo") {
+    return {
+      label: "Update plan",
+      summary: summarizeHermesTodos(sourceArgs.todos) ?? "Updating the research plan.",
+    };
+  }
+  if (normalizedName === "terminal") {
+    const command = typeof sourceArgs.command === "string" ? sourceArgs.command : "";
+    return summarizeHermesCommandIntent(command) ?? {
+      label: "Run terminal step",
+      summary: "Running a shell step on the research box.",
+    };
+  }
+  if (normalizedName === "execute_code") {
+    const code = typeof sourceArgs.code === "string" ? sourceArgs.code : "";
+    return summarizeHermesCodeIntent(code) ?? {
+      label: "Execute code",
+      summary: "Running a scripted processing step.",
+    };
+  }
+  if (normalizedName.includes("search")) {
+    const query = typeof sourceArgs.query === "string" && sourceArgs.query.trim().length > 0
+      ? truncateHermesText(sourceArgs.query.trim(), 96)
+      : null;
+    const cleaned = name.replace(/[_-]+/gu, " ").trim();
+    return {
+      label: cleaned.length > 0
+        ? cleaned.replace(/\b\w/gu, (char) => char.toUpperCase())
+        : "Search",
+      summary: query ? `Searching for ${query}.` : "Running a search step.",
+    };
+  }
+  const cleaned = name.replace(/[_-]+/gu, " ").trim();
+  return {
+    label: cleaned.length > 0
+      ? cleaned.replace(/\b\w/gu, (char) => char.toUpperCase())
+      : "Hermes Step",
+    summary: null,
+  };
+}
+
+function summarizeHermesToolResult(
+  content: string | null | undefined,
+  functionName?: string,
+  sourceArgs: Record<string, unknown> = {},
+) {
   if (typeof content !== "string" || content.trim().length === 0) {
     return { text: null, result: {} as Record<string, unknown> };
   }
   const parsed = parseHermesJsonRecord(content);
   if (!parsed) {
+    const fallbackText = truncateHermesText(content);
     return {
-      text: truncateHermesText(content),
+      text: fallbackText,
       result: {
         output: truncateHermesText(content, 800),
+        __summary: fallbackText,
       },
     };
   }
+  const normalizedName = typeof functionName === "string" ? functionName.trim().toLowerCase() : "";
+  const explicitError =
+    typeof parsed.error === "string" && parsed.error.trim().length > 0
+      ? parsed.error.trim()
+      : typeof parsed.stderr === "string" && parsed.stderr.trim().length > 0
+        ? parsed.stderr.trim()
+        : null;
+  if (explicitError) {
+    const errorLine = explicitError
+      .split(/\r?\n/u)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .reverse()
+      .find((line) => /(?:error|exception|traceback|keyerror|valueerror|typeerror|runtimeerror)/iu.test(line))
+      ?? explicitError;
+    const text = truncateHermesText(errorLine, 180);
+    return {
+      text,
+      result: {
+        ...parsed,
+        __summary: text,
+      },
+    };
+  }
+
+  if (normalizedName === "todo") {
+    const text = summarizeHermesTodos(parsed.todos) ?? summarizeHermesTodos(sourceArgs.todos);
+    return {
+      text,
+      result: {
+        ...parsed,
+        ...(text ? { __summary: text } : {}),
+      },
+    };
+  }
+
+  if (normalizedName === "skills_list") {
+    const count = typeof parsed.count === "number" ? parsed.count : Array.isArray(parsed.skills) ? parsed.skills.length : null;
+    const categories = Array.isArray(parsed.categories) ? parsed.categories.filter((value): value is string => typeof value === "string" && value.trim().length > 0) : [];
+    const text = count !== null
+      ? `Loaded ${count} available ${categories.length > 0 ? categories[0] : "Hermes"} skills.`
+      : "Loaded the available Hermes skills.";
+    return {
+      text,
+      result: {
+        ...parsed,
+        __summary: text,
+      },
+    };
+  }
+
+  if (normalizedName === "skill_view") {
+    const name = typeof sourceArgs.name === "string" && sourceArgs.name.trim().length > 0 ? sourceArgs.name.trim() : "the selected skill";
+    const text = `Read the ${name} instructions.`;
+    return {
+      text,
+      result: {
+        ...parsed,
+        __summary: text,
+      },
+    };
+  }
+
+  if ((normalizedName === "terminal" || normalizedName === "execute_code") && typeof parsed.output === "string") {
+    const presentation = describeHermesToolCall(normalizedName, sourceArgs);
+    const text = summarizeHermesOutputText(parsed.output, sourceArgs)
+      ?? presentation.summary
+      ?? truncateHermesText(parsed.output, 180);
+    return {
+      text,
+      result: {
+        ...parsed,
+        __summary: text,
+      },
+    };
+  }
+
   const preferredText =
     typeof parsed.stdout === "string" && parsed.stdout.trim().length > 0
       ? parsed.stdout
@@ -8078,12 +8347,18 @@ function summarizeHermesToolResult(content: string | null | undefined) {
           ? parsed.content
           : typeof parsed.text === "string" && parsed.text.trim().length > 0
             ? parsed.text
+            : typeof parsed.message === "string" && parsed.message.trim().length > 0
+              ? parsed.message
             : typeof parsed.summary === "string" && parsed.summary.trim().length > 0
               ? parsed.summary
               : null;
+  const text = preferredText ? truncateHermesText(preferredText) : truncateHermesText(content);
   return {
-    text: preferredText ? truncateHermesText(preferredText) : truncateHermesText(content),
-    result: parsed,
+    text,
+    result: {
+      ...parsed,
+      __summary: text,
+    },
   };
 }
 
@@ -8450,14 +8725,24 @@ async function runHermesConversation(
           seenToolCallIds.add(toolCallId);
           currentToolCallId = toolCallId;
           const functionName = typeof toolCall.function?.name === "string" ? toolCall.function.name : "hermes_step";
-          const sourceArgs = parseHermesJsonRecord(toolCall.function?.arguments ?? "") ?? {};
+          const sourceArgs = {
+            ...(parseHermesJsonRecord(toolCall.function?.arguments ?? "") ?? {}),
+            __hermesFunctionName: functionName,
+          };
+          const presentation = describeHermesToolCall(functionName, sourceArgs);
           const entry: LiveToolTraceEntry = {
             id: toolCallId,
             toolName: "run_workspace_task",
-            label: humanizeHermesToolLabel(functionName),
-            progress: [],
+            label: presentation.label,
+            ...(presentation.summary ? { rationale: presentation.summary } : {}),
+            ...(presentation.summary ? { progress: [presentation.summary] } : { progress: [] }),
             sourceArgs,
-            args: canonicalToolArgs("run_workspace_task", sourceArgs),
+            args: canonicalToolArgs(
+              "run_workspace_task",
+              sourceArgs,
+              presentation.summary ?? undefined,
+              presentation.summary ? [presentation.summary] : [],
+            ),
             state: "running",
           };
           liveToolTrace = [...liveToolTrace, entry];
@@ -8481,7 +8766,11 @@ async function runHermesConversation(
         if (!toolEntry) {
           continue;
         }
-        const summarized = summarizeHermesToolResult(message.content);
+        const summarized = summarizeHermesToolResult(
+          message.content,
+          typeof toolEntry.sourceArgs.__hermesFunctionName === "string" ? toolEntry.sourceArgs.__hermesFunctionName : undefined,
+          toolEntry.sourceArgs,
+        );
         if (summarized.text) {
           toolEntry.progress.push(summarized.text);
         }
