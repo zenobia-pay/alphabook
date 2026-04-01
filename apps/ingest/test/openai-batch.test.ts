@@ -5,6 +5,7 @@ import {
   buildOpenAIEmbeddingBatchRequest,
   estimateEmbeddingCostUsd,
   estimateEmbeddingInputTokensForText,
+  resolveOpenAIMaxRequestsPerFile,
 } from "../src/openai-batch";
 
 test("buildOpenAIEmbeddingBatchRequest creates an embeddings batch request line", () => {
@@ -36,4 +37,9 @@ test("openai batch token estimation follows the chars-over-four heuristic", () =
 
 test("openai batch cost estimation converts token counts into usd", () => {
   assert.equal(estimateEmbeddingCostUsd(30_000_000_000, 0.01), 300);
+});
+
+test("openai batch request cap respects the 50k embedding input limit", () => {
+  assert.equal(resolveOpenAIMaxRequestsPerFile(32, 50_000, 50_000), 1562);
+  assert.equal(resolveOpenAIMaxRequestsPerFile(16, 50_000, 50_000), 3125);
 });

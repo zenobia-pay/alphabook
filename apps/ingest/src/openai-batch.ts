@@ -11,6 +11,7 @@ import { listMirrorIds, resolveMirrorSource } from "@alphabook/source-gutenberg/
 const DEFAULT_OPENAI_BATCH_PRICE_PER_MILLION_TOKENS_USD = 0.01;
 const DEFAULT_OPENAI_BATCH_MAX_FILE_BYTES = 190_000_000;
 const DEFAULT_OPENAI_BATCH_MAX_REQUESTS_PER_FILE = 50_000;
+const DEFAULT_OPENAI_BATCH_MAX_INPUTS_PER_FILE = 50_000;
 const OPENAI_BATCH_COMPLETION_WINDOW = "24h";
 const OPENAI_BATCH_ENDPOINT = "/v1/embeddings";
 
@@ -97,6 +98,7 @@ export interface PrepareOpenAIEmbeddingBatchOptions {
   outputDir: string;
   maxFileBytes?: number;
   maxRequestsPerFile?: number;
+  maxInputsPerFile?: number;
   chunkTargetSize: number;
   requestBatchSize: number;
   dimensions?: number | null;
@@ -118,6 +120,16 @@ export function estimateEmbeddingCostUsd(
   pricePerMillionTokensUsd = DEFAULT_OPENAI_BATCH_PRICE_PER_MILLION_TOKENS_USD,
 ) {
   return Number(((estimatedTokens / 1_000_000) * pricePerMillionTokensUsd).toFixed(8));
+}
+
+export function resolveOpenAIMaxRequestsPerFile(requestBatchSize: number, configuredMaxRequestsPerFile?: number | null, maxInputsPerFile = DEFAULT_OPENAI_BATCH_MAX_INPUTS_PER_FILE) {
+  return Math.max(
+    1,
+    Math.min(
+      configuredMaxRequestsPerFile ?? DEFAULT_OPENAI_BATCH_MAX_REQUESTS_PER_FILE,
+      Math.floor(Math.max(requestBatchSize, maxInputsPerFile) / Math.max(1, requestBatchSize)),
+    ),
+  );
 }
 
 export function buildOpenAIEmbeddingBatchRequest(
@@ -152,6 +164,7 @@ class BatchFileWriter {
   readonly sidecarPath: string;
   readonly index: number;
   requestCount = 0;
+  inputCount = 0;
   totalBytes = 0;
   estimatedTokens = 0;
   firstGutenbergId: string | null = null;
@@ -169,14 +182,18 @@ class BatchFileWriter {
     this.sidecarStream = createWriteStream(this.sidecarPath, { encoding: "utf8" });
   }
 
-  canFit(bytes: number, maxFileBytes: number, maxRequestsPerFile: number) {
+  canFit(bytes: number, inputCount: number, maxFileBytes: number, maxRequestsPerFile: number, maxInputsPerFile: number) {
     return (
       this.requestCount === 0
-      || (this.totalBytes + bytes <= maxFileBytes && this.requestCount < maxRequestsPerFile)
+      || (
+        this.totalBytes + bytes <= maxFileBytes
+        && this.requestCount < maxRequestsPerFile
+        && this.inputCount + inputCount <= maxInputsPerFile
+      )
     );
   }
 
-  async write(requestLine: string, sidecarLine: string, estimatedTokens: number, gutenbergId: string) {
+  async write(requestLine: string, sidecarLine: string, estimatedTokens: number, gutenbergId: string, inputCount: number) {
     const bytes = Buffer.byteLength(`${requestLine}\n`, "utf8");
     await Promise.all([
       new Promise<void>((resolvePromise, rejectPromise) => {
@@ -199,6 +216,7 @@ class BatchFileWriter {
       }),
     ]);
     this.requestCount += 1;
+    this.inputCount += inputCount;
     this.totalBytes += bytes;
     this.estimatedTokens += estimatedTokens;
     this.firstGutenbergId ??= gutenbergId;
@@ -316,12 +334,17 @@ export async function prepareOpenAIEmbeddingBatch(
   const runId = `openai-embedding-batch-${new Date().toISOString().replace(/[:.]/g, "-")}`;
   const runDir = resolve(options.outputDir);
   const maxFileBytes = Math.max(1_000_000, options.maxFileBytes ?? DEFAULT_OPENAI_BATCH_MAX_FILE_BYTES);
-  const maxRequestsPerFile = Math.max(1, options.maxRequestsPerFile ?? DEFAULT_OPENAI_BATCH_MAX_REQUESTS_PER_FILE);
   const pricePerMillionTokensUsd = options.pricePerMillionTokensUsd ?? DEFAULT_OPENAI_BATCH_PRICE_PER_MILLION_TOKENS_USD;
   const targetTokens = Math.max(1, Math.floor((options.targetCostUsd / pricePerMillionTokensUsd) * 1_000_000));
   const startAfter = numericIdOrInfinity(options.startAfterId ?? null);
   const limitBooks = options.limitBooks ?? null;
   const requestBatchSize = Math.max(1, options.requestBatchSize);
+  const maxInputsPerFile = Math.max(requestBatchSize, options.maxInputsPerFile ?? DEFAULT_OPENAI_BATCH_MAX_INPUTS_PER_FILE);
+  const maxRequestsPerFile = resolveOpenAIMaxRequestsPerFile(
+    requestBatchSize,
+    options.maxRequestsPerFile ?? DEFAULT_OPENAI_BATCH_MAX_REQUESTS_PER_FILE,
+    maxInputsPerFile,
+  );
 
   await mkdir(runDir, { recursive: true });
 
@@ -350,7 +373,8 @@ export async function prepareOpenAIEmbeddingBatch(
     const sidecarLine = JSON.stringify(pendingSidecars);
     const requestBytes = Buffer.byteLength(`${requestLine}\n`, "utf8");
 
-    if (!currentFile || !currentFile.canFit(requestBytes, maxFileBytes, maxRequestsPerFile)) {
+    const requestInputCount = pendingTexts.length;
+    if (!currentFile || !currentFile.canFit(requestBytes, requestInputCount, maxFileBytes, maxRequestsPerFile, maxInputsPerFile)) {
       if (currentFile) {
         await currentFile.close();
         files.push({
@@ -368,7 +392,7 @@ export async function prepareOpenAIEmbeddingBatch(
       currentFile = new BatchFileWriter(runDir, files.length + 1);
     }
 
-    await currentFile.write(requestLine, sidecarLine, pendingTokens, pendingSidecars[0]!.gutenbergId);
+    await currentFile.write(requestLine, sidecarLine, pendingTokens, pendingSidecars[0]!.gutenbergId, requestInputCount);
     requestCount += 1;
     pendingTexts = [];
     pendingSidecars = [];
@@ -634,6 +658,7 @@ export async function createOpenAIEmbeddingBatchFromEnv(args: {
     outputDir,
     maxFileBytes: args.maxFileBytes ?? DEFAULT_OPENAI_BATCH_MAX_FILE_BYTES,
     maxRequestsPerFile: args.maxRequestsPerFile ?? DEFAULT_OPENAI_BATCH_MAX_REQUESTS_PER_FILE,
+    maxInputsPerFile: DEFAULT_OPENAI_BATCH_MAX_INPUTS_PER_FILE,
     chunkTargetSize: args.chunkTargetSize,
     requestBatchSize: Number(process.env.OPENAI_EMBEDDING_BATCH_SIZE ?? "32"),
     dimensions: args.dimensions ?? null,
