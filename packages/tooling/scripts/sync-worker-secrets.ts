@@ -74,10 +74,17 @@ function resolveEnvFile(configPath: string, explicitPath?: string) {
 function buildSecretPayload(values: Map<string, string>, keys: string[]) {
   const payload: Record<string, string> = {};
   const missing: string[] = [];
-  for (const key of keys) {
+  const skippedOptional: string[] = [];
+  for (const rawKey of keys) {
+    const optional = rawKey.endsWith("?");
+    const key = optional ? rawKey.slice(0, -1) : rawKey;
     const value = values.get(key);
     if (!value) {
-      missing.push(key);
+      if (optional) {
+        skippedOptional.push(key);
+      } else {
+        missing.push(key);
+      }
       continue;
     }
     payload[key] = value;
@@ -85,7 +92,7 @@ function buildSecretPayload(values: Map<string, string>, keys: string[]) {
   if (missing.length > 0) {
     throw new Error(`Missing required secrets in env file: ${missing.join(", ")}`);
   }
-  return payload;
+  return { payload, skippedOptional };
 }
 
 function main() {
@@ -101,18 +108,21 @@ function main() {
   const envFile = resolveEnvFile(configPath, envFileArg);
   const envValues = parseEnvFile(envFile);
   const keys = keysArg.split(",").map((value) => value.trim()).filter(Boolean);
-  const payload = buildSecretPayload(envValues, keys);
+  const { payload, skippedOptional } = buildSecretPayload(envValues, keys);
   const tempFile = path.join(os.tmpdir(), `wrangler-secret-bulk-${Date.now()}.json`);
 
   try {
-    fs.writeFileSync(tempFile, JSON.stringify(payload, null, 2));
-    execFileSync("npx", ["wrangler", "secret", "bulk", tempFile, "--config", configPath], {
-      stdio: "inherit",
-    });
+    if (Object.keys(payload).length > 0) {
+      fs.writeFileSync(tempFile, JSON.stringify(payload, null, 2));
+      execFileSync("npx", ["wrangler", "secret", "bulk", tempFile, "--config", configPath], {
+        stdio: "inherit",
+      });
+    }
     console.log(JSON.stringify({
       configPath,
       envFile,
-      syncedKeys: keys,
+      syncedKeys: Object.keys(payload),
+      skippedOptional,
     }, null, 2));
   } finally {
     fs.rmSync(tempFile, { force: true });
