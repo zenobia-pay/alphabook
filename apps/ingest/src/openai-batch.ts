@@ -14,6 +14,7 @@ const DEFAULT_OPENAI_BATCH_MAX_REQUESTS_PER_FILE = 50_000;
 const DEFAULT_OPENAI_BATCH_MAX_INPUTS_PER_FILE = 50_000;
 const OPENAI_BATCH_COMPLETION_WINDOW = "24h";
 const OPENAI_BATCH_ENDPOINT = "/v1/embeddings";
+const OPENAI_RETRYABLE_STATUS_CODES = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
 
 export interface OpenAIEmbeddingBatchRequestLine {
   custom_id: string;
@@ -89,6 +90,10 @@ export interface OpenAIEmbeddingBatchSubmission {
     errorFileId: string | null;
     errorMessage: string | null;
   }>;
+}
+
+function resolveSubmissionPath(manifestPath: string) {
+  return join(dirname(manifestPath), "submission.json");
 }
 
 export interface PrepareOpenAIEmbeddingBatchOptions {
@@ -257,17 +262,36 @@ function numericIdOrInfinity(value: string | null | undefined) {
 
 async function openAIRequest(path: string, init: RequestInit) {
   const apiKey = resolveOpenAIApiKey();
-  const response = await fetch(`https://api.openai.com${path}`, {
-    ...init,
-    headers: {
-      authorization: `Bearer ${apiKey}`,
-      ...(init.headers ?? {}),
-    },
-  });
-  if (!response.ok) {
-    throw new Error(`OpenAI request failed: ${response.status} ${await response.text()}`);
+  let lastError: Error | null = null;
+  const maxAttempts = path === "/v1/files" ? 8 : 6;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const response = await fetch(`https://api.openai.com${path}`, {
+        ...init,
+        headers: {
+          authorization: `Bearer ${apiKey}`,
+          ...(init.headers ?? {}),
+        },
+      });
+      if (response.ok) {
+        return response;
+      }
+      const detail = await response.text();
+      const error = new Error(`OpenAI request failed: ${response.status} ${detail}`);
+      if (!OPENAI_RETRYABLE_STATUS_CODES.has(response.status) || attempt >= maxAttempts) {
+        throw error;
+      }
+      lastError = error;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      if (attempt >= maxAttempts) {
+        throw lastError;
+      }
+    }
+    const backoffMs = Math.min(60_000, 1_000 * 2 ** (attempt - 1)) + Math.floor(Math.random() * 500);
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, backoffMs));
   }
-  return response;
+  throw lastError ?? new Error("OpenAI request failed.");
 }
 
 async function uploadBatchInputFile(requestPath: string) {
@@ -525,20 +549,29 @@ export async function prepareOpenAIEmbeddingBatch(
 export async function submitOpenAIEmbeddingBatch(manifestPathInput: string) {
   const manifestPath = resolve(manifestPathInput);
   const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as OpenAIEmbeddingBatchManifest;
-  const submission: OpenAIEmbeddingBatchSubmission = {
+  const submissionPath = resolveSubmissionPath(manifestPath);
+  const existingSubmission = await readFile(submissionPath, "utf8")
+    .then((text) => JSON.parse(text) as OpenAIEmbeddingBatchSubmission)
+    .catch(() => null);
+  const submission: OpenAIEmbeddingBatchSubmission = existingSubmission ?? {
     manifestPath,
     submittedAt: new Date().toISOString(),
     model: manifest.model,
     jobs: [],
   };
+  const jobsByIndex = new Map(submission.jobs.map((job) => [job.index, job]));
 
   for (const file of manifest.files) {
+    const existingJob = jobsByIndex.get(file.index);
+    if (existingJob?.batchId) {
+      continue;
+    }
     const uploaded = await uploadBatchInputFile(file.requestPath);
     const batch = await createBatch(uploaded.id, {
       run_id: manifest.runId,
       part: String(file.index),
     });
-    submission.jobs.push({
+    const job = {
       index: file.index,
       requestPath: file.requestPath,
       sidecarPath: file.sidecarPath,
@@ -551,11 +584,12 @@ export async function submitOpenAIEmbeddingBatch(manifestPathInput: string) {
       outputFileId: batch.output_file_id ?? null,
       errorFileId: batch.error_file_id ?? null,
       errorMessage: batch.errors?.data?.map((item) => item.message).filter(Boolean).join("; ") || null,
-    });
+    };
+    jobsByIndex.set(file.index, job);
+    submission.jobs = [...jobsByIndex.values()].sort((left, right) => left.index - right.index);
+    await writeFile(submissionPath, JSON.stringify(submission, null, 2), "utf8");
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
   }
-
-  const submissionPath = join(dirname(manifestPath), "submission.json");
-  await writeFile(submissionPath, JSON.stringify(submission, null, 2), "utf8");
   return { submissionPath, submission };
 }
 
