@@ -8196,7 +8196,14 @@ async function runHermesConversation(
     phase: "user",
   });
 
-  const run = await deps.store.createRun(activeSession.id);
+  const initialHeartbeatAt = new Date().toISOString();
+  const initialLeaseExpiresAt = new Date(Date.now() + RUN_LEASE_MS).toISOString();
+  const runOwnerInstanceId = `hermes:${activeSession.id}:${Date.now()}:${input.userId}`;
+  let run = await deps.store.createRun(activeSession.id, {
+    ownerInstanceId: runOwnerInstanceId,
+    heartbeatAt: initialHeartbeatAt,
+    leaseExpiresAt: initialLeaseExpiresAt,
+  });
   activeRuns.set(run.id, {
     sessionId: activeSession.id,
     userId: activeSession.userId,
@@ -8205,6 +8212,7 @@ async function runHermesConversation(
     rawLog: [],
     subscribers: new Map(),
   });
+  let lastLeaseHeartbeatAtMs = Date.now();
 
   let planMessageId: string | null = null;
   let latestPlanTraceVersion = 0;
@@ -8212,6 +8220,48 @@ async function runHermesConversation(
   let planTracePersistChain = Promise.resolve();
   let liveToolTrace: LiveToolTraceEntry[] = [];
   let currentToolCallId: string | null = null;
+
+  const renewRunLease = async (force = false) => {
+    if (isTerminalRunStatus(run.status)) {
+      return;
+    }
+    const nowMs = Date.now();
+    if (!force && nowMs - lastLeaseHeartbeatAtMs < RUN_HEARTBEAT_INTERVAL_MS / 2) {
+      return;
+    }
+    lastLeaseHeartbeatAtMs = nowMs;
+    await deps.store.updateRun(run.id, {
+      ownerInstanceId: runOwnerInstanceId,
+      heartbeatAt: new Date(nowMs).toISOString(),
+      leaseExpiresAt: new Date(nowMs + RUN_LEASE_MS).toISOString(),
+      activeToolCallId: currentToolCallId,
+    });
+    run = {
+      ...run,
+      ownerInstanceId: runOwnerInstanceId,
+      heartbeatAt: new Date(nowMs).toISOString(),
+      leaseExpiresAt: new Date(nowMs + RUN_LEASE_MS).toISOString(),
+      activeToolCallId: currentToolCallId,
+    };
+  };
+
+  const writeHermesTerminalRunState = async (status: "completed" | "failed" | "timed_out") => {
+    const completedAt = new Date().toISOString();
+    await deps.store.updateRun(run.id, terminalRunStateUpdate(status, completedAt));
+    run = {
+      ...run,
+      status,
+      completedAt,
+      ownerInstanceId: null,
+      heartbeatAt: completedAt,
+      leaseExpiresAt: null,
+      activeToolCallId: null,
+    };
+  };
+
+  const leaseHeartbeatTimer = setInterval(() => {
+    void renewRunLease(true).catch(() => {});
+  }, RUN_HEARTBEAT_INTERVAL_MS);
 
   const persistLatestPlanToolTrace = async () => {
     if (!planMessageId) {
@@ -8247,6 +8297,7 @@ async function runHermesConversation(
     if (persistable.has(event)) {
       await deps.store.appendRunEvent(run.id, activeSession.id, event, data);
     }
+    await renewRunLease();
     await send(event, data);
     const activeRun = activeRuns.get(run.id);
     if (!activeRun || activeRun.subscribers.size === 0) {
@@ -8575,7 +8626,7 @@ async function runHermesConversation(
           estimatedCostUsd: job.cost?.estimatedCostUsd ?? null,
         },
       });
-      await writeTerminalRunState(deps, run.id, "failed");
+      await writeHermesTerminalRunState("failed");
       await emit("run.completed", {
         runId: run.id,
         sessionId: activeSession.id,
@@ -8614,7 +8665,7 @@ async function runHermesConversation(
       },
     });
 
-    await writeTerminalRunState(deps, run.id, "completed");
+    await writeHermesTerminalRunState("completed");
     await emit("run.completed", {
       runId: run.id,
       sessionId: activeSession.id,
@@ -8635,7 +8686,7 @@ async function runHermesConversation(
       phase: "error",
       runId: run.id,
     });
-    await writeTerminalRunState(deps, run.id, "failed");
+    await writeHermesTerminalRunState("failed");
     await emit("run.completed", {
       runId: run.id,
       sessionId: activeSession.id,
@@ -8644,6 +8695,7 @@ async function runHermesConversation(
       error: message,
     });
   } finally {
+    clearInterval(leaseHeartbeatTimer);
     activeRuns.delete(run.id);
   }
 }
