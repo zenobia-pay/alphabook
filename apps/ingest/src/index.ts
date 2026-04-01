@@ -5,7 +5,7 @@ import { promisify } from "node:util";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { Agent as HttpsAgent } from "node:https";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import { DeleteObjectsCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
@@ -84,6 +84,13 @@ interface MirrorBackfillOptions {
   concurrency?: number;
 }
 
+interface LocalArtifactPrepOptions {
+  startAfterId?: string | null;
+  limit: number;
+  outputDir: string;
+  concurrency?: number;
+}
+
 interface MirrorBackfillCheckpoint {
   lastProcessedId: string | null;
   processed: number;
@@ -140,6 +147,31 @@ interface BookHtmlPersistResult {
   bookHtmlKey?: string;
   skipped?: boolean;
   error?: string;
+}
+
+interface LocalPreparedBookManifest {
+  gutenbergId: string;
+  title: string;
+  outputDir: string;
+  chunkCount: number;
+  chunkIds: string[];
+  r2Keys: {
+    raw: string;
+    metadata: string;
+    clean: string;
+    chunks: string;
+    bookHtml: string | null;
+    bookManifest: string | null;
+    pages: string[];
+    coverImage: string | null;
+    chunkObjects: string[];
+  };
+  d1Records: {
+    work: Record<string, unknown>;
+    workFiles: Array<Record<string, unknown>>;
+    authors: string[];
+    subjects: string[];
+  };
 }
 
 type BookBlockKind = "heading" | "paragraph" | "blockquote" | "preformatted" | "list";
@@ -2554,6 +2586,302 @@ function buildRenderedArtifactsForSource(
   });
 }
 
+function expectedEmbeddingMetadata() {
+  const embeddingProvider = process.env.EMBEDDING_PROVIDER ?? "google";
+  const embeddingModel = embeddingProvider === "google"
+    ? (process.env.GOOGLE_EMBEDDING_MODEL ?? "gemini-embedding-001")
+    : (process.env.OPENAI_EMBEDDING_MODEL ?? "text-embedding-3-small");
+  const configuredDimensions = embeddingProvider === "google"
+    ? process.env.GOOGLE_EMBEDDING_DIMENSIONS
+    : process.env.OPENAI_EMBEDDING_DIMENSIONS;
+  const embeddingDimensions = configuredDimensions ? Number(configuredDimensions) : null;
+  return {
+    embeddingProvider,
+    embeddingModel,
+    embeddingDimensions: Number.isFinite(embeddingDimensions) ? embeddingDimensions : null,
+  };
+}
+
+async function writeLocalArtifact(outputDir: string, relativePath: string, body: string | Uint8Array) {
+  const destination = join(outputDir, relativePath);
+  await mkdir(dirname(destination), { recursive: true });
+  await writeFile(destination, body);
+}
+
+async function prepareMirrorArtifactsLocally(
+  outputDir: string,
+  gutenbergId: string,
+  source: Awaited<ReturnType<typeof resolveMirrorSource>>,
+): Promise<LocalPreparedBookManifest> {
+  const title = source.title ?? `Project Gutenberg ${gutenbergId}`;
+  const renderedArtifacts = buildRenderedArtifactsForSource({
+    adapterId: gutenbergCorpusAdapter.id,
+    externalId: gutenbergId,
+    legacyNumericId: gutenbergId,
+    title,
+    rawSource: source.rawSource,
+    rawText: source.rawText,
+    sourceFormat: source.format,
+    authors: source.authors,
+    subjects: source.subjects,
+    language: source.language,
+    releaseDate: source.releaseDate,
+    rightsStatus: source.rightsStatus,
+    summary: source.summary,
+    metadata: {
+      source: "local-mirror",
+      mirrorRoot: process.env.GUTENBERG_MIRROR_ROOT ?? null,
+      metadataPath: source.metadataPath,
+      format: source.format,
+      subtitle: source.subtitle,
+      bookshelves: source.bookshelves,
+      coverImagePath: source.coverImagePath,
+    },
+  });
+  const prepared = prepareCorpusIngest(gutenbergCorpusAdapter, {
+    adapterId: gutenbergCorpusAdapter.id,
+    externalId: gutenbergId,
+    legacyNumericId: gutenbergId,
+    title,
+    rawSource: source.rawSource,
+    rawText: source.rawText,
+    sourceFormat: source.format,
+    authors: source.authors,
+    subjects: source.subjects,
+    language: source.language,
+    releaseDate: source.releaseDate,
+    rightsStatus: source.rightsStatus,
+    summary: source.summary,
+    sourcePath: source.sourcePath,
+    metadata: {
+      source: "local-mirror",
+      mirrorRoot: process.env.GUTENBERG_MIRROR_ROOT ?? null,
+      metadataPath: source.metadataPath,
+      format: source.format,
+      subtitle: source.subtitle,
+      bookshelves: source.bookshelves,
+      coverImagePath: source.coverImagePath,
+    },
+    renderedArtifacts,
+  }, {
+    chunkTargetSize: getGutenbergChunkTargetSize(),
+  });
+  const coverImageKey = source.coverImagePath
+    ? gutenbergCorpusAdapter.artifactKeys.coverImage?.(gutenbergId, coverExtension(source.coverImagePath)) ?? null
+    : null;
+  const metadataPayload = {
+    ...prepared.metadataPayload,
+    subtitle: source.subtitle,
+    bookshelves: source.bookshelves,
+    coverImageKey,
+  };
+  const renderedSource = selectRenderedBookSource({
+    rawSource: source.rawSource,
+    sourceFormat: source.format,
+    cleanText: source.rawText,
+  });
+  const embeddingMetadata = expectedEmbeddingMetadata();
+  const readerPaths = resolveChunkReaderPaths(
+    gutenbergId,
+    renderedSource.rawSource,
+    renderedSource.sourceFormat,
+    prepared.chunks.map((text) => ({ text, excerpt: createChunkExcerpt(text) })),
+  );
+  const chunkArtifacts = buildStoredChunkArtifacts({
+    adapter: gutenbergCorpusAdapter,
+    adapterId: gutenbergCorpusAdapter.id,
+    externalId: gutenbergId,
+    workTitle: title,
+    authors: prepared.authors,
+    chunks: prepared.chunks,
+    readerPaths,
+    embeddingProvider: embeddingMetadata.embeddingProvider,
+    embeddingModel: embeddingMetadata.embeddingModel,
+    embeddingDimensions: prepared.chunks.map(() => embeddingMetadata.embeddingDimensions),
+  });
+  const renderedDocumentKey = prepared.renderedDocumentKey;
+  const renderedManifestKey = prepared.renderedManifestKey;
+  const workId = `local-gutenberg-${gutenbergId}`;
+  const chunksPayload = serializeChunkManifest(chunkArtifacts, workId);
+
+  await Promise.all([
+    writeLocalArtifact(outputDir, join("r2", prepared.rawKey), source.rawSource),
+    writeLocalArtifact(outputDir, join("r2", prepared.metadataKey), JSON.stringify(metadataPayload, null, 2)),
+    writeLocalArtifact(outputDir, join("r2", prepared.cleanKey), prepared.cleanText),
+    writeLocalArtifact(outputDir, join("r2", prepared.chunksKey), chunksPayload),
+    ...chunkArtifacts.flatMap((chunk) => ([
+      writeLocalArtifact(
+        outputDir,
+        join("r2", chunk.r2Key),
+        JSON.stringify({
+          id: chunk.id,
+          work_id: workId,
+          work_title: chunk.workTitle,
+          authors: chunk.authors,
+          chunk_index: chunk.chunkIndex,
+          text: chunk.text,
+          excerpt: chunk.excerpt,
+          r2_key: chunk.r2Key,
+          reader_path: chunk.readerPath,
+          metadata: chunk.metadata,
+        }, null, 2),
+      ),
+      writeLocalArtifact(
+        outputDir,
+        join("books", gutenbergId, "chunk-text", `${String(chunk.chunkIndex).padStart(6, "0")}.txt`),
+        chunk.text,
+      ),
+    ])),
+    ...(renderedArtifacts && renderedDocumentKey
+      ? [writeLocalArtifact(outputDir, join("r2", renderedDocumentKey), renderedArtifacts.landingHtml)]
+      : []),
+    ...(renderedArtifacts && renderedManifestKey
+      ? [writeLocalArtifact(outputDir, join("r2", renderedManifestKey), renderedArtifacts.manifestJson)]
+      : []),
+    ...(renderedArtifacts
+      ? renderedArtifacts.pageFiles.map((page) =>
+          writeLocalArtifact(
+            outputDir,
+            join("r2", gutenbergCorpusAdapter.artifactKeys.renderedPage?.(gutenbergId, page.pageNumber) ?? ""),
+            page.html,
+          ))
+      : []),
+    ...(source.coverImagePath && coverImageKey
+      ? [readFile(source.coverImagePath).then((bytes) => writeLocalArtifact(outputDir, join("r2", coverImageKey), bytes))]
+      : []),
+  ]);
+
+  const bookManifest: LocalPreparedBookManifest = {
+    gutenbergId,
+    title,
+    outputDir: join(outputDir, "books", gutenbergId),
+    chunkCount: prepared.chunks.length,
+    chunkIds: chunkArtifacts.map((chunk) => chunk.id),
+    r2Keys: {
+      raw: prepared.rawKey,
+      metadata: prepared.metadataKey,
+      clean: prepared.cleanKey,
+      chunks: prepared.chunksKey,
+      bookHtml: renderedDocumentKey ?? null,
+      bookManifest: renderedManifestKey ?? null,
+      pages: renderedArtifacts
+        ? renderedArtifacts.pageFiles.map((page) => gutenbergCorpusAdapter.artifactKeys.renderedPage?.(gutenbergId, page.pageNumber) ?? "")
+        : [],
+      coverImage: coverImageKey,
+      chunkObjects: chunkArtifacts.map((chunk) => chunk.r2Key),
+    },
+    d1Records: {
+      work: {
+        id: workId,
+        gutenberg_id: Number(gutenbergId),
+        title,
+        language: source.language ?? null,
+        release_date: source.releaseDate ?? null,
+        rights_status: source.rightsStatus ?? null,
+        summary: source.summary ?? null,
+        metadata_json: metadataPayload,
+      },
+      workFiles: [
+        { kind: "raw", r2_key: prepared.rawKey },
+        { kind: "metadata", r2_key: prepared.metadataKey },
+        { kind: "clean", r2_key: prepared.cleanKey },
+        { kind: "chunks", r2_key: prepared.chunksKey },
+        ...(renderedDocumentKey ? [{ kind: "book_html", r2_key: renderedDocumentKey }] : []),
+      ],
+      authors: prepared.authors,
+      subjects: prepared.subjects,
+    },
+  };
+
+  await Promise.all([
+    writeLocalArtifact(
+      outputDir,
+      join("books", gutenbergId, "manifest.json"),
+      JSON.stringify(bookManifest, null, 2),
+    ),
+    writeLocalArtifact(
+      outputDir,
+      join("books", gutenbergId, "metadata.json"),
+      JSON.stringify(metadataPayload, null, 2),
+    ),
+    writeLocalArtifact(
+      outputDir,
+      join("books", gutenbergId, "chunk-index.json"),
+      JSON.stringify(chunkArtifacts.map((chunk) => ({
+        id: chunk.id,
+        chunkIndex: chunk.chunkIndex,
+        excerpt: chunk.excerpt,
+        readerPath: chunk.readerPath,
+        r2Key: chunk.r2Key,
+      })), null, 2),
+    ),
+  ]);
+
+  return bookManifest;
+}
+
+async function prepareMirrorArtifactsLocallyBatch(options: LocalArtifactPrepOptions) {
+  const mirrorRoot = process.env.GUTENBERG_MIRROR_ROOT;
+  if (!mirrorRoot) {
+    throw new Error("GUTENBERG_MIRROR_ROOT is required for local artifact prep.");
+  }
+  const configuredMirrorRoot = mirrorRoot;
+
+  const allIds = await listMirrorIds(configuredMirrorRoot);
+  const firstGreaterIndex = options.startAfterId ? allIds.findIndex((id) => Number(id) > Number(options.startAfterId)) : -1;
+  const startIndex = options.startAfterId ? (firstGreaterIndex >= 0 ? firstGreaterIndex : allIds.length) : 0;
+  const selectedIds = allIds.slice(startIndex, startIndex + options.limit);
+  const results: LocalPreparedBookManifest[] = [];
+  const errors: Array<{ gutenbergId: string; error: string }> = [];
+  const concurrency = Math.max(1, Number(options.concurrency ?? process.env.LOCAL_ARTIFACT_PREP_CONCURRENCY ?? "4"));
+  let cursor = 0;
+
+  async function worker() {
+    while (cursor < selectedIds.length) {
+      const gutenbergId = selectedIds[cursor];
+      cursor += 1;
+      if (!gutenbergId) {
+        continue;
+      }
+      try {
+        const source = await resolveMirrorSource(configuredMirrorRoot, gutenbergId);
+        results.push(await prepareMirrorArtifactsLocally(options.outputDir, gutenbergId, source));
+      } catch (error) {
+        errors.push({
+          gutenbergId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, selectedIds.length || 1) }, () => worker()));
+
+  const runManifest = {
+    createdAt: new Date().toISOString(),
+    mirrorRoot: configuredMirrorRoot,
+    outputDir: resolve(options.outputDir),
+    startAfterId: options.startAfterId ?? null,
+    processed: results.length + errors.length,
+    prepared: results.length,
+    failed: errors.length,
+    nextStartAfterId: selectedIds.length > 0 ? selectedIds[selectedIds.length - 1] : options.startAfterId ?? null,
+    books: results.map((result) => ({
+      gutenbergId: result.gutenbergId,
+      title: result.title,
+      chunkCount: result.chunkCount,
+      manifestPath: join("books", result.gutenbergId, "manifest.json"),
+    })),
+    errors,
+  };
+  await writeLocalArtifact(
+    options.outputDir,
+    "run-manifest.json",
+    JSON.stringify(runManifest, null, 2),
+  );
+  return runManifest;
+}
+
 async function persistIngestedWork(
   context: IngestContext,
   adapter: CorpusAdapter,
@@ -4814,6 +5142,24 @@ async function main() {
       return;
     }
 
+    if (command === "prepare-local-gutenberg-artifacts") {
+      const [startAfterId, outputDir, limitValue, concurrencyValue] = args;
+      const result = await prepareMirrorArtifactsLocallyBatch({
+        startAfterId: startAfterId && startAfterId !== "-" ? startAfterId : null,
+        outputDir: outputDir && outputDir !== "-"
+          ? resolve(outputDir)
+          : resolve(process.cwd(), ".alphabook", "local-gutenberg-artifacts"),
+        limit: limitValue && limitValue !== "-"
+          ? Number(limitValue)
+          : 100,
+        concurrency: concurrencyValue && concurrencyValue !== "-"
+          ? Number(concurrencyValue)
+          : undefined,
+      });
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
     if (command === "submit-openai-embedding-batch") {
       const [manifestPath] = args;
       if (!manifestPath) {
@@ -5042,6 +5388,7 @@ async function main() {
     console.log("  google-embedding-batch-status <batchJobName|submissionPath>");
     console.log("  download-google-embedding-batch-output <submissionPath> [outputDir]");
     console.log("  prepare-openai-embedding-batch [startAfterId|-] [targetCostUsd|-] [outputDir|-] [maxFileBytes|-] [limitBooks|-]");
+    console.log("  prepare-local-gutenberg-artifacts [startAfterId|-] [outputDir|-] [limitBooks|-] [concurrency|-]");
     console.log("  submit-openai-embedding-batch <manifestPath>");
     console.log("  openai-embedding-batch-status <batchId|submissionPath>");
     console.log("  download-openai-embedding-batch-output <submissionPath> [outputDir]");
