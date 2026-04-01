@@ -31,6 +31,7 @@ export const SemanticDeepSearchArgsSchema = z.object({
   query: z.string().min(1),
   workIds: z.array(z.string()).max(80).optional(),
   maxResults: z.number().int().positive().max(12).optional(),
+  backend: z.enum(["alphaloop", "context1"]).optional(),
 });
 
 export const EstimateResearchScopeArgsSchema = z.object({
@@ -152,6 +153,7 @@ export const ChatRequestSchema = z.object({
   mode: z.enum(["semantic", "comprehensive"]).optional(),
   intensityOverride: z.enum(["normal", "high", "maximum"]).optional(),
   researchMode: z.enum(["default", "sprite_fanout"]).optional(),
+  semanticBackend: z.enum(["alphaloop", "context1"]).optional(),
 });
 
 export type ChatRequest = z.infer<typeof ChatRequestSchema>;

@@ -4,7 +4,9 @@ import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createAlphaloop } from "alphaloop";
 
 import type { BillingContext } from "./billing";
+import { openAIUsageFromResponse, type BillingService } from "./billing";
 import type { Embedder } from "./embeddings";
+import { parseModelJsonObject } from "./json";
 import type { AppStore } from "./store";
 import type { Citation, ChunkSearchResult } from "@alphabook/shared";
 import type { VectorSearchIndex } from "./vectorize";
@@ -26,6 +28,7 @@ export interface SemanticSearchService {
     query: string;
     workIds?: string[];
     maxResults?: number;
+    backend?: "alphaloop" | "context1";
     billingContext?: BillingContext;
     onProgress?: (text: string, detail?: Record<string, unknown>) => Promise<void>;
     auditLog?: (event: string, payload: Record<string, unknown>) => void;
@@ -48,6 +51,22 @@ export interface SemanticSearchOptions {
   openAIModel?: string;
   googleAIApiKey?: string;
   googleModel?: string;
+}
+
+export interface Context1SemanticSearchOptions {
+  store: AppStore;
+  embedder: Embedder;
+  vectorIndex: VectorSearchIndex;
+  apiKey: string;
+  model: string;
+  baseUrl?: string;
+  maxTurns?: number;
+  totalTokenBudget?: number;
+  softTokenBudget?: number;
+  hardTokenBudget?: number;
+  perToolTokenBudget?: number;
+  fetchImpl?: typeof fetch;
+  billing?: BillingService;
 }
 
 function looksLikeExpansionQuery(originalQuery: string, candidateQuery: string) {
@@ -179,6 +198,7 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
     query: string;
     workIds?: string[];
     maxResults?: number;
+    backend?: "alphaloop" | "context1";
     billingContext?: BillingContext;
     onProgress?: (text: string, detail?: Record<string, unknown>) => Promise<void>;
     auditLog?: (event: string, payload: Record<string, unknown>) => void;
@@ -561,5 +581,497 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
       iterations: finalResult.iterations,
       totalChunksConsidered: finalResult.totalChunksConsidered,
     };
+  }
+}
+
+type Context1Action =
+  | { type: "search_corpus"; query: string }
+  | { type: "grep_corpus"; pattern: string }
+  | { type: "read_document"; docId: string }
+  | { type: "prune_chunks"; chunkIds: string[] }
+  | { type: "final"; selectedChunkIds?: string[]; answer?: string };
+
+type Context1RetainedChunk = {
+  chunk: ChunkSearchResult;
+  score: number;
+  source: string;
+};
+
+function estimateTokenCount(value: string) {
+  return Math.max(1, Math.ceil(value.length / 4));
+}
+
+function reciprocalRankFusion(ranks: number[]) {
+  return ranks.reduce((sum, rank) => sum + (1 / (60 + rank)), 0);
+}
+
+function parseContext1Action(content: string): Context1Action {
+  const parsed = parseModelJsonObject<Record<string, unknown>>(content);
+  if (parsed.type === "search_corpus" && typeof parsed.query === "string" && parsed.query.trim()) {
+    return { type: "search_corpus", query: parsed.query.trim() };
+  }
+  if (parsed.type === "grep_corpus" && typeof parsed.pattern === "string" && parsed.pattern.trim()) {
+    return { type: "grep_corpus", pattern: parsed.pattern.trim() };
+  }
+  if (parsed.type === "read_document" && typeof parsed.docId === "string" && parsed.docId.trim()) {
+    return { type: "read_document", docId: parsed.docId.trim() };
+  }
+  if (parsed.type === "prune_chunks" && Array.isArray(parsed.chunkIds)) {
+    return {
+      type: "prune_chunks",
+      chunkIds: parsed.chunkIds.filter((value): value is string => typeof value === "string").slice(0, 24),
+    };
+  }
+  if (parsed.type === "final") {
+    return {
+      type: "final",
+      selectedChunkIds: Array.isArray(parsed.selectedChunkIds)
+        ? parsed.selectedChunkIds.filter((value): value is string => typeof value === "string").slice(0, 12)
+        : undefined,
+      answer: typeof parsed.answer === "string" ? parsed.answer.trim() : undefined,
+    };
+  }
+  throw new Error("Context-1 action response was not a supported JSON action.");
+}
+
+async function rerankHydratedMatches(
+  store: AppStore,
+  matches: Array<{ id: string; score: number }>,
+  workIds?: string[],
+) {
+  const hydrated = matches.length > 0 ? await store.getChunksByIds(matches.map((match) => match.id)) : [];
+  const hydratedById = new Map(hydrated.map((chunk) => [chunk.id, chunk]));
+  return matches
+    .map((match) => {
+      const chunk = hydratedById.get(match.id);
+      if (!chunk) {
+        return null;
+      }
+      if (Array.isArray(workIds) && workIds.length > 0 && !workIds.includes(chunk.workId)) {
+        return null;
+      }
+      return {
+        ...chunk,
+        score: match.score,
+        excerpt: excerptForChunk(chunk),
+      };
+    })
+    .filter((chunk): chunk is ChunkSearchResult => Boolean(chunk));
+}
+
+export class Context1SemanticSearchService implements SemanticSearchService {
+  private readonly maxTurns: number;
+  private readonly totalTokenBudget: number;
+  private readonly softTokenBudget: number;
+  private readonly hardTokenBudget: number;
+  private readonly perToolTokenBudget: number;
+  private readonly fetchImpl: typeof fetch;
+  private readonly baseUrl: string;
+
+  constructor(private readonly options: Context1SemanticSearchOptions) {
+    this.maxTurns = Math.max(2, options.maxTurns ?? 8);
+    this.totalTokenBudget = Math.max(4_096, options.totalTokenBudget ?? 32_768);
+    this.softTokenBudget = Math.max(2_048, Math.min(this.totalTokenBudget - 512, options.softTokenBudget ?? 24_576));
+    this.hardTokenBudget = Math.max(this.softTokenBudget + 256, Math.min(this.totalTokenBudget, options.hardTokenBudget ?? 30_720));
+    this.perToolTokenBudget = Math.max(512, options.perToolTokenBudget ?? 4_096);
+    this.fetchImpl = options.fetchImpl ?? ((input, init) => fetch(input, init));
+    this.baseUrl = (options.baseUrl ?? "https://api.openai.com/v1").replace(/\/$/, "");
+  }
+
+  private retainedTokenUsage(retained: Map<string, Context1RetainedChunk>) {
+    let total = 0;
+    for (const { chunk } of retained.values()) {
+      total += estimateTokenCount(chunk.text) + 32;
+    }
+    return total;
+  }
+
+  private summarizeRetained(retained: Map<string, Context1RetainedChunk>) {
+    return [...retained.values()]
+      .sort((left, right) => right.score - left.score)
+      .slice(0, 12)
+      .map(({ chunk, score, source }) => ({
+        id: chunk.id,
+        workId: chunk.workId,
+        chunkIndex: chunk.chunkIndex,
+        score: Number(score.toFixed(4)),
+        source,
+        excerpt: excerptForChunk(chunk).slice(0, 280),
+      }));
+  }
+
+  private async inferAction(args: {
+    query: string;
+    turn: number;
+    workIds?: string[];
+    retained: Map<string, Context1RetainedChunk>;
+    observations: Array<Record<string, unknown>>;
+    encounteredCount: number;
+    billingContext?: BillingContext;
+  }) {
+    const body = {
+      model: this.options.model,
+      response_format: { type: "json_object" as const },
+      messages: [
+        {
+          role: "system",
+          content: [
+            "You are AlphaBook Context-1 mode, a retrieval subagent.",
+            "Do not answer the user directly unless you choose the final action.",
+            "Use only these tools: search_corpus, grep_corpus, read_document, prune_chunks, final.",
+            "search_corpus should broaden or refine discovery using semantic + lexical retrieval.",
+            "grep_corpus should look for exact phrases, names, or regex-like patterns.",
+            "read_document should drill into one book when you need more evidence from it.",
+            "prune_chunks should remove lower-value chunks when token pressure rises.",
+            "Return exactly one JSON object for the next action.",
+          ].join("\n"),
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            task: "Choose the next retrieval action.",
+            query: args.query,
+            turn: args.turn,
+            maxTurns: this.maxTurns,
+            workIds: args.workIds ?? [],
+            tokenUsage: {
+              used: this.retainedTokenUsage(args.retained),
+              total: this.totalTokenBudget,
+              soft: this.softTokenBudget,
+              hard: this.hardTokenBudget,
+            },
+            encounteredChunkCount: args.encounteredCount,
+            retainedChunks: this.summarizeRetained(args.retained),
+            recentObservations: args.observations.slice(-6),
+            outputSchema: {
+              type: "search_corpus | grep_corpus | read_document | prune_chunks | final",
+              query: "string for search_corpus",
+              pattern: "string for grep_corpus",
+              docId: "work id for read_document",
+              chunkIds: ["chunk ids for prune_chunks"],
+              selectedChunkIds: ["best chunk ids for final"],
+              answer: "optional short retrieval note for final",
+            },
+          }),
+        },
+      ],
+    };
+    const response = await this.fetchImpl(`${this.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${this.options.apiKey}`,
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(SEMANTIC_ALPHALOOP_NEXT_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      throw new Error(`Context-1 request failed: ${response.status} ${await response.text()}`);
+    }
+    const payload = await response.json() as {
+      choices?: Array<{ message?: { content?: string } }>;
+      usage?: Record<string, unknown>;
+      id?: string;
+    };
+    if (this.options.billing && args.billingContext) {
+      const usage = openAIUsageFromResponse(payload as Record<string, unknown>);
+      if (usage) {
+        await this.options.billing.track(args.billingContext, {
+          provider: "openai-compatible",
+          model: this.options.model,
+          operation: "chat.completions.create",
+          ...usage,
+          requestId: payload.id ?? null,
+          requestJson: body as unknown as Record<string, unknown>,
+          responseJson: { usage: payload.usage ?? null },
+          metadata: { phase: "semantic_search", backend: "context1" },
+        });
+      }
+    }
+    const content = payload.choices?.[0]?.message?.content;
+    if (!content) {
+      throw new Error("Context-1 returned an empty action.");
+    }
+    return parseContext1Action(content);
+  }
+
+  private async searchCorpus(query: string, workIds: string[] | undefined, encounteredChunkIds: Set<string>) {
+    const embedding = await withTimeout(
+      this.options.embedder.embedQuery(query),
+      SEMANTIC_SEARCH_STEP_TIMEOUT_MS,
+      "Context-1 query embedding",
+    );
+    const [vectorMatches, lexicalMatches] = await Promise.all([
+      this.options.vectorIndex.query(embedding, {
+        topK: 32,
+      }),
+      this.options.store.getRelevantChunks(query, workIds, 32, undefined),
+    ]);
+    const fused = new Map<string, { id: string; ranks: number[] }>();
+    for (const [index, match] of vectorMatches.entries()) {
+      if (encounteredChunkIds.has(match.id)) {
+        continue;
+      }
+      const entry = fused.get(match.id) ?? { id: match.id, ranks: [] };
+      entry.ranks.push(index + 1);
+      fused.set(match.id, entry);
+    }
+    for (const [index, chunk] of lexicalMatches.entries()) {
+      if (encounteredChunkIds.has(chunk.id)) {
+        continue;
+      }
+      const entry = fused.get(chunk.id) ?? { id: chunk.id, ranks: [] };
+      entry.ranks.push(index + 1);
+      fused.set(chunk.id, entry);
+    }
+    const hydrated = await rerankHydratedMatches(
+      this.options.store,
+      [...fused.values()]
+        .map((entry) => ({
+          id: entry.id,
+          score: reciprocalRankFusion(entry.ranks),
+        }))
+        .sort((left, right) => right.score - left.score)
+        .slice(0, 50),
+      workIds,
+    );
+    return hydrated.sort((left, right) => (right.score ?? 0) - (left.score ?? 0));
+  }
+
+  private async grepCorpus(pattern: string, workIds: string[] | undefined, encounteredChunkIds: Set<string>) {
+    const probeWorks = workIds?.length
+      ? await this.options.store.getWorkMetadata(workIds.slice(0, 12))
+      : await this.options.store.searchWorks(pattern, { limit: 12 });
+    let matcher: RegExp | null = null;
+    try {
+      matcher = new RegExp(pattern, "iu");
+    } catch {
+      matcher = null;
+    }
+    const results: ChunkSearchResult[] = [];
+    for (const work of probeWorks.slice(0, 8)) {
+      const chunks = await this.options.store.getRelevantChunks(pattern, [work.id], 12, undefined);
+      for (const chunk of chunks) {
+        if (encounteredChunkIds.has(chunk.id)) {
+          continue;
+        }
+        if (matcher && !matcher.test(chunk.text) && !matcher.test(chunk.excerpt)) {
+          continue;
+        }
+        results.push({
+          ...chunk,
+          excerpt: excerptForChunk(chunk),
+          score: chunk.score,
+        });
+        if (results.length >= 5) {
+          return results;
+        }
+      }
+    }
+    return results.slice(0, 5);
+  }
+
+  private async readDocument(docId: string, query: string, encounteredChunkIds: Set<string>) {
+    const anchorChunks = await this.options.store.getRelevantChunks(query, [docId], 4, undefined);
+    const hydrated: ChunkSearchResult[] = [];
+    for (const anchor of anchorChunks) {
+      for (const offset of [-1, 0, 1]) {
+        const candidate = await this.options.store.getChunkByWorkAndIndex(docId, anchor.chunkIndex + offset);
+        if (!candidate || encounteredChunkIds.has(candidate.id)) {
+          continue;
+        }
+        hydrated.push({
+          ...candidate,
+          excerpt: excerptForChunk(candidate),
+          score: anchor.score,
+        });
+      }
+    }
+    return hydrated
+      .sort((left, right) => (right.score ?? 0) - (left.score ?? 0))
+      .slice(0, 8);
+  }
+
+  async search(args: {
+    query: string;
+    workIds?: string[];
+    maxResults?: number;
+    backend?: "alphaloop" | "context1";
+    billingContext?: BillingContext;
+    onProgress?: (text: string, detail?: Record<string, unknown>) => Promise<void>;
+    auditLog?: (event: string, payload: Record<string, unknown>) => void;
+  }) {
+    const retained = new Map<string, Context1RetainedChunk>();
+    const encounteredChunkIds = new Set<string>();
+    const trajectoryRecallIds = new Set<string>();
+    const observations: Array<Record<string, unknown>> = [];
+    const events: AlphaloopEvent[] = [];
+    const iterations: IterationRecord[] = [];
+    const maxResults = Math.max(1, Math.min(args.maxResults ?? 8, 12));
+
+    for (let turn = 1; turn <= this.maxTurns; turn += 1) {
+      const usedTokens = this.retainedTokenUsage(retained);
+      args.auditLog?.("semantic.search.context1.turn.started", {
+        query: args.query,
+        turn,
+        retainedChunkCount: retained.size,
+        encounteredChunkCount: encounteredChunkIds.size,
+        usedTokens,
+      });
+      if (usedTokens >= this.softTokenBudget) {
+        await args.onProgress?.("Context-1 mode is near its evidence budget and may prune weaker chunks.", {
+          type: "semantic.context1",
+          event: { type: "token_budget", usedTokens, totalTokens: this.totalTokenBudget },
+        });
+      }
+      const action = await this.inferAction({
+        query: args.query,
+        turn,
+        workIds: args.workIds,
+        retained,
+        observations,
+        encounteredCount: encounteredChunkIds.size,
+        billingContext: args.billingContext,
+      });
+      events.push({ type: "context1_action", turn, actionType: action.type });
+      if (action.type === "final") {
+        break;
+      }
+      if (usedTokens >= this.hardTokenBudget && action.type !== "prune_chunks") {
+        observations.push({
+          type: "tool_error",
+          tool: action.type,
+          message: "Hard token cutoff reached. Prune chunks or conclude.",
+        });
+        continue;
+      }
+      if (action.type === "prune_chunks") {
+        for (const chunkId of action.chunkIds) {
+          retained.delete(chunkId);
+        }
+        observations.push({
+          type: "prune_chunks",
+          chunkIds: action.chunkIds,
+          retainedChunkCount: retained.size,
+        });
+        await args.onProgress?.(`Pruned ${action.chunkIds.length} weaker chunks to keep the search moving.`, {
+          type: "semantic.context1",
+          event: { type: "prune_chunks", chunkIds: action.chunkIds },
+        });
+        continue;
+      }
+
+      let freshChunks: ChunkSearchResult[] = [];
+      let source = "";
+      if (action.type === "search_corpus") {
+        source = action.query;
+        await args.onProgress?.(`Context-1 searching the corpus for “${action.query}”.`, {
+          type: "semantic.context1",
+          event: { type: "search_corpus", query: action.query },
+        });
+        freshChunks = await this.searchCorpus(action.query, args.workIds, encounteredChunkIds);
+      } else if (action.type === "grep_corpus") {
+        source = action.pattern;
+        await args.onProgress?.(`Context-1 running exact-match search for “${action.pattern}”.`, {
+          type: "semantic.context1",
+          event: { type: "grep_corpus", pattern: action.pattern },
+        });
+        freshChunks = await this.grepCorpus(action.pattern, args.workIds, encounteredChunkIds);
+      } else if (action.type === "read_document") {
+        source = action.docId;
+        await args.onProgress?.(`Context-1 drilling into ${action.docId}.`, {
+          type: "semantic.context1",
+          event: { type: "read_document", docId: action.docId },
+        });
+        freshChunks = await this.readDocument(action.docId, args.query, encounteredChunkIds);
+      }
+
+      const remainingBudget = Math.max(0, Math.min(this.perToolTokenBudget, this.totalTokenBudget - this.retainedTokenUsage(retained)));
+      let addedChunks = 0;
+      let addedTokens = 0;
+      for (const chunk of freshChunks) {
+        const chunkTokens = estimateTokenCount(chunk.text);
+        if (addedTokens + chunkTokens > remainingBudget) {
+          break;
+        }
+        encounteredChunkIds.add(chunk.id);
+        trajectoryRecallIds.add(chunk.id);
+        retained.set(chunk.id, {
+          chunk,
+          score: chunk.score ?? 0,
+          source,
+        });
+        addedTokens += chunkTokens;
+        addedChunks += 1;
+      }
+      observations.push({
+        type: action.type,
+        source,
+        addedChunks,
+        totalRetainedChunks: retained.size,
+      });
+      iterations.push({
+        iteration: turn,
+        newQueries: [source],
+        chunksFound: addedChunks,
+        totalUniqueChunks: trajectoryRecallIds.size,
+      });
+    }
+
+    const rankedChunks = [...retained.values()]
+      .sort((left, right) => right.score - left.score)
+      .map((entry) => entry.chunk);
+    const chunks = rankedChunks.slice(0, maxResults);
+    if (chunks.length === 0) {
+      return {
+        briefing: "I couldn’t find strong matches in Context-1 mode yet.",
+        citations: [],
+        chunks: [],
+        rankedChunks: [],
+        alphaloopEvents: events,
+        iterations,
+        totalChunksConsidered: encounteredChunkIds.size,
+      };
+    }
+    const briefing = [
+      "Context-1 mode searched iteratively and kept the strongest passages after pruning weaker ones.",
+      `It retained ${chunks.length} top passages across ${new Set(chunks.map((chunk) => chunk.workId)).size} books.`,
+    ].join(" ");
+    return {
+      briefing,
+      citations: citationsFromChunks(chunks),
+      chunks,
+      rankedChunks,
+      alphaloopEvents: events,
+      iterations,
+      totalChunksConsidered: encounteredChunkIds.size,
+    };
+  }
+}
+
+export class DelegatingSemanticSearchService implements SemanticSearchService {
+  constructor(
+    private readonly backends: {
+      alphaloop?: SemanticSearchService;
+      context1?: SemanticSearchService;
+    },
+    private readonly defaultBackend: "alphaloop" | "context1" = "alphaloop",
+  ) {}
+
+  async search(args: {
+    query: string;
+    workIds?: string[];
+    maxResults?: number;
+    backend?: "alphaloop" | "context1";
+    billingContext?: BillingContext;
+    onProgress?: (text: string, detail?: Record<string, unknown>) => Promise<void>;
+    auditLog?: (event: string, payload: Record<string, unknown>) => void;
+  }) {
+    const backend = args.backend ?? this.defaultBackend;
+    const service = backend === "context1" ? this.backends.context1 : this.backends.alphaloop;
+    if (!service) {
+      throw new Error(`${backend} semantic backend is not configured.`);
+    }
+    return service.search(args);
   }
 }

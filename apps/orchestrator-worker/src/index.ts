@@ -14,7 +14,7 @@ import { OpenAIPlanner } from "./planner";
 import { CloudflareR2Store } from "./r2";
 import { OpenAIRouter } from "./router";
 import { FlyMachinesRuntimeGateway, HttpRuntimeGateway } from "./runtime";
-import { AlphaloopSemanticSearchService } from "./semantic-search";
+import { AlphaloopSemanticSearchService, Context1SemanticSearchService, DelegatingSemanticSearchService } from "./semantic-search";
 import { D1AppStore } from "./d1-store";
 import { OpenAISynthesizer } from "./synthesizer";
 import { CloudflareVectorizeIndex, QdrantVectorIndex, type VectorSearchIndex } from "./vectorize";
@@ -34,6 +34,7 @@ export interface Env {
   OPENAI_MODEL?: string;
   OPENAI_SYNTH_MODEL?: string;
   OPENAI_EMBEDDING_MODEL?: string;
+  OPENAI_EMBEDDING_DIMENSIONS?: string;
   EMBEDDING_PROVIDER?: string;
   GOOGLE_AI_API_KEY?: string;
   GOOGLE_EMBEDDING_MODEL?: string;
@@ -43,6 +44,14 @@ export interface Env {
   QDRANT_API_KEY?: string;
   QDRANT_COLLECTION?: string;
   QDRANT_QUERY_TIMEOUT_MS?: string;
+  CONTEXT1_BASE_URL?: string;
+  CONTEXT1_API_KEY?: string;
+  CONTEXT1_MODEL?: string;
+  CONTEXT1_MAX_TURNS?: string;
+  CONTEXT1_TOTAL_TOKEN_BUDGET?: string;
+  CONTEXT1_SOFT_TOKEN_BUDGET?: string;
+  CONTEXT1_HARD_TOKEN_BUDGET?: string;
+  CONTEXT1_PER_TOOL_TOKEN_BUDGET?: string;
   RUNTIME_TOOL_TIMEOUT_SECONDS?: string;
   TOOL_STREAM_CLEANUP_MODEL?: string;
   BILLING_MONTHLY_LIMIT_USD?: string;
@@ -217,6 +226,7 @@ function resolveEmbedder(env: Env, billing: ReturnType<typeof createBillingServi
   return new OpenAIEmbedder(
     env.OPENAI_API_KEY,
     env.OPENAI_EMBEDDING_MODEL ?? "text-embedding-3-small",
+    env.OPENAI_EMBEDDING_DIMENSIONS ? Number(env.OPENAI_EMBEDDING_DIMENSIONS) : 768,
     undefined,
     billing,
   );
@@ -286,14 +296,36 @@ function buildFetchHandler(env: Env) {
   const embedder = resolveEmbedder(env, billing);
   const vectorIndex = resolveVectorIndex(env);
   const semanticSearch = vectorIndex
-    ? new AlphaloopSemanticSearchService({
-        store,
-        embedder,
-        vectorIndex,
-        openAIApiKey: env.OPENAI_API_KEY,
-        openAIModel: env.OPENAI_SYNTH_MODEL ?? env.OPENAI_MODEL ?? "gpt-5.2",
-        googleAIApiKey: env.GOOGLE_AI_API_KEY,
-      })
+    ? new DelegatingSemanticSearchService(
+        {
+          alphaloop: new AlphaloopSemanticSearchService({
+            store,
+            embedder,
+            vectorIndex,
+            openAIApiKey: env.OPENAI_API_KEY,
+            openAIModel: env.OPENAI_SYNTH_MODEL ?? env.OPENAI_MODEL ?? "gpt-5.2",
+            googleAIApiKey: env.GOOGLE_AI_API_KEY,
+          }),
+          context1:
+            env.CONTEXT1_API_KEY && env.CONTEXT1_MODEL
+              ? new Context1SemanticSearchService({
+                  store,
+                  embedder,
+                  vectorIndex,
+                  apiKey: env.CONTEXT1_API_KEY,
+                  model: env.CONTEXT1_MODEL,
+                  baseUrl: env.CONTEXT1_BASE_URL,
+                  maxTurns: env.CONTEXT1_MAX_TURNS ? Number(env.CONTEXT1_MAX_TURNS) : undefined,
+                  totalTokenBudget: env.CONTEXT1_TOTAL_TOKEN_BUDGET ? Number(env.CONTEXT1_TOTAL_TOKEN_BUDGET) : undefined,
+                  softTokenBudget: env.CONTEXT1_SOFT_TOKEN_BUDGET ? Number(env.CONTEXT1_SOFT_TOKEN_BUDGET) : undefined,
+                  hardTokenBudget: env.CONTEXT1_HARD_TOKEN_BUDGET ? Number(env.CONTEXT1_HARD_TOKEN_BUDGET) : undefined,
+                  perToolTokenBudget: env.CONTEXT1_PER_TOOL_TOKEN_BUDGET ? Number(env.CONTEXT1_PER_TOOL_TOKEN_BUDGET) : undefined,
+                  billing,
+                })
+              : undefined,
+        },
+        env.SEMANTIC_BACKEND === "context1" ? "context1" : "alphaloop",
+      )
     : undefined;
   const synthesizer = new OpenAISynthesizer(
     env.OPENAI_API_KEY,
@@ -632,11 +664,16 @@ async function processResearchTaskMessage(env: Env, message: ResearchTaskQueueMe
         ? task.taskSpecJson.workIds.filter((value): value is string => typeof value === "string")
         : undefined;
       const maxResults = typeof task.taskSpecJson.maxResults === "number" ? task.taskSpecJson.maxResults : 8;
+      const backend =
+        task.taskSpecJson.backend === "context1" || task.taskSpecJson.backend === "alphaloop"
+          ? task.taskSpecJson.backend
+          : undefined;
       result = await withTimeout(
         semanticSearch.search({
           query,
           workIds,
           maxResults,
+          backend,
           billingContext: {
             userId: session.userId,
             sessionId: session.id,

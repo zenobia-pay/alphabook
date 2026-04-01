@@ -2048,6 +2048,9 @@ function normalizeToolArgs(toolName: ToolName, args: Record<string, unknown>): R
       if (typeof normalized.maxResults === "number") {
         normalized.maxResults = Math.max(1, Math.min(12, Math.trunc(normalized.maxResults)));
       }
+      if (normalized.backend !== "alphaloop" && normalized.backend !== "context1") {
+        delete normalized.backend;
+      }
       break;
     case "estimate_research_scope":
     case "search_works":
@@ -2683,6 +2686,7 @@ async function executeTool(
         query: parsed.query,
         workIds: parsed.workIds,
         maxResults: parsed.maxResults ?? 8,
+        backend: parsed.backend,
         billingContext: {
           userId: context.userId,
           sessionId: context.sessionId,
@@ -10098,6 +10102,9 @@ async function runOrchestrator(
         ),
         toolHistory,
       );
+      if (toolCall.tool_name === "semantic_deep_search" && input.semanticBackend && normalizedToolArgs.backend === undefined) {
+        normalizedToolArgs.backend = input.semanticBackend;
+      }
       if (toolCall.tool_name === "run_workspace_task" && normalizedToolArgs.taskSpec && typeof normalizedToolArgs.taskSpec === "object") {
         normalizedToolArgs.taskSpec = mergeTaskSpecWithPriorEvidence(
           normalizedToolArgs.taskSpec as Record<string, unknown>,
@@ -10173,7 +10180,12 @@ async function runOrchestrator(
                     ? normalizedToolArgs.taskSpec as Record<string, unknown>
                     : {},
                 }
-              : { query: normalizedToolArgs.query, workIds: normalizedToolArgs.workIds, maxResults: normalizedToolArgs.maxResults },
+              : {
+                  query: normalizedToolArgs.query,
+                  workIds: normalizedToolArgs.workIds,
+                  maxResults: normalizedToolArgs.maxResults,
+                  ...(typeof normalizedToolArgs.backend === "string" ? { backend: normalizedToolArgs.backend } : {}),
+                },
           })
         : null;
       await ensureInitialPlanSent(routedQuery);

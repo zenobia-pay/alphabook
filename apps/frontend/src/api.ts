@@ -541,6 +541,7 @@ export async function streamChat(
     mode?: "semantic" | "comprehensive";
     intensityOverride?: "normal" | "high" | "maximum";
     researchMode?: "default" | "sprite_fanout";
+    semanticBackend?: "alphaloop" | "context1";
   },
   handlers: ChatStreamHandlers,
   options: {
