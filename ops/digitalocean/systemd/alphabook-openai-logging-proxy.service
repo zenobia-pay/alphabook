@@ -1,0 +1,21 @@
+[Unit]
+Description=AlphaBook OpenAI logging proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=OPENAI_LOG_PROXY_HOST=127.0.0.1
+Environment=OPENAI_LOG_PROXY_PORT=8790
+Environment=OPENAI_LOG_PROXY_LOG_ROOT=/srv/alphabook/logs/openai-proxy
+Environment=OPENAI_LOG_PROXY_UPSTREAM_BASE_URL=https://api.openai.com
+EnvironmentFile=-/root/.hermes/.env
+EnvironmentFile=-/srv/alphabook/.ingest.env
+ExecStart=/usr/bin/env node /srv/alphabook/bin/openai-logging-proxy.mjs
+WorkingDirectory=/srv/alphabook/repo
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target

@@ -21,11 +21,13 @@ Target layout on the VM:
 - `/srv/alphabook/bin/backfill-book-html-all.sh`
 - `/srv/alphabook/bin/rebuild-book-html-all.sh`
 - `/srv/alphabook/bin/hermes-job-api.mjs`
+- `/srv/alphabook/bin/openai-logging-proxy.mjs`
 - `/etc/systemd/system/alphabook-gutenberg-rsync.service`
 - `/etc/systemd/system/alphabook-gutenberg-rsync.timer`
 - `/etc/systemd/system/alphabook-gutenberg-rsync-epub.service`
 - `/etc/systemd/system/alphabook-gutenberg-rsync-epub.timer`
 - `/etc/systemd/system/alphabook-hermes-job-api.service`
+- `/etc/systemd/system/alphabook-openai-logging-proxy.service`
 
 ## Bootstrap
 
@@ -49,6 +51,7 @@ That script:
 - installs the full book HTML backfill runner into `/srv/alphabook/bin`
 - installs the full book HTML rebuild runner into `/srv/alphabook/bin`
 - installs the Hermes job API runner and systemd unit
+- installs the OpenAI-compatible logging proxy and systemd unit
 - installs the systemd services and timers
 - enables the recurring timers
 
@@ -357,6 +360,46 @@ Notes:
 - cost fields are exposed when the inner run writes `cost-profile.json` or a compatible `status.json`; otherwise cost remains unavailable instead of guessed.
 - `GET /v1/jobs/:jobId/logs` is poll-friendly and returns per-source line tails plus a cursor for incremental fetches.
 - Bootstrap installs the runner, unit, and token file, but you still need the repo present at `/srv/alphabook/repo` before enabling the service.
+
+## OpenAI Logging Proxy
+
+To persist the raw OpenAI request and response JSON for Hermes runs, use the local OpenAI-compatible logging proxy.
+
+Install and enable:
+
+```bash
+sudo cp ops/digitalocean/bin/openai-logging-proxy.mjs /srv/alphabook/bin/openai-logging-proxy.mjs
+sudo cp ops/digitalocean/systemd/alphabook-openai-logging-proxy.service /etc/systemd/system/alphabook-openai-logging-proxy.service
+sudo install -d -m 755 /srv/alphabook/logs/openai-proxy
+sudo systemctl daemon-reload
+sudo systemctl enable --now alphabook-openai-logging-proxy.service
+sudo systemctl status alphabook-openai-logging-proxy.service --no-pager
+```
+
+Default bind:
+
+- `127.0.0.1:8790`
+
+Log files:
+
+- `/srv/alphabook/logs/openai-proxy/requests.jsonl`
+- `/srv/alphabook/logs/openai-proxy/<request-id>.request.json`
+- `/srv/alphabook/logs/openai-proxy/<request-id>.response.json`
+
+To route Hermes through the proxy, point Hermes custom-model base URL at:
+
+```yaml
+model:
+  default: "gpt-5.4"
+  provider: "custom"
+  base_url: "http://127.0.0.1:8790/v1"
+```
+
+Notes:
+
+- The proxy forwards to `https://api.openai.com` and logs both the request and response bodies.
+- It also records token usage and an estimated cost when the upstream response includes a `usage` block.
+- The proxy is intended for debugging and auditing; logs can become large on long runs.
 
 For ripgrep progress-aware corpus scans, the expected helper flow is:
 

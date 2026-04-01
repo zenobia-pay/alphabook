@@ -32,11 +32,13 @@ install -m 0755 "$SCRIPT_DIR/bin/prune-orphan-vectors.sh" "$ALPHABOOK_ROOT/bin/p
 install -m 0755 "$SCRIPT_DIR/bin/prune-orphan-d1-records.sh" "$ALPHABOOK_ROOT/bin/prune-orphan-d1-records.sh"
 install -m 0755 "$SCRIPT_DIR/bin/prune-orphan-r2-keys.sh" "$ALPHABOOK_ROOT/bin/prune-orphan-r2-keys.sh"
 install -m 0755 "$SCRIPT_DIR/bin/hermes-job-api.mjs" "$ALPHABOOK_ROOT/bin/hermes-job-api.mjs"
+install -m 0755 "$SCRIPT_DIR/bin/openai-logging-proxy.mjs" "$ALPHABOOK_ROOT/bin/openai-logging-proxy.mjs"
 install -m 0644 "$SCRIPT_DIR/systemd/alphabook-gutenberg-rsync.service" /etc/systemd/system/alphabook-gutenberg-rsync.service
 install -m 0644 "$SCRIPT_DIR/systemd/alphabook-gutenberg-rsync.timer" /etc/systemd/system/alphabook-gutenberg-rsync.timer
 install -m 0644 "$SCRIPT_DIR/systemd/alphabook-gutenberg-rsync-epub.service" /etc/systemd/system/alphabook-gutenberg-rsync-epub.service
 install -m 0644 "$SCRIPT_DIR/systemd/alphabook-gutenberg-rsync-epub.timer" /etc/systemd/system/alphabook-gutenberg-rsync-epub.timer
 install -m 0644 "$SCRIPT_DIR/systemd/alphabook-hermes-job-api.service" /etc/systemd/system/alphabook-hermes-job-api.service
+install -m 0644 "$SCRIPT_DIR/systemd/alphabook-openai-logging-proxy.service" /etc/systemd/system/alphabook-openai-logging-proxy.service
 
 if [[ ! -f "$ALPHABOOK_ROOT/.hermes-job-api-token" ]]; then
   openssl rand -hex 24 > "$ALPHABOOK_ROOT/.hermes-job-api-token"
@@ -59,12 +61,14 @@ Audit: $ALPHABOOK_ROOT/bin/audit-cloudflare-corpus.sh
 Validate: $ALPHABOOK_ROOT/bin/validate-corpus-integrity.sh
 Rebuild: $ALPHABOOK_ROOT/bin/rebuild-r2-corpus-all.sh
 Hermes job API runner: $ALPHABOOK_ROOT/bin/hermes-job-api.mjs
+OpenAI logging proxy: $ALPHABOOK_ROOT/bin/openai-logging-proxy.mjs
 Useful commands:
   systemctl status alphabook-gutenberg-rsync.timer
   systemctl status alphabook-gutenberg-rsync-epub.timer
   systemctl start alphabook-gutenberg-rsync.service
   systemctl start alphabook-gutenberg-rsync-epub.service
   systemctl enable --now alphabook-hermes-job-api.service   # requires /srv/alphabook/repo
+  systemctl enable --now alphabook-openai-logging-proxy.service
   journalctl -u alphabook-gutenberg-rsync.service -n 200 --no-pager
   journalctl -u alphabook-gutenberg-rsync-epub.service -n 200 --no-pager
 EOF
