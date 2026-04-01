@@ -62,6 +62,28 @@ function sanitizedHeaders(headers) {
   return result;
 }
 
+function usageFromStreamBody(text) {
+  let usage = null;
+  for (const line of text.split("\n")) {
+    if (!line.startsWith("data: ")) {
+      continue;
+    }
+    const payload = line.slice(6).trim();
+    if (!payload || payload === "[DONE]") {
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(payload);
+      if (parsed?.usage) {
+        usage = parsed.usage;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return usage;
+}
+
 async function writeJson(filePath, value) {
   await fsp.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`);
 }
@@ -113,7 +135,7 @@ const server = http.createServer(async (req, res) => {
 
     const responseBuffer = Buffer.from(await upstreamResponse.arrayBuffer());
     const responseBody = jsonOrText(responseBuffer);
-    const usage = responseBody.parsed?.usage || null;
+    const usage = responseBody.parsed?.usage || (responseBody.kind === "text" ? usageFromStreamBody(responseBody.text) : null);
     const estimatedCostUsd = estimateCost(model || responseBody.parsed?.model || "", usage);
 
     const responseRecord = {
