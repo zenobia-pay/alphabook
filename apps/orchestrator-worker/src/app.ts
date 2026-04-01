@@ -119,6 +119,7 @@ export interface AppDeps {
     defaultUserName?: string;
     defaultReaderName?: string;
   };
+  comprehensiveJobs?: DurableObjectNamespace;
 }
 
 type CreateAppInput = Partial<Omit<AppDeps, "store" | "billing">> & Pick<AppDeps, "store" | "billing">;
@@ -2430,7 +2431,7 @@ function isTerminalRunStatus(status: string | null | undefined): status is "comp
   return status === "completed" || status === "failed" || status === "timed_out";
 }
 
-type ActiveRunState = {
+export type ActiveRunState = {
   sessionId: string;
   userId: string;
   runtimeIds: Set<string>;
@@ -8989,7 +8990,7 @@ async function runHermesConversation(
   }
 }
 
-async function runOrchestrator(
+export async function runOrchestrator(
   deps: AppDeps,
   request: Request,
   input: ChatRequest,
@@ -11815,6 +11816,20 @@ export function createApp(inputDeps: CreateAppInput) {
     return owningAgent?.ownerUserId === principal.user.id;
   }
 
+  async function canAccessComprehensiveJob(c: Context, ownerUserId: string | null | undefined) {
+    if (!(deps.auth?.isConfigured() ?? false)) {
+      return true;
+    }
+    const principal = await resolvePrincipal(c);
+    if (!principal) {
+      return false;
+    }
+    if (principal.kind === "agent") {
+      return principal.user.id === ownerUserId;
+    }
+    return principal.user.id === ownerUserId || isAdminUser(principal.user, deps.adminAllowedEmail);
+  }
+
   function requireTrustedBrowserRequest(c: Context) {
     if (bearerTokenFromRequest(c.req.raw)) {
       return null;
@@ -11831,6 +11846,31 @@ export function createApp(inputDeps: CreateAppInput) {
       return null;
     }
       return applyCorsHeaders(deps, c, c.json({ error: "Cross-site requests are not allowed." }, 403));
+  }
+
+  async function fetchComprehensiveJobResponse(
+    jobId: string,
+    pathname: string,
+    init?: RequestInit,
+  ) {
+    if (!deps.comprehensiveJobs) {
+      throw new Error("Comprehensive job Durable Object is not configured.");
+    }
+    const stub = deps.comprehensiveJobs.get(deps.comprehensiveJobs.idFromName(jobId));
+    return stub.fetch(`https://comprehensive-job.internal${pathname}`, init);
+  }
+
+  async function fetchComprehensiveJobJson<T>(
+    jobId: string,
+    pathname: string,
+    init?: RequestInit,
+  ): Promise<T> {
+    const response = await fetchComprehensiveJobResponse(jobId, pathname, init);
+    const text = await response.text();
+    if (!response.ok) {
+      throw new Error(text || `Comprehensive job request failed with ${response.status}.`);
+    }
+    return text ? JSON.parse(text) as T : {} as T;
   }
 
   async function respondWithLoggedError(
@@ -12557,6 +12597,188 @@ export function createApp(inputDeps: CreateAppInput) {
   app.post("/chat", handleChatRequest);
   app.post("/api/v1/chat", handleChatRequest);
   app.post("/api/v1/documents/chat", handleChatRequest);
+
+  const ComprehensiveJobRequestSchema = z.object({
+    prompt: z.string().trim().min(1),
+    sessionId: z.string().trim().min(1).optional(),
+    userId: z.string().trim().min(1).optional(),
+    workIds: z.array(z.string().trim().min(1)).max(256).optional(),
+    mode: z.enum(["comprehensive", "semantic"]).optional(),
+    intensityOverride: z.enum(["normal", "high", "maximum"]).optional(),
+    semanticBackend: z.enum(["alphaloop", "context1"]).optional(),
+  });
+
+  type ComprehensiveJobPayload = {
+    job: {
+      id: string;
+      ownerUserId?: string | null;
+    } & Record<string, unknown>;
+  };
+
+  const handleCreateComprehensiveJob = async (c: Context) => {
+    const trustedRequest = requireTrustedBrowserRequest(c);
+    if (trustedRequest) {
+      return trustedRequest;
+    }
+    if (!deps.comprehensiveJobs) {
+      return c.json({ error: "Comprehensive jobs are not configured." }, 501);
+    }
+    const payload = ComprehensiveJobRequestSchema.parse(await c.req.json());
+    const principal = await resolvePrincipal(c);
+    const user = principal?.user ?? null;
+    if ((deps.auth?.isConfigured() ?? false) && !user && !bearerTokenFromRequest(c.req.raw)) {
+      return c.json({ error: "Authentication required." }, 401);
+    }
+    const ownerUserId = user?.id ?? payload.userId;
+    if (!ownerUserId) {
+      return c.json({ error: "userId is required when authentication is disabled." }, 400);
+    }
+    if (payload.sessionId) {
+      const existingSession = await deps.store.getSession(payload.sessionId);
+      if (existingSession && existingSession.userId !== ownerUserId) {
+        return c.json({ error: "Not authorized for this session." }, 403);
+      }
+    }
+    const jobId = crypto.randomUUID();
+    const response = await fetchComprehensiveJobResponse(jobId, "/internal/start", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        jobId,
+        ownerUserId,
+        chatRequest: {
+          message: payload.prompt,
+          mode: payload.mode ?? "comprehensive",
+          sessionId: payload.sessionId,
+          userId: ownerUserId,
+          workIds: payload.workIds ?? [],
+          intensityOverride: payload.intensityOverride,
+          semanticBackend: payload.semanticBackend,
+        } satisfies ChatRequest,
+      }),
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      return c.json({ error: text || "Failed to create comprehensive job." }, response.status as never);
+    }
+    return c.body(text, 201, {
+      "content-type": "application/json; charset=utf-8",
+    });
+  };
+
+  const handleGetComprehensiveJob = async (c: Context) => {
+    if (!deps.comprehensiveJobs) {
+      return c.json({ error: "Comprehensive jobs are not configured." }, 501);
+    }
+    const jobId = c.req.param("jobId") ?? "";
+    const payload = await fetchComprehensiveJobJson<ComprehensiveJobPayload>(jobId, "/job");
+    if (!(await canAccessComprehensiveJob(c, payload.job.ownerUserId))) {
+      return c.json({ error: "Not authorized for this job." }, 403);
+    }
+    return c.json(payload);
+  };
+
+  const handleGetComprehensiveJobLogs = async (c: Context) => {
+    if (!deps.comprehensiveJobs) {
+      return c.json({ error: "Comprehensive jobs are not configured." }, 501);
+    }
+    const jobId = c.req.param("jobId") ?? "";
+    const summary = await fetchComprehensiveJobJson<ComprehensiveJobPayload>(jobId, "/job");
+    if (!(await canAccessComprehensiveJob(c, summary.job.ownerUserId))) {
+      return c.json({ error: "Not authorized for this job." }, 403);
+    }
+    const query = new URLSearchParams();
+    const cursor = c.req.query("cursor");
+    const limit = c.req.query("limit");
+    if (cursor) {
+      query.set("cursor", cursor);
+    }
+    if (limit) {
+      query.set("limit", limit);
+    }
+    const response = await fetchComprehensiveJobResponse(
+      jobId,
+      `/logs${query.toString() ? `?${query.toString()}` : ""}`,
+    );
+    const text = await response.text();
+    return c.body(text, response.status as never, {
+      "content-type": response.headers.get("content-type") ?? "application/json; charset=utf-8",
+    });
+  };
+
+  const handleGetComprehensiveJobArtifacts = async (c: Context) => {
+    if (!deps.comprehensiveJobs) {
+      return c.json({ error: "Comprehensive jobs are not configured." }, 501);
+    }
+    const jobId = c.req.param("jobId") ?? "";
+    const summary = await fetchComprehensiveJobJson<ComprehensiveJobPayload>(jobId, "/job");
+    if (!(await canAccessComprehensiveJob(c, summary.job.ownerUserId))) {
+      return c.json({ error: "Not authorized for this job." }, 403);
+    }
+    const response = await fetchComprehensiveJobResponse(jobId, "/artifacts");
+    const text = await response.text();
+    return c.body(text, response.status as never, {
+      "content-type": response.headers.get("content-type") ?? "application/json; charset=utf-8",
+    });
+  };
+
+  const handleGetComprehensiveJobArtifact = async (c: Context) => {
+    if (!deps.comprehensiveJobs) {
+      return c.json({ error: "Comprehensive jobs are not configured." }, 501);
+    }
+    const jobId = c.req.param("jobId") ?? "";
+    const artifactName = c.req.param("artifactName") ?? "";
+    const summary = await fetchComprehensiveJobJson<ComprehensiveJobPayload>(jobId, "/job");
+    if (!(await canAccessComprehensiveJob(c, summary.job.ownerUserId))) {
+      return c.json({ error: "Not authorized for this job." }, 403);
+    }
+    const response = await fetchComprehensiveJobResponse(jobId, `/artifacts/${encodeURIComponent(artifactName)}`);
+    const text = await response.text();
+    return c.body(text, response.status as never, {
+      "content-type": response.headers.get("content-type") ?? "application/json; charset=utf-8",
+    });
+  };
+
+  const handleCancelComprehensiveJob = async (c: Context) => {
+    const trustedRequest = requireTrustedBrowserRequest(c);
+    if (trustedRequest) {
+      return trustedRequest;
+    }
+    if (!deps.comprehensiveJobs) {
+      return c.json({ error: "Comprehensive jobs are not configured." }, 501);
+    }
+    const jobId = c.req.param("jobId") ?? "";
+    const summary = await fetchComprehensiveJobJson<ComprehensiveJobPayload>(jobId, "/job");
+    if (!(await canAccessComprehensiveJob(c, summary.job.ownerUserId))) {
+      return c.json({ error: "Not authorized for this job." }, 403);
+    }
+    const response = await fetchComprehensiveJobResponse(jobId, "/cancel", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({}),
+    });
+    const text = await response.text();
+    return c.body(text, response.status as never, {
+      "content-type": response.headers.get("content-type") ?? "application/json; charset=utf-8",
+    });
+  };
+
+  app.post("/v1/comprehensive-jobs", handleCreateComprehensiveJob);
+  app.post("/api/v1/comprehensive-jobs", handleCreateComprehensiveJob);
+  app.get("/v1/comprehensive-jobs/:jobId", handleGetComprehensiveJob);
+  app.get("/api/v1/comprehensive-jobs/:jobId", handleGetComprehensiveJob);
+  app.get("/v1/comprehensive-jobs/:jobId/logs", handleGetComprehensiveJobLogs);
+  app.get("/api/v1/comprehensive-jobs/:jobId/logs", handleGetComprehensiveJobLogs);
+  app.get("/v1/comprehensive-jobs/:jobId/artifacts", handleGetComprehensiveJobArtifacts);
+  app.get("/api/v1/comprehensive-jobs/:jobId/artifacts", handleGetComprehensiveJobArtifacts);
+  app.get("/v1/comprehensive-jobs/:jobId/artifacts/:artifactName", handleGetComprehensiveJobArtifact);
+  app.get("/api/v1/comprehensive-jobs/:jobId/artifacts/:artifactName", handleGetComprehensiveJobArtifact);
+  app.post("/v1/comprehensive-jobs/:jobId/cancel", handleCancelComprehensiveJob);
+  app.post("/api/v1/comprehensive-jobs/:jobId/cancel", handleCancelComprehensiveJob);
 
   app.get("/sessions/:sessionId/runs/:runId/stream", async (c) => {
     const trustedRequest = requireTrustedBrowserRequest(c);

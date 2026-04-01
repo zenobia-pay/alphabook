@@ -5,30 +5,66 @@ import { loadDotEnvFile } from "./lib/benchmark-env.ts";
 
 type Args = {
   prompt?: string;
+  attachJobId?: string;
   apiBaseUrl?: string;
   cookie?: string;
   sessionId?: string;
   userId?: string;
   workIds: string[];
-  mode: "semantic" | "comprehensive" | "hermes";
+  mode: "comprehensive" | "semantic";
   intensityOverride?: "normal" | "high" | "maximum";
   semanticBackend?: "alphaloop" | "context1";
-  rawEvents: boolean;
+  pollMs: number;
+  logLimit: number;
   cancelOnSigint: boolean;
 };
 
-type CurrentUserResponse = {
-  authenticated?: boolean;
-  user?: {
-    id?: string | null;
-    email?: string | null;
-    name?: string | null;
-  } | null;
+type JobSummary = {
+  id: string;
+  ownerUserId?: string | null;
+  prompt: string;
+  mode: "comprehensive" | "semantic";
+  state: string;
+  running: boolean;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  sessionId: string | null;
+  runId: string | null;
+  detail: string | null;
+  error: string | null;
+  cancelRequestedAt: string | null;
 };
 
-type StreamEvent = {
-  event: string;
-  data: Record<string, unknown>;
+type JobResponse = {
+  job: JobSummary;
+};
+
+type LogsResponse = {
+  jobId: string;
+  sources: Array<{
+    name: string;
+    lines: string[];
+  }>;
+  nextCursor: string;
+};
+
+type ArtifactResponse = {
+  artifact: {
+    name: string;
+    content: string;
+    updatedAt: string | null;
+    mimeType: string;
+  };
+};
+
+type ArtifactSummaryResponse = {
+  artifacts: Array<{
+    name: string;
+    updatedAt: string | null;
+    mimeType: string;
+    byteSize: number | null;
+  }>;
 };
 
 function usage(): never {
@@ -38,17 +74,19 @@ function usage(): never {
       "  npm run research:comprehensive -- --prompt \"Find me examples...\"",
       "",
       "Options:",
-      "  --prompt <text>              User prompt to send to the live /chat endpoint",
+      "  --prompt <text>              User prompt to send to the comprehensive job API",
+      "  --attach-job-id <id>         Inspect an existing comprehensive job",
       "  --api-base-url <url>         API base URL (default https://api.alpha-book.org)",
       "  --cookie <cookie>            Explicit alphabook_session cookie string",
       "  --session-id <uuid>          Continue an existing session",
       "  --user-id <id>               Explicit user id when auth is disabled",
       "  --work-id <id>               Scope the run to a work id (repeatable)",
-      "  --mode <mode>                semantic | comprehensive | hermes (default comprehensive)",
+      "  --mode <mode>                comprehensive | semantic (default comprehensive)",
       "  --intensity-override <lvl>   normal | high | maximum",
       "  --semantic-backend <name>    alphaloop | context1",
-      "  --raw-events                 Print every SSE payload as JSON",
-      "  --no-cancel-on-sigint        Do not try to cancel the run on Ctrl-C",
+      "  --poll-ms <ms>               Poll interval (default 3000)",
+      "  --log-limit <n>              Max log lines per poll (default 200)",
+      "  --no-cancel-on-sigint        Do not try to cancel the remote job on Ctrl-C",
       "",
       "Environment:",
       "  ALPHABOOK_COOKIE",
@@ -62,7 +100,8 @@ function parseArgs(argv: string[]): Args {
   const args: Args = {
     workIds: [],
     mode: "comprehensive",
-    rawEvents: false,
+    pollMs: 3000,
+    logLimit: 200,
     cancelOnSigint: true,
   };
 
@@ -71,6 +110,11 @@ function parseArgs(argv: string[]): Args {
     const next = argv[index + 1];
     if ((arg === "--prompt" || arg === "-p") && next) {
       args.prompt = next;
+      index += 1;
+      continue;
+    }
+    if (arg === "--attach-job-id" && next) {
+      args.attachJobId = next;
       index += 1;
       continue;
     }
@@ -99,7 +143,7 @@ function parseArgs(argv: string[]): Args {
       index += 1;
       continue;
     }
-    if (arg === "--mode" && next && (next === "semantic" || next === "comprehensive" || next === "hermes")) {
+    if (arg === "--mode" && next && (next === "comprehensive" || next === "semantic")) {
       args.mode = next;
       index += 1;
       continue;
@@ -114,8 +158,14 @@ function parseArgs(argv: string[]): Args {
       index += 1;
       continue;
     }
-    if (arg === "--raw-events") {
-      args.rawEvents = true;
+    if (arg === "--poll-ms" && next) {
+      args.pollMs = Number.parseInt(next, 10);
+      index += 1;
+      continue;
+    }
+    if (arg === "--log-limit" && next) {
+      args.logLimit = Number.parseInt(next, 10);
+      index += 1;
       continue;
     }
     if (arg === "--no-cancel-on-sigint") {
@@ -129,8 +179,14 @@ function parseArgs(argv: string[]): Args {
     usage();
   }
 
-  if (!args.prompt) {
+  if (!args.prompt && !args.attachJobId) {
     usage();
+  }
+  if (!Number.isFinite(args.pollMs) || args.pollMs < 250) {
+    throw new Error(`Invalid --poll-ms value: ${args.pollMs}`);
+  }
+  if (!Number.isFinite(args.logLimit) || args.logLimit < 1 || args.logLimit > 500) {
+    throw new Error(`Invalid --log-limit value: ${args.logLimit}`);
   }
   return args;
 }
@@ -160,68 +216,14 @@ async function resolveConfig(args: Args) {
   return { apiBaseUrl, cookie: cookie ?? null };
 }
 
-async function fetchCurrentUser(apiBaseUrl: string, cookie: string | null): Promise<CurrentUserResponse | null> {
-  if (!cookie) {
-    return null;
-  }
-  const response = await fetch(`${apiBaseUrl}/me`, {
-    headers: {
-      Cookie: cookie,
-      Origin: "https://alpha-book.org",
-      Referer: "https://alpha-book.org/",
-      "User-Agent": "Mozilla/5.0",
-      Accept: "application/json,text/plain,*/*",
-    },
-  });
-  if (!response.ok) {
-    return null;
-  }
-  return await response.json() as CurrentUserResponse;
-}
-
-function printHeader(title: string) {
-  process.stdout.write(`\n=== ${title} ===\n`);
-}
-
-function summarizeEvent(event: StreamEvent): string {
-  const data = event.data;
-  if (event.event === "session.created") {
-    return `session=${typeof data.sessionId === "string" ? data.sessionId : "unknown"}`;
-  }
-  if (event.event === "run.started") {
-    return `run=${typeof data.runId === "string" ? data.runId : "unknown"} status=running`;
-  }
-  if (event.event === "router.completed") {
-    return `router=${typeof data.type === "string" ? data.type : "unknown"}`;
-  }
-  if (event.event === "assistant.delta") {
-    const delta = typeof data.delta === "string" ? data.delta : typeof data.content === "string" ? data.content : "";
-    return delta;
-  }
-  if (event.event === "assistant.completed") {
-    return typeof data.content === "string" ? data.content : "assistant completed";
-  }
-  if (event.event === "tool.started") {
-    return `tool=${typeof data.toolName === "string" ? data.toolName : "unknown"} started`;
-  }
-  if (event.event === "tool.completed") {
-    return `tool=${typeof data.toolName === "string" ? data.toolName : "unknown"} completed`;
-  }
-  if (event.event === "tool.progress") {
-    return typeof data.message === "string" ? data.message : "tool progress";
-  }
-  if (event.event === "run.completed") {
-    return `run=${typeof data.runId === "string" ? data.runId : "unknown"} status=${typeof data.status === "string" ? data.status : "completed"}`;
-  }
-  if (event.event === "error") {
-    return typeof data.message === "string" ? data.message : JSON.stringify(data);
-  }
-  return JSON.stringify(data);
-}
-
-async function cancelRun(apiBaseUrl: string, cookie: string | null, runId: string) {
-  const response = await fetch(`${apiBaseUrl}/runs/${encodeURIComponent(runId)}/cancel`, {
-    method: "POST",
+async function apiFetch<T>(
+  apiBaseUrl: string,
+  cookie: string | null,
+  pathname: string,
+  init?: RequestInit,
+): Promise<T> {
+  const response = await fetch(`${apiBaseUrl}${pathname}`, {
+    ...init,
     headers: {
       "content-type": "application/json",
       ...(cookie ? {
@@ -231,85 +233,41 @@ async function cancelRun(apiBaseUrl: string, cookie: string | null, runId: strin
         "User-Agent": "Mozilla/5.0",
         Accept: "application/json,text/plain,*/*",
       } : {}),
+      ...(init?.headers || {}),
     },
-    body: JSON.stringify({}),
   });
+  const text = await response.text();
   if (!response.ok) {
-    throw new Error(await response.text());
+    throw new Error(`${response.status} ${response.statusText}: ${text}`);
   }
+  return text ? JSON.parse(text) as T : {} as T;
 }
 
-async function streamChat(
+function printHeader(title: string) {
+  process.stdout.write(`\n=== ${title} ===\n`);
+}
+
+function summarizeJob(job: JobSummary): string {
+  return [
+    `job=${job.id}`,
+    `mode=${job.mode}`,
+    `state=${job.state}`,
+    job.sessionId ? `session=${job.sessionId}` : null,
+    job.runId ? `run=${job.runId}` : null,
+  ].filter(Boolean).join(" ");
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function createJob(
+  args: Args,
   apiBaseUrl: string,
-  payload: Record<string, unknown>,
   cookie: string | null,
-  onEvent: (event: StreamEvent) => Promise<void> | void,
-) {
-  const response = await fetch(`${apiBaseUrl}/chat`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      ...(cookie ? {
-        Cookie: cookie,
-        Origin: "https://alpha-book.org",
-        Referer: "https://alpha-book.org/",
-        "User-Agent": "Mozilla/5.0",
-        Accept: "text/event-stream,application/json,text/plain,*/*",
-      } : {}),
-    },
-    body: JSON.stringify(payload),
-  });
-  if (!response.ok) {
-    throw new Error(await response.text());
-  }
-  const reader = response.body?.getReader();
-  if (!reader) {
-    throw new Error("Response stream was not available.");
-  }
-
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) {
-      break;
-    }
-    buffer += decoder.decode(value, { stream: true });
-    let boundary = buffer.indexOf("\n\n");
-    while (boundary >= 0) {
-      const rawEvent = buffer.slice(0, boundary);
-      buffer = buffer.slice(boundary + 2);
-      boundary = buffer.indexOf("\n\n");
-
-      const eventName = rawEvent
-        .split("\n")
-        .find((line) => line.startsWith("event:"))
-        ?.replace("event:", "")
-        .trim();
-      const dataLine = rawEvent
-        .split("\n")
-        .find((line) => line.startsWith("data:"))
-        ?.replace("data:", "")
-        .trim();
-      if (!eventName || !dataLine) {
-        continue;
-      }
-      await onEvent({
-        event: eventName,
-        data: JSON.parse(dataLine) as Record<string, unknown>,
-      });
-    }
-  }
-}
-
-async function main() {
-  const args = parseArgs(process.argv.slice(2));
-  const config = await resolveConfig(args);
-  const currentUser = await fetchCurrentUser(config.apiBaseUrl, config.cookie);
-
+): Promise<JobSummary> {
   const payload: Record<string, unknown> = {
-    message: args.prompt,
+    prompt: args.prompt,
     mode: args.mode,
   };
   if (args.sessionId) {
@@ -327,24 +285,145 @@ async function main() {
   if (args.semanticBackend) {
     payload.semanticBackend = args.semanticBackend;
   }
+  const response = await apiFetch<JobResponse>(apiBaseUrl, cookie, "/v1/comprehensive-jobs", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  return response.job;
+}
 
-  printHeader("Comprehensive Run Started");
-  process.stdout.write(`api=${config.apiBaseUrl}\n`);
-  process.stdout.write(`mode=${args.mode}\n`);
-  if (currentUser?.authenticated) {
-    process.stdout.write(`user=${currentUser.user?.email || currentUser.user?.id || "authenticated"}\n`);
-  } else if (payload.userId) {
-    process.stdout.write(`user=${String(payload.userId)}\n`);
-  } else {
-    process.stdout.write("user=anonymous\n");
+async function fetchJob(
+  apiBaseUrl: string,
+  cookie: string | null,
+  jobId: string,
+): Promise<JobSummary> {
+  const response = await apiFetch<JobResponse>(apiBaseUrl, cookie, `/v1/comprehensive-jobs/${encodeURIComponent(jobId)}`);
+  return response.job;
+}
+
+async function fetchLogs(
+  apiBaseUrl: string,
+  cookie: string | null,
+  jobId: string,
+  cursor: string | undefined,
+  limit: number,
+): Promise<LogsResponse> {
+  return apiFetch<LogsResponse>(
+    apiBaseUrl,
+    cookie,
+    `/v1/comprehensive-jobs/${encodeURIComponent(jobId)}/logs?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+  );
+}
+
+async function fetchArtifacts(
+  apiBaseUrl: string,
+  cookie: string | null,
+  jobId: string,
+): Promise<ArtifactSummaryResponse["artifacts"]> {
+  try {
+    const response = await apiFetch<ArtifactSummaryResponse>(
+      apiBaseUrl,
+      cookie,
+      `/v1/comprehensive-jobs/${encodeURIComponent(jobId)}/artifacts`,
+    );
+    return response.artifacts;
+  } catch {
+    return [];
   }
+}
 
-  let activeRunId = "";
-  let activeSessionId = args.sessionId ?? "";
+async function fetchArtifact(
+  apiBaseUrl: string,
+  cookie: string | null,
+  jobId: string,
+  artifactName: string,
+): Promise<string | null> {
+  try {
+    const response = await apiFetch<ArtifactResponse>(
+      apiBaseUrl,
+      cookie,
+      `/v1/comprehensive-jobs/${encodeURIComponent(jobId)}/artifacts/${encodeURIComponent(artifactName)}`,
+    );
+    return response.artifact.content;
+  } catch {
+    return null;
+  }
+}
+
+async function cancelJob(
+  apiBaseUrl: string,
+  cookie: string | null,
+  jobId: string,
+) {
+  await apiFetch(apiBaseUrl, cookie, `/v1/comprehensive-jobs/${encodeURIComponent(jobId)}/cancel`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+async function waitForCompletion(
+  args: Args,
+  apiBaseUrl: string,
+  cookie: string | null,
+  jobId: string,
+): Promise<JobSummary> {
+  let cursor: string | undefined;
+  while (true) {
+    const logs = await fetchLogs(apiBaseUrl, cookie, jobId, cursor, args.logLimit);
+    for (const source of logs.sources) {
+      for (const line of source.lines) {
+        process.stdout.write(`[${source.name}] ${line}\n`);
+      }
+    }
+    cursor = logs.nextCursor;
+    const job = await fetchJob(apiBaseUrl, cookie, jobId);
+    if (!job.running) {
+      return job;
+    }
+    await sleep(args.pollMs);
+  }
+}
+
+async function waitForBriefing(
+  apiBaseUrl: string,
+  cookie: string | null,
+  jobId: string,
+): Promise<string | null> {
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    const artifacts = await fetchArtifacts(apiBaseUrl, cookie, jobId);
+    const briefing = artifacts.find((artifact) => artifact.name.endsWith(".md"));
+    if (briefing) {
+      return await fetchArtifact(apiBaseUrl, cookie, jobId, briefing.name);
+    }
+    await sleep(1500);
+  }
+  return null;
+}
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+  const config = await resolveConfig(args);
+
+  const startedJob = args.attachJobId
+    ? await fetchJob(config.apiBaseUrl, config.cookie, args.attachJobId)
+    : await createJob(args, config.apiBaseUrl, config.cookie);
+  printHeader("Comprehensive Job Started");
+  process.stdout.write(`${summarizeJob(startedJob)}\n`);
+  if (startedJob.prompt) {
+    process.stdout.write(`prompt=${startedJob.prompt}\n`);
+  }
+  process.stdout.write("streaming logs...\n");
+
+  let activeJobId = startedJob.id;
   let cancelRequested = false;
-
   const onSigint = async () => {
-    if (!args.cancelOnSigint || !activeRunId) {
+    if (!activeJobId) {
+      process.exit(130);
+      return;
+    }
+    if (!args.cancelOnSigint) {
+      process.stderr.write(`\nLeaving comprehensive job ${activeJobId} running.\n`);
       process.exit(130);
       return;
     }
@@ -352,11 +431,11 @@ async function main() {
       return;
     }
     cancelRequested = true;
-    process.stderr.write(`\nCancelling run ${activeRunId}...\n`);
+    process.stderr.write(`\nCancelling comprehensive job ${activeJobId}...\n`);
     try {
-      await cancelRun(config.apiBaseUrl, config.cookie, activeRunId);
+      await cancelJob(config.apiBaseUrl, config.cookie, activeJobId);
     } catch (error) {
-      process.stderr.write(`Failed to cancel run: ${error instanceof Error ? error.message : String(error)}\n`);
+      process.stderr.write(`Failed to cancel remote job: ${error instanceof Error ? error.message : String(error)}\n`);
     }
     process.exit(130);
   };
@@ -364,38 +443,26 @@ async function main() {
     void onSigint();
   });
 
-  await streamChat(config.apiBaseUrl, payload, config.cookie, async (event) => {
-    if (event.event === "session.created" && typeof event.data.sessionId === "string") {
-      activeSessionId = event.data.sessionId;
-    }
-    if (event.event === "run.started" && typeof event.data.runId === "string") {
-      activeRunId = event.data.runId;
-    }
-    if (args.rawEvents) {
-      process.stdout.write(`${JSON.stringify(event)}\n`);
-      return;
-    }
-    const line = summarizeEvent(event);
-    if (!line) {
-      return;
-    }
-    if (event.event === "assistant.delta") {
-      process.stdout.write(line);
-      return;
-    }
-    if (event.event === "assistant.completed") {
-      process.stdout.write(`\n[assistant.completed] ${line}\n`);
-      return;
-    }
-    process.stdout.write(`[${event.event}] ${line}\n`);
-  });
+  const finishedJob = await waitForCompletion(args, config.apiBaseUrl, config.cookie, activeJobId);
+  activeJobId = "";
 
-  printHeader("Comprehensive Run Finished");
-  if (activeSessionId) {
-    process.stdout.write(`session=${activeSessionId}\n`);
+  printHeader("Comprehensive Job Finished");
+  process.stdout.write(`${summarizeJob(finishedJob)}\n`);
+  if (finishedJob.detail) {
+    process.stdout.write(`detail=${finishedJob.detail}\n`);
   }
-  if (activeRunId) {
-    process.stdout.write(`run=${activeRunId}\n`);
+  if (finishedJob.error) {
+    process.stdout.write(`error=${finishedJob.error}\n`);
+  }
+
+  const briefing = await waitForBriefing(config.apiBaseUrl, config.cookie, finishedJob.id);
+  if (briefing) {
+    printHeader("Artifact");
+    process.stdout.write(`${briefing.trim()}\n`);
+  }
+
+  if (finishedJob.state !== "completed") {
+    process.exit(1);
   }
 }
 

@@ -83,3 +83,11 @@ index_name = "alphabook-semantic"
 
 [ai]
 binding = "AI"
+
+[[durable_objects.bindings]]
+name = "COMPREHENSIVE_JOB_DO"
+class_name = "ComprehensiveJobDurableObject"
+
+[[migrations]]
+tag = "comprehensive-job-do-v1"
+new_sqlite_classes = ["ComprehensiveJobDurableObject"]

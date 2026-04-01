@@ -5,8 +5,9 @@ import {
   buildSynthesizerPrompt,
   getImplementationConfig,
 } from "@alphabook/implementations";
+import type { ChatRequest } from "@alphabook/shared";
 
-import { createApp, reapExpiredRuntimeInstances, reapStaleRuns, type ResearchTaskQueueMessage } from "./app";
+import { createApp, reapExpiredRuntimeInstances, reapStaleRuns, runOrchestrator, type ActiveRunState, type AppDeps, type ResearchTaskQueueMessage } from "./app";
 import { WorkOSAuth } from "./auth";
 import { createBillingService } from "./billing";
 import { GoogleAIEmbedder, OpenAIEmbedder } from "./embeddings";
@@ -105,6 +106,7 @@ export interface Env {
   INGEST_QUEUE: Queue;
   JOBS_QUEUE: Queue;
   VECTOR_INDEX?: VectorizeIndex;
+  COMPREHENSIVE_JOB_DO: DurableObjectNamespace;
 }
 
 async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -251,20 +253,28 @@ function resolveVectorIndex(env: Env): VectorSearchIndex | null {
   return null;
 }
 
-function buildFetchHandler(env: Env) {
+function buildImplementationConfig(env: Env) {
+  const base = getImplementationConfig(env.IMPLEMENTATION_ID);
+  return {
+    ...base,
+    siteOrigin: env.SITE_ORIGIN ?? base.siteOrigin,
+    apiOrigin: env.API_ORIGIN ?? base.apiOrigin,
+  };
+}
+
+function buildQueueNames(env: Env, implementationId: string) {
+  return {
+    ingestName: env.QUEUE_INGEST_NAME ?? `${implementationId}-ingest`,
+    jobsName: env.QUEUE_JOBS_NAME ?? `${implementationId}-jobs`,
+  };
+}
+
+export function buildAppDeps(env: Env): AppDeps {
   if (!env.OPENAI_API_KEY) {
     throw new Error("OPENAI_API_KEY is required.");
   }
-  const implementation = (() => {
-    const base = getImplementationConfig(env.IMPLEMENTATION_ID);
-    return {
-      ...base,
-      siteOrigin: env.SITE_ORIGIN ?? base.siteOrigin,
-      apiOrigin: env.API_ORIGIN ?? base.apiOrigin,
-    };
-  })();
-  const ingestQueueName = env.QUEUE_INGEST_NAME ?? `${implementation.id}-ingest`;
-  const jobsQueueName = env.QUEUE_JOBS_NAME ?? `${implementation.id}-jobs`;
+  const implementation = buildImplementationConfig(env);
+  const queueNames = buildQueueNames(env, implementation.id);
   const db = createD1Db(env.APP_DB);
   const blobStore = new CloudflareR2Store(env.CORPUS_BUCKET);
   const store = new D1AppStore(db, {
@@ -339,7 +349,7 @@ function buildFetchHandler(env: Env) {
     buildSynthesizerPrompt(implementation),
   );
 
-  const app = createApp({
+  return {
     store,
     billing,
     router,
@@ -368,8 +378,8 @@ function buildFetchHandler(env: Env) {
           )
         : undefined,
     queues: {
-      ingestName: ingestQueueName,
-      jobsName: jobsQueueName,
+      ingestName: queueNames.ingestName,
+      jobsName: queueNames.jobsName,
     },
     adminAllowedEmail: env.ADMIN_ALLOWED_EMAIL,
     openAIApiKey: env.OPENAI_API_KEY,
@@ -413,8 +423,12 @@ function buildFetchHandler(env: Env) {
       defaultUserName: implementation.defaultUserName,
       defaultReaderName: implementation.defaultReaderName,
     },
-  });
+    comprehensiveJobs: env.COMPREHENSIVE_JOB_DO,
+  };
+}
 
+function buildFetchHandler(env: Env) {
+  const app = createApp(buildAppDeps(env));
   return app.fetch;
 }
 
@@ -725,6 +739,390 @@ async function processResearchTaskMessage(env: Env, message: ResearchTaskQueueMe
       leaseOwner,
       leaseExpiresAt: null,
     });
+  }
+}
+
+type ComprehensiveJobRecord = {
+  id: string;
+  ownerUserId: string;
+  prompt: string;
+  mode: "comprehensive" | "semantic";
+  chatRequest: ChatRequest;
+  state: "queued" | "running" | "completed" | "failed" | "timed_out" | "cancelling" | "cancelled";
+  running: boolean;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  sessionId: string | null;
+  runId: string | null;
+  detail: string | null;
+  error: string | null;
+  cancelRequestedAt: string | null;
+  lastEventAt: string | null;
+};
+
+type ComprehensiveJobLogEntry = {
+  seq: number;
+  createdAt: string;
+  event: string;
+  line: string;
+  data: Record<string, unknown>;
+};
+
+function summarizeComprehensiveJobEvent(event: string, data: Record<string, unknown>) {
+  switch (event) {
+    case "session.created":
+      return `session=${typeof data.sessionId === "string" ? data.sessionId : "unknown"}`;
+    case "run.started":
+      return `run=${typeof data.runId === "string" ? data.runId : "unknown"} status=running`;
+    case "assistant.plan":
+      return typeof data.text === "string" ? data.text : "assistant planned the job";
+    case "tool.started":
+      return `tool=${typeof data.toolName === "string" ? data.toolName : "unknown"} started`;
+    case "tool.progress":
+      return typeof data.text === "string" ? data.text : "tool progress";
+    case "tool.completed":
+      return `tool=${typeof data.toolName === "string" ? data.toolName : "unknown"} completed`;
+    case "assistant.completed":
+      return typeof data.content === "string" ? data.content : "assistant completed";
+    case "run.completed":
+      return `run=${typeof data.runId === "string" ? data.runId : "unknown"} status=${typeof data.status === "string" ? data.status : "completed"}`;
+    case "error":
+      return typeof data.message === "string" ? data.message : "job failed";
+    default:
+      return JSON.stringify(data);
+  }
+}
+
+function isTextArtifact(filename: string, mimeType: string) {
+  return mimeType.startsWith("text/") || mimeType.includes("json") || /\.(md|txt|json|log)$/iu.test(filename);
+}
+
+function collectRuntimeIdsFromRunEvents(runEvents: Array<{ runtimeId?: string | null }>) {
+  const runtimeIds = new Set<string>();
+  for (const runEvent of runEvents) {
+    if (typeof runEvent.runtimeId === "string" && runEvent.runtimeId.length > 0) {
+      runtimeIds.add(runEvent.runtimeId);
+    }
+  }
+  return runtimeIds;
+}
+
+function artifactBelongsToRun(
+  artifact: { runtimeId: string | null; metadata: Record<string, unknown> },
+  runId: string,
+  runtimeIdSet: Set<string>,
+) {
+  if (typeof artifact.runtimeId === "string" && artifact.runtimeId.length > 0) {
+    return runtimeIdSet.has(artifact.runtimeId);
+  }
+  return typeof artifact.metadata.runId === "string" && artifact.metadata.runId === runId;
+}
+
+export class ComprehensiveJobDurableObject {
+  private executionPromise: Promise<void> | null = null;
+  private readonly activeRuns = new Map<string, ActiveRunState>();
+
+  constructor(
+    private readonly state: DurableObjectState,
+    private readonly env: Env,
+  ) {}
+
+  private async getJob() {
+    return await this.state.storage.get<ComprehensiveJobRecord>("job");
+  }
+
+  private async putJob(job: ComprehensiveJobRecord) {
+    await this.state.storage.put("job", job);
+    return job;
+  }
+
+  private async getLogs() {
+    return (await this.state.storage.get<ComprehensiveJobLogEntry[]>("logs")) ?? [];
+  }
+
+  private async appendLog(event: string, data: Record<string, unknown>) {
+    const logs = await this.getLogs();
+    const entry: ComprehensiveJobLogEntry = {
+      seq: logs.length,
+      createdAt: new Date().toISOString(),
+      event,
+      line: summarizeComprehensiveJobEvent(event, data),
+      data,
+    };
+    logs.push(entry);
+    await this.state.storage.put("logs", logs.slice(-5_000));
+  }
+
+  private async executeJob() {
+    if (this.executionPromise) {
+      return this.executionPromise;
+    }
+    this.executionPromise = (async () => {
+      const existingJob = await this.getJob();
+      if (!existingJob) {
+        return;
+      }
+      await this.putJob({
+        ...existingJob,
+        state: "running",
+        running: true,
+        startedAt: existingJob.startedAt ?? new Date().toISOString(),
+        detail: "Starting comprehensive run.",
+      });
+      try {
+        const deps = buildAppDeps(this.env);
+        await runOrchestrator(
+          deps,
+          new Request("https://comprehensive-job.internal/run"),
+          existingJob.chatRequest,
+          async (event, data) => {
+            await this.appendLog(event, data);
+            const current = await this.getJob();
+            if (!current) {
+              return;
+            }
+            const next: ComprehensiveJobRecord = {
+              ...current,
+              lastEventAt: new Date().toISOString(),
+            };
+            if (event === "session.created" && typeof data.sessionId === "string") {
+              next.sessionId = data.sessionId;
+            }
+            if (event === "run.started" && typeof data.runId === "string") {
+              next.runId = data.runId;
+            }
+            if (event === "assistant.completed" && typeof data.content === "string") {
+              next.detail = data.content.slice(0, 500);
+            }
+            if (event === "tool.progress" && typeof data.text === "string") {
+              next.detail = data.text.slice(0, 500);
+            }
+            if (event === "run.completed") {
+              const status = data.status === "completed" || data.status === "failed" || data.status === "timed_out"
+                ? data.status
+                : "failed";
+              next.state = status;
+              next.running = false;
+              next.finishedAt = new Date().toISOString();
+              next.error = typeof data.error === "string" ? data.error : null;
+              next.detail = typeof data.error === "string"
+                ? data.error
+                : typeof next.detail === "string" && next.detail.trim().length > 0
+                  ? next.detail
+                  : summarizeComprehensiveJobEvent(event, data);
+            }
+            await this.putJob(next);
+          },
+          this.activeRuns,
+        );
+      } catch (error) {
+        const current = await this.getJob();
+        if (current) {
+          await this.putJob({
+            ...current,
+            state: current.cancelRequestedAt ? "cancelled" : "failed",
+            running: false,
+            finishedAt: new Date().toISOString(),
+            error: error instanceof Error ? error.message : String(error),
+            detail: error instanceof Error ? error.message : String(error),
+          });
+          await this.appendLog("error", {
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
+      } finally {
+        this.executionPromise = null;
+      }
+    })();
+    return this.executionPromise;
+  }
+
+  private async cancelJob() {
+    const job = await this.getJob();
+    if (!job) {
+      return null;
+    }
+    const nextState: ComprehensiveJobRecord = {
+      ...job,
+      state: job.running ? "cancelling" : "cancelled",
+      cancelRequestedAt: job.cancelRequestedAt ?? new Date().toISOString(),
+      detail: "Cancellation requested.",
+    };
+    await this.putJob(nextState);
+    await this.appendLog("job.cancel_requested", {
+      runId: job.runId,
+      sessionId: job.sessionId,
+    });
+    if (job.runId) {
+      const activeRun = this.activeRuns.get(job.runId);
+      if (activeRun) {
+        activeRun.cancelRequested = true;
+      }
+      try {
+        const deps = buildAppDeps(this.env);
+        const run = await deps.store.getRun(job.runId);
+        const session = job.sessionId ? await deps.store.getSession(job.sessionId) : null;
+        if (run && session) {
+          const [toolCalls, runEvents] = await Promise.all([
+            deps.store.listToolCalls(job.runId),
+            deps.store.listRunEvents(job.runId),
+          ]);
+          const runtimeIds = collectRuntimeIdsFromRunEvents(runEvents);
+          await Promise.all(
+            Array.from(runtimeIds).map((runtimeId) =>
+              deps.runtimeGateway.cancelWorkspaceTask?.({ runtimeId }).catch(() => {}),
+            ),
+          );
+          await Promise.all(
+            toolCalls
+              .filter((toolCall) => toolCall.status === "running" || toolCall.status === "queued")
+              .map((toolCall) => deps.store.finishToolCall(toolCall.id, "failed", {
+                ok: false,
+                error: "Run cancelled by comprehensive job API.",
+              })),
+          );
+          await deps.store.updateRun(job.runId, {
+            status: "failed",
+            completedAt: new Date().toISOString(),
+          });
+        }
+      } catch {
+        // Best effort cancellation. The live run loop also observes cancelRequested.
+      }
+    }
+    return await this.getJob();
+  }
+
+  private async listArtifacts(job: ComprehensiveJobRecord) {
+    if (!job.sessionId || !job.runId) {
+      return [];
+    }
+    const deps = buildAppDeps(this.env);
+    const [artifacts, runEvents] = await Promise.all([
+      deps.store.listArtifacts(job.sessionId),
+      deps.store.listRunEvents(job.runId),
+    ]);
+    const runtimeIds = collectRuntimeIdsFromRunEvents(runEvents);
+    return artifacts
+      .filter((artifact) => artifactBelongsToRun(artifact, job.runId!, runtimeIds))
+      .map((artifact) => ({
+        name: artifact.filename,
+        updatedAt: artifact.createdAt,
+        mimeType: artifact.mimeType,
+        byteSize: artifact.byteSize ?? null,
+      }));
+  }
+
+  async fetch(request: Request) {
+    const url = new URL(request.url);
+    if (request.method === "POST" && url.pathname === "/internal/start") {
+      const payload = await request.json() as {
+        jobId: string;
+        ownerUserId: string;
+        chatRequest: ChatRequest;
+      };
+      const existing = await this.getJob();
+      if (existing) {
+        return Response.json({ error: "Job already exists." }, { status: 409 });
+      }
+      const job: ComprehensiveJobRecord = {
+        id: payload.jobId,
+        ownerUserId: payload.ownerUserId,
+        prompt: payload.chatRequest.message,
+        mode: payload.chatRequest.mode === "semantic" ? "semantic" : "comprehensive",
+        chatRequest: payload.chatRequest,
+        state: "queued",
+        running: true,
+        createdAt: new Date().toISOString(),
+        startedAt: null,
+        finishedAt: null,
+        sessionId: payload.chatRequest.sessionId ?? null,
+        runId: null,
+        detail: "Queued comprehensive run.",
+        error: null,
+        cancelRequestedAt: null,
+        lastEventAt: null,
+      };
+      await this.putJob(job);
+      this.state.waitUntil(this.executeJob());
+      return Response.json({ job });
+    }
+    if (request.method === "GET" && url.pathname === "/job") {
+      const job = await this.getJob();
+      if (!job) {
+        return Response.json({ error: "Job not found." }, { status: 404 });
+      }
+      return Response.json({ job });
+    }
+    if (request.method === "GET" && url.pathname === "/logs") {
+      const job = await this.getJob();
+      if (!job) {
+        return Response.json({ error: "Job not found." }, { status: 404 });
+      }
+      const logs = await this.getLogs();
+      const cursor = Math.max(0, Number.parseInt(url.searchParams.get("cursor") ?? "0", 10) || 0);
+      const limit = Math.min(500, Math.max(1, Number.parseInt(url.searchParams.get("limit") ?? "200", 10) || 200));
+      const nextSlice = logs.slice(cursor, cursor + limit);
+      return Response.json({
+        jobId: job.id,
+        sources: [{
+          name: "events",
+          lines: nextSlice.map((entry) => entry.line),
+        }],
+        nextCursor: String(cursor + nextSlice.length),
+      });
+    }
+    if (request.method === "GET" && url.pathname === "/artifacts") {
+      const job = await this.getJob();
+      if (!job) {
+        return Response.json({ error: "Job not found." }, { status: 404 });
+      }
+      const artifacts = await this.listArtifacts(job);
+      return Response.json({ artifacts });
+    }
+    if (request.method === "GET" && url.pathname.startsWith("/artifacts/")) {
+      const job = await this.getJob();
+      if (!job) {
+        return Response.json({ error: "Job not found." }, { status: 404 });
+      }
+      if (!job.sessionId || !job.runId) {
+        return Response.json({ error: "Job artifacts are not ready yet." }, { status: 404 });
+      }
+      const targetName = decodeURIComponent(url.pathname.slice("/artifacts/".length));
+      const deps = buildAppDeps(this.env);
+      const [artifacts, runEvents] = await Promise.all([
+        deps.store.listArtifacts(job.sessionId),
+        deps.store.listRunEvents(job.runId),
+      ]);
+      const runtimeIds = collectRuntimeIdsFromRunEvents(runEvents);
+      const artifact = artifacts.find((candidate) =>
+        candidate.filename === targetName && artifactBelongsToRun(candidate, job.runId!, runtimeIds)
+      );
+      if (!artifact) {
+        return Response.json({ error: "Artifact not found." }, { status: 404 });
+      }
+      if (!isTextArtifact(artifact.filename, artifact.mimeType)) {
+        return Response.json({ error: "Artifact is not a text artifact." }, { status: 415 });
+      }
+      const content = await deps.blobStore.getText(artifact.r2Key);
+      return Response.json({
+        artifact: {
+          name: artifact.filename,
+          content: content ?? "",
+          updatedAt: artifact.createdAt,
+          mimeType: artifact.mimeType,
+        },
+      });
+    }
+    if (request.method === "POST" && url.pathname === "/cancel") {
+      const job = await this.cancelJob();
+      if (!job) {
+        return Response.json({ error: "Job not found." }, { status: 404 });
+      }
+      return Response.json({ job });
+    }
+    return Response.json({ error: "Not found." }, { status: 404 });
   }
 }
 
