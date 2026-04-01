@@ -107,6 +107,9 @@ Analysis requirements:
 - The briefing should read like a polished research memo, not a mechanical report.
 - It should make clear interpretive points, not just dump themes or counts.
 - Prefer findings that are memorable, surprising, or sharply representative.
+- For the briefing and synthesis stage, use your own model judgment to select evidence and write the prose.
+- Do not generate a deterministic script whose job is to mechanically write the final briefing for you.
+- Terminal tools are for retrieval, extraction, filtering, inspection, and artifact assembly; the interpretive briefing itself should be authored by the agent from the evidence.
 - In the main findings/themes section, do not only summarize themes abstractly.
 - For each recurrent way authors handle the topic in the user request that you identify, include:
   - a claim about what the dataset suggests
