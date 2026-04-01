@@ -20,6 +20,7 @@
     "benchmark:grief": "node --import tsx packages/tooling/scripts/run-grief-benchmark.ts",
     "benchmark:analyze-model-selection": "node --import tsx packages/tooling/scripts/analyze-model-selection.ts",
     "benchmark:real-ir": "node --import tsx packages/tooling/scripts/run-real-ir-benchmark.ts",
+    "research:comprehensive": "node --import tsx packages/tooling/scripts/run-comprehensive-cli.ts",
     "research:gutenberg-grief-semantic-scan": "node --import tsx packages/tooling/scripts/run-gutenberg-grief-semantic-scan.ts",
     "research:gutenberg-agentic-search": "node --import tsx packages/tooling/scripts/run-gutenberg-agentic-search.ts",
     "research:search-plan": "node --import tsx packages/tooling/scripts/build-corpus-research-search-plan.ts",
