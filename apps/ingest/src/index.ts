@@ -86,6 +86,7 @@ interface MirrorBackfillOptions {
 
 interface LocalArtifactPrepOptions {
   startAfterId?: string | null;
+  idsPath?: string | null;
   limit: number;
   outputDir: string;
   concurrency?: number;
@@ -2784,10 +2785,21 @@ async function prepareMirrorArtifactsLocallyBatch(options: LocalArtifactPrepOpti
   }
   const configuredMirrorRoot = mirrorRoot;
 
-  const allIds = await listMirrorIds(configuredMirrorRoot);
-  const firstGreaterIndex = options.startAfterId ? allIds.findIndex((id) => Number(id) > Number(options.startAfterId)) : -1;
-  const startIndex = options.startAfterId ? (firstGreaterIndex >= 0 ? firstGreaterIndex : allIds.length) : 0;
-  const selectedIds = allIds.slice(startIndex, startIndex + options.limit);
+  let selectedIds: string[];
+  if (options.idsPath) {
+    const explicitIds = Array.from(new Set(
+      (await readFile(options.idsPath, "utf8"))
+        .split(/\r?\n/)
+        .map((value) => value.trim())
+        .filter((value) => /^\d+$/.test(value)),
+    )).sort((left, right) => Number(left) - Number(right));
+    selectedIds = explicitIds.slice(0, options.limit);
+  } else {
+    const allIds = await listMirrorIds(configuredMirrorRoot);
+    const firstGreaterIndex = options.startAfterId ? allIds.findIndex((id) => Number(id) > Number(options.startAfterId)) : -1;
+    const startIndex = options.startAfterId ? (firstGreaterIndex >= 0 ? firstGreaterIndex : allIds.length) : 0;
+    selectedIds = allIds.slice(startIndex, startIndex + options.limit);
+  }
   const results: LocalPreparedBookManifest[] = [];
   const errors: Array<{ gutenbergId: string; error: string }> = [];
   const concurrency = Math.max(1, Number(options.concurrency ?? process.env.LOCAL_ARTIFACT_PREP_CONCURRENCY ?? "4"));
@@ -2819,6 +2831,7 @@ async function prepareMirrorArtifactsLocallyBatch(options: LocalArtifactPrepOpti
     mirrorRoot: configuredMirrorRoot,
     outputDir: resolve(options.outputDir),
     startAfterId: options.startAfterId ?? null,
+    idsPath: options.idsPath ? resolve(options.idsPath) : null,
     processed: results.length + errors.length,
     prepared: results.length,
     failed: errors.length,
@@ -5100,9 +5113,10 @@ async function main() {
     }
 
     if (command === "prepare-local-gutenberg-artifacts") {
-      const [startAfterId, outputDir, limitValue, concurrencyValue] = args;
+      const [startAfterId, outputDir, limitValue, concurrencyValue, idsPathValue] = args;
       const result = await prepareMirrorArtifactsLocallyBatch({
         startAfterId: startAfterId && startAfterId !== "-" ? startAfterId : null,
+        idsPath: idsPathValue && idsPathValue !== "-" ? resolve(idsPathValue) : null,
         outputDir: outputDir && outputDir !== "-"
           ? resolve(outputDir)
           : resolve(process.cwd(), ".alphabook", "local-gutenberg-artifacts"),
@@ -5345,7 +5359,7 @@ async function main() {
     console.log("  google-embedding-batch-status <batchJobName|submissionPath>");
     console.log("  download-google-embedding-batch-output <submissionPath> [outputDir]");
     console.log("  prepare-openai-embedding-batch [startAfterId|-] [targetCostUsd|-] [outputDir|-] [maxFileBytes|-] [limitBooks|-]");
-    console.log("  prepare-local-gutenberg-artifacts [startAfterId|-] [outputDir|-] [limitBooks|-] [concurrency|-]");
+    console.log("  prepare-local-gutenberg-artifacts [startAfterId|-] [outputDir|-] [limitBooks|-] [concurrency|-] [idsPath|-]");
     console.log("  submit-openai-embedding-batch <manifestPath>");
     console.log("  openai-embedding-batch-status <batchId|submissionPath>");
     console.log("  download-openai-embedding-batch-output <submissionPath> [outputDir]");
