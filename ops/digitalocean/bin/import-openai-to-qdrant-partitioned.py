@@ -51,7 +51,16 @@ state = {
     "worker_count": WORKER_COUNT,
 }
 if STATE_PATH.exists():
-    state = json.loads(STATE_PATH.read_text())
+    try:
+        state = json.loads(STATE_PATH.read_text())
+    except Exception:
+        state = {
+            "done": [],
+            "failed": {},
+            "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "worker_index": WORKER_INDEX,
+            "worker_count": WORKER_COUNT,
+        }
 done = {int(value) for value in state.get("done", [])}
 failed = {str(key): value for key, value in state.get("failed", {}).items()}
 
@@ -59,7 +68,9 @@ failed = {str(key): value for key, value in state.get("failed", {}).items()}
 def save_state() -> None:
     state["done"] = sorted(done)
     state["failed"] = failed
-    STATE_PATH.write_text(json.dumps(state, indent=2))
+    tmp_path = STATE_PATH.with_suffix(STATE_PATH.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(state, indent=2))
+    tmp_path.replace(STATE_PATH)
 
 
 def log(message: str) -> None:
@@ -251,6 +262,8 @@ def import_part(part: int, job: dict) -> None:
     done.add(part)
     clear_failure(part)
     save_state()
+    if output_path.exists():
+        output_path.unlink()
     log(f"imported part {part} upserted={upserted}")
 
 
