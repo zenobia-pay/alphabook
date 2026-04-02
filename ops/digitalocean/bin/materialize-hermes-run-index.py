@@ -42,6 +42,16 @@ def stat_payload(path: Path) -> dict[str, Any] | None:
 
 
 def infer_inner_run_dir(run_dir: Path) -> Path | None:
+    explicit_path = run_dir / "inner-run-dir.txt"
+    try:
+        value = explicit_path.read_text().strip()
+    except Exception:
+        value = ""
+    if value:
+        candidate = Path(value)
+        if candidate.exists():
+            return candidate
+
     regex = re.compile(r"/srv/alphabook/logs/corpus-research/[A-Za-z0-9._-]+")
     candidate_files = [
         run_dir / "status.json",
@@ -67,7 +77,7 @@ def infer_inner_run_dir(run_dir: Path) -> Path | None:
 
 
 def collect_session_info(run_dir: Path) -> dict[str, Any]:
-    hermes_home = run_dir / "hermes-home"
+    hermes_home = (run_dir / "hermes-home").resolve() if (run_dir / "hermes-home").exists() else run_dir / "hermes-home"
     sessions_dir = hermes_home / ".hermes" / "sessions"
     session_files = sorted(sessions_dir.glob("session_*.json"), key=lambda p: p.stat().st_mtime)
     payload: dict[str, Any] = {
@@ -194,8 +204,10 @@ def main() -> None:
             "stdout_log": stat_payload(run_dir / "hermes.stdout.log"),
             "stderr_log": stat_payload(run_dir / "hermes.stderr.log"),
             "heartbeat_log": stat_payload(run_dir / "heartbeat.log"),
+            "process_log": stat_payload(run_dir / "process.log"),
             "profile_jsonl": stat_payload(run_dir / "profile.jsonl"),
             "command_snapshots_jsonl": stat_payload(run_dir / "command-snapshots.jsonl"),
+            "inner_run_file": stat_payload(run_dir / "inner-run-dir.txt"),
         },
         "inner_artifacts": collect_inner_artifacts(inner_run_dir),
     }

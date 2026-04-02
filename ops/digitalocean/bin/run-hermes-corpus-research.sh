@@ -121,20 +121,47 @@ PY
 run_dir="$RUN_ROOT/$timestamp-$run_id"
 mkdir -p "$run_dir"
 job_id="$(basename "$run_dir")"
-hermes_home="$run_dir/hermes-home"
-mkdir -p "$hermes_home/.hermes/sessions"
+state_dir="$run_dir/state"
+attempts_dir="$run_dir/attempts"
+attempt_id="attempt-0001"
+attempt_dir="$attempts_dir/$attempt_id"
+logs_dir="$attempt_dir/logs"
+runtime_dir="$attempt_dir/runtime"
+hermes_home="$attempt_dir/hermes-home"
+mkdir -p "$state_dir" "$logs_dir" "$runtime_dir" "$hermes_home/.hermes/sessions"
 
-prompt_file="$run_dir/prompt.txt"
-launcher_log="$run_dir/launcher.log"
-stdout_log="$run_dir/hermes.stdout.log"
-stderr_log="$run_dir/hermes.stderr.log"
-heartbeat_log="$run_dir/heartbeat.log"
-pid_file="$run_dir/hermes.pid"
-watcher_pid_file="$run_dir/heartbeat.pid"
-profiler_pid_file="$run_dir/profiler.pid"
-status_file="$run_dir/status.json"
-summary_file="$run_dir/summary.json"
+prompt_file="$state_dir/prompt.txt"
+launcher_log="$logs_dir/launcher.log"
+stdout_log="$logs_dir/hermes.stdout.log"
+stderr_log="$logs_dir/hermes.stderr.log"
+heartbeat_log="$logs_dir/heartbeat.log"
+process_log="$logs_dir/process.log"
+pid_file="$runtime_dir/hermes.pid"
+watcher_pid_file="$runtime_dir/heartbeat.pid"
+profiler_pid_file="$runtime_dir/profiler.pid"
+inner_run_file="$runtime_dir/inner-run-dir.txt"
+status_file="$state_dir/status.json"
+summary_file="$state_dir/summary.json"
 index_file="$run_dir/index.json"
+attempt_manifest_file="$attempt_dir/attempt.json"
+
+ln -sfn "state/prompt.txt" "$run_dir/prompt.txt"
+ln -sfn "state/status.json" "$run_dir/status.json"
+ln -sfn "state/summary.json" "$run_dir/summary.json"
+ln -sfn "attempts/$attempt_id/logs/launcher.log" "$run_dir/launcher.log"
+ln -sfn "attempts/$attempt_id/logs/hermes.stdout.log" "$run_dir/hermes.stdout.log"
+ln -sfn "attempts/$attempt_id/logs/hermes.stderr.log" "$run_dir/hermes.stderr.log"
+ln -sfn "attempts/$attempt_id/logs/heartbeat.log" "$run_dir/heartbeat.log"
+ln -sfn "attempts/$attempt_id/logs/process.log" "$run_dir/process.log"
+ln -sfn "attempts/$attempt_id/logs/profile.jsonl" "$run_dir/profile.jsonl"
+ln -sfn "attempts/$attempt_id/logs/profile-summary.json" "$run_dir/profile-summary.json"
+ln -sfn "attempts/$attempt_id/logs/command-snapshots.jsonl" "$run_dir/command-snapshots.jsonl"
+ln -sfn "attempts/$attempt_id/runtime/hermes.pid" "$run_dir/hermes.pid"
+ln -sfn "attempts/$attempt_id/runtime/heartbeat.pid" "$run_dir/heartbeat.pid"
+ln -sfn "attempts/$attempt_id/runtime/profiler.pid" "$run_dir/profiler.pid"
+ln -sfn "attempts/$attempt_id/runtime/inner-run-dir.txt" "$run_dir/inner-run-dir.txt"
+ln -sfn "attempts/$attempt_id/hermes-home" "$run_dir/hermes-home"
+ln -sfn "attempts/$attempt_id" "$run_dir/current-attempt"
 
 if [[ -n "$RESUME_RUN_DIR" && -d "$RESUME_RUN_DIR/hermes-home/.hermes" ]]; then
   mkdir -p "$hermes_home/.hermes"
@@ -341,6 +368,7 @@ Process requirements:
   - `/srv/alphabook/repo/ops/digitalocean/bin/run-ripgrep-progress.sh --file-list "$RUN_DIR/prepared/scoped-text-files.tsv" --pattern '<regex>' --output-dir "$RUN_DIR/search"`
 - Do not pass `{corpus_root}` as a bare positional argument to helper scripts.
 - The manifest helper writes `all-text-files.tsv` under the output dir; if you derive a scoped subset, write it as another TSV with the same `size_bytes<TAB>absolute_path` format before calling the ripgrep helper.
+- The wrapper exported an explicit handoff file path in `$WRAPPER_INNER_RUN_FILE`. After you create the inner corpus run directory, write that absolute path into `$WRAPPER_INNER_RUN_FILE` immediately so the wrapper can associate the run without parsing logs.
 - The required order is:
   1. decide scope
   2. write chosen_scope and scope_rationale into the run manifest
@@ -434,10 +462,32 @@ payload = {
     "resumed_from_run_dir": sys.argv[11] or None,
     "resumed_session_id": sys.argv[12] or None,
     "state": "launching",
-    "run_dir": str(status_path.parent),
+    "run_dir": str(status_path.parent.parent),
+    "state_dir": str(status_path.parent),
+    "attempt_id": "attempt-0001",
+    "attempt_dir": str(status_path.parent.parent / "attempts" / "attempt-0001"),
+    "logs_dir": str(status_path.parent.parent / "attempts" / "attempt-0001" / "logs"),
+    "runtime_dir": str(status_path.parent.parent / "attempts" / "attempt-0001" / "runtime"),
 }
 status_path.write_text(json.dumps(payload, indent=2) + "\n")
 summary_path.write_text(json.dumps(payload, indent=2) + "\n")
+PY
+
+python3 - "$attempt_manifest_file" "$run_dir" "$attempt_dir" "$attempt_id" "$timestamp" <<'PY'
+from pathlib import Path
+import json
+import sys
+
+payload = {
+    "wrapper_run_dir": sys.argv[1],
+    "attempt_dir": sys.argv[2],
+    "attempt_id": sys.argv[3],
+    "created_at": sys.argv[4],
+    "logs_dir": str(Path(sys.argv[2]) / "logs"),
+    "runtime_dir": str(Path(sys.argv[2]) / "runtime"),
+    "hermes_home": str(Path(sys.argv[2]) / "hermes-home"),
+}
+Path(sys.argv[1]).joinpath("attempts", sys.argv[3], "attempt.json").write_text(json.dumps(payload, indent=2) + "\n")
 PY
 
 cat >"$run_dir/run-hermes.sh" <<'EOS'
@@ -452,6 +502,9 @@ echo "prompt_file=$PROMPT_FILE"
 echo "job_id=$JOB_ID"
 echo "hermes_home=$HOME"
 echo "resume_session_id=${RESUME_SESSION_ID:-}"
+echo "attempt_id=${ATTEMPT_ID:-}"
+echo "attempt_dir=${ATTEMPT_DIR:-}"
+echo "inner_run_file=${WRAPPER_INNER_RUN_FILE:-}"
 
 python3 - "$STATUS_FILE" "running" "$(date -u +%FT%TZ)" <<'PY'
 from pathlib import Path
@@ -503,6 +556,10 @@ chmod +x "$run_dir/run-hermes.sh"
   echo "timestamp=$timestamp"
   echo "run_id=$run_id"
   echo "run_dir=$run_dir"
+  echo "state_dir=$state_dir"
+  echo "attempt_dir=$attempt_dir"
+  echo "logs_dir=$logs_dir"
+  echo "runtime_dir=$runtime_dir"
   echo "root_dir=$ROOT_DIR"
   echo "corpus_root=$CORPUS_ROOT"
   echo "model=$MODEL"
@@ -524,12 +581,17 @@ chmod +x "$run_dir/run-hermes.sh"
   export RUN_DIR="$run_dir"
   export JOB_ID="$job_id"
   export RESUME_SESSION_ID="$RESUME_SESSION_ID"
+  export ATTEMPT_ID="$attempt_id"
+  export ATTEMPT_DIR="$attempt_dir"
+  export WRAPPER_RUN_DIR="$run_dir"
+  export WRAPPER_INNER_RUN_FILE="$inner_run_file"
   export HOME="$hermes_home"
   nohup "$run_dir/run-hermes.sh" >>"$launcher_log" 2>&1 &
   echo $! >"$pid_file"
 ) >/dev/null
 
 pid="$(cat "$pid_file")"
+printf '%s pid=%s started attempt=%s\n' "$(date -u +%FT%TZ)" "$pid" "$attempt_id" >>"$process_log"
 
 (
   while kill -0 "$pid" 2>/dev/null; do
@@ -537,6 +599,7 @@ pid="$(cat "$pid_file")"
     sleep "$HEARTBEAT_SECONDS"
   done
   printf '%s pid=%s exited\n' "$(date -u +%FT%TZ)" "$pid" >>"$heartbeat_log"
+  printf '%s pid=%s exited attempt=%s\n' "$(date -u +%FT%TZ)" "$pid" "$attempt_id" >>"$process_log"
 ) >/dev/null 2>&1 &
 echo $! >"$watcher_pid_file"
 

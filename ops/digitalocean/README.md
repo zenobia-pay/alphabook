@@ -236,6 +236,31 @@ To reuse the precomputed manifest in existing helper-driven runs:
   --precomputed-index-dir /srv/alphabook/precomputed-corpus/latest
 ```
 
+## Hermes Run Layout
+
+Wrapper-managed Hermes research runs are now isolated into explicit subfolders:
+
+- `state/`
+  - `prompt.txt`
+  - `status.json`
+  - `summary.json`
+- `attempts/attempt-0001/logs/`
+  - `launcher.log`
+  - `hermes.stdout.log`
+  - `hermes.stderr.log`
+  - `heartbeat.log`
+  - `process.log`
+  - `profile.jsonl`
+  - `profile-summary.json`
+  - `command-snapshots.jsonl`
+- `attempts/attempt-0001/runtime/`
+  - `hermes.pid`
+  - `heartbeat.pid`
+  - `profiler.pid`
+  - `inner-run-dir.txt`
+
+Top-level files such as `status.json`, `launcher.log`, and `profile.jsonl` are compatibility symlinks into those subfolders. The explicit `inner-run-dir.txt` handoff file is the canonical association between a wrapper run and its inner corpus-research run; the system should no longer need to guess from mixed log text.
+
 ## Working Notes
 
 Current operational notes that matter in practice:

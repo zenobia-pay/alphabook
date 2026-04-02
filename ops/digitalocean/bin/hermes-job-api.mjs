@@ -127,6 +127,13 @@ function listRunDirs() {
 }
 
 function inferInnerRunDir(runDir) {
+  const explicitPath = path.join(runDir, "inner-run-dir.txt");
+  try {
+    const explicitValue = fs.readFileSync(explicitPath, "utf8").trim();
+    if (explicitValue && fs.existsSync(explicitValue)) {
+      return explicitValue;
+    }
+  } catch {}
   const wrapperIndex = readJson(path.join(runDir, "index.json"));
   if (wrapperIndex?.inner_run_dir && fs.existsSync(wrapperIndex.inner_run_dir)) {
     return wrapperIndex.inner_run_dir;
@@ -298,9 +305,11 @@ function getCuratedLogSources(runDir) {
   const sources = [
     { name: "launcher", path: path.join(runDir, "launcher.log") },
     { name: "heartbeat", path: path.join(runDir, "heartbeat.log") },
+    { name: "process", path: path.join(runDir, "process.log") },
     { name: "hermes_stdout", path: path.join(runDir, "hermes.stdout.log") },
     { name: "hermes_stderr", path: path.join(runDir, "hermes.stderr.log") },
     { name: "wrapper_index", path: path.join(runDir, "index.json") },
+    { name: "inner_run_file", path: path.join(runDir, "inner-run-dir.txt") },
     { name: "openai_requests", path: path.join(runDir, "openai-requests.jsonl") },
   ];
   if (innerRunDir) {
