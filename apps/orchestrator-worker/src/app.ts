@@ -12706,11 +12706,19 @@ export function createApp(inputDeps: CreateAppInput) {
     const query = new URLSearchParams();
     const cursor = c.req.query("cursor");
     const limit = c.req.query("limit");
+    const stream = c.req.query("stream");
+    const includeEvents = c.req.query("include_events");
     if (cursor) {
       query.set("cursor", cursor);
     }
     if (limit) {
       query.set("limit", limit);
+    }
+    if (stream) {
+      query.set("stream", stream);
+    }
+    if (includeEvents) {
+      query.set("include_events", includeEvents);
     }
     const response = await fetchComprehensiveJobResponse(
       jobId,

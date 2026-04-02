@@ -17,6 +17,8 @@ type Args = {
   pollMs: number;
   logLimit: number;
   cancelOnSigint: boolean;
+  logStream: "raw" | "all";
+  includeEvents: boolean;
 };
 
 type JobSummary = {
@@ -86,6 +88,8 @@ function usage(): never {
       "  --semantic-backend <name>    alphaloop | context1",
       "  --poll-ms <ms>               Poll interval (default 3000)",
       "  --log-limit <n>              Max log lines per poll (default 200)",
+      "  --log-stream <mode>          raw | all (default raw)",
+      "  --include-events             Include structured DO/job events in the stream",
       "  --no-cancel-on-sigint        Do not try to cancel the remote job on Ctrl-C",
       "",
       "Environment:",
@@ -103,6 +107,8 @@ function parseArgs(argv: string[]): Args {
     pollMs: 3000,
     logLimit: 200,
     cancelOnSigint: true,
+    logStream: "raw",
+    includeEvents: false,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -166,6 +172,15 @@ function parseArgs(argv: string[]): Args {
     if (arg === "--log-limit" && next) {
       args.logLimit = Number.parseInt(next, 10);
       index += 1;
+      continue;
+    }
+    if (arg === "--log-stream" && next && (next === "raw" || next === "all")) {
+      args.logStream = next;
+      index += 1;
+      continue;
+    }
+    if (arg === "--include-events") {
+      args.includeEvents = true;
       continue;
     }
     if (arg === "--no-cancel-on-sigint") {
@@ -307,11 +322,24 @@ async function fetchLogs(
   jobId: string,
   cursor: string | undefined,
   limit: number,
+  options: {
+    logStream: "raw" | "all";
+    includeEvents: boolean;
+  },
 ): Promise<LogsResponse> {
+  const query = new URLSearchParams();
+  query.set("limit", String(limit));
+  query.set("stream", options.logStream);
+  if (cursor) {
+    query.set("cursor", cursor);
+  }
+  if (options.includeEvents) {
+    query.set("include_events", "1");
+  }
   return apiFetch<LogsResponse>(
     apiBaseUrl,
     cookie,
-    `/v1/comprehensive-jobs/${encodeURIComponent(jobId)}/logs?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+    `/v1/comprehensive-jobs/${encodeURIComponent(jobId)}/logs?${query.toString()}`,
   );
 }
 
@@ -369,7 +397,10 @@ async function waitForCompletion(
 ): Promise<JobSummary> {
   let cursor: string | undefined;
   while (true) {
-    const logs = await fetchLogs(apiBaseUrl, cookie, jobId, cursor, args.logLimit);
+    const logs = await fetchLogs(apiBaseUrl, cookie, jobId, cursor, args.logLimit, {
+      logStream: args.logStream,
+      includeEvents: args.includeEvents,
+    });
     for (const source of logs.sources) {
       for (const line of source.lines) {
         process.stdout.write(`[${source.name}] ${line}\n`);
@@ -381,7 +412,10 @@ async function waitForCompletion(
       // Drain one final time after the job reaches a terminal state so late
       // shard run-status/proxy logs are not skipped by the last poll boundary.
       while (true) {
-        const finalLogs = await fetchLogs(apiBaseUrl, cookie, jobId, cursor, args.logLimit);
+        const finalLogs = await fetchLogs(apiBaseUrl, cookie, jobId, cursor, args.logLimit, {
+          logStream: args.logStream,
+          includeEvents: args.includeEvents,
+        });
         let printed = 0;
         for (const source of finalLogs.sources) {
           for (const line of source.lines) {

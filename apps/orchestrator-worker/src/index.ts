@@ -777,6 +777,8 @@ type ComprehensiveLogCursor = {
   sources: Record<string, number>;
 };
 
+type ComprehensiveLogStreamMode = "raw" | "all";
+
 function summarizeComprehensiveJobEvent(event: string, data: Record<string, unknown>) {
   switch (event) {
     case "session.created":
@@ -807,6 +809,21 @@ function isInterestingRuntimeLogPath(path: string) {
     return false;
   }
   return /\.(?:md|txt|json|jsonl|log)$/iu.test(path);
+}
+
+function isRawRuntimeLogPath(path: string, filename?: string) {
+  const normalized = path.trim();
+  const name = (filename ?? normalized.split("/").at(-1) ?? "").trim();
+  if (normalized === "output/runtime-stdout.log" || normalized === "output/runtime-stderr.log") {
+    return true;
+  }
+  if (normalized === "output/codex-progress.jsonl" || normalized === "output/openai-proxy.jsonl") {
+    return true;
+  }
+  if (/^output\/.+\.log(?:\.txt)?$/iu.test(normalized)) {
+    return true;
+  }
+  return /^(?:runtime-(?:stdout|stderr)\.log|codex-progress\.jsonl|openai-proxy\.jsonl|.+\.log(?:\.txt)?)$/iu.test(name);
 }
 
 function isInterestingArtifactLogPath(path: string, filename: string) {
@@ -1243,7 +1260,11 @@ export class ComprehensiveJobDurableObject {
       }));
   }
 
-  private async collectRuntimeLogSources(job: ComprehensiveJobRecord, deps: AppDeps) {
+  private async collectRuntimeLogSources(
+    job: ComprehensiveJobRecord,
+    deps: AppDeps,
+    mode: ComprehensiveLogStreamMode,
+  ) {
     if (!job.sessionId || !job.runId) {
       return [] as Array<{ name: string; lines: string[] }>;
     }
@@ -1269,6 +1290,10 @@ export class ComprehensiveJobDurableObject {
       artifacts
         .filter((artifact) =>
           artifactBelongsToRun(artifact, job.runId!, runtimeIds)
+          && (mode === "all" || isRawRuntimeLogPath(
+            typeof artifact.metadata.path === "string" ? artifact.metadata.path : artifact.filename,
+            artifact.filename,
+          ))
           && isInterestingArtifactLogPath(
             typeof artifact.metadata.path === "string" ? artifact.metadata.path : "",
             artifact.filename,
@@ -1299,7 +1324,11 @@ export class ComprehensiveJobDurableObject {
                 runId: job.runId!,
               });
               const files = Array.isArray(listing.files)
-                ? listing.files.filter((value): value is string => typeof value === "string" && isInterestingRuntimeLogPath(value))
+                ? listing.files.filter((value): value is string =>
+                  typeof value === "string"
+                  && isInterestingRuntimeLogPath(value)
+                  && (mode === "all" || isRawRuntimeLogPath(value)),
+                )
                 : [];
               const fileSources = await Promise.all(
                 files.map(async (path) => {
@@ -1340,16 +1369,24 @@ export class ComprehensiveJobDurableObject {
     return [...merged.values()].sort((left, right) => left.name.localeCompare(right.name));
   }
 
-  private async readLogSources(job: ComprehensiveJobRecord, limit: number, cursorRaw: string | null) {
+  private async readLogSources(
+    job: ComprehensiveJobRecord,
+    limit: number,
+    cursorRaw: string | null,
+    options: {
+      mode: ComprehensiveLogStreamMode;
+      includeEvents: boolean;
+    },
+  ) {
     const cursor = decodeLogCursor(cursorRaw);
     const deps = buildAppDeps(this.env);
-    const eventLogs = await this.getLogs();
-    const structuredSource = {
-      name: "events",
-      lines: eventLogs.map((entry) => entry.line),
-    };
-    const runtimeSources = await this.collectRuntimeLogSources(job, deps);
-    const allSources = [structuredSource, ...runtimeSources];
+    const runtimeSources = await this.collectRuntimeLogSources(job, deps, options.mode);
+    const allSources = options.includeEvents
+      ? [{
+          name: "events",
+          lines: (await this.getLogs()).map((entry) => entry.line),
+        }, ...runtimeSources]
+      : runtimeSources;
     const nextCursor: ComprehensiveLogCursor = {
       sources: { ...cursor.sources },
     };
@@ -1425,7 +1462,9 @@ export class ComprehensiveJobDurableObject {
         return Response.json({ error: "Job not found." }, { status: 404 });
       }
       const limit = Math.min(500, Math.max(1, Number.parseInt(url.searchParams.get("limit") ?? "200", 10) || 200));
-      return Response.json(await this.readLogSources(job, limit, url.searchParams.get("cursor")));
+      const mode = url.searchParams.get("stream") === "all" ? "all" : "raw";
+      const includeEvents = ["1", "true", "yes", "on"].includes((url.searchParams.get("include_events") ?? "").toLowerCase());
+      return Response.json(await this.readLogSources(job, limit, url.searchParams.get("cursor"), { mode, includeEvents }));
     }
     if (request.method === "GET" && url.pathname === "/artifacts") {
       const job = await this.reconcileJobState("request");
