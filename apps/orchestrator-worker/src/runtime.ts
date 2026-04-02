@@ -58,7 +58,7 @@ type ProvisionSpriteShardArgs = {
   expiresMinutes?: number;
 };
 
-const DEFAULT_RUNTIME_AGENT_MODEL = "gpt-5.2-codex";
+const DEFAULT_RUNTIME_AGENT_MODEL = "gpt-5.4";
 const RUNTIME_STATUS_POLL_TIMEOUT_MS = 5_000;
 const DEFAULT_SPRITE_SHARD_GUEST: FlyMachineGuestConfig = {
   cpu_kind: "performance",

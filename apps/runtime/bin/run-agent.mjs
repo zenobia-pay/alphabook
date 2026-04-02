@@ -1519,11 +1519,11 @@ function isCodexScaffoldingLine(line) {
   return false;
 }
 
-function codexStepLabel(step) {
+function briefingStepLabel(step) {
   if (step === "codex-briefing") {
-    return "Codex corpus briefing";
+    return "Corpus briefing";
   }
-  return "Codex step";
+  return "Briefing step";
 }
 
 async function appendProgressEvent(outputDir, event) {
@@ -1537,36 +1537,59 @@ async function appendProgressEvent(outputDir, event) {
   );
 }
 
-async function resolveCodexCommand(workspaceRoot) {
-  const candidates = [
-    process.env.CODEX_CLI_PATH,
-    join(workspaceRoot, "node_modules", ".bin", "codex"),
-    "/app/node_modules/.bin/codex",
-    "codex",
-  ].filter(Boolean);
+function joinUrl(baseUrl, pathname) {
+  return `${String(baseUrl || "").replace(/\/+$/, "")}/${String(pathname || "").replace(/^\/+/, "")}`;
+}
 
-  for (const candidate of candidates) {
-    if (candidate === "codex") {
-      return candidate;
+function extractResponseOutputText(payload) {
+  if (!payload || typeof payload !== "object") {
+    return "";
+  }
+  const parts = [];
+  for (const item of Array.isArray(payload.output) ? payload.output : []) {
+    if (!item || typeof item !== "object") {
+      continue;
     }
-    if (await fileExists(candidate)) {
-      return candidate;
+    for (const content of Array.isArray(item.content) ? item.content : []) {
+      if (content?.type === "output_text" && typeof content.text === "string") {
+        parts.push(content.text);
+      }
     }
   }
-  return "codex";
+  return parts.join("\n").trim();
+}
+
+function parseJsonObject(text) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) {
+    return null;
+  }
+  try {
+    return JSON.parse(trimmed);
+  } catch {}
+  const match = trimmed.match(/\{[\s\S]*\}/);
+  if (!match) {
+    return null;
+  }
+  try {
+    return JSON.parse(match[0]);
+  } catch {
+    return null;
+  }
 }
 
 async function runCodexStep({
-  workspaceRoot,
   outputDir,
   model,
   step,
   promptText,
 }) {
-  const codexCommand = await resolveCodexCommand(workspaceRoot);
   const promptPath = join(outputDir, `${step}.prompt.md`);
-  const outputPath = join(outputDir, `${step}.last-message.txt`);
+  const outputPath = join(outputDir, `${step}.response.json`);
   const logPath = join(outputDir, `${step}.log.txt`);
+  const briefingPath = join(outputDir, "briefing.md");
+  const notesPath = join(outputDir, "evidence-notes.md");
+  const baseUrl = process.env.OPENAI_BASE_URL?.trim() || "http://127.0.0.1:8080/openai-proxy/v1";
 
   await writeFile(promptPath, promptText, "utf8");
   await appendProgressEvent(outputDir, {
@@ -1574,17 +1597,32 @@ async function runCodexStep({
     step,
     promptPath,
     promptPreview: compactText(promptText, 700),
-    message: `${codexStepLabel(step)} is ready to run.`,
+    message: `${briefingStepLabel(step)} is ready to run.`,
   });
 
   const attemptLogs = [];
-  let result = null;
-  let exitCode = 1;
-  const maxAttempts = 3;
+  let lastStatus = 0;
+  let lastRawBody = "";
+  let lastResponse = null;
+  const maxAttempts = 5;
   const isHardQuotaFailure = (output) =>
     /quota exceeded/i.test(output)
     || /billing details/i.test(output)
     || /insufficient_quota/i.test(output);
+  const isRateLimited = (status, output) =>
+    status === 429
+    || /rate limit/i.test(output)
+    || /too many requests/i.test(output);
+
+  const systemInstruction = [
+    "You are preparing a grounded literary research briefing.",
+    "You are not writing files directly.",
+    "Return exactly one JSON object and nothing else.",
+    'JSON schema: {"briefing_markdown": string, "evidence_notes_markdown": string}',
+    "briefing_markdown must be complete markdown suitable for /workspace/output/briefing.md.",
+    "evidence_notes_markdown must be complete markdown suitable for /workspace/output/evidence-notes.md.",
+    "Do not wrap the JSON in code fences.",
+  ].join("\n");
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     await appendProgressEvent(outputDir, {
@@ -1592,118 +1630,116 @@ async function runCodexStep({
       step,
       attempt,
       model,
-      baseUrl: process.env.OPENAI_BASE_URL ?? null,
+      baseUrl,
       message: attempt === 1
-        ? `Sending ${codexStepLabel(step).toLowerCase()} to Codex.`
-        : `Retrying ${codexStepLabel(step).toLowerCase()} with Codex.`,
+        ? `Sending ${briefingStepLabel(step).toLowerCase()} to the OpenAI API.`
+        : `Retrying ${briefingStepLabel(step).toLowerCase()} via the OpenAI API.`,
     });
-    result = await runProcess(
-      codexCommand,
-      [
-        "exec",
-        "--skip-git-repo-check",
-        "-C",
-        workspaceRoot,
-        "--dangerously-bypass-approvals-and-sandbox",
-        "--model",
-        model,
-        "--output-last-message",
-        outputPath,
-        "-",
-      ],
-      {
-        cwd: workspaceRoot,
-        env: process.env,
-        input: promptText,
-        onStdoutLine: (line) => {
-          if (isCodexScaffoldingLine(line)) {
-            return;
-          }
-          void appendProgressEvent(outputDir, {
-            type: "codex.stdout",
-            step,
-            line: compactText(line, 400),
-            message: compactText(line, 400),
-          });
-        },
-        onStderrLine: (line) => {
-          if (isCodexScaffoldingLine(line)) {
-            return;
-          }
-          void appendProgressEvent(outputDir, {
-            type: "codex.stderr",
-            step,
-            line: compactText(line, 400),
-            message: compactText(line, 400),
-          });
-        },
+    const requestBody = {
+      model,
+      reasoning: { effort: "medium" },
+      text: {
+        format: { type: "text" },
+        verbosity: "medium",
       },
-    );
-
-    exitCode = result.exitCode;
+      input: [
+        {
+          role: "system",
+          content: [{ type: "input_text", text: systemInstruction }],
+        },
+        {
+          role: "user",
+          content: [{ type: "input_text", text: promptText }],
+        },
+      ],
+    };
+    const response = await fetch(joinUrl(baseUrl, "/responses"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(requestBody),
+    });
+    lastStatus = response.status;
+    const retryAfterHeader = response.headers.get("retry-after");
+    lastRawBody = await response.text();
+    lastResponse = parseJsonObject(lastRawBody);
     attemptLogs.push(
       [
         `attempt=${attempt}`,
-        `exitCode=${result.exitCode}`,
+        `status=${response.status}`,
         "",
-        "# stdout",
-        result.stdout,
+        "# request",
+        JSON.stringify(requestBody, null, 2),
         "",
-        "# stderr",
-        result.stderr,
+        "# response",
+        lastRawBody,
       ].join("\n"),
     );
 
-    if (result.exitCode === 0) {
+    const payload = lastResponse && !lastResponse.error
+      ? parseJsonObject(extractResponseOutputText(lastResponse))
+      : null;
+
+    if (
+      response.ok
+      && payload
+      && typeof payload.briefing_markdown === "string"
+      && typeof payload.evidence_notes_markdown === "string"
+    ) {
+      await writeFile(outputPath, JSON.stringify(lastResponse, null, 2), "utf8");
+      await writeFile(briefingPath, payload.briefing_markdown.trim() ? `${payload.briefing_markdown.trim()}\n` : "", "utf8");
+      await writeFile(notesPath, payload.evidence_notes_markdown.trim() ? `${payload.evidence_notes_markdown.trim()}\n` : "", "utf8");
       await appendProgressEvent(outputDir, {
         type: "codex.step.completed",
         step,
         attempt,
         logPath,
         outputPath,
-        message: `${codexStepLabel(step)} completed.`,
+        message: `${briefingStepLabel(step)} completed.`,
       });
       break;
     }
+
+    const errorPreview = lastResponse?.error
+      ? JSON.stringify(lastResponse.error)
+      : compactText(lastRawBody, 400);
 
     await appendProgressEvent(outputDir, {
       type: "codex.step.attempt_failed",
       step,
       attempt,
-      exitCode: result.exitCode,
+      exitCode: response.ok ? 1 : response.status,
       logPath,
-      stderrPreview: compactText(result.stderr, 400),
-      stdoutPreview: compactText(result.stdout, 400),
-      message: `${codexStepLabel(step)} failed on attempt ${attempt}.`,
+      stderrPreview: errorPreview,
+      stdoutPreview: null,
+      message: `${briefingStepLabel(step)} failed on attempt ${attempt}.`,
     });
 
-    if (
-      /refresh_token_reused/i.test(result.stderr)
-      || /Your refresh token has already been used to generate a new access token/i.test(result.stderr)
-    ) {
-      await appendProgressEvent(outputDir, {
-        type: "codex.auth_failed",
-        step,
-        attempt,
-        exitCode: result.exitCode,
-        message: "Codex authentication failed because the refresh token was already reused.",
-      });
-      break;
-    }
-
-    if (isHardQuotaFailure(`${result.stderr}\n${result.stdout}`)) {
+    if (isHardQuotaFailure(errorPreview)) {
       await appendProgressEvent(outputDir, {
         type: "codex.quota_exceeded",
         step,
         attempt,
-        exitCode: result.exitCode,
-        message: "Codex quota was exceeded, so the shard stopped without retrying.",
+        exitCode: response.ok ? 1 : response.status,
+        message: "The OpenAI API quota or rate limit was exceeded, so the shard stopped without retrying.",
       });
       break;
     }
 
     if (attempt < maxAttempts) {
-      await new Promise((resolve) => setTimeout(resolve, attempt * 2_000));
+      const retryAfterSeconds = Number.parseInt(retryAfterHeader ?? "", 10);
+      const retryDelayMs = isRateLimited(response.status, errorPreview)
+        ? Math.max(Number.isFinite(retryAfterSeconds) ? retryAfterSeconds * 1_000 : 0, attempt * 15_000)
+        : attempt * 2_000;
+      await appendProgressEvent(outputDir, {
+        type: "codex.step.retry_wait",
+        step,
+        attempt,
+        delayMs: retryDelayMs,
+        message: `Waiting ${Math.round(retryDelayMs / 1_000)}s before retrying ${briefingStepLabel(step).toLowerCase()}.`,
+      });
+      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
     }
   }
 
@@ -1711,7 +1747,7 @@ async function runCodexStep({
     logPath,
     [
       `step=${step}`,
-      `exitCode=${exitCode}`,
+      `status=${lastStatus}`,
       `attempts=${attemptLogs.length}`,
       "",
       ...attemptLogs,
@@ -1719,32 +1755,35 @@ async function runCodexStep({
     "utf8",
   );
 
-  if (!result || result.exitCode !== 0) {
-    const quotaExceeded = result ? isHardQuotaFailure(`${result.stderr}\n${result.stdout}`) : false;
+  if (!(await fileExists(briefingPath))) {
+    const errorText = lastResponse?.error
+      ? JSON.stringify(lastResponse.error)
+      : lastRawBody;
+    const quotaExceeded = isHardQuotaFailure(errorText);
     await appendProgressEvent(outputDir, {
       type: "codex.step.failed",
       step,
-      exitCode,
+      exitCode: lastStatus || 1,
       logPath,
       message: quotaExceeded
-        ? `${codexStepLabel(step)} failed because Codex quota was exceeded.`
-        : `${codexStepLabel(step)} failed.`,
+        ? `${briefingStepLabel(step)} failed because the OpenAI API quota or rate limit was exceeded.`
+        : `${briefingStepLabel(step)} failed.`,
     });
     throw new Error(
       quotaExceeded
-        ? `Codex step ${step} failed because Codex quota was exceeded.`
-        : `Codex step ${step} failed with exit code ${exitCode}.`,
+        ? `Briefing step ${step} failed because the OpenAI API quota or rate limit was exceeded.`
+        : `Briefing step ${step} failed with status ${lastStatus || 1}.`,
     );
   }
 
-  const lastMessage = await readFile(outputPath, "utf8").catch(() => "");
+  const lastMessage = await readFile(briefingPath, "utf8").catch(() => "");
 
   return {
     step,
     promptPath,
     outputPath,
     logPath,
-    exitCode: result.exitCode,
+    exitCode: 0,
     lastMessage,
   };
 }
@@ -1903,7 +1942,7 @@ async function main() {
   const taskPath = process.env.ALPHABOOK_TASK_PATH;
   const outputDir = process.env.ALPHABOOK_OUTPUT_DIR;
   const runtimePrompt = process.env.ALPHABOOK_RUNTIME_PROMPT || "";
-  const model = process.env.RUNTIME_AGENT_MODEL || "gpt-5.2-codex";
+  const model = process.env.RUNTIME_AGENT_MODEL || "gpt-5.4";
 
   if (!taskPath || !outputDir) {
     throw new Error("ALPHABOOK_TASK_PATH and ALPHABOOK_OUTPUT_DIR are required.");

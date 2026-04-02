@@ -15,7 +15,7 @@ RUN npm ci --legacy-peer-deps
 ENV PORT=8080
 ENV RUNTIME_WORKSPACE_ROOT=/workspace
 ENV RUNTIME_AGENT_COMMAND=/app/apps/runtime/bin/run-agent.mjs
-ENV RUNTIME_AGENT_MODEL=gpt-5.2-codex
+ENV RUNTIME_AGENT_MODEL=gpt-5.4
 ENV PATH=/app/node_modules/.bin:$PATH
 ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 
