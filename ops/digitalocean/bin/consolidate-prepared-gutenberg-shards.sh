@@ -9,18 +9,36 @@ LOCAL_SHARDS_ROOT="${LOCAL_SHARDS_ROOT:-/root/alphabook-prepared/shards}"
 SSH_KEY_PATH="${SSH_KEY_PATH:-/root/.ssh/alphabook_consolidate}"
 POLL_SECONDS="${POLL_SECONDS:-30}"
 WAIT_FOR_COMPLETION=0
+POST_INDEX_ENABLED="${POST_INDEX_ENABLED:-1}"
+POST_INDEX_OUTPUT_DIR="${POST_INDEX_OUTPUT_DIR:-$FINAL_DIR/research-corpus-index}"
+POST_INDEX_NO_PRIMARY_TEXT="${POST_INDEX_NO_PRIMARY_TEXT:-1}"
+POST_INDEX_LOG_PATH="${POST_INDEX_LOG_PATH:-$FINAL_DIR/post-index.log}"
 
 DEFAULT_EXPECTED_SHARDS="mirror-1 mirror-2-rerun mirror-3 mirror-4 small-1 small-2 small-3 small-4 qdrant-1 qdrant-2 qdrant-3 qdrant-4 qdrant-5 qdrant-5b qdrant-6 qdrant-7 qdrant-7b qdrant-8 qdrant-8b"
 EXPECTED_SHARDS="${EXPECTED_SHARDS:-$DEFAULT_EXPECTED_SHARDS}"
+MIRROR_HOST_IP="${MIRROR_HOST_IP:-10.116.0.3}"
+SMALL_HOST_IP="${SMALL_HOST_IP:-10.116.0.2}"
+QDRANT_HOST_IP="${QDRANT_HOST_IP:-10.116.0.4}"
+LOCAL_PRIVATE_IP="${LOCAL_PRIVATE_IP:-$(hostname -I 2>/dev/null | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^10\\.116\\./) { print $i; exit } }')}"
+
+source_spec_for_host() {
+  local label="$1"
+  local host_ip="$2"
+  if [[ -n "$LOCAL_PRIVATE_IP" && "$LOCAL_PRIVATE_IP" == "$host_ip" ]]; then
+    printf '%s=local:%s\n' "$label" "$LOCAL_SHARDS_ROOT"
+  else
+    printf '%s=root@%s:/root/alphabook-prepared/shards\n' "$label" "$host_ip"
+  fi
+}
 
 declare -a SOURCE_SPECS
 if [[ -n "${SOURCE_SPECS_OVERRIDE:-}" ]]; then
   mapfile -t SOURCE_SPECS < <(printf '%s\n' "$SOURCE_SPECS_OVERRIDE" | sed '/^$/d')
 else
-  SOURCE_SPECS=(
-    "mirror=root@10.116.0.3:/root/alphabook-prepared/shards"
-    "small=root@10.116.0.2:/root/alphabook-prepared/shards"
-    "qdrant=local:$LOCAL_SHARDS_ROOT"
+  mapfile -t SOURCE_SPECS < <(
+    source_spec_for_host "mirror" "$MIRROR_HOST_IP"
+    source_spec_for_host "small" "$SMALL_HOST_IP"
+    source_spec_for_host "qdrant" "$QDRANT_HOST_IP"
   )
 fi
 
@@ -37,9 +55,16 @@ Config:
   FINAL_RUN_ID          final folder name under FINAL_PARENT_DIR
   FINAL_DIR             explicit final folder path (overrides FINAL_PARENT_DIR/FINAL_RUN_ID)
   LOCAL_SHARDS_ROOT     local shard root on the consolidation box
+  LOCAL_PRIVATE_IP      explicit local private IP override for source auto-detection
+  MIRROR_HOST_IP        private IP for the mirror shard box
+  SMALL_HOST_IP         private IP for the small shard box
+  QDRANT_HOST_IP        private IP for the qdrant shard box
   SSH_KEY_PATH          SSH private key used to fetch remote shard outputs
   POLL_SECONDS          poll interval when --wait is used
   EXPECTED_SHARDS       space-separated expected shard directory names
+  POST_INDEX_ENABLED    set to 1 to build the research corpus index after consolidation
+  POST_INDEX_OUTPUT_DIR destination directory for metadata-table.sqlite and all-text-files.tsv
+  POST_INDEX_NO_PRIMARY_TEXT set to 1 to point directly at consolidated clean.txt files
 EOF
   exit 1
 }
@@ -110,7 +135,12 @@ has_active_workers() {
 if [[ $WAIT_FOR_COMPLETION -eq 1 ]]; then
   while true; do
     active=0
-    for host in root@10.116.0.3 root@10.116.0.2 local; do
+    for host_ip in "$MIRROR_HOST_IP" "$SMALL_HOST_IP" "$QDRANT_HOST_IP"; do
+      if [[ -n "$LOCAL_PRIVATE_IP" && "$host_ip" == "$LOCAL_PRIVATE_IP" ]]; then
+        host="local"
+      else
+        host="root@$host_ip"
+      fi
       if has_active_workers "$host"; then
         active=1
         break
@@ -205,4 +235,22 @@ payload = {
 PY
 
 ln -sfn "$FINAL_DIR" "$FINAL_PARENT_DIR/latest"
+
+if [[ "$POST_INDEX_ENABLED" == "1" ]]; then
+  precompute_cmd=(python3 /srv/alphabook/repo/ops/digitalocean/bin/precompute-text-corpus-index.py
+    --prepared-root "$FINAL_DIR"
+    --output-dir "$POST_INDEX_OUTPUT_DIR")
+  if [[ "$POST_INDEX_NO_PRIMARY_TEXT" == "1" ]]; then
+    precompute_cmd+=(--no-primary-text)
+  fi
+  {
+    printf '[%s] starting post-consolidation corpus index build\n' "$(date -u +%FT%TZ)"
+    printf '[%s] command:' "$(date -u +%FT%TZ)"
+    printf ' %q' "${precompute_cmd[@]}"
+    printf '\n'
+    "${precompute_cmd[@]}"
+    printf '[%s] finished post-consolidation corpus index build\n' "$(date -u +%FT%TZ)"
+  } >>"$POST_INDEX_LOG_PATH" 2>&1
+fi
+
 echo "$FINAL_DIR"
