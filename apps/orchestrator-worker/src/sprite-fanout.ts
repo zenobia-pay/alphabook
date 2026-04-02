@@ -123,6 +123,7 @@ const MIN_SPRITE_SHARD_SIZE = 25;
 const TARGET_SPRITE_SHARD_COUNT = 12;
 const MAX_SPRITE_WORKSPACE_BYTES = 2 * 1024 * 1024 * 1024;
 const SPRITE_SHARD_NO_OUTPUT_TIMEOUT_MS = 150_000;
+const SPRITE_PROGRESS_RELAY_POLL_MS = 10_000;
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -581,55 +582,11 @@ function startSpriteShardProgressRelay(
       }
       seenCodexLines = codexLines.length;
 
-      const evidenceNotesContent = await readFile("output/evidence-notes.md");
-      const evidenceNoteLines = evidenceNotesContent
-        .split(/\r?\n/u)
-        .map((line) => line.trimEnd())
-        .filter((line) => line.trim().length > 0);
-      if (seenEvidenceNoteLines > evidenceNoteLines.length) {
-        seenEvidenceNoteLines = 0;
-      }
-      for (let index = seenEvidenceNoteLines; index < evidenceNoteLines.length; index += 1) {
-        const line = evidenceNoteLines[index]?.trim();
-        if (!line || !shouldStreamSpriteResearchLine(line)) {
-          continue;
-        }
-        await safeReportProgress(progressReporter, line, {
-          type: "research.briefing_line",
-          line,
-          lineIndex: index,
-          researchMode: "sprite_fanout",
-          shardId: shard.shardId,
-          shardLabel: shardLabel(shard),
-          bookCount: shard.bookCount,
-        });
-      }
-      seenEvidenceNoteLines = evidenceNoteLines.length;
-
-      const briefingContent = await readFile("output/briefing.md");
-      const briefingLines = briefingContent
-        .split(/\r?\n/u)
-        .map((line) => line.trimEnd())
-        .filter((line) => line.trim().length > 0);
-      if (seenBriefingLines > briefingLines.length) {
-        seenBriefingLines = 0;
-      }
-      for (let index = seenBriefingLines; index < briefingLines.length; index += 1) {
-        const line = briefingLines[index]?.trim();
-        if (!line || !shouldStreamSpriteResearchLine(line)) {
-          continue;
-        }
-        await safeReportProgress(progressReporter, line, {
-          type: "research.briefing_line",
-          line,
-          lineIndex: index,
-          researchMode: "sprite_fanout",
-          shardId: shard.shardId,
-          shardLabel: shardLabel(shard),
-          bookCount: shard.bookCount,
-        });
-      }
-      seenBriefingLines = briefingLines.length;
+      // Raw shard logs are available through the comprehensive job log tail, so the
+      // orchestrator only mirrors codex progress here. Polling every artifact file
+      // on every shard quickly exhausts the Worker subrequest budget during long runs.
+      seenEvidenceNoteLines = 0;
+      seenBriefingLines = 0;
     } finally {
       inFlight = false;
     }
@@ -638,7 +595,7 @@ function startSpriteShardProgressRelay(
   void poll();
   const timer = setInterval(() => {
     void poll();
-  }, 1_500);
+  }, SPRITE_PROGRESS_RELAY_POLL_MS);
 
   return {
     stop() {

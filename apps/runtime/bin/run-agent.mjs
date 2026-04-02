@@ -1567,15 +1567,70 @@ function parseJsonObject(text) {
   try {
     return JSON.parse(trimmed);
   } catch {}
-  const match = trimmed.match(/\{[\s\S]*\}/);
-  if (!match) {
+  const candidates = [];
+  const firstBrace = trimmed.indexOf("{");
+  if (firstBrace >= 0) {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    let start = -1;
+    for (let index = firstBrace; index < trimmed.length; index += 1) {
+      const char = trimmed[index];
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (char === "\"") {
+        inString = !inString;
+        continue;
+      }
+      if (inString) {
+        continue;
+      }
+      if (char === "{") {
+        if (depth === 0) {
+          start = index;
+        }
+        depth += 1;
+        continue;
+      }
+      if (char === "}") {
+        depth -= 1;
+        if (depth === 0 && start >= 0) {
+          candidates.push(trimmed.slice(start, index + 1));
+          start = -1;
+        }
+      }
+    }
+  }
+  for (let index = candidates.length - 1; index >= 0; index -= 1) {
+    try {
+      return JSON.parse(candidates[index]);
+    } catch {}
+  }
+  return null;
+}
+
+function buildBriefingPayload(rawPayload) {
+  const payload = parseJsonObject(rawPayload);
+  if (!payload || typeof payload !== "object") {
     return null;
   }
-  try {
-    return JSON.parse(match[0]);
-  } catch {
+  if (
+    typeof payload.briefing_markdown !== "string"
+    || typeof payload.evidence_notes_markdown !== "string"
+  ) {
     return null;
   }
+  return {
+    briefingMarkdown: payload.briefing_markdown,
+    evidenceNotesMarkdown: payload.evidence_notes_markdown,
+    rawPayload: payload,
+  };
 }
 
 async function runCodexStep({
@@ -1604,6 +1659,7 @@ async function runCodexStep({
   let lastStatus = 0;
   let lastRawBody = "";
   let lastResponse = null;
+  let successfulPayload = null;
   const maxAttempts = 5;
   const isHardQuotaFailure = (output) =>
     /quota exceeded/i.test(output)
@@ -1653,13 +1709,29 @@ async function runCodexStep({
         },
       ],
     };
-    const response = await fetch(joinUrl(baseUrl, "/responses"), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(requestBody),
-    });
+    const requestStartedAt = Date.now();
+    const waitingInterval = setInterval(() => {
+      void appendProgressEvent(outputDir, {
+        type: "codex.step.waiting",
+        step,
+        attempt,
+        elapsedMs: Date.now() - requestStartedAt,
+        message: `${briefingStepLabel(step)} is still waiting on OpenAI.`,
+      }).catch(() => {});
+    }, 20_000);
+    waitingInterval.unref?.();
+    let response;
+    try {
+      response = await fetch(joinUrl(baseUrl, "/responses"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(requestBody),
+      });
+    } finally {
+      clearInterval(waitingInterval);
+    }
     lastStatus = response.status;
     const retryAfterHeader = response.headers.get("retry-after");
     lastRawBody = await response.text();
@@ -1678,18 +1750,14 @@ async function runCodexStep({
     );
 
     const payload = lastResponse && !lastResponse.error
-      ? parseJsonObject(extractResponseOutputText(lastResponse))
+      ? buildBriefingPayload(extractResponseOutputText(lastResponse))
       : null;
 
-    if (
-      response.ok
-      && payload
-      && typeof payload.briefing_markdown === "string"
-      && typeof payload.evidence_notes_markdown === "string"
-    ) {
+    if (response.ok && payload) {
+      successfulPayload = payload;
       await writeFile(outputPath, JSON.stringify(lastResponse, null, 2), "utf8");
-      await writeFile(briefingPath, payload.briefing_markdown.trim() ? `${payload.briefing_markdown.trim()}\n` : "", "utf8");
-      await writeFile(notesPath, payload.evidence_notes_markdown.trim() ? `${payload.evidence_notes_markdown.trim()}\n` : "", "utf8");
+      await writeFile(briefingPath, payload.briefingMarkdown.trim() ? `${payload.briefingMarkdown.trim()}\n` : "", "utf8");
+      await writeFile(notesPath, payload.evidenceNotesMarkdown.trim() ? `${payload.evidenceNotesMarkdown.trim()}\n` : "", "utf8");
       await appendProgressEvent(outputDir, {
         type: "codex.step.completed",
         step,
@@ -1785,6 +1853,8 @@ async function runCodexStep({
     logPath,
     exitCode: 0,
     lastMessage,
+    briefingMarkdown: successfulPayload?.briefingMarkdown ?? lastMessage,
+    evidenceNotesMarkdown: successfulPayload?.evidenceNotesMarkdown ?? "",
   };
 }
 
@@ -1823,6 +1893,12 @@ async function writeBriefingJson(outputDir, briefing, citations, metadata = {}) 
     }, null, 2),
     "utf8",
   );
+}
+
+async function persistCodexRuns(outputDir, codexRuns) {
+  const previousCodexRuns = await readJsonIfPresent(join(outputDir, "codex-runs.json"), []);
+  const nextCodexRuns = Array.isArray(previousCodexRuns) ? [...previousCodexRuns, ...codexRuns] : codexRuns;
+  await writeFile(join(outputDir, "codex-runs.json"), JSON.stringify(nextCodexRuns, null, 2), "utf8");
 }
 
 async function runSpriteAggregator({
@@ -1917,10 +1993,15 @@ async function runSpriteAggregator({
     promptText,
   });
   const briefingPath = join(outputDir, "briefing.md");
-  if (!(await fileExists(briefingPath))) {
-    throw new Error("Codex did not write /workspace/output/briefing.md.");
-  }
-  const briefing = await readFile(briefingPath, "utf8");
+  const notesPath = join(outputDir, "evidence-notes.md");
+  const briefing = typeof briefingRun.briefingMarkdown === "string"
+    ? briefingRun.briefingMarkdown.trim()
+    : "";
+  const notes = typeof briefingRun.evidenceNotesMarkdown === "string"
+    ? briefingRun.evidenceNotesMarkdown.trim()
+    : "";
+  await writeFile(briefingPath, briefing ? `${briefing}\n` : "", "utf8");
+  await writeFile(notesPath, notes ? `${notes}\n` : "", "utf8");
   if (!briefing.trim()) {
     throw new Error("Codex wrote an empty /workspace/output/briefing.md.");
   }
@@ -1928,14 +2009,12 @@ async function runSpriteAggregator({
     successfulShardCount: successful.length,
     shardCount: shardResults.length,
   });
+  await persistCodexRuns(outputDir, [briefingRun]);
   await writeFile(join(outputDir, "aggregation-summary.json"), JSON.stringify({
     successfulShardCount: successful.length,
     shardCount: shardResults.length,
     citations: mergedCitations.slice(0, 12),
   }, null, 2), "utf8");
-  const previousCodexRuns = await readJsonIfPresent(join(outputDir, "codex-runs.json"), []);
-  const nextCodexRuns = Array.isArray(previousCodexRuns) ? [...previousCodexRuns, briefingRun] : [briefingRun];
-  await writeFile(join(outputDir, "codex-runs.json"), JSON.stringify(nextCodexRuns, null, 2), "utf8");
 }
 
 async function main() {
@@ -2165,6 +2244,7 @@ async function main() {
   const phase = normalizePhase(task);
   const codexRuns = [];
   let briefing = "";
+  let evidenceNotesText = "";
 
   if (phase === "collect_evidence" || phase === "write_briefing" || phase === "collect_and_brief") {
     const briefingRun = await runCodexStep({
@@ -2177,26 +2257,29 @@ async function main() {
     codexRuns.push(briefingRun);
     const briefingPath = join(outputDir, "briefing.md");
     const notesPath = join(outputDir, "evidence-notes.md");
-    if (!(await fileExists(briefingPath))) {
-      throw new Error("Codex did not write /workspace/output/briefing.md.");
-    }
-    briefing = await readFile(briefingPath, "utf8");
+    briefing = typeof briefingRun.briefingMarkdown === "string"
+      ? briefingRun.briefingMarkdown.trim()
+      : "";
+    evidenceNotesText = typeof briefingRun.evidenceNotesMarkdown === "string"
+      ? briefingRun.evidenceNotesMarkdown.trim()
+      : "";
+    await writeFile(briefingPath, briefing ? `${briefing}\n` : "", "utf8");
     if (!briefing.trim()) {
       throw new Error("Codex wrote an empty /workspace/output/briefing.md.");
     }
-    if (!(await fileExists(notesPath))) {
-      await writeFile(
-        notesPath,
-        [
+    await writeFile(
+      notesPath,
+      evidenceNotesText
+        ? `${evidenceNotesText}\n`
+        : [
           "# Search Notes",
           "",
           "This run did not write separate notes, so the final briefing is the primary artifact.",
           "",
           `Codex completion: ${briefingRun.lastMessage.trim() || "completed"}`,
         ].join("\n"),
-        "utf8",
-      );
-    }
+      "utf8",
+    );
     const citations = dedupeSpriteCitations(
       evidence.items.map((item, index) => ({
         workId: typeof item.workId === "string" ? item.workId : typeof item.documentId === "string" ? item.documentId : "unknown",
@@ -2222,9 +2305,7 @@ async function main() {
     }
   }
 
-  const previousCodexRuns = await readJsonIfPresent(join(outputDir, "codex-runs.json"), []);
-  const nextCodexRuns = Array.isArray(previousCodexRuns) ? [...previousCodexRuns, ...codexRuns] : codexRuns;
-  await writeFile(join(outputDir, "codex-runs.json"), JSON.stringify(nextCodexRuns, null, 2), "utf8");
+  await persistCodexRuns(outputDir, codexRuns);
 }
 
 main().catch((error) => {

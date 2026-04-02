@@ -1188,12 +1188,14 @@ async function runExternalAgent(
   const outputFiles = await listFiles(paths.output, workspaceRoot);
   const briefingMarkdownPath = join(paths.output, "briefing.md");
   const briefingJsonPath = join(paths.output, "briefing.json");
+  const evidenceJsonPath = join(paths.output, "evidence.json");
   const codexRunsPath = join(paths.output, "codex-runs.json");
   const evidenceNotesPath = join(paths.output, "evidence-notes.md");
   const briefingMarkdown = (await fileExists(briefingMarkdownPath))
     ? await readFile(briefingMarkdownPath, "utf8")
     : undefined;
   const briefingJson = await readJsonIfPresent<Record<string, unknown> | null>(briefingJsonPath, null);
+  const evidenceJson = await readJsonIfPresent<Record<string, unknown> | null>(evidenceJsonPath, null);
   const codexRuns = await readJsonIfPresent<unknown[]>(codexRunsPath, []);
   const evidenceNotes = (await fileExists(evidenceNotesPath))
     ? await readFile(evidenceNotesPath, "utf8")
@@ -1222,6 +1224,33 @@ async function runExternalAgent(
       }];
     })
     : [];
+  const fallbackCitations = Array.isArray(evidenceJson?.items)
+    ? evidenceJson.items.flatMap((item, index) => {
+      if (!item || typeof item !== "object") {
+        return [];
+      }
+      const record = item as Record<string, unknown>;
+      const workId = typeof record.workId === "string"
+        ? record.workId
+        : typeof record.documentId === "string"
+          ? record.documentId
+          : "unknown";
+      const chunkId = typeof record.chunkId === "string"
+        ? record.chunkId
+        : typeof record.id === "string"
+          ? record.id
+          : `evidence-${index}`;
+      return [{
+        workId,
+        chunkId,
+        label: typeof record.label === "string"
+          ? record.label
+          : `${workId}#${typeof record.chunkIndex === "number" ? record.chunkIndex : index}`,
+        excerpt: typeof record.excerpt === "string" ? record.excerpt : "",
+        r2Key: typeof record.r2Key === "string" ? record.r2Key : undefined,
+      }];
+    })
+    : [];
   const billingEvents = await readRuntimeBillingEvents(paths);
   const artifactMetadataByFilename = new Map<string, Record<string, unknown>>([
     ["every-single-reference.md", { kind: "reference_file", title: "Every Single Reference" }],
@@ -1242,7 +1271,7 @@ async function runExternalAgent(
     citations:
       briefingJson && typeof briefingJson === "object" && Array.isArray(briefingJson.citations)
         ? briefingJson.citations
-        : [],
+        : fallbackCitations,
     codexRuns: normalizedCodexRuns,
     billingEvents,
     artifacts: outputFiles.map((file) => {
