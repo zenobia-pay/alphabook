@@ -189,6 +189,53 @@ The ingest parser now preserves richer browse metadata from the mirror when pres
 - translators, illustrators, and editors
 - cover image path (local mirror path)
 
+## Precomputed Research Corpus Index
+
+For Hermes-style corpus research runs, do not rebuild the text manifest on every run once
+prepared Gutenberg artifacts exist. Build a reusable canonical text index from the prepared
+artifact tree instead:
+
+```bash
+python3 /srv/alphabook/repo/ops/digitalocean/bin/precompute-text-corpus-index.py \
+  --prepared-root /root/alphabook-prepared/final/<run-id> \
+  --output-dir /srv/alphabook/precomputed-corpus/latest \
+  --prefer-source clean
+```
+
+That produces:
+
+- `primary-text/`:
+  one canonical text path per Gutenberg ID, symlinked by default
+- `all-text-files.tsv`:
+  `size_bytes<TAB>absolute_path`
+- `metadata-table.jsonl`
+- `metadata-table.csv`
+- `metadata-table.sqlite`
+- `manifest.json`
+
+Primary text policy:
+
+- prefer `gutenberg/clean/<id>/clean.txt`
+- fall back to `gutenberg/raw/<id>/raw.txt` when clean text is missing
+
+To derive scoped file lists deterministically from the metadata table:
+
+```bash
+python3 /srv/alphabook/repo/ops/digitalocean/bin/build-scoped-text-file-list.py \
+  --index-dir /srv/alphabook/precomputed-corpus/latest \
+  --output-path /tmp/scoped-text-files.tsv \
+  --publication-year-from 1800 \
+  --publication-year-to 1919
+```
+
+To reuse the precomputed manifest in existing helper-driven runs:
+
+```bash
+/srv/alphabook/repo/ops/digitalocean/bin/prepare-text-corpus-manifest.sh \
+  --output-dir /tmp/run/prepared \
+  --precomputed-index-dir /srv/alphabook/precomputed-corpus/latest
+```
+
 ## Working Notes
 
 Current operational notes that matter in practice:
