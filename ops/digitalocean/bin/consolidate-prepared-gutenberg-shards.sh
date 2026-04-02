@@ -166,6 +166,7 @@ sync_local_tree() {
   [[ -d "$shard_path/books" ]] && rsync -a "$shard_path/books/" "$FINAL_DIR/books/"
   [[ -d "$shard_path/r2" ]] && rsync -a "$shard_path/r2/" "$FINAL_DIR/r2/"
   [[ -f "$shard_path/run-manifest.json" ]] && cp "$shard_path/run-manifest.json" "$FINAL_DIR/manifests/$shard_name.json"
+  return 0
 }
 
 sync_remote_tree() {
@@ -182,6 +183,7 @@ sync_remote_tree() {
   if remote_shell "$remote_host" "test -f '$remote_path/run-manifest.json'"; then
     rsync -a -e "${ssh_cmd[*]}" "$remote_host:$remote_path/run-manifest.json" "$FINAL_DIR/manifests/$shard_name.json"
   fi
+  return 0
 }
 
 for spec in "${SOURCE_SPECS[@]}"; do
