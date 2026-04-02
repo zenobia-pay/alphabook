@@ -198,8 +198,7 @@ artifact tree instead:
 ```bash
 python3 /srv/alphabook/repo/ops/digitalocean/bin/precompute-text-corpus-index.py \
   --prepared-root /root/alphabook-prepared/final/<run-id> \
-  --output-dir /srv/alphabook/precomputed-corpus/latest \
-  --prefer-source clean
+  --output-dir /srv/alphabook/precomputed-corpus/latest
 ```
 
 That produces:
@@ -215,8 +214,8 @@ That produces:
 
 Primary text policy:
 
-- prefer `gutenberg/clean/<id>/clean.txt`
-- fall back to `gutenberg/raw/<id>/raw.txt` when clean text is missing
+- require `gutenberg/clean/<id>/clean.txt`
+- skip books that do not yet have clean text
 
 To derive scoped file lists deterministically from the metadata table:
 

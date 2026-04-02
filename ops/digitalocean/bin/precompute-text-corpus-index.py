@@ -27,12 +27,6 @@ def parse_args() -> argparse.Namespace:
         help="Destination directory for the precomputed manifest and metadata index.",
     )
     parser.add_argument(
-        "--prefer-source",
-        choices=["clean", "raw"],
-        default="clean",
-        help="Preferred canonical text source kind.",
-    )
-    parser.add_argument(
         "--primary-text-dir-name",
         default="primary-text",
         help="Folder name to create under --output-dir for canonical text links.",
@@ -198,7 +192,7 @@ def main() -> None:
         "books_with_raw": 0,
         "books_with_book_html": 0,
         "primary_clean": 0,
-        "primary_raw": 0,
+        "books_missing_clean": 0,
     }
 
     for manifest_path in sorted(books_root.glob("*/manifest.json"), key=lambda path: int(path.parent.name)):
@@ -220,19 +214,13 @@ def main() -> None:
         counts["books_with_raw"] += int(has_raw)
         counts["books_with_book_html"] += int(has_book_html)
 
-        preferred_path = clean_path if args.prefer_source == "clean" else raw_path
-        fallback_path = raw_path if args.prefer_source == "clean" else clean_path
+        if not has_clean:
+            counts["books_missing_clean"] += 1
+            continue
 
-        if preferred_path and preferred_path.is_file():
-          primary_text_kind = args.prefer_source
-          primary_text_path = preferred_path
-        elif fallback_path and fallback_path.is_file():
-          primary_text_kind = "raw" if args.prefer_source == "clean" else "clean"
-          primary_text_path = fallback_path
-        else:
-          continue
-
-        counts[f"primary_{primary_text_kind}"] += 1
+        primary_text_kind = "clean"
+        primary_text_path = clean_path
+        counts["primary_clean"] += 1
         primary_text_link_path = primary_text_root / f"{int(gutenberg_id):06d}.txt"
         ensure_link(primary_text_path, primary_text_link_path, args.link_mode)
 
@@ -318,8 +306,9 @@ def main() -> None:
         "primary_text_root": str(primary_text_root),
         "file_type": "canonical-text-only",
         "selection_policy": {
-            "preferred_source": args.prefer_source,
-            "fallback_source": "raw" if args.prefer_source == "clean" else "clean",
+            "preferred_source": "clean",
+            "fallback_source": None,
+            "requires_clean_text": True,
             "link_mode": args.link_mode,
         },
         "total_files": len(rows),
