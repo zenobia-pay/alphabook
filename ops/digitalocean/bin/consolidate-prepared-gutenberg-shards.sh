@@ -10,14 +10,19 @@ SSH_KEY_PATH="${SSH_KEY_PATH:-/root/.ssh/alphabook_consolidate}"
 POLL_SECONDS="${POLL_SECONDS:-30}"
 WAIT_FOR_COMPLETION=0
 
-DEFAULT_EXPECTED_SHARDS="mirror-1 mirror-2-rerun mirror-3 mirror-4 small-1 small-2 small-3 small-4 qdrant-1 qdrant-2 qdrant-3 qdrant-4 qdrant-5 qdrant-6 qdrant-7 qdrant-8"
+DEFAULT_EXPECTED_SHARDS="mirror-1 mirror-2-rerun mirror-3 mirror-4 small-1 small-2 small-3 small-4 qdrant-1 qdrant-2 qdrant-3 qdrant-4 qdrant-5 qdrant-5b qdrant-6 qdrant-7 qdrant-7b qdrant-8 qdrant-8b"
 EXPECTED_SHARDS="${EXPECTED_SHARDS:-$DEFAULT_EXPECTED_SHARDS}"
 
-declare -a SOURCE_SPECS=(
-  "mirror=root@10.116.0.3:/root/alphabook-prepared/shards"
-  "small=root@10.116.0.2:/root/alphabook-prepared/shards"
-  "qdrant=local:$LOCAL_SHARDS_ROOT"
-)
+declare -a SOURCE_SPECS
+if [[ -n "${SOURCE_SPECS_OVERRIDE:-}" ]]; then
+  mapfile -t SOURCE_SPECS < <(printf '%s\n' "$SOURCE_SPECS_OVERRIDE" | sed '/^$/d')
+else
+  SOURCE_SPECS=(
+    "mirror=root@10.116.0.3:/root/alphabook-prepared/shards"
+    "small=root@10.116.0.2:/root/alphabook-prepared/shards"
+    "qdrant=local:$LOCAL_SHARDS_ROOT"
+  )
+fi
 
 usage() {
   cat >&2 <<'EOF'
@@ -120,6 +125,10 @@ fi
 
 mapfile -t expected_shards < <(printf '%s\n' $EXPECTED_SHARDS | sed '/^$/d' | sort -u)
 declare -A seen_shards=()
+declare -A expected_shard_lookup=()
+for shard_name in "${expected_shards[@]}"; do
+  expected_shard_lookup["$shard_name"]=1
+done
 
 sync_local_tree() {
   local shard_path="$1"
@@ -140,7 +149,9 @@ sync_remote_tree() {
   if remote_shell "$remote_host" "test -d '$remote_path/r2'"; then
     rsync -a -e "${ssh_cmd[*]}" "$remote_host:$remote_path/r2/" "$FINAL_DIR/r2/"
   fi
-  rsync -a -e "${ssh_cmd[*]}" "$remote_host:$remote_path/run-manifest.json" "$FINAL_DIR/manifests/$shard_name.json"
+  if remote_shell "$remote_host" "test -f '$remote_path/run-manifest.json'"; then
+    rsync -a -e "${ssh_cmd[*]}" "$remote_host:$remote_path/run-manifest.json" "$FINAL_DIR/manifests/$shard_name.json"
+  fi
 }
 
 for spec in "${SOURCE_SPECS[@]}"; do
@@ -148,6 +159,9 @@ for spec in "${SOURCE_SPECS[@]}"; do
   source_value="${spec#*=}"
   mapfile -t shard_names < <(list_shards "$source_value")
   for shard_name in "${shard_names[@]}"; do
+    if [[ -z "${expected_shard_lookup[$shard_name]:-}" ]]; then
+      continue
+    fi
     seen_shards["$shard_name"]=1
     if [[ "$source_value" == local:* ]]; then
       sync_local_tree "${source_value#local:}/$shard_name" "$shard_name"
