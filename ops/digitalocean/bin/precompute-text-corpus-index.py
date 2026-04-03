@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import shutil
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -99,96 +100,143 @@ def ensure_link(source: Path, destination: Path, mode: str) -> None:
     destination.symlink_to(source)
 
 
-def write_csv(path: Path, rows: list[dict[str, Any]], fieldnames: list[str]) -> None:
-    with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow(row)
+SQLITE_SCHEMA = """
+CREATE TABLE books (
+  gutenberg_id TEXT PRIMARY KEY,
+  source_manifest_path TEXT,
+  source_manifest_mtime_ns INTEGER,
+  title TEXT,
+  subtitle TEXT,
+  authors_json TEXT NOT NULL,
+  subjects_json TEXT NOT NULL,
+  bookshelves_json TEXT NOT NULL,
+  language TEXT,
+  release_date TEXT,
+  release_year INTEGER,
+  publication_year INTEGER,
+  publication_year_source TEXT,
+  rights_status TEXT,
+  summary TEXT,
+  source_format TEXT,
+  source_path TEXT,
+  metadata_path TEXT,
+  raw_path TEXT,
+  clean_path TEXT,
+  clean_mtime_ns INTEGER,
+  book_html_path TEXT,
+  primary_text_kind TEXT NOT NULL,
+  primary_text_path TEXT NOT NULL,
+  primary_text_link_path TEXT NOT NULL,
+  primary_text_bytes INTEGER NOT NULL,
+  has_raw INTEGER NOT NULL,
+  has_clean INTEGER NOT NULL,
+  has_book_html INTEGER NOT NULL
+);
+
+CREATE INDEX idx_books_release_year ON books (release_year);
+CREATE INDEX idx_books_publication_year ON books (publication_year);
+CREATE INDEX idx_books_language ON books (language);
+CREATE INDEX idx_books_primary_kind ON books (primary_text_kind);
+"""
+
+SQLITE_INSERT = """
+INSERT INTO books (
+  gutenberg_id, source_manifest_path, source_manifest_mtime_ns, title, subtitle, authors_json, subjects_json, bookshelves_json,
+  language, release_date, release_year, publication_year, publication_year_source,
+  rights_status, summary, source_format, source_path, metadata_path, raw_path,
+  clean_path, clean_mtime_ns, book_html_path, primary_text_kind, primary_text_path,
+  primary_text_link_path, primary_text_bytes, has_raw, has_clean, has_book_html
+) VALUES (
+  :gutenberg_id, :source_manifest_path, :source_manifest_mtime_ns, :title, :subtitle, :authors_json, :subjects_json, :bookshelves_json,
+  :language, :release_date, :release_year, :publication_year, :publication_year_source,
+  :rights_status, :summary, :source_format, :source_path, :metadata_path, :raw_path,
+  :clean_path, :clean_mtime_ns, :book_html_path, :primary_text_kind, :primary_text_path,
+  :primary_text_link_path, :primary_text_bytes, :has_raw, :has_clean, :has_book_html
+)
+"""
+
+FIELDNAMES = [
+    "gutenberg_id",
+    "source_manifest_path",
+    "source_manifest_mtime_ns",
+    "title",
+    "subtitle",
+    "authors_json",
+    "subjects_json",
+    "bookshelves_json",
+    "language",
+    "release_date",
+    "release_year",
+    "publication_year",
+    "publication_year_source",
+    "rights_status",
+    "summary",
+    "source_format",
+    "source_path",
+    "metadata_path",
+    "raw_path",
+    "clean_path",
+    "clean_mtime_ns",
+    "book_html_path",
+    "primary_text_kind",
+    "primary_text_path",
+    "primary_text_link_path",
+    "primary_text_bytes",
+    "has_raw",
+    "has_clean",
+    "has_book_html",
+]
 
 
-def build_sqlite(path: Path, rows: list[dict[str, Any]]) -> None:
+def init_sqlite(path: Path) -> sqlite3.Connection:
     if path.exists():
         path.unlink()
     conn = sqlite3.connect(path)
-    try:
-        conn.executescript(
-            """
-            CREATE TABLE books (
-              gutenberg_id TEXT PRIMARY KEY,
-              source_manifest_path TEXT,
-              source_manifest_mtime_ns INTEGER,
-              title TEXT,
-              subtitle TEXT,
-              authors_json TEXT NOT NULL,
-              subjects_json TEXT NOT NULL,
-              bookshelves_json TEXT NOT NULL,
-              language TEXT,
-              release_date TEXT,
-              release_year INTEGER,
-              publication_year INTEGER,
-              publication_year_source TEXT,
-              rights_status TEXT,
-              summary TEXT,
-              source_format TEXT,
-              source_path TEXT,
-              metadata_path TEXT,
-              raw_path TEXT,
-              clean_path TEXT,
-              clean_mtime_ns INTEGER,
-              book_html_path TEXT,
-              primary_text_kind TEXT NOT NULL,
-              primary_text_path TEXT NOT NULL,
-              primary_text_link_path TEXT NOT NULL,
-              primary_text_bytes INTEGER NOT NULL,
-              has_raw INTEGER NOT NULL,
-              has_clean INTEGER NOT NULL,
-              has_book_html INTEGER NOT NULL
-            );
-
-            CREATE INDEX idx_books_release_year ON books (release_year);
-            CREATE INDEX idx_books_publication_year ON books (publication_year);
-            CREATE INDEX idx_books_language ON books (language);
-            CREATE INDEX idx_books_primary_kind ON books (primary_text_kind);
-            """
-        )
-        conn.executemany(
-            """
-            INSERT INTO books (
-              gutenberg_id, source_manifest_path, source_manifest_mtime_ns, title, subtitle, authors_json, subjects_json, bookshelves_json,
-              language, release_date, release_year, publication_year, publication_year_source,
-              rights_status, summary, source_format, source_path, metadata_path, raw_path,
-              clean_path, clean_mtime_ns, book_html_path, primary_text_kind, primary_text_path,
-              primary_text_link_path, primary_text_bytes, has_raw, has_clean, has_book_html
-            ) VALUES (
-              :gutenberg_id, :source_manifest_path, :source_manifest_mtime_ns, :title, :subtitle, :authors_json, :subjects_json, :bookshelves_json,
-              :language, :release_date, :release_year, :publication_year, :publication_year_source,
-              :rights_status, :summary, :source_format, :source_path, :metadata_path, :raw_path,
-              :clean_path, :clean_mtime_ns, :book_html_path, :primary_text_kind, :primary_text_path,
-              :primary_text_link_path, :primary_text_bytes, :has_raw, :has_clean, :has_book_html
-            )
-            """,
-            rows,
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    conn.executescript(SQLITE_SCHEMA)
+    return conn
 
 
-def load_existing_rows(path: Path) -> dict[str, dict[str, Any]]:
-    if not path.exists():
-        return {}
-    rows: dict[str, dict[str, Any]] = {}
-    with path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line:
-                continue
-            row = json.loads(line)
-            gutenberg_id = str(row.get("gutenberg_id", "")).strip()
-            if gutenberg_id:
-                rows[gutenberg_id] = row
-    return rows
+def prepare_previous_sqlite(output_dir: Path) -> Path | None:
+    previous_path = output_dir / "metadata-table.sqlite"
+    backup_path = output_dir / "metadata-table.prev.sqlite"
+    if backup_path.exists():
+        backup_path.unlink()
+    if previous_path.exists():
+        shutil.move(previous_path, backup_path)
+        return backup_path
+    return None
+
+
+def open_previous_lookup(path: Path | None) -> tuple[sqlite3.Connection | None, set[str]]:
+    if not path or not path.exists():
+        return None, set()
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    columns = {
+        str(row["name"])
+        for row in conn.execute("PRAGMA table_info(books)")
+    }
+    return conn, columns
+
+
+def fetch_existing_row(
+    conn: sqlite3.Connection | None,
+    columns: set[str],
+    gutenberg_id: str,
+) -> dict[str, Any] | None:
+    if conn is None:
+        return None
+    row = conn.execute(
+        "SELECT * FROM books WHERE gutenberg_id = ?",
+        (gutenberg_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    result = dict(row)
+    for key in FIELDNAMES:
+        if key not in result and key not in columns:
+            result[key] = None
+    return result
 
 
 def maybe_reuse_existing_row(
@@ -275,9 +323,6 @@ def main() -> None:
     if not args.no_primary_text:
         primary_text_root.mkdir(parents=True, exist_ok=True)
 
-    rows: list[dict[str, Any]] = []
-    existing_rows = load_existing_rows(output_dir / "metadata-table.jsonl")
-    manifest_lines: list[str] = []
     total_primary_bytes = 0
     counts = {
         "books_total": 0,
@@ -290,139 +335,130 @@ def main() -> None:
     counts["reused_rows"] = 0
     counts["rebuilt_rows"] = 0
 
-    for manifest_path in sorted(books_root.glob("*/manifest.json"), key=lambda path: int(path.parent.name)):
-        book_manifest = load_json(manifest_path)
-        gutenberg_id = str(book_manifest["gutenbergId"])
-        metadata = book_manifest["d1Records"]["work"]["metadata_json"]
-        r2_keys = book_manifest["r2Keys"]
+    previous_sqlite_path = prepare_previous_sqlite(output_dir)
+    previous_conn, previous_columns = open_previous_lookup(previous_sqlite_path)
+    sqlite_conn = init_sqlite(output_dir / "metadata-table.sqlite")
 
-        raw_path = r2_root / r2_keys["raw"] if r2_keys.get("raw") else None
-        clean_path = r2_root / r2_keys["clean"] if r2_keys.get("clean") else None
-        book_html_path = r2_root / r2_keys["bookHtml"] if r2_keys.get("bookHtml") else None
+    tsv_handle = (output_dir / "all-text-files.tsv").open("w", encoding="utf-8")
+    jsonl_handle = (output_dir / "metadata-table.jsonl").open("w", encoding="utf-8")
+    csv_handle = (output_dir / "metadata-table.csv").open("w", encoding="utf-8", newline="")
+    csv_writer = csv.DictWriter(csv_handle, fieldnames=FIELDNAMES)
+    csv_writer.writeheader()
 
-        has_clean = bool(clean_path and clean_path.is_file())
-        has_raw = bool(raw_path and raw_path.is_file())
-        has_book_html = bool(book_html_path and book_html_path.is_file())
+    processed_since_commit = 0
 
-        counts["books_total"] += 1
-        counts["books_with_clean"] += int(has_clean)
-        counts["books_with_raw"] += int(has_raw)
-        counts["books_with_book_html"] += int(has_book_html)
+    try:
+        for manifest_path in sorted(books_root.glob("*/manifest.json"), key=lambda path: int(path.parent.name)):
+            book_manifest = load_json(manifest_path)
+            gutenberg_id = str(book_manifest["gutenbergId"])
+            metadata = book_manifest["d1Records"]["work"]["metadata_json"]
+            r2_keys = book_manifest["r2Keys"]
 
-        if not has_clean:
-            counts["books_missing_clean"] += 1
-            continue
+            raw_path = r2_root / r2_keys["raw"] if r2_keys.get("raw") else None
+            clean_path = r2_root / r2_keys["clean"] if r2_keys.get("clean") else None
+            book_html_path = r2_root / r2_keys["bookHtml"] if r2_keys.get("bookHtml") else None
 
-        primary_text_kind = "clean"
-        primary_text_path = clean_path
-        counts["primary_clean"] += 1
-        if args.no_primary_text:
-            primary_text_link_path = primary_text_path
-        else:
-            primary_text_link_path = primary_text_root / f"{int(gutenberg_id):06d}.txt"
-            ensure_link(primary_text_path, primary_text_link_path, args.link_mode)
+            has_clean = bool(clean_path and clean_path.is_file())
+            has_raw = bool(raw_path and raw_path.is_file())
+            has_book_html = bool(book_html_path and book_html_path.is_file())
 
-        primary_text_bytes = primary_text_path.stat().st_size
-        source_manifest_mtime_ns = manifest_path.stat().st_mtime_ns
-        clean_mtime_ns = primary_text_path.stat().st_mtime_ns
-        total_primary_bytes += primary_text_bytes
-        manifest_lines.append(f"{primary_text_bytes}\t{primary_text_link_path}\n")
+            counts["books_total"] += 1
+            counts["books_with_clean"] += int(has_clean)
+            counts["books_with_raw"] += int(has_raw)
+            counts["books_with_book_html"] += int(has_book_html)
 
-        reused_row = maybe_reuse_existing_row(
-            existing_rows.get(gutenberg_id),
-            manifest_path=manifest_path,
-            clean_path=clean_path,
-            primary_text_path=primary_text_path,
-            primary_text_link_path=primary_text_link_path,
-            primary_text_kind=primary_text_kind,
-            primary_text_bytes=primary_text_bytes,
-            source_manifest_mtime_ns=source_manifest_mtime_ns,
-            clean_mtime_ns=clean_mtime_ns,
-        )
-        if reused_row:
-            rows.append(reused_row)
-            counts["reused_rows"] += 1
-            continue
+            if not has_clean:
+                counts["books_missing_clean"] += 1
+                continue
 
-        release_date = coerce_text(metadata.get("releaseDate"))
-        release_year = year_from_date(release_date)
-        publication_year, publication_year_source = infer_publication_year(metadata)
-        authors = safe_list(metadata.get("authors"))
-        subjects = safe_list(metadata.get("subjects"))
-        bookshelves = safe_list(metadata.get("bookshelves"))
+            primary_text_kind = "clean"
+            primary_text_path = clean_path
+            counts["primary_clean"] += 1
+            if args.no_primary_text:
+                primary_text_link_path = primary_text_path
+            else:
+                primary_text_link_path = primary_text_root / f"{int(gutenberg_id):06d}.txt"
+                ensure_link(primary_text_path, primary_text_link_path, args.link_mode)
 
-        row = {
-            "gutenberg_id": gutenberg_id,
-            "source_manifest_path": str(manifest_path),
-            "source_manifest_mtime_ns": source_manifest_mtime_ns,
-            "title": coerce_text(metadata.get("title")) or coerce_text(book_manifest.get("title")),
-            "subtitle": coerce_text(metadata.get("subtitle")),
-            "authors_json": json.dumps(authors, ensure_ascii=True),
-            "subjects_json": json.dumps(subjects, ensure_ascii=True),
-            "bookshelves_json": json.dumps(bookshelves, ensure_ascii=True),
-            "language": coerce_text(metadata.get("language")),
-            "release_date": release_date,
-            "release_year": release_year,
-            "publication_year": publication_year,
-            "publication_year_source": publication_year_source,
-            "rights_status": coerce_text(metadata.get("rightsStatus")),
-            "summary": coerce_text(metadata.get("summary")),
-            "source_format": coerce_text(metadata.get("sourceFormat")) or coerce_text(metadata.get("format")),
-            "source_path": coerce_text(metadata.get("sourcePath")),
-            "metadata_path": coerce_text(metadata.get("metadataPath")),
-            "raw_path": str(raw_path) if raw_path else None,
-            "clean_path": str(clean_path) if clean_path else None,
-            "clean_mtime_ns": clean_mtime_ns,
-            "book_html_path": str(book_html_path) if book_html_path else None,
-            "primary_text_kind": primary_text_kind,
-            "primary_text_path": str(primary_text_path),
-            "primary_text_link_path": str(primary_text_link_path),
-            "primary_text_bytes": primary_text_bytes,
-            "has_raw": int(has_raw),
-            "has_clean": int(has_clean),
-            "has_book_html": int(has_book_html),
-        }
-        rows.append(row)
-        counts["rebuilt_rows"] += 1
+            primary_text_bytes = primary_text_path.stat().st_size
+            source_manifest_mtime_ns = manifest_path.stat().st_mtime_ns
+            clean_mtime_ns = primary_text_path.stat().st_mtime_ns
+            total_primary_bytes += primary_text_bytes
+            tsv_handle.write(f"{primary_text_bytes}\t{primary_text_link_path}\n")
 
-    fieldnames = [
-        "gutenberg_id",
-        "source_manifest_path",
-        "source_manifest_mtime_ns",
-        "title",
-        "subtitle",
-        "authors_json",
-        "subjects_json",
-        "bookshelves_json",
-        "language",
-        "release_date",
-        "release_year",
-        "publication_year",
-        "publication_year_source",
-        "rights_status",
-        "summary",
-        "source_format",
-        "source_path",
-        "metadata_path",
-        "raw_path",
-        "clean_path",
-        "clean_mtime_ns",
-        "book_html_path",
-        "primary_text_kind",
-        "primary_text_path",
-        "primary_text_link_path",
-        "primary_text_bytes",
-        "has_raw",
-        "has_clean",
-        "has_book_html",
-    ]
+            reused_row = maybe_reuse_existing_row(
+                fetch_existing_row(previous_conn, previous_columns, gutenberg_id),
+                manifest_path=manifest_path,
+                clean_path=clean_path,
+                primary_text_path=primary_text_path,
+                primary_text_link_path=primary_text_link_path,
+                primary_text_kind=primary_text_kind,
+                primary_text_bytes=primary_text_bytes,
+                source_manifest_mtime_ns=source_manifest_mtime_ns,
+                clean_mtime_ns=clean_mtime_ns,
+            )
+            if reused_row:
+                row = reused_row
+                counts["reused_rows"] += 1
+            else:
+                release_date = coerce_text(metadata.get("releaseDate"))
+                release_year = year_from_date(release_date)
+                publication_year, publication_year_source = infer_publication_year(metadata)
+                authors = safe_list(metadata.get("authors"))
+                subjects = safe_list(metadata.get("subjects"))
+                bookshelves = safe_list(metadata.get("bookshelves"))
 
-    (output_dir / "all-text-files.tsv").write_text("".join(manifest_lines), encoding="utf-8")
-    with (output_dir / "metadata-table.jsonl").open("w", encoding="utf-8") as handle:
-        for row in rows:
-            handle.write(json.dumps(row, ensure_ascii=True) + "\n")
-    write_csv(output_dir / "metadata-table.csv", rows, fieldnames)
-    build_sqlite(output_dir / "metadata-table.sqlite", rows)
+                row = {
+                    "gutenberg_id": gutenberg_id,
+                    "source_manifest_path": str(manifest_path),
+                    "source_manifest_mtime_ns": source_manifest_mtime_ns,
+                    "title": coerce_text(metadata.get("title")) or coerce_text(book_manifest.get("title")),
+                    "subtitle": coerce_text(metadata.get("subtitle")),
+                    "authors_json": json.dumps(authors, ensure_ascii=True),
+                    "subjects_json": json.dumps(subjects, ensure_ascii=True),
+                    "bookshelves_json": json.dumps(bookshelves, ensure_ascii=True),
+                    "language": coerce_text(metadata.get("language")),
+                    "release_date": release_date,
+                    "release_year": release_year,
+                    "publication_year": publication_year,
+                    "publication_year_source": publication_year_source,
+                    "rights_status": coerce_text(metadata.get("rightsStatus")),
+                    "summary": coerce_text(metadata.get("summary")),
+                    "source_format": coerce_text(metadata.get("sourceFormat")) or coerce_text(metadata.get("format")),
+                    "source_path": coerce_text(metadata.get("sourcePath")),
+                    "metadata_path": coerce_text(metadata.get("metadataPath")),
+                    "raw_path": str(raw_path) if raw_path else None,
+                    "clean_path": str(clean_path) if clean_path else None,
+                    "clean_mtime_ns": clean_mtime_ns,
+                    "book_html_path": str(book_html_path) if book_html_path else None,
+                    "primary_text_kind": primary_text_kind,
+                    "primary_text_path": str(primary_text_path),
+                    "primary_text_link_path": str(primary_text_link_path),
+                    "primary_text_bytes": primary_text_bytes,
+                    "has_raw": int(has_raw),
+                    "has_clean": int(has_clean),
+                    "has_book_html": int(has_book_html),
+                }
+                counts["rebuilt_rows"] += 1
+
+            jsonl_handle.write(json.dumps(row, ensure_ascii=True) + "\n")
+            csv_writer.writerow(row)
+            sqlite_conn.execute(SQLITE_INSERT, row)
+            processed_since_commit += 1
+            if processed_since_commit >= 500:
+                sqlite_conn.commit()
+                csv_handle.flush()
+                jsonl_handle.flush()
+                tsv_handle.flush()
+                processed_since_commit = 0
+    finally:
+        sqlite_conn.commit()
+        tsv_handle.close()
+        jsonl_handle.close()
+        csv_handle.close()
+        sqlite_conn.close()
+        if previous_conn is not None:
+            previous_conn.close()
 
     manifest = {
         "prepared_root": str(prepared_root),
@@ -435,7 +471,7 @@ def main() -> None:
             "link_mode": None if args.no_primary_text else args.link_mode,
             "uses_primary_text_aliases": not args.no_primary_text,
         },
-        "total_files": len(rows),
+        "total_files": counts["primary_clean"],
         "total_bytes": total_primary_bytes,
         "counts": counts,
         "paths": {
