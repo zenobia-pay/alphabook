@@ -191,6 +191,73 @@ def load_existing_rows(path: Path) -> dict[str, dict[str, Any]]:
     return rows
 
 
+def maybe_reuse_existing_row(
+    existing_row: dict[str, Any] | None,
+    *,
+    manifest_path: Path,
+    clean_path: Path,
+    primary_text_path: Path,
+    primary_text_link_path: Path,
+    primary_text_kind: str,
+    primary_text_bytes: int,
+    source_manifest_mtime_ns: int,
+    clean_mtime_ns: int,
+) -> dict[str, Any] | None:
+    if not existing_row:
+        return None
+
+    existing_clean_path = str(existing_row.get("clean_path") or "")
+    existing_primary_text_path = str(existing_row.get("primary_text_path") or "")
+    existing_source_manifest_path = str(existing_row.get("source_manifest_path") or "")
+    existing_source_manifest_mtime_ns = existing_row.get("source_manifest_mtime_ns")
+    existing_clean_mtime_ns = existing_row.get("clean_mtime_ns")
+    existing_primary_text_bytes = existing_row.get("primary_text_bytes")
+
+    path_matches = (
+        existing_clean_path == str(clean_path)
+        and (
+            existing_primary_text_path in ("", str(clean_path), str(primary_text_path))
+        )
+    )
+    size_matches = int(existing_primary_text_bytes or -1) == primary_text_bytes
+
+    # Backward-compatible fast path for rows written before the cache metadata existed.
+    # If the canonical clean path and byte size are unchanged, hydrate the cache fields
+    # in place and reuse the row instead of reparsing metadata.
+    if (
+        path_matches
+        and size_matches
+        and existing_source_manifest_path == ""
+        and existing_source_manifest_mtime_ns in (None, "")
+        and existing_clean_mtime_ns in (None, "")
+    ):
+        reused = dict(existing_row)
+        reused["source_manifest_path"] = str(manifest_path)
+        reused["source_manifest_mtime_ns"] = source_manifest_mtime_ns
+        reused["clean_mtime_ns"] = clean_mtime_ns
+        reused["primary_text_path"] = str(primary_text_path)
+        reused["primary_text_link_path"] = str(primary_text_link_path)
+        reused["primary_text_kind"] = primary_text_kind
+        reused["primary_text_bytes"] = primary_text_bytes
+        return reused
+
+    if (
+        existing_source_manifest_path == str(manifest_path)
+        and int(existing_source_manifest_mtime_ns or -1) == source_manifest_mtime_ns
+        and existing_clean_path == str(clean_path)
+        and int(existing_clean_mtime_ns or -1) == clean_mtime_ns
+        and size_matches
+    ):
+        reused = dict(existing_row)
+        reused["primary_text_path"] = str(primary_text_path)
+        reused["primary_text_link_path"] = str(primary_text_link_path)
+        reused["primary_text_kind"] = primary_text_kind
+        reused["primary_text_bytes"] = primary_text_bytes
+        return reused
+
+    return None
+
+
 def main() -> None:
     args = parse_args()
     prepared_root = Path(args.prepared_root).resolve()
@@ -261,22 +328,21 @@ def main() -> None:
         total_primary_bytes += primary_text_bytes
         manifest_lines.append(f"{primary_text_bytes}\t{primary_text_link_path}\n")
 
-        existing_row = existing_rows.get(gutenberg_id)
-        if existing_row:
-            if (
-                str(existing_row.get("source_manifest_path")) == str(manifest_path)
-                and int(existing_row.get("source_manifest_mtime_ns") or -1) == source_manifest_mtime_ns
-                and str(existing_row.get("clean_path")) == str(clean_path)
-                and int(existing_row.get("clean_mtime_ns") or -1) == clean_mtime_ns
-                and int(existing_row.get("primary_text_bytes") or -1) == primary_text_bytes
-            ):
-                existing_row["primary_text_link_path"] = str(primary_text_link_path)
-                existing_row["primary_text_path"] = str(primary_text_path)
-                existing_row["primary_text_kind"] = primary_text_kind
-                existing_row["primary_text_bytes"] = primary_text_bytes
-                rows.append(existing_row)
-                counts["reused_rows"] += 1
-                continue
+        reused_row = maybe_reuse_existing_row(
+            existing_rows.get(gutenberg_id),
+            manifest_path=manifest_path,
+            clean_path=clean_path,
+            primary_text_path=primary_text_path,
+            primary_text_link_path=primary_text_link_path,
+            primary_text_kind=primary_text_kind,
+            primary_text_bytes=primary_text_bytes,
+            source_manifest_mtime_ns=source_manifest_mtime_ns,
+            clean_mtime_ns=clean_mtime_ns,
+        )
+        if reused_row:
+            rows.append(reused_row)
+            counts["reused_rows"] += 1
+            continue
 
         release_date = coerce_text(metadata.get("releaseDate"))
         release_year = year_from_date(release_date)
