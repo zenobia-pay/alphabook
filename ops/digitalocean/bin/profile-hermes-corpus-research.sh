@@ -115,10 +115,6 @@ if explicit_value:
     candidate = Path(explicit_value)
     if candidate.exists():
         inner_dir = candidate
-if inner_dir is None and inner_root.exists():
-    candidates = [p for p in inner_root.iterdir() if p.is_dir()]
-    if candidates:
-        inner_dir = max(candidates, key=lambda p: p.stat().st_mtime)
 
 inner = None
 if inner_dir:

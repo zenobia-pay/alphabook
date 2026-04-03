@@ -138,29 +138,7 @@ function inferInnerRunDir(runDir) {
   if (wrapperIndex?.inner_run_dir && fs.existsSync(wrapperIndex.inner_run_dir)) {
     return wrapperIndex.inner_run_dir;
   }
-  const candidateFiles = [
-    path.join(runDir, "status.json"),
-    path.join(runDir, "summary.json"),
-    path.join(runDir, "launcher.log"),
-    path.join(runDir, "hermes.stdout.log"),
-    path.join(runDir, "hermes.stderr.log"),
-    path.join(runDir, "profile-summary.json"),
-    path.join(runDir, "command-snapshots.jsonl"),
-  ];
-  const regex = /\/srv\/alphabook\/logs\/corpus-research\/[A-Za-z0-9._-]+/g;
-  const matches = new Set();
-  for (const filePath of candidateFiles) {
-    try {
-      const text = fs.readFileSync(filePath, "utf8");
-      for (const match of text.matchAll(regex)) {
-        matches.add(match[0]);
-      }
-    } catch {
-      continue;
-    }
-  }
-  const sorted = [...matches].filter((item) => fs.existsSync(item)).sort();
-  return sorted.at(-1) || null;
+  return null;
 }
 
 function getCostSummary(innerRunDir) {

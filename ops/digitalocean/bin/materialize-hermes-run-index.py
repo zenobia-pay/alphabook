@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -51,29 +50,7 @@ def infer_inner_run_dir(run_dir: Path) -> Path | None:
         candidate = Path(value)
         if candidate.exists():
             return candidate
-
-    regex = re.compile(r"/srv/alphabook/logs/corpus-research/[A-Za-z0-9._-]+")
-    candidate_files = [
-        run_dir / "status.json",
-        run_dir / "summary.json",
-        run_dir / "launcher.log",
-        run_dir / "hermes.stdout.log",
-        run_dir / "hermes.stderr.log",
-        run_dir / "profile-summary.json",
-        run_dir / "command-snapshots.jsonl",
-    ]
-    matches: set[str] = set()
-    for file_path in candidate_files:
-        try:
-            text = file_path.read_text()
-        except Exception:
-            continue
-        for match in regex.findall(text):
-            if Path(match).exists():
-                matches.add(match)
-    if not matches:
-        return None
-    return Path(sorted(matches)[-1])
+    return None
 
 
 def collect_session_info(run_dir: Path) -> dict[str, Any]:
