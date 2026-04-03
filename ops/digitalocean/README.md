@@ -198,13 +198,12 @@ artifact tree instead:
 ```bash
 python3 /srv/alphabook/repo/ops/digitalocean/bin/precompute-text-corpus-index.py \
   --prepared-root /root/alphabook-prepared/final/<run-id> \
-  --output-dir /srv/alphabook/precomputed-corpus/latest
+  --output-dir /srv/alphabook/precomputed-corpus/latest \
+  --no-primary-text
 ```
 
 That produces:
 
-- `primary-text/`:
-  one canonical text path per Gutenberg ID, symlinked by default
 - `all-text-files.tsv`:
   `size_bytes<TAB>absolute_path`
 - `metadata-table.jsonl`
@@ -227,15 +226,24 @@ python3 /srv/alphabook/repo/ops/digitalocean/bin/build-scoped-text-file-list.py 
   --publication-year-to 1919
 ```
 
-To reuse the precomputed manifest in existing helper-driven runs:
+To reuse the precomputed manifest directly in ad hoc runs, point your scoped-file-list logic at the index:
 
 ```bash
-/srv/alphabook/repo/ops/digitalocean/bin/prepare-text-corpus-manifest.sh \
-  --output-dir /tmp/run/prepared \
-  --precomputed-index-dir /srv/alphabook/precomputed-corpus/latest
+cp /srv/alphabook/precomputed-corpus/latest/all-text-files.tsv /tmp/run/all-text-files.tsv
 ```
 
 ## Hermes Run Layout
+
+When `--no-primary-text` is used, `all-text-files.tsv` points directly at the consolidated canonical clean text files under `r2/gutenberg/clean/<id>/clean.txt`, so no alias folder is created.
+
+The shard consolidation helper can kick this off automatically after the final merge:
+
+```bash
+POST_INDEX_ENABLED=1 \
+POST_INDEX_OUTPUT_DIR=/mnt/alphabook_consolidation/final/latest/research-corpus-index \
+POST_INDEX_NO_PRIMARY_TEXT=1 \
+/srv/alphabook/repo/ops/digitalocean/bin/consolidate-prepared-gutenberg-shards.sh --wait
+```
 
 Wrapper-managed Hermes research runs are now isolated into explicit subfolders:
 
@@ -335,6 +343,8 @@ From the droplet repo:
 ```bash
 cd /srv/alphabook/repo
 ops/digitalocean/bin/run-hermes-corpus-research.sh \
+  --corpus-root /mnt/alphabook_consolidation/final/latest \
+  --precomputed-index-dir /mnt/alphabook_consolidation/final/latest/research-corpus-index \
   --user-prompt "Find me all the different ways that authors deal with grief in 19th century literature."
 ```
 
@@ -488,15 +498,14 @@ Notes:
 - It also records token usage and an estimated cost when the upstream response includes a `usage` block.
 - The proxy is intended for debugging and auditing; logs can become large on long runs.
 
-For ripgrep progress-aware corpus scans, the expected helper flow is:
+For ripgrep progress-aware corpus scans, assume the corpus index already exists and use it directly:
 
 ```bash
-ops/digitalocean/bin/prepare-text-corpus-manifest.sh \
-  --corpus-root /srv/alphabook/gutenberg \
-  --output-dir /srv/alphabook/logs/corpus-research/<run-id>/prepared
+cp /mnt/alphabook_consolidation/final/latest/research-corpus-index/all-text-files.tsv \
+  /srv/alphabook/logs/corpus-research/<run-id>/all-text-files.tsv
 ```
 
-That writes a sorted text-only TSV manifest:
+That gives you the sorted text-only TSV manifest:
 
 - `all-text-files.tsv` as `size_bytes<TAB>absolute_path`
 

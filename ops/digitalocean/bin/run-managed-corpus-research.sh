@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="${ROOT_DIR:-/srv/alphabook/repo}"
 RUN_ROOT="${RUN_ROOT:-/srv/alphabook/logs/corpus-research}"
 CORPUS_ROOT="${CORPUS_ROOT:-/srv/alphabook/gutenberg}"
+PRECOMPUTED_INDEX_DIR="${PRECOMPUTED_INDEX_DIR:-}"
 ENV_FILE="${ENV_FILE:-$ROOT_DIR/.dev.vars}"
 FALLBACK_ENV_FILE="${FALLBACK_ENV_FILE:-/srv/alphabook/.ingest.env}"
 NANO_MODEL="${NANO_MODEL:-gpt-5-nano}"
@@ -17,6 +18,20 @@ usage() {
 Usage: run-managed-corpus-research.sh --user-prompt "<research prompt>"
 EOF
   exit 1
+}
+
+resolve_precomputed_index_dir() {
+  local corpus_root="$1"
+  local explicit_dir="${2:-}"
+  if [[ -n "$explicit_dir" ]]; then
+    printf '%s\n' "$explicit_dir"
+    return 0
+  fi
+  if [[ -f "$corpus_root/all-text-files.tsv" ]]; then
+    printf '%s\n' "$corpus_root"
+    return 0
+  fi
+  printf '%s\n' "$corpus_root/research-corpus-index"
 }
 
 load_key() {
@@ -39,6 +54,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --user-prompt)
       USER_PROMPT="$2"
+      shift 2
+      ;;
+    --precomputed-index-dir)
+      PRECOMPUTED_INDEX_DIR="$2"
       shift 2
       ;;
     --model)
@@ -71,6 +90,11 @@ done
 
 [[ -n "$USER_PROMPT" ]] || usage
 [[ -d "$ROOT_DIR" ]] || { echo "Missing repo root: $ROOT_DIR" >&2; exit 1; }
+PRECOMPUTED_INDEX_DIR="$(resolve_precomputed_index_dir "$CORPUS_ROOT" "$PRECOMPUTED_INDEX_DIR")"
+[[ -f "$PRECOMPUTED_INDEX_DIR/all-text-files.tsv" ]] || {
+  echo "Missing precomputed text manifest: $PRECOMPUTED_INDEX_DIR/all-text-files.tsv" >&2
+  exit 1
+}
 
 if [[ -f "$ENV_FILE" ]]; then
   export OPENAI_API_KEY="$(load_key "$ENV_FILE")"
@@ -86,7 +110,7 @@ print(secrets.token_hex(4))
 PY
 )"
 run_dir="$RUN_ROOT/$timestamp-$run_id"
-mkdir -p "$run_dir" "$run_dir/search" "$run_dir/prepared" "$run_dir/triage" "$run_dir/visualizations"
+mkdir -p "$run_dir" "$run_dir/search" "$run_dir/triage" "$run_dir/visualizations"
 
 status_file="$run_dir/status.json"
 run_log="$run_dir/run.log"
@@ -94,15 +118,16 @@ stream_log="$run_dir/stream.log"
 pid_file="$run_dir/runner.pid"
 heartbeat_pid_file="$run_dir/streamer.pid"
 
-python3 - "$run_dir/manifest.json" "$USER_PROMPT" "$CORPUS_ROOT" "$timestamp" "$run_id" <<'PY'
+python3 - "$run_dir/manifest.json" "$USER_PROMPT" "$CORPUS_ROOT" "$PRECOMPUTED_INDEX_DIR" "$timestamp" "$run_id" <<'PY'
 from pathlib import Path
 import json
 import sys
 payload = {
     "user_prompt": sys.argv[2],
     "corpus_root": sys.argv[3],
-    "timestamp": sys.argv[4],
-    "run_id": sys.argv[5],
+    "precomputed_index_dir": sys.argv[4],
+    "timestamp": sys.argv[5],
+    "run_id": sys.argv[6],
     "status": "launching",
 }
 Path(sys.argv[1]).write_text(json.dumps(payload, indent=2) + "\n")
@@ -157,11 +182,7 @@ PY
 log "run_start"
 update_phase "scope_selection" "0" "choosing scope"
 
-"$ROOT_DIR/ops/digitalocean/bin/prepare-text-corpus-manifest.sh" \
-  --corpus-root "$CORPUS_ROOT" \
-  --output-dir "$RUN_DIR/prepared" >/dev/null
-
-python3 - "$RUN_DIR" "$USER_PROMPT" <<'PY'
+python3 - "$RUN_DIR" "$USER_PROMPT" "$PRECOMPUTED_INDEX_DIR" <<'PY'
 from pathlib import Path
 import json
 import re
@@ -169,9 +190,10 @@ import sys
 
 run_dir = Path(sys.argv[1])
 user_prompt = sys.argv[2].lower()
+precomputed_index_dir = Path(sys.argv[3])
 manifest_path = run_dir / "manifest.json"
 manifest = json.loads(manifest_path.read_text())
-tsv_path = run_dir / "prepared" / "all-text-files.tsv"
+tsv_path = precomputed_index_dir / "all-text-files.tsv"
 scope_path = run_dir / "scope-files.tsv"
 rows = tsv_path.read_text().splitlines()
 

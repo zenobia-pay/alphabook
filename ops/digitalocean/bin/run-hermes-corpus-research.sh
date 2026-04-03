@@ -8,6 +8,7 @@ HERMES_ENV_SOURCE="${HERMES_ENV_SOURCE:-/root/.hermes/.env}"
 ENV_FILE="${ENV_FILE:-$ROOT_DIR/.dev.vars}"
 FALLBACK_ENV_FILE="${FALLBACK_ENV_FILE:-/srv/alphabook/.ingest.env}"
 CORPUS_ROOT="${CORPUS_ROOT:-/srv/alphabook/gutenberg}"
+PRECOMPUTED_INDEX_DIR="${PRECOMPUTED_INDEX_DIR:-}"
 MODEL="${MODEL:-gpt-5.4}"
 MAX_TURNS="${MAX_TURNS:-60}"
 HEARTBEAT_SECONDS="${HEARTBEAT_SECONDS:-15}"
@@ -24,6 +25,9 @@ Options:
   --model NAME           Override Hermes model. Default: gpt-5.4
   --run-root PATH        Output root. Default: /srv/alphabook/logs/hermes-corpus-research
   --corpus-root PATH     Corpus root. Default: /srv/alphabook/gutenberg
+  --precomputed-index-dir PATH
+                         Reusable text manifest dir. Defaults to <corpus-root>/research-corpus-index
+                         or <corpus-root> when it already contains all-text-files.tsv.
   --root-dir PATH        Repo root. Default: /srv/alphabook/repo
   --resume-run-dir PATH  Prior wrapper run dir to resume Hermes thread from
   --resume-session-id ID Prior Hermes session id to resume
@@ -60,6 +64,11 @@ while [[ $# -gt 0 ]]; do
       CORPUS_ROOT="$2"
       shift 2
       ;;
+    --precomputed-index-dir)
+      [[ $# -ge 2 ]] || usage
+      PRECOMPUTED_INDEX_DIR="$2"
+      shift 2
+      ;;
     --root-dir)
       [[ $# -ge 2 ]] || usage
       ROOT_DIR="$2"
@@ -88,6 +97,26 @@ if [[ -n "$RESUME_RUN_DIR" ]]; then
   [[ -d "$RESUME_RUN_DIR" ]] || { echo "Missing resume run dir: $RESUME_RUN_DIR" >&2; exit 1; }
 fi
 mkdir -p "$RUN_ROOT"
+
+resolve_precomputed_index_dir() {
+  local corpus_root="$1"
+  local explicit_dir="${2:-}"
+  if [[ -n "$explicit_dir" ]]; then
+    printf '%s\n' "$explicit_dir"
+    return 0
+  fi
+  if [[ -f "$corpus_root/all-text-files.tsv" ]]; then
+    printf '%s\n' "$corpus_root"
+    return 0
+  fi
+  printf '%s\n' "$corpus_root/research-corpus-index"
+}
+
+PRECOMPUTED_INDEX_DIR="$(resolve_precomputed_index_dir "$CORPUS_ROOT" "$PRECOMPUTED_INDEX_DIR")"
+[[ -f "$PRECOMPUTED_INDEX_DIR/all-text-files.tsv" ]] || {
+  echo "Missing precomputed text manifest: $PRECOMPUTED_INDEX_DIR/all-text-files.tsv" >&2
+  exit 1
+}
 
 load_key() {
   local source_file="$1"
@@ -231,16 +260,17 @@ else:
 path.write_text(text)
 PY
 
-python3 - "$prompt_file" "$CORPUS_ROOT" "$USER_PROMPT" "$RESUME_SESSION_ID" "$RESUME_RUN_DIR" <<'PY'
+python3 - "$prompt_file" "$CORPUS_ROOT" "$PRECOMPUTED_INDEX_DIR" "$USER_PROMPT" "$RESUME_SESSION_ID" "$RESUME_RUN_DIR" <<'PY'
 from pathlib import Path
 import sys
 import json
 
 prompt_path = Path(sys.argv[1])
 corpus_root = sys.argv[2]
-user_prompt = sys.argv[3]
-resume_session_id = sys.argv[4].strip()
-resume_run_dir = Path(sys.argv[5]) if len(sys.argv) > 5 and sys.argv[5].strip() else None
+precomputed_index_dir = sys.argv[3]
+user_prompt = sys.argv[4]
+resume_session_id = sys.argv[5].strip()
+resume_run_dir = Path(sys.argv[6]) if len(sys.argv) > 6 and sys.argv[6].strip() else None
 
 if resume_session_id:
     inner_run_dir = None
@@ -285,7 +315,9 @@ User follow-up:
     prompt_path.write_text(follow_up_prompt)
     raise SystemExit
 
-prompt = f"""You are on a DigitalOcean droplet with a Project Gutenberg mirror at {corpus_root}.
+prompt = f"""You are on a DigitalOcean droplet with a prepared Project Gutenberg corpus at {corpus_root}.
+
+The reusable text-only manifest for this corpus lives at {precomputed_index_dir}.
 
 A user has submitted this research request:
 
@@ -360,21 +392,20 @@ Process requirements:
 - If a search step is large, break it into smaller chunks and persist intermediate files in the run directory.
 - Decide and record the chosen scope before starting any ripgrep search.
 - Search raw text only. Do not use HTML, RDF, EPUB metadata, cache files, or other non-text derivatives for the main corpus search.
-- Use the provided helper scripts when available:
-  - /srv/alphabook/repo/ops/digitalocean/bin/prepare-text-corpus-manifest.sh
+- The corpus metadata and text manifest are already precomputed. Do not regenerate them.
+- Use the precomputed index in `{precomputed_index_dir}` as the source of truth for corpus metadata and searchable text files.
+- Use the provided ripgrep helper:
   - /srv/alphabook/repo/ops/digitalocean/bin/run-ripgrep-progress.sh
-- Use the helpers with their actual CLI syntax. Example invocations:
-  - `/srv/alphabook/repo/ops/digitalocean/bin/prepare-text-corpus-manifest.sh --output-dir "$RUN_DIR/prepared" --corpus-root "{corpus_root}"`
-  - `/srv/alphabook/repo/ops/digitalocean/bin/run-ripgrep-progress.sh --file-list "$RUN_DIR/prepared/scoped-text-files.tsv" --pattern '<regex>' --output-dir "$RUN_DIR/search"`
-- Do not pass `{corpus_root}` as a bare positional argument to helper scripts.
-- The manifest helper writes `all-text-files.tsv` under the output dir; if you derive a scoped subset, write it as another TSV with the same `size_bytes<TAB>absolute_path` format before calling the ripgrep helper.
+- Use it with its actual CLI syntax. Example invocation:
+  - `/srv/alphabook/repo/ops/digitalocean/bin/run-ripgrep-progress.sh --file-list "$RUN_DIR/scoped-text-files.tsv" --pattern '<regex>' --output-dir "$RUN_DIR/search"`
+- Run ripgrep only against text files listed in `{precomputed_index_dir}/all-text-files.tsv` or a scoped TSV derived from it.
+- If you derive a scoped subset, write it as `size_bytes<TAB>absolute_path` TSV before calling the ripgrep helper.
 - The wrapper exported an explicit handoff file path in `$WRAPPER_INNER_RUN_FILE`. After you create the inner corpus run directory, write that absolute path into `$WRAPPER_INNER_RUN_FILE` immediately so the wrapper can associate the run without parsing logs.
 - The required order is:
   1. decide scope
   2. write chosen_scope and scope_rationale into the run manifest
-  3. prepare the text-only manifest
-  4. derive a scoped text-only file list
-  5. run the progress-aware ripgrep helper over that scoped text-only file list
+  3. derive a scoped text-only file list from the precomputed index
+  4. run the progress-aware ripgrep helper over that scoped text-only file list
 - When you invoke repo helpers on this droplet, use the repo-root absolute paths under `/srv/alphabook/repo/...`, not `/srv/alphabook/ops/...`.
 - Do not run a single raw `rg` command directly over /srv/alphabook/gutenberg.
 
@@ -443,7 +474,7 @@ At the end:
 prompt_path.write_text(prompt)
 PY
 
-python3 - "$status_file" "$summary_file" "$timestamp" "$run_id" "$job_id" "$ROOT_DIR" "$CORPUS_ROOT" "$MODEL" "$MAX_TURNS" "$USER_PROMPT" "$RESUME_RUN_DIR" "$RESUME_SESSION_ID" <<'PY'
+python3 - "$status_file" "$summary_file" "$timestamp" "$run_id" "$job_id" "$ROOT_DIR" "$CORPUS_ROOT" "$PRECOMPUTED_INDEX_DIR" "$MODEL" "$MAX_TURNS" "$USER_PROMPT" "$RESUME_RUN_DIR" "$RESUME_SESSION_ID" <<'PY'
 from pathlib import Path
 import json
 import sys
@@ -456,11 +487,12 @@ payload = {
     "job_id": sys.argv[5],
     "root_dir": sys.argv[6],
     "corpus_root": sys.argv[7],
-    "model": sys.argv[8],
-    "max_turns": int(sys.argv[9]),
-    "user_prompt": sys.argv[10],
-    "resumed_from_run_dir": sys.argv[11] or None,
-    "resumed_session_id": sys.argv[12] or None,
+    "precomputed_index_dir": sys.argv[8],
+    "model": sys.argv[9],
+    "max_turns": int(sys.argv[10]),
+    "user_prompt": sys.argv[11],
+    "resumed_from_run_dir": sys.argv[12] or None,
+    "resumed_session_id": sys.argv[13] or None,
     "state": "launching",
     "run_dir": str(status_path.parent.parent),
     "state_dir": str(status_path.parent),
