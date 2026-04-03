@@ -8077,12 +8077,6 @@ function summarizeHermesCommandIntent(command: string) {
   if (!normalized) {
     return null;
   }
-  if (normalized.includes("prepare-text-corpus-manifest.sh")) {
-    return {
-      label: "Prepare text manifest",
-      summary: "Preparing the text-only corpus manifest.",
-    };
-  }
   if (normalized.includes("run-ripgrep-progress.sh") || /\brg\b/u.test(normalized)) {
     return {
       label: "Search corpus",
@@ -8168,15 +8162,6 @@ function summarizeHermesOutputText(output: string, sourceArgs: Record<string, un
   const zeroCount = [...lines].reverse().find((line) => /^0$/u.test(line));
   if (scopedFiles && zeroCount) {
     return "Prepared the manifest, but found 0 scoped files.";
-  }
-
-  const helperLine = [...lines].find((line) => /Running prepare-text-corpus-manifest helper/iu.test(line));
-  if (helperLine) {
-    const zeroLine = [...lines].reverse().find((line) => /^\d+$/u.test(line));
-    if (zeroLine) {
-      return `Prepared the text manifest and found ${zeroLine} scoped files.`;
-    }
-    return "Prepared the text-only corpus manifest.";
   }
 
   const pathOnly = lines.every((line) => line.startsWith("/"));
