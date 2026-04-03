@@ -55,7 +55,7 @@ source "$INGEST_ENV_FILE"
 set +a
 
 if [[ -z "${CLOUDFLARE_API_TOKEN:-${CF_API_TOKEN:-}}" ]]; then
-  echo "[$(date -Is)] CLOUDFLARE_API_TOKEN (or CF_API_TOKEN) is required for D1 and Vectorize access." >&2
+  echo "[$(date -Is)] CLOUDFLARE_API_TOKEN (or CF_API_TOKEN) is required for Wrangler-backed D1 access during ingest." >&2
   exit 1
 fi
 

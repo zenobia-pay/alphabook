@@ -30,7 +30,7 @@ source "$INGEST_ENV_FILE"
 set +a
 
 if [[ -z "${CLOUDFLARE_API_TOKEN:-${CF_API_TOKEN:-}}" ]]; then
-  echo "[$(date -Is)] CLOUDFLARE_API_TOKEN (or CF_API_TOKEN) is required for D1 and Vectorize access." >&2
+  echo "[$(date -Is)] CLOUDFLARE_API_TOKEN (or CF_API_TOKEN) is required for Wrangler-backed D1 access during ingest." >&2
   exit 1
 fi
 
@@ -41,35 +41,62 @@ export TARGET_COUNT
 
 cd "$INGEST_REPO_ROOT"
 
-python3 - <<'PY' > "$TARGET_FILE"
-import json
-import os
-from pathlib import Path
+npx tsx <<'TS' > "$TARGET_FILE"
+import { readFile } from "node:fs/promises";
 
-target_count = int(os.environ["TARGET_COUNT"])
-start_after = None
-checkpoint_path = Path(os.environ["CHECKPOINT_PATH"])
-if checkpoint_path.exists():
-    try:
-        start_after = json.loads(checkpoint_path.read_text()).get("lastProcessedId")
-    except Exception:
-        start_after = None
+import { createWranglerD1Db } from "@alphabook/db";
+import { listMirrorIds } from "@alphabook/source-gutenberg/mirror";
 
-root = Path(os.environ["GUTENBERG_MIRROR_ROOT"])
-ids = sorted(
-    [entry.name for entry in root.iterdir() if entry.is_dir() and entry.name.isdigit()],
-    key=lambda value: int(value),
-)
-if start_after is not None:
-    ids = [value for value in ids if int(value) > int(start_after)]
+function normalizeId(value: string | number | null | undefined) {
+  if (value === null || value === undefined) return null;
+  const raw = String(value).trim();
+  if (!/^\d+$/u.test(raw)) return null;
+  return String(Number(raw));
+}
 
-print(json.dumps({
-    "targetCount": target_count,
-    "startAfterId": start_after,
-    "checkpointPath": str(checkpoint_path),
-    "candidatePreview": ids[:target_count],
-}, indent=2))
-PY
+const targetCount = Number(process.env.TARGET_COUNT ?? "0");
+const checkpointPath = process.env.CHECKPOINT_PATH ?? "";
+let startAfterId: string | null = null;
+if (checkpointPath) {
+  try {
+    const raw = await readFile(checkpointPath, "utf8");
+    const parsed = JSON.parse(raw) as { lastProcessedId?: string | null };
+    startAfterId = typeof parsed.lastProcessedId === "string" ? parsed.lastProcessedId : null;
+  } catch {
+    startAfterId = null;
+  }
+}
+
+const allIds = await listMirrorIds(process.env.GUTENBERG_MIRROR_ROOT!);
+const filteredIds = startAfterId
+  ? allIds.filter((id) => Number(id) > Number(startAfterId))
+  : allIds;
+const db = createWranglerD1Db({
+  cwd: process.cwd(),
+  databaseName: process.env.D1_DATABASE_NAME,
+  wranglerConfig: "apps/orchestrator-worker/wrangler.toml",
+});
+const existingRows = await db.query<{ gutenberg_id: string | number }>(
+  `SELECT CAST(gutenberg_id AS TEXT) AS gutenberg_id FROM works WHERE gutenberg_id IS NOT NULL`,
+);
+await db.end();
+const existing = new Set(
+  existingRows.rows
+    .map((row) => normalizeId(row.gutenberg_id))
+    .filter((value): value is string => Boolean(value)),
+);
+const candidateIds = filteredIds.filter((id) => {
+  const normalized = normalizeId(id);
+  return normalized !== null && !existing.has(normalized);
+});
+
+console.log(JSON.stringify({
+  targetCount,
+  startAfterId,
+  checkpointPath,
+  candidatePreview: candidateIds.slice(0, targetCount),
+}, null, 2));
+TS
 
 echo "[$(date -Is)] Frozen timers. Checkpoint: $CHECKPOINT_PATH"
 echo "[$(date -Is)] Run directory: $RUN_DIR"

@@ -46,8 +46,8 @@ That script:
 - installs the EPUB/RDF rsync runner into `/srv/alphabook/bin`
 - installs the upload runner into `/srv/alphabook/bin`
 - installs freeze/resume helpers for the recurring ingest timers
-- installs Cloudflare audit/validate/prune helpers
-- installs the full D1 + Vectorize rebuild runner
+- installs corpus audit/validate/prune helpers
+- installs the full D1 + R2 + Qdrant rebuild runner
 - installs the full book HTML backfill runner into `/srv/alphabook/bin`
 - installs the full book HTML rebuild runner into `/srv/alphabook/bin`
 - installs the Hermes job API runner and systemd unit
@@ -93,11 +93,14 @@ R2_BUCKET_NAME=...
 R2_ENDPOINT=...
 R2_ACCESS_KEY_ID=...
 R2_SECRET_ACCESS_KEY=...
-EMBEDDING_PROVIDER=google # or openai
-GOOGLE_AI_API_KEY=... # required when EMBEDDING_PROVIDER=google
-GOOGLE_EMBEDDING_MODEL=gemini-embedding-2-preview
-GOOGLE_EMBEDDING_DIMENSIONS=1536
-VECTOR_INDEX_NAME=alphabook-semantic
+VECTOR_PROVIDER=qdrant
+QDRANT_URL=http://10.116.0.4:6333
+QDRANT_API_KEY=...
+QDRANT_COLLECTION=alphabook-semantic
+EMBEDDING_PROVIDER=openai # current live path
+# GOOGLE_AI_API_KEY=... # only if EMBEDDING_PROVIDER=google
+# GOOGLE_EMBEDDING_MODEL=gemini-embedding-001
+# GOOGLE_EMBEDDING_DIMENSIONS=768
 # OPENAI_API_KEY=... # required when EMBEDDING_PROVIDER=openai
 # OPENAI_EMBEDDING_MODEL=text-embedding-3-small
 ```
@@ -105,10 +108,10 @@ VECTOR_INDEX_NAME=alphabook-semantic
 Notes:
 
 - The live repo still requires `D1_DATABASE_NAME` today because ingest persists corpus metadata and chunk rows into the existing relational store.
-- The droplet ingest path now expects explicit Cloudflare API-token auth via `CLOUDFLARE_API_TOKEN` (or `CF_API_TOKEN`) for Wrangler D1 and Vectorize commands. It no longer relies on a local Wrangler OAuth login.
-- The embedding provider is now configurable. For the Cloudflare migration path, use Google embeddings with `GOOGLE_EMBEDDING_DIMENSIONS=1536`.
-- For rebuild/cutover, freeze the timers first with `sudo /srv/alphabook/bin/freeze-gutenberg-ingest.sh`, run `audit-r2-corpus` and `rebuild-r2-corpus`, then resume with `sudo /srv/alphabook/bin/resume-gutenberg-ingest.sh`.
-- For the full Cloudflare cleanup + rebuild path, use:
+- The droplet ingest path still expects explicit Cloudflare API-token auth via `CLOUDFLARE_API_TOKEN` (or `CF_API_TOKEN`) for Wrangler-backed D1 access.
+- The live semantic store is Qdrant, not Cloudflare Vectorize.
+- `EMBEDDING_PROVIDER` controls which embedding API is called before vectors are written into the configured vector store.
+- For the full live rebuild path, use:
   - `sudo /srv/alphabook/bin/freeze-gutenberg-ingest.sh`
   - `sudo /srv/alphabook/bin/audit-cloudflare-corpus.sh`
   - `sudo /srv/alphabook/bin/rebuild-r2-corpus-all.sh`
@@ -124,6 +127,12 @@ Notes:
     - `sudo APPLY_FLAG=--apply /srv/alphabook/bin/prune-orphan-r2-keys.sh`
   - `sudo /srv/alphabook/bin/validate-corpus-integrity.sh`
   - `sudo /srv/alphabook/bin/resume-gutenberg-ingest.sh`
+
+The naming on some of these helpers is older than the current system. In particular:
+
+- `audit-cloudflare-corpus.sh` audits the live corpus shape across R2, D1, and the active vector store
+- `rebuild-r2-corpus-all.sh` rebuilds live corpus state from canonical R2 artifacts into D1 and the active vector store
+- neither helper implies Cloudflare Vectorize any more when `VECTOR_PROVIDER=qdrant`
 
 Then you can run:
 
@@ -191,6 +200,8 @@ The ingest parser now preserves richer browse metadata from the mirror when pres
 
 ## Precomputed Research Corpus Index
 
+For the full picture of how the mirror, live ingest, prepared shards, and mounted consolidation tree relate to each other, see [docs/gutenberg-mirror-to-consolidation.md](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/docs/gutenberg-mirror-to-consolidation.md).
+
 For Hermes-style corpus research runs, do not rebuild the text manifest on every run once
 prepared Gutenberg artifacts exist. Build a reusable canonical text index from the prepared
 artifact tree instead:
@@ -236,7 +247,9 @@ cp /srv/alphabook/precomputed-corpus/latest/all-text-files.tsv /tmp/run/all-text
 
 When `--no-primary-text` is used, `all-text-files.tsv` points directly at the consolidated canonical clean text files under `r2/gutenberg/clean/<id>/clean.txt`, so no alias folder is created.
 
-The shard consolidation helper can kick this off automatically after the final merge:
+The checked-in consolidation helper at [ops/digitalocean/bin/consolidate-prepared-gutenberg-shards.sh](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/ops/digitalocean/bin/consolidate-prepared-gutenberg-shards.sh) represents the intended repo flow for merging prepared shard outputs. The live boxes have also used ad hoc qdrant-box copies of that script during the April 2026 shard runs, so verify the live script location before assuming the repo copy is what last ran.
+
+The intended repo helper can kick off the post-index build after the final merge:
 
 ```bash
 POST_INDEX_ENABLED=1 \
@@ -244,6 +257,8 @@ POST_INDEX_OUTPUT_DIR=/mnt/alphabook_consolidation/final/latest/research-corpus-
 POST_INDEX_NO_PRIMARY_TEXT=1 \
 /srv/alphabook/repo/ops/digitalocean/bin/consolidate-prepared-gutenberg-shards.sh --wait
 ```
+
+If `research-corpus-index/` is empty under `/mnt/alphabook_consolidation/final/latest`, that means the post-consolidation index build did not actually run to completion for the mounted copy even if the prepared `books/` and `r2/` trees are present.
 
 Wrapper-managed Hermes research runs are now isolated into explicit subfolders:
 
