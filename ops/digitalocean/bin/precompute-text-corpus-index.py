@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import json
 import shutil
 import sqlite3
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +44,12 @@ def parse_args() -> argparse.Namespace:
         choices=["symlink", "copy"],
         default="symlink",
         help="How to materialize canonical primary text files.",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=max(4, min(32, (os.cpu_count() or 8) * 2)),
+        help="Number of worker threads for manifest parsing and file stat work.",
     )
     return parser.parse_args()
 
@@ -306,6 +314,74 @@ def maybe_reuse_existing_row(
     return None
 
 
+def process_manifest_book(
+    manifest_path: Path,
+    *,
+    r2_root: Path,
+    args: argparse.Namespace,
+    primary_text_root: Path,
+) -> dict[str, Any]:
+    book_manifest = load_json(manifest_path)
+    gutenberg_id = str(book_manifest["gutenbergId"])
+    metadata = book_manifest["d1Records"]["work"]["metadata_json"]
+    r2_keys = book_manifest["r2Keys"]
+
+    raw_path = r2_root / r2_keys["raw"] if r2_keys.get("raw") else None
+    clean_path = r2_root / r2_keys["clean"] if r2_keys.get("clean") else None
+    book_html_path = r2_root / r2_keys["bookHtml"] if r2_keys.get("bookHtml") else None
+
+    has_clean = bool(clean_path and clean_path.is_file())
+    has_raw = bool(raw_path and raw_path.is_file())
+    has_book_html = bool(book_html_path and book_html_path.is_file())
+
+    result: dict[str, Any] = {
+        "gutenberg_id": gutenberg_id,
+        "manifest_path": manifest_path,
+        "book_title": book_manifest.get("title"),
+        "metadata": metadata,
+        "raw_path": raw_path,
+        "clean_path": clean_path,
+        "book_html_path": book_html_path,
+        "has_clean": has_clean,
+        "has_raw": has_raw,
+        "has_book_html": has_book_html,
+    }
+
+    if not has_clean:
+        return result
+
+    primary_text_kind = "clean"
+    primary_text_path = clean_path
+    if args.no_primary_text:
+        primary_text_link_path = primary_text_path
+    else:
+        primary_text_link_path = primary_text_root / f"{int(gutenberg_id):06d}.txt"
+        ensure_link(primary_text_path, primary_text_link_path, args.link_mode)
+
+    primary_text_stat = primary_text_path.stat()
+    manifest_stat = manifest_path.stat()
+
+    result.update(
+        {
+            "primary_text_kind": primary_text_kind,
+            "primary_text_path": primary_text_path,
+            "primary_text_link_path": primary_text_link_path,
+            "primary_text_bytes": primary_text_stat.st_size,
+            "source_manifest_mtime_ns": manifest_stat.st_mtime_ns,
+            "clean_mtime_ns": primary_text_stat.st_mtime_ns,
+        }
+    )
+    return result
+
+
+def write_progress(output_dir: Path, counts: dict[str, int], total_primary_bytes: int) -> None:
+    progress = {
+        "counts": counts,
+        "total_primary_bytes": total_primary_bytes,
+    }
+    (output_dir / "progress.json").write_text(json.dumps(progress, indent=2) + "\n", encoding="utf-8")
+
+
 def main() -> None:
     args = parse_args()
     prepared_root = Path(args.prepared_root).resolve()
@@ -346,21 +422,45 @@ def main() -> None:
     csv_writer.writeheader()
 
     processed_since_commit = 0
+    manifest_paths = (
+        child / "manifest.json"
+        for child in books_root.iterdir()
+        if child.is_dir() and (child / "manifest.json").is_file()
+    )
 
     try:
-        for manifest_path in sorted(books_root.glob("*/manifest.json"), key=lambda path: int(path.parent.name)):
-            book_manifest = load_json(manifest_path)
-            gutenberg_id = str(book_manifest["gutenbergId"])
-            metadata = book_manifest["d1Records"]["work"]["metadata_json"]
-            r2_keys = book_manifest["r2Keys"]
+        def flush_progress() -> None:
+            nonlocal processed_since_commit
+            sqlite_conn.commit()
+            csv_handle.flush()
+            jsonl_handle.flush()
+            tsv_handle.flush()
+            write_progress(output_dir, counts, total_primary_bytes)
+            print(
+                json.dumps(
+                    {
+                        "books_total": counts["books_total"],
+                        "primary_clean": counts["primary_clean"],
+                        "reused_rows": counts["reused_rows"],
+                        "rebuilt_rows": counts["rebuilt_rows"],
+                    }
+                ),
+                flush=True,
+            )
+            processed_since_commit = 0
 
-            raw_path = r2_root / r2_keys["raw"] if r2_keys.get("raw") else None
-            clean_path = r2_root / r2_keys["clean"] if r2_keys.get("clean") else None
-            book_html_path = r2_root / r2_keys["bookHtml"] if r2_keys.get("bookHtml") else None
-
-            has_clean = bool(clean_path and clean_path.is_file())
-            has_raw = bool(raw_path and raw_path.is_file())
-            has_book_html = bool(book_html_path and book_html_path.is_file())
+        def emit_prepared(prepared: dict[str, Any]) -> None:
+            nonlocal total_primary_bytes, processed_since_commit
+            gutenberg_id = str(prepared["gutenberg_id"])
+            manifest_path = Path(prepared["manifest_path"])
+            book_title = prepared["book_title"]
+            metadata = prepared["metadata"]
+            raw_path = prepared["raw_path"]
+            clean_path = prepared["clean_path"]
+            book_html_path = prepared["book_html_path"]
+            has_clean = bool(prepared["has_clean"])
+            has_raw = bool(prepared["has_raw"])
+            has_book_html = bool(prepared["has_book_html"])
 
             counts["books_total"] += 1
             counts["books_with_clean"] += int(has_clean)
@@ -369,20 +469,16 @@ def main() -> None:
 
             if not has_clean:
                 counts["books_missing_clean"] += 1
-                continue
+                return
 
-            primary_text_kind = "clean"
-            primary_text_path = clean_path
+            primary_text_kind = prepared["primary_text_kind"]
+            primary_text_path = prepared["primary_text_path"]
+            primary_text_link_path = prepared["primary_text_link_path"]
+            primary_text_bytes = int(prepared["primary_text_bytes"])
+            source_manifest_mtime_ns = int(prepared["source_manifest_mtime_ns"])
+            clean_mtime_ns = int(prepared["clean_mtime_ns"])
+
             counts["primary_clean"] += 1
-            if args.no_primary_text:
-                primary_text_link_path = primary_text_path
-            else:
-                primary_text_link_path = primary_text_root / f"{int(gutenberg_id):06d}.txt"
-                ensure_link(primary_text_path, primary_text_link_path, args.link_mode)
-
-            primary_text_bytes = primary_text_path.stat().st_size
-            source_manifest_mtime_ns = manifest_path.stat().st_mtime_ns
-            clean_mtime_ns = primary_text_path.stat().st_mtime_ns
             total_primary_bytes += primary_text_bytes
             tsv_handle.write(f"{primary_text_bytes}\t{primary_text_link_path}\n")
 
@@ -412,7 +508,7 @@ def main() -> None:
                     "gutenberg_id": gutenberg_id,
                     "source_manifest_path": str(manifest_path),
                     "source_manifest_mtime_ns": source_manifest_mtime_ns,
-                    "title": coerce_text(metadata.get("title")) or coerce_text(book_manifest.get("title")),
+                    "title": coerce_text(metadata.get("title")) or coerce_text(book_title),
                     "subtitle": coerce_text(metadata.get("subtitle")),
                     "authors_json": json.dumps(authors, ensure_ascii=True),
                     "subjects_json": json.dumps(subjects, ensure_ascii=True),
@@ -445,12 +541,35 @@ def main() -> None:
             csv_writer.writerow(row)
             sqlite_conn.execute(SQLITE_INSERT, row)
             processed_since_commit += 1
-            if processed_since_commit >= 500:
-                sqlite_conn.commit()
-                csv_handle.flush()
-                jsonl_handle.flush()
-                tsv_handle.flush()
-                processed_since_commit = 0
+            if processed_since_commit >= 100:
+                flush_progress()
+
+        with ThreadPoolExecutor(max_workers=max(1, args.workers)) as executor:
+            pending = set()
+            max_pending = max(8, args.workers * 4)
+
+            def submit(path: Path) -> None:
+                pending.add(
+                    executor.submit(
+                        process_manifest_book,
+                        path,
+                        r2_root=r2_root,
+                        args=args,
+                        primary_text_root=primary_text_root,
+                    )
+                )
+
+            for manifest_path in manifest_paths:
+                submit(manifest_path)
+                if len(pending) >= max_pending:
+                    done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        emit_prepared(future.result())
+
+            while pending:
+                done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                for future in done:
+                    emit_prepared(future.result())
     finally:
         sqlite_conn.commit()
         tsv_handle.close()
@@ -459,6 +578,7 @@ def main() -> None:
         sqlite_conn.close()
         if previous_conn is not None:
             previous_conn.close()
+        write_progress(output_dir, counts, total_primary_bytes)
 
     manifest = {
         "prepared_root": str(prepared_root),
