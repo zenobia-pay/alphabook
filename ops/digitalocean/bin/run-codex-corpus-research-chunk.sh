@@ -166,6 +166,13 @@ Hard requirements:
   - --batch-size 500
 - Search raw text only.
 - Never invoke the ripgrep helper on more than the shard TSV.
+- Use ripgrep only for retrieval and candidate gathering. Relevance triage, keep/discard decisions, theme labeling, and synthesis must be done with model judgment over local context.
+- Do not use hard-coded quote scoring, regex-weight scoring, static relevance formulas, top-N ranking scripts, or deterministic keyword-based triage as the decision-maker.
+- Do not impose arbitrary hard caps like "top 700 files", "top 36 records", "max 3 quotes per file", or "max 8 per theme". Coverage should be driven by the shard evidence, not fixed caps.
+- Do not generate a Python or TypeScript script whose job is to mechanically score quotes or mechanically decide relevance from hand-written weights or thresholds.
+- If you write helper scripts, limit them to parsing, batching, deduplication, artifact assembly, and ledger/progress tracking. The actual research judgment must remain model-authored.
+- Review the shard evidence progressively in batches until you have covered the shard's candidate material. Maintain an inspectable reviewed ledger or notes if needed, but do not shortcut coverage with deterministic ranking heuristics.
+- When candidate volume is large, batch the candidate passages and evaluate them with the model against the user request using local context windows from the source text.
 
 Required outputs under {artifacts_dir}:
 - manifest.json
@@ -196,6 +203,8 @@ Quality bar:
 - Build a real structured dataset from this shard.
 - Every kept quote needs provenance and a short reasoning field.
 - The briefing must synthesize the shard-level findings and caveats.
+- The kept dataset must reflect LLM-reviewed passages, not deterministic score thresholds.
+- If you exclude a large candidate subset, explain the exclusion rule in model-authored prose in the manifest/run log rather than hiding it behind a numeric heuristic.
 
 At the end:
 - Print the shard artifacts directory path.
