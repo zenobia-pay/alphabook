@@ -100,6 +100,7 @@ Analysis requirements:
 - Build a markdown briefing that explains:
   - the interpreted user request
   - the chosen corpus scope and why
+  - how many text files/books were searched after scoping
   - extraction method
   - schema
   - main findings/themes
@@ -160,6 +161,7 @@ At the end:
 - Print the run directory path.
 - Print a short summary of:
   - chosen scope
+  - searched book/file count
   - record count
   - labels/themes used
   - main output files
