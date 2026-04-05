@@ -3865,6 +3865,7 @@ async function rebuildCanonicalR2Work(
   canonical: CanonicalR2Work,
   existingWork: ExistingCorpusWorkRow | null,
 ) {
+  const metadataOnly = process.env.CANONICAL_REBUILD_METADATA_ONLY === "1";
   const source: CorpusIngestSourceInput = {
     adapterId: gutenbergCorpusAdapter.id,
     externalId: canonical.externalId,
@@ -3883,72 +3884,90 @@ async function rebuildCanonicalR2Work(
   };
   const workId = await resolveIngestedWorkId(context, source);
 
-  const vectorApi = createVectorAdminApi(context);
-  if (vectorApi) {
-    await vectorApi.deleteVectorIds(canonical.chunks.map((chunk) => chunk.id));
-  }
+  if (!metadataOnly) {
+    const vectorApi = createVectorAdminApi(context);
+    if (vectorApi) {
+      await vectorApi.deleteVectorIds(canonical.chunks.map((chunk) => chunk.id));
+    }
 
-  await context.db.query(`DELETE FROM work_files WHERE work_id = $1 AND kind IN ('raw', 'metadata', 'clean', 'chunks', 'book_html')`, [workId]);
+    await context.db.query(`DELETE FROM work_files WHERE work_id = $1 AND kind IN ('raw', 'metadata', 'clean', 'chunks', 'book_html')`, [workId]);
 
-  const chunkEmbeddings = await embedChunks(canonical.chunks.map((chunk) => chunk.text));
-  if (!chunkEmbeddings) {
-    throw new Error("Embedding generation is required for canonical rebuilds.");
-  }
-  const renderedSource = selectRenderedBookSource({
-    rawSource: canonical.rawSource,
-    sourceFormat: canonical.sourceFormat,
-    cleanText: canonical.cleanText,
-  });
-  const chunkArtifacts = resolveStoredChunkReaderPaths(
-    canonical.gutenbergId,
-    renderedSource.rawSource,
-    renderedSource.sourceFormat,
-    canonical.chunks.map((chunk, index) => ({
-      id: chunk.id,
-      chunkIndex: chunk.chunkIndex,
-      workTitle: canonical.title,
+    const chunkEmbeddings = await embedChunks(canonical.chunks.map((chunk) => chunk.text));
+    if (!chunkEmbeddings) {
+      throw new Error("Embedding generation is required for canonical rebuilds.");
+    }
+    const renderedSource = selectRenderedBookSource({
+      rawSource: canonical.rawSource,
+      sourceFormat: canonical.sourceFormat,
+      cleanText: canonical.cleanText,
+    });
+    const chunkArtifacts = resolveStoredChunkReaderPaths(
+      canonical.gutenbergId,
+      renderedSource.rawSource,
+      renderedSource.sourceFormat,
+      canonical.chunks.map((chunk, index) => ({
+        id: chunk.id,
+        chunkIndex: chunk.chunkIndex,
+        workTitle: canonical.title,
+        authors: canonical.authors,
+        text: chunk.text,
+        excerpt: chunk.excerpt,
+        r2Key: chunk.r2Key,
+        readerPath: chunk.readerPath,
+        metadata: {
+          ...chunk.metadata,
+          embeddingProvider: "google",
+          embeddingModel: process.env.GOOGLE_EMBEDDING_MODEL ?? "gemini-embedding-001",
+          embeddingDimensions: chunkEmbeddings[index]?.length ?? null,
+        },
+      } satisfies StoredChunkArtifact)),
+    );
+    const bookBundle = buildPaginatedBookArtifactBundle({
+      gutenbergId: canonical.gutenbergId,
+      title: canonical.title,
+      subtitle: typeof canonical.metadataPayload.subtitle === "string" ? canonical.metadataPayload.subtitle : null,
       authors: canonical.authors,
-      text: chunk.text,
-      excerpt: chunk.excerpt,
-      r2Key: chunk.r2Key,
-      readerPath: chunk.readerPath,
-      metadata: {
-        ...chunk.metadata,
-        embeddingProvider: "google",
-        embeddingModel: process.env.GOOGLE_EMBEDDING_MODEL ?? "gemini-embedding-001",
-        embeddingDimensions: chunkEmbeddings[index]?.length ?? null,
-      },
-    } satisfies StoredChunkArtifact)),
-  );
-  const bookBundle = buildPaginatedBookArtifactBundle({
-    gutenbergId: canonical.gutenbergId,
-    title: canonical.title,
-    subtitle: typeof canonical.metadataPayload.subtitle === "string" ? canonical.metadataPayload.subtitle : null,
-    authors: canonical.authors,
-    bookshelves: Array.isArray(canonical.metadataPayload.bookshelves)
-      ? canonical.metadataPayload.bookshelves.filter((value): value is string => typeof value === "string")
-      : [],
-    summary: canonical.summary ?? null,
-    language: canonical.language ?? null,
-    releaseDate: canonical.releaseDate ?? null,
-    rawSource: renderedSource.rawSource,
-    sourceFormat: renderedSource.sourceFormat,
-  });
-  const bookManifestKey = gutenbergCorpusAdapter.artifactKeys.renderedManifest?.(canonical.gutenbergId) ?? "";
+      bookshelves: Array.isArray(canonical.metadataPayload.bookshelves)
+        ? canonical.metadataPayload.bookshelves.filter((value): value is string => typeof value === "string")
+        : [],
+      summary: canonical.summary ?? null,
+      language: canonical.language ?? null,
+      releaseDate: canonical.releaseDate ?? null,
+      rawSource: renderedSource.rawSource,
+      sourceFormat: renderedSource.sourceFormat,
+    });
+    const bookManifestKey = gutenbergCorpusAdapter.artifactKeys.renderedManifest?.(canonical.gutenbergId) ?? "";
 
-  await Promise.all([
-    persistChunkArtifacts(context, workId, canonical.artifactKeys.chunks, chunkArtifacts),
-    putText(context.r2, context.r2Bucket, canonical.artifactKeys.bookHtml, bookBundle.landingHtml, "text/html; charset=utf-8"),
-    putText(context.r2, context.r2Bucket, bookManifestKey, bookBundle.manifestJson, "application/json; charset=utf-8"),
-    ...bookBundle.pageFiles.map((page) =>
-      putText(
-        context.r2,
-        context.r2Bucket,
-        gutenbergCorpusAdapter.artifactKeys.renderedPage?.(canonical.gutenbergId, page.pageNumber) ?? "",
-        page.html,
-        "text/html; charset=utf-8",
-      )),
-  ]);
+    await Promise.all([
+      persistChunkArtifacts(context, workId, canonical.artifactKeys.chunks, chunkArtifacts),
+      putText(context.r2, context.r2Bucket, canonical.artifactKeys.bookHtml, bookBundle.landingHtml, "text/html; charset=utf-8"),
+      putText(context.r2, context.r2Bucket, bookManifestKey, bookBundle.manifestJson, "application/json; charset=utf-8"),
+      ...bookBundle.pageFiles.map((page) =>
+        putText(
+          context.r2,
+          context.r2Bucket,
+          gutenbergCorpusAdapter.artifactKeys.renderedPage?.(canonical.gutenbergId, page.pageNumber) ?? "",
+          page.html,
+          "text/html; charset=utf-8",
+        )),
+    ]);
+
+    await upsertChunkVectors(
+      context,
+      canonical.chunks.map((chunk, index) => ({
+        id: chunk.id,
+        values: chunkEmbeddings[index] ?? [],
+        metadata: {
+          workId,
+          chunkIndex: chunk.chunkIndex,
+          adapterId: gutenbergCorpusAdapter.id,
+          externalId: canonical.externalId,
+          language: canonical.language,
+          rightsStatus: canonical.rightsStatus,
+        },
+      })),
+    );
+  }
 
   await context.db.query(
     `
@@ -3959,6 +3978,8 @@ async function rebuildCanonicalR2Work(
         ($6, $2, 'clean', $7, '{}', CURRENT_TIMESTAMP),
         ($8, $2, 'chunks', $9, '{}', CURRENT_TIMESTAMP),
         ($10, $2, 'book_html', $11, '{}', CURRENT_TIMESTAMP)
+      ON CONFLICT (r2_key) DO UPDATE
+      SET work_id = EXCLUDED.work_id
     `,
     [
       crypto.randomUUID(),
@@ -3979,27 +4000,12 @@ async function rebuildCanonicalR2Work(
   await syncAuthors(context, workId, canonical.authors);
   await syncSubjects(context, workId, canonical.subjects);
 
-  await upsertChunkVectors(
-    context,
-    canonical.chunks.map((chunk, index) => ({
-      id: chunk.id,
-      values: chunkEmbeddings[index] ?? [],
-      metadata: {
-        workId,
-        chunkIndex: chunk.chunkIndex,
-        adapterId: gutenbergCorpusAdapter.id,
-        externalId: canonical.externalId,
-        language: canonical.language,
-        rightsStatus: canonical.rightsStatus,
-      },
-    })),
-  );
-
   return {
     gutenbergId: canonical.gutenbergId,
     workId,
     replacedExistingWork: Boolean(existingWork),
     chunkCount: canonical.chunks.length,
+    metadataOnly,
   };
 }
 
