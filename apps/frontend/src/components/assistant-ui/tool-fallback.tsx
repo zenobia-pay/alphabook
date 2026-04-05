@@ -3,26 +3,14 @@
 import { memo, useCallback, useMemo, useRef, useState } from "react";
 import {
   AlertCircleIcon,
-  CheckIcon,
-  ChevronDownIcon,
-  LoaderIcon,
   XCircleIcon,
 } from "lucide-react";
 import {
-  useScrollLock,
   type ToolCallMessagePartComponent,
   type ToolCallMessagePartStatus,
 } from "@assistant-ui/react";
 import { Citations as AlphaloopCitations, SearchProgress as AlphaloopSearchProgress } from "alphaloop/react";
-
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
-
-const ANIMATION_DURATION = 200;
 
 type JsonRecord = Record<string, unknown>;
 type ToolStatus = ToolCallMessagePartStatus["type"];
@@ -45,13 +33,6 @@ type AlphaloopChunk = {
   relevance: number;
   rationale?: string;
   metadata?: Record<string, unknown>;
-};
-
-const statusIconMap: Record<ToolStatus, React.ElementType> = {
-  running: LoaderIcon,
-  complete: CheckIcon,
-  incomplete: XCircleIcon,
-  "requires-action": AlertCircleIcon,
 };
 
 function safeObject(value: unknown): JsonRecord | null {
@@ -218,42 +199,12 @@ function summarizeTool(toolName: string, args: JsonRecord | null, result: JsonRe
   return "Working";
 }
 
-function ToolStatusBadge({
-  status,
-  result,
-  hideLabel = false,
-}: {
-  status?: ToolCallMessagePartStatus;
-  result: JsonRecord | null;
-  hideLabel?: boolean;
-}) {
-  const statusType = status?.type ?? "complete";
-  const isCancelled = status?.type === "incomplete" && status.reason === "cancelled";
-  const hasError = Boolean(getErrorText(status, result));
-  const Icon = hasError ? XCircleIcon : statusIconMap[statusType];
-  const label = isCancelled ? "Cancelled" : hasError ? "Failed" : statusType === "running" ? "Running" : null;
-
-  return (
-    <>
-      <span className={cn("aui-tool-fallback-status-shell", hasError && "aui-tool-fallback-status-shell-error")}>
-        <Icon className={cn("size-3.5", statusType === "running" && "animate-spin")} />
-      </span>
-      {hideLabel || !label ? null : (
-        <span className={cn("aui-tool-fallback-badge", hasError && "aui-tool-fallback-badge-error")}>{label}</span>
-      )}
-    </>
-  );
-}
-
 const GenericToolUI: ToolCallMessagePartComponent = ({
   toolName,
   argsText,
   result,
   status,
 }) => {
-  const [open, setOpen] = useState(status?.type === "running");
-  const collapsibleRef = useRef<HTMLDivElement>(null);
-  const lockScroll = useScrollLock(collapsibleRef, ANIMATION_DURATION);
   const args = useMemo(() => parseArgs(argsText), [argsText]);
   const resultObject = useMemo(() => safeObject(result), [result]);
   const summary = useMemo(() => summarizeTool(toolName, args, resultObject, status), [toolName, args, resultObject, status]);
@@ -273,73 +224,46 @@ const GenericToolUI: ToolCallMessagePartComponent = ({
     ),
     [errorText, logLines, progressLines, rationale],
   );
-  const shouldShowDetail = detailLines.length > 0;
-
-  const handleOpenChange = useCallback((nextOpen: boolean) => {
-    if (!nextOpen) {
-      lockScroll();
-    }
-    setOpen(nextOpen);
-  }, [lockScroll]);
+  const statusType = status?.type ?? "complete";
+  const hasError = Boolean(errorText);
+  const headline = `${toolName} — ${summary}`;
+  const lines = useMemo(
+    () => [headline, ...detailLines.filter((line) => line !== summary)],
+    [detailLines, headline, summary],
+  );
 
   return (
-    <Collapsible
-      ref={collapsibleRef}
-      open={open}
-      onOpenChange={handleOpenChange}
-      className="aui-tool-fallback-root group/tool-fallback-root w-full"
-      style={{ ["--animation-duration" as string]: `${ANIMATION_DURATION}ms` }}
+    <div
+      className={cn(
+        "aui-tool-trace-root",
+        statusType === "running" && "is-running",
+        hasError && "is-error",
+      )}
     >
-      <CollapsibleTrigger
-        className="aui-tool-fallback-trigger group/trigger flex w-full items-start gap-3 text-left"
-      >
-        <ToolStatusBadge status={status} result={resultObject} />
-        <span className="min-w-0 grow">
-          <span className="aui-tool-fallback-head">
-            <b className="aui-tool-fallback-title">{toolName}</b>
-          </span>
-          <span className="aui-tool-fallback-summary">{summary}</span>
-        </span>
-        {shouldShowDetail ? (
-          <ChevronDownIcon
+      {lines.map((line, index) => {
+        const isHeadline = index === 0;
+        const isLatest = index === lines.length - 1;
+        const lineIsError = Boolean(errorText && line === errorText);
+        return (
+          <div
+            key={`${toolName}-${index}`}
             className={cn(
-              "aui-tool-fallback-chevron size-4 shrink-0 transition-transform duration-(--animation-duration) ease-out",
-              "group-data-[state=closed]/trigger:-rotate-90",
-              "group-data-[state=open]/trigger:rotate-0",
+              "aui-tool-trace-line",
+              isHeadline && "is-headline",
+              isLatest && "is-latest",
+              lineIsError && "is-error",
+              statusType === "running" && "is-running",
             )}
-          />
-        ) : null}
-      </CollapsibleTrigger>
-      {shouldShowDetail ? (
-        <CollapsibleContent
-          className={cn(
-            "aui-tool-fallback-content overflow-hidden outline-none",
-            "group/collapsible-content ease-out",
-            "data-[state=closed]:animate-collapsible-up",
-            "data-[state=open]:animate-collapsible-down",
-            "data-[state=closed]:fill-mode-forwards",
-            "data-[state=closed]:pointer-events-none",
-            "data-[state=open]:duration-(--animation-duration)",
-            "data-[state=closed]:duration-(--animation-duration)",
-          )}
-        >
-          <div className="aui-tool-fallback-detail-shell">
-            <section className="aui-tool-section">
-              <div className="aui-tool-progress-log">
-                {detailLines.map((line, index) => (
-                  <div
-                    key={`${toolName}-${index}`}
-                    className={cn("aui-tool-progress-line", errorText && line === errorText && "aui-tool-progress-line-error")}
-                  >
-                    <span className="aui-tool-line-value">{line}</span>
-                  </div>
-                ))}
-              </div>
-            </section>
+            title={line}
+          >
+            <span className="aui-tool-trace-prefix" aria-hidden="true">
+              {hasError ? <XCircleIcon className="size-3.5" /> : statusType === "running" ? ">" : "\u2022"}
+            </span>
+            <span className="aui-tool-trace-text">{line}</span>
           </div>
-        </CollapsibleContent>
-      ) : null}
-    </Collapsible>
+        );
+      })}
+    </div>
   );
 };
 
@@ -358,13 +282,19 @@ const SemanticSearchToolUI: ToolCallMessagePartComponent = ({
   const errorText = useMemo(() => getErrorText(status, result), [result, status]);
 
   return (
-    <div className="py-2">
-      <div className="mb-2 flex items-start gap-3">
-        <ToolStatusBadge status={status} result={resultObject} hideLabel />
-        <div className="min-w-0">
-          <div className="aui-tool-fallback-title">{toolName}</div>
-          {errorText ? <p className="aui-tool-error-text">{errorText}</p> : null}
-        </div>
+    <div className="aui-tool-semantic-shell">
+      <div
+        className={cn(
+          "aui-tool-trace-line is-headline",
+          status?.type === "running" && "is-running",
+          errorText && "is-error",
+        )}
+        title={errorText ? `${toolName} — ${errorText}` : toolName}
+      >
+        <span className="aui-tool-trace-prefix" aria-hidden="true">
+          {errorText ? <AlertCircleIcon className="size-3.5" /> : status?.type === "running" ? ">" : "\u2022"}
+        </span>
+        <span className="aui-tool-trace-text">{errorText ? `${toolName} — ${errorText}` : toolName}</span>
       </div>
       <AlphaloopSearchProgress events={alphaloopEvents} isRunning={status?.type === "running"} />
       <AlphaloopCitations chunks={alphaloopChunks} />
