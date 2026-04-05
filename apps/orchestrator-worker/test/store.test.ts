@@ -192,12 +192,8 @@ test("D1 store serves explore works from feed snapshots without hydrating the fu
           }] as T[],
         };
       }
-      if (sql.includes("FROM site_stats")) {
-        return {
-          rows: [{
-            value_json: JSON.stringify({ count: 33328 }),
-          }] as T[],
-        };
+      if (sql.includes("COUNT(*) AS count")) {
+        return { rows: [{ count: "33328" }] as T[] };
       }
       if (sql.includes("FROM works ORDER BY title ASC") || sql.includes("FROM work_authors") || sql.includes("FROM work_subjects")) {
         throw new Error(`Unexpected corpus hydration query: ${sql}`);
@@ -222,7 +218,7 @@ test("D1 store serves explore works from feed snapshots without hydrating the fu
   assert.equal(works[0]?.feedLabel, "Worth opening");
   assert.equal(count, 33328);
   assert.ok(queries.some((entry) => entry.sql.includes("FROM feed_works")));
-  assert.ok(queries.some((entry) => entry.sql.includes("FROM site_stats")));
+  assert.ok(queries.some((entry) => entry.sql.includes("COUNT(*) AS count")));
 });
 
 test("in-memory store spills oversized run event payloads to blob storage and rehydrates them", async () => {

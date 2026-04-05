@@ -1433,13 +1433,6 @@ export class D1AppStore implements AppStore {
   }
 
   async countWorks() {
-    const cached = await this.db.query<{ value_json: string | Record<string, unknown> }>(
-      "SELECT value_json FROM site_stats WHERE key = 'corpus_work_count' LIMIT 1",
-    );
-    const cachedValue = parseJsonObject(cached.rows[0]?.value_json).count;
-    if (typeof cachedValue === "number" && Number.isFinite(cachedValue)) {
-      return cachedValue;
-    }
     const result = await this.db.query<{ count: string | number }>(
       `SELECT COUNT(*) AS count FROM works w WHERE 1 = 1 ${this.adapterWorkClause("w")}`,
     );
