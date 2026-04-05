@@ -6,13 +6,6 @@ import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { SemanticSearchToolUI, ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import {
   ActionBarMorePrimitive,
@@ -261,45 +254,85 @@ const ThreadArtifacts: FC<{
   artifacts: RunArtifactRecord[];
 }> = ({ artifacts }) => {
   const visibleArtifacts = useMemo(() => selectVisibleArtifacts(artifacts), [artifacts]);
+  const [selectedPath, setSelectedPath] = useState<string | null>(visibleArtifacts[0]?.filename ?? null);
+
+  useEffect(() => {
+    if (!visibleArtifacts.some((artifact) => artifact.filename === selectedPath)) {
+      setSelectedPath(visibleArtifacts[0]?.filename ?? null);
+    }
+  }, [selectedPath, visibleArtifacts]);
 
   if (visibleArtifacts.length === 0) {
     return null;
   }
 
+  const selectedArtifact = visibleArtifacts.find((artifact) => artifact.filename === selectedPath) ?? visibleArtifacts[0]!;
+  const selectedContent = typeof selectedArtifact.content === "string" ? selectedArtifact.content.trim() : "";
+
   return (
-    <section className="assistant-artifact-strip" aria-label="Run files">
-      {visibleArtifacts.map((artifact) => (
-        <ArtifactChip
-          key={`${artifact.r2Key ?? artifact.filename}-${artifact.createdAt ?? ""}`}
-          artifact={artifact}
-        />
-      ))}
+    <section className="assistant-artifact-explorer" aria-label="Run files">
+      <div className="assistant-artifact-explorer-header">
+        <div>
+          <div className="assistant-artifact-explorer-eyebrow">Artifacts</div>
+          <h2 className="assistant-artifact-explorer-title">Run Files</h2>
+        </div>
+        <div className="assistant-artifact-explorer-count">{visibleArtifacts.length}</div>
+      </div>
+      <div className="assistant-artifact-explorer-body">
+        <div className="assistant-artifact-explorer-list" role="listbox" aria-label="Artifact files">
+          {visibleArtifacts.map((artifact) => {
+            const isSelected = artifact.filename === selectedArtifact.filename;
+            return (
+              <button
+                key={`${artifact.r2Key ?? artifact.filename}-${artifact.createdAt ?? ""}`}
+                type="button"
+                className={cn("assistant-artifact-row", isSelected && "is-selected")}
+                aria-selected={isSelected}
+                onClick={() => setSelectedPath(artifact.filename)}
+              >
+                <FileTextIcon className="assistant-artifact-row-icon" />
+                <span className="assistant-artifact-row-copy">
+                  <span className="assistant-artifact-row-name">{artifact.filename}</span>
+                  <span className="assistant-artifact-row-meta">
+                    {formatArtifactMeta(artifact)}
+                  </span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+        <div className="assistant-artifact-preview">
+          <div className="assistant-artifact-preview-header">
+            <div className="assistant-artifact-preview-title">{selectedArtifact.filename}</div>
+            <div className="assistant-artifact-preview-meta">{formatArtifactMeta(selectedArtifact)}</div>
+          </div>
+          {selectedContent ? (
+            <pre className="assistant-artifact-preview-content">{selectedContent}</pre>
+          ) : (
+            <div className="assistant-artifact-preview-empty">Preview unavailable. The file is stored for this run, but not inlined into the session payload.</div>
+          )}
+        </div>
+      </div>
     </section>
   );
 };
 
 function selectVisibleArtifacts(artifacts: RunArtifactRecord[]) {
-  const relevant = artifacts.filter((artifact) => {
-    const kind = typeof artifact.metadata?.kind === "string" ? artifact.metadata.kind : "";
-    return (
-      artifact.filename === "briefing.md"
-      || artifact.filename === "every-single-reference.md"
-      || artifact.filename === "evidence-notes.md"
-      || kind === "reference_file"
-    );
-  });
-
   const byFilename = new Map<string, RunArtifactRecord>();
-  for (const artifact of relevant) {
+  for (const artifact of artifacts) {
     if (!byFilename.has(artifact.filename)) {
       byFilename.set(artifact.filename, artifact);
     }
   }
 
   const priority = new Map<string, number>([
+    ["inner/briefing.md", 0],
     ["briefing.md", 0],
-    ["every-single-reference.md", 1],
-    ["evidence-notes.md", 2],
+    ["inner/dataset.csv", 1],
+    ["dataset.csv", 1],
+    ["inner/citation-index.json", 2],
+    ["citation-index.json", 2],
+    ["wrapper/archive-manifest.json", 3],
   ]);
 
   return [...byFilename.values()].sort((left, right) => {
@@ -312,41 +345,26 @@ function selectVisibleArtifacts(artifacts: RunArtifactRecord[]) {
   });
 }
 
-const ArtifactChip: FC<{
-  artifact: RunArtifactRecord;
-}> = ({ artifact }) => {
-  const title =
-    typeof artifact.metadata?.title === "string"
-      ? artifact.metadata.title
-      : artifact.filename === "briefing.md"
-        ? "Briefing"
-        : artifact.filename === "evidence-notes.md"
-          ? "Search Notes"
-          : artifact.filename;
-  const content = typeof artifact.content === "string" ? artifact.content.trim() : "";
+function formatArtifactMeta(artifact: RunArtifactRecord) {
+  const pieces: string[] = [];
+  if (typeof artifact.byteSize === "number" && Number.isFinite(artifact.byteSize)) {
+    pieces.push(formatBytes(artifact.byteSize));
+  }
+  if (typeof artifact.metadata?.kind === "string" && artifact.metadata.kind.trim().length > 0) {
+    pieces.push(artifact.metadata.kind.trim().replace(/_/gu, " "));
+  }
+  return pieces.join(" • ") || "artifact";
+}
 
-  return (
-    <Dialog>
-      <DialogTrigger asChild>
-        <button type="button" className="assistant-artifact-chip">
-          <FileTextIcon className="assistant-artifact-chip-icon" />
-          <span className="assistant-artifact-chip-label">{title}</span>
-        </button>
-      </DialogTrigger>
-      <DialogContent className="assistant-artifact-dialog">
-        <DialogHeader className="assistant-artifact-dialog-header">
-          <DialogTitle>{title}</DialogTitle>
-          <div className="assistant-artifact-dialog-meta">{artifact.filename}</div>
-        </DialogHeader>
-        {content ? (
-          <pre className="assistant-artifact-dialog-content">{content}</pre>
-        ) : (
-          <div className="assistant-artifact-dialog-empty">Stored in R2 for this run.</div>
-        )}
-      </DialogContent>
-    </Dialog>
-  );
-};
+function formatBytes(bytes: number) {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 const ThreadAutoFollow: FC<{
   active: boolean;

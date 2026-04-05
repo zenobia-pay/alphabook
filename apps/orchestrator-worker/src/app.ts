@@ -24,6 +24,7 @@ import {
   cancelHermesJob,
   createHermesJob,
   fetchHermesArtifact,
+  fetchHermesJobArtifacts,
   fetchHermesJob,
   fetchHermesJobLogs,
   resumeHermesJob,
@@ -36,7 +37,7 @@ import type { Router } from "./router";
 import type { SemanticSearchService } from "./semantic-search";
 import { cleanupToolStreamWithWorkersAi, type ToolStreamCleanupLine } from "./tool-stream-cleanup";
 import type { Synthesizer, ToolHistoryEntry } from "./synthesizer";
-import type { AgentIdentityRecord, AnalyticsEventRecord, AppStore, MessageRecord, NotificationRecord, PassageSearchFilters, RunEventRecord, RunRecord, RuntimeInstanceRecord, SessionRecord, ToolCallRecord, UserRecord, WorkDetailRecord } from "./store";
+import type { AgentIdentityRecord, AnalyticsEventRecord, AppStore, ArtifactRecord, MessageRecord, NotificationRecord, PassageSearchFilters, RunEventRecord, RunRecord, RuntimeInstanceRecord, SessionRecord, ToolCallRecord, UserRecord, WorkDetailRecord } from "./store";
 import type { WorkersAiBinding } from "./index";
 import { parseModelJsonObject } from "./json";
 
@@ -5822,6 +5823,18 @@ function artifactBelongsToRun(artifact: RunArtifactLike, runId: string, runtimeI
   return runtimeIdSet.has(artifact.runtimeId);
 }
 
+const INLINE_ARTIFACT_PREVIEW_MAX_BYTES = 96_000;
+
+function shouldInlineArtifactContent(artifact: RunArtifactLike) {
+  if (!isTextArtifact(artifact.filename, artifact.mimeType)) {
+    return false;
+  }
+  if (typeof artifact.byteSize === "number" && artifact.byteSize > INLINE_ARTIFACT_PREVIEW_MAX_BYTES) {
+    return false;
+  }
+  return true;
+}
+
 async function loadRunArtifacts(
   deps: AppDeps,
   sessionId: string,
@@ -5834,8 +5847,8 @@ async function loadRunArtifacts(
   const hydrated = await Promise.all(
     filtered.map(async (artifact) => ({
       ...artifact,
-      content: isTextArtifact(artifact.filename, artifact.mimeType)
-        ? await deps.blobStore.getText(artifact.r2Key)
+      content: shouldInlineArtifactContent(artifact)
+        ? await deps.blobStore.getText(artifact.r2Key).catch(() => null)
         : null,
     })),
   );
@@ -5859,16 +5872,7 @@ async function loadRunDocumentArtifacts(
   runId: string,
   runtimeIds: string[],
 ) {
-  const artifacts = await loadRunArtifactSummaries(deps, sessionId, runId, runtimeIds);
-  return Promise.all(
-    artifacts.map(async (artifact) => ({
-      ...artifact,
-      content:
-        artifact.metadata?.kind === "research_document"
-          ? await deps.blobStore.getText(artifact.r2Key).catch(() => null)
-          : null,
-    })),
-  );
+  return loadRunArtifacts(deps, sessionId, runId, runtimeIds);
 }
 
 function queryFlag(value: string | undefined, defaultValue = false): boolean {
@@ -6166,6 +6170,7 @@ async function sendRunCompletionEmail(
 type RunArtifactLike = {
   filename: string;
   mimeType: string;
+  byteSize?: number | null;
   metadata?: Record<string, unknown> | null;
   content?: string | null;
   createdAt?: string | null;
@@ -8021,6 +8026,25 @@ type HermesSessionSnapshot = {
   last_updated?: string;
 };
 
+type HermesArchiveManifestFile = {
+  relativePath: string;
+  r2Key: string;
+  sourcePath?: string | null;
+  byteSize?: number | null;
+  mimeType?: string | null;
+  uploadedAt?: string | null;
+};
+
+type HermesArchiveManifest = {
+  version?: number;
+  jobId?: string;
+  sessionId?: string;
+  runId?: string;
+  archivePrefix?: string;
+  uploadedAt?: string;
+  files?: HermesArchiveManifestFile[];
+};
+
 function shouldUseHermesBackend(
   deps: AppDeps,
   input: {
@@ -8046,6 +8070,92 @@ function parseHermesJsonRecord(input: string | null | undefined) {
   } catch {
     return null;
   }
+}
+
+function parseHermesArchiveManifest(input: string | null | undefined): HermesArchiveManifest | null {
+  const parsed = parseHermesJsonRecord(input);
+  if (!parsed) {
+    return null;
+  }
+  const files = Array.isArray(parsed.files)
+    ? parsed.files.filter((entry): entry is HermesArchiveManifestFile =>
+        Boolean(entry)
+        && typeof entry === "object"
+        && typeof (entry as HermesArchiveManifestFile).relativePath === "string"
+        && typeof (entry as HermesArchiveManifestFile).r2Key === "string",
+      )
+    : [];
+  return {
+    version: typeof parsed.version === "number" ? parsed.version : undefined,
+    jobId: typeof parsed.jobId === "string" ? parsed.jobId : undefined,
+    sessionId: typeof parsed.sessionId === "string" ? parsed.sessionId : undefined,
+    runId: typeof parsed.runId === "string" ? parsed.runId : undefined,
+    archivePrefix: typeof parsed.archivePrefix === "string" ? parsed.archivePrefix : undefined,
+    uploadedAt: typeof parsed.uploadedAt === "string" ? parsed.uploadedAt : undefined,
+    files,
+  };
+}
+
+function defaultMimeTypeForHermesArtifact(relativePath: string) {
+  const normalized = relativePath.toLowerCase();
+  if (normalized.endsWith(".md")) {
+    return "text/markdown; charset=utf-8";
+  }
+  if (normalized.endsWith(".json") || normalized.endsWith(".jsonl")) {
+    return "application/json; charset=utf-8";
+  }
+  if (normalized.endsWith(".csv") || normalized.endsWith(".tsv")) {
+    return "text/csv; charset=utf-8";
+  }
+  if (normalized.endsWith(".svg")) {
+    return "image/svg+xml";
+  }
+  if (normalized.endsWith(".log") || normalized.endsWith(".txt")) {
+    return "text/plain; charset=utf-8";
+  }
+  return "application/octet-stream";
+}
+
+function loadHermesArchiveSummary(job: HermesJobSummary) {
+  const archive = job.archive && typeof job.archive === "object" ? job.archive : null;
+  return {
+    status: typeof archive?.status === "string" ? archive.status : null,
+    prefix: typeof archive?.prefix === "string" ? archive.prefix : null,
+    manifestKey: typeof archive?.manifestKey === "string" ? archive.manifestKey : null,
+    fileCount: typeof archive?.fileCount === "number" ? archive.fileCount : null,
+    updatedAt: typeof archive?.updatedAt === "string" ? archive.updatedAt : null,
+  };
+}
+
+async function loadHermesArchiveManifest(
+  deps: AppDeps,
+  job: HermesJobSummary,
+) {
+  const archive = loadHermesArchiveSummary(job);
+  if (!archive.manifestKey) {
+    return null;
+  }
+  const text = await deps.blobStore.getText(archive.manifestKey).catch(() => null);
+  return parseHermesArchiveManifest(text);
+}
+
+function findHermesArchiveFile(
+  manifest: HermesArchiveManifest | null,
+  predicate: (file: HermesArchiveManifestFile) => boolean,
+) {
+  return manifest?.files?.find(predicate) ?? null;
+}
+
+async function loadHermesArchiveText(
+  deps: AppDeps,
+  manifest: HermesArchiveManifest | null,
+  predicate: (file: HermesArchiveManifestFile) => boolean,
+) {
+  const file = findHermesArchiveFile(manifest, predicate);
+  if (!file) {
+    return null;
+  }
+  return await deps.blobStore.getText(file.r2Key).catch(() => null);
 }
 
 function truncateHermesText(input: string, maxChars = 400) {
@@ -8376,6 +8486,427 @@ function extractHermesThreadMetadata(messages: MessageRecord[]): HermesThreadMet
   return null;
 }
 
+async function fanOutActiveRunSubscribers(
+  activeRuns: Map<string, ActiveRunState>,
+  runId: string,
+  event: string,
+  data: Record<string, unknown>,
+) {
+  const activeRun = activeRuns.get(runId);
+  if (!activeRun || activeRun.subscribers.size === 0) {
+    return;
+  }
+  const subscribers = [...activeRun.subscribers.values()];
+  await Promise.all(subscribers.map(async (subscriber) => {
+    try {
+      await subscriber(event, data);
+    } catch {
+      // Ignore subscriber disconnect races.
+    }
+  }));
+}
+
+async function publishPersistedHermesEvent(
+  deps: AppDeps,
+  activeRuns: Map<string, ActiveRunState>,
+  runId: string,
+  sessionId: string,
+  event: string,
+  data: Record<string, unknown>,
+  send?: (event: string, data: Record<string, unknown>) => Promise<void>,
+) {
+  await deps.store.appendRunEvent(runId, sessionId, event, data);
+  if (send) {
+    await send(event, data);
+  }
+  await fanOutActiveRunSubscribers(activeRuns, runId, event, data);
+}
+
+function normalizeHermesArtifactFilename(relativePath: string) {
+  return relativePath.replace(/^\/+/u, "").trim();
+}
+
+function titleForHermesArtifact(relativePath: string) {
+  const normalized = normalizeHermesArtifactFilename(relativePath);
+  const base = normalized.split("/").at(-1) ?? normalized;
+  if (base === "briefing.md") {
+    return "Briefing";
+  }
+  if (base === "citation-index.json") {
+    return "Citation Index";
+  }
+  if (base === "dataset.csv") {
+    return "Dataset CSV";
+  }
+  if (base === "dataset.jsonl") {
+    return "Dataset JSONL";
+  }
+  if (base === "run.log") {
+    return "Run Log";
+  }
+  if (base === "hermes.session.json") {
+    return "Hermes Session Snapshot";
+  }
+  return base;
+}
+
+function kindForHermesArtifact(relativePath: string) {
+  const base = normalizeHermesArtifactFilename(relativePath).split("/").at(-1) ?? "";
+  if (base === "briefing.md") {
+    return "briefing_markdown";
+  }
+  if (base === "every-single-reference.md") {
+    return "reference_file";
+  }
+  if (base === "hermes.session.json") {
+    return "hermes_session_snapshot";
+  }
+  if (base === "archive-manifest.json") {
+    return "hermes_archive_manifest";
+  }
+  return "hermes_run_artifact";
+}
+
+async function persistHermesArchiveArtifacts(
+  deps: AppDeps,
+  sessionId: string,
+  runId: string,
+  job: HermesJobSummary,
+  manifest: HermesArchiveManifest,
+) {
+  const existing = new Set(
+    (await deps.store.listArtifacts(sessionId))
+      .filter((artifact) => artifactRunId(artifact) === runId)
+      .map((artifact) => artifact.r2Key),
+  );
+  const imported: Array<ArtifactRecord> = [];
+  for (const file of manifest.files ?? []) {
+    const r2Key = typeof file.r2Key === "string" ? file.r2Key.trim() : "";
+    const relativePath = typeof file.relativePath === "string" ? normalizeHermesArtifactFilename(file.relativePath) : "";
+    if (!r2Key || !relativePath) {
+      continue;
+    }
+    const mimeType = typeof file.mimeType === "string" && file.mimeType.trim().length > 0
+      ? file.mimeType
+      : defaultMimeTypeForHermesArtifact(relativePath);
+    const record = await deps.store.saveArtifact({
+      sessionId,
+      runtimeId: null,
+      r2Key,
+      blobRef: r2Key,
+      filename: relativePath,
+      mimeType,
+      byteSize: typeof file.byteSize === "number" ? file.byteSize : null,
+      metadata: {
+        kind: kindForHermesArtifact(relativePath),
+        title: titleForHermesArtifact(relativePath),
+        runId,
+        hermesJobId: job.id,
+        relativePath,
+        sourcePath: typeof file.sourcePath === "string" ? file.sourcePath : null,
+        archivePrefix: manifest.archivePrefix ?? null,
+        hermesArchiveStatus: loadHermesArchiveSummary(job).status,
+        previewable: isTextArtifact(relativePath, mimeType),
+      },
+      createdAt: typeof file.uploadedAt === "string" ? file.uploadedAt : undefined,
+    });
+    if (!existing.has(r2Key)) {
+      imported.push(record);
+      existing.add(r2Key);
+    }
+  }
+  const archiveSummary = loadHermesArchiveSummary(job);
+  if (archiveSummary.manifestKey && !existing.has(archiveSummary.manifestKey)) {
+    imported.push(await deps.store.saveArtifact({
+      sessionId,
+      runtimeId: null,
+      r2Key: archiveSummary.manifestKey,
+      blobRef: archiveSummary.manifestKey,
+      filename: "wrapper/archive-manifest.json",
+      mimeType: "application/json; charset=utf-8",
+      metadata: {
+        kind: "hermes_archive_manifest",
+        title: "Archive Manifest",
+        runId,
+        hermesJobId: job.id,
+        relativePath: "wrapper/archive-manifest.json",
+        archivePrefix: manifest.archivePrefix ?? null,
+        previewable: true,
+      },
+    }));
+    existing.add(archiveSummary.manifestKey);
+  }
+  return imported;
+}
+
+async function persistHermesFallbackArtifacts(
+  deps: AppDeps,
+  sessionId: string,
+  runId: string,
+  job: HermesJobSummary,
+) {
+  const imported: Array<ArtifactRecord> = [];
+  const response = await fetchHermesJobArtifacts(
+    deps.hermesJobApiUrl!,
+    deps.hermesJobApiToken,
+    job.id,
+  ).catch(() => null);
+  const artifacts = Array.isArray(response?.artifacts) ? response.artifacts : [];
+  for (const entry of artifacts) {
+    const name = typeof entry.name === "string" ? normalizeHermesArtifactFilename(entry.name) : "";
+    if (!name) {
+      continue;
+    }
+    const relativePath = name.startsWith("wrapper/") || name.startsWith("inner/") ? name : `inner/${name}`;
+    const mimeType = defaultMimeTypeForHermesArtifact(relativePath);
+    if (!isTextArtifact(relativePath, mimeType)) {
+      continue;
+    }
+    const artifact = await fetchHermesArtifact(
+      deps.hermesJobApiUrl!,
+      deps.hermesJobApiToken,
+      job.id,
+      normalizeHermesArtifactName(name.split("/").at(-1) ?? name),
+    ).catch(() => null);
+    const content = artifact?.artifact.content ?? null;
+    if (typeof content !== "string") {
+      continue;
+    }
+    const r2Key = artifactKeys.sessionArtifact(sessionId, `runs/${runId}/hermes-import/${relativePath}`);
+    await deps.blobStore.putText(r2Key, content, mimeType);
+    imported.push(await deps.store.saveArtifact({
+      sessionId,
+      runtimeId: null,
+      r2Key,
+      blobRef: r2Key,
+      filename: relativePath,
+      mimeType,
+      byteSize: typeof entry.bytes === "number" ? entry.bytes : new TextEncoder().encode(content).byteLength,
+      metadata: {
+        kind: kindForHermesArtifact(relativePath),
+        title: titleForHermesArtifact(relativePath),
+        runId,
+        hermesJobId: job.id,
+        relativePath,
+        sourcePath: typeof entry.path === "string" ? entry.path : null,
+        previewable: true,
+        fallbackImported: true,
+      },
+      createdAt: typeof entry.updatedAt === "string" ? entry.updatedAt : undefined,
+    }));
+  }
+  return imported;
+}
+
+function buildHermesCompletionAnswer(
+  finalSnapshot: HermesSessionSnapshot | null,
+  archiveManifest: HermesArchiveManifest | null,
+) {
+  const finalMessages = Array.isArray(finalSnapshot?.messages) ? finalSnapshot.messages : [];
+  const finalAssistantMessage = [...finalMessages]
+    .reverse()
+    .find((message) => message.role === "assistant" && typeof message.content === "string" && message.content.trim().length > 0);
+  if (typeof finalAssistantMessage?.content === "string" && finalAssistantMessage.content.trim().length > 0) {
+    return finalAssistantMessage.content.trim();
+  }
+  const importantFiles = (archiveManifest?.files ?? [])
+    .map((file) => normalizeHermesArtifactFilename(file.relativePath))
+    .filter((path) =>
+      path.endsWith("briefing.md")
+      || path.endsWith("dataset.csv")
+      || path.endsWith("citation-index.json"),
+    )
+    .slice(0, 3);
+  if (importantFiles.length > 0) {
+    return `Completed. Open the files panel to inspect ${importantFiles.map((file) => `\`${file}\``).join(", ")}.`;
+  }
+  return "Completed. Open the files panel to inspect the run artifacts.";
+}
+
+async function finalizeHermesRun(
+  deps: AppDeps,
+  activeRuns: Map<string, ActiveRunState>,
+  params: {
+    session: SessionRecord;
+    runId: string;
+    job: HermesJobSummary;
+    send?: (event: string, data: Record<string, unknown>) => Promise<void>;
+  },
+) {
+  const currentRun = await deps.store.getRun(params.runId);
+  if (!currentRun || currentRun.sessionId !== params.session.id) {
+    return { finalized: false, reason: "run_not_found" as const };
+  }
+  if (isTerminalRunStatus(currentRun.status)) {
+    return { finalized: false, reason: "already_terminal" as const };
+  }
+
+  const archiveManifest = await loadHermesArchiveManifest(deps, params.job);
+  const importedArtifacts = archiveManifest
+    ? await persistHermesArchiveArtifacts(deps, params.session.id, currentRun.id, params.job, archiveManifest)
+    : await persistHermesFallbackArtifacts(deps, params.session.id, currentRun.id, params.job);
+
+  for (const artifact of importedArtifacts) {
+    await publishPersistedHermesEvent(
+      deps,
+      activeRuns,
+      currentRun.id,
+      params.session.id,
+      "artifact.created",
+      {
+        runId: currentRun.id,
+        sessionId: params.session.id,
+        artifact,
+      },
+      params.send,
+    );
+  }
+
+  if (importedArtifacts.length > 0) {
+    await publishPersistedHermesEvent(
+      deps,
+      activeRuns,
+      currentRun.id,
+      params.session.id,
+      "artifacts.updated",
+      {
+        runId: currentRun.id,
+        sessionId: params.session.id,
+        count: importedArtifacts.length,
+      },
+      params.send,
+    );
+  }
+
+  const briefingMarkdown =
+    await loadHermesArchiveText(deps, archiveManifest, (file) => normalizeHermesArtifactFilename(file.relativePath).endsWith("briefing.md"))
+    ?? await fetchHermesArtifact(
+      deps.hermesJobApiUrl!,
+      deps.hermesJobApiToken,
+      params.job.id,
+      normalizeHermesArtifactName("briefing.md"),
+    ).then((response) => response.artifact.content.trim()).catch(() => "");
+
+  if (briefingMarkdown) {
+    const briefingHtml = await renderBriefingHtml(deps, params.session.id, briefingMarkdown);
+    await persistResearchDocumentArtifact(deps, params.session.id, currentRun.id, briefingHtml);
+  }
+
+  const sessionArtifactText =
+    await loadHermesArchiveText(deps, archiveManifest, (file) => normalizeHermesArtifactFilename(file.relativePath).endsWith("hermes.session.json"))
+    ?? await fetchHermesArtifact(
+      deps.hermesJobApiUrl!,
+      deps.hermesJobApiToken,
+      params.job.id,
+      normalizeHermesArtifactName("hermes.session.json"),
+    ).then((response) => response.artifact.content).catch(() => null);
+  const finalSnapshot = parseHermesJsonRecord(sessionArtifactText ?? "") as HermesSessionSnapshot | null;
+  const finalAnswer = buildHermesCompletionAnswer(finalSnapshot, archiveManifest);
+
+  const archiveSummary = loadHermesArchiveSummary(params.job);
+  const manifestStatus = typeof params.job.manifestStatus === "string" ? params.job.manifestStatus.trim() : "";
+  const runSucceeded =
+    params.job.state === "completed"
+    && (params.job.exitCode == null || params.job.exitCode === 0)
+    && (
+      Boolean(briefingMarkdown)
+      || /^completed/iu.test(manifestStatus)
+      || (archiveSummary.fileCount ?? 0) > 0
+    );
+
+  if (!runSucceeded) {
+    const failureMessage =
+      finalAnswer && finalAnswer !== "Completed. Open the files panel to inspect the run artifacts."
+        ? finalAnswer
+        : "Hermes finished without producing the expected artifacts.";
+    await deps.store.appendMessage(params.session.id, "assistant", failureMessage, {
+      phase: "error",
+      runId: currentRun.id,
+      hermes: {
+        jobId: params.job.id,
+        sessionId: params.job.hermesSessionId ?? finalSnapshot?.session_id ?? null,
+        model: params.job.model ?? deps.hermesModel ?? null,
+        innerRunId: params.job.innerRunId ?? null,
+        innerRunDir: params.job.innerRunDir ?? null,
+        estimatedCostUsd: params.job.cost?.estimatedCostUsd ?? null,
+        archive: archiveSummary,
+      },
+    });
+    await deps.store.updateRun(currentRun.id, terminalRunStateUpdate("failed", new Date().toISOString()));
+    await publishPersistedHermesEvent(
+      deps,
+      activeRuns,
+      currentRun.id,
+      params.session.id,
+      "run.completed",
+      {
+        runId: currentRun.id,
+        sessionId: params.session.id,
+        status: "failed",
+        completionMode: "hermes",
+        error: failureMessage,
+        hermes: {
+          jobId: params.job.id,
+          sessionId: params.job.hermesSessionId ?? finalSnapshot?.session_id ?? null,
+          model: params.job.model ?? deps.hermesModel ?? null,
+          innerRunId: params.job.innerRunId ?? null,
+          innerRunDir: params.job.innerRunDir ?? null,
+          estimatedCostUsd: params.job.cost?.estimatedCostUsd ?? null,
+          manifestStatus: manifestStatus || null,
+          archive: archiveSummary,
+        },
+      },
+      params.send,
+    );
+    return { finalized: true, status: "failed" as const };
+  }
+
+  await persistCompletedAssistantAnswer(deps, {
+    sessionId: params.session.id,
+    runId: currentRun.id,
+    answer: finalAnswer,
+    citations: [],
+    toolHistory: [],
+    send: params.send ?? (async () => {}),
+    extraMetadata: {
+      hermes: {
+        jobId: params.job.id,
+        sessionId: params.job.hermesSessionId ?? finalSnapshot?.session_id ?? null,
+        model: params.job.model ?? deps.hermesModel ?? null,
+        innerRunId: params.job.innerRunId ?? null,
+        innerRunDir: params.job.innerRunDir ?? null,
+        estimatedCostUsd: params.job.cost?.estimatedCostUsd ?? null,
+        archive: archiveSummary,
+      },
+    },
+  });
+  await deps.store.updateRun(currentRun.id, terminalRunStateUpdate("completed", new Date().toISOString()));
+  await publishPersistedHermesEvent(
+    deps,
+    activeRuns,
+    currentRun.id,
+    params.session.id,
+    "run.completed",
+    {
+      runId: currentRun.id,
+      sessionId: params.session.id,
+      status: "completed",
+      completionMode: "hermes",
+      hermes: {
+        jobId: params.job.id,
+        sessionId: params.job.hermesSessionId ?? finalSnapshot?.session_id ?? null,
+        model: params.job.model ?? deps.hermesModel ?? null,
+        innerRunId: params.job.innerRunId ?? null,
+        innerRunDir: params.job.innerRunDir ?? null,
+        estimatedCostUsd: params.job.cost?.estimatedCostUsd ?? null,
+        archive: archiveSummary,
+      },
+    },
+    params.send,
+  );
+  return { finalized: true, status: "completed" as const };
+}
+
 async function buildHermesUserPrompt(
   deps: AppDeps,
   input: ChatRequest,
@@ -8602,10 +9133,17 @@ async function runHermesConversation(
   });
 
   const hermesUserPrompt = await buildHermesUserPrompt(deps, input);
+  const hermesCallbackUrl = new URL("/api/v1/hermes/callbacks/run-completed", apiOrigin(deps, request)).toString();
+  const archivePrefix = artifactKeys.sessionArtifact(activeSession.id, `runs/${run.id}/hermes`);
   const launchPayload = {
     userPrompt: hermesUserPrompt,
     model: deps.hermesModel,
     maxTurns: deps.hermesMaxTurns,
+    alphabookSessionId: activeSession.id,
+    alphabookRunId: run.id,
+    callbackUrl: hermesCallbackUrl,
+    callbackToken: deps.hermesJobApiToken,
+    archivePrefix,
   };
   const launchResult = priorHermesThread?.jobId
     ? await resumeHermesJob(deps.hermesJobApiUrl, deps.hermesJobApiToken, {
@@ -8797,6 +9335,14 @@ async function runHermesConversation(
 
   try {
     while (true) {
+      const persistedRun = await deps.store.getRun(run.id);
+      if (!persistedRun || persistedRun.sessionId !== activeSession.id) {
+        throw new Error("Hermes run disappeared while it was still active.");
+      }
+      run = persistedRun;
+      if (isTerminalRunStatus(run.status)) {
+        return;
+      }
       const activeRun = activeRuns.get(run.id);
       if (activeRun?.cancelRequested) {
         await cancelHermesJob(deps.hermesJobApiUrl, deps.hermesJobApiToken, job.id).catch(() => {});
@@ -8835,133 +9381,17 @@ async function runHermesConversation(
     }
 
     await syncHermesSessionSnapshot();
-
-    const briefingArtifact = await fetchHermesArtifact(
-      deps.hermesJobApiUrl,
-      deps.hermesJobApiToken,
-      job.id,
-      normalizeHermesArtifactName("briefing.md"),
-    ).catch(() => null);
-
-    const briefingMarkdown = briefingArtifact?.artifact.content?.trim() ?? "";
-    if (briefingMarkdown) {
-      const markdownKey = artifactKeys.sessionArtifact(activeSession.id, `${run.id}-briefing.md`);
-      await deps.blobStore.putText(markdownKey, briefingMarkdown, "text/markdown; charset=utf-8");
-      await deps.store.saveArtifact({
-        sessionId: activeSession.id,
-        runtimeId: null,
-        r2Key: markdownKey,
-        filename: `${run.id}-briefing.md`,
-        mimeType: "text/markdown",
-        metadata: {
-          kind: "briefing_markdown",
-          runId: run.id,
-          hermesJobId: job.id,
-        },
-      });
-      const briefingHtml = await renderBriefingHtml(deps, activeSession.id, briefingMarkdown);
-      await persistResearchDocumentArtifact(deps, activeSession.id, run.id, briefingHtml);
-    }
-
-    const sessionArtifact = await fetchHermesArtifact(
-      deps.hermesJobApiUrl,
-      deps.hermesJobApiToken,
-      job.id,
-      normalizeHermesArtifactName("hermes.session.json"),
-    ).catch(() => null);
-    const finalSnapshot = parseHermesJsonRecord(sessionArtifact?.artifact.content ?? "") as HermesSessionSnapshot | null;
-    const finalMessages = Array.isArray(finalSnapshot?.messages) ? finalSnapshot.messages : [];
-    const finalAssistantMessage = [...finalMessages]
-      .reverse()
-      .find((message) => message.role === "assistant" && typeof message.content === "string" && message.content.trim().length > 0);
-
-    const finalAnswer =
-      (typeof finalAssistantMessage?.content === "string" && finalAssistantMessage.content.trim().length > 0
-        ? finalAssistantMessage.content.trim()
-        : briefingMarkdown
-          ? `Hermes completed the run. The full briefing is attached in the research pane.`
-          : `Hermes completed the run.`).trim();
-
-    const manifestStatus = typeof job.manifestStatus === "string" ? job.manifestStatus.trim() : "";
-    const runSucceeded =
-      job.state === "completed"
-      && (job.exitCode == null || job.exitCode === 0)
-      && (
-        briefingMarkdown.length > 0
-        || /^completed/iu.test(manifestStatus)
-      );
-
-    if (!runSucceeded) {
-      const failureMessage = finalAnswer && finalAnswer !== "Hermes completed the run."
-        ? finalAnswer
-        : "Hermes finished without producing the expected briefing artifacts.";
-      await deps.store.appendMessage(activeSession.id, "assistant", failureMessage, {
-        phase: "error",
-        runId: run.id,
-        hermes: {
-          jobId: job.id,
-          sessionId: job.hermesSessionId ?? finalSnapshot?.session_id ?? null,
-          model: job.model ?? deps.hermesModel ?? null,
-          innerRunId: job.innerRunId ?? null,
-          innerRunDir: job.innerRunDir ?? null,
-          estimatedCostUsd: job.cost?.estimatedCostUsd ?? null,
-        },
-      });
-      await writeHermesTerminalRunState("failed");
-      await emit("run.completed", {
-        runId: run.id,
-        sessionId: activeSession.id,
-        status: "failed",
-        completionMode: "hermes",
-        error: failureMessage,
-        hermes: {
-          jobId: job.id,
-          sessionId: job.hermesSessionId ?? finalSnapshot?.session_id ?? null,
-          model: job.model ?? deps.hermesModel ?? null,
-          innerRunId: job.innerRunId ?? null,
-          innerRunDir: job.innerRunDir ?? null,
-          estimatedCostUsd: job.cost?.estimatedCostUsd ?? null,
-          manifestStatus: manifestStatus || null,
-        },
-      });
-      return;
-    }
-
-    await persistCompletedAssistantAnswer(deps, {
-      sessionId: activeSession.id,
+    await finalizeHermesRun(deps, activeRuns, {
+      session: activeSession,
       runId: run.id,
-      answer: finalAnswer,
-      citations: [],
-      toolHistory: [],
-      send: emit,
-      extraMetadata: {
-        hermes: {
-          jobId: job.id,
-          sessionId: job.hermesSessionId ?? finalSnapshot?.session_id ?? null,
-          model: job.model ?? deps.hermesModel ?? null,
-          innerRunId: job.innerRunId ?? null,
-          innerRunDir: job.innerRunDir ?? null,
-          estimatedCostUsd: job.cost?.estimatedCostUsd ?? null,
-        },
-      },
-    });
-
-    await writeHermesTerminalRunState("completed");
-    await emit("run.completed", {
-      runId: run.id,
-      sessionId: activeSession.id,
-      status: "completed",
-      completionMode: "hermes",
-      hermes: {
-        jobId: job.id,
-        sessionId: job.hermesSessionId ?? finalSnapshot?.session_id ?? null,
-        model: job.model ?? deps.hermesModel ?? null,
-        innerRunId: job.innerRunId ?? null,
-        innerRunDir: job.innerRunDir ?? null,
-        estimatedCostUsd: job.cost?.estimatedCostUsd ?? null,
-      },
+      job,
+      send,
     });
   } catch (error) {
+    const currentRun = await deps.store.getRun(run.id);
+    if (currentRun && isTerminalRunStatus(currentRun.status)) {
+      return;
+    }
     const message = error instanceof Error ? error.message : "Hermes run failed.";
     await deps.store.appendMessage(activeSession.id, "assistant", message, {
       phase: "error",
@@ -12912,6 +13342,48 @@ export function createApp(inputDeps: CreateAppInput) {
       },
     );
   });
+
+  const HermesCompletionCallbackSchema = z.object({
+    sessionId: z.string().trim().min(1),
+    runId: z.string().trim().min(1),
+    jobId: z.string().trim().min(1),
+    status: z.string().trim().optional(),
+  });
+
+  const handleHermesCompletionCallback = async (c: Context) => {
+    if (!deps.hermesJobApiUrl || !deps.hermesJobApiToken) {
+      return c.json({ error: "Hermes callbacks are not configured." }, 501);
+    }
+    const authHeader = c.req.header("authorization") ?? "";
+    if (authHeader !== `Bearer ${deps.hermesJobApiToken}`) {
+      return c.json({ error: "Not authorized." }, 403);
+    }
+    const payload = HermesCompletionCallbackSchema.parse(await c.req.json());
+    const session = await deps.store.getSession(payload.sessionId);
+    if (!session) {
+      return c.json({ error: "Session not found." }, 404);
+    }
+    const run = await deps.store.getRun(payload.runId);
+    if (!run || run.sessionId !== payload.sessionId) {
+      return c.json({ error: "Run not found." }, 404);
+    }
+
+    const latestJob = await fetchHermesJob(deps.hermesJobApiUrl, deps.hermesJobApiToken, payload.jobId);
+    const finalized = await finalizeHermesRun(deps, activeRuns, {
+      session,
+      runId: payload.runId,
+      job: latestJob.job,
+    });
+    return c.json({
+      ok: true,
+      runId: payload.runId,
+      jobId: payload.jobId,
+      finalized,
+    });
+  };
+
+  app.post("/v1/hermes/callbacks/run-completed", handleHermesCompletionCallback);
+  app.post("/api/v1/hermes/callbacks/run-completed", handleHermesCompletionCallback);
 
   app.post("/runs/:runId/cancel", async (c) => {
     const trustedRequest = requireTrustedBrowserRequest(c);

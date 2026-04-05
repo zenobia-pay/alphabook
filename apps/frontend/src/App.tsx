@@ -2843,14 +2843,6 @@ function ResearchArtifactDocument({
   );
 }
 
-function ResearchArtifactPane(props: {
-  sessionTitle: string;
-  documentHtml: string;
-  emptyState?: ReactNode;
-}) {
-  return <ResearchArtifactDocument {...props} />;
-}
-
 function AssistantDocumentFramePage({
   sessionId,
   runId,
@@ -3023,50 +3015,6 @@ function AssistantDocumentFramePage({
         sessionTitle={sessionTitle}
         documentHtml={documentHtml}
       />
-    </section>
-  );
-}
-
-function AssistantWorkspace({
-  leftPane,
-  rightPane,
-  onResizeStart,
-  isResizing,
-  width,
-  pageRef,
-}: {
-  leftPane: ReactNode;
-  rightPane: ReactNode;
-  onResizeStart: (event: ReactPointerEvent<HTMLDivElement>) => void;
-  isResizing: boolean;
-  width: number;
-  pageRef: React.RefObject<HTMLElement | null>;
-}) {
-  return (
-    <section
-      ref={pageRef}
-      className={cn("assistant-workspace-page", isResizing && "is-resizing")}
-      style={{ ["--book-assistant-width" as string]: `${width}px` }}
-    >
-      <div className="assistant-workspace-main">
-        {leftPane}
-      </div>
-
-      <div
-        className="book-assistant-divider"
-        onPointerDown={onResizeStart}
-        role="separator"
-        aria-orientation="vertical"
-        aria-label="Resize assistant panel"
-      />
-
-      <aside className="book-assistant-pane">
-        <div className="book-assistant-shell" data-testid="assistant-workspace-thread">
-          <div className="assistant-session-thread">
-            {rightPane}
-          </div>
-        </div>
-      </aside>
     </section>
   );
 }
@@ -3505,14 +3453,6 @@ export default function App() {
   const navigationItems = adminAccess.allowed
     ? [...NAV_ITEMS, { id: "admin" as const, label: "Admin", icon: ProfileIcon }]
     : NAV_ITEMS;
-  const preferredAssistantRun = useMemo(
-    () =>
-      sessionRuns.find((run) => run.id === recoveredActiveRunId)
-      ?? sessionRuns.find((run) => run.status === "running" || run.status === "queued")
-      ?? [...sessionRuns].sort((left, right) => right.startedAt.localeCompare(left.startedAt))[0]
-      ?? null,
-    [recoveredActiveRunId, sessionRuns],
-  );
   const runningSessionIds = useMemo(() => {
     const next = new Set(
       sessions
@@ -4507,6 +4447,8 @@ export default function App() {
             || event.event === "tool.started"
             || event.event === "tool.progress"
             || event.event === "tool.completed"
+            || event.event === "artifact.created"
+            || event.event === "artifacts.updated"
             || event.event === "assistant.completed"
             || event.event === "run.completed"
           ) {
@@ -5180,6 +5122,13 @@ export default function App() {
               return;
             }
 
+            if (event.event === "artifact.created" || event.event === "artifacts.updated") {
+              if (workingSessionId) {
+                void refreshAssistantConversation(workingSessionId);
+              }
+              return;
+            }
+
             if (event.event === "assistant.delta" && typeof event.data.text === "string") {
               scheduleStreamIdleSettle();
               return;
@@ -5573,11 +5522,6 @@ export default function App() {
           || messagesLoading
         ))
       );
-    const workspaceDocumentHtml = currentResearchDocumentHtml(
-      visibleMessages,
-      runArtifacts,
-      preferredAssistantRun?.id ?? null,
-    );
     const showBlankSession =
       !assistantSessionLoading
       && selectedSessionId == null
@@ -5601,34 +5545,22 @@ export default function App() {
     return (
       <section className="assistant-page">
         {assistantSessionLoading ? (
-          <AssistantWorkspace
-            onResizeStart={startBookAssistantResize}
-            isResizing={isDraggingBookAssistant}
-            width={bookAssistantWidth}
-            pageRef={bookPageRef}
-            leftPane={(
-              <section className="assistant-document-pane" aria-hidden="true">
-                <div className="assistant-document-scroll" />
-              </section>
-            )}
-            rightPane={(
-              renderAssistantSurface({
-                messages: [],
-                isSending: false,
-                streamingAssistantId: null,
-                artifacts: [],
-                showArtifacts: false,
-                showWelcome: false,
-                effortLevel: assistantEffort,
-                onEffortLevelChange: setAssistantEffort,
-                onPrompt: sendPrompt,
-                onCancel: cancelActiveRun,
-                composerDisabled: authLocked,
-                composerDisabledNotice: assistantComposerNotice,
-                componentKey: `loading-${selectedSessionId ?? "new-thread"}`,
-              })
-            )}
-          />
+          <div className="assistant-thread-shell" data-testid="thread">
+            {renderAssistantSurface({
+              messages: [],
+              isSending: false,
+              streamingAssistantId: null,
+              artifacts: [],
+              showWelcome: false,
+              effortLevel: assistantEffort,
+              onEffortLevelChange: setAssistantEffort,
+              onPrompt: sendPrompt,
+              onCancel: cancelActiveRun,
+              composerDisabled: authLocked,
+              composerDisabledNotice: assistantComposerNotice,
+              componentKey: `loading-${selectedSessionId ?? "new-thread"}`,
+            })}
+          </div>
         ) : showRestrictedConversation ? (
           <div className="assistant-thread-shell" data-testid="thread">
             <LockedState compact title={authLocked ? "Sign in to view this conversation." : "This conversation is private."} />
@@ -5650,34 +5582,21 @@ export default function App() {
             })}
           </div>
         ) : (
-          <AssistantWorkspace
-            onResizeStart={startBookAssistantResize}
-            isResizing={isDraggingBookAssistant}
-            width={bookAssistantWidth}
-            pageRef={bookPageRef}
-            leftPane={(
-              <ResearchArtifactPane
-                sessionTitle={assistantSessionName(activeSession)}
-                documentHtml={workspaceDocumentHtml}
-              />
-            )}
-            rightPane={(
-              renderAssistantSurface({
-                messages: visibleMessages,
-                isSending: isSending || recoveredActiveRunId !== null,
-                streamingAssistantId,
-                artifacts: runArtifacts,
-                showArtifacts: false,
-                effortLevel: assistantEffort,
-                onEffortLevelChange: setAssistantEffort,
-                onPrompt: sendPrompt,
-                onCancel: cancelActiveRun,
-                composerDisabled: authLocked,
-                composerDisabledNotice: assistantComposerNotice,
-                componentKey: selectedSessionId ?? "new-thread",
-              })
-            )}
-          />
+          <div className="assistant-thread-shell" data-testid="thread">
+            {renderAssistantSurface({
+              messages: visibleMessages,
+              isSending: isSending || recoveredActiveRunId !== null,
+              streamingAssistantId,
+              artifacts: runArtifacts,
+              effortLevel: assistantEffort,
+              onEffortLevelChange: setAssistantEffort,
+              onPrompt: sendPrompt,
+              onCancel: cancelActiveRun,
+              composerDisabled: authLocked,
+              composerDisabledNotice: assistantComposerNotice,
+              componentKey: selectedSessionId ?? "new-thread",
+            })}
+          </div>
         )}
       </section>
     );

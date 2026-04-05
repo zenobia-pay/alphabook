@@ -28,6 +28,13 @@ export type HermesJobSummary = {
   } | null;
   openai?: Record<string, unknown> | null;
   artifacts?: Array<Record<string, unknown>>;
+  archive?: {
+    status?: string | null;
+    prefix?: string | null;
+    manifestKey?: string | null;
+    fileCount?: number | null;
+    updatedAt?: string | null;
+  } | null;
 };
 
 export type HermesLogSource = {
@@ -55,6 +62,13 @@ export type HermesArtifactResponse = {
   };
 };
 
+export type HermesArtifactListResponse = {
+  jobId: string;
+  runDir: string;
+  innerRunDir: string | null;
+  artifacts: Array<Record<string, unknown>>;
+};
+
 function buildHeaders(token?: string) {
   return {
     "content-type": "application/json",
@@ -78,6 +92,11 @@ export async function createHermesJob(
     model?: string;
     maxTurns?: number;
     corpusRoot?: string;
+    alphabookSessionId?: string;
+    alphabookRunId?: string;
+    callbackUrl?: string;
+    callbackToken?: string;
+    archivePrefix?: string;
   },
 ) {
   const response = await ensureOk(await fetch(`${baseUrl.replace(/\/$/, "")}/v1/jobs`, {
@@ -98,6 +117,11 @@ export async function resumeHermesJob(
     model?: string;
     maxTurns?: number;
     corpusRoot?: string;
+    alphabookSessionId?: string;
+    alphabookRunId?: string;
+    callbackUrl?: string;
+    callbackToken?: string;
+    archivePrefix?: string;
   },
 ) {
   const response = await ensureOk(await fetch(`${baseUrl.replace(/\/$/, "")}/v1/jobs/resume`, {
@@ -147,6 +171,17 @@ export async function fetchHermesArtifact(
     headers: buildHeaders(token),
   }));
   return await response.json() as HermesArtifactResponse;
+}
+
+export async function fetchHermesJobArtifacts(
+  baseUrl: string,
+  token: string | undefined,
+  jobId: string,
+) {
+  const response = await ensureOk(await fetch(`${baseUrl.replace(/\/$/, "")}/v1/jobs/${encodeURIComponent(jobId)}/artifacts`, {
+    headers: buildHeaders(token),
+  }));
+  return await response.json() as HermesArtifactListResponse;
 }
 
 export async function cancelHermesJob(

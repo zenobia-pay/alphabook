@@ -196,6 +196,23 @@ function summarizeArtifacts(innerRunDir) {
   }).filter(Boolean);
 }
 
+function summarizeArchive(runDir) {
+  const index = readJson(path.join(runDir, "index.json")) || {};
+  const status = readJson(path.join(runDir, "status.json")) || {};
+  const archive = (index.archive && typeof index.archive === "object" ? index.archive : null)
+    || (status.archive && typeof status.archive === "object" ? status.archive : null);
+  if (!archive) {
+    return null;
+  }
+  return {
+    status: typeof archive.status === "string" ? archive.status : null,
+    prefix: typeof archive.prefix === "string" ? archive.prefix : null,
+    manifestKey: typeof archive.manifestKey === "string" ? archive.manifestKey : null,
+    fileCount: typeof archive.fileCount === "number" ? archive.fileCount : null,
+    updatedAt: typeof archive.updatedAt === "string" ? archive.updatedAt : null,
+  };
+}
+
 function parseHeartbeatAt(runDir) {
   const heartbeatPath = path.join(runDir, "heartbeat.log");
   try {
@@ -250,6 +267,7 @@ function getRunSummary(runDir) {
     cost,
     openai: index.openai || null,
     artifacts: summarizeArtifacts(innerRunDir),
+    archive: summarizeArchive(runDir),
   };
 }
 
@@ -507,6 +525,21 @@ async function launchJob(payload) {
   if (payload.corpusRoot) {
     args.push("--corpus-root", String(payload.corpusRoot));
   }
+  if (payload.alphabookSessionId) {
+    args.push("--alphabook-session-id", String(payload.alphabookSessionId));
+  }
+  if (payload.alphabookRunId) {
+    args.push("--alphabook-run-id", String(payload.alphabookRunId));
+  }
+  if (payload.callbackUrl) {
+    args.push("--callback-url", String(payload.callbackUrl));
+  }
+  if (payload.callbackToken) {
+    args.push("--callback-token", String(payload.callbackToken));
+  }
+  if (payload.archivePrefix) {
+    args.push("--archive-prefix", String(payload.archivePrefix));
+  }
 
   return await new Promise((resolve, reject) => {
     const child = spawn(args[0], args.slice(1), {
@@ -575,6 +608,21 @@ async function resumeJob(payload) {
   }
   if (payload.corpusRoot) {
     args.push("--corpus-root", String(payload.corpusRoot));
+  }
+  if (payload.alphabookSessionId) {
+    args.push("--alphabook-session-id", String(payload.alphabookSessionId));
+  }
+  if (payload.alphabookRunId) {
+    args.push("--alphabook-run-id", String(payload.alphabookRunId));
+  }
+  if (payload.callbackUrl) {
+    args.push("--callback-url", String(payload.callbackUrl));
+  }
+  if (payload.callbackToken) {
+    args.push("--callback-token", String(payload.callbackToken));
+  }
+  if (payload.archivePrefix) {
+    args.push("--archive-prefix", String(payload.archivePrefix));
   }
 
   return await new Promise((resolve, reject) => {

@@ -12,6 +12,11 @@ PRECOMPUTED_INDEX_DIR="${PRECOMPUTED_INDEX_DIR:-}"
 MODEL="${MODEL:-gpt-5.4}"
 MAX_TURNS="${MAX_TURNS:-60}"
 HEARTBEAT_SECONDS="${HEARTBEAT_SECONDS:-15}"
+CALLBACK_URL="${CALLBACK_URL:-}"
+CALLBACK_TOKEN="${CALLBACK_TOKEN:-}"
+ARCHIVE_PREFIX="${ARCHIVE_PREFIX:-}"
+ALPHABOOK_SESSION_ID="${ALPHABOOK_SESSION_ID:-}"
+ALPHABOOK_RUN_ID="${ALPHABOOK_RUN_ID:-}"
 RESUME_RUN_DIR=""
 RESUME_SESSION_ID=""
 
@@ -31,6 +36,11 @@ Options:
   --root-dir PATH        Repo root. Default: /srv/alphabook/repo
   --resume-run-dir PATH  Prior wrapper run dir to resume Hermes thread from
   --resume-session-id ID Prior Hermes session id to resume
+  --callback-url URL     AlphaBook callback URL to notify on completion
+  --callback-token TEXT  Bearer token used for the completion callback
+  --archive-prefix KEY   R2 prefix where the wrapper archives this run
+  --alphabook-session-id ID  AlphaBook session id associated with this Hermes run
+  --alphabook-run-id ID      AlphaBook run id associated with this Hermes run
 EOF
   exit 1
 }
@@ -84,6 +94,31 @@ while [[ $# -gt 0 ]]; do
       RESUME_SESSION_ID="$2"
       shift 2
       ;;
+    --callback-url)
+      [[ $# -ge 2 ]] || usage
+      CALLBACK_URL="$2"
+      shift 2
+      ;;
+    --callback-token)
+      [[ $# -ge 2 ]] || usage
+      CALLBACK_TOKEN="$2"
+      shift 2
+      ;;
+    --archive-prefix)
+      [[ $# -ge 2 ]] || usage
+      ARCHIVE_PREFIX="$2"
+      shift 2
+      ;;
+    --alphabook-session-id)
+      [[ $# -ge 2 ]] || usage
+      ALPHABOOK_SESSION_ID="$2"
+      shift 2
+      ;;
+    --alphabook-run-id)
+      [[ $# -ge 2 ]] || usage
+      ALPHABOOK_RUN_ID="$2"
+      shift 2
+      ;;
     *)
       echo "Unknown argument: $1" >&2
       usage
@@ -118,13 +153,14 @@ PRECOMPUTED_INDEX_DIR="$(resolve_precomputed_index_dir "$CORPUS_ROOT" "$PRECOMPU
   exit 1
 }
 
-load_key() {
+load_env_value() {
   local source_file="$1"
-  python3 - "$source_file" <<'PY'
+  local key="$2"
+  python3 - "$source_file" "$key" <<'PY'
 from pathlib import Path
 import sys
 for line in Path(sys.argv[1]).read_text().splitlines():
-    if line.startswith("OPENAI_API_KEY="):
+    if line.startswith(sys.argv[2] + "="):
         value = line.split("=", 1)[1].strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
             value = value[1:-1]
@@ -134,9 +170,17 @@ PY
 }
 
 if [[ -f "$ENV_FILE" ]]; then
-  export OPENAI_API_KEY="$(load_key "$ENV_FILE")"
+  export OPENAI_API_KEY="$(load_env_value "$ENV_FILE" "OPENAI_API_KEY")"
+  export R2_BUCKET_NAME="${R2_BUCKET_NAME:-$(load_env_value "$ENV_FILE" "R2_BUCKET_NAME")}"
+  export R2_ENDPOINT="${R2_ENDPOINT:-$(load_env_value "$ENV_FILE" "R2_ENDPOINT")}"
+  export R2_ACCESS_KEY_ID="${R2_ACCESS_KEY_ID:-$(load_env_value "$ENV_FILE" "R2_ACCESS_KEY_ID")}"
+  export R2_SECRET_ACCESS_KEY="${R2_SECRET_ACCESS_KEY:-$(load_env_value "$ENV_FILE" "R2_SECRET_ACCESS_KEY")}"
 elif [[ -f "$FALLBACK_ENV_FILE" ]]; then
-  export OPENAI_API_KEY="$(load_key "$FALLBACK_ENV_FILE")"
+  export OPENAI_API_KEY="$(load_env_value "$FALLBACK_ENV_FILE" "OPENAI_API_KEY")"
+  export R2_BUCKET_NAME="${R2_BUCKET_NAME:-$(load_env_value "$FALLBACK_ENV_FILE" "R2_BUCKET_NAME")}"
+  export R2_ENDPOINT="${R2_ENDPOINT:-$(load_env_value "$FALLBACK_ENV_FILE" "R2_ENDPOINT")}"
+  export R2_ACCESS_KEY_ID="${R2_ACCESS_KEY_ID:-$(load_env_value "$FALLBACK_ENV_FILE" "R2_ACCESS_KEY_ID")}"
+  export R2_SECRET_ACCESS_KEY="${R2_SECRET_ACCESS_KEY:-$(load_env_value "$FALLBACK_ENV_FILE" "R2_SECRET_ACCESS_KEY")}"
 fi
 
 [[ -n "${OPENAI_API_KEY:-}" ]] || { echo "OPENAI_API_KEY is not available from $ENV_FILE or $FALLBACK_ENV_FILE" >&2; exit 1; }
@@ -476,7 +520,7 @@ At the end:
 prompt_path.write_text(prompt)
 PY
 
-python3 - "$status_file" "$summary_file" "$timestamp" "$run_id" "$job_id" "$ROOT_DIR" "$CORPUS_ROOT" "$PRECOMPUTED_INDEX_DIR" "$MODEL" "$MAX_TURNS" "$USER_PROMPT" "$RESUME_RUN_DIR" "$RESUME_SESSION_ID" <<'PY'
+python3 - "$status_file" "$summary_file" "$timestamp" "$run_id" "$job_id" "$ROOT_DIR" "$CORPUS_ROOT" "$PRECOMPUTED_INDEX_DIR" "$MODEL" "$MAX_TURNS" "$USER_PROMPT" "$RESUME_RUN_DIR" "$RESUME_SESSION_ID" "$ALPHABOOK_SESSION_ID" "$ALPHABOOK_RUN_ID" "$CALLBACK_URL" "$ARCHIVE_PREFIX" <<'PY'
 from pathlib import Path
 import json
 import sys
@@ -495,6 +539,10 @@ payload = {
     "user_prompt": sys.argv[11],
     "resumed_from_run_dir": sys.argv[12] or None,
     "resumed_session_id": sys.argv[13] or None,
+    "alphabook_session_id": sys.argv[14] or None,
+    "alphabook_run_id": sys.argv[15] or None,
+    "callback_url": sys.argv[16] or None,
+    "archive_prefix": sys.argv[17] or None,
     "state": "launching",
     "run_dir": str(status_path.parent.parent),
     "state_dir": str(status_path.parent),
@@ -539,6 +587,10 @@ echo "resume_session_id=${RESUME_SESSION_ID:-}"
 echo "attempt_id=${ATTEMPT_ID:-}"
 echo "attempt_dir=${ATTEMPT_DIR:-}"
 echo "inner_run_file=${WRAPPER_INNER_RUN_FILE:-}"
+echo "alphabook_session_id=${ALPHABOOK_SESSION_ID:-}"
+echo "alphabook_run_id=${ALPHABOOK_RUN_ID:-}"
+echo "archive_prefix=${ARCHIVE_PREFIX:-}"
+echo "callback_url=${CALLBACK_URL:-}"
 
 python3 - "$STATUS_FILE" "running" "$(date -u +%FT%TZ)" <<'PY'
 from pathlib import Path
@@ -582,6 +634,29 @@ echo "$exit_code" > "$RUN_DIR/exit_code"
 echo "launcher_finished_at=$(date -u +%FT%TZ)"
 echo "exit_code=$exit_code"
 
+materialize_script="${ROOT_DIR}/ops/digitalocean/bin/materialize-hermes-run-index.py"
+if [[ -x "$materialize_script" ]]; then
+  python3 "$materialize_script" --run-dir "$RUN_DIR" >>"$STDOUT_LOG" 2>>"$STDERR_LOG" || true
+fi
+
+archive_script="${ROOT_DIR}/ops/digitalocean/bin/archive-hermes-run.mjs"
+if [[ -n "${ARCHIVE_PREFIX:-}" && -n "${ALPHABOOK_SESSION_ID:-}" && -n "${ALPHABOOK_RUN_ID:-}" && -x "$archive_script" ]]; then
+  archive_args=(
+    --run-dir "$RUN_DIR"
+    --job-id "$JOB_ID"
+    --session-id "$ALPHABOOK_SESSION_ID"
+    --run-id "$ALPHABOOK_RUN_ID"
+    --archive-prefix "$ARCHIVE_PREFIX"
+  )
+  if [[ -n "${CALLBACK_URL:-}" ]]; then
+    archive_args+=(--callback-url "$CALLBACK_URL")
+  fi
+  if [[ -n "${CALLBACK_TOKEN:-}" ]]; then
+    archive_args+=(--callback-token "$CALLBACK_TOKEN")
+  fi
+  node "$archive_script" "${archive_args[@]}" >>"$STDOUT_LOG" 2>>"$STDERR_LOG" || true
+fi
+
 exit "$exit_code"
 EOS
 chmod +x "$run_dir/run-hermes.sh"
@@ -615,11 +690,20 @@ chmod +x "$run_dir/run-hermes.sh"
   export RUN_DIR="$run_dir"
   export JOB_ID="$job_id"
   export RESUME_SESSION_ID="$RESUME_SESSION_ID"
+  export ALPHABOOK_SESSION_ID="$ALPHABOOK_SESSION_ID"
+  export ALPHABOOK_RUN_ID="$ALPHABOOK_RUN_ID"
+  export CALLBACK_URL="$CALLBACK_URL"
+  export CALLBACK_TOKEN="$CALLBACK_TOKEN"
+  export ARCHIVE_PREFIX="$ARCHIVE_PREFIX"
   export ATTEMPT_ID="$attempt_id"
   export ATTEMPT_DIR="$attempt_dir"
   export WRAPPER_RUN_DIR="$run_dir"
   export WRAPPER_INNER_RUN_FILE="$inner_run_file"
   export HOME="$hermes_home"
+  export R2_BUCKET_NAME="${R2_BUCKET_NAME:-}"
+  export R2_ENDPOINT="${R2_ENDPOINT:-}"
+  export R2_ACCESS_KEY_ID="${R2_ACCESS_KEY_ID:-}"
+  export R2_SECRET_ACCESS_KEY="${R2_SECRET_ACCESS_KEY:-}"
   nohup "$run_dir/run-hermes.sh" >>"$launcher_log" 2>&1 &
   echo $! >"$pid_file"
 ) >/dev/null

@@ -127,6 +127,8 @@ export type RunArtifactRecord = {
   r2Key?: string;
   filename: string;
   mimeType: string;
+  byteSize?: number | null;
+  summaryText?: string | null;
   metadata?: Record<string, unknown>;
   createdAt?: string | null;
   content?: string | null;
