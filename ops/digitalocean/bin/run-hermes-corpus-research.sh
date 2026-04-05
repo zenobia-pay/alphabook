@@ -448,6 +448,8 @@ Process requirements:
 - Use it with its actual CLI syntax. Example invocation:
   - `/srv/alphabook/repo/ops/digitalocean/bin/partition-file-list.sh --file-list "$RUN_DIR/scoped-text-files.tsv" --output-dir "$RUN_DIR/search/grief_core/partitions" --max-files 5000`
   - `/srv/alphabook/repo/ops/digitalocean/bin/run-ripgrep-progress.sh --file-list "$RUN_DIR/search/grief_core/partitions/part-00001.files.tsv" --pattern '<regex>' --output-dir "$RUN_DIR/search/grief_core/part-00001" --batch-size 500 --max-total-files 5000`
+- When you build regexes in Python, use raw strings with single backslashes for regex tokens, for example `r'(?i)\bgrief\b'`, not doubled forms like `r'(?i)\\bgrief\\b'`.
+- When you pass a regex from Python into a shell command, interpolate the pattern value directly. Do not use `repr()`, `!r`, or JSON-escaped string literals when constructing the `--pattern` argument.
 - Run ripgrep only against text files listed in `{precomputed_index_dir}/all-text-files.tsv` or a scoped TSV derived from it.
 - If you derive a scoped subset, write it as `size_bytes<TAB>absolute_path` TSV before calling the ripgrep helper.
 - Never call `run-ripgrep-progress.sh` on more than 5000 files from Hermes. The helper should receive `--max-total-files 5000` and `--batch-size 500`.

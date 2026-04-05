@@ -4,6 +4,7 @@ set -euo pipefail
 FILE_LIST=""
 OUTPUT_DIR=""
 PATTERN=""
+ORIGINAL_PATTERN=""
 BATCH_SIZE="${BATCH_SIZE:-500}"
 RESUME_MODE="auto"
 MAX_BATCH_SIZE="${MAX_BATCH_SIZE:-500}"
@@ -83,6 +84,24 @@ if (( BATCH_SIZE > MAX_BATCH_SIZE )); then
   echo "Bound it to a maximum of ${MAX_BATCH_SIZE} books in the corpus." >&2
   exit 1
 fi
+
+ORIGINAL_PATTERN="$PATTERN"
+PATTERN="$(
+  python3 - "$PATTERN" <<'PY'
+import re
+import sys
+
+pattern = sys.argv[1]
+
+# Hermes sometimes serializes Python regexes twice, turning `\b` into `\\b`
+# before they reach the helper. Collapse the common regex escapes back to the
+# single-backslash form ripgrep expects.
+normalized = re.sub(r"\\\\([bBsSdDwW])", r"\\\1", pattern)
+
+print(normalized)
+PY
+)"
+
 mkdir -p "$OUTPUT_DIR/batches"
 
 HITS_PATH="$OUTPUT_DIR/rg_hits.jsonl"
@@ -155,7 +174,7 @@ if rows:
     (batches_dir / f"batch-{batch_index:05d}.files.tsv").write_text("\n".join(rows) + "\n", encoding="utf-8")
 PY
 
-python3 - "$STATUS_PATH" "$FILE_LIST" "$PATTERN" "$total_files" "$total_bytes" "$total_batches" "$BATCH_SIZE" "$RESUME_MODE" <<'PY'
+python3 - "$STATUS_PATH" "$FILE_LIST" "$PATTERN" "$ORIGINAL_PATTERN" "$total_files" "$total_bytes" "$total_batches" "$BATCH_SIZE" "$RESUME_MODE" <<'PY'
 from pathlib import Path
 import json
 import sys
@@ -165,11 +184,12 @@ payload = {
     "phase": "ripgrep",
     "file_list": sys.argv[2],
     "pattern": sys.argv[3],
-    "total_files": int(sys.argv[4]),
-    "total_bytes": int(sys.argv[5]),
-    "total_batches": int(sys.argv[6]),
-    "batch_size": int(sys.argv[7]),
-    "resume_mode": sys.argv[8],
+    "original_pattern": sys.argv[4],
+    "total_files": int(sys.argv[5]),
+    "total_bytes": int(sys.argv[6]),
+    "total_batches": int(sys.argv[7]),
+    "batch_size": int(sys.argv[8]),
+    "resume_mode": sys.argv[9],
     "completed_batches": 0,
     "completed_files": 0,
     "completed_bytes": 0,
@@ -185,7 +205,7 @@ if status_path.exists():
     except Exception:
         pass
 payload["state"] = "running"
-payload["resume_mode"] = sys.argv[8]
+payload["resume_mode"] = sys.argv[9]
 status_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 PY
 
