@@ -173,6 +173,10 @@ Hard requirements:
 - If you write helper scripts, limit them to parsing, batching, deduplication, artifact assembly, and ledger/progress tracking. The actual research judgment must remain model-authored.
 - Review the shard evidence progressively in batches until you have covered the shard's candidate material. Maintain an inspectable reviewed ledger or notes if needed, but do not shortcut coverage with deterministic ranking heuristics.
 - When candidate volume is large, batch the candidate passages and evaluate them with the model against the user request using local context windows from the source text.
+- A correct triage pass means an LLM sees the candidate passage text and decides whether it is relevant to the user request. Keyword matches or regex hits alone are not triage.
+- If you want an existing implementation, prefer the repo's LLM triage workflow at `/srv/alphabook/repo/packages/tooling/scripts/run-corpus-research-triage.ts` and adapt the shard artifacts to feed it, rather than inventing heuristic scoring code.
+- Never write a script that reads natural-language passages and decides relevance with hand-written weights, term counts, or threshold rules. If a script decides relevance, it must be calling an LLM on the passage text.
+- If you use a script to orchestrate triage, it must persist the raw candidate passages, LLM decisions, reasoning, and acceptance/exclusion outcomes under `{artifacts_dir}` so the shard remains inspectable.
 
 Required outputs under {artifacts_dir}:
 - manifest.json

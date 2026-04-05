@@ -429,6 +429,10 @@ Extraction requirements:
 - Each extracted quote must include a short reasoning field explaining why it is relevant.
 - Record provenance for every extracted item.
 - Deduplicate repeated/near-duplicate hits where practical.
+- Ripgrep is for retrieval only. Semantic triage means an LLM reviews passage text plus local context and decides whether the passage is relevant to the user request.
+- Do not write Python or TypeScript code that reads natural-language passages and decides relevance using hand-written weights, regex scores, term counts, threshold rules, top-N ranking, or arbitrary caps.
+- If you automate triage, use an LLM-backed workflow such as `/srv/alphabook/repo/packages/tooling/scripts/run-corpus-research-triage.ts` or an equivalent model-reviewed batch process.
+- Any triage script must persist candidate passages, LLM decisions, reasoning, and acceptance/exclusion outcomes. A deterministic script over natural language is not acceptable triage.
 
 Process requirements:
 - Avoid long single shell commands that are likely to time out.
@@ -480,6 +484,7 @@ Analysis requirements:
 - Prefer findings that are memorable, surprising, or sharply representative.
 - For the briefing and synthesis stage, use your own model judgment to select evidence and write the prose.
 - Do not generate a deterministic script whose job is to mechanically write the final briefing for you.
+- Do not generate a deterministic script whose job is to mechanically decide passage relevance either.
 - Terminal tools are for retrieval, extraction, filtering, inspection, and artifact assembly; the interpretive briefing itself should be authored by the agent from the evidence.
 - In each main finding section, make a claim, explain why it matters, and support it with exact quotes plus citation markers.
 - Introduce quotes with source context when available, such as title, author, and year.
