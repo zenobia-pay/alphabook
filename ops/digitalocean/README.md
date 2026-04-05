@@ -405,6 +405,93 @@ The wrapper run ID is now the canonical handle for a Hermes job. `index.json` ex
 - per-run OpenAI request log and copied request/response JSON
 - primary wrapper and inner artifacts
 
+## Codex Corpus Research
+
+For chunked Codex-driven corpus research on the droplet, use the Codex wrapper instead of a single large Hermes session. The wrapper partitions the precomputed text manifest into deterministic `<=5000`-file shards, runs a bounded number of Codex shard jobs in parallel, and then launches a Codex consolidator over the shard logs and artifacts.
+
+From the droplet repo:
+
+```bash
+cd /srv/alphabook/repo
+ops/digitalocean/bin/run-codex-corpus-research.sh \
+  --corpus-root /mnt/alphabook_consolidation/final/latest \
+  --precomputed-index-dir /mnt/alphabook_consolidation/final/latest/research-corpus-index \
+  --max-parallel 5 \
+  --user-prompt "Find me all the different ways that authors deal with grief in 19th century literature."
+```
+
+That command prints the wrapper run directory, for example:
+
+```text
+/srv/alphabook/logs/codex-corpus-research/20260405T193000Z-deadbeef
+```
+
+To check progress:
+
+```bash
+ops/digitalocean/bin/codex-corpus-research-status.sh \
+  /srv/alphabook/logs/codex-corpus-research/20260405T193000Z-deadbeef
+```
+
+Wrapper layout:
+
+- `state/`
+  - `prompt.txt`
+  - `status.json`
+  - `summary.json`
+  - `partitions.json`
+- `attempts/attempt-0001/logs/`
+  - `launcher.log`
+  - `manager.stdout.log`
+  - `manager.stderr.log`
+  - `heartbeat.log`
+  - `process.log`
+- `attempts/attempt-0001/runtime/`
+  - `manager.pid`
+  - `heartbeat.pid`
+- `chunks/chunk-*/`
+  - `scope-files.tsv`
+  - `prompt.txt`
+  - `status.json`
+  - `summary.json`
+  - `logs/codex-events.jsonl`
+  - `logs/codex.stderr.log`
+  - `logs/heartbeat.log`
+  - `runtime/codex.pid`
+  - `codex-home/.codex/...`
+  - `artifacts/*`
+  - `openai-requests.jsonl`
+  - `openai-proxy/*.request.json`
+  - `openai-proxy/*.response.json`
+- `consolidator/`
+  - `input/*`
+  - `status.json`
+  - `logs/*`
+  - `artifacts/*`
+  - `openai-requests.jsonl`
+  - `openai-proxy/*.request.json`
+  - `openai-proxy/*.response.json`
+
+Top-level convenience files include:
+
+- `status.json`
+- `summary.json`
+- `launcher.log`
+- `manager.stdout.log`
+- `manager.stderr.log`
+- `heartbeat.log`
+- `process.log`
+- `pricing-summary.json`
+- `consolidated-briefing.md`
+- `consolidated-summary.json`
+- `consolidated-citation-index.json`
+
+Operational notes:
+
+- `--max-parallel` is intentionally capped to `5..10` to avoid exhausting droplet RAM.
+- Each shard routes Codex traffic through the local OpenAI logging proxy using a shard-specific proxy run ID, so `pricing-summary.json` and per-shard `openai-requests.jsonl` stay attributable.
+- The consolidator does not rerun corpus retrieval. It works from the shard logs, summaries, datasets, and citation payloads already written into the wrapper run folder.
+
 ## Hermes Job API
 
 For external products that need to kick off and monitor droplet-side research runs, use the Hermes job API service.
