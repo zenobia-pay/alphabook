@@ -375,8 +375,8 @@ export class D1AppStore implements AppStore {
     return ` AND COALESCE(json_extract(${alias}.metadata_json, '$.corpusAdapterId'), '') = '${this.adapterId}'`;
   }
 
-  private async queryRankedWorks(offset = 0, limit = 12): Promise<WorkSummary[]> {
-    const result = await this.db.query<{
+  private async queryRankedWorkRows(offset = 0, limit = 12) {
+    return this.db.query<{
       id: string;
       gutenberg_id: number | string | null;
       title: string;
@@ -437,6 +437,10 @@ export class D1AppStore implements AppStore {
       `,
       [this.feedLabels.summary, this.feedLabels.taxonomy, this.feedLabels.fallback, limit, offset],
     );
+  }
+
+  private async queryRankedWorks(offset = 0, limit = 12): Promise<WorkSummary[]> {
+    const result = await this.queryRankedWorkRows(offset, limit);
     return result.rows.map(mapFeedWorkRowToSummary);
   }
 
@@ -1441,8 +1445,8 @@ export class D1AppStore implements AppStore {
   async listDocuments(offset?: number, limit?: number) { return (await this.corpusStore()).listDocuments(offset, limit); }
   async countDocuments() { return (await this.corpusStore()).countDocuments(); }
   async refreshExploreFeedSnapshot(limit = 512) {
-    const [works, countResult] = await Promise.all([
-      this.queryRankedWorks(0, limit),
+    const [rankedRows, countResult] = await Promise.all([
+      this.queryRankedWorkRows(0, limit),
       this.db.query<{ count: string | number }>(
         `SELECT COUNT(*) AS count FROM works w WHERE 1 = 1 ${this.adapterWorkClause("w")}`,
       ),
@@ -1450,11 +1454,7 @@ export class D1AppStore implements AppStore {
     const totalCount = Number.parseInt(String(countResult.rows[0]?.count ?? "0"), 10) || 0;
 
     await this.db.query("DELETE FROM feed_works");
-    for (const [index, work] of works.entries()) {
-      const bookshelves = work.bookshelves ?? [];
-      const translators = work.translators ?? [];
-      const illustrators = work.illustrators ?? [];
-      const editors = work.editors ?? [];
+    for (const [index, row] of rankedRows.rows.entries()) {
       await this.db.query(
         `
           INSERT INTO feed_works (
@@ -1463,27 +1463,19 @@ export class D1AppStore implements AppStore {
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
         [
-          work.id,
+          row.id,
           index,
-          work.score ?? 0,
-          work.feedLabel,
-          work.title,
-          work.gutenbergId,
-          work.language,
-          work.releaseDate,
-          work.rightsStatus,
-          work.summary,
-          JSON.stringify({
-            ...(work.subtitle ? { subtitle: work.subtitle } : {}),
-            ...(work.coverImageUrl ? { coverImageUrl: work.coverImageUrl } : {}),
-            ...(work.publisher ? { publisher: work.publisher } : {}),
-            ...(bookshelves.length ? { bookshelves } : {}),
-            ...(translators.length ? { translators } : {}),
-            ...(illustrators.length ? { illustrators } : {}),
-            ...(editors.length ? { editors } : {}),
-          }),
-          JSON.stringify(work.authors),
-          JSON.stringify(work.subjects),
+          row.score ?? 0,
+          row.feed_label,
+          row.title,
+          row.gutenberg_id == null ? null : Number(row.gutenberg_id),
+          row.language,
+          row.release_date,
+          row.rights_status,
+          row.summary,
+          JSON.stringify(parseJsonObject(row.metadata_json)),
+          JSON.stringify(parseJsonStringList(row.authors_json)),
+          JSON.stringify(parseJsonStringList(row.subjects_json)),
           nowIso(),
         ],
       );
