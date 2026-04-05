@@ -99,14 +99,12 @@ async function main() {
 
   const resetSql = [
     "PRAGMA foreign_keys = ON;",
-    "BEGIN;",
     "DELETE FROM work_subjects;",
     "DELETE FROM work_authors;",
     "DELETE FROM work_files;",
     "DELETE FROM subjects;",
     "DELETE FROM authors;",
     "DELETE FROM works;",
-    "COMMIT;",
     "",
   ].join("\n");
   await writeFile(join(outputDir, "000-reset.sql"), resetSql, "utf8");
@@ -123,7 +121,7 @@ async function main() {
 
   for (let start = 0; start < canonicalIds.length; start += batchSize) {
     const ids = canonicalIds.slice(start, start + batchSize);
-    const lines = ["PRAGMA foreign_keys = ON;", "BEGIN;"];
+    const lines = ["PRAGMA foreign_keys = ON;"];
 
     for (const gutenbergId of ids) {
       let manifest: PreparedBookManifest;
@@ -222,7 +220,7 @@ async function main() {
       processedBooks += 1;
     }
 
-    lines.push("COMMIT;", "");
+    lines.push("");
     const fileName = `${String(batchIndex).padStart(3, "0")}-corpus.sql`;
     await writeFile(join(outputDir, fileName), lines.join("\n"), "utf8");
     batchFiles.push(fileName);
