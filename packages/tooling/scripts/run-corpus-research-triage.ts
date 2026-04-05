@@ -207,6 +207,14 @@ const MODEL_PRICING: Record<string, ModelPricing> = {
   "gpt-5-mini": { inputPerMillion: 0.25, outputPerMillion: 2.0 },
 };
 
+function openAiBaseUrl(): string {
+  const configured = process.env.OPENAI_BASE_URL?.trim();
+  if (!configured) {
+    return "https://api.openai.com/v1";
+  }
+  return configured.replace(/\/+$/u, "");
+}
+
 function parseArgs(argv: string[]): ScriptOptions {
   const options: ScriptOptions = {
     runDir: "",
@@ -970,7 +978,7 @@ async function callOpenAI<T>(input: {
   prompt: string;
   schema: ReturnType<typeof triageSchema> | ReturnType<typeof briefingSchema>;
 }): Promise<OpenAiResponse<T>> {
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+  const response = await fetch(`${openAiBaseUrl()}/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
