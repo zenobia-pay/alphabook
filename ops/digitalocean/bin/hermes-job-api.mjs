@@ -314,6 +314,24 @@ function getCuratedLogSources(runDir) {
       { name: "stream_log", path: path.join(innerRunDir, "stream.log") },
       { name: "inner_status", path: path.join(innerRunDir, "status.json") },
     );
+    const searchDir = path.join(innerRunDir, "search");
+    try {
+      for (const entry of fs.readdirSync(searchDir, { withFileTypes: true })) {
+        if (!entry.isDirectory()) {
+          continue;
+        }
+        const progressPath = path.join(searchDir, entry.name, "ripgrep-progress.jsonl");
+        const statusPath = path.join(searchDir, entry.name, "ripgrep-status.json");
+        if (statSafe(progressPath)?.isFile()) {
+          sources.push({ name: `ripgrep_progress:${entry.name}`, path: progressPath });
+        }
+        if (statSafe(statusPath)?.isFile()) {
+          sources.push({ name: `ripgrep_status:${entry.name}`, path: statusPath });
+        }
+      }
+    } catch {
+      // Ignore missing or unreadable search directories.
+    }
   }
   return sources.filter((source) => statSafe(source.path)?.isFile());
 }

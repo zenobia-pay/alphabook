@@ -4263,6 +4263,122 @@ test("reapStaleRuns does not fail a stale semantic run with an active durable re
   assert.equal(errorMessage, undefined);
 });
 
+test("reapStaleRuns does not fail a stale Hermes run while the external Hermes job is still active", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    assert.match(url, /\/v1\/jobs\/job-hermes-active$/);
+    return new Response(JSON.stringify({
+      job: {
+        id: "job-hermes-active",
+        state: "running",
+        running: true,
+        pid: 1234,
+        userPrompt: "How do authors deal with grief?",
+        model: "gpt-5.4",
+        maxTurns: 60,
+        launchedAt: new Date().toISOString(),
+        startedAt: new Date().toISOString(),
+        finishedAt: null,
+        innerRunDir: "/srv/alphabook/logs/corpus-research/example",
+        innerRunId: "example",
+        hermesSessionId: "hermes-session",
+        exitCode: null,
+        heartbeatAt: new Date().toISOString(),
+        phase: "ripgrep",
+        phaseProgressPct: 12.5,
+        detail: null,
+        manifestStatus: "initialized",
+        chosenScope: "full corpus",
+        scopeRationale: null,
+        recordCounts: null,
+      },
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+
+  try {
+    const store = new InMemoryAppStore();
+    const session = await store.createSession("reader-user", "Active Hermes janitor run");
+    await store.appendMessage(session.id, "user", "How do authors deal with grief?");
+    const run = await store.createRun(session.id);
+    await store.appendMessage(session.id, "assistant", "Hermes is running.", {
+      phase: "plan",
+      runId: run.id,
+      hermes: {
+        jobId: "job-hermes-active",
+        sessionId: "hermes-session",
+        model: "gpt-5.4",
+      },
+    });
+
+    const staleStartedAt = new Date(Date.now() - 45_000).toISOString();
+    await store.updateRun(run.id, {
+      status: "running",
+      completedAt: null,
+    });
+    const runs = (store as unknown as { runs: Map<string, { startedAt: string }> }).runs;
+    const storedRun = runs.get(run.id);
+    assert.ok(storedRun);
+    storedRun.startedAt = staleStartedAt;
+
+    await reapStaleRuns({
+      store,
+      billing: createBillingService(store),
+      planner: new ScriptedPlanner([
+        {
+          type: "final_answer",
+          answer: "unused",
+          citations: [],
+        },
+      ]),
+      embedder: new HashEmbedder(),
+      synthesizer: new EchoSynthesizer(),
+      blobStore: new MemoryBlobStore(),
+      runtimeGateway: {
+        async createWorkspace() {
+          return { ok: false, error: "disabled" };
+        },
+        async runWorkspaceTask() {
+          return { ok: false, error: "disabled" };
+        },
+        async readWorkspaceFile() {
+          return { ok: false, error: "disabled" };
+        },
+        async listWorkspaceFiles() {
+          return { ok: true, files: [] };
+        },
+        async destroyWorkspace() {
+          return { ok: true };
+        },
+      },
+      hermesJobApiUrl: "https://hermes.example.test",
+      hermesJobApiToken: "test-token",
+      queues: {
+        ingestName: "alphabook-ingest",
+        jobsName: "alphabook-jobs",
+      },
+    }, {
+      runId: "janitor-test",
+    });
+
+    const refreshedRun = await store.getRun(run.id);
+    assert.equal(refreshedRun?.status, "running");
+
+    const payload = {
+      messages: await store.listMessages(session.id),
+    } as {
+      messages: Array<{ role: string; content: string; metadata: Record<string, unknown> }>;
+    };
+    const errorMessage = payload.messages.find((message) => message.metadata?.phase === "error");
+    assert.equal(errorMessage, undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("run details endpoint does not fail a stale semantic run that still has recent persisted progress", async () => {
   const store = new InMemoryAppStore();
   const session = await store.createSession("reader-user", "Active semantic run");

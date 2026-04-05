@@ -4774,6 +4774,22 @@ export async function finalizeStaleRun(
     return run;
   }
 
+  const sessionMessages = await deps.store.listMessages(session.id);
+  const activeHermesThread = findHermesThreadMetadataForRun(sessionMessages, run.id);
+  if (activeHermesThread && deps.hermesJobApiUrl) {
+    try {
+      const { job } = await fetchHermesJob(deps.hermesJobApiUrl, deps.hermesJobApiToken, activeHermesThread.jobId);
+      const hermesHeartbeatFresh = Boolean(
+        job.heartbeatAt && (Date.now() - Date.parse(job.heartbeatAt)) < RUN_LEASE_MS,
+      );
+      if (job.running || job.state === "running" || job.state === "launching" || hermesHeartbeatFresh) {
+        return run;
+      }
+    } catch {
+      // Ignore Hermes job lookup failures and fall back to the normal stale-run path.
+    }
+  }
+
   const failureMessage = "This run stopped before it wrote a terminal event.";
   await appendRunLifecycleEvent(deps, run, "run.recovery.failed", {
     reason: "lease_expired_without_terminal_event",
@@ -8486,6 +8502,31 @@ function extractHermesThreadMetadata(messages: MessageRecord[]): HermesThreadMet
   return null;
 }
 
+function findHermesThreadMetadataForRun(messages: MessageRecord[], runId: string): HermesThreadMetadata | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.metadata?.runId !== runId) {
+      continue;
+    }
+    const candidate =
+      message.metadata?.hermes && typeof message.metadata.hermes === "object"
+        ? message.metadata.hermes as Record<string, unknown>
+        : null;
+    if (!candidate || typeof candidate.jobId !== "string" || candidate.jobId.trim().length === 0) {
+      continue;
+    }
+    return {
+      jobId: candidate.jobId,
+      sessionId: typeof candidate.sessionId === "string" ? candidate.sessionId : null,
+      model: typeof candidate.model === "string" ? candidate.model : null,
+      innerRunId: typeof candidate.innerRunId === "string" ? candidate.innerRunId : null,
+      innerRunDir: typeof candidate.innerRunDir === "string" ? candidate.innerRunDir : null,
+      estimatedCostUsd: typeof candidate.estimatedCostUsd === "number" ? candidate.estimatedCostUsd : null,
+    };
+  }
+  return extractHermesThreadMetadata(messages);
+}
+
 async function fanOutActiveRunSubscribers(
   activeRuns: Map<string, ActiveRunState>,
   runId: string,
@@ -9332,6 +9373,10 @@ async function runHermesConversation(
   };
 
   const heartbeatProgressSources = new Set(["launcher", "heartbeat", "run_log", "stream_log", "hermes_stdout", "hermes_stderr"]);
+  const isHeartbeatProgressSource = (name: string) =>
+    heartbeatProgressSources.has(name)
+    || name.startsWith("ripgrep_progress:")
+    || name.startsWith("ripgrep_status:");
 
   try {
     while (true) {
@@ -9357,7 +9402,7 @@ async function runHermesConversation(
       await updateHermesPlanMetadata();
 
       for (const source of logUpdate.sources) {
-        if (!heartbeatProgressSources.has(source.name)) {
+        if (!isHeartbeatProgressSource(source.name)) {
           continue;
         }
         for (const line of source.lines) {
