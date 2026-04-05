@@ -6,6 +6,7 @@ OUTPUT_DIR=""
 PATTERN=""
 BATCH_SIZE="${BATCH_SIZE:-500}"
 RESUME_MODE="auto"
+MAX_BATCH_SIZE="${MAX_BATCH_SIZE:-500}"
 
 usage() {
   cat >&2 <<'EOF'
@@ -22,6 +23,7 @@ Outputs:
   - batches/batch-*.meta.json
 
 The helper is resumable. Existing completed batches are reused unless --resume never is set.
+The maximum supported ripgrep batch size is 500 files per invocation.
 EOF
   exit 1
 }
@@ -63,6 +65,14 @@ done
 [[ -n "$FILE_LIST" && -n "$PATTERN" && -n "$OUTPUT_DIR" ]] || usage
 [[ -f "$FILE_LIST" ]] || { echo "Missing file list: $FILE_LIST" >&2; exit 1; }
 [[ "$RESUME_MODE" =~ ^(auto|always|never)$ ]] || { echo "Invalid --resume value: $RESUME_MODE" >&2; exit 1; }
+[[ "$BATCH_SIZE" =~ ^[0-9]+$ ]] || { echo "Invalid --batch-size value: $BATCH_SIZE" >&2; exit 1; }
+[[ "$MAX_BATCH_SIZE" =~ ^[0-9]+$ ]] || { echo "Invalid MAX_BATCH_SIZE value: $MAX_BATCH_SIZE" >&2; exit 1; }
+(( BATCH_SIZE > 0 )) || { echo "Invalid --batch-size value: $BATCH_SIZE" >&2; exit 1; }
+(( MAX_BATCH_SIZE > 0 )) || { echo "Invalid MAX_BATCH_SIZE value: $MAX_BATCH_SIZE" >&2; exit 1; }
+if (( BATCH_SIZE > MAX_BATCH_SIZE )); then
+  echo "Bound it to a maximum of ${MAX_BATCH_SIZE} books in the corpus." >&2
+  exit 1
+fi
 mkdir -p "$OUTPUT_DIR/batches"
 
 HITS_PATH="$OUTPUT_DIR/rg_hits.jsonl"
