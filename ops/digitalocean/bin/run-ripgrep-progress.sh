@@ -13,6 +13,7 @@ usage() {
 Usage: run-ripgrep-progress.sh --file-list /path/to/scope-files.tsv --pattern '<regex>' --output-dir /path/to/run/search [--batch-size 500] [--resume auto|always|never]
 
 The file list must be TSV: size_bytes<TAB>absolute_path
+An optional header row `size_bytes<TAB>absolute_path` is ignored.
 Outputs:
   - rg_hits.jsonl
   - ripgrep-progress.jsonl
@@ -88,8 +89,18 @@ fi
 
 touch "$HITS_PATH" "$PROGRESS_PATH" "$LOG_PATH"
 
-total_files="$(wc -l < "$FILE_LIST" | tr -d ' ')"
-total_bytes="$(awk -F '\t' '{s+=$1} END {print s+0}' "$FILE_LIST")"
+total_files="$(
+  awk -F '\t' '
+    NF >= 2 && $1 ~ /^[0-9]+$/ && $2 != "absolute_path" { count += 1 }
+    END { print count + 0 }
+  ' "$FILE_LIST"
+)"
+total_bytes="$(
+  awk -F '\t' '
+    NF >= 2 && $1 ~ /^[0-9]+$/ && $2 != "absolute_path" { bytes += $1 }
+    END { print bytes + 0 }
+  ' "$FILE_LIST"
+)"
 total_batches="$(
   python3 - "$total_files" "$BATCH_SIZE" <<'PY'
 import math
@@ -112,6 +123,14 @@ rows = []
 batch_index = 0
 for raw_line in file_list.read_text(encoding="utf-8").splitlines():
     if not raw_line.strip():
+        continue
+    parts = raw_line.split("\t", 1)
+    if len(parts) != 2:
+        continue
+    size_text, absolute_path = parts
+    if size_text == "size_bytes" and absolute_path == "absolute_path":
+        continue
+    if not size_text.isdigit():
         continue
     rows.append(raw_line)
     if len(rows) >= batch_size:
