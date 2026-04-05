@@ -67,8 +67,10 @@ export default function AssistantSurface({
   composerDisabled = false,
   composerDisabledNotice,
 }: AssistantSurfaceProps) {
+  const shouldShowRuntimePlaceholder =
+    isSending && !messages.some((message) => message.role === "assistant");
   const runtime = useExternalStoreRuntime({
-    isRunning: isSending,
+    isRunning: shouldShowRuntimePlaceholder,
     messages: messages.filter((message) => message.role === "user" || message.role === "assistant"),
     convertMessage: (message: UiMessage) => convertMessage(message, streamingAssistantId, isSending) as never,
     onNew: async (message: { content?: unknown }) => {

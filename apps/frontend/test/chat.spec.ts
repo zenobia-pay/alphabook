@@ -2126,7 +2126,170 @@ test("active Hermes plan messages keep the thread running dot while the run is s
     hasText: "Starting a Hermes research run on this thread and streaming the tool activity here.",
   });
   await expect(message.locator(".aui-assistant-running-indicator")).toBeVisible();
+  await expect(page.locator(".aui-assistant-running-indicator")).toHaveCount(1);
   await expect(page.getByRole("button", { name: "Stop" })).toBeVisible();
+});
+
+test("existing Hermes sessions do not show running dots before transcript bootstrap finishes", async ({ page }) => {
+  const sessionId = "11111111-1111-4111-8111-111111111131";
+  const runId = "22222222-2222-4222-8222-222222222241";
+  const planMessageId = "33333333-3333-4333-8333-333333333351";
+
+  await page.route("**/api/me", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        authConfigured: true,
+        authenticated: true,
+        user: {
+          id: "local-user",
+          email: "local@example.com",
+          name: "Local User",
+        },
+      }),
+    });
+  });
+
+  await page.route("**/api/admin/access", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        allowed: false,
+        authenticated: true,
+        authConfigured: true,
+        user: {
+          id: "local-user",
+          email: "local@example.com",
+          name: "Local User",
+        },
+      }),
+    });
+  });
+
+  await page.route("**/api/sessions", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        sessions: [
+          {
+            id: sessionId,
+            userId: "local-user",
+            title: "Hermes bootstrap thread",
+            createdAt: "2026-03-26T12:00:00.000Z",
+            lastMessageAt: "2026-03-26T12:00:00.000Z",
+            lastMessagePreview: "How do authors deal with grief?",
+            activeRunStatus: "running",
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.route(`**/api/sessions/${sessionId}/bootstrap`, async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        sessionId,
+        sessions: [
+          {
+            id: sessionId,
+            userId: "local-user",
+            title: "Hermes bootstrap thread",
+            createdAt: "2026-03-26T12:00:00.000Z",
+            lastMessageAt: "2026-03-26T12:00:00.000Z",
+            lastMessagePreview: "How do authors deal with grief?",
+            activeRunStatus: "running",
+          },
+        ],
+        messages: [
+          {
+            id: planMessageId,
+            sessionId,
+            role: "assistant",
+            content: "Starting a Hermes research run on this thread and streaming the tool activity here.",
+            metadata: {
+              phase: "plan",
+              runId,
+              hermes: {
+                jobId: "job-hermes-bootstrap",
+                sessionId: "hermes-session",
+                model: "gpt-5.4",
+              },
+            },
+            createdAt: "2026-03-26T12:00:01.000Z",
+            citations: [],
+            toolCalls: [],
+          },
+        ],
+        runs: [
+          {
+            id: runId,
+            sessionId,
+            status: "running",
+            plannerTurns: 1,
+            startedAt: "2026-03-26T12:00:00.000Z",
+            completedAt: null,
+          },
+        ],
+        runState: {
+          artifacts: [],
+        },
+      }),
+    });
+  });
+
+  await page.route(`**/api/sessions/${sessionId}/runs`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        runs: [
+          {
+            id: runId,
+            sessionId,
+            status: "running",
+            plannerTurns: 1,
+            startedAt: "2026-03-26T12:00:00.000Z",
+            completedAt: null,
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.route(`**/api/sessions/${sessionId}/runs/${runId}`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        run: {
+          id: runId,
+          sessionId,
+          status: "running",
+          plannerTurns: 1,
+          startedAt: "2026-03-26T12:00:00.000Z",
+          completedAt: null,
+        },
+        toolTrace: [],
+        artifacts: [],
+      }),
+    });
+  });
+
+  await page.goto(`/?view=assistant&session=${sessionId}`, { waitUntil: "domcontentloaded" });
+
+  await expect(page.locator(".aui-assistant-message-root")).toHaveCount(0);
+  await expect(page.locator(".aui-assistant-running-indicator")).toHaveCount(0);
+
+  const message = page.locator(".aui-assistant-message-root").filter({
+    hasText: "Starting a Hermes research run on this thread and streaming the tool activity here.",
+  });
+  await expect(message).toBeVisible();
 });
 
 test("recovered tool traces keep friendly log lines after refresh", async ({ page }) => {

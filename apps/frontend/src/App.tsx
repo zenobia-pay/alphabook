@@ -708,10 +708,6 @@ function isOptimisticMessage(message: UiMessage) {
   return message.metadata?.optimistic === true;
 }
 
-function hasRenderableAssistantState(messages: UiMessage[], runActive: boolean) {
-  return runActive || messages.length > 0;
-}
-
 function shouldPreserveOptimisticMessages(
   currentMessages: UiMessage[],
   nextMessages: UiMessage[],
@@ -3309,6 +3305,9 @@ export default function App() {
   const [adminSection, setAdminSection] = useState<"runs" | "users" | "analytics" | "incidents" | "logs">(initialUrlState.adminSection);
   const [messages, setMessages] = useState<UiMessage[]>(initialBootstrapHydratedMessages);
   const messagesRef = useRef<UiMessage[]>([]);
+  const [conversationHydrated, setConversationHydrated] = useState(() => (
+    initialUrlState.sessionId == null || Array.isArray(initialAssistantSessionBootstrap?.messages)
+  ));
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [sessionsResolved, setSessionsResolved] = useState(Boolean(initialAssistantSessionBootstrap?.sessions));
   const [messagesLoading, setMessagesLoading] = useState(false);
@@ -4394,6 +4393,7 @@ export default function App() {
     }
     if (!selectedSessionId) {
       setMessagesLoading(false);
+      setConversationHydrated(true);
       setMessages([]);
       return;
     }
@@ -4403,6 +4403,9 @@ export default function App() {
         setMessagesLoading(true);
         await refreshAssistantConversation(selectedSessionId);
       } catch (error) {
+        if (selectedSessionIdRef.current === selectedSessionId) {
+          setConversationHydrated(true);
+        }
         setLoadError(getErrorMessage(error, "We couldn't load this conversation."));
       } finally {
         setMessagesLoading(false);
@@ -4726,6 +4729,7 @@ export default function App() {
     if (selectedSessionIdRef.current !== sessionId) {
       return;
     }
+    setConversationHydrated(true);
     setSessionRuns(nextRuns);
     setRecoveredActiveRunId(activeRun?.id ?? null);
     setRunArtifacts(Array.isArray(bootstrap.runState?.artifacts) ? bootstrap.runState.artifacts : []);
@@ -5294,6 +5298,7 @@ export default function App() {
     setMobileNavOpen(false);
     selectedSessionIdRef.current = null;
     setSelectedSessionId(null);
+    setConversationHydrated(true);
     setMessages([]);
     setSessionRuns([]);
     setRunArtifacts([]);
@@ -5307,6 +5312,7 @@ export default function App() {
     detachActiveAssistantStreams();
     selectedSessionIdRef.current = null;
     setSelectedSessionId(null);
+    setConversationHydrated(true);
     setMessages([]);
     setSessionRuns([]);
     setRunArtifacts([]);
@@ -5381,6 +5387,7 @@ export default function App() {
     detachActiveAssistantStreams();
     setMobileNavOpen(false);
     void handleMarkSessionNotificationsRead(sessionId);
+    setConversationHydrated(false);
     setMessages([]);
     setSessionRuns([]);
     setRunArtifacts([]);
@@ -5506,6 +5513,7 @@ export default function App() {
   function openBookSession(sessionId: string | null) {
     pendingUrlWriteModeRef.current = "push";
     detachActiveAssistantStreams();
+    setConversationHydrated(sessionId == null);
     setMessages([]);
     setSessionRuns([]);
     setRunArtifacts([]);
@@ -5566,18 +5574,7 @@ export default function App() {
   }
 
   function renderAssistantView() {
-    const hasVisibleAssistantState = hasRenderableAssistantState(messages, isSending || recoveredActiveRunId !== null);
-    const assistantSessionLoading =
-      selectedSessionId != null
-      && !hasVisibleAssistantState
-      && (
-        (!hasAssistantSessionBootstrap && authPending)
-        || (!authLocked && (
-          (hasAuthenticatedUser && !sessionsResolved)
-          || sessionsLoading
-          || messagesLoading
-        ))
-      );
+    const assistantSessionLoading = selectedSessionId != null && !conversationHydrated;
     const showBlankSession =
       !assistantSessionLoading
       && selectedSessionId == null
