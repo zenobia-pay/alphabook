@@ -784,6 +784,22 @@ button {
   min-width: 0;
 }
 
+.aui-assistant-running-indicator {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.25rem;
+  padding-left: 0.1rem;
+}
+
+.aui-assistant-running-indicator-dot {
+  width: 0.42rem;
+  height: 0.42rem;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.8;
+  animation: aui-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
 .aui-assistant-message-content > .aui-md + .aui-tool-fallback-root,
 .aui-assistant-message-content > .aui-tool-fallback-root + .aui-md,
 .aui-assistant-message-content > .aui-message-error-root {

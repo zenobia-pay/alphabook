@@ -709,6 +709,19 @@ const MessageError: FC = () => {
 };
 
 const AssistantMessage: FC = () => {
+  const hasTextPart = useAuiState((state) =>
+    Array.isArray(state.message.content)
+      && state.message.content.some((part) => (
+        part
+        && typeof part === "object"
+        && "type" in part
+        && part.type === "text"
+        && "text" in part
+        && typeof part.text === "string"
+        && part.text.trim().length > 0
+      )),
+  );
+  const isRunning = useAuiState((state) => state.message.status?.type === "running");
   const phase = useAuiState((state) => {
     const metadata = state.message.metadata;
     const custom = metadata && typeof metadata === "object" && "custom" in metadata
@@ -726,6 +739,11 @@ const AssistantMessage: FC = () => {
     >
       <div className="aui-assistant-message-content wrap-break-word px-2 text-foreground leading-relaxed">
         <MessagePrimitive.Parts components={TOOL_PART_COMPONENTS} />
+        {isRunning && !hasTextPart ? (
+          <div className="aui-assistant-running-indicator" aria-label="Assistant is thinking">
+            <span className="aui-assistant-running-indicator-dot" aria-hidden="true" />
+          </div>
+        ) : null}
         <MessageError />
       </div>
 
