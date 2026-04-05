@@ -7,10 +7,11 @@ PATTERN=""
 BATCH_SIZE="${BATCH_SIZE:-500}"
 RESUME_MODE="auto"
 MAX_BATCH_SIZE="${MAX_BATCH_SIZE:-500}"
+MAX_TOTAL_FILES="${MAX_TOTAL_FILES:-0}"
 
 usage() {
   cat >&2 <<'EOF'
-Usage: run-ripgrep-progress.sh --file-list /path/to/scope-files.tsv --pattern '<regex>' --output-dir /path/to/run/search [--batch-size 500] [--resume auto|always|never]
+Usage: run-ripgrep-progress.sh --file-list /path/to/scope-files.tsv --pattern '<regex>' --output-dir /path/to/run/search [--batch-size 500] [--resume auto|always|never] [--max-total-files 5000]
 
 The file list must be TSV: size_bytes<TAB>absolute_path
 An optional header row `size_bytes<TAB>absolute_path` is ignored.
@@ -25,6 +26,7 @@ Outputs:
 
 The helper is resumable. Existing completed batches are reused unless --resume never is set.
 The maximum supported ripgrep batch size is 500 files per invocation.
+Use --max-total-files to enforce a cap on the overall helper input size.
 EOF
   exit 1
 }
@@ -56,6 +58,11 @@ while [[ $# -gt 0 ]]; do
       RESUME_MODE="$2"
       shift 2
       ;;
+    --max-total-files)
+      [[ $# -ge 2 ]] || usage
+      MAX_TOTAL_FILES="$2"
+      shift 2
+      ;;
     *)
       echo "Unknown argument: $1" >&2
       usage
@@ -68,8 +75,10 @@ done
 [[ "$RESUME_MODE" =~ ^(auto|always|never)$ ]] || { echo "Invalid --resume value: $RESUME_MODE" >&2; exit 1; }
 [[ "$BATCH_SIZE" =~ ^[0-9]+$ ]] || { echo "Invalid --batch-size value: $BATCH_SIZE" >&2; exit 1; }
 [[ "$MAX_BATCH_SIZE" =~ ^[0-9]+$ ]] || { echo "Invalid MAX_BATCH_SIZE value: $MAX_BATCH_SIZE" >&2; exit 1; }
+[[ "$MAX_TOTAL_FILES" =~ ^[0-9]+$ ]] || { echo "Invalid --max-total-files value: $MAX_TOTAL_FILES" >&2; exit 1; }
 (( BATCH_SIZE > 0 )) || { echo "Invalid --batch-size value: $BATCH_SIZE" >&2; exit 1; }
 (( MAX_BATCH_SIZE > 0 )) || { echo "Invalid MAX_BATCH_SIZE value: $MAX_BATCH_SIZE" >&2; exit 1; }
+(( MAX_TOTAL_FILES >= 0 )) || { echo "Invalid --max-total-files value: $MAX_TOTAL_FILES" >&2; exit 1; }
 if (( BATCH_SIZE > MAX_BATCH_SIZE )); then
   echo "Bound it to a maximum of ${MAX_BATCH_SIZE} books in the corpus." >&2
   exit 1
@@ -95,6 +104,10 @@ total_files="$(
     END { print count + 0 }
   ' "$FILE_LIST"
 )"
+if (( MAX_TOTAL_FILES > 0 && total_files > MAX_TOTAL_FILES )); then
+  echo "Bound it to a maximum of ${MAX_TOTAL_FILES} books in the corpus." >&2
+  exit 1
+fi
 total_bytes="$(
   awk -F '\t' '
     NF >= 2 && $1 ~ /^[0-9]+$/ && $2 != "absolute_path" { bytes += $1 }

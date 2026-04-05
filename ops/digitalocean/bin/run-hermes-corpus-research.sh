@@ -434,24 +434,31 @@ Process requirements:
 - Avoid long single shell commands that are likely to time out.
 - Prefer bounded terminal commands and append progress updates to run.log frequently.
 - If a search step is large, break it into smaller chunks and persist intermediate files in the run directory.
-- Always run corpus ripgrep in bounded invocations of at most 500 files per helper call.
+- For Hermes, the real timeout boundary is the outer helper invocation. Never send more than 5000 files to a single ripgrep helper call.
+- Partition large scoped TSVs into multiple `<=5000`-file partitions, then invoke the ripgrep helper separately for each partition.
+- Keep the helper's internal `--batch-size 500` so each ripgrep subprocess stays small and resumable.
 - Decide and record the chosen scope before starting any ripgrep search.
 - Search raw text only. Do not use HTML, RDF, EPUB metadata, cache files, or other non-text derivatives for the main corpus search.
 - The corpus metadata and text manifest are already precomputed. Do not regenerate them.
 - Use the precomputed index in `{precomputed_index_dir}` as the source of truth for corpus metadata and searchable text files.
 - Use the provided ripgrep helper:
   - /srv/alphabook/repo/ops/digitalocean/bin/run-ripgrep-progress.sh
+- Use the provided partition helper when the scoped TSV is larger than 5000 files:
+  - /srv/alphabook/repo/ops/digitalocean/bin/partition-file-list.sh
 - Use it with its actual CLI syntax. Example invocation:
-  - `/srv/alphabook/repo/ops/digitalocean/bin/run-ripgrep-progress.sh --file-list "$RUN_DIR/scoped-text-files.tsv" --pattern '<regex>' --output-dir "$RUN_DIR/search" --batch-size 500`
+  - `/srv/alphabook/repo/ops/digitalocean/bin/partition-file-list.sh --file-list "$RUN_DIR/scoped-text-files.tsv" --output-dir "$RUN_DIR/search/grief_core/partitions" --max-files 5000`
+  - `/srv/alphabook/repo/ops/digitalocean/bin/run-ripgrep-progress.sh --file-list "$RUN_DIR/search/grief_core/partitions/part-00001.files.tsv" --pattern '<regex>' --output-dir "$RUN_DIR/search/grief_core/part-00001" --batch-size 500 --max-total-files 5000`
 - Run ripgrep only against text files listed in `{precomputed_index_dir}/all-text-files.tsv` or a scoped TSV derived from it.
 - If you derive a scoped subset, write it as `size_bytes<TAB>absolute_path` TSV before calling the ripgrep helper.
-- Never use an unbounded helper call or a batch size above 500. If you need to search more files, make multiple helper calls or let the helper resume across its bounded batches.
+- Never call `run-ripgrep-progress.sh` on more than 5000 files from Hermes. The helper should receive `--max-total-files 5000` and `--batch-size 500`.
+- When the scope is larger than 5000 files, make many helper calls, one partition at a time or in parallel, and persist each partition's output in its own subdirectory.
 - The wrapper exported an explicit handoff file path in `$WRAPPER_INNER_RUN_FILE`. After you create the inner corpus run directory, write that absolute path into `$WRAPPER_INNER_RUN_FILE` immediately so the wrapper can associate the run without parsing logs.
 - The required order is:
   1. decide scope
   2. write chosen_scope and scope_rationale into the run manifest
   3. derive a scoped text-only file list from the precomputed index
-  4. run the progress-aware ripgrep helper over that scoped text-only file list with `--batch-size 500`
+  4. if the scoped file list exceeds 5000 files, partition it into `<=5000`-file TSVs
+  5. run the progress-aware ripgrep helper separately on each partition with `--max-total-files 5000 --batch-size 500`
 - When you invoke repo helpers on this droplet, use the repo-root absolute paths under `/srv/alphabook/repo/...`, not `/srv/alphabook/ops/...`.
 - Do not run a single raw `rg` command directly over /srv/alphabook/gutenberg.
 
