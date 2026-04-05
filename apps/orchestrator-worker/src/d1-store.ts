@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 
 import type { DbClient } from "@alphabook/db";
 import { artifactKeys, buildCorpusChunkId, parseCorpusChunkId } from "@alphabook/corpus-core";
-import type { ChunkSearchResult, NotificationType, ToolName } from "@alphabook/shared";
+import type { ChunkSearchResult, NotificationType, ToolName, WorkSummary } from "@alphabook/shared";
 
 import { InMemoryAppStore, type AdminRunRecord, type AdminSessionRecord, type AdminUserRecord, type AgentIdentityRecord, type AnalyticsEventRecord, type AppStore, type ArtifactRecord, type BillingEventRecord, type BillingSpendSummary, type DocumentTextRecord, type MessageRecord, type NotificationRecord, type PassageSearchFilters, type ResearchScopeEstimate, type ResearchTaskRecord, type RunEventRecord, type RunRecord, type RuntimeInstanceRecord, type SeedChunk, type SeedWork, type SessionRecord, type SessionSummaryRecord, type ToolCallRecord, type UserProfileStatsRecord, type UserRecord, type WorkDetailRecord, type WorkFileKind, type WorkFileRecord, type WorkSetSizeEstimate } from "./store";
 import { MemoryBlobStore, type BlobStore } from "./r2";
@@ -46,6 +46,102 @@ function parseJsonArray(value: unknown): string[] {
     }
   }
   return Array.isArray(value) ? value.map((item) => String(item)) : [];
+}
+
+function parseJsonStringList(value: unknown): string[] {
+  return parseJsonArray(value)
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0 && entry !== "null" && entry !== "undefined");
+}
+
+function splitSubtitleFromTitle(title: string): { title: string; subtitle: string | null } {
+  const match = title.match(/^(.+?)(?:\s+[:;]\s+|\s+[—-]\s+)(.+)$/u);
+  if (!match) {
+    return { title, subtitle: null };
+  }
+  return {
+    title: match[1]?.trim() || title,
+    subtitle: match[2]?.trim() || null,
+  };
+}
+
+function readMetadataText(metadata: Record<string, unknown> | undefined, keys: string[]) {
+  if (!metadata) {
+    return null;
+  }
+  for (const key of keys) {
+    const value = metadata[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
+function readMetadataTextList(metadata: Record<string, unknown> | undefined, keys: string[]) {
+  if (!metadata) {
+    return [];
+  }
+  for (const key of keys) {
+    const value = metadata[key];
+    if (Array.isArray(value)) {
+      const list = value
+        .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+        .filter(Boolean);
+      if (list.length > 0) {
+        return list;
+      }
+    }
+    if (typeof value === "string" && value.trim()) {
+      return value
+        .split(/[,;|]/gu)
+        .map((entry) => entry.trim())
+        .filter(Boolean);
+    }
+  }
+  return [];
+}
+
+function mapFeedWorkRowToSummary(row: {
+  id: string;
+  gutenberg_id: number | string | null;
+  title: string;
+  language: string | null;
+  release_date: string | null;
+  rights_status: string | null;
+  summary: string | null;
+  metadata_json: string | Record<string, unknown> | null;
+  authors_json?: string | null;
+  subjects_json?: string | null;
+  score?: number | null;
+  feed_label?: string | null;
+}): WorkSummary {
+  const metadata = parseJsonObject(row.metadata_json);
+  const explicitSubtitle = readMetadataText(metadata, ["subtitle", "subTitle", "secondaryTitle"]);
+  const explicitCoverImageUrl = readMetadataText(metadata, ["coverImageUrl", "coverUrl", "imageUrl", "thumbnailUrl"]);
+  const coverImageKey = readMetadataText(metadata, ["coverImageKey"]);
+  const titleParts = explicitSubtitle ? { title: row.title, subtitle: explicitSubtitle } : splitSubtitleFromTitle(row.title);
+  return {
+    id: row.id,
+    gutenbergId: row.gutenberg_id == null ? null : Number(row.gutenberg_id),
+    title: titleParts.title,
+    subtitle: titleParts.subtitle,
+    coverImageUrl: explicitCoverImageUrl,
+    hasCoverImage: Boolean(explicitCoverImageUrl || coverImageKey),
+    language: row.language ?? null,
+    releaseDate: row.release_date ?? null,
+    rightsStatus: row.rights_status ?? null,
+    summary: row.summary ?? null,
+    publisher: readMetadataText(metadata, ["publisher"]),
+    authors: parseJsonStringList(row.authors_json),
+    subjects: parseJsonStringList(row.subjects_json),
+    bookshelves: readMetadataTextList(metadata, ["bookshelves"]),
+    translators: readMetadataTextList(metadata, ["translators"]),
+    illustrators: readMetadataTextList(metadata, ["illustrators"]),
+    editors: readMetadataTextList(metadata, ["editors"]),
+    score: typeof row.score === "number" ? row.score : undefined,
+    feedLabel: row.feed_label ?? null,
+  };
 }
 
 type ChunkManifestEntry = {
@@ -266,6 +362,82 @@ export class D1AppStore implements AppStore {
       this.corpusStorePromise = this.loadCorpusStore();
     }
     return this.corpusStorePromise;
+  }
+
+  private hasScopedCorpus() {
+    return Boolean(this.adapterId && this.adapterId !== "gutenberg");
+  }
+
+  private adapterWorkClause(alias = "w") {
+    if (!this.hasScopedCorpus()) {
+      return "";
+    }
+    return ` AND COALESCE(json_extract(${alias}.metadata_json, '$.corpusAdapterId'), '') = '${this.adapterId}'`;
+  }
+
+  private async queryRankedWorks(offset = 0, limit = 12): Promise<WorkSummary[]> {
+    const result = await this.db.query<{
+      id: string;
+      gutenberg_id: number | string | null;
+      title: string;
+      language: string | null;
+      release_date: string | null;
+      rights_status: string | null;
+      summary: string | null;
+      metadata_json: string | Record<string, unknown> | null;
+      authors_json: string | null;
+      subjects_json: string | null;
+      score: number;
+      feed_label: string | null;
+    }>(
+      `
+        SELECT
+          w.id,
+          w.gutenberg_id,
+          w.title,
+          w.language,
+          w.release_date,
+          w.rights_status,
+          w.summary,
+          w.metadata_json,
+          json_group_array(DISTINCT a.name) AS authors_json,
+          json_group_array(DISTINCT s.label) AS subjects_json,
+          (
+            CASE WHEN COALESCE(
+              json_extract(w.metadata_json, '$.coverImageKey'),
+              json_extract(w.metadata_json, '$.coverImageUrl'),
+              json_extract(w.metadata_json, '$.coverUrl'),
+              json_extract(w.metadata_json, '$.imageUrl'),
+              json_extract(w.metadata_json, '$.thumbnailUrl')
+            ) IS NOT NULL THEN 0.9 ELSE 0 END
+            + CASE WHEN w.summary IS NOT NULL AND TRIM(w.summary) <> '' THEN 0.8 ELSE 0 END
+            + CASE WHEN EXISTS(SELECT 1 FROM work_authors wa2 WHERE wa2.work_id = w.id) THEN 0.35 ELSE 0 END
+            + MIN(3, COALESCE(json_array_length(json_extract(w.metadata_json, '$.bookshelves')), 0)) * 0.18
+          ) AS score,
+          CASE
+            WHEN COALESCE(
+              json_extract(w.metadata_json, '$.coverImageKey'),
+              json_extract(w.metadata_json, '$.coverImageUrl'),
+              json_extract(w.metadata_json, '$.coverUrl'),
+              json_extract(w.metadata_json, '$.imageUrl'),
+              json_extract(w.metadata_json, '$.thumbnailUrl')
+            ) IS NOT NULL AND w.summary IS NOT NULL AND TRIM(w.summary) <> '' THEN ?
+            WHEN COALESCE(json_array_length(json_extract(w.metadata_json, '$.bookshelves')), 0) > 0 THEN ?
+            ELSE ?
+          END AS feed_label
+        FROM works w
+        LEFT JOIN work_authors wa ON wa.work_id = w.id
+        LEFT JOIN authors a ON a.id = wa.author_id
+        LEFT JOIN work_subjects ws ON ws.work_id = w.id
+        LEFT JOIN subjects s ON s.id = ws.subject_id
+        WHERE 1 = 1 ${this.adapterWorkClause("w")}
+        GROUP BY w.id, w.gutenberg_id, w.title, w.language, w.release_date, w.rights_status, w.summary, w.metadata_json
+        ORDER BY score DESC, CASE WHEN w.release_date IS NULL THEN 1 ELSE 0 END, w.release_date DESC, w.title ASC
+        LIMIT ? OFFSET ?
+      `,
+      [this.feedLabels.summary, this.feedLabels.taxonomy, this.feedLabels.fallback, limit, offset],
+    );
+    return result.rows.map(mapFeedWorkRowToSummary);
   }
 
   private async ensureRunLifecycleColumns() {
@@ -1206,11 +1378,132 @@ export class D1AppStore implements AppStore {
     return all.slice(Math.max(0, all.length - Math.max(1, limit)));
   }
 
-  async listWorks(offset?: number, limit?: number) { return (await this.corpusStore()).listWorks(offset, limit); }
-  async countWorks() { return (await this.corpusStore()).countWorks(); }
+  async listWorks(offset = 0, limit = 12) {
+    const snapshot = await this.db.query<{
+      work_id: string;
+      gutenberg_id: number | string | null;
+      title: string;
+      language: string | null;
+      release_date: string | null;
+      rights_status: string | null;
+      summary: string | null;
+      metadata_json: string | Record<string, unknown> | null;
+      authors_json: string | null;
+      subjects_json: string | null;
+      score: number;
+      feed_label: string | null;
+    }>(
+      `
+        SELECT
+          work_id,
+          gutenberg_id,
+          title,
+          language,
+          release_date,
+          rights_status,
+          summary,
+          metadata_json,
+          authors_json,
+          subjects_json,
+          score,
+          feed_label
+        FROM feed_works
+        ORDER BY rank ASC
+        LIMIT ? OFFSET ?
+      `,
+      [limit, offset],
+    );
+    if (snapshot.rows.length > 0) {
+      return snapshot.rows.map((row) => mapFeedWorkRowToSummary({
+        id: row.work_id,
+        gutenberg_id: row.gutenberg_id,
+        title: row.title,
+        language: row.language,
+        release_date: row.release_date,
+        rights_status: row.rights_status,
+        summary: row.summary,
+        metadata_json: row.metadata_json,
+        authors_json: row.authors_json,
+        subjects_json: row.subjects_json,
+        score: row.score,
+        feed_label: row.feed_label,
+      }));
+    }
+    return this.queryRankedWorks(offset, limit);
+  }
+
+  async countWorks() {
+    const cached = await this.db.query<{ value_json: string | Record<string, unknown> }>(
+      "SELECT value_json FROM site_stats WHERE key = 'corpus_work_count' LIMIT 1",
+    );
+    const cachedValue = parseJsonObject(cached.rows[0]?.value_json).count;
+    if (typeof cachedValue === "number" && Number.isFinite(cachedValue)) {
+      return cachedValue;
+    }
+    const result = await this.db.query<{ count: string | number }>(
+      `SELECT COUNT(*) AS count FROM works w WHERE 1 = 1 ${this.adapterWorkClause("w")}`,
+    );
+    return Number.parseInt(String(result.rows[0]?.count ?? "0"), 10) || 0;
+  }
   async listDocuments(offset?: number, limit?: number) { return (await this.corpusStore()).listDocuments(offset, limit); }
   async countDocuments() { return (await this.corpusStore()).countDocuments(); }
-  async refreshExploreFeedSnapshot(_limit?: number) {}
+  async refreshExploreFeedSnapshot(limit = 512) {
+    const [works, countResult] = await Promise.all([
+      this.queryRankedWorks(0, limit),
+      this.db.query<{ count: string | number }>(
+        `SELECT COUNT(*) AS count FROM works w WHERE 1 = 1 ${this.adapterWorkClause("w")}`,
+      ),
+    ]);
+    const totalCount = Number.parseInt(String(countResult.rows[0]?.count ?? "0"), 10) || 0;
+
+    await this.db.query("DELETE FROM feed_works");
+    for (const [index, work] of works.entries()) {
+      const bookshelves = work.bookshelves ?? [];
+      const translators = work.translators ?? [];
+      const illustrators = work.illustrators ?? [];
+      const editors = work.editors ?? [];
+      await this.db.query(
+        `
+          INSERT INTO feed_works (
+            work_id, rank, score, feed_label, title, gutenberg_id, language, release_date,
+            rights_status, summary, metadata_json, authors_json, subjects_json, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          work.id,
+          index,
+          work.score ?? 0,
+          work.feedLabel,
+          work.title,
+          work.gutenbergId,
+          work.language,
+          work.releaseDate,
+          work.rightsStatus,
+          work.summary,
+          JSON.stringify({
+            ...(work.subtitle ? { subtitle: work.subtitle } : {}),
+            ...(work.coverImageUrl ? { coverImageUrl: work.coverImageUrl } : {}),
+            ...(work.publisher ? { publisher: work.publisher } : {}),
+            ...(bookshelves.length ? { bookshelves } : {}),
+            ...(translators.length ? { translators } : {}),
+            ...(illustrators.length ? { illustrators } : {}),
+            ...(editors.length ? { editors } : {}),
+          }),
+          JSON.stringify(work.authors),
+          JSON.stringify(work.subjects),
+          nowIso(),
+        ],
+      );
+    }
+    await this.db.query(
+      `
+        INSERT INTO site_stats (key, value_json, updated_at)
+        VALUES ('corpus_work_count', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at
+      `,
+      [JSON.stringify({ count: totalCount }), nowIso()],
+    );
+  }
   async getWorkById(workId: string): Promise<WorkDetailRecord | null> { return (await this.corpusStore()).getWorkById(workId); }
   async getDocumentById(documentId: string) { return (await this.corpusStore()).getDocumentById(documentId); }
   async getWorksByIdPrefixes(prefixes: string[]) { return (await this.corpusStore()).getWorksByIdPrefixes(prefixes); }

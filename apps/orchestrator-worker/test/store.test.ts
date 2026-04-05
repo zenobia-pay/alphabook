@@ -165,6 +165,66 @@ test("appendRunEvent uses a single insert-select query for sequence allocation",
   assert.equal(queries.filter((entry) => entry.sql.includes("INSERT INTO run_events")).length, 1);
 });
 
+test("D1 store serves explore works from feed snapshots without hydrating the full corpus", async () => {
+  const queries: Array<{ sql: string; params?: unknown[] }> = [];
+  const db: DbClient = {
+    async query<T = Record<string, unknown>>(sql: string, params?: unknown[]) {
+      queries.push({ sql, params });
+      if (sql.includes("FROM feed_works")) {
+        return {
+          rows: [{
+            work_id: "work-1",
+            gutenberg_id: 42,
+            title: "Sample Book: A Tale",
+            language: "en",
+            release_date: "1900-01-01",
+            rights_status: "public_domain",
+            summary: "Sample summary",
+            metadata_json: JSON.stringify({
+              coverImageUrl: "https://example.com/cover.jpg",
+              publisher: "Example Press",
+              bookshelves: ["Fiction"],
+            }),
+            authors_json: JSON.stringify(["Jane Doe"]),
+            subjects_json: JSON.stringify(["Testing"]),
+            score: 2.23,
+            feed_label: "Worth opening",
+          }] as T[],
+        };
+      }
+      if (sql.includes("FROM site_stats")) {
+        return {
+          rows: [{
+            value_json: JSON.stringify({ count: 33328 }),
+          }] as T[],
+        };
+      }
+      if (sql.includes("FROM works ORDER BY title ASC") || sql.includes("FROM work_authors") || sql.includes("FROM work_subjects")) {
+        throw new Error(`Unexpected corpus hydration query: ${sql}`);
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+    async end() {},
+  };
+
+  const store = new D1AppStore(db);
+  const [works, count] = await Promise.all([
+    store.listWorks(0, 12),
+    store.countWorks(),
+  ]);
+
+  assert.equal(works.length, 1);
+  assert.equal(works[0]?.id, "work-1");
+  assert.equal(works[0]?.title, "Sample Book: A Tale");
+  assert.equal(works[0]?.subtitle, null);
+  assert.deepEqual(works[0]?.authors, ["Jane Doe"]);
+  assert.deepEqual(works[0]?.bookshelves, ["Fiction"]);
+  assert.equal(works[0]?.feedLabel, "Worth opening");
+  assert.equal(count, 33328);
+  assert.ok(queries.some((entry) => entry.sql.includes("FROM feed_works")));
+  assert.ok(queries.some((entry) => entry.sql.includes("FROM site_stats")));
+});
+
 test("in-memory store spills oversized run event payloads to blob storage and rehydrates them", async () => {
   const store = new InMemoryAppStore();
   const largeHtml = `<div>${"x".repeat(8_000)}</div>`;
