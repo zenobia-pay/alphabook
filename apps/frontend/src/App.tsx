@@ -704,6 +704,26 @@ function dedupeAdjacentErrorMessages(messages: UiMessage[]) {
   return deduped;
 }
 
+function isOptimisticMessage(message: UiMessage) {
+  return message.metadata?.optimistic === true;
+}
+
+function hasRenderableAssistantState(messages: UiMessage[], runActive: boolean) {
+  return runActive || messages.length > 0;
+}
+
+function shouldPreserveOptimisticMessages(
+  currentMessages: UiMessage[],
+  nextMessages: UiMessage[],
+  sessionId: string,
+  runActive: boolean,
+) {
+  if (nextMessages.length > 0 || !runActive) {
+    return false;
+  }
+  return currentMessages.some((message) => message.sessionId === sessionId && isOptimisticMessage(message));
+}
+
 function formatRelativeTime(value: string | null | undefined) {
   if (!value) {
     return "Just now";
@@ -4684,7 +4704,11 @@ export default function App() {
     setSessionRuns(nextRuns);
     setRecoveredActiveRunId(activeRun?.id ?? null);
     setRunArtifacts(Array.isArray(bootstrap.runState?.artifacts) ? bootstrap.runState.artifacts : []);
-    setMessages(hydratedMessages);
+    setMessages((current) => (
+      shouldPreserveOptimisticMessages(current, hydratedMessages, sessionId, activeRun != null)
+        ? current
+        : hydratedMessages
+    ));
   }
 
   function detachActiveAssistantStreams() {
@@ -5512,8 +5536,10 @@ export default function App() {
   }
 
   function renderAssistantView() {
+    const hasVisibleAssistantState = hasRenderableAssistantState(messages, isSending || recoveredActiveRunId !== null);
     const assistantSessionLoading =
       selectedSessionId != null
+      && !hasVisibleAssistantState
       && (
         (!hasAssistantSessionBootstrap && authPending)
         || (!authLocked && (

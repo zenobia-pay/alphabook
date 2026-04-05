@@ -1081,6 +1081,188 @@ test("sidebar recents shows and clears the spinner during an optimistic send lif
   await expect(page.getByTestId(`recent-session-spinner-${sessionId}`)).toHaveCount(0);
 });
 
+test("new Hermes chat keeps the optimistic thread visible while the created session hydrates", async ({ page }) => {
+  const sessionId = "11111111-1111-4111-8111-111111111214";
+  const runId = "run-hermes-optimistic-1";
+
+  await page.addInitScript(({ sessionId: bootstrapSessionId, runId: bootstrapRunId }) => {
+    const originalFetch = window.fetch.bind(window);
+    let bootstrapRequestCount = 0;
+
+    window.fetch = async (input, init) => {
+      const url = typeof input === "string"
+        ? input
+        : input instanceof Request
+          ? input.url
+          : String(input);
+
+      if (url.endsWith("/api/chat")) {
+        const encoder = new TextEncoder();
+        const body = new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode(`event: session.created\ndata: ${JSON.stringify({
+              sessionId: bootstrapSessionId,
+              title: "New Hermes thread",
+            })}\n\n`));
+            controller.enqueue(encoder.encode(`event: run.started\ndata: ${JSON.stringify({ runId: bootstrapRunId })}\n\n`));
+            window.setTimeout(() => {
+              controller.enqueue(encoder.encode(`event: assistant.completed\ndata: ${JSON.stringify({
+                answer: "Hermes is running the deeper research pass.",
+                citations: [],
+                phase: "answer",
+              })}\n\n`));
+              controller.enqueue(encoder.encode(`event: run.completed\ndata: ${JSON.stringify({
+                runId: bootstrapRunId,
+                status: "completed",
+              })}\n\n`));
+              controller.close();
+            }, 300);
+          },
+        });
+
+        return new Response(body, {
+          status: 200,
+          headers: {
+            "content-type": "text/event-stream",
+            "cache-control": "no-cache",
+          },
+        });
+      }
+
+      if (url.endsWith(`/api/sessions/${bootstrapSessionId}/bootstrap`)) {
+        bootstrapRequestCount += 1;
+        await new Promise((resolve) => window.setTimeout(resolve, 100));
+        const messages = bootstrapRequestCount === 1
+          ? []
+          : [
+              {
+                id: "user-hermes-1",
+                sessionId: bootstrapSessionId,
+                role: "user",
+                content: "Start a Hermes run.",
+                createdAt: "2026-03-16T12:00:00.000Z",
+                citations: [],
+                toolCalls: [],
+              },
+              {
+                id: "assistant-hermes-1",
+                sessionId: bootstrapSessionId,
+                role: "assistant",
+                content: "Hermes is running the deeper research pass.",
+                createdAt: "2026-03-16T12:00:01.000Z",
+                citations: [],
+                toolCalls: [],
+                metadata: {
+                  phase: "answer",
+                },
+              },
+            ];
+        const runs = [
+          {
+            id: bootstrapRunId,
+            sessionId: bootstrapSessionId,
+            status: bootstrapRequestCount === 1 ? "running" : "completed",
+            plannerTurns: 0,
+            startedAt: "2026-03-16T12:00:00.000Z",
+            completedAt: bootstrapRequestCount === 1 ? null : "2026-03-16T12:00:02.000Z",
+          },
+        ];
+        return new Response(JSON.stringify({
+          sessionId: bootstrapSessionId,
+          sessions: [
+            {
+              id: bootstrapSessionId,
+              userId: "local-user",
+              title: "New Hermes thread",
+              createdAt: "2026-03-16T12:00:00.000Z",
+              lastMessageAt: "2026-03-16T12:00:00.000Z",
+              lastMessagePreview: "Start a Hermes run.",
+              activeRunStatus: bootstrapRequestCount === 1 ? "running" : null,
+            },
+          ],
+          messages,
+          runs,
+          runState: {
+            artifacts: [],
+          },
+        }), {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+          },
+        });
+      }
+
+      return originalFetch(input, init);
+    };
+  }, { sessionId, runId });
+
+  await page.route("**/api/me", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        authConfigured: false,
+        authenticated: false,
+        user: null,
+      }),
+    });
+  });
+
+  await page.route("**/api/admin/access", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        allowed: false,
+        authenticated: false,
+        authConfigured: false,
+        user: null,
+      }),
+    });
+  });
+
+  await page.route(/\/api\/sessions(?:\?.*)?$/, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        sessions: [],
+      }),
+    });
+  });
+
+  await page.route(`**/api/sessions/${sessionId}/runs`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        runs: [
+          {
+            id: runId,
+            sessionId,
+            status: "running",
+            plannerTurns: 0,
+            startedAt: "2026-03-16T12:00:00.000Z",
+            completedAt: null,
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.goto("/?view=assistant");
+
+  await page.locator(".aui-composer-input").fill("Start a Hermes run.");
+  await page.locator(".aui-composer-send").click();
+
+  await expect(page.locator(".aui-user-message-root").last()).toContainText("Start a Hermes run.");
+  await page.waitForTimeout(180);
+  await expect(page.locator(".aui-user-message-root").last()).toContainText("Start a Hermes run.");
+  await expect(page.getByTestId("empty-state")).toHaveCount(0);
+  await expect(page.locator(".assistant-thread-shell")).toBeVisible();
+});
+
 test("reloading a session keeps streamed tool progress instead of replacing it with sparse run state", async ({ page }) => {
   const sessionId = "11111111-1111-4111-8111-111111111112";
   const runId = "run-progress-1";
