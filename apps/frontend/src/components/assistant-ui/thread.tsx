@@ -709,18 +709,6 @@ const MessageError: FC = () => {
 };
 
 const AssistantMessage: FC = () => {
-  const hasTextPart = useAuiState((state) =>
-    Array.isArray(state.message.content)
-      && state.message.content.some((part) => (
-        part
-        && typeof part === "object"
-        && "type" in part
-        && part.type === "text"
-        && "text" in part
-        && typeof part.text === "string"
-        && part.text.trim().length > 0
-      )),
-  );
   const isRunning = useAuiState((state) => state.message.status?.type === "running");
   const phase = useAuiState((state) => {
     const metadata = state.message.metadata;
@@ -736,10 +724,11 @@ const AssistantMessage: FC = () => {
       className="aui-assistant-message-root fade-in slide-in-from-bottom-1 relative mx-auto w-full max-w-(--thread-max-width) animate-in py-3 duration-150"
       data-role="assistant"
       data-error-message={isErrorMessage ? "true" : "false"}
+      data-running-message={isRunning ? "true" : "false"}
     >
       <div className="aui-assistant-message-content wrap-break-word px-2 text-foreground leading-relaxed">
         <MessagePrimitive.Parts components={TOOL_PART_COMPONENTS} />
-        {isRunning && !hasTextPart ? (
+        {isRunning ? (
           <div className="aui-assistant-running-indicator" aria-label="Assistant is thinking">
             <span className="aui-assistant-running-indicator-dot" aria-hidden="true" />
           </div>

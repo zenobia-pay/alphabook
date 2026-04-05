@@ -1716,7 +1716,7 @@ function buildBookAssistantPrompt(
 
 function messageToThreadMessage(
   message: UiMessage,
-  streamingAssistantId: string | null,
+  activeAssistantId: string | null,
   isSending: boolean,
   runActive: boolean,
 ) {
@@ -1781,7 +1781,7 @@ function messageToThreadMessage(
       content,
       metadata,
       status:
-        (isSending && message.id === streamingAssistantId) || hasRunningTool
+        ((isSending || runActive) && message.id === activeAssistantId) || hasRunningTool
           ? ({ type: "running" } as const)
           : ({ type: "complete", reason: "stop" } as const),
     };
@@ -1794,6 +1794,31 @@ function messageToThreadMessage(
     content: message.content,
     metadata,
   };
+}
+
+function resolveActiveAssistantMessageId(
+  messages: UiMessage[],
+  streamingAssistantId: string | null,
+  runActive: boolean,
+) {
+  if (streamingAssistantId) {
+    return streamingAssistantId;
+  }
+  if (!runActive) {
+    return null;
+  }
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role !== "assistant") {
+      continue;
+    }
+    const phase = typeof message.metadata?.phase === "string" ? message.metadata.phase : null;
+    if (phase === "answer" || phase === "error") {
+      continue;
+    }
+    return message.id;
+  }
+  return null;
 }
 
 function extractPromptText(message: {
@@ -5511,6 +5536,11 @@ export default function App() {
       return <AssistantSurfaceFallback />;
     }
     const Component = AssistantSurfaceComponent;
+    const activeAssistantId = resolveActiveAssistantMessageId(
+      props.messages,
+      props.streamingAssistantId,
+      props.isSending,
+    );
     return (
       <Component
         key={props.componentKey}
@@ -5527,8 +5557,8 @@ export default function App() {
         suggestions={props.suggestions}
         composerDisabled={props.composerDisabled}
         composerDisabledNotice={props.composerDisabledNotice}
-        convertMessage={(message, streamingAssistantId, isSending) =>
-          messageToThreadMessage(message, streamingAssistantId, isSending, isSending)
+        convertMessage={(message, _streamingAssistantId, isSending) =>
+          messageToThreadMessage(message, activeAssistantId, isSending, props.isSending)
         }
         extractPromptText={extractPromptText}
       />
