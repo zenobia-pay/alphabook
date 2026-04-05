@@ -10,6 +10,9 @@ test("scanGutenbergR2Keys identifies canonical ids and orphaned keys", () => {
     "gutenberg/clean/123/clean.txt",
     "gutenberg/clean/123/chunks.jsonl",
     "gutenberg/clean/123/book.html",
+    "gutenberg/clean/00123/chunks/0.json",
+    "gutenberg/clean/00123/book/manifest.json",
+    "gutenberg/clean/00123/book/pages/page-0001.html",
     "gutenberg/raw/456/metadata.json",
     "gutenberg/clean/456/chunks.jsonl",
     "gutenberg/misc/weird.txt",
@@ -18,7 +21,10 @@ test("scanGutenbergR2Keys identifies canonical ids and orphaned keys", () => {
   assert.deepEqual(result.canonicalIds, ["123"]);
   assert.deepEqual(result.idsMissingRequiredArtifacts, ["456"]);
   assert.deepEqual(result.orphanedKeys, ["gutenberg/misc/weird.txt"]);
-  assert.deepEqual(getMissingRequiredArtifacts(result.byId.get("456") ?? { id: "456", keys: {}, unknownKeys: [] }), ["raw", "clean", "book_html"]);
+  assert.deepEqual(
+    getMissingRequiredArtifacts(result.byId.get("456") ?? { id: "456", keys: {}, unknownKeys: [] }),
+    ["raw", "clean", "chunk_object", "book_html", "book_manifest", "book_page"],
+  );
 });
 
 test("parseChunkPayload parses ndjson chunk payloads", () => {

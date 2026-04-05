@@ -65,25 +65,32 @@ function pushArtifact(artifacts: GutenbergR2Artifacts, kind: GutenbergArtifactKi
   artifacts.keys[kind] = existing;
 }
 
+function normalizeScannedGutenbergId(id: string | null) {
+  if (!id || !/^\d+$/u.test(id)) {
+    return null;
+  }
+  return String(Number(id));
+}
+
 function classifyGutenbergKey(key: string): { id: string | null; kind: GutenbergArtifactKind } {
   let match = key.match(/^gutenberg\/raw\/(\d+)\/raw\.txt$/u);
-  if (match) return { id: match[1] ?? null, kind: "raw" };
+  if (match) return { id: normalizeScannedGutenbergId(match[1] ?? null), kind: "raw" };
   match = key.match(/^gutenberg\/raw\/(\d+)\/metadata\.json$/u);
-  if (match) return { id: match[1] ?? null, kind: "metadata" };
+  if (match) return { id: normalizeScannedGutenbergId(match[1] ?? null), kind: "metadata" };
   match = key.match(/^gutenberg\/raw\/(\d+)\/cover\.[^.]+$/u);
-  if (match) return { id: match[1] ?? null, kind: "cover" };
+  if (match) return { id: normalizeScannedGutenbergId(match[1] ?? null), kind: "cover" };
   match = key.match(/^gutenberg\/clean\/(\d+)\/clean\.txt$/u);
-  if (match) return { id: match[1] ?? null, kind: "clean" };
+  if (match) return { id: normalizeScannedGutenbergId(match[1] ?? null), kind: "clean" };
   match = key.match(/^gutenberg\/clean\/(\d+)\/chunks\.jsonl$/u);
-  if (match) return { id: match[1] ?? null, kind: "chunks" };
+  if (match) return { id: normalizeScannedGutenbergId(match[1] ?? null), kind: "chunks" };
   match = key.match(/^gutenberg\/clean\/(\d+)\/chunks\/\d+\.json$/u);
-  if (match) return { id: match[1] ?? null, kind: "chunk_object" };
+  if (match) return { id: normalizeScannedGutenbergId(match[1] ?? null), kind: "chunk_object" };
   match = key.match(/^gutenberg\/clean\/(\d+)\/book\.html$/u);
-  if (match) return { id: match[1] ?? null, kind: "book_html" };
+  if (match) return { id: normalizeScannedGutenbergId(match[1] ?? null), kind: "book_html" };
   match = key.match(/^gutenberg\/clean\/(\d+)\/book\/manifest\.json$/u);
-  if (match) return { id: match[1] ?? null, kind: "book_manifest" };
+  if (match) return { id: normalizeScannedGutenbergId(match[1] ?? null), kind: "book_manifest" };
   match = key.match(/^gutenberg\/clean\/(\d+)\/book\/pages\/page-\d+\.html$/u);
-  if (match) return { id: match[1] ?? null, kind: "book_page" };
+  if (match) return { id: normalizeScannedGutenbergId(match[1] ?? null), kind: "book_page" };
   return { id: null, kind: "unknown" };
 }
 
