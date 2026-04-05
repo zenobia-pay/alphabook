@@ -262,6 +262,7 @@ PY
     --color never \
     --json \
     --cd "$ROOT_DIR" \
+    --skip-git-repo-check \
     --output-last-message "$last_message_file" \
     --add-dir "$RUN_DIR" \
     --add-dir "$CONSOLIDATOR_DIR" \

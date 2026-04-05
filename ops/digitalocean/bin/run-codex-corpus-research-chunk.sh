@@ -267,6 +267,7 @@ PY
     --color never \
     --json \
     --cd "$ROOT_DIR" \
+    --skip-git-repo-check \
     --output-last-message "$last_message_file" \
     --add-dir "$CHUNK_DIR" \
     --add-dir "$CORPUS_ROOT" \
