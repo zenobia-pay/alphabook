@@ -76,7 +76,7 @@ async function main() {
     "--output-dir",
     stageDir,
   ];
-  for (const flag of ["--books-root", "--books-host", "--qdrant-url", "--qdrant-api-key", "--qdrant-collection", "--qdrant-id-batch-size", "--qdrant-scroll-limit"]) {
+  for (const flag of ["--books-root", "--books-host", "--qdrant-url", "--qdrant-api-key", "--qdrant-collection", "--qdrant-id-batch-size", "--qdrant-scroll-limit", "--qdrant-timeout-seconds"]) {
     const value = readArg(flag);
     if (value) {
       stageArgs.push(flag, value);

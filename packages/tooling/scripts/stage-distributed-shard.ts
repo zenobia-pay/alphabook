@@ -30,6 +30,7 @@ type QdrantScrollResponse = {
 
 const DEFAULT_QDRANT_BATCH_IDS = 100;
 const DEFAULT_QDRANT_SCROLL_LIMIT = 256;
+const DEFAULT_QDRANT_TIMEOUT_SECONDS = 120;
 
 function usage() {
   process.stdout.write(
@@ -45,6 +46,7 @@ function usage() {
       "  --qdrant-collection <alphabook-semantic>",
       "  --qdrant-id-batch-size <100>",
       "  --qdrant-scroll-limit <256>",
+      "  --qdrant-timeout-seconds <120>",
       "  --skip-books",
       "  --skip-vectors",
     ].join("\n") + "\n",
@@ -67,6 +69,7 @@ async function exportQdrantPoints(options: {
   qdrantCollection: string;
   idBatchSize: number;
   scrollLimit: number;
+  timeoutSeconds: number;
 }) {
   const outputPath = join(options.outputDir, "vectors", "qdrant-points.ndjson");
   await mkdir(join(options.outputDir, "vectors"), { recursive: true });
@@ -81,6 +84,7 @@ async function exportQdrantPoints(options: {
         limit: options.scrollLimit,
         with_payload: true,
         with_vector: true,
+        timeout: options.timeoutSeconds,
         filter: {
           must: [
             {
@@ -236,6 +240,7 @@ async function main() {
       qdrantCollection,
       idBatchSize: Number(readArg("--qdrant-id-batch-size") ?? DEFAULT_QDRANT_BATCH_IDS),
       scrollLimit: Number(readArg("--qdrant-scroll-limit") ?? DEFAULT_QDRANT_SCROLL_LIMIT),
+      timeoutSeconds: Number(readArg("--qdrant-timeout-seconds") ?? DEFAULT_QDRANT_TIMEOUT_SECONDS),
     });
   }
 

@@ -1,4 +1,4 @@
-import { access, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawn } from "node:child_process";
@@ -209,6 +209,21 @@ export async function loadMirrorIdsFromSource(options: {
   sourceHost: string | null;
 }): Promise<string[]> {
   if (!options.sourceHost && await pathExists(options.sourceRoot)) {
+    const directBooksRoot = await pathExists(join(options.sourceRoot, "books"))
+      ? join(options.sourceRoot, "books")
+      : options.sourceRoot;
+    try {
+      const entries = await readdir(directBooksRoot, { withFileTypes: true });
+      const numericDirectories = entries
+        .filter((entry) => entry.isDirectory() && /^\d+$/u.test(entry.name))
+        .map((entry) => String(Number(entry.name)))
+        .sort((left, right) => Number(left) - Number(right));
+      if (numericDirectories.length > 0) {
+        return numericDirectories;
+      }
+    } catch {
+      // Fall through to the Gutenberg mirror scanner.
+    }
     return listMirrorIds(options.sourceRoot);
   }
   if (!options.sourceHost) {
