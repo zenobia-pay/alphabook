@@ -16,7 +16,7 @@ from typing import Any
 
 DEFAULT_EMBEDDING_MODEL = os.environ.get("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
 DEFAULT_EMBEDDING_DIMENSIONS = int(os.environ.get("OPENAI_EMBEDDING_DIMENSIONS", "768"))
-DEFAULT_EXPANSION_MODEL = os.environ.get("ALPHABOOK_RAG_EXPANSION_MODEL", "gpt-5-mini")
+DEFAULT_EXPANSION_MODEL = os.environ.get("ALPHABOOK_RAG_EXPANSION_MODEL", "gpt-5.4")
 DEFAULT_RERANK_MODEL = os.environ.get("ALPHABOOK_RAG_RERANK_MODEL", "gpt-5-mini")
 
 
@@ -281,10 +281,20 @@ def expand_query_variants(args: argparse.Namespace, output_dir: Path) -> list[st
         },
     }
     prompt = "\n".join([
-        "Generate semantically diverse retrieval variants for a corpus RAG pipeline.",
-        "Cover synonyms, paraphrases, narrower variants, broader variants, contextual indicators, edge cases, and related phrasings.",
-        "Do not number the variants.",
-        "Keep them retrieval-oriented, concrete, and high recall.",
+        "Generate semantically diverse retrieval variants for a bounded corpus RAG pipeline.",
+        "Dataset context:",
+        "- The corpus is a large text-only book collection derived from Project Gutenberg-style public-domain works.",
+        "- The indexed units are chunked passages from books, including fiction, poetry, drama, sermons, memoirs, essays, letters, and historical prose.",
+        "- Retrieval works best when variants resemble language that could plausibly appear inside those texts or in their surrounding narrative/descriptive prose.",
+        "Variant requirements:",
+        "- Cover synonyms, paraphrases, narrower variants, broader variants, contextual indicators, edge cases, and related phrasings.",
+        "- Prefer phrases that are useful for semantic retrieval over historical and literary texts.",
+        "- Prefer language that could plausibly occur in books or descriptions of scenes, relationships, events, practices, institutions, emotions, or behaviors.",
+        "- Avoid modern resource-seeking, self-help, hotline, workplace, checklist, or service-directory phrasing unless the original query explicitly asks for that.",
+        "- Avoid overly clinical, diagnostic, or treatment-program framing unless the original query explicitly asks for that.",
+        "- Avoid generic conversational reformulations that do not improve retrieval recall.",
+        "- Keep the variants concrete, high-recall, and text-retrieval oriented.",
+        "- Do not number the variants.",
         f"Return exactly {max(10, min(args.variant_count, 50))} variants.",
         f"Original query: {args.query}",
     ])
@@ -296,7 +306,7 @@ def expand_query_variants(args: argparse.Namespace, output_dir: Path) -> list[st
             "messages": [
                 {
                     "role": "system",
-                    "content": "You produce retrieval query variants for bounded RAG jobs. Return JSON only.",
+                    "content": "You produce retrieval query variants for bounded corpus RAG jobs over historical and literary book text. Favor corpus-plausible retrieval language over modern advice framing. Return JSON only.",
                 },
                 {
                     "role": "user",
