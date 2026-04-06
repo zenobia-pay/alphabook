@@ -53,6 +53,11 @@ type CheckpointState = {
   updatedAt: string;
 };
 
+type GutenbergIdRange = {
+  min?: number;
+  max?: number;
+};
+
 function requireEnv(name: string) {
   const value = process.env[name]?.trim();
   if (!value) {
@@ -122,6 +127,7 @@ async function fetchQdrantInfo() {
 
 async function fetchQdrantBatch(limit: number, offset: QdrantOffset) {
   const collection = requireEnv("QDRANT_COLLECTION");
+  const filter = buildGutenbergIdFilter();
   const payload = await qdrantRequest<QdrantScrollResponse>(
     `collections/${encodeURIComponent(collection)}/points/scroll`,
     {
@@ -130,6 +136,7 @@ async function fetchQdrantBatch(limit: number, offset: QdrantOffset) {
         limit,
         with_payload: true,
         with_vector: true,
+        ...(filter ? { filter } : {}),
         ...(offset === null ? {} : { offset }),
       }),
     },
@@ -137,6 +144,48 @@ async function fetchQdrantBatch(limit: number, offset: QdrantOffset) {
   return {
     points: payload.result?.points ?? [],
     nextOffset: payload.result?.next_page_offset ?? null,
+  };
+}
+
+function parseOptionalInt(value: string | undefined) {
+  if (value === undefined || value.trim() === "") {
+    return undefined;
+  }
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`Invalid integer value: ${value}`);
+  }
+  return parsed;
+}
+
+function getGutenbergIdRange(): GutenbergIdRange {
+  const min = parseOptionalInt(process.env.QDRANT_GUTENBERG_ID_MIN);
+  const max = parseOptionalInt(process.env.QDRANT_GUTENBERG_ID_MAX);
+  if (min !== undefined && max !== undefined && min > max) {
+    throw new Error(`Invalid Gutenberg ID range: min ${min} exceeds max ${max}`);
+  }
+  return { min, max };
+}
+
+function buildGutenbergIdFilter() {
+  const { min, max } = getGutenbergIdRange();
+  if (min === undefined && max === undefined) {
+    return undefined;
+  }
+  const range: Record<string, number> = {};
+  if (min !== undefined) {
+    range.gte = min;
+  }
+  if (max !== undefined) {
+    range.lte = max;
+  }
+  return {
+    must: [
+      {
+        key: "gutenberg_id",
+        range,
+      },
+    ],
   };
 }
 
@@ -238,6 +287,8 @@ async function main() {
   let uploadBatchSize = Math.max(1, Number(process.env.VECTORIZE_UPSERT_BATCH_SIZE ?? "1000"));
   const checkpointPath = process.env.QDRANT_VECTORIZE_CHECKPOINT_PATH?.trim()
     || ".alphabook/qdrant-to-vectorize-checkpoint.json";
+  const range = getGutenbergIdRange();
+  const workerLabel = process.env.QDRANT_VECTORIZE_WORKER_LABEL?.trim() || "default";
   const checkpoint = await readCheckpoint(checkpointPath);
   let offset = checkpoint?.offset ?? null;
   let processedPoints = checkpoint?.processedPoints ?? 0;
@@ -260,6 +311,9 @@ async function main() {
     vectorizeDimensions: vectorizeInfo.dimensions ?? null,
     qdrantPointCount: qdrantInfo.pointCount ?? null,
     vectorizeVectorCount: vectorizeInfo.vectorCount ?? null,
+    workerLabel,
+    gutenbergIdMin: range.min ?? null,
+    gutenbergIdMax: range.max ?? null,
     offset,
     processedPoints,
     uploadedVectors,
@@ -297,6 +351,9 @@ async function main() {
       processedPoints,
       uploadedVectors,
       batchPoints: points.length,
+      workerLabel,
+      gutenbergIdMin: range.min ?? null,
+      gutenbergIdMax: range.max ?? null,
       nextOffset: offset,
       uploadBatchSize,
     }));
@@ -311,6 +368,9 @@ async function main() {
     processedPoints,
     uploadedVectors,
     batches,
+    workerLabel,
+    gutenbergIdMin: range.min ?? null,
+    gutenbergIdMax: range.max ?? null,
     vectorizeVectorCount: finalInfo.vectorCount ?? null,
     updatedAt: new Date().toISOString(),
   }));
