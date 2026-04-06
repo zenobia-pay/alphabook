@@ -138,12 +138,18 @@ if [[ -f "$ENV_FILE" ]]; then
   export R2_ENDPOINT="${R2_ENDPOINT:-$(load_env_value "$ENV_FILE" "R2_ENDPOINT")}"
   export R2_ACCESS_KEY_ID="${R2_ACCESS_KEY_ID:-$(load_env_value "$ENV_FILE" "R2_ACCESS_KEY_ID")}"
   export R2_SECRET_ACCESS_KEY="${R2_SECRET_ACCESS_KEY:-$(load_env_value "$ENV_FILE" "R2_SECRET_ACCESS_KEY")}"
+  export QDRANT_URL="${QDRANT_URL:-$(load_env_value "$ENV_FILE" "QDRANT_URL")}"
+  export QDRANT_API_KEY="${QDRANT_API_KEY:-$(load_env_value "$ENV_FILE" "QDRANT_API_KEY")}"
+  export QDRANT_COLLECTION="${QDRANT_COLLECTION:-$(load_env_value "$ENV_FILE" "QDRANT_COLLECTION")}"
 elif [[ -f "$FALLBACK_ENV_FILE" ]]; then
   export OPENAI_API_KEY="${OPENAI_API_KEY:-$(load_env_value "$FALLBACK_ENV_FILE" "OPENAI_API_KEY")}"
   export R2_BUCKET_NAME="${R2_BUCKET_NAME:-$(load_env_value "$FALLBACK_ENV_FILE" "R2_BUCKET_NAME")}"
   export R2_ENDPOINT="${R2_ENDPOINT:-$(load_env_value "$FALLBACK_ENV_FILE" "R2_ENDPOINT")}"
   export R2_ACCESS_KEY_ID="${R2_ACCESS_KEY_ID:-$(load_env_value "$FALLBACK_ENV_FILE" "R2_ACCESS_KEY_ID")}"
   export R2_SECRET_ACCESS_KEY="${R2_SECRET_ACCESS_KEY:-$(load_env_value "$FALLBACK_ENV_FILE" "R2_SECRET_ACCESS_KEY")}"
+  export QDRANT_URL="${QDRANT_URL:-$(load_env_value "$FALLBACK_ENV_FILE" "QDRANT_URL")}"
+  export QDRANT_API_KEY="${QDRANT_API_KEY:-$(load_env_value "$FALLBACK_ENV_FILE" "QDRANT_API_KEY")}"
+  export QDRANT_COLLECTION="${QDRANT_COLLECTION:-$(load_env_value "$FALLBACK_ENV_FILE" "QDRANT_COLLECTION")}"
 fi
 [[ -n "${OPENAI_API_KEY:-}" ]] || { echo "OPENAI_API_KEY is not available from $ENV_FILE or $FALLBACK_ENV_FILE" >&2; exit 1; }
 
@@ -280,6 +286,58 @@ for index, partition in enumerate(partitions, start=1):
     shutil.copy2(partition["partition_file"], chunk_dir / "scope-files.tsv")
 PY
 
+python3 - "$run_dir" "$PRECOMPUTED_INDEX_DIR/metadata-table.jsonl" "$CHUNK_SIZE" <<'PY'
+from pathlib import Path
+import json
+import sys
+
+run_dir = Path(sys.argv[1])
+metadata_path = Path(sys.argv[2])
+chunk_size = int(sys.argv[3])
+
+path_to_gutenberg: dict[str, str] = {}
+for raw_line in metadata_path.read_text(encoding="utf-8").splitlines():
+    raw_line = raw_line.strip()
+    if not raw_line:
+        continue
+    row = json.loads(raw_line)
+    gutenberg_id = str(row.get("gutenberg_id") or "").strip()
+    if not gutenberg_id:
+        continue
+    for key in ("primary_text_path", "primary_text_link_path", "clean_path"):
+        value = row.get(key)
+        if isinstance(value, str) and value.strip():
+            path_to_gutenberg[value] = gutenberg_id
+
+for index, chunk_dir in enumerate(sorted((run_dir / "chunks").glob("chunk-*")), start=1):
+    corpus_chunk_id = f"corpus-files{chunk_size}-{index:05d}"
+    source_file_map: dict[str, str] = {}
+    gutenberg_ids: list[str] = []
+    for raw_line in (chunk_dir / "scope-files.tsv").read_text(encoding="utf-8").splitlines():
+        raw_line = raw_line.strip()
+        if not raw_line:
+            continue
+        parts = raw_line.split("\t", 1)
+        if len(parts) != 2:
+            continue
+        size_text, absolute_path = parts
+        if size_text == "size_bytes" and absolute_path == "absolute_path":
+            continue
+        gutenberg_id = path_to_gutenberg.get(absolute_path)
+        if gutenberg_id:
+            source_file_map[absolute_path] = gutenberg_id
+            gutenberg_ids.append(gutenberg_id)
+    payload = {
+        "chunk_id": chunk_dir.name,
+        "corpus_chunk_id": corpus_chunk_id,
+        "chunk_size": chunk_size,
+        "gutenberg_ids": sorted(set(gutenberg_ids), key=lambda value: int(value)),
+        "source_file_to_gutenberg_id": source_file_map,
+    }
+    (chunk_dir / "vector-scope.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    (chunk_dir / "corpus-chunk-id.txt").write_text(corpus_chunk_id + "\n", encoding="utf-8")
+PY
+
 cat >"$run_dir/run-codex-manager.sh" <<'EOS'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -366,8 +424,15 @@ books_dir = run_dir / "books"
 books_dir.mkdir(parents=True, exist_ok=True)
 rows = []
 seen = set()
+scope_lookup: dict[str, dict[str, object]] = {}
 
 for chunk_dir in sorted((run_dir / "chunks").glob("chunk-*")):
+    vector_scope_path = chunk_dir / "vector-scope.json"
+    if vector_scope_path.exists():
+        try:
+            scope_lookup[chunk_dir.name] = json.loads(vector_scope_path.read_text(encoding="utf-8"))
+        except Exception:
+            scope_lookup[chunk_dir.name] = {}
     relevant_path = chunk_dir / "artifacts" / "relevant-books.jsonl"
     if not relevant_path.exists():
         continue
@@ -388,6 +453,14 @@ for chunk_dir in sorted((run_dir / "chunks").glob("chunk-*")):
         seen.add(key)
         payload["source_file"] = key
         payload["origin_chunk_id"] = chunk_dir.name
+        scope = scope_lookup.get(chunk_dir.name) or {}
+        source_file_to_gutenberg = scope.get("source_file_to_gutenberg_id") if isinstance(scope.get("source_file_to_gutenberg_id"), dict) else {}
+        if not payload.get("gutenberg_id") and isinstance(source_file_to_gutenberg, dict):
+            inferred = source_file_to_gutenberg.get(key)
+            if isinstance(inferred, str) and inferred.strip():
+                payload["gutenberg_id"] = inferred.strip()
+        if not payload.get("corpus_chunk_id") and isinstance(scope.get("corpus_chunk_id"), str):
+            payload["corpus_chunk_id"] = scope["corpus_chunk_id"]
         rows.append(payload)
 
 rows.sort(key=lambda item: (
@@ -414,6 +487,8 @@ for index, row in enumerate(rows, start=1):
         "source_author": row.get("source_author") or row.get("author"),
         "source_year_or_period": row.get("source_year_or_period") or row.get("year"),
         "origin_chunk_id": row.get("origin_chunk_id"),
+        "gutenberg_id": row.get("gutenberg_id"),
+        "corpus_chunk_id": row.get("corpus_chunk_id"),
     })
 
 (run_dir / "state" / "relevant-books.json").write_text(json.dumps(rows, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -593,6 +668,9 @@ chmod +x "$run_dir/run-codex-manager.sh"
   export R2_ENDPOINT="${R2_ENDPOINT:-}"
   export R2_ACCESS_KEY_ID="${R2_ACCESS_KEY_ID:-}"
   export R2_SECRET_ACCESS_KEY="${R2_SECRET_ACCESS_KEY:-}"
+  export QDRANT_URL="${QDRANT_URL:-}"
+  export QDRANT_API_KEY="${QDRANT_API_KEY:-}"
+  export QDRANT_COLLECTION="${QDRANT_COLLECTION:-}"
   nohup "$run_dir/run-codex-manager.sh" >>"$stdout_log" 2>>"$stderr_log" &
   echo $! >"$pid_file"
 ) >/dev/null

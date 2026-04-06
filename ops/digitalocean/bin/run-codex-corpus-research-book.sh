@@ -126,6 +126,8 @@ author = book_decision.get("source_author") or book_decision.get("author") or "u
 year = book_decision.get("source_year_or_period") or book_decision.get("year") or "unknown"
 reasoning = book_decision.get("reasoning") or ""
 evidence = book_decision.get("evidence_snippets") or []
+gutenberg_id = book_decision.get("gutenberg_id") or ""
+corpus_chunk_id = book_decision.get("corpus_chunk_id") or ""
 
 prompt = f"""You are running a dedicated single-book Codex research job on a DigitalOcean droplet.
 
@@ -145,6 +147,8 @@ Book contract:
 - source title: {title}
 - source author: {author}
 - source year or period: {year}
+- source Gutenberg id: {gutenberg_id or "unknown"}
+- deterministic corpus chunk id: {corpus_chunk_id or "unknown"}
 - shard triage reasoning: {reasoning}
 - shard evidence snippets: {json.dumps(evidence, ensure_ascii=False)}
 - corpus root: {corpus_root}
@@ -158,6 +162,9 @@ Hard requirements:
 - Use model judgment over local context to explain how this book deals with grief.
 - Exact quotes must be grounded in the source text with line references or local provenance.
 - You may use helper scripts for parsing or note-taking, but not to mechanically decide relevance from hand-written weights.
+- A bounded Qdrant helper is available at `/srv/alphabook/repo/ops/digitalocean/bin/run-qdrant-bounded-search.py`.
+- If you use semantic retrieval for this book, bound it to this specific book with `--gutenberg-id "{gutenberg_id}"`.
+- Do not run an unbounded semantic search against the full Qdrant collection from this book run.
 
 Required outputs under {artifacts_dir}:
 - manifest.json
@@ -240,6 +247,19 @@ PY
   export HOME="$codex_home"
   export OPENAI_BASE_URL="http://127.0.0.1:8790/runs/$JOB_ID/v1"
   export OPENAI_API_KEY="${OPENAI_API_KEY:-}"
+  export QDRANT_URL="${QDRANT_URL:-}"
+  export QDRANT_API_KEY="${QDRANT_API_KEY:-}"
+  export QDRANT_COLLECTION="${QDRANT_COLLECTION:-}"
+  export ALPHABOOK_CODEX_QDRANT_GUTENBERG_ID="$(python3 - "$BOOK_DECISION_FILE" <<'PY'
+from pathlib import Path
+import json
+import sys
+
+payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+value = payload.get("gutenberg_id")
+print(value if isinstance(value, str) else "")
+PY
+)"
   codex -a never exec \
     -s danger-full-access \
     --color never \

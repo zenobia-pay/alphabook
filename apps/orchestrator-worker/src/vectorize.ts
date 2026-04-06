@@ -12,7 +12,10 @@ type FetchLike = typeof fetch;
 
 interface QdrantFilterClause {
   key: string;
-  match?: { value: string | number | boolean | null };
+  match?: {
+    value?: string | number | boolean | null;
+    any?: Array<string | number>;
+  };
 }
 
 interface QdrantPointResult {
@@ -61,6 +64,37 @@ function toQdrantFilter(filter?: VectorSearchFilter) {
   }
   const must: QdrantFilterClause[] = [];
   for (const [key, value] of Object.entries(filter)) {
+    if (Array.isArray(value)) {
+      const any = value.filter((entry): entry is string | number => typeof entry === "string" || typeof entry === "number");
+      if (any.length > 0) {
+        must.push({
+          key,
+          match: {
+            any,
+          },
+        });
+      }
+      continue;
+    }
+    if (
+      value
+      && typeof value === "object"
+      && !Array.isArray(value)
+      && "any" in value
+      && Array.isArray((value as { any?: unknown }).any)
+    ) {
+      const any = (value as { any?: unknown[] }).any!
+        .filter((entry): entry is string | number => typeof entry === "string" || typeof entry === "number");
+      if (any.length > 0) {
+        must.push({
+          key,
+          match: {
+            any,
+          },
+        });
+      }
+      continue;
+    }
     if (
       value === null
       || typeof value === "string"

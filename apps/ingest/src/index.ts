@@ -1942,6 +1942,93 @@ function readWranglerAccountId(): string | null {
   return null;
 }
 
+let corpusVectorChunkMapPromise: Promise<Map<string, string> | null> | null = null;
+
+async function loadCorpusVectorChunkMap() {
+  if (corpusVectorChunkMapPromise) {
+    return corpusVectorChunkMapPromise;
+  }
+  corpusVectorChunkMapPromise = (async () => {
+    const path = process.env.CORPUS_VECTOR_CHUNK_MAP_PATH?.trim();
+    if (!path) {
+      return null;
+    }
+    try {
+      const raw = await readFile(path, "utf8");
+      const parsed = JSON.parse(raw) as unknown;
+      const rows = Array.isArray(parsed)
+        ? parsed
+        : parsed && typeof parsed === "object" && Array.isArray((parsed as { rows?: unknown[] }).rows)
+          ? (parsed as { rows: unknown[] }).rows
+          : [];
+      const mapping = new Map<string, string>();
+      for (const row of rows) {
+        if (!row || typeof row !== "object") {
+          continue;
+        }
+        const gutenbergId = normalizeGutenbergId((row as { gutenberg_id?: unknown }).gutenberg_id);
+        const corpusChunkId = typeof (row as { corpus_chunk_id?: unknown }).corpus_chunk_id === "string"
+          ? (row as { corpus_chunk_id: string }).corpus_chunk_id.trim()
+          : "";
+        if (gutenbergId && corpusChunkId) {
+          mapping.set(gutenbergId, corpusChunkId);
+        }
+      }
+      return mapping;
+    } catch {
+      return null;
+    }
+  })();
+  return corpusVectorChunkMapPromise;
+}
+
+async function resolveCorpusVectorChunkId(
+  adapterId: string,
+  externalId: string | null | undefined,
+) {
+  if (adapterId !== gutenbergCorpusAdapter.id) {
+    return null;
+  }
+  const gutenbergId = normalizeGutenbergId(externalId);
+  if (!gutenbergId) {
+    return null;
+  }
+  const mapping = await loadCorpusVectorChunkMap();
+  return mapping?.get(gutenbergId) ?? null;
+}
+
+async function buildQdrantChunkMetadata(args: {
+  adapterId: string;
+  externalId: string | null | undefined;
+  workId: string;
+  chunkIndex: number;
+  title: string | null | undefined;
+  authors: string[];
+  language: string | null | undefined;
+  rightsStatus: string | null | undefined;
+}) {
+  const gutenbergId = normalizeGutenbergId(args.externalId);
+  const corpusChunkId = await resolveCorpusVectorChunkId(args.adapterId, args.externalId);
+  return {
+    workId: args.workId,
+    work_id: args.workId,
+    chunkIndex: args.chunkIndex,
+    chunk_index: args.chunkIndex,
+    adapterId: args.adapterId,
+    adapter_id: args.adapterId,
+    externalId: args.externalId ?? null,
+    external_id: args.externalId ?? null,
+    gutenberg_id: gutenbergId,
+    title: args.title ?? null,
+    authors: args.authors,
+    language: args.language ?? null,
+    rightsStatus: args.rightsStatus ?? null,
+    rights_status: args.rightsStatus ?? null,
+    corpusChunkId,
+    corpus_chunk_id: corpusChunkId,
+  } satisfies Record<string, unknown>;
+}
+
 async function resolveCloudflareAccountId(configPath: string): Promise<string | null> {
   const fromEnv = readWranglerAccountId();
   if (fromEnv) {
@@ -3044,18 +3131,20 @@ async function persistIngestedWork(
   await upsertChunkVectors(
     context,
     chunkEmbeddings
-      ? chunkEmbeddings.map((values, index) => ({
+      ? await Promise.all(chunkEmbeddings.map(async (values, index) => ({
           id: chunkArtifacts[index]!.id,
           values,
-          metadata: {
+          metadata: await buildQdrantChunkMetadata({
             workId,
             chunkIndex: index,
             adapterId: source.adapterId,
             externalId: source.externalId,
+            title: source.title ?? null,
+            authors,
             language: source.language ?? null,
             rightsStatus: source.rightsStatus ?? null,
-          },
-        }))
+          }),
+        })))
       : [],
   );
 
@@ -3954,18 +4043,20 @@ async function rebuildCanonicalR2Work(
 
     await upsertChunkVectors(
       context,
-      canonical.chunks.map((chunk, index) => ({
+      await Promise.all(canonical.chunks.map(async (chunk, index) => ({
         id: chunk.id,
         values: chunkEmbeddings[index] ?? [],
-        metadata: {
+        metadata: await buildQdrantChunkMetadata({
           workId,
           chunkIndex: chunk.chunkIndex,
           adapterId: gutenbergCorpusAdapter.id,
           externalId: canonical.externalId,
+          title: canonical.title,
+          authors: canonical.authors,
           language: canonical.language,
           rightsStatus: canonical.rightsStatus,
-        },
-      })),
+        }),
+      }))),
     );
   }
 

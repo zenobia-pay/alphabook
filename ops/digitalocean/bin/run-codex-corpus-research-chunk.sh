@@ -97,6 +97,8 @@ pid_file="$CHUNK_DIR/runtime/codex.pid"
 last_message_file="$CHUNK_DIR/last-message.txt"
 artifacts_dir="$CHUNK_DIR/artifacts"
 codex_home="$CHUNK_DIR/codex-home"
+vector_scope_file="$CHUNK_DIR/vector-scope.json"
+corpus_chunk_id="$(tr -d '\r\n' <"$CHUNK_DIR/corpus-chunk-id.txt" 2>/dev/null || true)"
 
 ln -sfn "logs/launcher.log" "$CHUNK_DIR/launcher.log"
 ln -sfn "logs/codex-events.jsonl" "$CHUNK_DIR/codex-events.jsonl"
@@ -118,7 +120,7 @@ scope_total_bytes="$(
   ' "$SCOPE_FILE_LIST"
 )"
 
-python3 - "$prompt_file" "$USER_PROMPT_FILE" "$RUN_DIR" "$CHUNK_ID" "$JOB_ID" "$SCOPE_FILE_LIST" "$scope_file_count" "$scope_total_bytes" "$CORPUS_ROOT" "$PRECOMPUTED_INDEX_DIR" "$artifacts_dir" <<'PY'
+python3 - "$prompt_file" "$USER_PROMPT_FILE" "$RUN_DIR" "$CHUNK_ID" "$JOB_ID" "$SCOPE_FILE_LIST" "$scope_file_count" "$scope_total_bytes" "$CORPUS_ROOT" "$PRECOMPUTED_INDEX_DIR" "$artifacts_dir" "$vector_scope_file" "$corpus_chunk_id" <<'PY'
 from pathlib import Path
 import sys
 
@@ -133,6 +135,8 @@ scope_bytes = sys.argv[8]
 corpus_root = sys.argv[9]
 precomputed_index_dir = sys.argv[10]
 artifacts_dir = sys.argv[11]
+vector_scope_file = sys.argv[12]
+corpus_chunk_id = sys.argv[13]
 
 prompt = f"""You are running one bounded shard of an AlphaBook corpus research job on a DigitalOcean droplet.
 
@@ -181,6 +185,11 @@ Hard requirements:
 - You must produce one decision row per book in the shard. Do not stop after a small sample.
 - Favor recall over premature exclusion. If a book materially engages grief even as a secondary thread, mark it relevant and let the later single-book run decide depth.
 - Use `/mnt/alphabook_consolidation/final/latest/research-corpus-index/metadata-table.jsonl` or the equivalent metadata table under `{precomputed_index_dir}` to recover title/author/year for shard files when possible.
+- A bounded Qdrant helper is available at `/srv/alphabook/repo/ops/digitalocean/bin/run-qdrant-bounded-search.py`.
+- If you use semantic retrieval, you must keep it bounded to this shard by passing:
+  - `--corpus-chunk-id "{corpus_chunk_id}"` when the live index has shard payloads
+  - or `--gutenberg-ids-file "{vector_scope_file}"` as the fallback bounded filter
+- Never run an unbounded semantic search against the full Qdrant collection from this shard.
 
 Required outputs under {artifacts_dir}:
 - manifest.json
@@ -275,9 +284,14 @@ PY
   export R2_ENDPOINT="${R2_ENDPOINT:-}"
   export R2_ACCESS_KEY_ID="${R2_ACCESS_KEY_ID:-}"
   export R2_SECRET_ACCESS_KEY="${R2_SECRET_ACCESS_KEY:-}"
+  export QDRANT_URL="${QDRANT_URL:-}"
+  export QDRANT_API_KEY="${QDRANT_API_KEY:-}"
+  export QDRANT_COLLECTION="${QDRANT_COLLECTION:-}"
   export ALPHABOOK_CODEX_CHUNK_DIR="$CHUNK_DIR"
   export ALPHABOOK_CODEX_ARTIFACTS_DIR="$artifacts_dir"
   export ALPHABOOK_CODEX_SCOPE_FILE_LIST="$SCOPE_FILE_LIST"
+  export ALPHABOOK_CODEX_QDRANT_VECTOR_SCOPE_FILE="$vector_scope_file"
+  export ALPHABOOK_CODEX_QDRANT_CORPUS_CHUNK_ID="$corpus_chunk_id"
   codex -a never exec \
     -s danger-full-access \
     --color never \

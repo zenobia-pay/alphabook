@@ -80,3 +80,32 @@ test("QdrantVectorIndex writes vectors using Qdrant point upserts", async () => 
   assert.match(requestBody, /"source_id":"chunk-2"/);
   assert.match(requestBody, /"work_id":"work-2"/);
 });
+
+test("QdrantVectorIndex supports match.any filters", async () => {
+  let requestBody = "";
+  const index = new QdrantVectorIndex(
+    "https://qdrant.example.com",
+    "alphabook-semantic",
+    "secret",
+    10_000,
+    async (_input, init) => {
+      requestBody = String(init?.body ?? "");
+      return Response.json({
+        result: [],
+      });
+    },
+  );
+
+  await index.query([0.1, 0.2], {
+    topK: 5,
+    filter: {
+      gutenberg_id: ["1342", "19514"],
+      corpus_chunk_id: { any: ["corpus-files5000-00001"] },
+    },
+  });
+
+  assert.match(requestBody, /"key":"gutenberg_id"/);
+  assert.match(requestBody, /"any":\["1342","19514"\]/);
+  assert.match(requestBody, /"key":"corpus_chunk_id"/);
+  assert.match(requestBody, /"any":\["corpus-files5000-00001"\]/);
+});

@@ -97,6 +97,7 @@ VECTOR_PROVIDER=qdrant
 QDRANT_URL=http://10.116.0.4:6333
 QDRANT_API_KEY=...
 QDRANT_COLLECTION=alphabook-semantic
+CORPUS_VECTOR_CHUNK_MAP_PATH=/mnt/alphabook_consolidation/final/latest/research-corpus-index/corpus-vector-chunk-map.json
 EMBEDDING_PROVIDER=openai # current live path
 # GOOGLE_AI_API_KEY=... # only if EMBEDDING_PROVIDER=google
 # GOOGLE_EMBEDDING_MODEL=gemini-embedding-001
@@ -110,6 +111,7 @@ Notes:
 - The live repo still requires `D1_DATABASE_NAME` today because ingest persists corpus metadata and chunk rows into the existing relational store.
 - The droplet ingest path still expects explicit Cloudflare API-token auth via `CLOUDFLARE_API_TOKEN` (or `CF_API_TOKEN`) for Wrangler-backed D1 access.
 - The live semantic store is Qdrant, not Cloudflare Vectorize.
+- For bounded Codex semantic search, the live payload indexes should include `gutenberg_id`, `source_id`, and `corpus_chunk_id`.
 - `EMBEDDING_PROVIDER` controls which embedding API is called before vectors are written into the configured vector store.
 - For the full live rebuild path, use:
   - `sudo /srv/alphabook/bin/freeze-gutenberg-ingest.sh`
@@ -133,6 +135,36 @@ The naming on some of these helpers is older than the current system. In particu
 - `audit-cloudflare-corpus.sh` audits the live corpus shape across R2, D1, and the active vector store
 - `rebuild-r2-corpus-all.sh` rebuilds live corpus state from canonical R2 artifacts into D1 and the active vector store
 - neither helper implies Cloudflare Vectorize any more when `VECTOR_PROVIDER=qdrant`
+
+For bounded semantic retrieval on the Qdrant box:
+
+```bash
+python3 /srv/alphabook/bin/materialize-corpus-vector-chunk-map.py \
+  --precomputed-index-dir /mnt/alphabook_consolidation/final/latest/research-corpus-index \
+  --chunk-size 5000 \
+  --output /mnt/alphabook_consolidation/final/latest/research-corpus-index/corpus-vector-chunk-map.json
+
+python3 /srv/alphabook/bin/ensure-qdrant-payload-indexes.py
+
+python3 /srv/alphabook/bin/backfill-qdrant-corpus-chunk-id.py \
+  --map-file /mnt/alphabook_consolidation/final/latest/research-corpus-index/corpus-vector-chunk-map.json
+```
+
+The bounded semantic helper for Codex runs is:
+
+```bash
+python3 /srv/alphabook/bin/run-qdrant-bounded-search.py \
+  --query "how do authors deal with grief?" \
+  --corpus-chunk-id corpus-files5000-00001
+```
+
+For a single-book bound:
+
+```bash
+python3 /srv/alphabook/bin/run-qdrant-bounded-search.py \
+  --query "how does this book deal with grief?" \
+  --gutenberg-id 1342
+```
 
 Then you can run:
 
