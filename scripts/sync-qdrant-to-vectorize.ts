@@ -27,6 +27,10 @@ type QdrantScrollResponse = {
   };
 };
 
+type QdrantPointLookupResponse = {
+  result?: QdrantScrollPoint[];
+};
+
 type QdrantInfoResponse = {
   result?: {
     config?: {
@@ -51,6 +55,7 @@ type CheckpointState = {
   uploadedVectors: number;
   batches: number;
   updatedAt: string;
+  sourceIndex?: number;
 };
 
 type GutenbergIdRange = {
@@ -114,6 +119,15 @@ async function qdrantRequest<T>(path: string, init: RequestInit): Promise<T> {
   return await response.json() as T;
 }
 
+async function toQdrantPointId(id: string) {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-1", new TextEncoder().encode(id)));
+  const bytes = Array.from(digest.slice(0, 16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
 async function fetchQdrantInfo() {
   const collection = requireEnv("QDRANT_COLLECTION");
   const payload = await qdrantRequest<QdrantInfoResponse>(`collections/${encodeURIComponent(collection)}`, {
@@ -145,6 +159,26 @@ async function fetchQdrantBatch(limit: number, offset: QdrantOffset) {
     points: payload.result?.points ?? [],
     nextOffset: payload.result?.next_page_offset ?? null,
   };
+}
+
+async function fetchQdrantPointsBySourceIds(sourceIds: string[]) {
+  if (sourceIds.length === 0) {
+    return [];
+  }
+  const collection = requireEnv("QDRANT_COLLECTION");
+  const ids = await Promise.all(sourceIds.map((sourceId) => toQdrantPointId(sourceId)));
+  const payload = await qdrantRequest<QdrantPointLookupResponse>(
+    `collections/${encodeURIComponent(collection)}/points`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        ids,
+        with_payload: true,
+        with_vector: true,
+      }),
+    },
+  );
+  return payload.result ?? [];
 }
 
 function parseOptionalInt(value: string | undefined) {
@@ -282,18 +316,29 @@ async function writeCheckpoint(path: string, state: CheckpointState) {
   await writeFile(path, `${JSON.stringify(state, null, 2)}\n`, "utf8");
 }
 
+async function readSourceIds(path: string) {
+  const contents = await readFile(path, "utf8");
+  return contents
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+}
+
 async function main() {
   const scrollLimit = Math.max(1, Number(process.env.QDRANT_SCROLL_LIMIT ?? "1000"));
   let uploadBatchSize = Math.max(1, Number(process.env.VECTORIZE_UPSERT_BATCH_SIZE ?? "1000"));
+  const sourceLookupBatchSize = Math.max(1, Number(process.env.QDRANT_POINT_LOOKUP_BATCH_SIZE ?? "256"));
   const checkpointPath = process.env.QDRANT_VECTORIZE_CHECKPOINT_PATH?.trim()
     || ".alphabook/qdrant-to-vectorize-checkpoint.json";
   const range = getGutenbergIdRange();
   const workerLabel = process.env.QDRANT_VECTORIZE_WORKER_LABEL?.trim() || "default";
+  const sourceIdsPath = process.env.QDRANT_SOURCE_IDS_FILE?.trim();
   const checkpoint = await readCheckpoint(checkpointPath);
   let offset = checkpoint?.offset ?? null;
   let processedPoints = checkpoint?.processedPoints ?? 0;
   let uploadedVectors = checkpoint?.uploadedVectors ?? 0;
   let batches = checkpoint?.batches ?? 0;
+  let sourceIndex = checkpoint?.sourceIndex ?? 0;
 
   const qdrantInfo = await fetchQdrantInfo();
   const vectorizeInfo = await getVectorizeInfo();
@@ -320,7 +365,61 @@ async function main() {
     batches,
     scrollLimit,
     uploadBatchSize,
+    sourceIdsPath: sourceIdsPath ?? null,
+    sourceLookupBatchSize,
+    sourceIndex,
   }));
+
+  if (sourceIdsPath) {
+    const sourceIds = await readSourceIds(sourceIdsPath);
+    while (sourceIndex < sourceIds.length) {
+      const batchSourceIds = sourceIds.slice(sourceIndex, sourceIndex + sourceLookupBatchSize);
+      const points = await fetchQdrantPointsBySourceIds(batchSourceIds);
+      const vectors = points.map((point) => ({
+        id: normalizePointId(point),
+        values: normalizeVector(point),
+        ...(normalizeMetadata(point) ? { metadata: normalizeMetadata(point) } : {}),
+      }));
+      const upload = await uploadAdaptive(vectors, uploadBatchSize);
+      uploadBatchSize = upload.nextSuggestedBatchSize;
+      processedPoints += points.length;
+      uploadedVectors += upload.uploaded;
+      batches += 1;
+      sourceIndex += batchSourceIds.length;
+      await writeCheckpoint(checkpointPath, {
+        offset: null,
+        processedPoints,
+        uploadedVectors,
+        batches,
+        updatedAt: new Date().toISOString(),
+        sourceIndex,
+      });
+      console.log(JSON.stringify({
+        event: "batch",
+        batches,
+        processedPoints,
+        uploadedVectors,
+        sourceIndex,
+        batchSourceIds: batchSourceIds.length,
+        batchPoints: points.length,
+        workerLabel,
+        uploadBatchSize,
+      }));
+    }
+
+    const finalInfo = await getVectorizeInfo();
+    console.log(JSON.stringify({
+      event: "complete",
+      processedPoints,
+      uploadedVectors,
+      batches,
+      sourceIndex,
+      workerLabel,
+      vectorizeVectorCount: finalInfo.vectorCount ?? null,
+      updatedAt: new Date().toISOString(),
+    }));
+    return;
+  }
 
   while (true) {
     const { points, nextOffset } = await fetchQdrantBatch(scrollLimit, offset);
