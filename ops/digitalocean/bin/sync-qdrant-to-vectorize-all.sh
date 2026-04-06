@@ -10,7 +10,7 @@ WORKER_COUNT="${WORKER_COUNT:-4}"
 VECTORIZE_UPSERT_BATCH_SIZE="${VECTORIZE_UPSERT_BATCH_SIZE:-1000}"
 QDRANT_POINT_LOOKUP_BATCH_SIZE="${QDRANT_POINT_LOOKUP_BATCH_SIZE:-256}"
 PARTITION_DIR="${PARTITION_DIR:-$ALPHABOOK_ROOT/.alphabook/qdrant-vectorize-source-ids}"
-BOOK_HTML_ROOT="${BOOK_HTML_ROOT:-/mnt/alphabook_consolidation/final/latest/r2/gutenberg/clean}"
+BOOK_MANIFEST_ROOT="${BOOK_MANIFEST_ROOT:-/mnt/alphabook_consolidation/final/latest/books}"
 QDRANT_RANGE_SPEC="${QDRANT_RANGE_SPEC:-1:20000,20001:40000,40001:60000,60001:999999}"
 
 mkdir -p "$(dirname "$LOG_PATH")"
@@ -37,12 +37,12 @@ fi
 
 mkdir -p "$PARTITION_DIR"
 
-python3 - "$BOOK_HTML_ROOT" "$PARTITION_DIR" "${RANGE_LIST[@]}" <<'PY'
+python3 - "$BOOK_MANIFEST_ROOT" "$PARTITION_DIR" "${RANGE_LIST[@]}" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-clean_root = Path(sys.argv[1])
+manifest_root = Path(sys.argv[1])
 partition_dir = Path(sys.argv[2])
 ranges = []
 for spec in sys.argv[3:]:
@@ -55,7 +55,7 @@ try:
     path = partition_dir / f"worker-{index + 1}.txt"
     writers.append(path.open("w", encoding="utf-8"))
 
-  for book_dir in sorted(clean_root.iterdir(), key=lambda entry: int(entry.name) if entry.name.isdigit() else entry.name):
+  for book_dir in sorted(manifest_root.iterdir(), key=lambda entry: int(entry.name) if entry.name.isdigit() else entry.name):
     if not book_dir.is_dir() or not book_dir.name.isdigit():
       continue
     gutenberg_id = int(book_dir.name)
@@ -66,18 +66,13 @@ try:
         break
     if worker_index is None:
       continue
-    chunks_path = book_dir / "chunks.jsonl"
-    if not chunks_path.exists():
+    manifest_path = book_dir / "manifest.json"
+    if not manifest_path.exists():
       continue
-    with chunks_path.open("r", encoding="utf-8") as handle:
-      for line in handle:
-        line = line.strip()
-        if not line:
-          continue
-        payload = json.loads(line)
-        source_id = payload.get("id") or payload.get("chunkId") or payload.get("source_id")
-        if source_id:
-          writers[worker_index].write(f"{source_id}\n")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    for source_id in manifest.get("chunkIds", []):
+      if source_id:
+        writers[worker_index].write(f"{source_id}\n")
 finally:
   for writer in writers:
     writer.close()
