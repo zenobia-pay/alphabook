@@ -15,6 +15,12 @@ PRIMARY_ARTIFACT_NAMES = [
     "dataset.jsonl",
     "dataset.csv",
     "citation-index.json",
+    "relevant-books.jsonl",
+    "relevant-books.csv",
+    "excluded-books.jsonl",
+    "shard-briefing.md",
+    "book-summary.json",
+    "quotes.jsonl",
     "consolidated-summary.json",
     "consolidated-briefing.md",
     "consolidated-citation-index.json",
@@ -177,6 +183,32 @@ def build_consolidator_payload(consolidator_dir: Path) -> dict[str, Any] | None:
     return payload
 
 
+def build_book_payload(book_dir: Path) -> dict[str, Any]:
+    status = read_json(book_dir / "status.json") or {}
+    summary = read_json(book_dir / "summary.json") or {}
+    job_id = status.get("job_id") if isinstance(status.get("job_id"), str) else book_dir.name
+    openai = collect_openai_requests(book_dir, [job_id])
+    payload = {
+        "book_id": book_dir.name,
+        "book_dir": str(book_dir),
+        "job_id": job_id,
+        "state": status.get("state"),
+        "exit_code": status.get("exit_code"),
+        "artifact_file_count": status.get("artifact_file_count"),
+        "status_file": str(book_dir / "status.json"),
+        "summary_file": str(book_dir / "summary.json"),
+        "prompt_file": str(book_dir / "prompt.txt"),
+        "session": collect_session_info(book_dir),
+        "openai": openai,
+        "artifacts": collect_artifacts(book_dir),
+        "summary": summary,
+    }
+    if openai["estimated_total_cost_usd"] is not None:
+        status["estimated_openai_cost_usd"] = openai["estimated_total_cost_usd"]
+        (book_dir / "status.json").write_text(json.dumps(status, indent=2) + "\n", encoding="utf-8")
+    return payload
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-dir", required=True)
@@ -188,15 +220,25 @@ def main() -> None:
 
     chunks_dir = run_dir / "chunks"
     chunk_payloads = [build_chunk_payload(path) for path in sorted(chunks_dir.glob("chunk-*")) if path.is_dir()]
+    books_dir = run_dir / "books"
+    book_payloads = [build_book_payload(path) for path in sorted(books_dir.glob("book-*")) if path.is_dir()]
     consolidator_payload = build_consolidator_payload(run_dir / "consolidator")
 
     completed_chunks = sum(1 for item in chunk_payloads if item.get("state") == "completed")
     failed_chunks = sum(1 for item in chunk_payloads if item.get("state") == "failed")
     running_chunks = sum(1 for item in chunk_payloads if item.get("state") == "running")
+    completed_books = sum(1 for item in book_payloads if item.get("state") == "completed")
+    failed_books = sum(1 for item in book_payloads if item.get("state") == "failed")
+    running_books = sum(1 for item in book_payloads if item.get("state") == "running")
 
     total_cost = 0.0
     total_cost_known = False
     for item in chunk_payloads:
+        cost = item["openai"].get("estimated_total_cost_usd")
+        if cost is not None:
+            total_cost += float(cost)
+            total_cost_known = True
+    for item in book_payloads:
         cost = item["openai"].get("estimated_total_cost_usd")
         if cost is not None:
             total_cost += float(cost)
@@ -227,6 +269,11 @@ def main() -> None:
         "failed_chunks": failed_chunks,
         "running_chunks": running_chunks,
         "chunks": chunk_payloads,
+        "book_count": len(book_payloads),
+        "completed_books": completed_books,
+        "failed_books": failed_books,
+        "running_books": running_books,
+        "books": book_payloads,
         "consolidator": consolidator_payload,
         "estimated_total_openai_cost_usd": round(total_cost, 6) if total_cost_known else None,
         "wrapper_artifacts": {
@@ -252,6 +299,15 @@ def main() -> None:
             }
             for item in chunk_payloads
         ],
+        "books": [
+            {
+                "book_id": item["book_id"],
+                "job_id": item["job_id"],
+                "estimated_openai_cost_usd": item["openai"].get("estimated_total_cost_usd"),
+                "request_count": item["openai"].get("request_count"),
+            }
+            for item in book_payloads
+        ],
         "consolidator": None if not consolidator_payload else {
             "job_id": consolidator_payload["job_id"],
             "estimated_openai_cost_usd": consolidator_payload["openai"].get("estimated_total_cost_usd"),
@@ -266,6 +322,10 @@ def main() -> None:
     state["completed_chunks"] = completed_chunks
     state["failed_chunks"] = failed_chunks
     state["running_chunks"] = running_chunks
+    state["book_count"] = len(book_payloads)
+    state["completed_books"] = completed_books
+    state["failed_books"] = failed_books
+    state["running_books"] = running_books
     if total_cost_known:
         state["estimated_openai_cost_usd"] = round(total_cost, 6)
     (run_dir / "status.json").write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
@@ -274,6 +334,9 @@ def main() -> None:
         summary["chunk_count"] = len(chunk_payloads)
         summary["completed_chunks"] = completed_chunks
         summary["failed_chunks"] = failed_chunks
+        summary["book_count"] = len(book_payloads)
+        summary["completed_books"] = completed_books
+        summary["failed_books"] = failed_books
         if total_cost_known:
             summary["estimated_openai_cost_usd"] = round(total_cost, 6)
         (run_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")

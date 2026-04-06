@@ -67,6 +67,25 @@ print("--- chunk summary ---")
 for chunk in chunks:
     print(json.dumps(chunk, sort_keys=True))
 
+books = []
+for book_dir in sorted((run_dir / "books").glob("book-*")):
+    status_path = book_dir / "status.json"
+    try:
+        status = json.loads(status_path.read_text(encoding="utf-8"))
+    except Exception:
+        status = {}
+    books.append({
+        "book_id": book_dir.name,
+        "state": status.get("state"),
+        "exit_code": status.get("exit_code"),
+        "artifact_file_count": status.get("artifact_file_count"),
+        "estimated_openai_cost_usd": status.get("estimated_openai_cost_usd"),
+    })
+
+print("--- book summary ---")
+for book in books:
+    print(json.dumps(book, sort_keys=True))
+
 consolidator_status = run_dir / "consolidator" / "status.json"
 if consolidator_status.exists():
     try:

@@ -90,27 +90,29 @@ import sys
 
 run_dir = Path(sys.argv[1])
 input_dir = Path(sys.argv[2])
-chunks_dir = run_dir / "chunks"
+books_dir = run_dir / "books"
 input_dir.mkdir(parents=True, exist_ok=True)
 
-chunk_rows = []
-combined_dataset_path = input_dir / "combined-dataset.jsonl"
-combined_dataset_path.write_text("", encoding="utf-8")
-combined_citations = []
+book_rows = []
+combined_quotes_path = input_dir / "combined-quotes.jsonl"
+combined_quotes_path.write_text("", encoding="utf-8")
+combined_summaries = []
 
-for chunk_dir in sorted(chunks_dir.glob("chunk-*")):
-    status_path = chunk_dir / "status.json"
-    summary_path = chunk_dir / "summary.json"
-    manifest_path = chunk_dir / "artifacts" / "manifest.json"
-    dataset_path = chunk_dir / "artifacts" / "dataset.jsonl"
-    citation_path = chunk_dir / "artifacts" / "citation-index.json"
+for book_dir in sorted(books_dir.glob("book-*")):
+    status_path = book_dir / "status.json"
+    summary_path = book_dir / "summary.json"
+    manifest_path = book_dir / "artifacts" / "manifest.json"
+    summary_json_path = book_dir / "artifacts" / "book-summary.json"
+    quotes_path = book_dir / "artifacts" / "quotes.jsonl"
+    citation_path = book_dir / "artifacts" / "citation-index.json"
     row = {
-        "chunk_id": chunk_dir.name,
-        "chunk_dir": str(chunk_dir),
+        "book_id": book_dir.name,
+        "book_dir": str(book_dir),
         "status": None,
         "summary": None,
         "manifest": None,
-        "dataset_path": str(dataset_path) if dataset_path.exists() else None,
+        "book_summary_path": str(summary_json_path) if summary_json_path.exists() else None,
+        "quotes_path": str(quotes_path) if quotes_path.exists() else None,
         "citation_index_path": str(citation_path) if citation_path.exists() else None,
     }
     for key, path in (("status", status_path), ("summary", summary_path), ("manifest", manifest_path)):
@@ -118,38 +120,45 @@ for chunk_dir in sorted(chunks_dir.glob("chunk-*")):
             row[key] = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             row[key] = None
-    chunk_rows.append(row)
-    if dataset_path.exists():
-        with dataset_path.open("r", encoding="utf-8") as handle, combined_dataset_path.open("a", encoding="utf-8") as output:
+    book_rows.append(row)
+    if quotes_path.exists():
+        with quotes_path.open("r", encoding="utf-8") as handle, combined_quotes_path.open("a", encoding="utf-8") as output:
             for line in handle:
                 if line.strip():
                     output.write(line.rstrip() + "\n")
+    if summary_json_path.exists():
+        try:
+            combined_summaries.append({
+                "book_id": book_dir.name,
+                "book_summary": json.loads(summary_json_path.read_text(encoding="utf-8")),
+            })
+        except Exception:
+            pass
     if citation_path.exists():
         try:
             payload = json.loads(citation_path.read_text(encoding="utf-8"))
         except Exception:
             payload = None
         if isinstance(payload, dict):
-            combined_citations.append({
-                "chunk_id": chunk_dir.name,
+            combined_summaries.append({
+                "book_id": book_dir.name,
                 "citation_index": payload,
             })
 
-(input_dir / "chunk-statuses.json").write_text(json.dumps(chunk_rows, indent=2) + "\n", encoding="utf-8")
-(input_dir / "combined-citation-index.json").write_text(json.dumps(combined_citations, indent=2) + "\n", encoding="utf-8")
+(input_dir / "book-statuses.json").write_text(json.dumps(book_rows, indent=2) + "\n", encoding="utf-8")
+(input_dir / "combined-book-summaries.json").write_text(json.dumps(combined_summaries, indent=2) + "\n", encoding="utf-8")
 
-summary_csv_path = input_dir / "chunk-summary.csv"
+summary_csv_path = input_dir / "book-summary.csv"
 with summary_csv_path.open("w", encoding="utf-8", newline="") as handle:
     writer = csv.writer(handle)
-    writer.writerow(["chunk_id", "state", "exit_code", "artifact_file_count", "scope_file_count"])
-    for row in chunk_rows:
+    writer.writerow(["book_id", "state", "exit_code", "artifact_file_count"])
+    for row in book_rows:
         status = row["status"] or {}
         writer.writerow([
-            row["chunk_id"],
+            row["book_id"],
             status.get("state"),
             status.get("exit_code"),
             status.get("artifact_file_count"),
-            status.get("scope_file_count"),
         ])
 PY
 
@@ -175,14 +184,14 @@ Original user research request:
 Consolidation inputs:
 - wrapper run dir: {run_dir}
 - proxy run id: {job_id}
-- chunk statuses: {input_dir}/chunk-statuses.json
-- chunk summary csv: {input_dir}/chunk-summary.csv
-- combined shard dataset: {input_dir}/combined-dataset.jsonl
-- combined shard citation payload: {input_dir}/combined-citation-index.json
+- book statuses: {input_dir}/book-statuses.json
+- book summary csv: {input_dir}/book-summary.csv
+- combined book quotes: {input_dir}/combined-quotes.jsonl
+- combined book summaries and citations: {input_dir}/combined-book-summaries.json
 
 Hard requirements:
-- Consolidate the chunk run logs and artifacts. Do not re-run corpus retrieval.
-- Work only from the existing shard outputs, logs, and summaries under the wrapper run directory.
+- Consolidate the per-book run logs and artifacts. Do not re-run corpus retrieval.
+- Work only from the existing book outputs, logs, and summaries under the wrapper run directory.
 - Write every consolidation artifact under {artifacts_dir}.
 
 Required outputs:
@@ -196,20 +205,20 @@ Required manifest fields:
 - proxy_run_id
 - wrapper_run_dir
 - user_prompt
-- source_chunk_count
-- completed_chunk_count
-- failed_chunk_count
+- source_book_count
+- completed_book_count
+- failed_book_count
 - output_file_list
 - status
 
 Quality bar:
-- Identify cross-shard themes and contradictions.
-- Call out failed or thin shards explicitly if they affect confidence.
+- Identify cross-book themes and contradictions.
+- Call out failed or thin books explicitly if they affect confidence.
 - Prefer grounded synthesis over repetition.
 
 At the end:
 - Print the consolidation artifacts directory path.
-- Print a short summary with the source chunk count and main output files.
+- Print a short summary with the source book count and main output files.
 """
 prompt_path.write_text(prompt, encoding="utf-8")
 PY

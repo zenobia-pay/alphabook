@@ -407,7 +407,7 @@ The wrapper run ID is now the canonical handle for a Hermes job. `index.json` ex
 
 ## Codex Corpus Research
 
-For chunked Codex-driven corpus research on the droplet, use the Codex wrapper instead of a single large Hermes session. The wrapper partitions the precomputed text manifest into deterministic `<=5000`-file shards, runs a bounded number of Codex shard jobs in parallel, and then launches a Codex consolidator over the shard logs and artifacts.
+For chunked Codex-driven corpus research on the droplet, use the Codex wrapper instead of a single large Hermes session. The wrapper partitions the precomputed text manifest into deterministic `<=5000`-file shards, runs shard-level Codex jobs that classify which books in each shard materially engage the user request, deterministically fans out into one Codex run per relevant book, and then launches a Codex consolidator over the per-book artifacts.
 
 From the droplet repo:
 
@@ -463,6 +463,20 @@ Wrapper layout:
   - `openai-requests.jsonl`
   - `openai-proxy/*.request.json`
   - `openai-proxy/*.response.json`
+- `books/book-*/`
+  - `book-decision.json`
+  - `prompt.txt`
+  - `status.json`
+  - `summary.json`
+  - `logs/codex-events.jsonl`
+  - `logs/codex.stderr.log`
+  - `logs/heartbeat.log`
+  - `runtime/codex.pid`
+  - `codex-home/.codex/...`
+  - `artifacts/*`
+  - `openai-requests.jsonl`
+  - `openai-proxy/*.request.json`
+  - `openai-proxy/*.response.json`
 - `consolidator/`
   - `input/*`
   - `status.json`
@@ -489,8 +503,8 @@ Top-level convenience files include:
 Operational notes:
 
 - `--max-parallel` is intentionally capped to `5..10` to avoid exhausting droplet RAM.
-- Each shard routes Codex traffic through the local OpenAI logging proxy using a shard-specific proxy run ID, so `pricing-summary.json` and per-shard `openai-requests.jsonl` stay attributable.
-- The consolidator does not rerun corpus retrieval. It works from the shard logs, summaries, datasets, and citation payloads already written into the wrapper run folder.
+- Each shard and each per-book run routes Codex traffic through the local OpenAI logging proxy using a run-specific proxy run ID, so `pricing-summary.json` and per-run `openai-requests.jsonl` stay attributable.
+- The consolidator does not rerun corpus retrieval. It works from the shard classification logs plus the per-book artifacts already written into the wrapper run folder.
 
 ## Hermes Job API
 

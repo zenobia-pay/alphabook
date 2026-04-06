@@ -177,14 +177,18 @@ Hard requirements:
 - If you want an existing implementation, prefer the repo's LLM triage workflow at `/srv/alphabook/repo/packages/tooling/scripts/run-corpus-research-triage.ts` and adapt the shard artifacts to feed it, rather than inventing heuristic scoring code.
 - Never write a script that reads natural-language passages and decides relevance with hand-written weights, term counts, or threshold rules. If a script decides relevance, it must be calling an LLM on the passage text.
 - If you use a script to orchestrate triage, it must persist the raw candidate passages, LLM decisions, reasoning, and acceptance/exclusion outcomes under `{artifacts_dir}` so the shard remains inspectable.
+- This shard phase is book classification, not final passage extraction. Its job is to decide which books in the shard materially deal with the user request and should advance to dedicated per-book Codex runs.
+- You must produce one decision row per book in the shard. Do not stop after a small sample.
+- Favor recall over premature exclusion. If a book materially engages grief even as a secondary thread, mark it relevant and let the later single-book run decide depth.
+- Use `/mnt/alphabook_consolidation/final/latest/research-corpus-index/metadata-table.jsonl` or the equivalent metadata table under `{precomputed_index_dir}` to recover title/author/year for shard files when possible.
 
 Required outputs under {artifacts_dir}:
 - manifest.json
 - run.log
-- dataset.jsonl
-- dataset.csv
-- citation-index.json
-- briefing.md
+- relevant-books.jsonl
+- relevant-books.csv
+- excluded-books.jsonl
+- shard-briefing.md
 - summary.json
 - search/...
 
@@ -197,22 +201,21 @@ Required manifest fields:
 - scope_file_count
 - scope_total_bytes
 - search_strategy_summary
-- schema_summary
+- decision_schema_summary
 - output_file_list
 - record_counts
 - status
 
 Quality bar:
 - This is not a quick grep dump.
-- Build a real structured dataset from this shard.
-- Every kept quote needs provenance and a short reasoning field.
-- The briefing must synthesize the shard-level findings and caveats.
-- The kept dataset must reflect LLM-reviewed passages, not deterministic score thresholds.
-- If you exclude a large candidate subset, explain the exclusion rule in model-authored prose in the manifest/run log rather than hiding it behind a numeric heuristic.
+- The relevant-books output must reflect LLM-reviewed book decisions, not deterministic score thresholds.
+- Each relevant book row must include reasoning and at least one supporting evidence snippet or explanation of the grief signal.
+- If you exclude a large candidate subset, explain the exclusion logic in model-authored prose in the manifest/run log rather than hiding it behind a numeric heuristic.
+- The shard briefing should summarize what kinds of books in this shard appear relevant, what kinds were excluded, and any uncertainty carried into the per-book phase.
 
 At the end:
 - Print the shard artifacts directory path.
-- Print a short summary with the searched file count, kept record count, and main output files.
+- Print a short summary with the searched file count, relevant book count, and main output files.
 """
 prompt_path.write_text(prompt, encoding="utf-8")
 PY

@@ -285,6 +285,7 @@ cat >"$run_dir/run-codex-manager.sh" <<'EOS'
 set -euo pipefail
 
 chunk_runner="$ROOT_DIR/ops/digitalocean/bin/run-codex-corpus-research-chunk.sh"
+book_runner="$ROOT_DIR/ops/digitalocean/bin/run-codex-corpus-research-book.sh"
 consolidator_runner="$ROOT_DIR/ops/digitalocean/bin/run-codex-corpus-research-consolidator.sh"
 materialize_script="$ROOT_DIR/ops/digitalocean/bin/materialize-codex-run-index.py"
 
@@ -301,6 +302,7 @@ path = Path(sys.argv[1])
 payload = json.loads(path.read_text(encoding="utf-8"))
 payload["state"] = sys.argv[2]
 payload["started_at"] = sys.argv[3]
+payload["phase"] = "chunk_classification"
 path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 PY
 
@@ -340,26 +342,186 @@ while (( $(jobs -pr | wc -l | tr -d ' ') > 0 )); do
 done
 
 python3 "$materialize_script" --run-dir "$RUN_DIR" >/dev/null 2>&1 || true
+python3 - "$STATUS_FILE" <<'PY'
+from pathlib import Path
+import json
+import sys
 
-failed_chunks="$(
+path = Path(sys.argv[1])
+payload = json.loads(path.read_text(encoding="utf-8"))
+payload["phase"] = "book_fanout"
+path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+PY
+
+python3 - "$RUN_DIR" <<'PY'
+from pathlib import Path
+import json
+import csv
+import hashlib
+import re
+import sys
+
+run_dir = Path(sys.argv[1])
+books_dir = run_dir / "books"
+books_dir.mkdir(parents=True, exist_ok=True)
+rows = []
+seen = set()
+
+for chunk_dir in sorted((run_dir / "chunks").glob("chunk-*")):
+    relevant_path = chunk_dir / "artifacts" / "relevant-books.jsonl"
+    if not relevant_path.exists():
+        continue
+    for raw_line in relevant_path.read_text(encoding="utf-8").splitlines():
+        raw_line = raw_line.strip()
+        if not raw_line:
+            continue
+        try:
+            payload = json.loads(raw_line)
+        except Exception:
+            continue
+        source_file = payload.get("source_file") or payload.get("book_path")
+        if not isinstance(source_file, str) or not source_file.strip():
+            continue
+        key = source_file.strip()
+        if key in seen:
+            continue
+        seen.add(key)
+        payload["source_file"] = key
+        payload["origin_chunk_id"] = chunk_dir.name
+        rows.append(payload)
+
+rows.sort(key=lambda item: (
+    str(item.get("source_author") or item.get("author") or "").lower(),
+    str(item.get("source_title") or item.get("title") or "").lower(),
+    item["source_file"],
+))
+
+manifest_rows = []
+for index, row in enumerate(rows, start=1):
+    book_name = f"book-{index:05d}"
+    book_dir = books_dir / book_name
+    book_dir.mkdir(parents=True, exist_ok=True)
+    row["book_id"] = book_name
+    row["book_dir"] = str(book_dir)
+    decision_path = book_dir / "book-decision.json"
+    decision_path.write_text(json.dumps(row, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    manifest_rows.append({
+        "book_id": book_name,
+        "book_dir": str(book_dir),
+        "decision_file": str(decision_path),
+        "source_file": row["source_file"],
+        "source_title": row.get("source_title") or row.get("title"),
+        "source_author": row.get("source_author") or row.get("author"),
+        "source_year_or_period": row.get("source_year_or_period") or row.get("year"),
+        "origin_chunk_id": row.get("origin_chunk_id"),
+    })
+
+(run_dir / "state" / "relevant-books.json").write_text(json.dumps(rows, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+with (run_dir / "state" / "relevant-books.csv").open("w", encoding="utf-8", newline="") as handle:
+    writer = csv.DictWriter(handle, fieldnames=[
+        "book_id", "origin_chunk_id", "source_title", "source_author", "source_year_or_period", "source_file"
+    ])
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({
+            "book_id": row.get("book_id"),
+            "origin_chunk_id": row.get("origin_chunk_id"),
+            "source_title": row.get("source_title") or row.get("title"),
+            "source_author": row.get("source_author") or row.get("author"),
+            "source_year_or_period": row.get("source_year_or_period") or row.get("year"),
+            "source_file": row.get("source_file"),
+        })
+
+(run_dir / "state" / "book-jobs.json").write_text(json.dumps(manifest_rows, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+print(len(manifest_rows))
+PY
+
+book_job_count="$(python3 - "$RUN_DIR/state/book-jobs.json" <<'PY'
+from pathlib import Path
+import json
+import sys
+rows = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+print(len(rows))
+PY
+)"
+
+log_line "book_fanout_prepared book_count=$book_job_count"
+
+launch_book() {
+  local book_dir="$1"
+  local book_id
+  book_id="$(basename "$book_dir")"
+  local book_job_id="${JOB_ID}-${book_id}"
+  log_line "launch_book book_id=$book_id job_id=$book_job_id"
+  "$book_runner" \
+    --run-dir "$RUN_DIR" \
+    --book-dir "$book_dir" \
+    --book-id "$book_id" \
+    --job-id "$book_job_id" \
+    --model "$MODEL" \
+    --root-dir "$ROOT_DIR" \
+    --user-prompt-file "$PROMPT_FILE" \
+    --book-decision-file "$book_dir/book-decision.json" \
+    --corpus-root "$CORPUS_ROOT" \
+    --precomputed-index-dir "$PRECOMPUTED_INDEX_DIR" &
+}
+
+mapfile -t book_dirs < <(find "$RUN_DIR/books" -mindepth 1 -maxdepth 1 -type d | sort)
+for book_dir in "${book_dirs[@]}"; do
+  while (( $(jobs -pr | wc -l | tr -d ' ') >= MAX_PARALLEL )); do
+    wait -n || true
+    python3 "$materialize_script" --run-dir "$RUN_DIR" >/dev/null 2>&1 || true
+  done
+  launch_book "$book_dir"
+done
+
+while (( $(jobs -pr | wc -l | tr -d ' ') > 0 )); do
+  wait -n || true
+  python3 "$materialize_script" --run-dir "$RUN_DIR" >/dev/null 2>&1 || true
+done
+
+python3 "$materialize_script" --run-dir "$RUN_DIR" >/dev/null 2>&1 || true
+
+python3 - "$STATUS_FILE" <<'PY'
+from pathlib import Path
+import json
+import sys
+
+path = Path(sys.argv[1])
+payload = json.loads(path.read_text(encoding="utf-8"))
+payload["phase"] = "consolidation"
+path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+PY
+
+failed_counts="$(
   python3 - "$RUN_DIR" <<'PY'
 from pathlib import Path
 import json
 import sys
 
-failed = 0
-for chunk_dir in sorted((Path(sys.argv[1]) / "chunks").glob("chunk-*")):
+run_dir = Path(sys.argv[1])
+failed_chunks = 0
+failed_books = 0
+for chunk_dir in sorted((run_dir / "chunks").glob("chunk-*")):
     try:
         status = json.loads((chunk_dir / "status.json").read_text(encoding="utf-8"))
     except Exception:
         status = {}
     if status.get("state") != "completed":
-        failed += 1
-print(failed)
+        failed_chunks += 1
+for book_dir in sorted((run_dir / "books").glob("book-*")):
+    try:
+        status = json.loads((book_dir / "status.json").read_text(encoding="utf-8"))
+    except Exception:
+        status = {}
+    if status.get("state") != "completed":
+        failed_books += 1
+print(f"{failed_chunks} {failed_books}")
 PY
 )"
+read -r failed_chunks failed_books <<<"$failed_counts"
 
-log_line "chunks_complete failed_chunks=$failed_chunks"
+log_line "classification_and_books_complete failed_chunks=$failed_chunks failed_books=$failed_books"
 
 set +e
 "$consolidator_runner" \
@@ -374,7 +536,7 @@ set -e
 
 python3 "$materialize_script" --run-dir "$RUN_DIR" >/dev/null 2>&1 || true
 
-python3 - "$STATUS_FILE" "$SUMMARY_FILE" "$failed_chunks" "$consolidator_exit" "$(date -u +%FT%TZ)" <<'PY'
+python3 - "$STATUS_FILE" "$SUMMARY_FILE" "$failed_chunks" "$failed_books" "$consolidator_exit" "$(date -u +%FT%TZ)" <<'PY'
 from pathlib import Path
 import json
 import sys
@@ -382,14 +544,17 @@ import sys
 status_path = Path(sys.argv[1])
 summary_path = Path(sys.argv[2])
 failed_chunks = int(sys.argv[3])
-consolidator_exit = int(sys.argv[4])
-finished_at = sys.argv[5]
+failed_books = int(sys.argv[4])
+consolidator_exit = int(sys.argv[5])
+finished_at = sys.argv[6]
 
 payload = json.loads(status_path.read_text(encoding="utf-8"))
 payload["finished_at"] = finished_at
 payload["failed_chunks"] = failed_chunks
+payload["failed_books"] = failed_books
 payload["consolidator_exit_code"] = consolidator_exit
-payload["state"] = "completed" if failed_chunks == 0 and consolidator_exit == 0 else "failed"
+payload["phase"] = "completed" if failed_chunks == 0 and failed_books == 0 and consolidator_exit == 0 else "failed"
+payload["state"] = "completed" if failed_chunks == 0 and failed_books == 0 and consolidator_exit == 0 else "failed"
 
 for target in (status_path, summary_path):
     target.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
