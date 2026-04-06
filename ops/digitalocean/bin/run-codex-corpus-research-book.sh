@@ -160,6 +160,9 @@ Hard requirements:
 - Do not broaden back out to the shard or full corpus.
 - Write every artifact under {artifacts_dir}.
 - Use model judgment over local context to explain how this book deals with grief.
+- Explicitly use Codex sub-agents for bounded parts of the book run, such as quote harvesting, passage review, theme grouping, or draft synthesis.
+- Give each sub-agent a narrow slice of work over this same book only, then merge their outputs in the parent book run.
+- Persist the sub-agent assignments, intermediate notes, and returned artifacts under {artifacts_dir} so the book run remains inspectable.
 - Exact quotes must be grounded in the source text with line references or local provenance.
 - You may use helper scripts for parsing or note-taking, but not to mechanically decide relevance from hand-written weights.
 - A bounded Qdrant helper is available at `/srv/alphabook/repo/ops/digitalocean/bin/run-qdrant-bounded-search.py`.
@@ -192,6 +195,7 @@ Quality bar:
 - Explain the main grief-handling patterns in this book, not just isolated sad lines.
 - Keep multiple quotes when the book presents distinct grief responses.
 - Be explicit when the shard triage looked plausible but the book turns out to be thin or only marginally relevant.
+- Use sub-agents to widen coverage within the book, but the parent run must reconcile overlaps and produce one coherent final briefing.
 
 At the end:
 - Print the book artifacts directory path.

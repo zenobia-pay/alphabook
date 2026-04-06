@@ -171,6 +171,12 @@ Hard requirements:
 - Search raw text only.
 - Never invoke the ripgrep helper on more than the shard TSV.
 - Use ripgrep only for retrieval and candidate gathering. Relevance triage, keep/discard decisions, theme labeling, and synthesis must be done with model judgment over local context.
+- After retrieval, explicitly use Codex sub-agents for triage work rather than doing all review in one monolithic thread.
+- Split the candidate review workload into bounded sub-agent batches, for example by contiguous slices of candidate books or contiguous slices of the persisted hit ledger.
+- Each sub-agent must review only its assigned slice, inspect the local context for those candidate books, and return per-book relevance decisions with reasoning and evidence snippets.
+- The parent shard run must then merge those sub-agent outputs into the final shard-level `relevant-books.jsonl`, `relevant-books.csv`, and `excluded-books.jsonl`.
+- Do not let sub-agents search outside this shard TSV or outside persisted shard artifacts.
+- Persist the sub-agent assignments and outputs under `{artifacts_dir}` so the shard remains inspectable.
 - Do not use hard-coded quote scoring, regex-weight scoring, static relevance formulas, top-N ranking scripts, or deterministic keyword-based triage as the decision-maker.
 - Do not impose arbitrary hard caps like "top 700 files", "top 36 records", "max 3 quotes per file", or "max 8 per theme". Coverage should be driven by the shard evidence, not fixed caps.
 - Do not generate a Python or TypeScript script whose job is to mechanically score quotes or mechanically decide relevance from hand-written weights or thresholds.
@@ -184,6 +190,7 @@ Hard requirements:
 - This shard phase is book classification, not final passage extraction. Its job is to decide which books in the shard materially deal with the user request and should advance to dedicated per-book Codex runs.
 - You must produce one decision row per book in the shard. Do not stop after a small sample.
 - Favor recall over premature exclusion. If a book materially engages grief even as a secondary thread, mark it relevant and let the later single-book run decide depth.
+- Treat the sub-agents as the primary triage mechanism for book relevance. The parent shard run should coordinate, reconcile, and serialize the final per-book decisions.
 - Use `/mnt/alphabook_consolidation/final/latest/research-corpus-index/metadata-table.jsonl` or the equivalent metadata table under `{precomputed_index_dir}` to recover title/author/year for shard files when possible.
 - A bounded Qdrant helper is available at `/srv/alphabook/repo/ops/digitalocean/bin/run-qdrant-bounded-search.py`.
 - If you use semantic retrieval, you must keep it bounded to this shard by passing:
@@ -219,6 +226,7 @@ Quality bar:
 - This is not a quick grep dump.
 - The relevant-books output must reflect LLM-reviewed book decisions, not deterministic score thresholds.
 - Each relevant book row must include reasoning and at least one supporting evidence snippet or explanation of the grief signal.
+- The reasoning and evidence on each relevant book row should come from sub-agent review of the book's local evidence, not from deterministic aggregation rules alone.
 - If you exclude a large candidate subset, explain the exclusion logic in model-authored prose in the manifest/run log rather than hiding it behind a numeric heuristic.
 - The shard briefing should summarize what kinds of books in this shard appear relevant, what kinds were excluded, and any uncertainty carried into the per-book phase.
 
