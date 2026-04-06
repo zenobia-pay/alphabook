@@ -166,16 +166,19 @@ async function syncBooks(options: {
   const stageBooksRoot = join(options.outputDir, "books");
   await rm(stageBooksRoot, { recursive: true, force: true });
   await ensureDirectory(stageBooksRoot);
+  const normalizedBooksRoot = options.booksRoot.replace(/\/+$/u, "");
+  const sourceHasBooksSuffix = normalizedBooksRoot.endsWith("/books");
+  const filesFromEntries = options.manifest.selectedGutenbergIds.map((gutenbergId) => sourceHasBooksSuffix ? `${gutenbergId}/` : `books/${gutenbergId}/`);
   await withTempDir("alphabook-distributed-books-", async (tempDir) => {
     const filesFromPath = join(tempDir, "files-from.txt");
     await writeFile(
       filesFromPath,
-      `${options.manifest.selectedGutenbergIds.map((gutenbergId) => `books/${gutenbergId}/`).join("\n")}\n`,
+      `${filesFromEntries.join("\n")}\n`,
       "utf8",
     );
     const source = options.booksHost
-      ? `${options.booksHost}:${options.booksRoot.replace(/\/+$/u, "")}/`
-      : `${options.booksRoot.replace(/\/+$/u, "")}/`;
+      ? `${options.booksHost}:${normalizedBooksRoot}/`
+      : `${normalizedBooksRoot}/`;
     await runStreamingCommand("rsync", [
       "-az",
       "--prune-empty-dirs",

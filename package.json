@@ -31,6 +31,7 @@
     "sprite:cleanup": "node --import tsx packages/tooling/scripts/cleanup-sprite-machines.ts",
     "distributed:build-shard": "node --import tsx packages/tooling/scripts/build-distributed-shard.ts",
     "distributed:stage-shard": "node --import tsx packages/tooling/scripts/stage-distributed-shard.ts",
+    "distributed:reembed-shard": "node --import tsx packages/tooling/scripts/reembed-distributed-shard.ts",
     "distributed:provision-shard": "node --import tsx packages/tooling/scripts/provision-distributed-shard-machine.ts",
     "distributed:setup": "node --import tsx packages/tooling/scripts/setup-distributed-run.ts",
     "debug:session": "node --import tsx packages/tooling/scripts/fetch-session-debug.ts",

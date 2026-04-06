@@ -6,7 +6,7 @@ It is intentionally separate from the runtime sprite fanout flow. The goal is:
 
 - pick a deterministic 1,000-book shard
 - copy that shard's prepared book files onto a Fly volume
-- export all Qdrant points for that shard's books
+- re-embed all stored chunk records for that shard with OpenAI Batch
 - leave the Fly machine in place after provisioning
 
 ## Shard Contract
@@ -26,7 +26,9 @@ This is intentionally not "Gutenberg ids 1 through 1000", because Gutenberg numb
 - `npm run distributed:build-shard`
   Build the deterministic shard manifest.
 - `npm run distributed:stage-shard`
-  Pull `books/<id>/` from the consolidated-books source and export matching Qdrant points into a local stage directory.
+  Pull `books/<id>/` from the consolidated-books source into a local stage directory.
+- `npm run distributed:reembed-shard`
+  Read the shard's existing `chunks.jsonl` artifacts from the consolidated corpus, submit an OpenAI Batch embedding job, wait for completion, download results, and materialize shard-local vector files.
 - `npm run distributed:provision-shard`
   Create or reuse a Fly app, volume, and machine, then upload the staged shard data onto the mounted volume.
 - `npm run distributed:setup`
@@ -39,11 +41,11 @@ For the books side:
 - a consolidated books root, for example `/mnt/alphabook_consolidation/final/latest`
 - optionally a host like `root@<books-host>` if that root only exists remotely
 
-For the vector side:
+For the embedding side:
 
-- `QDRANT_URL`
-- `QDRANT_COLLECTION`
-- optionally `QDRANT_API_KEY`
+- `OPENAI_API_KEY`
+- optionally `OPENAI_EMBEDDING_MODEL`
+- optionally `OPENAI_EMBEDDING_DIMENSIONS`
 
 For Fly:
 
@@ -61,8 +63,6 @@ npm run distributed:setup -- \
   --shard-id shard-0001 \
   --source-host root@<books-host> \
   --source-root /mnt/alphabook_consolidation/final/latest \
-  --qdrant-url https://<qdrant-host> \
-  --qdrant-collection alphabook-semantic \
   --fly-app alphabook-distributed-run \
   --fly-image registry.fly.io/alphabook-runtime:<tag> \
   --dry-run
@@ -75,8 +75,6 @@ npm run distributed:setup -- \
   --shard-id shard-0001 \
   --source-host root@<books-host> \
   --source-root /mnt/alphabook_consolidation/final/latest \
-  --qdrant-url https://<qdrant-host> \
-  --qdrant-collection alphabook-semantic \
   --fly-app alphabook-distributed-run \
   --fly-image registry.fly.io/alphabook-runtime:<tag> \
   --runtime-shared-token <token>
@@ -86,6 +84,8 @@ Default outputs land under:
 
 - `output/distributed-run/shard-0001/manifest.json`
 - `output/distributed-run/shard-0001/stage/`
+- `output/distributed-run/shard-0001/stage/vectors/vectors.ndjson`
+- `output/distributed-run/shard-0001/stage/vectors/vector-manifest.json`
 
 On the Fly volume, the shard lands at:
 
@@ -93,6 +93,7 @@ On the Fly volume, the shard lands at:
 
 ## Notes
 
-- The staged vector export contains all Qdrant points for the shard's books, not just 1,000 vectors total.
+- The staged vector output contains all chunk embeddings for the shard's books, not just 1,000 vectors total.
+- The re-embed step uses the already-stored `chunks.jsonl` artifacts from the consolidated corpus; it does not invent new chunk boundaries.
 - The Fly machine provisioning path is idempotent enough for reruns. If the machine already exists, the script reuses it and refreshes the shard directory on the mounted volume.
 - This workflow does not modify the existing sprite fanout catalog or runtime orchestration path.

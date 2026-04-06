@@ -28,6 +28,8 @@ function usage() {
       "  --source-host <root@host>",
       "  --books-root <same as source-root by default>",
       "  --books-host <same as source-host by default>",
+      "  --corpus-root <same as source-root by default>",
+      "  --r2-root <same as corpus-root/r2 by default>",
       "  --output-root <output/distributed-run>",
       "  --fly-app <alphabook-distributed-run>",
       "  --fly-org <org>",
@@ -35,7 +37,7 @@ function usage() {
       "  --fly-image <registry.fly.io/...>",
       "  --runtime-shared-token <token>",
       "  --skip-books",
-      "  --skip-vectors",
+      "  --skip-embeddings",
       "  --skip-service",
       "  --dry-run",
     ].join("\n") + "\n",
@@ -75,16 +77,35 @@ async function main() {
     manifestPath,
     "--output-dir",
     stageDir,
+    "--skip-vectors",
   ];
-  for (const flag of ["--books-root", "--books-host", "--qdrant-url", "--qdrant-api-key", "--qdrant-collection", "--qdrant-id-batch-size", "--qdrant-scroll-limit", "--qdrant-timeout-seconds"]) {
+  for (const flag of ["--books-root", "--books-host"]) {
     const value = readArg(flag);
     if (value) {
       stageArgs.push(flag, value);
     }
   }
-  for (const flag of ["--skip-books", "--skip-vectors"]) {
+  for (const flag of ["--skip-books"]) {
     if (hasFlag(flag)) {
       stageArgs.push(flag);
+    }
+  }
+
+  const embeddingArgs = [
+    "--manifest",
+    manifestPath,
+    "--output-dir",
+    `${stageDir}/vectors`,
+  ];
+  for (const flag of ["--corpus-root", "--r2-root", "--model", "--dimensions", "--request-batch-size", "--poll-interval-seconds", "--max-wait-minutes"]) {
+    const value = readArg(flag);
+    if (value) {
+      embeddingArgs.push(flag, value);
+    }
+  }
+  for (const flag of ["--skip-submit", "--skip-wait", "--skip-download", "--skip-materialize"]) {
+    if (hasFlag(flag)) {
+      embeddingArgs.push(flag);
     }
   }
 
@@ -115,12 +136,16 @@ async function main() {
       stageDir,
       selectedGutenbergIds: manifest.selectedGutenbergIds.length,
       stageCommand: ["node", "--import", "tsx", "packages/tooling/scripts/stage-distributed-shard.ts", ...stageArgs],
+      embeddingCommand: ["node", "--import", "tsx", "packages/tooling/scripts/reembed-distributed-shard.ts", ...embeddingArgs],
       provisionCommand: ["node", "--import", "tsx", "packages/tooling/scripts/provision-distributed-shard-machine.ts", ...provisionArgs],
     });
     return;
   }
 
   await runStreamingCommand("node", ["--import", "tsx", "packages/tooling/scripts/stage-distributed-shard.ts", ...stageArgs]);
+  if (!hasFlag("--skip-embeddings")) {
+    await runStreamingCommand("node", ["--import", "tsx", "packages/tooling/scripts/reembed-distributed-shard.ts", ...embeddingArgs]);
+  }
   await runStreamingCommand("node", ["--import", "tsx", "packages/tooling/scripts/provision-distributed-shard-machine.ts", ...provisionArgs]);
 
   printJson({
