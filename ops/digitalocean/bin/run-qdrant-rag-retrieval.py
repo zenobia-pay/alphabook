@@ -258,6 +258,7 @@ def chunk_corpus_text(text: str, target_size: int) -> list[str]:
 def expand_query_variants(args: argparse.Namespace, output_dir: Path) -> list[str]:
     if not args.openai_api_key:
         raise SystemExit("OPENAI_API_KEY is required for query expansion")
+    requested_count = max(1, min(args.variant_count, 50))
     schema = {
         "type": "json_schema",
         "json_schema": {
@@ -269,8 +270,8 @@ def expand_query_variants(args: argparse.Namespace, output_dir: Path) -> list[st
                 "properties": {
                     "variants": {
                         "type": "array",
-                        "minItems": max(10, min(args.variant_count, 50)),
-                        "maxItems": max(10, min(args.variant_count, 50)),
+                        "minItems": requested_count,
+                        "maxItems": requested_count,
                         "items": {
                             "type": "string",
                             "minLength": 3,
@@ -295,7 +296,7 @@ def expand_query_variants(args: argparse.Namespace, output_dir: Path) -> list[st
         "- Avoid generic conversational reformulations that do not improve retrieval recall.",
         "- Keep the variants concrete, high-recall, and text-retrieval oriented.",
         "- Do not number the variants.",
-        f"Return exactly {max(10, min(args.variant_count, 50))} variants.",
+        f"Return exactly {requested_count} variants.",
         f"Original query: {args.query}",
     ])
     payload = post_json(
