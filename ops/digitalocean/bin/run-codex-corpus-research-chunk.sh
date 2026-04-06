@@ -164,10 +164,24 @@ Hard requirements:
 - Do not expand to the full corpus, regenerate manifests, or search outside this shard TSV for primary retrieval.
 - Write every research artifact under {artifacts_dir}.
 - Keep the run inspectable. Persist intermediate search outputs instead of relying on terminal scrollback.
+- Prefer the bounded Qdrant-first retrieval helper at `/srv/alphabook/repo/ops/digitalocean/bin/run-qdrant-rag-retrieval.sh` before broad ripgrep fanout.
+- Use the Qdrant-first helper to:
+  - expand the query into semantically diverse variants,
+  - run bounded dense retrieval with a score threshold and pagination,
+  - hydrate and deduplicate candidate chunks,
+  - group nearby chunk hits into larger review packets,
+  - optionally rerank those packets against the original query.
+- Keep that retrieval bounded to this shard by passing:
+  - `--precomputed-index-dir "{precomputed_index_dir}"`
+  - `--scope-file "{scope_file}"`
+  - `--corpus-chunk-id "{corpus_chunk_id}"`
+  - `--gutenberg-ids-file "{vector_scope_file}"` as fallback if needed
+- Persist the Qdrant-first retrieval artifacts under `{artifacts_dir}/rag-retrieval/`.
 - Use /srv/alphabook/repo/ops/digitalocean/bin/run-ripgrep-progress.sh for corpus search and pass:
   - --file-list "{scope_file}"
   - --max-total-files 5000
   - --batch-size 500
+- Use ripgrep as a secondary lexical follow-up or fallback path once the bounded semantic retrieval has narrowed the candidate books or packets.
 - Search raw text only.
 - Never invoke the ripgrep helper on more than the shard TSV.
 - Use ripgrep only for retrieval and candidate gathering. Relevance triage, keep/discard decisions, theme labeling, and synthesis must be done with model judgment over local context.

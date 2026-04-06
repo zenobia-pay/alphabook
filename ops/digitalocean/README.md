@@ -687,3 +687,36 @@ The launcher also starts a profiler that samples:
 - ripgrep batch/file/byte progress when the helper script is used
 - per-sample line/byte throughput
 - artifact counts and file sizes
+
+For bounded Qdrant-first RAG retrieval, use:
+
+```bash
+/srv/alphabook/bin/run-qdrant-rag-retrieval.sh \
+  --query "how do people deal with grief?" \
+  --precomputed-index-dir /mnt/alphabook_consolidation/final/latest/research-corpus-index \
+  --corpus-chunk-id corpus-files5000-00003 \
+  --gutenberg-ids-file /srv/alphabook/logs/codex-corpus-research/<run-id>/chunks/chunk-00003/vector-scope.json \
+  --output-dir /srv/alphabook/logs/corpus-research/<run-id>/rag-retrieval
+```
+
+This helper is additive. It does not replace the ripgrep workflow. It writes:
+
+- `query-expansion.json`
+- `dense-matches.jsonl`
+- `hydrated-hits.jsonl`
+- `review-packets.jsonl`
+- `reranked-packets.jsonl`
+- `summary.json`
+
+Pipeline shape:
+
+- query expansion into semantically diverse variants
+- bounded dense retrieval in Qdrant with score thresholds plus pagination
+- hydration back into canonical `clean.txt` chunk text
+- dedup and grouping into larger review packets
+- optional reranking against the original query
+
+Recommended usage:
+
+- use `run-qdrant-rag-retrieval.sh` first to narrow candidate books or packets
+- then use ripgrep as a lexical follow-up or fallback over the bounded scope

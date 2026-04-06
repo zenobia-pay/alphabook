@@ -166,6 +166,14 @@ Hard requirements:
 - Exact quotes must be grounded in the source text with line references or local provenance.
 - You may use helper scripts for parsing or note-taking, but not to mechanically decide relevance from hand-written weights.
 - A bounded Qdrant helper is available at `/srv/alphabook/repo/ops/digitalocean/bin/run-qdrant-bounded-search.py`.
+- Prefer the richer bounded Qdrant retrieval helper at `/srv/alphabook/repo/ops/digitalocean/bin/run-qdrant-rag-retrieval.sh` for book-level retrieval packets before any broad lexical sweep.
+- Use it to:
+  - expand the query into semantically diverse variants,
+  - run bounded dense retrieval for this book with a score threshold and pagination,
+  - hydrate and deduplicate chunk hits,
+  - merge nearby chunk hits into review packets,
+  - optionally rerank those packets against the original user query.
+- Persist those retrieval artifacts under `{artifacts_dir}/rag-retrieval/`.
 - If you use semantic retrieval for this book, bound it to this specific book with `--gutenberg-id "{gutenberg_id}"`.
 - Do not run an unbounded semantic search against the full Qdrant collection from this book run.
 
