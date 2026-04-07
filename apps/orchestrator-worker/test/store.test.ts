@@ -165,6 +165,45 @@ test("appendRunEvent uses a single insert-select query for sequence allocation",
   assert.equal(queries.filter((entry) => entry.sql.includes("INSERT INTO run_events")).length, 1);
 });
 
+test("appendRunEvent retries on run event sequence conflicts", async () => {
+  let insertAttempts = 0;
+  const db: DbClient = {
+    async query<T = Record<string, unknown>>(sql: string, params?: unknown[]) {
+      if (
+        sql.includes("CREATE TABLE IF NOT EXISTS run_events")
+        || sql.includes("CREATE UNIQUE INDEX IF NOT EXISTS idx_run_events_run_id_sequence")
+        || sql.includes("CREATE INDEX IF NOT EXISTS idx_run_events_run_id_created_at")
+        || sql.startsWith("ALTER TABLE ")
+      ) {
+        return { rows: [] as T[] };
+      }
+      if (sql.includes("INSERT INTO run_events") && sql.includes("COALESCE(MAX(sequence), 0) + 1")) {
+        insertAttempts += 1;
+        if (insertAttempts === 1) {
+          throw new Error("duplicate key value violates unique constraint \"idx_run_events_run_id_sequence\"");
+        }
+        return { rows: [] as T[] };
+      }
+      if (sql.includes("SELECT sequence FROM run_events WHERE id = ? LIMIT 1")) {
+        return { rows: [{ sequence: 8 }] as T[] };
+      }
+      throw new Error(`Unexpected query: ${sql} :: ${JSON.stringify(params ?? [])}`);
+    },
+    async end() {},
+  };
+
+  const store = new D1AppStore(db);
+  const event = await store.appendRunEvent(
+    "11111111-1111-1111-1111-111111111111",
+    "22222222-2222-2222-2222-222222222222",
+    "run.progress",
+    { status: "running" },
+  );
+
+  assert.equal(insertAttempts, 2);
+  assert.equal(event.sequence, 8);
+});
+
 test("D1 store serves explore works from feed snapshots without hydrating the full corpus", async () => {
   const queries: Array<{ sql: string; params?: unknown[] }> = [];
   const db: DbClient = {

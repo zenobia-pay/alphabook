@@ -55,6 +55,13 @@ function parseJsonStringList(value: unknown): string[] {
     .filter((entry) => entry.length > 0 && entry !== "null" && entry !== "undefined");
 }
 
+function isRunEventSequenceConflict(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("idx_run_events_run_id_sequence")
+    || /run_events.*run_id.*sequence/iu.test(message)
+    || (/duplicate key value/iu.test(message) && /sequence/iu.test(message));
+}
+
 function splitSubtitleFromTitle(title: string): { title: string; subtitle: string | null } {
   const match = title.match(/^(.+?)(?:\s+[:;]\s+|\s+[—-]\s+)(.+)$/u);
   if (!match) {
@@ -101,6 +108,31 @@ function readMetadataTextList(metadata: Record<string, unknown> | undefined, key
     }
   }
   return [];
+}
+
+function normalizeSqlExploreSeed(value: number | null | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return null;
+  }
+  const seed = Math.abs(Math.trunc(value)) || 1;
+  return {
+    primary: (seed % 997) + 1,
+    secondary: (Math.floor(seed / 997) % 389) + 1,
+    offset: seed % 104729,
+  };
+}
+
+function buildSqlExploreOrderBy(idExpression: string, randomSeed: ReturnType<typeof normalizeSqlExploreSeed>, fallbackOrder: string) {
+  if (randomSeed == null) {
+    return {
+      clause: fallbackOrder,
+      params: [] as number[],
+    };
+  }
+  return {
+    clause: `ORDER BY ABS(((((${idExpression}) % 100003) * ?) + (((${idExpression}) % 8191) * ?) + ?) % 2147483647) ASC, ${fallbackOrder.replace(/^ORDER BY\s+/u, "")}`,
+    params: [randomSeed.primary, randomSeed.secondary, randomSeed.offset],
+  };
 }
 
 function mapFeedWorkRowToSummary(row: {
@@ -503,12 +535,12 @@ export class D1AppStore implements AppStore {
 
   private async queryRankedWorkRows(offset = 0, limit = 12, filters: ExploreWorksFilters = {}) {
     const filterClause = this.buildExploreFilterClause(filters, "w");
-    const randomSeed = typeof filters.randomSeed === "number" && Number.isFinite(filters.randomSeed)
-      ? Math.abs(Math.trunc(filters.randomSeed)) || 1
-      : null;
-    const orderByClause = randomSeed == null
-      ? "ORDER BY score DESC, CASE WHEN w.release_date IS NULL THEN 1 ELSE 0 END, w.release_date DESC, w.title ASC"
-      : "ORDER BY ABS(((COALESCE(w.gutenberg_id, length(w.id) * 7919) * 1103515245) + ?) % 2147483647) ASC, score DESC, w.title ASC";
+    const randomSeed = normalizeSqlExploreSeed(filters.randomSeed);
+    const orderBy = buildSqlExploreOrderBy(
+      "COALESCE(w.gutenberg_id, length(w.id) * 7919)",
+      randomSeed,
+      "ORDER BY score DESC, CASE WHEN w.release_date IS NULL THEN 1 ELSE 0 END, w.release_date DESC, w.title ASC",
+    );
     return this.db.query<{
       id: string;
       gutenberg_id: number | string | null;
@@ -566,7 +598,7 @@ export class D1AppStore implements AppStore {
         WHERE 1 = 1 ${this.adapterWorkClause("w")}
         ${filterClause.clause}
         GROUP BY w.id, w.gutenberg_id, w.title, w.language, w.release_date, w.rights_status, w.summary, w.metadata_json
-        ${orderByClause}
+        ${orderBy.clause}
         LIMIT ? OFFSET ?
       `,
       [
@@ -574,7 +606,7 @@ export class D1AppStore implements AppStore {
         this.feedLabels.taxonomy,
         this.feedLabels.fallback,
         ...filterClause.params,
-        ...(randomSeed == null ? [] : [randomSeed]),
+        ...orderBy.params,
         limit,
         offset,
       ],
@@ -1753,30 +1785,39 @@ export class D1AppStore implements AppStore {
     if (payloadRef) {
       await this.blobStore.putJson(payloadRef, dataJson);
     }
-    await this.db.query(
-      `
-        INSERT INTO run_events (id, run_id, session_id, sequence, event, data_json, payload_ref, summary_text, phase, status, tool_call_id, runtime_id, retention_class, created_at)
-        SELECT ?, ?, ?, COALESCE(MAX(sequence), 0) + 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-        FROM run_events
-        WHERE run_id = ?
-      `,
-      [
-        id,
-        runId,
-        sessionId,
-        event,
-        JSON.stringify(payloadRef ? buildInlinePayload(dataJson) : dataJson),
-        payloadRef,
-        summaryText,
-        phase,
-        status,
-        toolCallId,
-        runtimeId,
-        retentionClass,
-        createdAt,
-        runId,
-      ],
-    );
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        await this.db.query(
+          `
+            INSERT INTO run_events (id, run_id, session_id, sequence, event, data_json, payload_ref, summary_text, phase, status, tool_call_id, runtime_id, retention_class, created_at)
+            SELECT ?, ?, ?, COALESCE(MAX(sequence), 0) + 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            FROM run_events
+            WHERE run_id = ?
+          `,
+          [
+            id,
+            runId,
+            sessionId,
+            event,
+            JSON.stringify(payloadRef ? buildInlinePayload(dataJson) : dataJson),
+            payloadRef,
+            summaryText,
+            phase,
+            status,
+            toolCallId,
+            runtimeId,
+            retentionClass,
+            createdAt,
+            runId,
+          ],
+        );
+        break;
+      } catch (error) {
+        if (!isRunEventSequenceConflict(error) || attempt === 4) {
+          throw error;
+        }
+      }
+    }
     const inserted = await this.db.query<{ sequence: number }>(
       "SELECT sequence FROM run_events WHERE id = ? LIMIT 1",
       [id],
@@ -1839,6 +1880,11 @@ export class D1AppStore implements AppStore {
     if (hasDatasetFilters) {
       return this.queryRankedWorks(offset, limit, filters);
     }
+    const orderBy = buildSqlExploreOrderBy(
+      "COALESCE(gutenberg_id, length(work_id) * 7919)",
+      normalizeSqlExploreSeed(filters.randomSeed),
+      "ORDER BY rank ASC",
+    );
     const snapshot = await this.db.query<{
       work_id: string;
       gutenberg_id: number | string | null;
@@ -1872,14 +1918,14 @@ export class D1AppStore implements AppStore {
           ${typeof filters.language === "string" && filters.language.trim().length > 0 ? "AND language = ?" : ""}
           ${typeof filters.subject === "string" && filters.subject.trim().length > 0 ? "AND EXISTS (SELECT 1 FROM json_each(COALESCE(subjects_json, '[]')) subject_filter WHERE subject_filter.value = ?)" : ""}
           ${typeof filters.bookshelf === "string" && filters.bookshelf.trim().length > 0 ? "AND EXISTS (SELECT 1 FROM json_each(COALESCE(json_extract(metadata_json, '$.bookshelves'), '[]')) shelf_filter WHERE shelf_filter.value = ?)" : ""}
-        ORDER BY ${typeof filters.randomSeed === "number" && Number.isFinite(filters.randomSeed) ? "ABS(((COALESCE(gutenberg_id, length(work_id) * 7919) * 1103515245) + ?) % 2147483647) ASC, rank ASC" : "rank ASC"}
+        ${orderBy.clause}
         LIMIT ? OFFSET ?
       `,
       [
         ...(typeof filters.language === "string" && filters.language.trim().length > 0 ? [filters.language.trim()] : []),
         ...(typeof filters.subject === "string" && filters.subject.trim().length > 0 ? [filters.subject.trim()] : []),
         ...(typeof filters.bookshelf === "string" && filters.bookshelf.trim().length > 0 ? [filters.bookshelf.trim()] : []),
-        ...(typeof filters.randomSeed === "number" && Number.isFinite(filters.randomSeed) ? [Math.abs(Math.trunc(filters.randomSeed)) || 1] : []),
+        ...orderBy.params,
         limit,
         offset,
       ],

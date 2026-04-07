@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-TARGET_HOST="${ALPHABOOK_WEB_HOST:-162.243.162.20}"
+TARGET_HOST="${ALPHABOOK_WEB_HOST:-178.128.159.197}"
 TARGET_USER="${ALPHABOOK_WEB_USER:-root}"
 TARGET_REPO_DIR="${ALPHABOOK_WEB_REPO_DIR:-/srv/alphabook/repo}"
 TARGET_COMPOSE_DIR="${ALPHABOOK_WEB_COMPOSE_DIR:-$TARGET_REPO_DIR/ops/digitalocean/linux/web}"
