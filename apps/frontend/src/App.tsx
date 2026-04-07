@@ -179,7 +179,7 @@ type ThreadSuggestion = {
   prompt: string;
 };
 
-type AssistantEffortLevel = "semantic" | "comprehensive" | "hermes";
+type AssistantWorkflow = "auto" | "search" | "design_experiment";
 
 type ReaderPassageKind = "heading" | "paragraph" | "quote" | "list-item" | "preformatted";
 
@@ -200,29 +200,10 @@ declare global {
 
 const USER_STORAGE_KEY = "alphabook.localUserId";
 const BOOK_ASSISTANT_WIDTH_STORAGE_KEY = "alphabook.bookAssistantWidth";
-const ASSISTANT_EFFORT_STORAGE_KEY = "alphabook.assistantEffort";
+const ASSISTANT_EFFORT_STORAGE_KEY = "alphabook.assistantWorkflow";
 
-function normalizeAssistantEffort(value: string | null): AssistantEffortLevel {
-  return value === "semantic" || value === "comprehensive" || value === "hermes" ? value : "semantic";
-}
-
-function resolveResearchMode(
-  effort: AssistantEffortLevel,
-): { mode: "semantic" | "comprehensive" | "hermes" } {
-  if (effort === "comprehensive") {
-    return {
-      mode: "comprehensive",
-    };
-  }
-  if (effort === "hermes") {
-    return {
-      mode: "hermes",
-    };
-  }
-
-  return {
-    mode: "semantic",
-  };
+function normalizeAssistantEffort(value: string | null): AssistantWorkflow {
+  return value === "search" || value === "design_experiment" || value === "auto" ? value : "auto";
 }
 const RECENT_SESSIONS_STORAGE_KEY = "alphabook.recentSessions";
 const BOOK_ASSISTANT_MIN_WIDTH = 320;
@@ -3314,9 +3295,9 @@ export default function App() {
   const [isSending, setIsSending] = useState(false);
   const [recoveredActiveRunId, setRecoveredActiveRunId] = useState<string | null>(initialBootstrapPreferredRun?.id ?? null);
   const [streamConnected, setStreamConnected] = useState(false);
-  const [assistantEffort, setAssistantEffort] = useState<AssistantEffortLevel>(() => {
+  const [assistantEffort, setAssistantEffort] = useState<AssistantWorkflow>(() => {
     if (typeof window === "undefined") {
-      return "semantic";
+      return "auto";
     }
     return normalizeAssistantEffort(window.localStorage.getItem(ASSISTANT_EFFORT_STORAGE_KEY));
   });
@@ -5070,14 +5051,13 @@ export default function App() {
     };
 
     try {
-      const researchConfig = resolveResearchMode(assistantEffort);
       await streamChat(
         {
           sessionId: initialSessionId ?? undefined,
           userId: authState.authConfigured ? undefined : currentUserId,
           message: transportQuestion,
           workIds: options.workIdsOverride,
-          mode: researchConfig.mode,
+          workflow: assistantEffort,
         },
         {
           onEvent: (event) => {
@@ -5531,8 +5511,8 @@ export default function App() {
     artifacts: RunArtifactRecord[];
     showArtifacts?: boolean;
     showWelcome?: boolean;
-    effortLevel: AssistantEffortLevel;
-    onEffortLevelChange: (value: AssistantEffortLevel) => void;
+    effortLevel: AssistantWorkflow;
+    onEffortLevelChange: (value: AssistantWorkflow) => void;
     onPrompt: (prompt: string) => Promise<void>;
     onCancel: () => Promise<void>;
     suggestions?: ThreadSuggestion[];

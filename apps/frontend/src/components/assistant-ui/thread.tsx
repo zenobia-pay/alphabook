@@ -41,7 +41,7 @@ import { resolveFrontendImplementation } from "@/implementation";
 
 const AUTO_FOLLOW_THRESHOLD_PX = 96;
 
-type AssistantEffortLevel = "semantic" | "comprehensive" | "hermes";
+type AssistantWorkflow = "auto" | "search" | "design_experiment";
 
 const IMPLEMENTATION = resolveFrontendImplementation();
 const SITE_ORIGIN = IMPLEMENTATION.siteOrigin;
@@ -139,19 +139,19 @@ const suggestionIconMap = {
 
 const EFFORT_OPTIONS = [
   {
-    value: "semantic",
-    label: "Fast",
+    value: "auto",
+    label: "Auto",
   },
   {
-    value: "comprehensive",
-    label: "Comprehensive",
+    value: "search",
+    label: "Search",
   },
   {
-    value: "hermes",
-    label: "Hermes",
+    value: "design_experiment",
+    label: "Experiment",
   },
 ] satisfies Array<{
-  value: AssistantEffortLevel;
+  value: AssistantWorkflow;
   label: string;
 }>;
 
@@ -163,8 +163,8 @@ export const Thread: FC<{
   suggestions?: ThreadSuggestion[];
   onSuggestionSelect?: (prompt: string) => void;
   onCancel?: () => void;
-  effortLevel: AssistantEffortLevel;
-  onEffortLevelChange: (value: AssistantEffortLevel) => void;
+  effortLevel: AssistantWorkflow;
+  onEffortLevelChange: (value: AssistantWorkflow) => void;
   composerDisabled?: boolean;
   composerDisabledNotice?: React.ReactNode;
 }> = ({
@@ -526,8 +526,8 @@ const ThreadSuggestionItem: FC<{
 const Composer: FC<{
   isRunning?: boolean;
   onCancel?: () => void;
-  effortLevel: AssistantEffortLevel;
-  onEffortLevelChange: (value: AssistantEffortLevel) => void;
+  effortLevel: AssistantWorkflow;
+  onEffortLevelChange: (value: AssistantWorkflow) => void;
   disabled?: boolean;
   notice?: React.ReactNode;
 }> = ({ isRunning = false, onCancel, effortLevel, onEffortLevelChange, disabled = false, notice }) => {
@@ -564,8 +564,8 @@ const Composer: FC<{
 const ComposerAction: FC<{
   isRunning?: boolean;
   onCancel?: () => void;
-  effortLevel: AssistantEffortLevel;
-  onEffortLevelChange: (value: AssistantEffortLevel) => void;
+  effortLevel: AssistantWorkflow;
+  onEffortLevelChange: (value: AssistantWorkflow) => void;
   disabled?: boolean;
 }> = ({
   isRunning = false,
@@ -619,7 +619,7 @@ const ComposerAction: FC<{
             "h-8 rounded-full border border-transparent bg-neutral-100/95 px-4 text-left shadow-none transition hover:bg-neutral-200/90 disabled:bg-neutral-100/70",
             isEffortMenuOpen && "bg-neutral-200/95",
           )}
-          aria-label="Effort level"
+          aria-label="Workflow"
           aria-haspopup="listbox"
           aria-expanded={isEffortMenuOpen}
           disabled={isRunning || disabled}
@@ -637,7 +637,7 @@ const ComposerAction: FC<{
             aria-label="Effort options"
           >
             <div className="px-2.5 pb-1.5 pt-1 text-[0.8rem] font-medium text-muted-foreground">
-              Select mode
+              Select workflow
             </div>
             {EFFORT_OPTIONS.map((option) => {
               const isSelected = option.value === effortLevel;

@@ -122,6 +122,111 @@ test("orchestrator can answer direct chat without starting the tool chain", asyn
   assert.match(body, /You could ask about themes, moods, exact passages, or comparisons between books\./);
 });
 
+test("approved design experiments launch a visible runner job", async () => {
+  const store = new InMemoryAppStore([], []);
+  let createWorkspaceCalls = 0;
+  let runWorkspaceTaskCalls = 0;
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    router: new ScriptedRouter([
+      {
+        type: "design_experiment",
+        designSummary: "Label grief scenes, aggregate by category, and draft a short paper with charts.",
+        executionPrompt: "Run an experiment over the corpus that labels grief scenes, aggregates the labels by category, and writes a short paper with charts.",
+        rationale: "The design is concrete and approved, so the runner can start.",
+      },
+    ]),
+    planner: new ScriptedPlanner([
+      {
+        type: "final_answer",
+        answer: "planner should not run",
+        citations: [],
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        createWorkspaceCalls += 1;
+        return {
+          ok: true,
+          runtimeId: "runtime-exp-1",
+          manifest: {
+            works: [],
+            selectedChunkIds: [],
+            taskContext: {},
+          },
+        };
+      },
+      async runWorkspaceTask() {
+        runWorkspaceTaskCalls += 1;
+        return {
+          ok: true,
+          runtimeId: "runtime-exp-1",
+          briefing: "Experiment paper draft.",
+          citations: [],
+          artifacts: [
+            {
+              path: "output/briefing.md",
+              filename: "briefing.md",
+              mimeType: "text/markdown",
+            },
+            {
+              path: "output/charts/chart-1.png",
+              filename: "chart-1.png",
+              mimeType: "image/png",
+            },
+          ],
+          billingEvents: [],
+        };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: false, error: "disabled" };
+      },
+      async destroyWorkspace() {
+        return { ok: true };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const response = await app.request("/chat", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      userId: "11111111-1111-1111-1111-111111111111",
+      message: "Yes, run that experiment.",
+      workflow: "design_experiment",
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  const body = await response.text();
+  assert.equal(createWorkspaceCalls, 1);
+  assert.equal(runWorkspaceTaskCalls, 1);
+  assert.match(body, /event: router\.completed/);
+  assert.match(body, /"type":"design_experiment"/);
+  assert.match(body, /toolName":"create_workspace"/);
+  assert.match(body, /toolName":"run_workspace_task"/);
+  assert.match(body, /Experiment paper draft\./);
+  assert.doesNotMatch(body, /event: planner\.turn/);
+  const [session] = await store.listSessions("11111111-1111-1111-1111-111111111111");
+  const messages = await store.listMessages(session!.id);
+  const planMessage = messages.find((message) => message.metadata?.phase === "plan");
+  const planToolCalls = Array.isArray(planMessage?.metadata?.toolCalls) ? planMessage.metadata.toolCalls as Array<Record<string, unknown>> : [];
+  assert.equal(planToolCalls[0]?.toolName, "design_experiment");
+});
+
 test("sprite fanout mode bypasses router and runs the distributed runtime lane", async () => {
   const store = new InMemoryAppStore([], []);
   let spriteRuns = 0;
@@ -1236,7 +1341,7 @@ test("follow-up requests pass full chat history into router and planner", async 
         ],
       );
       return {
-        type: "tool_chain" as const,
+        type: "search" as const,
         fullQuery: "Tell me more about Moby-Dick as a grief novel.",
       };
     },

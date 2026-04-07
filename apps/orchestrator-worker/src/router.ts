@@ -10,10 +10,19 @@ const RouterDecisionSchema = z.union([
   z.object({
     type: z.literal("direct_response"),
     answer: z.string().min(1),
+    workflowHint: z.enum(["search", "design_experiment"]).nullable().optional(),
   }),
   z.object({
-    type: z.literal("tool_chain"),
+    type: z.literal("search"),
     fullQuery: z.string().min(1),
+    rationale: z.string().min(1).optional(),
+    executionMode: z.enum(["semantic", "comprehensive", "hermes"]).optional(),
+  }),
+  z.object({
+    type: z.literal("design_experiment"),
+    designSummary: z.string().min(1),
+    executionPrompt: z.string().min(1),
+    rationale: z.string().min(1).optional(),
   }),
 ]);
 
@@ -21,6 +30,7 @@ export type RouterDecision = z.infer<typeof RouterDecisionSchema>;
 
 export interface RouterContext {
   userMessage: string;
+  requestedWorkflow?: "auto" | "search" | "design_experiment";
   conversationHistory: Array<{
     role: "user" | "assistant" | "system" | "tool";
     content: string;
@@ -32,26 +42,66 @@ export interface Router {
   decide(context: RouterContext): Promise<RouterDecision>;
 }
 
+type LegacyToolChainDecision = {
+  type: "tool_chain";
+  fullQuery: string;
+};
+
 function shouldUseToolChain(message: string): boolean {
   return /\b(book|books|novel|novels|story|stories|fiction|passage|passages|quote|quotes|theme|themes|motif|motifs|corpus|search|find|show me|look up|examples?|compare|contrast|which works?|which book|who writes|where does)\b/i.test(message);
+}
+
+function shouldDesignExperiment(message: string): boolean {
+  return /\b(experiment|label(?:ing)?|annotat(?:e|ion)|taxonomy|schema|aggregate|aggregation|paper|chart|dataset|subset|run (?:an )?experiment)\b/i.test(message);
+}
+
+function looksLikeApproval(message: string): boolean {
+  return /\b(yes|yep|yeah|looks good|sounds good|approved|approve|go ahead|run it|do it|ship it|that works|let's do it|lets do it)\b/i.test(message);
 }
 
 function fallbackDirectAnswer(message: string): string {
   if (/\bwhat kind of things should i look up\b/i.test(message)) {
     return "You could ask for themes, moods, character types, exact passages, comparisons between books, or examples of a feeling like grief, obsession, or reconciliation across the corpus.";
   }
-  if (/\bcan you help\b/i.test(message) || /\bwhat can you do\b/i.test(message)) {
-    return "I can help you search the corpus for books, themes, character patterns, comparisons, and specific passages, or I can help you refine a search before running it.";
+  if (shouldDesignExperiment(message)) {
+    return "Before I run an experiment, I need the design to be concrete. Tell me the corpus scope, what should be labeled or extracted, how those labels should be aggregated, and what the final output should look like.";
   }
-  return "I can respond directly when you are brainstorming or asking how to search, and I can run the book-search pipeline when you want evidence from the corpus.";
+  if (/\bcan you help\b/i.test(message) || /\bwhat can you do\b/i.test(message)) {
+    return "I can help you search the corpus for books, themes, character patterns, comparisons, and specific passages, or I can help you design a corpus experiment before running it.";
+  }
+  return "I can respond directly when you are brainstorming or designing a study, and I can launch either a search run or an approved experiment when you are ready.";
 }
 
 export class FallbackRouter implements Router {
   async decide(context: RouterContext): Promise<RouterDecision> {
+    if (context.requestedWorkflow === "search") {
+      return {
+        type: "search",
+        fullQuery: context.userMessage.trim(),
+        executionMode: "semantic",
+      };
+    }
+    if (context.requestedWorkflow === "design_experiment" || shouldDesignExperiment(context.userMessage)) {
+      const priorAssistant = [...context.conversationHistory].reverse().find((entry) => entry.role === "assistant")?.content ?? "";
+      if (looksLikeApproval(context.userMessage) && /\bexperiment|label|aggregate|paper|chart\b/i.test(priorAssistant)) {
+        return {
+          type: "design_experiment",
+          designSummary: priorAssistant.trim().slice(0, 800) || "Approved experiment design.",
+          executionPrompt: `Design and run the approved experiment over the AlphaBook corpus.\n\nLatest approval message: ${context.userMessage.trim()}\n\nApproved design:\n${priorAssistant.trim()}`,
+          rationale: "The experiment design appears approved, so the runner can start building and executing it.",
+        };
+      }
+      return {
+        type: "direct_response",
+        answer: fallbackDirectAnswer(context.userMessage),
+        workflowHint: "design_experiment",
+      };
+    }
     if (shouldUseToolChain(context.userMessage)) {
       return {
-        type: "tool_chain",
+        type: "search",
         fullQuery: context.userMessage.trim(),
+        executionMode: "semantic",
       };
     }
     return {
@@ -64,13 +114,19 @@ export class FallbackRouter implements Router {
 export class ScriptedRouter implements Router {
   private cursor = 0;
 
-  constructor(private readonly script: RouterDecision[]) {}
+  constructor(private readonly script: Array<RouterDecision | LegacyToolChainDecision>) {}
 
   async decide(): Promise<RouterDecision> {
     const next = this.script[this.cursor];
     this.cursor += 1;
     if (!next) {
       throw new Error("Scripted router exhausted.");
+    }
+    if (next.type === "tool_chain") {
+      return {
+        type: "search",
+        fullQuery: next.fullQuery,
+      };
     }
     return next;
   }
@@ -97,14 +153,20 @@ export class OpenAIRouter implements Router {
         {
           role: "user",
           content: JSON.stringify({
-            task: "Route the user's message before any search tools run.",
+            task: "Route the user's message before any search or experiment tools run.",
             responseInstructions: "Reply with JSON only.",
             userMessage: context.userMessage,
+            requestedWorkflow: context.requestedWorkflow ?? "auto",
             conversationHistory: context.conversationHistory,
             outputShape: {
-              type: "direct_response | tool_chain",
+              type: "direct_response | search | design_experiment",
               answer: "string when using direct_response",
-              fullQuery: "string when using tool_chain",
+              workflowHint: "optional search | design_experiment hint when using direct_response",
+              fullQuery: "string when using search",
+              rationale: "optional short explanation when using search or design_experiment",
+              executionMode: "optional semantic | comprehensive | hermes when using search",
+              designSummary: "string when using design_experiment",
+              executionPrompt: "string when using design_experiment",
             },
           }),
         },

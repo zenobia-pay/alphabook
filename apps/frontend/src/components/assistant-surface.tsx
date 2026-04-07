@@ -30,7 +30,7 @@ type ThreadSuggestion = {
   prompt: string;
 };
 
-type AssistantEffortLevel = "semantic" | "comprehensive" | "hermes";
+type AssistantWorkflow = "auto" | "search" | "design_experiment";
 
 export type AssistantSurfaceProps = {
   messages: UiMessage[];
@@ -39,8 +39,8 @@ export type AssistantSurfaceProps = {
   artifacts: RunArtifactRecord[];
   showArtifacts?: boolean;
   showWelcome?: boolean;
-  effortLevel: AssistantEffortLevel;
-  onEffortLevelChange: (value: AssistantEffortLevel) => void;
+  effortLevel: AssistantWorkflow;
+  onEffortLevelChange: (value: AssistantWorkflow) => void;
   onPrompt: (prompt: string) => Promise<void>;
   onCancel: () => Promise<void>;
   convertMessage: (message: UiMessage, streamingAssistantId: string | null, isSending: boolean) => unknown;

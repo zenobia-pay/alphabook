@@ -1148,6 +1148,7 @@ function searchPlanFromEstimate(
 
 function requestedAssistantMode(input: {
   mode?: "semantic" | "comprehensive" | "hermes";
+  workflow?: "auto" | "search" | "design_experiment";
   researchMode?: "default" | "sprite_fanout";
 }): "semantic" | "comprehensive" | "hermes" {
   if (input.mode === "hermes") {
@@ -1156,11 +1157,15 @@ function requestedAssistantMode(input: {
   if (input.mode === "comprehensive" || input.researchMode === "sprite_fanout") {
     return "comprehensive";
   }
+  if (input.workflow === "search") {
+    return "semantic";
+  }
   return "semantic";
 }
 
 function requestedIntensityOverride(input: {
   mode?: "semantic" | "comprehensive" | "hermes";
+  workflow?: "auto" | "search" | "design_experiment";
   intensityOverride?: "normal" | "high" | "maximum";
   researchMode?: "default" | "sprite_fanout";
 }): "normal" | "high" | "maximum" | undefined {
@@ -1168,6 +1173,10 @@ function requestedIntensityOverride(input: {
     return "maximum";
   }
   return undefined;
+}
+
+function inferSearchExecutionMode(query: string, scopedWorkCount = 0): "semantic" | "comprehensive" {
+  return isBroadCorpusResearchQuery(query, scopedWorkCount) ? "comprehensive" : "semantic";
 }
 
 async function deriveScopeEstimateFromSearchResult(
@@ -5001,7 +5010,9 @@ async function streamAssistantText(
   }
 }
 
-function labelForToolCall(toolName: ToolName, args: Record<string, unknown>) {
+type ToolTraceName = ToolName | "search" | "design_experiment";
+
+function labelForToolCall(toolName: ToolTraceName, args: Record<string, unknown>) {
   if (toolName === "run_workspace_task") {
     const taskSpec = args.taskSpec;
     if (taskSpec && typeof taskSpec === "object") {
@@ -5037,7 +5048,7 @@ function labelForToolCall(toolName: ToolName, args: Record<string, unknown>) {
   return getToolLabel(toolName);
 }
 
-function clientSafeToolResult(toolName: ToolName, result: Record<string, unknown>): Record<string, unknown> {
+function clientSafeToolResult(toolName: ToolTraceName, result: Record<string, unknown>): Record<string, unknown> {
   if (toolName === "semantic_deep_search") {
     const chunks = Array.isArray(result.chunks) ? result.chunks : [];
     const alphaloopEvents = Array.isArray(result.alphaloopEvents) ? result.alphaloopEvents : [];
@@ -5297,7 +5308,7 @@ function latestPriorAssistantSummaryFromConversation(
 
 type LiveToolTraceEntry = {
   id: string;
-  toolName: ToolName;
+  toolName: ToolTraceName;
   label: string;
   rationale?: string;
   progress: string[];
@@ -5351,7 +5362,7 @@ function compactProgressDetailsForPersistence(progressDetails?: Array<Record<str
 }
 
 function compactToolResultForPersistence(
-  toolName: ToolName,
+  toolName: ToolTraceName,
   result: Record<string, unknown> | undefined,
   state: LiveToolTraceEntry["state"],
 ) {
@@ -5423,7 +5434,7 @@ export function compactPlanToolTraceEntriesForPersistence(toolCalls: LiveToolTra
 }
 
 function canonicalToolArgs(
-  toolName: ToolName,
+  toolName: ToolTraceName,
   sourceArgs: Record<string, unknown>,
   rationale?: string,
   progress: string[] = [],
@@ -5483,7 +5494,7 @@ function canonicalToolArgs(
 }
 
 function canonicalToolResult(
-  toolName: ToolName,
+  toolName: ToolTraceName,
   result: Record<string, unknown> | undefined,
   options: {
     ok: boolean;
@@ -5575,7 +5586,7 @@ function canonicalToolResult(
   return safe;
 }
 
-function normalizeToolProgressText(toolName: ToolName, text: string) {
+function normalizeToolProgressText(toolName: ToolTraceName, text: string) {
   const sanitized = sanitizeUserFacingToolText(text)?.replace(/\s+/gu, " ").trim() ?? "";
   if (sanitized) {
     return sanitized;
@@ -5661,8 +5672,8 @@ function readPersistedPlanToolTrace(metadata: Record<string, unknown> | null | u
           : "completed";
     return [{
       id: typeof record.id === "string" && record.id.trim().length > 0 ? record.id : `${rawToolName}-${index}`,
-      toolName: rawToolName as ToolName,
-      label: typeof record.label === "string" && record.label.trim().length > 0 ? record.label : labelForToolCall(rawToolName as ToolName, args),
+      toolName: rawToolName as ToolTraceName,
+      label: typeof record.label === "string" && record.label.trim().length > 0 ? record.label : labelForToolCall(rawToolName as ToolTraceName, args),
       rationale: typeof record.rationale === "string" && record.rationale.trim().length > 0 ? record.rationale : undefined,
       progress,
       ...(progressDetails.length > 0 ? { progressDetails } : {}),
@@ -5867,6 +5878,27 @@ function initialSemanticAssistantPlan(userMessage: string) {
   return normalizedMessage
     ? `I’m running AlphaLoop for “${normalizedMessage}” and will answer from the strongest passages it finds.`
     : "I’m running AlphaLoop now and will answer from the strongest passages it finds.";
+}
+
+function initialWorkflowPlan(intent: {
+  workflow: "search" | "design_experiment";
+  routedQuery: string;
+  executionMode?: "semantic" | "comprehensive" | "hermes";
+}) {
+  const normalizedMessage = intent.routedQuery.trim();
+  if (intent.workflow === "design_experiment") {
+    return normalizedMessage
+      ? `I’ve locked the experiment design. I’m setting up the run for “${normalizedMessage},” then I’ll write the analysis scripts, execute them, and bring back the paper draft and artifacts.`
+      : "I’ve locked the experiment design. I’m setting up the run, then I’ll write the analysis scripts, execute them, and bring back the paper draft and artifacts.";
+  }
+  if (intent.executionMode === "comprehensive") {
+    return normalizedMessage
+      ? `I’ve selected Search for “${normalizedMessage}.” I’m going broad, pulling the strongest passages, and building a grounded briefing.`
+      : "I’ve selected Search. I’m going broad, pulling the strongest passages, and building a grounded briefing.";
+  }
+  return normalizedMessage
+    ? `I’ve selected Search for “${normalizedMessage}.” I’m starting with the fast evidence pass and will widen if the query needs more depth.`
+    : "I’ve selected Search. I’m starting with the fast evidence pass and will widen if the query needs more depth.";
 }
 
 function isTextArtifact(filename: string, mimeType: string) {
@@ -10474,6 +10506,15 @@ export async function runOrchestrator(
   let workspaceLastFailureAt = 0;
   let initialPlanSent = false;
   let planMessageId: string | null = null;
+  type HighLevelWorkflow = "search" | "design_experiment";
+  type InitialWorkflowIntent = {
+    workflow: HighLevelWorkflow;
+    routedQuery: string;
+    rationale: string;
+    executionMode?: "semantic" | "comprehensive" | "hermes";
+    designSummary?: string;
+  };
+  let initialWorkflowIntent: InitialWorkflowIntent | null = null;
   type PendingWorkspaceExecution = {
     toolName: ToolName;
     toolRecordId: string;
@@ -10861,14 +10902,48 @@ export async function runOrchestrator(
       return;
     }
     ensureResearchDocumentShell(routedQuery);
-    const planText = requestedAssistantMode(input) === "semantic"
-      ? initialSemanticAssistantPlan(routedQuery)
-      : initialAssistantPlan(routedQuery);
+    const planText = initialWorkflowIntent
+      ? initialWorkflowPlan(initialWorkflowIntent)
+      : requestedAssistantMode(input) === "semantic"
+        ? initialSemanticAssistantPlan(routedQuery)
+        : initialAssistantPlan(routedQuery);
     const planMessage = await deps.store.appendMessage(activeSession.id, "assistant", planText, {
       phase: "plan",
       runId: run.id,
     });
     planMessageId = planMessage.id;
+    if (initialWorkflowIntent) {
+      liveToolTrace = [{
+        id: `intent:${initialWorkflowIntent.workflow}:${run.id}`,
+        toolName: initialWorkflowIntent.workflow,
+        label: getToolLabel(initialWorkflowIntent.workflow),
+        rationale: initialWorkflowIntent.rationale,
+        progress: [initialWorkflowIntent.rationale],
+        sourceArgs: {
+          query: initialWorkflowIntent.routedQuery,
+          ...(initialWorkflowIntent.executionMode ? { executionMode: initialWorkflowIntent.executionMode } : {}),
+          ...(initialWorkflowIntent.designSummary ? { designSummary: initialWorkflowIntent.designSummary } : {}),
+        },
+        args: canonicalToolArgs(
+          initialWorkflowIntent.workflow,
+          {
+            query: initialWorkflowIntent.routedQuery,
+            ...(initialWorkflowIntent.executionMode ? { executionMode: initialWorkflowIntent.executionMode } : {}),
+            ...(initialWorkflowIntent.designSummary ? { designSummary: initialWorkflowIntent.designSummary } : {}),
+          },
+          initialWorkflowIntent.rationale,
+          [initialWorkflowIntent.rationale],
+        ),
+        result: canonicalToolResult(initialWorkflowIntent.workflow, {
+          ok: true,
+          status: "selected",
+          ...(initialWorkflowIntent.designSummary ? { briefing: initialWorkflowIntent.designSummary } : {}),
+        }, {
+          ok: true,
+        }),
+        state: "completed",
+      }];
+    }
     await persistLatestPlanToolTrace(planMessageId, liveToolTrace);
     await send("assistant.plan", {
       runId: run.id,
@@ -11092,6 +11167,58 @@ export async function runOrchestrator(
       taskSpec: mergedTaskSpec,
     });
   };
+
+  const buildExperimentWorkspaceArgs = () => normalizeToolArgs("create_workspace", {
+    workIds: Array.isArray(input.workIds) ? input.workIds.slice(0, 24) : [],
+    chunkIds: [],
+    taskContext: {
+      question: routedQueryRef.current,
+      researchObjective: routedQueryRef.current,
+      workflow: "design_experiment",
+      approved: true,
+      ...(initialWorkflowIntent?.designSummary ? { designSummary: initialWorkflowIntent.designSummary } : {}),
+      prewarmed: true,
+    },
+  });
+
+  const buildExperimentWorkspaceTaskSpec = (runtimeId: string) => normalizeToolArgs("run_workspace_task", {
+    runtimeId,
+    taskSpec: {
+      kind: "experiment_design",
+      phase: "collect_and_brief",
+      workflow: "design_experiment",
+      taskIntent: "experiment_design",
+      question: routedQueryRef.current,
+      researchObjective: routedQueryRef.current,
+      mode: Array.isArray(input.workIds) && input.workIds.length > 0 ? "open_book_analysis" : "exhaustive_corpus_search",
+      intensity: "maximum",
+      timeBudgetMinutes: 45,
+      parallelism: Array.isArray(input.workIds) && input.workIds.length > 0 ? 1 : 4,
+      workIds: Array.isArray(input.workIds) ? input.workIds.slice(0, 80) : [],
+      chunkIds: [],
+      searchHints: {
+        searchWorksQuery: routedQueryRef.current,
+        passageSearchFocus: "Find the passages and records needed to execute the approved experiment design. Build labels first, then run the aggregation and write up the paper.",
+      },
+      deliverables: [
+        "output/briefing.md",
+        "output/briefing.json",
+        "output/evidence.json",
+        "output/evidence-notes.md",
+        "output/scripts/",
+        "output/charts/",
+        "output/labels/",
+      ],
+      outputExpectations: {
+        paperFile: "output/briefing.md",
+        paperJsonFile: "output/briefing.json",
+        scriptDir: "output/scripts",
+        chartDir: "output/charts",
+        labelsDir: "output/labels",
+      },
+      ...(initialWorkflowIntent?.designSummary ? { designSummary: initialWorkflowIntent.designSummary } : {}),
+    },
+  });
 
   const startBackgroundTool = async (
     toolName: "create_workspace" | "run_workspace_task",
@@ -11448,6 +11575,41 @@ export async function runOrchestrator(
         : null;
     throw new Error(latestError ?? "Sprite fanout research did not return a usable briefing.");
   };
+
+  const runDesignExperimentMode = async () => {
+    await ensureInitialPlanSent(routedQueryRef.current);
+    if (!latestCompletedRuntimeId() && !pendingWorkspaceExecution) {
+      await startBackgroundTool(
+        "create_workspace",
+        buildExperimentWorkspaceArgs(),
+        "I’m setting up the experiment workspace and pulling in the corpus context needed for the approved design.",
+      );
+    }
+
+    const startedAtMs = deps.now?.() ?? Date.now();
+    const maxDurationMs = Math.min(HARD_LIMITS.MAX_RUN_WALL_CLOCK_SECONDS * 1000, 45 * 60_000);
+    while ((deps.now?.() ?? Date.now()) - startedAtMs < maxDurationMs) {
+      await harvestPendingWorkspace(false);
+      if (runFinalized) {
+        return;
+      }
+      const runtimeId = latestCompletedRuntimeId();
+      if (runtimeId && !pendingWorkspaceExecution && !(await hasWorkspaceTaskStarted("run_workspace_task"))) {
+        await startBackgroundTool(
+          "run_workspace_task",
+          buildExperimentWorkspaceTaskSpec(runtimeId),
+          "I’m writing the experiment scripts now, then I’ll run the labels and aggregations and turn the results into a paper draft.",
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, 750));
+    }
+
+    await harvestPendingWorkspace(true);
+    if (runFinalized) {
+      return;
+    }
+    throw new Error("The experiment run hit its wall-clock limit before it produced a paper draft.");
+  };
   try {
     if (requestedAssistantMode(input) === "comprehensive") {
       recordRawLog("research_mode.selected", {
@@ -11464,21 +11626,36 @@ export async function runOrchestrator(
     });
     let routeDecision;
     try {
-      routeDecision = deps.router
-        ? await deps.router.decide({
-            userMessage: input.message,
-            conversationHistory,
-            billingContext: {
-              userId: session.userId,
-              sessionId: session.id,
-              runId: run.id,
-              source: "router",
-            },
-          })
-        : {
-            type: "tool_chain" as const,
-            fullQuery: input.message,
-          };
+      routeDecision = input.workflow === "search"
+        ? {
+            type: "search" as const,
+            fullQuery: input.message.trim(),
+            executionMode: input.mode ?? "semantic",
+            rationale: "The user explicitly asked to run a search.",
+          }
+        : deps.router
+          ? await deps.router.decide({
+              userMessage: input.message,
+              requestedWorkflow: input.workflow,
+              conversationHistory,
+              billingContext: {
+                userId: session.userId,
+                sessionId: session.id,
+                runId: run.id,
+                source: "router",
+              },
+            })
+          : shouldUseHermesBackend(deps, input)
+            ? {
+                type: "search" as const,
+                fullQuery: input.message,
+                executionMode: "hermes" as const,
+              }
+            : {
+                type: "search" as const,
+                fullQuery: input.message,
+                executionMode: input.mode ?? "semantic",
+              };
     } catch (error) {
       recordRawLog("router.failed", {
         runId: run.id,
@@ -11491,13 +11668,13 @@ export async function runOrchestrator(
       runId: run.id,
       sessionId: session.id,
       type: routeDecision.type,
-      fullQuery: routeDecision.type === "tool_chain" ? routeDecision.fullQuery : null,
+      fullQuery: routeDecision.type === "search" ? routeDecision.fullQuery : null,
     });
     recordRawLog("router.completed", {
       runId: run.id,
       sessionId: session.id,
       type: routeDecision.type,
-      fullQuery: routeDecision.type === "tool_chain" ? routeDecision.fullQuery : null,
+      fullQuery: routeDecision.type === "search" ? routeDecision.fullQuery : null,
     });
 
     if (routeDecision.type === "direct_response") {
@@ -11546,8 +11723,32 @@ export async function runOrchestrator(
       return;
     }
 
+    if (routeDecision.type === "design_experiment") {
+      const routedQuery = routeDecision.executionPrompt.trim() || input.message;
+      routedQueryRef.current = routedQuery;
+      initialWorkflowIntent = {
+        workflow: "design_experiment",
+        routedQuery,
+        rationale: routeDecision.rationale
+          ?? "The experiment design is concrete and approved, so I’m setting up the runner now.",
+        designSummary: routeDecision.designSummary,
+      };
+      await runDesignExperimentMode();
+      return;
+    }
+
     const routedQuery = routeDecision.fullQuery.trim() || input.message;
     routedQueryRef.current = routedQuery;
+    input.mode = routeDecision.executionMode ?? input.mode ?? "semantic";
+    initialWorkflowIntent = {
+      workflow: "search",
+      routedQuery,
+      rationale: routeDecision.rationale
+        ?? (input.mode === "comprehensive"
+          ? "I’ve selected Search and this query needs the broader corpus pass."
+          : "I’ve selected Search and I’m starting with the fast evidence pass."),
+      executionMode: input.mode,
+    };
     await ensureInitialPlanSent(routedQuery);
     await maybeStartWorkspacePrewarm();
     const currentTimeBudgetMs = () => {
