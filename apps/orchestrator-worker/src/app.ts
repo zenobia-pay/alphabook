@@ -1169,10 +1169,33 @@ function requestedIntensityOverride(input: {
   intensityOverride?: "normal" | "high" | "maximum";
   researchMode?: "default" | "sprite_fanout";
 }): "normal" | "high" | "maximum" | undefined {
+  if (input.intensityOverride) {
+    return input.intensityOverride;
+  }
   if (requestedAssistantMode(input) === "comprehensive") {
     return "maximum";
   }
   return undefined;
+}
+
+function hermesSearchEffort(input: {
+  workflow?: "auto" | "search" | "design_experiment";
+  intensityOverride?: "normal" | "high" | "maximum";
+  mode?: "semantic" | "comprehensive" | "hermes";
+  researchMode?: "default" | "sprite_fanout";
+}): number | undefined {
+  if (input.workflow !== "search") {
+    return undefined;
+  }
+  switch (requestedIntensityOverride(input) ?? "normal") {
+    case "high":
+      return 25;
+    case "maximum":
+      return 50;
+    case "normal":
+    default:
+      return 10;
+  }
 }
 
 function inferSearchExecutionMode(query: string, scopedWorkCount = 0): "semantic" | "comprehensive" {
@@ -9307,9 +9330,12 @@ async function runHermesConversation(
     }));
   };
 
-  const planText = priorHermesThread
+  const shouldResumeHermesThread = Boolean(priorHermesThread?.jobId) && input.workflow !== "search";
+  const planText = shouldResumeHermesThread
     ? "Resuming the existing Hermes thread and continuing the research run."
-    : "Starting a Hermes research run on this thread and streaming the tool activity here.";
+    : input.workflow === "search"
+      ? "Starting a Hermes search run on this thread and streaming the tool activity here."
+      : "Starting a Hermes research run on this thread and streaming the tool activity here.";
   const planMessage = await deps.store.appendMessage(activeSession.id, "assistant", planText, {
     phase: "plan",
     runId: run.id,
@@ -9333,6 +9359,8 @@ async function runHermesConversation(
   const archivePrefix = artifactKeys.sessionArtifact(activeSession.id, `runs/${run.id}/hermes`);
   const launchPayload = {
     userPrompt: hermesUserPrompt,
+    workflow: input.workflow,
+    effort: hermesSearchEffort(input),
     model: deps.hermesModel,
     maxTurns: deps.hermesMaxTurns,
     alphabookSessionId: activeSession.id,
@@ -9341,10 +9369,10 @@ async function runHermesConversation(
     callbackToken: deps.hermesJobApiToken,
     archivePrefix,
   };
-  const launchResult = priorHermesThread?.jobId
+  const launchResult = shouldResumeHermesThread
     ? await resumeHermesJob(deps.hermesJobApiUrl, deps.hermesJobApiToken, {
-        previousJobId: priorHermesThread.jobId,
-        hermesSessionId: priorHermesThread.sessionId ?? undefined,
+        previousJobId: priorHermesThread!.jobId,
+        hermesSessionId: priorHermesThread!.sessionId ?? undefined,
         ...launchPayload,
       })
     : await createHermesJob(deps.hermesJobApiUrl, deps.hermesJobApiToken, launchPayload);

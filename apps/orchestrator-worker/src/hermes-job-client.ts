@@ -89,6 +89,8 @@ export async function createHermesJob(
   token: string | undefined,
   payload: {
     userPrompt: string;
+    workflow?: "search" | "design_experiment" | "auto";
+    effort?: number;
     model?: string;
     maxTurns?: number;
     corpusRoot?: string;
@@ -114,6 +116,8 @@ export async function resumeHermesJob(
     previousJobId: string;
     hermesSessionId?: string;
     userPrompt: string;
+    workflow?: "search" | "design_experiment" | "auto";
+    effort?: number;
     model?: string;
     maxTurns?: number;
     corpusRoot?: string;

@@ -11,8 +11,10 @@ import crypto from "node:crypto";
 const HOST = process.env.HERMES_JOB_API_HOST || "0.0.0.0";
 const PORT = Number.parseInt(process.env.HERMES_JOB_API_PORT || "8788", 10);
 const ROOT_DIR = process.env.ROOT_DIR || "/srv/alphabook/repo";
-const RUN_ROOT = process.env.RUN_ROOT || "/srv/alphabook/logs/hermes-corpus-research";
+const RESEARCH_RUN_ROOT = process.env.RUN_ROOT || "/srv/alphabook/logs/hermes-corpus-research";
+const SEARCH_RUN_ROOT = process.env.SEARCH_RUN_ROOT || "/srv/alphabook/logs/hermes-search";
 const CORPUS_RUN_ROOT = process.env.CORPUS_RUN_ROOT || "/srv/alphabook/logs/corpus-research";
+const SEARCH_CORPUS_RUN_ROOT = process.env.SEARCH_CORPUS_RUN_ROOT || "/srv/alphabook/logs/corpus-search";
 const API_LOG_ROOT = process.env.API_LOG_ROOT || "/srv/alphabook/logs/hermes-job-api";
 const API_TOKEN = loadToken();
 const CORS_ORIGIN = process.env.HERMES_JOB_API_CORS_ORIGIN || "*";
@@ -114,16 +116,30 @@ function isProcessAlive(pid) {
   }
 }
 
+function getWrapperRunRoots() {
+  return [RESEARCH_RUN_ROOT, SEARCH_RUN_ROOT];
+}
+
 function listRunDirs() {
-  if (!fs.existsSync(RUN_ROOT)) {
-    return [];
+  const seen = new Set();
+  const dirs = [];
+  for (const root of getWrapperRunRoots()) {
+    if (!fs.existsSync(root)) {
+      continue;
+    }
+    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+      const runDir = path.join(root, entry.name);
+      if (seen.has(runDir)) {
+        continue;
+      }
+      seen.add(runDir);
+      dirs.push(runDir);
+    }
   }
-  return fs
-    .readdirSync(RUN_ROOT, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => path.join(RUN_ROOT, entry.name))
-    .sort()
-    .reverse();
+  return dirs.sort().reverse();
 }
 
 function inferInnerRunDir(runDir) {
@@ -272,8 +288,43 @@ function getRunSummary(runDir) {
 }
 
 function resolveRunDir(jobId) {
-  const runDir = path.join(RUN_ROOT, jobId);
-  return fs.existsSync(runDir) ? runDir : null;
+  for (const root of getWrapperRunRoots()) {
+    const runDir = path.join(root, jobId);
+    if (fs.existsSync(runDir)) {
+      return runDir;
+    }
+  }
+  return null;
+}
+
+function normalizeWorkflow(value) {
+  if (value === "search" || value === "design_experiment" || value === "auto") {
+    return value;
+  }
+  return null;
+}
+
+function resolveLauncherConfig(payload) {
+  const workflow = normalizeWorkflow(payload.workflow);
+  const effort = Number.parseInt(String(payload.effort ?? ""), 10);
+  if (workflow === "search") {
+    return {
+      workflow,
+      launcherPath: path.join(ROOT_DIR, "ops/digitalocean/bin/run-hermes-search.sh"),
+      runRoot: SEARCH_RUN_ROOT,
+      innerRunRoot: SEARCH_CORPUS_RUN_ROOT,
+      promptArgName: "--user-prompt",
+      extraArgs: ["--effort", String(Number.isFinite(effort) && effort > 0 ? effort : 10)],
+    };
+  }
+  return {
+    workflow: workflow ?? "auto",
+    launcherPath: path.join(ROOT_DIR, "ops/digitalocean/bin/run-hermes-corpus-research.sh"),
+    runRoot: RESEARCH_RUN_ROOT,
+    innerRunRoot: CORPUS_RUN_ROOT,
+    promptArgName: "--user-prompt",
+    extraArgs: [],
+  };
 }
 
 function resolveArtifactPath(runDir, artifactName) {
@@ -533,7 +584,8 @@ async function launchJob(payload) {
     throw new Error("userPrompt is required");
   }
 
-  const args = [path.join(ROOT_DIR, "ops/digitalocean/bin/run-hermes-corpus-research.sh"), "--user-prompt", userPrompt];
+  const launcher = resolveLauncherConfig(payload);
+  const args = [launcher.launcherPath, launcher.promptArgName, userPrompt, ...launcher.extraArgs];
   if (payload.model) {
     args.push("--model", String(payload.model));
   }
@@ -565,7 +617,7 @@ async function launchJob(payload) {
       env: {
         ...process.env,
         ROOT_DIR,
-        RUN_ROOT,
+        RUN_ROOT: launcher.runRoot,
       },
     });
 
@@ -608,9 +660,13 @@ async function resumeJob(payload) {
   }
   const previousSummary = getRunSummary(previousRunDir);
   const resumeSessionId = String(payload.hermesSessionId || previousSummary.hermesSessionId || "").trim();
+  const launcher = resolveLauncherConfig(payload);
+  if (launcher.workflow === "search") {
+    throw new Error("Hermes search jobs do not support resume yet.");
+  }
   const args = [
-    path.join(ROOT_DIR, "ops/digitalocean/bin/run-hermes-corpus-research.sh"),
-    "--user-prompt",
+    launcher.launcherPath,
+    launcher.promptArgName,
     userPrompt,
     "--resume-run-dir",
     previousRunDir,
@@ -649,7 +705,7 @@ async function resumeJob(payload) {
       env: {
         ...process.env,
         ROOT_DIR,
-        RUN_ROOT,
+        RUN_ROOT: launcher.runRoot,
       },
     });
 
@@ -723,8 +779,9 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 200, {
         ok: true,
         now: nowIso(),
-        runRoot: RUN_ROOT,
+        runRoots: getWrapperRunRoots(),
         corpusRunRoot: CORPUS_RUN_ROOT,
+        searchCorpusRunRoot: SEARCH_CORPUS_RUN_ROOT,
       });
       return;
     }
