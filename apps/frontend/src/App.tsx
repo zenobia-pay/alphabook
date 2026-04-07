@@ -5,7 +5,7 @@ import { ChevronsLeft, ChevronsRight, Dices, Funnel, Link2, LoaderCircle, Messag
 
 import { ChatSessionSummarySchema, getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type NotificationRecord, type ProfileBookStat, type ProfileFacetStat, type ProfileQueryStat, type PublicProfileResponse, type UserProfile, type UserProfileStats, type WorkDetail, type WorkFacetCounts, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
-import { ApiError, buildSignInUrl, buildSignOutUrl, cancelRun, claimGuestProfile, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchAssistantDocumentState, fetchAssistantSessionBootstrap, fetchCurrentUser, fetchMessages, fetchNotifications, fetchProfile, fetchProfileStats, fetchRunState, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, getErrorMessage, markNotificationRead, queryAdminAnalytics, sendAnalyticsEvent, streamChat, streamRun, unfollowProfile, type PersistedRunEventRecord, type RunArtifactRecord, type SessionRunRecord } from "./api";
+import { ApiError, buildSignInUrl, buildSignOutUrl, cancelRun, claimGuestProfile, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchAssistantDocumentState, fetchAssistantSessionBootstrap, fetchCurrentUser, fetchMessages, fetchNotifications, fetchProfile, fetchProfileStats, fetchRunState, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, getErrorMessage, markNotificationRead, queryAdminAnalytics, sendAnalyticsEvent, streamChat, streamRun, unfollowProfile, type PersistedRunEventRecord, type RunArtifactRecord, type RunStateRecord, type SessionRunRecord } from "./api";
 import type { AssistantSurfaceProps } from "./components/assistant-surface";
 import { Avatar, AvatarFallback, AvatarImage } from "./components/ui/avatar";
 import { Button } from "./components/ui/button";
@@ -645,6 +645,111 @@ function hydrateStoredMessage(message: RawUiMessage): UiMessage {
         )
       : [],
   };
+}
+
+function readRunEventText(event: PersistedRunEventRecord): string | null {
+  if (!event || typeof event !== "object") {
+    return null;
+  }
+  const data = event.dataJson && typeof event.dataJson === "object"
+    ? event.dataJson as Record<string, unknown>
+    : null;
+  if (!data) {
+    return null;
+  }
+
+  if ((event.event === "tool.progress" || event.event === "tool.progress.raw") && typeof data.text === "string") {
+    const text = data.text.trim();
+    return text.length > 0 ? text : null;
+  }
+
+  if (event.event === "tool.started") {
+    const label = typeof data.label === "string"
+      ? data.label.trim()
+      : typeof data.toolName === "string"
+        ? getToolLabel(data.toolName)
+        : "Tool";
+    return label.length > 0 ? `${label} started.` : null;
+  }
+
+  if (event.event === "tool.completed") {
+    const label = typeof data.label === "string"
+      ? data.label.trim()
+      : typeof data.toolName === "string"
+        ? getToolLabel(data.toolName)
+        : "Tool";
+    const result = data.result && typeof data.result === "object"
+      ? data.result as Record<string, unknown>
+      : null;
+    const error = typeof result?.error === "string" ? result.error.trim() : "";
+    if (error) {
+      return `${label} failed: ${error}`;
+    }
+    return label.length > 0 ? `${label} completed.` : null;
+  }
+
+  if (event.event === "run.completed") {
+    const error = typeof data.error === "string" ? data.error.trim() : "";
+    return error || null;
+  }
+
+  return null;
+}
+
+function buildPersistedRunLogMessage(
+  sessionId: string,
+  runState: AssistantSessionBootstrapPayload["runState"] | RunStateRecord | null | undefined,
+): UiMessage | null {
+  const run = runState?.run;
+  if (!run || (run.status !== "running" && run.status !== "queued")) {
+    return null;
+  }
+  const runEvents = Array.isArray(runState?.runEvents) ? runState.runEvents : [];
+  if (runEvents.length === 0) {
+    return null;
+  }
+
+  const lines: string[] = [];
+  const seen = new Set<string>();
+  for (const event of runEvents) {
+    const text = readRunEventText(event);
+    if (!text || seen.has(text)) {
+      continue;
+    }
+    seen.add(text);
+    lines.push(text);
+  }
+  if (lines.length === 0) {
+    return null;
+  }
+
+  return {
+    id: `run-progress:${run.id}`,
+    sessionId,
+    role: "assistant",
+    content: lines.join("\n\n"),
+    metadata: {
+      phase: "progress",
+      runId: run.id,
+      synthetic: true,
+    },
+    createdAt: runEvents[runEvents.length - 1]?.createdAt ?? run.startedAt,
+    citations: [],
+    toolCalls: [],
+  };
+}
+
+function hydrateConversationMessages(
+  sessionId: string,
+  rawMessages: RawUiMessage[] | undefined,
+  runState: AssistantSessionBootstrapPayload["runState"] | RunStateRecord | null | undefined,
+): UiMessage[] {
+  const hydrated = Array.isArray(rawMessages) ? rawMessages.map(hydrateStoredMessage) : [];
+  const progressMessage = buildPersistedRunLogMessage(sessionId, runState);
+  if (!progressMessage) {
+    return hydrated;
+  }
+  return [...hydrated.filter((message) => message.id !== progressMessage.id), progressMessage];
 }
 
 function dedupeAdjacentErrorMessages(messages: UiMessage[]) {
@@ -2784,8 +2889,11 @@ function AssistantDocumentFramePage({
   const hasServerRenderedDocument = typeof document !== "undefined" && Boolean(document.getElementById("assistant-document-ssr"));
   const bootstrap = useMemo(() => readAssistantDocumentBootstrap(sessionId, runId), [runId, sessionId]);
   const bootstrapHydratedMessages = useMemo(() => {
-    const rawMessages = Array.isArray(bootstrap?.messages) ? bootstrap.messages : [];
-    return rawMessages.map(hydrateStoredMessage);
+    return hydrateConversationMessages(
+      sessionId,
+      Array.isArray(bootstrap?.messages) ? bootstrap.messages : [],
+      bootstrap?.runState,
+    );
   }, [bootstrap]);
   const [messages, setMessages] = useState<UiMessage[]>(bootstrapHydratedMessages);
   const [artifacts, setArtifacts] = useState<RunArtifactRecord[]>(() => (
@@ -2846,7 +2954,7 @@ function AssistantDocumentFramePage({
           window.clearTimeout(loadingTimer);
           loadingTimer = null;
         }
-        const merged = nextMessages.map(hydrateStoredMessage);
+        const merged = hydrateConversationMessages(sessionId, nextMessages, nextState);
         setMessages(merged);
         setArtifacts(Array.isArray(nextState.artifacts) ? nextState.artifacts : []);
         setRunStatus(nextState.run?.status ?? null);
@@ -3165,11 +3273,13 @@ export default function App() {
   const initialUrlState = readUrlState();
   const initialAssistantSessionBootstrap = readAssistantSessionBootstrap(initialUrlState.sessionId);
   const initialWorkPageBootstrap = readWorkPageBootstrap(initialUrlState.workId);
-  const initialBootstrapHydratedMessages = (
+  const initialBootstrapHydratedMessages = hydrateConversationMessages(
+    initialUrlState.sessionId ?? "pending",
     Array.isArray(initialAssistantSessionBootstrap?.messages)
       ? initialAssistantSessionBootstrap.messages
-      : []
-  ).map(hydrateStoredMessage);
+      : [],
+    initialAssistantSessionBootstrap?.runState,
+  );
   const initialBootstrapRuns = Array.isArray(initialAssistantSessionBootstrap?.runs)
     ? initialAssistantSessionBootstrap.runs
     : [];
@@ -4275,13 +4385,17 @@ export default function App() {
 
     const pollMessages = async () => {
       try {
-        const nextMessages = await fetchMessages(selectedSessionId);
+        const [nextMessages, nextRunState] = await Promise.all([
+          fetchMessages(selectedSessionId),
+          recoveredActiveRunId ? fetchRunState(selectedSessionId, recoveredActiveRunId).catch(() => null) : Promise.resolve(null),
+        ]);
         if (cancelled || selectedSessionIdRef.current !== selectedSessionId) {
           return;
         }
         consecutivePollFailures = 0;
-        const hydrated = nextMessages.map(hydrateStoredMessage);
+        const hydrated = hydrateConversationMessages(selectedSessionId, nextMessages, nextRunState);
         setMessages(hydrated);
+        setRunArtifacts(Array.isArray(nextRunState?.artifacts) ? nextRunState.artifacts : []);
         pollTimer = window.setTimeout(() => {
           void pollMessages();
         }, 2000);
@@ -4310,7 +4424,7 @@ export default function App() {
       if (cancelled || selectedSessionIdRef.current !== selectedSessionId) {
         return;
       }
-      const hydrated = nextMessages.map(hydrateStoredMessage);
+      const hydrated = hydrateConversationMessages(selectedSessionId, nextMessages, nextRunState);
       setMessages(hydrated);
       setRunArtifacts(Array.isArray(nextRunState?.artifacts) ? nextRunState.artifacts : []);
     };
@@ -4577,9 +4691,7 @@ export default function App() {
     const activeRun =
       nextRuns.find((run) => run.status === "running" || run.status === "queued")
       ?? null;
-    const hydratedMessages = Array.isArray(bootstrap.messages)
-      ? bootstrap.messages.map(hydrateStoredMessage)
-      : [];
+    const hydratedMessages = hydrateConversationMessages(sessionId, bootstrap.messages, bootstrap.runState);
     setSessions((current) => (
       Array.isArray(bootstrap.sessions) && bootstrap.sessions.length > 0
         ? bootstrap.sessions

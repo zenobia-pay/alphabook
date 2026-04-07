@@ -226,6 +226,81 @@ function renderMessageParagraphs(content: string) {
     .join("");
 }
 
+function buildAssistantTranscriptMessages(bootstrap: AssistantSessionBootstrapPayload) {
+  const baseMessages = Array.isArray(bootstrap.messages) ? bootstrap.messages : [];
+  const runState = bootstrap.runState && typeof bootstrap.runState === "object"
+    ? bootstrap.runState as {
+      run?: { id?: unknown; status?: unknown };
+      runEvents?: Array<{
+        event?: unknown;
+        dataJson?: unknown;
+      }>;
+    }
+    : null;
+  const run = runState?.run && typeof runState.run === "object"
+    ? runState.run as { id?: unknown; status?: unknown }
+    : null;
+  const runEvents = Array.isArray(runState?.runEvents) ? runState.runEvents : [];
+
+  if (!run || (run.status !== "running" && run.status !== "queued") || runEvents.length === 0) {
+    return baseMessages;
+  }
+
+  const lines: string[] = [];
+  const seen = new Set<string>();
+  for (const event of runEvents) {
+    if (!event || typeof event !== "object") {
+      continue;
+    }
+    const data = event.dataJson && typeof event.dataJson === "object"
+      ? event.dataJson as Record<string, unknown>
+      : null;
+    if (!data) {
+      continue;
+    }
+    let nextLine = "";
+    if ((event.event === "tool.progress" || event.event === "tool.progress.raw") && typeof data.text === "string") {
+      nextLine = data.text.trim();
+    } else if (event.event === "tool.started") {
+      const label = firstNonEmptyString(data.label, data.toolName, "Tool");
+      nextLine = label ? `${label} started.` : "";
+    } else if (event.event === "tool.completed") {
+      const label = firstNonEmptyString(data.label, data.toolName, "Tool");
+      const result = data.result && typeof data.result === "object"
+        ? data.result as Record<string, unknown>
+        : null;
+      const error = typeof result?.error === "string" ? result.error.trim() : "";
+      nextLine = error ? `${label} failed: ${error}` : (label ? `${label} completed.` : "");
+    } else if (event.event === "run.completed" && typeof data.error === "string") {
+      nextLine = data.error.trim();
+    }
+    if (!nextLine || seen.has(nextLine)) {
+      continue;
+    }
+    seen.add(nextLine);
+    lines.push(nextLine);
+  }
+
+  if (lines.length === 0) {
+    return baseMessages;
+  }
+
+  return [
+    ...baseMessages,
+    {
+      id: `run-progress:${String(run.id ?? "active")}`,
+      sessionId: bootstrap.sessionId,
+      role: "assistant",
+      content: lines.join("\n\n"),
+      metadata: {
+        phase: "progress",
+        synthetic: true,
+      },
+      createdAt: new Date().toISOString(),
+    },
+  ];
+}
+
 function renderAssistantSessionMarkup(bootstrap: AssistantSessionBootstrapPayload | null) {
   if (!bootstrap || bootstrap.error) {
     return null;
@@ -244,7 +319,7 @@ function renderAssistantSessionMarkup(bootstrap: AssistantSessionBootstrapPayloa
       `</section>`,
     ].join("");
 
-  const messages = Array.isArray(bootstrap.messages) ? bootstrap.messages : [];
+  const messages = buildAssistantTranscriptMessages(bootstrap);
   const transcript = messages
     .filter((message) => {
       if (!message || typeof message !== "object") {
