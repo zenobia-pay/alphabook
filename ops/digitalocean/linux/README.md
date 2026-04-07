@@ -2,6 +2,11 @@
 
 This directory contains the Linux-native AlphaBook deployment scaffolding for the staged migration onto generic Linux infrastructure.
 
+Current production hosts:
+
+- `alphabook-web-01` -> `178.128.159.197`
+- `alphabook-worker-01` -> `143.198.162.219`
+
 Target boxes:
 
 - `do-web-01`
@@ -25,6 +30,22 @@ Keep the existing Gutenberg mirror and Qdrant droplets in place. Point the worke
 5. Start `do-worker-01`.
 6. Start `do-web-01`.
 7. Put Cloudflare in front of the web box and restrict origin access to Cloudflare IP ranges.
+
+## Production deploy
+
+Primary live deploy command:
+
+```bash
+npm run deploy:prod
+```
+
+That deploys the current production surface in order:
+
+1. static frontend bundle to `alphabook-web-01`
+2. Linux API containers to `alphabook-web-01`
+3. Linux worker/runtime containers to `alphabook-worker-01`
+
+Do not use Cloudflare Worker deploys for the primary AlphaBook web or API path.
 
 ## Compose bundles
 
@@ -64,8 +85,9 @@ Web-specific:
 
 ## Notes
 
-- The main AlphaBook web and API path is Linux-native behind a DNS proxy. Do not deploy the primary AlphaBook session UI or API through Cloudflare Workers.
+- The main AlphaBook web and API path is Linux-native behind proxied Cloudflare DNS. Do not deploy the primary AlphaBook session UI or API through Cloudflare Workers.
 - The Linux API path is Postgres-only. It does not fall back to D1 or Wrangler.
 - Canonical blobs are expected to live in DO Spaces or another S3-compatible object store.
 - The Linux worker uses `pg-boss` for durable research task execution.
 - The Linux worker expects a normal HTTP runtime service on the private network. It does not launch Fly Machines.
+- `books.alpha-book.org` is still the one remaining Cloudflare Worker-backed surface; it is not part of the main app/API deploy path.
