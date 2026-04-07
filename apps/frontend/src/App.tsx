@@ -7432,6 +7432,19 @@ export default function App() {
 
   return (
     <div className={cn("app-shell", mobileNavOpen && "is-nav-open", sidebarCollapsed && "is-sidebar-collapsed")}>
+      {sidebarCollapsed ? (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="sidebar-expand-fab hidden md:inline-flex"
+          aria-label="Expand sidebar"
+          onClick={() => setSidebarCollapsed(false)}
+        >
+          <ChevronsRight className="size-4" />
+        </Button>
+      ) : null}
+
       <button
         type="button"
         className={`shell-backdrop ${mobileNavOpen ? "is-open" : ""}`}
@@ -7443,8 +7456,7 @@ export default function App() {
         <div className="sidebar-header gap-4">
           <div className="brand-lockup">
             <div className="flex min-w-0 items-center gap-3">
-              <span className={cn("wordmark", sidebarCollapsed && "sr-only")}>{WORDMARK}</span>
-              {sidebarCollapsed ? <span className="wordmark">{WORDMARK_MONOGRAM}</span> : null}
+              <span className="wordmark">{WORDMARK}</span>
             </div>
             <div className="flex items-center gap-2">
               <Button

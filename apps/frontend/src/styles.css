@@ -74,7 +74,7 @@ button {
 }
 
 .app-shell.is-sidebar-collapsed {
-  grid-template-columns: 84px minmax(0, 1fr);
+  grid-template-columns: 0 minmax(0, 1fr);
 }
 
 .shell-backdrop,
@@ -102,8 +102,34 @@ button {
 }
 
 .sidebar.is-collapsed {
-  padding-left: 10px;
-  padding-right: 10px;
+  padding: 0;
+  border-right: 0;
+  background: transparent;
+  backdrop-filter: none;
+  pointer-events: none;
+}
+
+.sidebar-expand-fab {
+  position: fixed;
+  left: 10px;
+  top: 14px;
+  z-index: 31;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--shell-border);
+  border-radius: 0;
+  background: rgba(255, 255, 255, 0.96);
+  color: var(--ink);
+  box-shadow: 0 10px 24px rgba(26, 33, 52, 0.08);
+}
+
+.sidebar-expand-fab:hover {
+  background: #fff;
+}
+
+.sidebar.is-collapsed > * {
+  opacity: 0;
+  visibility: hidden;
 }
 
 .sidebar-header {
