@@ -1034,22 +1034,29 @@ button {
 .aui-run-output-dialog {
   max-width: min(960px, calc(100vw - 32px));
   width: min(960px, calc(100vw - 32px));
-  padding: 18px 18px 16px;
+  gap: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: #fff;
+  overflow: hidden;
 }
 
 .aui-run-output-dialog-title {
   font-size: 0.95rem;
   font-weight: 600;
   color: rgba(24, 24, 22, 0.92);
+  padding: 18px 24px 14px;
 }
 
 .aui-run-output-dialog-body {
   max-height: min(72vh, 720px);
   overflow: auto;
-  margin-top: 12px;
-  border: 1px solid rgba(24, 24, 22, 0.12);
-  padding: 14px;
-  background: rgba(250, 250, 248, 0.92);
+  margin-top: 0;
+  border: 0;
+  padding: 0 24px 24px;
+  background: #fff;
 }
 
 .aui-run-output-dialog-pre {
@@ -1060,6 +1067,14 @@ button {
   white-space: pre-wrap;
   word-break: break-word;
   color: rgba(31, 31, 29, 0.92);
+}
+
+.aui-run-output-dialog [data-slot="dialog-close"] {
+  top: 18px;
+  right: 18px;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 @keyframes aui-agentic-spin {
