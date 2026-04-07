@@ -31,6 +31,14 @@ function buildJsonExtractExpression(source: string, path: string) {
 
 function replaceJsonEach(sql: string) {
   return sql.replace(
+    /JOIN\s+json_each\s*\(\s*COALESCE\(\s*json_extract\(\s*([^,]+?)\s*,\s*'(\$\.[^']+)'\s*\)\s*,\s*'(\[\])'\s*\)\s*\)\s+([a-zA-Z_][a-zA-Z0-9_]*)/gu,
+    (_match, source: string, path: string, fallback: string, alias: string) =>
+      `CROSS JOIN LATERAL jsonb_array_elements_text(COALESCE(${buildJsonExtractExpression(source.trim(), path)}, '${fallback}'::jsonb)) AS ${alias}(value)`,
+  ).replace(
+    /JOIN\s+json_each\s*\(\s*COALESCE\(\s*([^,()]+?)\s*,\s*'(\[\])'\s*\)\s*\)\s+([a-zA-Z_][a-zA-Z0-9_]*)/gu,
+    (_match, source: string, fallback: string, alias: string) =>
+      `CROSS JOIN LATERAL jsonb_array_elements_text(COALESCE((${source.trim()})::jsonb, '${fallback}'::jsonb)) AS ${alias}(value)`,
+  ).replace(
     /json_each\s*\(\s*COALESCE\(\s*json_extract\(\s*([^,]+?)\s*,\s*'(\$\.[^']+)'\s*\)\s*,\s*'(\[\])'\s*\)\s*\)\s+([a-zA-Z_][a-zA-Z0-9_]*)/gu,
     (_match, source: string, path: string, fallback: string, alias: string) =>
       `jsonb_array_elements_text(COALESCE(${buildJsonExtractExpression(source.trim(), path)}, '${fallback}'::jsonb)) AS ${alias}(value)`,
