@@ -5,6 +5,7 @@ import {
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { SemanticSearchToolUI, ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
+import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
@@ -728,7 +729,7 @@ const AssistantMessage: FC = () => {
     >
       <div className="aui-assistant-message-content wrap-break-word px-2 text-foreground leading-relaxed">
         {phase === "progress" ? <ProgressMessageCard text={progressText} /> : <MessagePrimitive.Parts components={TOOL_PART_COMPONENTS} />}
-        {hasPlanToolTrace ? <PlanToolTraceCard trace={planToolTrace} isRunning={isRunning} /> : null}
+        {hasPlanToolTrace ? <PlanToolTraceCard trace={planToolTrace} isRunning={isRunning} detailText={progressText} /> : null}
         {experimentProposal ? <ExperimentApprovalCard proposal={experimentProposal} disabled={isRunning} /> : null}
         {isRunning && !hasVisibleParts && !experimentProposal ? (
           <div className="aui-assistant-running-indicator" aria-label="Assistant is thinking">
@@ -749,46 +750,52 @@ const AssistantMessage: FC = () => {
 const ProgressMessageCard: FC<{
   text: string;
 }> = ({ text }) => {
-  const handleOpen = useCallback(() => {
-    const popup = window.open("", "_blank", "noopener,noreferrer,width=900,height=700");
-    if (!popup) {
-      return;
-    }
-    const escaped = text
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;");
-    popup.document.write(`<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <title>Run Output</title>
-    <style>
-      body { margin: 0; padding: 20px; background: #ffffff; color: #1f1f1f; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-      pre { white-space: pre-wrap; word-break: break-word; line-height: 1.5; font-size: 13px; margin: 0; }
-    </style>
-  </head>
-  <body><pre>${escaped}</pre></body>
-</html>`);
-    popup.document.close();
-  }, [text]);
-
   return (
-    <section className="aui-progress-link-shell" aria-label="Live run output">
-      <button type="button" className="aui-progress-link-button" onClick={handleOpen}>
-        View detailed run output
-      </button>
+    <section className="aui-agentic-trace" aria-label="Agentic Search run">
+      <div className="aui-agentic-trace-header is-static">
+        <div className="aui-agentic-trace-heading">
+          <div className="aui-agentic-trace-title-row">
+            <span className="aui-agentic-trace-title">Agentic Search</span>
+            <span className="aui-agentic-trace-spinner" aria-hidden="true" />
+            <span className="aui-agentic-trace-status">In Progress</span>
+            {text.trim().length > 0 ? <DetailedRunOutputButton text={text} /> : null}
+          </div>
+        </div>
+      </div>
     </section>
+  );
+};
+
+const DetailedRunOutputButton: FC<{
+  text: string;
+}> = ({ text }) => {
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <button type="button" className="aui-progress-link-button">
+          View detailed run output
+        </button>
+      </DialogTrigger>
+      <DialogContent className="aui-run-output-dialog">
+        <DialogTitle className="aui-run-output-dialog-title">
+          Detailed Run Output
+        </DialogTitle>
+        <div className="aui-run-output-dialog-body">
+          <pre className="aui-run-output-dialog-pre">{text}</pre>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 };
 
 const PlanToolTraceCard: FC<{
   trace: PlanToolTraceRecord[];
   isRunning: boolean;
-}> = ({ trace, isRunning }) => {
+  detailText?: string;
+}> = ({ trace, isRunning, detailText = "" }) => {
   const [collapsed, setCollapsed] = useState(false);
   const lines = useMemo(
-    () => trace.map((entry) => summarizePlanToolLine(entry)).filter((line, index, all) => line && all.indexOf(line) === index),
+    () => trace.map((entry) => summarizePlanToolLine(entry)).filter((line) => line),
     [trace],
   );
   const statusLabel = trace.some((entry) => entry.state === "error" || entry.isError)
@@ -817,6 +824,14 @@ const PlanToolTraceCard: FC<{
             >
               {statusLabel}
             </span>
+            {detailText.trim().length > 0 ? (
+              <span
+                className="aui-agentic-trace-inline-action"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <DetailedRunOutputButton text={detailText} />
+              </span>
+            ) : null}
           </div>
         </div>
         <ChevronDownIcon className={cn("aui-agentic-trace-chevron", !collapsed && "is-open")} />
@@ -825,7 +840,7 @@ const PlanToolTraceCard: FC<{
         <div className="aui-agentic-trace-body">
           <div className="aui-agentic-trace-lines" role="list">
             {lines.map((line, index) => (
-              <div key={`${line}-${index}`} className="aui-agentic-trace-line" role="listitem">
+              <div key={`${index}-${line.slice(0, 48)}`} className="aui-agentic-trace-line" role="listitem">
                 <span className="aui-agentic-trace-line-dot" aria-hidden="true" />
                 <span className="aui-agentic-trace-line-text">{line}</span>
               </div>
@@ -836,6 +851,7 @@ const PlanToolTraceCard: FC<{
     </section>
   );
 };
+
 
 const ExperimentApprovalCard: FC<{
   proposal: {
