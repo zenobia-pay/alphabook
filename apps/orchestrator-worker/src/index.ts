@@ -540,7 +540,10 @@ function resolveRuntimeGateway(
 }
 
 export async function runQueuedWorkspaceResearchTask(
-  runtimeGateway: FlyMachinesRuntimeGateway | HttpRuntimeGateway,
+  runtimeGateway: {
+    runWorkspaceTask(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+    runSpriteFanoutResearch?: (args: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  },
   input: {
     runtimeId: string;
     taskSpec: Record<string, unknown>;

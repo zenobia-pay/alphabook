@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 
-import { D1_SCHEMA_SQL } from "@alphabook/db";
+import { D1_SCHEMA_SQL, runPostgresMigrations } from "@alphabook/db";
 
 async function loadLocalEnvFile() {
   try {
@@ -49,6 +49,12 @@ async function runWrangler(args: string[]) {
 
 async function main() {
   await loadLocalEnvFile();
+
+  if (process.env.DATABASE_URL) {
+    await runPostgresMigrations({ connectionString: process.env.DATABASE_URL });
+    console.log("Applied AlphaBook schema to Postgres.");
+    return;
+  }
 
   const databaseName = process.argv[2] ?? process.env.D1_DATABASE_NAME ?? "alphabook-app";
   const remoteFlag = process.argv.includes("--local") ? "--local" : "--remote";

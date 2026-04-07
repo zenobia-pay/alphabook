@@ -6,6 +6,7 @@ import process from "node:process";
 
 export * from "./d1";
 export * from "./d1-sql";
+export * from "./postgres";
 
 export interface DbClient {
   query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<{ rows: T[] }>;

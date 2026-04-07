@@ -1,0 +1,28 @@
+services:
+  alphabook-api:
+    build:
+      context: ../../..
+      dockerfile: apps/orchestrator-worker/Dockerfile.linux
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8787:8787"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - /srv/alphabook/frontend:/srv/frontend:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - alphabook-api
+
+volumes:
+  caddy-data:
+  caddy-config:

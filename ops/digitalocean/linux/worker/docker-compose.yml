@@ -1,0 +1,24 @@
+services:
+  alphabook-runtime:
+    build:
+      context: ../../..
+      dockerfile: apps/runtime/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PORT: 8080
+    ports:
+      - "8080:8080"
+
+  alphabook-worker:
+    build:
+      context: ../../..
+      dockerfile: apps/orchestrator-worker/Dockerfile.linux
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      RUNTIME_SERVICE_URL: http://alphabook-runtime:8080
+    depends_on:
+      - alphabook-runtime

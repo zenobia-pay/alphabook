@@ -1966,7 +1966,11 @@ async function loadCorpusVectorChunkMap() {
         if (!row || typeof row !== "object") {
           continue;
         }
-        const gutenbergId = normalizeGutenbergId((row as { gutenberg_id?: unknown }).gutenberg_id);
+        const rawGutenbergId = (row as { gutenberg_id?: unknown }).gutenberg_id;
+        const gutenbergId =
+          typeof rawGutenbergId === "string" || typeof rawGutenbergId === "number" || rawGutenbergId == null
+            ? normalizeGutenbergId(rawGutenbergId)
+            : null;
         const corpusChunkId = typeof (row as { corpus_chunk_id?: unknown }).corpus_chunk_id === "string"
           ? (row as { corpus_chunk_id: string }).corpus_chunk_id.trim()
           : "";
