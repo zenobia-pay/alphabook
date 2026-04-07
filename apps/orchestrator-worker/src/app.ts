@@ -1163,6 +1163,20 @@ function requestedAssistantMode(input: {
   return "semantic";
 }
 
+function inferExplicitAssistantMode(message: string): "semantic" | "comprehensive" | "hermes" | undefined {
+  const normalized = message.toLowerCase();
+  if (/\bhermes\b/u.test(normalized)) {
+    return "hermes";
+  }
+  if (/\b(comprehensive|deep research|deeper research|sprite fanout|sprite_fanout)\b/u.test(normalized)) {
+    return "comprehensive";
+  }
+  if (/\bsemantic\b/u.test(normalized)) {
+    return "semantic";
+  }
+  return undefined;
+}
+
 function requestedIntensityOverride(input: {
   mode?: "semantic" | "comprehensive" | "hermes";
   workflow?: "auto" | "search" | "design_experiment";
@@ -13382,6 +13396,12 @@ export function createApp(inputDeps: CreateAppInput) {
       ...payload,
       userId: user?.id ?? payload.userId,
     };
+    if (!requestPayload.mode) {
+      const inferredMode = inferExplicitAssistantMode(requestPayload.message);
+      if (inferredMode) {
+        requestPayload.mode = inferredMode;
+      }
+    }
     if (requestPayload.sessionId) {
       const existingSession = await deps.store.getSession(requestPayload.sessionId);
       if (existingSession && existingSession.userId !== requestPayload.userId) {

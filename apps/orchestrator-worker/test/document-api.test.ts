@@ -180,3 +180,200 @@ test("document chat endpoint accepts documentIds and streams neutral tool aliase
   assert.match(body, /"documentId":"work-1"/);
   assert.doesNotMatch(body, /"toolName":"search_works"/);
 });
+
+test("document chat infers Hermes mode from the raw message before runner selection", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    if (url === "https://hermes.example.test/v1/jobs" && init?.method === "POST") {
+      return new Response(JSON.stringify({
+        job: {
+          id: "job-hermes-search",
+          state: "launching",
+          running: true,
+          pid: 1234,
+          userPrompt: "search for personal diaries and use hermes search",
+          model: "gpt-5.4",
+          maxTurns: 60,
+          launchedAt: new Date().toISOString(),
+          startedAt: new Date().toISOString(),
+          finishedAt: null,
+          innerRunDir: "/srv/alphabook/logs/corpus-research/job-hermes-search",
+          innerRunId: "job-hermes-search",
+          hermesSessionId: "hermes-session",
+          exitCode: null,
+          heartbeatAt: new Date().toISOString(),
+          phase: "launching",
+          phaseProgressPct: 5,
+          detail: null,
+          manifestStatus: "initialized",
+          chosenScope: "full corpus",
+          scopeRationale: null,
+          recordCounts: null,
+        },
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url === "https://hermes.example.test/v1/jobs/job-hermes-search") {
+      return new Response(JSON.stringify({
+        job: {
+          id: "job-hermes-search",
+          state: "completed",
+          running: false,
+          pid: 1234,
+          userPrompt: "search for personal diaries and use hermes search",
+          model: "gpt-5.4",
+          maxTurns: 60,
+          launchedAt: new Date().toISOString(),
+          startedAt: new Date().toISOString(),
+          finishedAt: new Date().toISOString(),
+          innerRunDir: "/srv/alphabook/logs/corpus-research/job-hermes-search",
+          innerRunId: "job-hermes-search",
+          hermesSessionId: "hermes-session",
+          exitCode: 0,
+          heartbeatAt: new Date().toISOString(),
+          phase: "completed",
+          phaseProgressPct: 100,
+          detail: null,
+          manifestStatus: "completed",
+          chosenScope: "full corpus",
+          scopeRationale: null,
+          recordCounts: null,
+        },
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.startsWith("https://hermes.example.test/v1/jobs/job-hermes-search/logs")) {
+      return new Response(JSON.stringify({
+        jobId: "job-hermes-search",
+        sources: [],
+        nextCursor: "",
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url === "https://hermes.example.test/v1/jobs/job-hermes-search/artifacts") {
+      return new Response(JSON.stringify({
+        jobId: "job-hermes-search",
+        runDir: "/srv/alphabook/logs/corpus-research/job-hermes-search",
+        innerRunDir: "/srv/alphabook/logs/corpus-research/job-hermes-search",
+        artifacts: [
+          {
+            name: "briefing.md",
+            path: "/srv/alphabook/logs/corpus-research/job-hermes-search/briefing.md",
+            bytes: 28,
+            updatedAt: new Date().toISOString(),
+          },
+          {
+            name: "hits/index.json",
+            path: "/srv/alphabook/logs/corpus-research/job-hermes-search/hits/index.json",
+            bytes: 11,
+            updatedAt: new Date().toISOString(),
+          },
+          {
+            name: "hermes.session.json",
+            path: "/srv/alphabook/logs/corpus-research/job-hermes-search/hermes.session.json",
+            bytes: 80,
+            updatedAt: new Date().toISOString(),
+          },
+        ],
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url === "https://hermes.example.test/v1/jobs/job-hermes-search/artifacts/briefing.md") {
+      return new Response(JSON.stringify({
+        jobId: "job-hermes-search",
+        artifact: {
+          name: "briefing.md",
+          path: "/srv/alphabook/logs/corpus-research/job-hermes-search/briefing.md",
+          bytes: 28,
+          updatedAt: new Date().toISOString(),
+          content: "# Briefing\nInteresting diaries",
+        },
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url === "https://hermes.example.test/v1/jobs/job-hermes-search/artifacts/hits%2Findex.json") {
+      return new Response(JSON.stringify({
+        jobId: "job-hermes-search",
+        artifact: {
+          name: "hits/index.json",
+          path: "/srv/alphabook/logs/corpus-research/job-hermes-search/hits/index.json",
+          bytes: 11,
+          updatedAt: new Date().toISOString(),
+          content: "{\"hits\":[]}",
+        },
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url === "https://hermes.example.test/v1/jobs/job-hermes-search/artifacts/hermes.session.json") {
+      return new Response(JSON.stringify({
+        jobId: "job-hermes-search",
+        artifact: {
+          name: "hermes.session.json",
+          path: "/srv/alphabook/logs/corpus-research/job-hermes-search/hermes.session.json",
+          bytes: 94,
+          updatedAt: new Date().toISOString(),
+          content: JSON.stringify({
+            session_id: "hermes-session",
+            messages: [
+              {
+                role: "assistant",
+                content: "Hermes found the strongest diary leads.",
+              },
+            ],
+          }),
+        },
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(`Unhandled fetch: ${url}`, { status: 500 });
+  }) as typeof fetch;
+
+  try {
+    const store = new InMemoryAppStore();
+    const app = createApp({
+      store,
+      billing: createBillingService(store),
+      blobStore: new MemoryBlobStore(),
+      hermesJobApiUrl: "https://hermes.example.test",
+      hermesJobApiToken: "test-token",
+      queues: {
+        ingestName: "alphabook-ingest",
+        jobsName: "alphabook-jobs",
+      },
+    });
+
+    const response = await app.request("/api/v1/documents/chat", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        userId: "11111111-1111-1111-1111-111111111111",
+        message: "search for personal diaries and use hermes search",
+      }),
+    });
+
+    assert.equal(response.status, 200);
+    const body = await response.text();
+    assert.match(body, /Starting a Hermes (search|research) run on this thread/);
+    assert.match(body, /"completionMode":"hermes"/);
+    assert.doesNotMatch(body, /semantic_deep_search/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
