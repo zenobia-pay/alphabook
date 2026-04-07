@@ -803,6 +803,14 @@ function buildFetchHandler(env: Env) {
   return app.fetch;
 }
 
+export function shouldHandleLocallyWhenOriginProxyEnabled(pathname: string): boolean {
+  const normalizedPath = pathname.trim() || "/";
+  return normalizedPath === "/health"
+    || normalizedPath === "/me"
+    || normalizedPath === "/auth"
+    || normalizedPath.startsWith("/auth/");
+}
+
 async function runScheduledJanitor(env: Env) {
   if (!env.OPENAI_API_KEY) {
     throw new Error("OPENAI_API_KEY is required.");
@@ -1946,8 +1954,8 @@ export class ComprehensiveJobDurableObject {
 
 export default {
   async fetch(request: Request, env: Env, executionCtx: ExecutionContext) {
-    if (env.ORIGIN_PROXY_URL) {
-      const requestUrl = new URL(request.url);
+    const requestUrl = new URL(request.url);
+    if (env.ORIGIN_PROXY_URL && !shouldHandleLocallyWhenOriginProxyEnabled(requestUrl.pathname)) {
       const upstreamUrl = new URL(env.ORIGIN_PROXY_URL);
       upstreamUrl.pathname = `${upstreamUrl.pathname.replace(/\/$/, "")}${requestUrl.pathname}` || "/";
       upstreamUrl.search = requestUrl.search;
