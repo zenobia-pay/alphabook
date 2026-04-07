@@ -4834,37 +4834,6 @@ export async function finalizeStaleRun(
     }
   }
 
-  const sessionMessages = await deps.store.listMessages(session.id);
-  const activeHermesThread = findHermesThreadMetadataForRun(sessionMessages, run.id);
-  if (!activeBackgroundJob && activeHermesThread && deps.hermesJobApiUrl) {
-    try {
-      const { job } = await fetchHermesJob(deps.hermesJobApiUrl, deps.hermesJobApiToken, activeHermesThread.jobId);
-      const nextStatus = backgroundJobStatusFromHermesJob(job);
-      if (backgroundJobIsActive(nextStatus)) {
-        await deps.store.createBackgroundJob({
-          runId: run.id,
-          sessionId: session.id,
-          provider: "hermes",
-          externalJobId: job.id,
-          status: nextStatus,
-          phase: job.phase ?? null,
-          detail: job.detail ?? null,
-          progressPct: job.phaseProgressPct ?? null,
-          lastHeartbeatAt: job.heartbeatAt ?? null,
-          startedAt: job.startedAt ?? null,
-          metadata: {
-            hermesSessionId: job.hermesSessionId ?? null,
-            innerRunId: job.innerRunId ?? null,
-            innerRunDir: job.innerRunDir ?? null,
-            manifestStatus: job.manifestStatus ?? null,
-          },
-        });
-        return run;
-      }
-    } catch {
-      // Best-effort migration fallback for legacy Hermes runs without a background job row.
-    }
-  }
   const failureMessage = "This run stopped before it wrote a terminal event.";
   await appendRunLifecycleEvent(deps, run, "run.recovery.failed", {
     reason: "lease_expired_without_terminal_event",
@@ -8316,15 +8285,6 @@ async function persistCompletedAssistantAnswer(
   return { answer: linkedAnswer, citations: params.citations, artifactKey, researchDocumentHtml };
 }
 
-type HermesThreadMetadata = {
-  jobId: string;
-  sessionId?: string | null;
-  model?: string | null;
-  innerRunId?: string | null;
-  innerRunDir?: string | null;
-  estimatedCostUsd?: number | null;
-};
-
 type HermesSessionMessage = {
   role?: string;
   content?: string | null;
@@ -8785,53 +8745,6 @@ function summarizeHermesToolResult(
       __summary: text,
     },
   };
-}
-
-function extractHermesThreadMetadata(messages: MessageRecord[]): HermesThreadMetadata | null {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    const candidate =
-      message.metadata?.hermes && typeof message.metadata.hermes === "object"
-        ? message.metadata.hermes as Record<string, unknown>
-        : null;
-    if (!candidate || typeof candidate.jobId !== "string" || candidate.jobId.trim().length === 0) {
-      continue;
-    }
-    return {
-      jobId: candidate.jobId,
-      sessionId: typeof candidate.sessionId === "string" ? candidate.sessionId : null,
-      model: typeof candidate.model === "string" ? candidate.model : null,
-      innerRunId: typeof candidate.innerRunId === "string" ? candidate.innerRunId : null,
-      innerRunDir: typeof candidate.innerRunDir === "string" ? candidate.innerRunDir : null,
-      estimatedCostUsd: typeof candidate.estimatedCostUsd === "number" ? candidate.estimatedCostUsd : null,
-    };
-  }
-  return null;
-}
-
-function findHermesThreadMetadataForRun(messages: MessageRecord[], runId: string): HermesThreadMetadata | null {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message.metadata?.runId !== runId) {
-      continue;
-    }
-    const candidate =
-      message.metadata?.hermes && typeof message.metadata.hermes === "object"
-        ? message.metadata.hermes as Record<string, unknown>
-        : null;
-    if (!candidate || typeof candidate.jobId !== "string" || candidate.jobId.trim().length === 0) {
-      continue;
-    }
-    return {
-      jobId: candidate.jobId,
-      sessionId: typeof candidate.sessionId === "string" ? candidate.sessionId : null,
-      model: typeof candidate.model === "string" ? candidate.model : null,
-      innerRunId: typeof candidate.innerRunId === "string" ? candidate.innerRunId : null,
-      innerRunDir: typeof candidate.innerRunDir === "string" ? candidate.innerRunDir : null,
-      estimatedCostUsd: typeof candidate.estimatedCostUsd === "number" ? candidate.estimatedCostUsd : null,
-    };
-  }
-  return extractHermesThreadMetadata(messages);
 }
 
 async function fanOutActiveRunSubscribers(
@@ -14253,48 +14166,6 @@ export function createApp(inputDeps: CreateAppInput) {
       },
     );
   });
-
-  const HermesCompletionCallbackSchema = z.object({
-    sessionId: z.string().trim().min(1),
-    runId: z.string().trim().min(1),
-    jobId: z.string().trim().min(1),
-    status: z.string().trim().optional(),
-  });
-
-  const handleHermesCompletionCallback = async (c: Context) => {
-    if (!deps.hermesJobApiUrl || !deps.hermesJobApiToken) {
-      return c.json({ error: "Hermes callbacks are not configured." }, 501);
-    }
-    const authHeader = c.req.header("authorization") ?? "";
-    if (authHeader !== `Bearer ${deps.hermesJobApiToken}`) {
-      return c.json({ error: "Not authorized." }, 403);
-    }
-    const payload = HermesCompletionCallbackSchema.parse(await c.req.json());
-    const session = await deps.store.getSession(payload.sessionId);
-    if (!session) {
-      return c.json({ error: "Session not found." }, 404);
-    }
-    const run = await deps.store.getRun(payload.runId);
-    if (!run || run.sessionId !== payload.sessionId) {
-      return c.json({ error: "Run not found." }, 404);
-    }
-
-    const latestJob = await fetchHermesJob(deps.hermesJobApiUrl, deps.hermesJobApiToken, payload.jobId);
-    const finalized = await finalizeHermesRun(deps, activeRuns, {
-      session,
-      runId: payload.runId,
-      job: latestJob.job,
-    });
-    return c.json({
-      ok: true,
-      runId: payload.runId,
-      jobId: payload.jobId,
-      finalized,
-    });
-  };
-
-  app.post("/v1/hermes/callbacks/run-completed", handleHermesCompletionCallback);
-  app.post("/api/v1/hermes/callbacks/run-completed", handleHermesCompletionCallback);
 
   app.post("/runs/:runId/cancel", async (c) => {
     const trustedRequest = requireTrustedBrowserRequest(c);

@@ -49,8 +49,6 @@ type RemoteJobCreatePayload = {
   corpusRoot?: string;
   alphabookSessionId?: string;
   alphabookRunId?: string;
-  callbackUrl?: string;
-  callbackToken?: string;
   archivePrefix?: string;
   maxResults?: number;
   backend?: "alphaloop" | "context1";
@@ -131,8 +129,6 @@ export async function resumeHermesJob(
     corpusRoot?: string;
     alphabookSessionId?: string;
     alphabookRunId?: string;
-    callbackUrl?: string;
-    callbackToken?: string;
     archivePrefix?: string;
   },
 ) {
@@ -154,8 +150,6 @@ export async function createSemanticSearchJob(
     gutenbergIds?: string[];
     alphabookSessionId?: string;
     alphabookRunId?: string;
-    callbackUrl?: string;
-    callbackToken?: string;
     archivePrefix?: string;
   },
 ) {
@@ -167,8 +161,6 @@ export async function createSemanticSearchJob(
     gutenbergIds: payload.gutenbergIds,
     alphabookSessionId: payload.alphabookSessionId,
     alphabookRunId: payload.alphabookRunId,
-    callbackUrl: payload.callbackUrl,
-    callbackToken: payload.callbackToken,
     archivePrefix: payload.archivePrefix,
     workflow: "search",
   });
