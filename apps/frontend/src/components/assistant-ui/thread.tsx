@@ -709,13 +709,14 @@ const AssistantMessage: FC = () => {
     });
     return textParts.join("\n\n").trim();
   });
-  const planToolTrace = useAuiState((state) => {
+  const rawPlanToolTrace = useAuiState((state) => {
     const metadata = state.message.metadata;
     const custom = metadata && typeof metadata === "object" && "custom" in metadata
       ? metadata.custom as Record<string, unknown>
       : null;
-    return readPlanToolTrace(custom?.toolCalls);
+    return custom?.toolCalls;
   });
+  const planToolTrace = useMemo(() => readPlanToolTrace(rawPlanToolTrace), [rawPlanToolTrace]);
   const hasPlanToolTrace = phase === "plan" && planToolTrace.length > 0;
 
   return (
