@@ -52,6 +52,95 @@ type LegacyToolChainDecision = {
   fullQuery: string;
 };
 
+function normalizeWorkflowHint(value: unknown): "search" | "design_experiment" | undefined {
+  if (value === "search" || value === "design_experiment") {
+    return value;
+  }
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) {
+    return undefined;
+  }
+  if (normalized.includes("design_experiment") || normalized.includes("design experiment") || normalized.includes("experiment")) {
+    return "design_experiment";
+  }
+  if (normalized.includes("search")) {
+    return "search";
+  }
+  return undefined;
+}
+
+function coerceRouterDecision(value: unknown): unknown {
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  const record = { ...(value as Record<string, unknown>) };
+  const type = typeof record.type === "string" ? record.type : null;
+  const workflowHint = normalizeWorkflowHint(record.workflowHint);
+  const answer = typeof record.answer === "string" ? record.answer : null;
+  const fullQuery = typeof record.fullQuery === "string" ? record.fullQuery : null;
+  const designSummary = typeof record.designSummary === "string" ? record.designSummary : null;
+  const executionPrompt = typeof record.executionPrompt === "string" ? record.executionPrompt : null;
+
+  if (type === "tool_chain" && fullQuery) {
+    return {
+      type: "search",
+      fullQuery,
+      ...(typeof record.rationale === "string" ? { rationale: record.rationale } : {}),
+    };
+  }
+
+  if (type === "direct_response" && answer) {
+    return {
+      type,
+      answer,
+      ...(workflowHint ? { workflowHint } : {}),
+      ...(record.experimentProposal && typeof record.experimentProposal === "object" ? { experimentProposal: record.experimentProposal } : {}),
+    };
+  }
+
+  if (type === "search" && fullQuery) {
+    return {
+      type,
+      fullQuery,
+      ...(typeof record.rationale === "string" ? { rationale: record.rationale } : {}),
+      ...((record.executionMode === "semantic" || record.executionMode === "comprehensive" || record.executionMode === "hermes")
+        ? { executionMode: record.executionMode }
+        : {}),
+    };
+  }
+
+  if (type === "design_experiment" && designSummary && executionPrompt) {
+    return {
+      type,
+      designSummary,
+      executionPrompt,
+      ...(typeof record.rationale === "string" ? { rationale: record.rationale } : {}),
+    };
+  }
+
+  if (answer) {
+    return {
+      type: "direct_response",
+      answer,
+      ...(workflowHint ? { workflowHint } : {}),
+      ...(record.experimentProposal && typeof record.experimentProposal === "object" ? { experimentProposal: record.experimentProposal } : {}),
+    };
+  }
+
+  if (fullQuery) {
+    return {
+      type: "search",
+      fullQuery,
+      ...(typeof record.rationale === "string" ? { rationale: record.rationale } : {}),
+    };
+  }
+
+  return record;
+}
+
 function shouldUseToolChain(message: string): boolean {
   return /\b(book|books|novel|novels|story|stories|fiction|passage|passages|quote|quotes|theme|themes|motif|motifs|corpus|search|find|show me|look up|examples?|compare|contrast|which works?|which book|who writes|where does)\b/i.test(message);
 }
@@ -245,6 +334,12 @@ export class OpenAIRouter implements Router {
     if (!content) {
       throw new Error("Router response was empty.");
     }
-    return RouterDecisionSchema.parse(parseModelJsonObject<unknown>(content));
+    const parsed = coerceRouterDecision(parseModelJsonObject<unknown>(content));
+    const result = RouterDecisionSchema.safeParse(parsed);
+    if (result.success) {
+      return result.data;
+    }
+    const fallbackRouter = new FallbackRouter();
+    return fallbackRouter.decide(context);
   }
 }
