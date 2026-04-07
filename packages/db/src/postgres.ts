@@ -80,6 +80,7 @@ export function translateSqliteToPostgresSql(sql: string) {
   let next = sql.trim();
   next = next.replace(/^\s*PRAGMA\s+foreign_keys\s*=\s*ON\s*;?\s*$/gimu, "");
   next = replaceInsertIgnore(next);
+  next = next.replace(/CREATE\s+VIEW\s+IF\s+NOT\s+EXISTS/giu, "CREATE OR REPLACE VIEW");
   next = next.replace(/\bMIN\s*\(\s*3\s*,/gu, "LEAST(3,");
   next = replaceJsonHelpers(next);
   next = next.replace(/\bINTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT\b/gu, "BIGSERIAL PRIMARY KEY");
