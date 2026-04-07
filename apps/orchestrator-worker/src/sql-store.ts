@@ -116,9 +116,10 @@ function normalizeSqlExploreSeed(value: number | null | undefined) {
   }
   const seed = Math.abs(Math.trunc(value)) || 1;
   return {
-    primary: (seed % 997) + 1,
-    secondary: (Math.floor(seed / 997) % 389) + 1,
-    offset: seed % 104729,
+    primaryFactor: (seed % 46336) + 1,
+    primaryOffset: (Math.floor(seed / 46337) % 46337),
+    secondaryFactor: (Math.floor(seed / 97) % 46326) + 1,
+    secondaryOffset: (Math.floor(seed / 193) % 46327),
   };
 }
 
@@ -130,8 +131,13 @@ function buildSqlExploreOrderBy(idExpression: string, randomSeed: ReturnType<typ
     };
   }
   return {
-    clause: `ORDER BY ABS(((((${idExpression}) % 100003) * ?) + (((${idExpression}) % 8191) * ?) + ?) % 2147483647) ASC, ${fallbackOrder.replace(/^ORDER BY\s+/u, "")}`,
-    params: [randomSeed.primary, randomSeed.secondary, randomSeed.offset],
+    clause: `ORDER BY ((((${idExpression}) % 46337) * ?) + ?) % 46337 ASC, ((((${idExpression}) % 46327) * ?) + ?) % 46327 ASC, ${fallbackOrder.replace(/^ORDER BY\s+/u, "")}`,
+    params: [
+      randomSeed.primaryFactor,
+      randomSeed.primaryOffset,
+      randomSeed.secondaryFactor,
+      randomSeed.secondaryOffset,
+    ],
   };
 }
 
