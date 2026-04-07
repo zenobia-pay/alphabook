@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 
 import type { DbClient } from "@alphabook/db";
 import { artifactKeys, buildCorpusChunkId, parseCorpusChunkId } from "@alphabook/corpus-core";
+import { workDetailToDocumentDetail } from "@alphabook/platform";
 import type { ChunkSearchResult, NotificationType, ToolName, WorkSummary } from "@alphabook/shared";
 
 import { InMemoryAppStore, type AdminRunRecord, type AdminSessionRecord, type AdminUserRecord, type AgentIdentityRecord, type AnalyticsEventRecord, type AppStore, type ArtifactRecord, type BillingEventRecord, type BillingSpendSummary, type DocumentTextRecord, type MessageRecord, type NotificationRecord, type PassageSearchFilters, type ResearchScopeEstimate, type ResearchTaskRecord, type RunEventRecord, type RunRecord, type RuntimeInstanceRecord, type SeedChunk, type SeedWork, type SessionRecord, type SessionSummaryRecord, type ToolCallRecord, type UserProfileStatsRecord, type UserRecord, type WorkDetailRecord, type WorkFileKind, type WorkFileRecord, type WorkSetSizeEstimate } from "./store";
@@ -141,6 +142,27 @@ function mapFeedWorkRowToSummary(row: {
     editors: readMetadataTextList(metadata, ["editors"]),
     score: typeof row.score === "number" ? row.score : undefined,
     feedLabel: row.feed_label ?? null,
+  };
+}
+
+function mapWorkRowToDetail(row: {
+  id: string;
+  gutenberg_id: number | string | null;
+  title: string;
+  language: string | null;
+  release_date: string | null;
+  rights_status: string | null;
+  summary: string | null;
+  metadata_json: string | Record<string, unknown> | null;
+  authors_json?: string | null;
+  subjects_json?: string | null;
+}): WorkDetailRecord {
+  const metadata = parseJsonObject(row.metadata_json);
+  return {
+    ...mapFeedWorkRowToSummary(row),
+    metadata,
+    authors: parseJsonStringList(row.authors_json),
+    subjects: parseJsonStringList(row.subjects_json),
   };
 }
 
@@ -442,6 +464,74 @@ export class D1AppStore implements AppStore {
   private async queryRankedWorks(offset = 0, limit = 12): Promise<WorkSummary[]> {
     const result = await this.queryRankedWorkRows(offset, limit);
     return result.rows.map(mapFeedWorkRowToSummary);
+  }
+
+  private async queryWorkDetailRow(workId: string) {
+    const result = await this.db.query<{
+      id: string;
+      gutenberg_id: number | string | null;
+      title: string;
+      language: string | null;
+      release_date: string | null;
+      rights_status: string | null;
+      summary: string | null;
+      metadata_json: string | Record<string, unknown> | null;
+      authors_json: string | null;
+      subjects_json: string | null;
+    }>(
+      `
+        SELECT
+          w.id,
+          w.gutenberg_id,
+          w.title,
+          w.language,
+          w.release_date,
+          w.rights_status,
+          w.summary,
+          w.metadata_json,
+          json_group_array(DISTINCT a.name) AS authors_json,
+          json_group_array(DISTINCT s.label) AS subjects_json
+        FROM works w
+        LEFT JOIN work_authors wa ON wa.work_id = w.id
+        LEFT JOIN authors a ON a.id = wa.author_id
+        LEFT JOIN work_subjects ws ON ws.work_id = w.id
+        LEFT JOIN subjects s ON s.id = ws.subject_id
+        WHERE w.id = ? ${this.adapterWorkClause("w")}
+        GROUP BY w.id, w.gutenberg_id, w.title, w.language, w.release_date, w.rights_status, w.summary, w.metadata_json
+        LIMIT 1
+      `,
+      [workId],
+    );
+    return result.rows[0] ?? null;
+  }
+
+  private async queryWorkFilesRows(workIds: string[], kinds?: WorkFileKind[]) {
+    const normalizedWorkIds = [...new Set(workIds.map((workId) => workId.trim()).filter(Boolean))];
+    if (normalizedWorkIds.length === 0) {
+      return [];
+    }
+    const workPlaceholders = normalizedWorkIds.map(() => "?").join(", ");
+    const normalizedKinds = kinds?.length ? [...new Set(kinds)] : null;
+    const kindClause = normalizedKinds?.length ? ` AND wf.kind IN (${normalizedKinds.map(() => "?").join(", ")})` : "";
+    const result = await this.db.query<{
+      id: string;
+      work_id: string;
+      kind: WorkFileKind;
+      r2_key: string;
+      byte_size: number | null;
+      metadata_json: string | Record<string, unknown> | null;
+      created_at?: string | null;
+    }>(
+      `
+        SELECT wf.id, wf.work_id, wf.kind, wf.r2_key, wf.byte_size, wf.metadata_json, wf.created_at
+        FROM work_files wf
+        JOIN works w ON w.id = wf.work_id
+        WHERE wf.work_id IN (${workPlaceholders}) ${kindClause} ${this.adapterWorkClause("w")}
+        ORDER BY wf.work_id ASC, wf.kind ASC
+      `,
+      normalizedKinds?.length ? [...normalizedWorkIds, ...normalizedKinds] : normalizedWorkIds,
+    );
+    return result.rows;
   }
 
   private async ensureRunLifecycleColumns() {
@@ -1489,8 +1579,15 @@ export class D1AppStore implements AppStore {
       [JSON.stringify({ count: totalCount }), nowIso()],
     );
   }
-  async getWorkById(workId: string): Promise<WorkDetailRecord | null> { return (await this.corpusStore()).getWorkById(workId); }
-  async getDocumentById(documentId: string) { return (await this.corpusStore()).getDocumentById(documentId); }
+  async getWorkById(workId: string): Promise<WorkDetailRecord | null> {
+    const row = await this.queryWorkDetailRow(workId);
+    return row ? mapWorkRowToDetail(row) : null;
+  }
+
+  async getDocumentById(documentId: string) {
+    const work = await this.getWorkById(documentId);
+    return work ? workDetailToDocumentDetail(work) : null;
+  }
   async getWorksByIdPrefixes(prefixes: string[]) { return (await this.corpusStore()).getWorksByIdPrefixes(prefixes); }
   async estimateWorkSetSize(workIds?: string[], filters?: PassageSearchFilters): Promise<WorkSetSizeEstimate> { return (await this.corpusStore()).estimateWorkSetSize(workIds, filters); }
   async estimateDocumentSetSize(documentIds?: string[], filters?: PassageSearchFilters): Promise<WorkSetSizeEstimate> { return (await this.corpusStore()).estimateDocumentSetSize(documentIds, filters); }
@@ -1545,7 +1642,18 @@ export class D1AppStore implements AppStore {
   }
   async getWorkTextFile(workId: string) { return (await this.corpusStore()).getWorkTextFile(workId); }
   async getDocumentTextFile(documentId: string): Promise<DocumentTextRecord | null> { return (await this.corpusStore()).getDocumentTextFile(documentId); }
-  async getWorkFiles(workIds: string[], kinds?: WorkFileKind[]): Promise<WorkFileRecord[]> { return (await this.corpusStore()).getWorkFiles(workIds, kinds); }
+  async getWorkFiles(workIds: string[], kinds?: WorkFileKind[]): Promise<WorkFileRecord[]> {
+    const rows = await this.queryWorkFilesRows(workIds, kinds);
+    return rows.map((row) => ({
+      id: row.id,
+      workId: row.work_id,
+      kind: row.kind,
+      r2Key: row.r2_key,
+      byteSize: row.byte_size ?? null,
+      metadata: parseJsonObject(row.metadata_json),
+      createdAt: row.created_at ?? undefined,
+    }));
+  }
   async getDocumentFiles(documentIds: string[], kinds?: WorkFileKind[]) { return (await this.corpusStore()).getDocumentFiles(documentIds, kinds); }
   async getChunksByIds(chunkIds: string[]) {
     await this.corpusStore();

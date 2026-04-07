@@ -221,6 +221,71 @@ test("D1 store serves explore works from feed snapshots without hydrating the fu
   assert.ok(queries.some((entry) => entry.sql.includes("COUNT(*) AS count")));
 });
 
+test("D1 store resolves single-work detail and files without hydrating the full corpus", async () => {
+  const queries: Array<{ sql: string; params?: unknown[] }> = [];
+  const db: DbClient = {
+    async query<T = Record<string, unknown>>(sql: string, params?: unknown[]) {
+      queries.push({ sql, params });
+      if (sql.includes("FROM works w") && sql.includes("WHERE w.id = ?")) {
+        return {
+          rows: [{
+            id: "work-1",
+            gutenberg_id: 42,
+            title: "Sample Book: A Tale",
+            language: "en",
+            release_date: "1900-01-01",
+            rights_status: "public_domain",
+            summary: "Sample summary",
+            metadata_json: JSON.stringify({
+              coverImageKey: "gutenberg/raw/42/cover.jpg",
+              publisher: "Example Press",
+              bookshelves: ["Fiction"],
+            }),
+            authors_json: JSON.stringify(["Jane Doe"]),
+            subjects_json: JSON.stringify(["Testing"]),
+          }] as T[],
+        };
+      }
+      if (sql.includes("FROM work_files wf")) {
+        return {
+          rows: [{
+            id: "file-1",
+            work_id: "work-1",
+            kind: "book_html",
+            r2_key: "gutenberg/clean/42/book.html",
+            byte_size: 1234,
+            metadata_json: JSON.stringify({}),
+            created_at: "2026-04-07T00:00:00.000Z",
+          }] as T[],
+        };
+      }
+      if (sql.includes("FROM works ORDER BY title ASC") || sql.includes("FROM work_authors") || sql.includes("FROM work_subjects")) {
+        throw new Error(`Unexpected corpus hydration query: ${sql}`);
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+    async end() {},
+  };
+
+  const store = new D1AppStore(db);
+  const [work, document, files] = await Promise.all([
+    store.getWorkById("work-1"),
+    store.getDocumentById("work-1"),
+    store.getWorkFiles(["work-1"], ["book_html"]),
+  ]);
+
+  assert.equal(work?.id, "work-1");
+  assert.equal(work?.title, "Sample Book: A Tale");
+  assert.equal(work?.subtitle, null);
+  assert.deepEqual(work?.authors, ["Jane Doe"]);
+  assert.equal(document?.id, "work-1");
+  assert.equal(document?.externalId, 42);
+  assert.equal(files[0]?.id, "file-1");
+  assert.equal(files[0]?.r2Key, "gutenberg/clean/42/book.html");
+  assert.ok(queries.some((entry) => entry.sql.includes("WHERE w.id = ?")));
+  assert.ok(queries.some((entry) => entry.sql.includes("FROM work_files wf")));
+});
+
 test("in-memory store spills oversized run event payloads to blob storage and rehydrates them", async () => {
   const store = new InMemoryAppStore();
   const largeHtml = `<div>${"x".repeat(8_000)}</div>`;
