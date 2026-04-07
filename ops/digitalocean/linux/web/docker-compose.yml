@@ -19,6 +19,7 @@ services:
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - /srv/alphabook/frontend:/srv/frontend:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
       - caddy-data:/data
       - caddy-config:/config
     depends_on:

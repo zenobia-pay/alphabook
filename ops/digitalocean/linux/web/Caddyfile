@@ -1,4 +1,5 @@
-:80 {
+alpha-book.org, www.alpha-book.org, api.alpha-book.org {
+  tls /etc/letsencrypt/live/alpha-book.org/fullchain.pem /etc/letsencrypt/live/alpha-book.org/privkey.pem
   encode zstd gzip
 
   route {
