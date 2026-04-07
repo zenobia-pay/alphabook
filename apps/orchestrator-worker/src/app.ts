@@ -37,8 +37,8 @@ import type { SemanticSearchService } from "./semantic-search";
 import { cleanupToolStreamWithWorkersAi, type ToolStreamCleanupLine } from "./tool-stream-cleanup";
 import type { Synthesizer, ToolHistoryEntry } from "./synthesizer";
 import type { AgentIdentityRecord, AnalyticsEventRecord, AppStore, ArtifactRecord, BackgroundJobRecord, MessageRecord, NotificationRecord, PassageSearchFilters, RunEventRecord, RunRecord, RuntimeInstanceRecord, SessionRecord, ToolCallRecord, UserRecord, WorkDetailRecord } from "./store";
-import type { WorkersAiBinding } from "./index";
 import { parseModelJsonObject } from "./json";
+import type { ModelTextGenerationBinding } from "./model-binding";
 
 export interface WorkerQueues {
   ingestName: string;
@@ -86,7 +86,7 @@ export interface AppDeps {
   hermesModel?: string;
   hermesMaxTurns?: number;
   runtimeSharedToken?: string;
-  ai?: WorkersAiBinding;
+  ai?: ModelTextGenerationBinding;
   toolStreamCleanupModel?: string;
   errorAlertWebhookUrl?: string;
   resendApiKey?: string;

@@ -34,7 +34,7 @@ Keep:
 - DigitalOcean Gutenberg mirror as source text
 - R2 as canonical artifact storage
 - D1 as metadata and chunk catalog
-- Cloudflare Worker/orchestrator as runtime app layer
+- DigitalOcean Linux API/orchestrator as the runtime app layer
 
 Change:
 - Replace Cloudflare Vectorize as the primary semantic index with Qdrant
@@ -43,7 +43,7 @@ Change:
 
 ### Vector provider abstraction
 
-Extend the existing vector index abstraction so the Worker can instantiate either provider by config.
+Extend the existing vector index abstraction so the API can instantiate either provider by config.
 
 Implementation intent:
 - keep `VectorSearchIndex` interface shape unchanged
@@ -53,7 +53,7 @@ Implementation intent:
 
 Main files to update:
 - [`apps/orchestrator-worker/src/vectorize.ts`](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/apps/orchestrator-worker/src/vectorize.ts)
-- [`apps/orchestrator-worker/src/index.ts`](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/apps/orchestrator-worker/src/index.ts)
+- [`apps/orchestrator-worker/src/linux-env.ts`](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/apps/orchestrator-worker/src/linux-env.ts)
 - [`apps/ingest/src/index.ts`](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/apps/ingest/src/index.ts)
 
 ### Payload design

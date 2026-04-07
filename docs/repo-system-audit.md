@@ -23,18 +23,12 @@ The fastest way to read this is:
 flowchart TB
   subgraph UI["User-facing apps"]
     FE["apps/frontend\nReact + Vite SPA"]
-    FEW["apps/frontend/src/worker.ts\nedge shell + SSR/bootstrap/proxy"]
     BCW["apps/book-content-worker\nserves static rendered book HTML from R2"]
     AJFE["apps/alphajustice-frontend\nwrapper deployment"]
-    AJBCW["apps/alphajustice-content\nwrapper deployment"]
   end
 
   subgraph API["API and orchestration"]
     ORCH["apps/orchestrator-worker\nmain API + orchestration engine"]
-    AJORCH["apps/alphajustice-orchestrator\nwrapper deployment"]
-    DO["ComprehensiveJobDurableObject\nCloudflare durable job state"]
-    QJ["JOBS_QUEUE\nCloudflare queue"]
-    CRON["Scheduled janitor\n1-minute cron"]
     LINUX["linux-server/linux-worker\nNode + pg-boss variant"]
   end
 
@@ -103,8 +97,7 @@ flowchart LR
   API --> D1["D1\nchat_sessions/messages/runs/tool_calls/..."]
   API --> R2["R2\ncorpus + artifacts"]
   API --> VEC["Vectorize / Qdrant"]
-  API --> Q["Cloudflare jobs queue"]
-  API --> DO["Comprehensive job durable object"]
+  API --> Q["pg-boss jobs queue"]
   API --> FLY["Fly runtime machines"]
   API --> H["Hermes job API"]
   API --> OPENAI["OpenAI\nrouter/planner/synth/embeddings"]
@@ -732,7 +725,8 @@ If you want the shortest accurate model of the system, it is this:
 ## 18. File-Level Anchor Map
 
 - Main app surface: `apps/orchestrator-worker/src/app.ts`
-- Worker entrypoint + queue/scheduled hooks: `apps/orchestrator-worker/src/index.ts`
+- Linux queue orchestration: `apps/orchestrator-worker/src/linux-worker.ts`
+- Shared queued research helpers: `apps/orchestrator-worker/src/queued-research.ts`
 - Run/session/artifact/research-task state model: `apps/orchestrator-worker/src/store.ts`
 - D1-backed implementation: `apps/orchestrator-worker/src/d1-store.ts`
 - Runtime integration: `apps/orchestrator-worker/src/runtime.ts`

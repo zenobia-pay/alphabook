@@ -69,8 +69,7 @@ The repo is structured as a shared core-plus-implementations monorepo:
 
 - `apps/frontend`: Vite frontend
 - `apps/alphajustice-frontend`: AlphaJustice frontend wrapper over the shared frontend app
-- `apps/orchestrator-worker`: Linux API and worker service, plus the legacy Worker entrypoint during migration
-- `apps/alphajustice-orchestrator`: AlphaJustice API wrapper over the shared orchestrator app surface
+- `apps/orchestrator-worker`: Linux API and worker service
 - `apps/runtime`: Linux runtime service for filesystem-backed analysis
 - `apps/ingest`: adapter-aware ingest service with Gutenberg production flows plus fixture and CourtListener-backed Supreme Court ingest paths
 - `packages/corpus-core`: generic runtime limits and artifact key helpers
@@ -122,12 +121,10 @@ The additive neutral API and compatibility contract details live in [docs/api-co
 ```text
 apps/
   alphajustice-frontend/
-  alphajustice-orchestrator/
   frontend/
   orchestrator-worker/
     src/
     test/
-    wrangler.toml
   runtime/
     src/
     Dockerfile
@@ -312,7 +309,8 @@ The request/response contracts are documented in [docs/api-contracts.md](docs/ap
 ## Notes
 
 - The frontend uses `assistant-ui` for the thread/composer surface and streams `POST /chat` responses over SSE.
-- The Linux API and worker path are the primary deployment target. The legacy Cloudflare Worker entrypoint remains in the repo only until the migration is fully retired.
+- The AlphaBook app and API are deployed on the DigitalOcean Linux stack behind Caddy.
+- The remaining Cloudflare-hosted surface is the static book-content domain at `books.alpha-book.org`.
 - `GET /me`, `/auth/sign-in`, `/auth/callback`, and `/auth/sign-out` provide the WorkOS-backed login flow.
 - `GET /sessions` plus `GET /sessions/:sessionId/messages` power the session history and sidebar reopening flow.
 - The runtime service is a normal private HTTP service and expects `RUNTIME_SHARED_TOKEN` plus S3-compatible storage credentials so it can hydrate the workspace directly from object-storage keys.

@@ -5003,7 +5003,7 @@ async function buildContext(): Promise<IngestContext> {
   const r2Endpoint = process.env.R2_ENDPOINT;
   const r2AccessKeyId = process.env.R2_ACCESS_KEY_ID;
   const r2SecretAccessKey = process.env.R2_SECRET_ACCESS_KEY;
-  const wranglerConfig = process.env.D1_WRANGLER_CONFIG ?? "apps/orchestrator-worker/wrangler.toml";
+  const wranglerConfig = process.env.D1_WRANGLER_CONFIG ?? "ops/cloudflare/resources.toml";
 
   if (!r2Bucket || !r2Endpoint || !r2AccessKeyId || !r2SecretAccessKey) {
     throw new Error("R2_BUCKET_NAME, R2_ENDPOINT, R2_ACCESS_KEY_ID, and R2_SECRET_ACCESS_KEY are required.");

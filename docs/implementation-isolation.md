@@ -4,12 +4,12 @@ Every branded corpus implementation in Alpha Research should be isolated by defa
 
 That means a new implementation must not silently reuse another implementation's:
 
-- frontend Worker
-- content Worker
-- orchestrator Worker
+- frontend app
+- static content surface
+- API/orchestrator service
 - runtime app
-- R2 buckets
-- Cloudflare queues
+- object-storage buckets
+- background-job queues
 - cookie namespace
 - branded copy or setup prompt
 
@@ -19,7 +19,6 @@ For an implementation id like `mycorpus`, the repo shape should be:
 
 - `apps/mycorpus-frontend`
 - `apps/mycorpus-content`
-- `apps/mycorpus-orchestrator`
 - `apps/mycorpus-runtime`
 
 Those wrappers should point at shared code, but they must use implementation-scoped resource names:
@@ -54,8 +53,7 @@ npm run implementation:scaffold -- \
   --product-name "MyCorpus" \
   --site-origin https://mycorpus.org \
   --api-origin https://api.mycorpus.org \
-  --content-origin https://content.mycorpus.org \
-  --account-id <cloudflare-account-id>
+  --content-origin https://content.mycorpus.org
 ```
 
 This creates the wrapper directories only. You still need to:
@@ -63,7 +61,7 @@ This creates the wrapper directories only. You still need to:
 1. add the implementation entry
 2. add the corpus adapter
 3. provision the named resources
-4. deploy the wrappers
+4. deploy the implementation-specific surfaces
 
 ## Review Rule
 

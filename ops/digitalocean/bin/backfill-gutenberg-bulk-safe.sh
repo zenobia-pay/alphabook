@@ -74,7 +74,7 @@ const filteredIds = startAfterId
 const db = createWranglerD1Db({
   cwd: process.cwd(),
   databaseName: process.env.D1_DATABASE_NAME,
-  wranglerConfig: "apps/orchestrator-worker/wrangler.toml",
+  wranglerConfig: "ops/cloudflare/resources.toml",
 });
 const existingRows = await db.query<{ gutenberg_id: string | number }>(
   `SELECT CAST(gutenberg_id AS TEXT) AS gutenberg_id FROM works WHERE gutenberg_id IS NOT NULL`,

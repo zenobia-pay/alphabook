@@ -235,7 +235,7 @@ async function lookupWorksByGutenbergId(
   const db = createWranglerD1Db({
     cwd: process.cwd(),
     databaseName: process.env.D1_DATABASE_NAME ?? "alphabook-app",
-    wranglerConfig: process.env.D1_WRANGLER_CONFIG ?? "apps/orchestrator-worker/wrangler.toml",
+    wranglerConfig: process.env.D1_WRANGLER_CONFIG ?? "ops/cloudflare/resources.toml",
   });
   const mapping = new Map<string, { workId: string; byteSize: number }>();
   const normalizedIds = gutenbergIds
@@ -370,7 +370,7 @@ async function main() {
   const store = new D1AppStore(createWranglerD1Db({
     cwd: process.cwd(),
     databaseName: process.env.D1_DATABASE_NAME ?? "alphabook-app",
-    wranglerConfig: process.env.D1_WRANGLER_CONFIG ?? "apps/orchestrator-worker/wrangler.toml",
+    wranglerConfig: process.env.D1_WRANGLER_CONFIG ?? "ops/cloudflare/resources.toml",
   }), {
     adapterId: implementation.adapterId,
     feedLabels: implementation.feedLabels,

@@ -9,9 +9,9 @@
 
 ## Runtime Image Pin
 
-- The comprehensive sprite path launches Fly runtime VMs using `FLY_RUNTIME_IMAGE` from [apps/orchestrator-worker/wrangler.toml](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/apps/orchestrator-worker/wrangler.toml).
+- The comprehensive sprite path launches Fly runtime VMs using `FLY_RUNTIME_IMAGE` from [ops/cloudflare/resources.toml](/Users/ryanprendergast/Documents/Zenobia%20Pay/alphabook/ops/cloudflare/resources.toml).
 - Before any orchestrator deploy, sync that pin to the latest `alphabook-runtime` Fly release image.
-- Prefer the built-in deploy path: `npm --workspace @alphabook/orchestrator-worker run deploy`. It now refreshes the runtime image pin before running `wrangler deploy`.
+- Prefer the built-in deploy path: `npm --workspace @alphabook/orchestrator-worker run deploy`. The live AlphaBook API deploy target is the DigitalOcean Linux stack, not a Cloudflare Worker.
 
 ## DigitalOcean Mirror Workflow
 
@@ -40,5 +40,5 @@
   - `apps/ingest/src/index.ts` auto-loads `.dev.vars`
   - local `.dev.vars` may contain quoted R2 credentials and a stale Cloudflare API token that breaks Wrangler D1 auth
   - prefer Wrangler OAuth login on the machine and do not rely on `CLOUDFLARE_API_TOKEN`
-  - for Vectorize operations, use Wrangler OAuth via `npx wrangler vectorize ... --config apps/orchestrator-worker/wrangler.toml`; do not build new REST-token codepaths when Wrangler already supports the operation
+  - for Vectorize operations, use Wrangler OAuth via `npx wrangler vectorize ... --config ops/cloudflare/resources.toml`; do not build new REST-token codepaths when Wrangler already supports the operation
   - if needed, temporarily move `.dev.vars` out of the way and export only normalized `R2_*` plus embedding vars before running the ingest CLI

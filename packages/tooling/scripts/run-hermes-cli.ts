@@ -211,7 +211,7 @@ function parseArgs(argv: string[]): Args {
 
 async function readWranglerDefaultApiUrl(): Promise<string | null> {
   try {
-    const wranglerPath = path.resolve(process.cwd(), "apps/orchestrator-worker/wrangler.toml");
+    const wranglerPath = path.resolve(process.cwd(), "ops/cloudflare/resources.toml");
     const content = await readFile(wranglerPath, "utf8");
     const match = content.match(/^\s*HERMES_JOB_API_URL\s*=\s*"([^"]+)"/m);
     return match?.[1] ?? null;

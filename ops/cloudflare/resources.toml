@@ -1,0 +1,21 @@
+name = "alphabook-cloudflare-resources"
+compatibility_date = "2026-03-12"
+account_id = "0e1651bc459f3017e816ba2263e0807a"
+
+[vars]
+HERMES_JOB_API_URL = "https://134.209.116.167.sslip.io"
+FLY_RUNTIME_IMAGE = "registry.fly.io/alphabook-runtime:deployment-01KN6857MCW2JDNHEX78HNW8B1"
+
+[[r2_buckets]]
+binding = "CORPUS_BUCKET"
+bucket_name = "alphabook-corpus-live"
+preview_bucket_name = "alphabook-corpus-live-preview"
+
+[[d1_databases]]
+binding = "APP_DB"
+database_name = "alphabook-app"
+database_id = "3d6ba6c9-25bf-4473-a1e8-1ee10e9174f1"
+
+[[vectorize]]
+binding = "VECTOR_INDEX"
+index_name = "alphabook-semantic"

@@ -26,7 +26,7 @@ npx wrangler d1 execute "${D1_DATABASE_NAME:-alphabook-app}" \
   --remote \
   --json \
   --command "SELECT id, CAST(gutenberg_id AS TEXT) AS gutenberg_id FROM works WHERE gutenberg_id IS NOT NULL ORDER BY gutenberg_id" \
-  --config "${D1_WRANGLER_CONFIG:-apps/orchestrator-worker/wrangler.toml}" > "$EXISTING_WORK_IDS_JSON"
+  --config "${D1_WRANGLER_CONFIG:-ops/cloudflare/resources.toml}" > "$EXISTING_WORK_IDS_JSON"
 
 npx tsx scripts/build-d1-corpus-import.ts \
   "$BOOKS_ROOT" \

@@ -2,7 +2,7 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "composite": true,
-    "types": ["vite/client", "node", "@cloudflare/workers-types"],
+    "types": ["vite/client", "node"],
     "lib": ["DOM", "DOM.Iterable", "ES2022"],
     "rootDir": "../../",
     "outDir": "dist",

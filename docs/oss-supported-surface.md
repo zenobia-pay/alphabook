@@ -24,10 +24,8 @@ The supported open-source integration surface is:
 - `apps/ingest` via adapter-aware ingest flows
 - `apps/orchestrator-worker` repository, retrieval, and runtime seams used by the fixture and adapter tests
 - `apps/alphajustice-frontend`
-- `apps/alphajustice-content`
-- `apps/alphajustice-orchestrator`
 - `apps/alphajustice-runtime`
-- the neutral Worker API under `/api/v1/documents/*`
+- the neutral HTTP API under `/api/v1/documents/*`
 
 These are the packages and codepaths covered by the OSS validation matrix in `npm run validate:oss`.
 
@@ -36,7 +34,7 @@ These are the packages and codepaths covered by the OSS validation matrix in `np
 The AlphaBook-facing compatibility layer remains intentionally book-shaped:
 
 - `packages/shared`
-- the public Worker HTTP API
+- the public HTTP API
 - AlphaBook browser flows and copy
 
 Examples:
@@ -56,7 +54,6 @@ These parts of the repository are reference-app code, not generic platform requi
 - `apps/frontend`
 - `apps/book-content-worker`
 - `apps/alphajustice-frontend`
-- `apps/alphajustice-content`
 - book-reader and static book HTML flows
 - AlphaBook auth and account UX
 - AlphaBook social/profile/feed features
@@ -114,7 +111,7 @@ That command covers:
 - platform typechecks and tests
 - adapter typechecks and tests
 - ingest typechecks and tests
-- implementation wrapper typechecks
+- implementation frontend wrapper typechecks
 - shared compatibility typechecks
 - focused orchestrator repository/store tests
 

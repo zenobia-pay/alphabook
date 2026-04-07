@@ -225,7 +225,7 @@ function buildGutenbergIdFilter() {
 
 async function getVectorizeInfo() {
   const indexName = requireEnv("VECTOR_INDEX_NAME");
-  const wranglerConfig = process.env.D1_WRANGLER_CONFIG?.trim() || "apps/orchestrator-worker/wrangler.toml";
+  const wranglerConfig = process.env.D1_WRANGLER_CONFIG?.trim() || "ops/cloudflare/resources.toml";
   const { stdout } = await execFileAsync("npx", [
     "wrangler",
     "vectorize",
@@ -248,7 +248,7 @@ async function getVectorizeInfo() {
 
 async function upsertVectorizeBatch(vectors: VectorizeRecord[]) {
   const indexName = requireEnv("VECTOR_INDEX_NAME");
-  const wranglerConfig = process.env.D1_WRANGLER_CONFIG?.trim() || "apps/orchestrator-worker/wrangler.toml";
+  const wranglerConfig = process.env.D1_WRANGLER_CONFIG?.trim() || "ops/cloudflare/resources.toml";
   const tempDir = await mkdtemp(join(tmpdir(), "alphabook-qdrant-vectorize-"));
   const payloadPath = join(tempDir, "vectors.ndjson");
   try {

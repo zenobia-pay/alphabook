@@ -101,7 +101,7 @@ function main() {
   const envFileArg = args.get("env-file");
   const keysArg = args.get("keys");
   if (!configPathArg || !keysArg) {
-    throw new Error("Usage: sync-worker-secrets.ts --config <wrangler.toml> --keys <KEY1,KEY2,...> [--env-file .dev.vars]");
+    throw new Error("Usage: sync-worker-secrets.ts --config <config.toml> --keys <KEY1,KEY2,...> [--env-file .dev.vars]");
   }
 
   const configPath = path.resolve(configPathArg);

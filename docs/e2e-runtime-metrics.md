@@ -93,7 +93,7 @@ import { createWranglerD1Db } from '@alphabook/db';
 
 const envText = fs.readFileSync('.dev.vars', 'utf8');
 const databaseName = envText.match(/^D1_DATABASE_NAME=(.*)$/m)[1].trim().replace(/^"|"$/g, '');
-const db = createWranglerD1Db({ databaseName, wranglerConfig: 'apps/orchestrator-worker/wrangler.toml' });
+const db = createWranglerD1Db({ databaseName, wranglerConfig: 'ops/cloudflare/resources.toml' });
 
 const sessionIds = [
   'REPLACE_SESSION_ID_1',

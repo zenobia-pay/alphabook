@@ -32,7 +32,7 @@ You need:
 - a relational database for production-style ingest and retrieval
 - an R2-compatible object store
 - an OpenAI API key
-- Cloudflare Workers credentials if you plan to deploy the web/API workers
+- Cloudflare credentials only if you plan to access D1, Vectorize, or the static content worker
 
 For local validation only, you can skip the relational DB and R2 and use the preview-mode ingest commands.
 
@@ -160,15 +160,13 @@ apps/my-corpus-frontend/
 apps/my-corpus-orchestrator/
 ```
 
-The existing examples are:
+The existing example is:
 
 - `apps/alphajustice-frontend`
-- `apps/alphajustice-orchestrator`
 
 These wrappers provide:
 
-- env/config for the shared frontend worker
-- env/config for the shared orchestrator worker
+- env/config for the shared frontend app
 - implementation-specific deploy targets and origins
 
 ## Step 8: Wire Ingest For Your Corpus

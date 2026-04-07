@@ -56,7 +56,7 @@ function main() {
   const appName = args.get("app");
   const configPathArg = args.get("config");
   if (!appName || !configPathArg) {
-    throw new Error("Usage: sync-runtime-image-pin.ts --app <fly-app> --config <wrangler.toml>");
+    throw new Error("Usage: sync-runtime-image-pin.ts --app <fly-app> --config <config.toml>");
   }
   const configPath = path.resolve(configPathArg);
   const imageRef = readLatestImageRef(appName);

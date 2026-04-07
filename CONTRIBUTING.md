@@ -7,7 +7,6 @@ Alpha Research is an open-source corpus research platform with `AlphaBook` and `
 - `apps/frontend`: AlphaBook web app
 - `apps/alphajustice-frontend`: AlphaJustice web app wrapper
 - `apps/orchestrator-worker`: API and orchestration layer
-- `apps/alphajustice-orchestrator`: AlphaJustice API wrapper
 - `apps/runtime`: bounded runtime for hydrated workspace analysis
 - `apps/ingest`: ingest pipeline for source adapters
 - `packages/corpus-core`: runtime limits and artifact storage primitives

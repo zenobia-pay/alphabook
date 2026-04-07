@@ -5,7 +5,7 @@ import PgBoss from "pg-boss";
 import { reapExpiredRuntimeInstances, reapStaleRuns, type ResearchTaskQueueMessage } from "./app";
 import { createBillingService } from "./billing";
 import { buildLinuxAppDeps, loadLinuxEnv } from "./linux-env";
-import { createResearchTaskLeaseRenewer, runQueuedWorkspaceResearchTask } from "./index";
+import { createResearchTaskLeaseRenewer, runQueuedWorkspaceResearchTask } from "./queued-research";
 
 const RESEARCH_TASK_LEASE_MS = 90_000;
 

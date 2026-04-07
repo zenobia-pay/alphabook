@@ -251,7 +251,7 @@ export async function fetchShardBooksFromD1(gutenbergIds: string[]): Promise<Map
   const db = createWranglerD1Db({
     cwd: process.cwd(),
     databaseName: process.env.D1_DATABASE_NAME ?? "alphabook-app",
-    wranglerConfig: process.env.D1_WRANGLER_CONFIG ?? "apps/orchestrator-worker/wrangler.toml",
+    wranglerConfig: process.env.D1_WRANGLER_CONFIG ?? "ops/cloudflare/resources.toml",
   });
   try {
     const rows = await db.query<D1WorkRow>(

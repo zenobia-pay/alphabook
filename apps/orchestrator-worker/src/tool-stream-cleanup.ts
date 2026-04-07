@@ -1,4 +1,4 @@
-import type { WorkersAiBinding } from "./index";
+import type { ModelTextGenerationBinding } from "./model-binding";
 
 export const DEFAULT_TOOL_STREAM_CLEANUP_MODEL = "@cf/zai-org/glm-4.7-flash";
 
@@ -60,7 +60,7 @@ function normalizeModelText(payload: unknown): string {
 }
 
 export async function cleanupToolStreamWithWorkersAi(
-  ai: WorkersAiBinding,
+  ai: ModelTextGenerationBinding,
   input: {
     model?: string;
     toolName: string;

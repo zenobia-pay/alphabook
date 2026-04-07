@@ -13,14 +13,12 @@ It shares the same platform code as AlphaBook, but it is intended to deploy as i
 
 ## Deployment Shape
 
-AlphaJustice is deployed as separate wrappers around the shared apps:
+The repo currently keeps only the AlphaJustice frontend wrapper around the shared app:
 
 - `apps/alphajustice-frontend`
-- `apps/alphajustice-content`
-- `apps/alphajustice-orchestrator`
 - `apps/alphajustice-runtime`
 
-Those wrappers provide:
+Those implementation-specific entrypoints provide:
 
 - implementation id
 - API origin
@@ -32,12 +30,7 @@ Those wrappers provide:
 
 The shared app code remains the same.
 
-The intended deployment shape is:
-
-- AlphaJustice web on its own Worker
-- AlphaJustice content on its own Worker and R2 bucket
-- AlphaJustice orchestrator on its own Worker and queues
-- AlphaJustice runtime on its own Fly app
+The active architecture is Linux-first for API and runtime, with the static content surface remaining separate from the main app.
 
 ## Corpus
 
@@ -86,6 +79,4 @@ For implementation-specific checks:
 
 ```bash
 npm run typecheck -w @alphabook/alphajustice-frontend
-npm run typecheck -w @alphabook/alphajustice-content
-npm run typecheck -w @alphabook/alphajustice-orchestrator
 ```

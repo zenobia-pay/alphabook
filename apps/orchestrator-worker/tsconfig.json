@@ -2,7 +2,7 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "composite": true,
-    "types": ["@cloudflare/workers-types", "node"],
+    "types": ["node"],
     "lib": ["ES2023", "WebWorker"],
     "rootDir": "../../",
     "outDir": "dist",

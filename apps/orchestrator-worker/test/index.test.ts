@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { createResearchTaskLeaseRenewer, runQueuedRemoteSemanticSearch, runQueuedWorkspaceResearchTask } from "../src/index";
+import { createResearchTaskLeaseRenewer, runQueuedRemoteSemanticSearch, runQueuedWorkspaceResearchTask } from "../src/queued-research";
 
 test("queued workspace research dispatches sprite fanout tasks to the sprite runtime lane", async () => {
   const calls: string[] = [];
