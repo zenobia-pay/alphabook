@@ -556,4 +556,19 @@ payload = {
 Path(sys.argv[1]).write_text(json.dumps(payload, indent=2) + "\n")
 PY
 
+python3 - "$status_file" "$summary_file" "$runner_pid" "$run_dir" "$(date -u +%FT%TZ)" <<'PY'
+from pathlib import Path
+import json
+import sys
+
+for target in (Path(sys.argv[1]), Path(sys.argv[2])):
+    data = json.loads(target.read_text())
+    data["state"] = "running"
+    data["pid"] = int(sys.argv[3])
+    data["run_dir"] = sys.argv[4]
+    data["launched_at"] = sys.argv[5]
+    data["index_file"] = str(Path(sys.argv[4]) / "index.json")
+    target.write_text(json.dumps(data, indent=2) + "\n")
+PY
+
 printf '%s\n' "$run_dir"
