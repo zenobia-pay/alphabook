@@ -56,6 +56,7 @@ Search requirements:
 Artifact requirements:
 - Create a timestamped inner run directory under:
   /srv/alphabook/logs/corpus-search/<timestamp>-<run-id>/
+- Immediately write that absolute inner run directory path into `$WRAPPER_INNER_RUN_FILE` after you create it, if that environment variable is set.
 - Log progress in `run.log`.
 - Write `manifest.json` with at least:
   - run_id

@@ -472,6 +472,8 @@ The Hermes prompt itself instructs the agent to create the inner search artifact
 - `hits/`
 - `hits/index.json`
 
+If `hermes` is not on the droplet `PATH`, the launcher falls back to `/root/.hermes/hermes-agent/venv/bin/hermes`. You can still override with `--hermes-bin /absolute/path/to/hermes`.
+
 The wrapper run ID is now the canonical handle for a Hermes job. `index.json` explicitly records:
 
 - wrapper run directory

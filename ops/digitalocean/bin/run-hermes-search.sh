@@ -12,6 +12,7 @@ PRECOMPUTED_INDEX_DIR="${PRECOMPUTED_INDEX_DIR:-}"
 MODEL="${MODEL:-gpt-5.4}"
 MAX_TURNS="${MAX_TURNS:-40}"
 HEARTBEAT_SECONDS="${HEARTBEAT_SECONDS:-15}"
+HERMES_BIN="${HERMES_BIN:-}"
 
 usage() {
   cat >&2 <<'EOF'
@@ -22,6 +23,8 @@ Options:
   --effort N             Maximum number of kept evidence hits before stopping.
   --max-turns N          Override Hermes max turns. Default: 40
   --model NAME           Override Hermes model. Default: gpt-5.4
+  --hermes-bin PATH      Override Hermes CLI path. Defaults to PATH lookup, then
+                         /root/.hermes/hermes-agent/venv/bin/hermes when present.
   --run-root PATH        Output root. Default: /srv/alphabook/logs/hermes-search
   --corpus-root PATH     Corpus root. Default: /srv/alphabook/gutenberg
   --precomputed-index-dir PATH
@@ -90,6 +93,11 @@ while [[ $# -gt 0 ]]; do
       MODEL="$2"
       shift 2
       ;;
+    --hermes-bin)
+      [[ $# -ge 2 ]] || usage
+      HERMES_BIN="$2"
+      shift 2
+      ;;
     --run-root)
       [[ $# -ge 2 ]] || usage
       RUN_ROOT="$2"
@@ -122,6 +130,18 @@ done
 [[ "$EFFORT" =~ ^[0-9]+$ ]] || { echo "Invalid --effort value: $EFFORT" >&2; exit 1; }
 (( EFFORT > 0 )) || { echo "Invalid --effort value: $EFFORT" >&2; exit 1; }
 [[ -d "$ROOT_DIR" ]] || { echo "Missing repo root: $ROOT_DIR" >&2; exit 1; }
+
+if [[ -z "$HERMES_BIN" ]]; then
+  if command -v hermes >/dev/null 2>&1; then
+    HERMES_BIN="$(command -v hermes)"
+  elif [[ -x /root/.hermes/hermes-agent/venv/bin/hermes ]]; then
+    HERMES_BIN="/root/.hermes/hermes-agent/venv/bin/hermes"
+  else
+    echo "Unable to find hermes CLI. Set --hermes-bin or ensure hermes is on PATH." >&2
+    exit 1
+  fi
+fi
+[[ -x "$HERMES_BIN" ]] || { echo "Hermes CLI is not executable: $HERMES_BIN" >&2; exit 1; }
 
 PRECOMPUTED_INDEX_DIR="$(resolve_precomputed_index_dir "$CORPUS_ROOT" "$PRECOMPUTED_INDEX_DIR")"
 [[ -f "$PRECOMPUTED_INDEX_DIR/all-text-files.tsv" ]] || {
@@ -247,6 +267,7 @@ Search requirements:
 Artifact requirements:
 - Create a timestamped inner run directory under:
   /srv/alphabook/logs/corpus-search/<timestamp>-<run-id>/
+- Immediately write that absolute inner run directory path into `$WRAPPER_INNER_RUN_FILE` after you create it, if that environment variable is set.
 - Log progress in `run.log`.
 - Write `manifest.json` with at least:
   - run_id
@@ -328,6 +349,7 @@ echo "launcher_started_at=$(date -u +%FT%TZ)"
 echo "pwd=$(pwd)"
 echo "model=$MODEL"
 echo "max_turns=$MAX_TURNS"
+echo "hermes_bin=$HERMES_BIN"
 echo "prompt_file=$PROMPT_FILE"
 echo "job_id=$JOB_ID"
 echo "effort=${EFFORT:-}"
@@ -348,7 +370,7 @@ path.write_text(json.dumps(data, indent=2) + "\n")
 PY
 
 set +e
-hermes chat -m "$MODEL" -q "$(cat "$PROMPT_FILE")" -Q --max-turns "$MAX_TURNS" --yolo > >(stdbuf -oL tee -a "$STDOUT_LOG") 2> >(stdbuf -oL tee -a "$STDERR_LOG" >&2)
+"$HERMES_BIN" chat -m "$MODEL" -q "$(cat "$PROMPT_FILE")" -Q --max-turns "$MAX_TURNS" --yolo > >(stdbuf -oL tee -a "$STDOUT_LOG") 2> >(stdbuf -oL tee -a "$STDERR_LOG" >&2)
 exit_code=$?
 set -e
 
@@ -399,6 +421,7 @@ chmod +x "$run_dir/watch-heartbeat.sh"
   HOME="$hermes_home" \
   MODEL="$MODEL" \
   MAX_TURNS="$MAX_TURNS" \
+  HERMES_BIN="$HERMES_BIN" \
   EFFORT="$EFFORT" \
   JOB_ID="$job_id" \
   PROMPT_FILE="$prompt_file" \
@@ -408,6 +431,7 @@ chmod +x "$run_dir/watch-heartbeat.sh"
   STDERR_LOG="$stderr_log" \
   ATTEMPT_ID="$attempt_id" \
   ATTEMPT_DIR="$attempt_dir" \
+  WRAPPER_INNER_RUN_FILE="$runtime_dir/inner-run-dir.txt" \
   bash "$run_dir/run-hermes.sh"
 ) >>"$launcher_log" 2>&1 &
 runner_pid=$!
@@ -441,6 +465,7 @@ payload = {
     "process_log": str(Path(sys.argv[2]) / "process.log"),
     "hermes_pid_file": str(Path(sys.argv[2]) / "hermes.pid"),
     "heartbeat_pid_file": str(Path(sys.argv[2]) / "heartbeat.pid"),
+    "inner_run_file": str(Path(sys.argv[2]) / "attempts" / "attempt-0001" / "runtime" / "inner-run-dir.txt"),
     "user_prompt": sys.argv[5],
     "effort": int(sys.argv[6]),
 }
