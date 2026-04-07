@@ -19,3 +19,24 @@ alpha-book.org, www.alpha-book.org, api.alpha-book.org {
     }
   }
 }
+
+http://origin.alpha-book.org {
+  encode zstd gzip
+
+  route {
+    handle_path /api/* {
+      reverse_proxy alphabook-api:8787
+    }
+
+    @api path /chat /health /me /notifications* /auth/* /claim/* /skill.md /v1/*
+    handle @api {
+      reverse_proxy alphabook-api:8787
+    }
+
+    handle {
+      root * /srv/frontend
+      try_files {path} /index.html
+      file_server
+    }
+  }
+}
