@@ -4933,6 +4933,50 @@ function terminalResearchTaskError(task: { checkpointJson?: unknown; errorJson?:
   return null;
 }
 
+function semanticStepFailureLabel(step: string) {
+  switch (step) {
+    case "model_selected":
+      return "while selecting the semantic ranking model";
+    case "embed_query":
+      return "while embedding a semantic query";
+    case "vector_query":
+      return "while querying the vector index";
+    case "hydrate_chunks":
+      return "while loading matched passages";
+    case "alphaloop_stream_start":
+      return "while starting AlphaLoop";
+    case "write_answer":
+      return "while writing the final answer";
+    default:
+      return "during semantic retrieval";
+  }
+}
+
+function stalledResearchTaskError(task: {
+  kind?: string;
+  checkpointJson?: unknown;
+}) {
+  const checkpoint = task.checkpointJson;
+  if (checkpoint && typeof checkpoint === "object" && !Array.isArray(checkpoint)) {
+    const record = checkpoint as Record<string, unknown>;
+    if (task.kind === "semantic_research") {
+      if (record.type === "semantic.step" && typeof record.step === "string") {
+        return `Semantic search stopped making progress ${semanticStepFailureLabel(record.step)}.`;
+      }
+      if (record.type === "semantic.alphaloop") {
+        return "Semantic search stopped making progress while AlphaLoop was reviewing the retrieved passages.";
+      }
+      if (record.type === "research.note" && typeof record.note === "string" && record.note.trim().length > 0) {
+        return `Semantic search stopped making progress after: ${record.note.trim()}`;
+      }
+    }
+  }
+  if (task.kind === "semantic_research") {
+    return "Semantic search stopped making progress and lost its worker lease.";
+  }
+  return "This long-running research task stopped making progress and lost its worker lease.";
+}
+
 function normalizedComparisonText(value: string) {
   return value
     .toLowerCase()
@@ -9331,6 +9375,25 @@ async function runHermesConversation(
     void renewRunLease(true).catch(() => {});
   }, RUN_HEARTBEAT_INTERVAL_MS);
 
+  const failHermesRun = async (message: string) => {
+    const currentRun = await deps.store.getRun(run.id);
+    if (currentRun && isTerminalRunStatus(currentRun.status)) {
+      return;
+    }
+    await deps.store.appendMessage(activeSession.id, "assistant", message, {
+      phase: "error",
+      runId: run.id,
+    });
+    await writeHermesTerminalRunState("failed");
+    await emit("run.completed", {
+      runId: run.id,
+      sessionId: activeSession.id,
+      status: "failed",
+      completionMode: "hermes",
+      error: message,
+    });
+  };
+
   const persistLatestPlanToolTrace = async () => {
     if (!planMessageId) {
       return;
@@ -9405,29 +9468,7 @@ async function runHermesConversation(
     text: planText,
   });
 
-  const hermesUserPrompt = await buildHermesUserPrompt(deps, input);
-  const hermesCallbackUrl = new URL("/api/v1/hermes/callbacks/run-completed", apiOrigin(deps, request)).toString();
-  const archivePrefix = artifactKeys.sessionArtifact(activeSession.id, `runs/${run.id}/hermes`);
-  const launchPayload = {
-    userPrompt: hermesUserPrompt,
-    workflow: input.workflow,
-    effort: hermesSearchEffort(input),
-    model: deps.hermesModel,
-    maxTurns: deps.hermesMaxTurns,
-    alphabookSessionId: activeSession.id,
-    alphabookRunId: run.id,
-    callbackUrl: hermesCallbackUrl,
-    callbackToken: deps.hermesJobApiToken,
-    archivePrefix,
-  };
-  const launchResult = shouldResumeHermesThread
-    ? await resumeHermesJob(deps.hermesJobApiUrl, deps.hermesJobApiToken, {
-        previousJobId: priorHermesThread!.jobId,
-        hermesSessionId: priorHermesThread!.sessionId ?? undefined,
-        ...launchPayload,
-      })
-    : await createHermesJob(deps.hermesJobApiUrl, deps.hermesJobApiToken, launchPayload);
-  let job = launchResult.job;
+  let job: HermesJobSummary;
 
   const updateHermesPlanMetadata = async () => {
     if (!planMessageId) {
@@ -9448,7 +9489,38 @@ async function runHermesConversation(
     });
   };
 
-  await updateHermesPlanMetadata();
+  try {
+    const hermesUserPrompt = await buildHermesUserPrompt(deps, input);
+    const hermesCallbackUrl = new URL("/api/v1/hermes/callbacks/run-completed", apiOrigin(deps, request)).toString();
+    const archivePrefix = artifactKeys.sessionArtifact(activeSession.id, `runs/${run.id}/hermes`);
+    const launchPayload = {
+      userPrompt: hermesUserPrompt,
+      workflow: input.workflow,
+      effort: hermesSearchEffort(input),
+      model: deps.hermesModel,
+      maxTurns: deps.hermesMaxTurns,
+      alphabookSessionId: activeSession.id,
+      alphabookRunId: run.id,
+      callbackUrl: hermesCallbackUrl,
+      callbackToken: deps.hermesJobApiToken,
+      archivePrefix,
+    };
+    const launchResult = shouldResumeHermesThread
+      ? await resumeHermesJob(deps.hermesJobApiUrl, deps.hermesJobApiToken, {
+          previousJobId: priorHermesThread!.jobId,
+          hermesSessionId: priorHermesThread!.sessionId ?? undefined,
+          ...launchPayload,
+        })
+      : await createHermesJob(deps.hermesJobApiUrl, deps.hermesJobApiToken, launchPayload);
+    job = launchResult.job;
+    await updateHermesPlanMetadata();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Hermes run failed before launch.";
+    await failHermesRun(message);
+    clearInterval(leaseHeartbeatTimer);
+    activeRuns.delete(run.id);
+    return;
+  }
 
   const seenToolCallIds = new Set<string>();
   const completedToolCallIds = new Set<string>();
@@ -9667,23 +9739,8 @@ async function runHermesConversation(
       send,
     });
   } catch (error) {
-    const currentRun = await deps.store.getRun(run.id);
-    if (currentRun && isTerminalRunStatus(currentRun.status)) {
-      return;
-    }
     const message = error instanceof Error ? error.message : "Hermes run failed.";
-    await deps.store.appendMessage(activeSession.id, "assistant", message, {
-      phase: "error",
-      runId: run.id,
-    });
-    await writeHermesTerminalRunState("failed");
-    await emit("run.completed", {
-      runId: run.id,
-      sessionId: activeSession.id,
-      status: "failed",
-      completionMode: "hermes",
-      error: message,
-    });
+    await failHermesRun(message);
   } finally {
     clearInterval(leaseHeartbeatTimer);
     activeRuns.delete(run.id);
@@ -10683,9 +10740,23 @@ export async function runOrchestrator(
         };
       }
       const leaseExpired = !task.leaseExpiresAt || Date.parse(task.leaseExpiresAt) <= Date.now();
+      if ((task.status === "starting" || task.status === "running") && leaseExpired) {
+        const staleError = stalledResearchTaskError(task);
+        await deps.store.updateResearchTask(task.id, {
+          status: "failed",
+          errorJson: { error: staleError },
+          completedAt: new Date().toISOString(),
+          lastHeartbeatAt: new Date().toISOString(),
+          leaseExpiresAt: null,
+        });
+        return {
+          status: "failed",
+          result: { ok: false, error: staleError },
+        } as const;
+      }
       if (
         deps.enqueueJob
-        && (task.status === "queued" || task.status === "starting" || task.status === "running")
+        && task.status === "queued"
         && leaseExpired
         && Date.now() - lastRecoveryEnqueueAt >= 30_000
       ) {

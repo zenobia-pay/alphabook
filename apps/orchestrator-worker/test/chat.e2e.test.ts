@@ -4658,6 +4658,107 @@ test("durable workspace waits honor a terminal tool call even if the research ta
   assert.equal(researchTask?.status, "failed");
 });
 
+test("durable semantic waits fail explicitly when a running research task loses its lease", async () => {
+  const store = new InMemoryAppStore([], []);
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    router: new ScriptedRouter([
+      {
+        type: "search",
+        fullQuery: "List diaries and journals in the corpus.",
+        rationale: "The user is asking for a corpus search.",
+      },
+    ]),
+    planner: new ScriptedPlanner([
+      {
+        type: "tool_call",
+        tool_name: "semantic_deep_search",
+        rationale: "Use semantic retrieval for diary-like works.",
+        args: {
+          query: "List diaries and journals in the corpus.",
+          maxResults: 8,
+        },
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+      async runWorkspaceTask() {
+        return { ok: false, error: "disabled" };
+      },
+      async runSpriteFanoutResearch() {
+        return { ok: false, error: "disabled" };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: false, error: "disabled" };
+      },
+      async destroyWorkspace() {
+        return { ok: true };
+      },
+    },
+    enqueueJob: async (message) => {
+      if (message.type !== "research_task_requested") {
+        return;
+      }
+      const staleAt = new Date(Date.now() - 120_000).toISOString();
+      await store.updateResearchTask(message.taskId, {
+        status: "running",
+        startedAt: staleAt,
+        lastHeartbeatAt: staleAt,
+        leaseOwner: "queue:stalled-semantic",
+        leaseExpiresAt: new Date(Date.now() - 1_000).toISOString(),
+        checkpointJson: {
+          type: "semantic.step",
+          step: "embed_query",
+          subqueryId: "sq_006",
+          query: "Abstract/adjacent autobiographical life-writing",
+        },
+      });
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const response = await Promise.race([
+    app.request("/chat", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        userId: "11111111-1111-1111-1111-111111111111",
+        message: "List diaries and journals in the corpus.",
+      }),
+    }),
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("chat request timed out")), 5_000)),
+  ]);
+
+  assert.equal(response.status, 200);
+  const body = await response.text();
+  assert.match(body, /Semantic search stopped making progress while embedding a semantic query\./);
+  assert.match(body, /event: run\.completed/);
+  assert.match(body, /"status":"failed"/);
+
+  const session = (await store.listSessions("11111111-1111-1111-1111-111111111111"))[0]!;
+  const [run] = await store.listRuns(session.id);
+  assert.ok(run);
+  const toolCall = (await store.listToolCalls(run.id)).find((candidate) => candidate.toolName === "semantic_deep_search");
+  assert.ok(toolCall);
+  const researchTask = await store.getLatestResearchTaskForToolCall(toolCall.id);
+  assert.equal(researchTask?.status, "failed");
+  assert.equal(researchTask?.errorJson?.error, "Semantic search stopped making progress while embedding a semantic query.");
+});
+
 test("persisted tool traces keep chunk results compact enough for refresh", async () => {
   const store = new InMemoryAppStore(
     [

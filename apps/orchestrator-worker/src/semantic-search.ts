@@ -21,7 +21,8 @@ type IterationRecord = {
 type AlphaloopEvent = { type: string } & Record<string, unknown>;
 const SEMANTIC_SEARCH_STEP_TIMEOUT_MS = 30_000;
 const SEMANTIC_SEARCH_MAX_PARALLEL_SUBQUERIES = 2;
-const SEMANTIC_ALPHALOOP_NEXT_TIMEOUT_MS = 120_000;
+const SEMANTIC_ALPHALOOP_NEXT_TIMEOUT_MS = 45_000;
+const SEMANTIC_PROGRESS_HEARTBEAT_MS = 15_000;
 export type SemanticModelProvider = "openai" | "google";
 
 export interface SemanticSearchService {
@@ -87,6 +88,67 @@ function citationsFromChunks(chunks: ChunkSearchResult[]): Citation[] {
     ...(chunk.r2Key ? { r2Key: chunk.r2Key } : {}),
     ...(chunk.readerPath ? { readerPath: chunk.readerPath } : {}),
   }));
+}
+
+function summarizeSemanticQuery(query: string, maxLength = 96) {
+  const normalized = query.replace(/\s+/gu, " ").trim();
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+  return `${normalized.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
+}
+
+async function withTimeoutAndHeartbeat<T>(
+  promiseFactory: () => Promise<T>,
+  ms: number,
+  label: string,
+  onHeartbeat: () => void | Promise<void>,
+  intervalMs = SEMANTIC_PROGRESS_HEARTBEAT_MS,
+): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  let timer: ReturnType<typeof setInterval> | null = null;
+  let heartbeatInFlight = false;
+
+  return await new Promise<T>((resolve, reject) => {
+    let settled = false;
+
+    const settle = (handler: (value: T | Error) => void, value: T | Error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+      if (timer) {
+        clearInterval(timer);
+        timer = null;
+      }
+      handler(value);
+    };
+
+    timeoutId = setTimeout(() => {
+      settle(reject as (value: T | Error) => void, new Error(`${label} timed out after ${Math.round(ms / 1000)}s.`));
+    }, ms);
+
+    timer = setInterval(() => {
+      if (settled || heartbeatInFlight) {
+        return;
+      }
+      heartbeatInFlight = true;
+      Promise.resolve(onHeartbeat()).catch(() => {}).finally(() => {
+        heartbeatInFlight = false;
+      });
+    }, Math.max(1, intervalMs));
+
+    Promise.resolve()
+      .then(promiseFactory)
+      .then(
+        (value) => settle(resolve as (value: T | Error) => void, value),
+        (error) => settle(reject as (value: T | Error) => void, error instanceof Error ? error : new Error(String(error))),
+      );
+  });
 }
 
 function progressTextFromEvent(event: AlphaloopEvent) {
@@ -280,6 +342,16 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
             activeSubqueries: searchLimiter.getActiveCount(),
             queuedSubqueries: searchLimiter.getQueuedCount(),
           });
+          await args.onProgress?.(
+            `Running semantic pass ${subqueryId} on “${summarizeSemanticQuery(query)}”.`,
+            {
+              type: "semantic.note",
+              phase: "subquery_started",
+              subqueryId,
+              query,
+              expansionQuery,
+            },
+          );
           try {
             args.auditLog?.("semantic.search.embed.started", {
               subqueryId,
@@ -435,6 +507,17 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
               hydratedCount: hydrated.length,
               expansionQuery,
             });
+            await args.onProgress?.(
+              `Semantic pass ${subqueryId} kept ${filteredCandidates.length} candidate passages after hydration.`,
+              {
+                type: "semantic.note",
+                phase: "subquery_completed",
+                subqueryId,
+                query,
+                candidateCount: filteredCandidates.length,
+                expansionQuery,
+              },
+            );
             args.auditLog?.("semantic.search.subquery.completed", {
               subqueryId,
               query,
@@ -484,10 +567,20 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
           modelProvider: this.modelProvider,
           modelName: this.modelName,
         });
-        const next = await withTimeout(
-          stream.next(),
+        const next = await withTimeoutAndHeartbeat(
+          () => stream.next(),
           SEMANTIC_ALPHALOOP_NEXT_TIMEOUT_MS,
           "AlphaLoop stopped yielding the next semantic event",
+          async () => {
+            await args.onProgress?.(
+              "Still reviewing the retrieved passages and deciding whether to widen the semantic search.",
+              {
+                type: "research.note",
+                note: "Still reviewing the retrieved passages and deciding whether to widen the semantic search.",
+                phase: "alphaloop_wait",
+              },
+            );
+          },
         );
         if (next.done) {
           finalResult = next.value;
