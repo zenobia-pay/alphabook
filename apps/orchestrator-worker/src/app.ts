@@ -9316,6 +9316,7 @@ async function runHermesConversation(
   let planTracePersistChain = Promise.resolve();
   let liveToolTrace: LiveToolTraceEntry[] = [];
   let currentToolCallId: string | null = null;
+  const hermesProgressToolCallId = "hermes_progress";
 
   const renewRunLease = async (force = false) => {
     if (isTerminalRunStatus(run.status)) {
@@ -9468,6 +9469,41 @@ async function runHermesConversation(
     });
   };
 
+  const ensureHermesProgressTool = async () => {
+    const existing = liveToolTrace.find((entry) => entry.id === hermesProgressToolCallId);
+    if (existing) {
+      return existing;
+    }
+    const entry: LiveToolTraceEntry = {
+      id: hermesProgressToolCallId,
+      toolName: "run_workspace_task",
+      label: "Hermes Search Progress",
+      rationale: "Streaming wrapper and inner-run progress while Hermes search is running.",
+      progress: ["Hermes search launched."],
+      args: canonicalToolArgs(
+        "run_workspace_task",
+        {
+          __toolName: "run_workspace_task",
+          __hermesSyntheticProgress: true,
+        },
+        "Streaming wrapper and inner-run progress while Hermes search is running.",
+        ["Hermes search launched."],
+      ),
+      state: "running",
+    };
+    liveToolTrace = [...liveToolTrace, entry];
+    await persistLatestPlanToolTrace();
+    await emit("tool.started", {
+      runId: run.id,
+      sessionId: activeSession.id,
+      toolCallId: entry.id,
+      toolName: entry.toolName,
+      label: entry.label,
+      args: entry.args,
+    });
+    return entry;
+  };
+
   try {
     const hermesUserPrompt = await buildHermesUserPrompt(deps, input);
     const hermesCallbackUrl = new URL("/api/v1/hermes/callbacks/run-completed", apiOrigin(deps, request)).toString();
@@ -9503,11 +9539,14 @@ async function runHermesConversation(
   let logCursor: string | undefined;
   let lastSessionMessageCount = baselineHermesMessageCount;
 
-  const appendToolProgress = async (text: string, detail?: Record<string, unknown>) => {
-    if (!currentToolCallId) {
-      return;
+  const appendToolProgress = async (text: string, detail?: Record<string, unknown>, toolCallId?: string | null) => {
+    const targetToolCallId = toolCallId ?? currentToolCallId;
+    let toolEntry = targetToolCallId
+      ? liveToolTrace.find((entry) => entry.id === targetToolCallId)
+      : null;
+    if (!toolEntry && !targetToolCallId) {
+      toolEntry = await ensureHermesProgressTool();
     }
-    const toolEntry = liveToolTrace.find((entry) => entry.id === currentToolCallId);
     if (!toolEntry) {
       return;
     }
@@ -9695,7 +9734,7 @@ async function runHermesConversation(
           await appendToolProgress(text, {
             source: source.name,
             updatedAt: source.updatedAt,
-          });
+          }, currentToolCallId);
         }
       }
 
@@ -9705,6 +9744,25 @@ async function runHermesConversation(
         break;
       }
       await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+
+    const hermesProgressEntry = liveToolTrace.find((entry) => entry.id === hermesProgressToolCallId);
+    if (hermesProgressEntry && hermesProgressEntry.state !== "completed") {
+      hermesProgressEntry.state = "completed";
+      hermesProgressEntry.result = {
+        ok: true,
+        __summary: "Hermes search progress stream completed.",
+      };
+      await persistLatestPlanToolTrace();
+      await emit("tool.completed", {
+        runId: run.id,
+        sessionId: activeSession.id,
+        toolCallId: hermesProgressToolCallId,
+        toolName: hermesProgressEntry.toolName,
+        label: hermesProgressEntry.label,
+        status: "completed",
+        result: hermesProgressEntry.result,
+      });
     }
 
     await syncHermesSessionSnapshot();

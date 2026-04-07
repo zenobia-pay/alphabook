@@ -453,7 +453,26 @@ test("document chat launches Hermes search even when the user only says use herm
     if (url.startsWith("https://hermes.example.test/v1/jobs/job-hermes-default-search/logs")) {
       return new Response(JSON.stringify({
         jobId: "job-hermes-default-search",
-        sources: [],
+        sources: [
+          {
+            name: "launcher",
+            path: "/srv/alphabook/logs/hermes-search/job-hermes-default-search/launcher.log",
+            bytes: 120,
+            updatedAt: new Date().toISOString(),
+            lines: [
+              "launching hermes search wrapper",
+            ],
+          },
+          {
+            name: "run_log",
+            path: "/srv/alphabook/logs/corpus-search/job-hermes-default-search/run.log",
+            bytes: 160,
+            updatedAt: new Date().toISOString(),
+            lines: [
+              "Scoped 72644 files from the precomputed corpus index.",
+            ],
+          },
+        ],
         nextCursor: "",
       }), {
         status: 200,
@@ -520,6 +539,8 @@ test("document chat launches Hermes search even when the user only says use herm
     assert.equal(response.status, 200);
     const body = await response.text();
     assert.match(body, /Starting a Hermes search run on this thread/);
+    assert.match(body, /Hermes Search Progress/);
+    assert.match(body, /Scoped 72644 files from the precomputed corpus index/);
     assert.equal(hermesLaunchPayloads.length, 1);
     assert.equal((hermesLaunchPayloads[0] as { workflow?: string }).workflow, "search");
   } finally {

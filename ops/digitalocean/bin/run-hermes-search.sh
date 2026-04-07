@@ -225,9 +225,11 @@ heartbeat_log="$logs_dir/heartbeat.log"
 process_log="$logs_dir/process.log"
 pid_file="$runtime_dir/hermes.pid"
 watcher_pid_file="$runtime_dir/heartbeat.pid"
+inner_run_file="$runtime_dir/inner-run-dir.txt"
 status_file="$state_dir/status.json"
 summary_file="$state_dir/summary.json"
 index_file="$run_dir/index.json"
+attempt_manifest_file="$attempt_dir/attempt.json"
 
 ln -sfn "state/prompt.txt" "$run_dir/prompt.txt"
 ln -sfn "state/status.json" "$run_dir/status.json"
@@ -239,6 +241,7 @@ ln -sfn "attempts/$attempt_id/logs/heartbeat.log" "$run_dir/heartbeat.log"
 ln -sfn "attempts/$attempt_id/logs/process.log" "$run_dir/process.log"
 ln -sfn "attempts/$attempt_id/runtime/hermes.pid" "$run_dir/hermes.pid"
 ln -sfn "attempts/$attempt_id/runtime/heartbeat.pid" "$run_dir/heartbeat.pid"
+ln -sfn "attempts/$attempt_id/runtime/inner-run-dir.txt" "$run_dir/inner-run-dir.txt"
 ln -sfn "attempts/$attempt_id/hermes-home" "$run_dir/hermes-home"
 ln -sfn "attempts/$attempt_id" "$run_dir/current-attempt"
 
@@ -388,6 +391,23 @@ Path(sys.argv[1]).write_text(json.dumps(payload, indent=2) + "\n")
 Path(sys.argv[2]).write_text(json.dumps(payload, indent=2) + "\n")
 PY
 
+python3 - "$attempt_manifest_file" "$run_dir" "$attempt_dir" "$attempt_id" "$timestamp" <<'PY'
+from pathlib import Path
+import json
+import sys
+
+payload = {
+    "wrapper_run_dir": sys.argv[2],
+    "attempt_dir": sys.argv[3],
+    "attempt_id": sys.argv[4],
+    "created_at": sys.argv[5],
+    "logs_dir": str(Path(sys.argv[3]) / "logs"),
+    "runtime_dir": str(Path(sys.argv[3]) / "runtime"),
+    "hermes_home": str(Path(sys.argv[3]) / "hermes-home"),
+}
+Path(sys.argv[1]).write_text(json.dumps(payload, indent=2) + "\n")
+PY
+
 cat >"$run_dir/run-hermes.sh" <<'EOS'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -403,6 +423,7 @@ echo "effort=${EFFORT:-}"
 echo "hermes_home=$HOME"
 echo "attempt_id=${ATTEMPT_ID:-}"
 echo "attempt_dir=${ATTEMPT_DIR:-}"
+echo "inner_run_file=${WRAPPER_INNER_RUN_FILE:-}"
 echo "alphabook_session_id=${ALPHABOOK_SESSION_ID:-}"
 echo "alphabook_run_id=${ALPHABOOK_RUN_ID:-}"
 echo "archive_prefix=${ARCHIVE_PREFIX:-}"
