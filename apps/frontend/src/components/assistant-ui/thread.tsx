@@ -650,6 +650,18 @@ const AssistantMessage: FC = () => {
       : null
   ), [experimentProposalJson]);
   const isErrorMessage = phase === "error";
+  const progressText = useAuiState((state) => {
+    if (phase !== "progress") {
+      return "";
+    }
+    const textParts = state.message.content.flatMap((part) => {
+      if (part && typeof part === "object" && "type" in part && part.type === "text" && typeof part.text === "string") {
+        return [part.text];
+      }
+      return [];
+    });
+    return textParts.join("\n\n").trim();
+  });
 
   return (
     <MessagePrimitive.Root
@@ -659,7 +671,7 @@ const AssistantMessage: FC = () => {
       data-running-message={isRunning ? "true" : "false"}
     >
       <div className="aui-assistant-message-content wrap-break-word px-2 text-foreground leading-relaxed">
-        <MessagePrimitive.Parts components={TOOL_PART_COMPONENTS} />
+        {phase === "progress" ? <ProgressMessageCard text={progressText} /> : <MessagePrimitive.Parts components={TOOL_PART_COMPONENTS} />}
         {experimentProposal ? <ExperimentApprovalCard proposal={experimentProposal} disabled={isRunning} /> : null}
         {isRunning && !hasVisibleParts && !experimentProposal ? (
           <div className="aui-assistant-running-indicator" aria-label="Assistant is thinking">
@@ -674,6 +686,22 @@ const AssistantMessage: FC = () => {
         <AssistantActionBar />
       </div>
     </MessagePrimitive.Root>
+  );
+};
+
+const ProgressMessageCard: FC<{
+  text: string;
+}> = ({ text }) => {
+  return (
+    <section className="aui-progress-card" aria-label="Live run output">
+      <div className="aui-progress-card-header">
+        <span className="aui-progress-card-dot" aria-hidden="true" />
+        <span className="aui-progress-card-title">Streaming Run Output</span>
+      </div>
+      <div className="aui-progress-card-body">
+        <pre className="aui-progress-card-pre">{text}</pre>
+      </div>
+    </section>
   );
 };
 

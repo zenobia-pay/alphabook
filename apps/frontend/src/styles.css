@@ -893,6 +893,61 @@ button {
   margin-top: 4px;
 }
 
+.aui-progress-card {
+  display: grid;
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid rgba(28, 32, 38, 0.14);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(22, 25, 31, 0.98), rgba(12, 15, 19, 0.98));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 12px 28px rgba(11, 14, 19, 0.14);
+}
+
+.aui-progress-card-header {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-height: 2.4rem;
+  padding: 0.8rem 1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0));
+}
+
+.aui-progress-card-dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 999px;
+  background: #78e08f;
+  box-shadow: 0 0 0 4px rgba(120, 224, 143, 0.12);
+}
+
+.aui-progress-card-title {
+  font-family: "SFMono-Regular", "SF Mono", "Cascadia Code", "JetBrains Mono", monospace;
+  font-size: 0.74rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(225, 232, 240, 0.72);
+}
+
+.aui-progress-card-body {
+  max-height: 20rem;
+  overflow: auto;
+  padding: 0.95rem 1rem 1rem;
+}
+
+.aui-progress-card-pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: "SFMono-Regular", "SF Mono", "Cascadia Code", "JetBrains Mono", monospace;
+  font-size: 0.79rem;
+  line-height: 1.62;
+  color: rgba(236, 241, 247, 0.9);
+}
+
 .aui-assistant-message-root[data-error-message="true"] .aui-assistant-message-content > .aui-md:first-child {
   border: 1px solid rgba(180, 66, 54, 0.22);
   background: rgba(180, 66, 54, 0.08);
