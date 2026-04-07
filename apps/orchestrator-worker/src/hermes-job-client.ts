@@ -1,6 +1,8 @@
 export type HermesJobSummary = {
   id: string;
   jobType?: string | null;
+  runDir?: string | null;
+  wrapperRunDir?: string | null;
   state: string;
   running: boolean;
   pid: number | null;
@@ -13,6 +15,7 @@ export type HermesJobSummary = {
   innerRunDir: string | null;
   innerRunId: string | null;
   hermesSessionId: string | null;
+  archivePrefix?: string | null;
   exitCode: number | null;
   heartbeatAt: string | null;
   phase: string | null;

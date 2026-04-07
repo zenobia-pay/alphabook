@@ -6117,6 +6117,8 @@ async function buildRunLogsPayload(
     deps.store.listMessages(session.id),
     resolveRunRuntimeContext(deps, session.id, run, toolCalls),
   ]);
+  const backgroundJob = await deps.store.getLatestBackgroundJobForRun(run.id);
+  const bridge = await resolveHermesBridgeRecord(deps, backgroundJob);
 
   const artifacts = includeArtifacts
     ? (includeArtifactContents
@@ -6136,6 +6138,8 @@ async function buildRunLogsPayload(
     ...(options.owner ? { owner: options.owner } : {}),
     session,
     run,
+    backgroundJob,
+    bridge,
     messages,
     toolCalls,
     runEvents: runContext.runEvents,
@@ -6150,6 +6154,104 @@ async function buildRunLogsPayload(
     ...(includeRuntimeInstances ? { runtimeInstances: runContext.runtimeInstances } : { runtimeInstances: summarizeRuntimeInstances(runContext.runtimeInstances) }),
     ...(includeArtifacts ? { artifacts } : {}),
     ...(includeLiveRuntime ? { liveRuntime } : {}),
+  };
+}
+
+function parseHermesBridgeRecord(
+  input: Record<string, unknown> | null | undefined,
+  externalJobIdFallback?: string | null,
+): HermesBridgeRecord | null {
+  if (!input) {
+    return externalJobIdFallback
+      ? {
+          externalJobId: externalJobIdFallback,
+          wrapperRunDir: null,
+          innerRunDir: null,
+          innerRunId: null,
+          archivePrefix: null,
+          hermesSessionId: null,
+        }
+      : null;
+  }
+  const externalJobId = typeof input.externalJobId === "string" && input.externalJobId.trim().length > 0
+    ? input.externalJobId.trim()
+    : (externalJobIdFallback?.trim() ?? "");
+  if (!externalJobId) {
+    return null;
+  }
+  const readNullable = (value: unknown) => typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+  return {
+    externalJobId,
+    wrapperRunDir: readNullable(input.wrapperRunDir),
+    innerRunDir: readNullable(input.innerRunDir),
+    innerRunId: readNullable(input.innerRunId),
+    archivePrefix: readNullable(input.archivePrefix),
+    hermesSessionId: readNullable(input.hermesSessionId),
+  };
+}
+
+function hermesBridgeNeedsHydration(bridge: HermesBridgeRecord | null) {
+  return !bridge
+    || !bridge.wrapperRunDir
+    || !bridge.innerRunDir
+    || !bridge.archivePrefix
+    || !bridge.hermesSessionId;
+}
+
+async function resolveHermesBridgeRecord(
+  deps: AppDeps,
+  backgroundJob: BackgroundJobRecord | null,
+): Promise<HermesBridgeRecord | null> {
+  if (!backgroundJob || backgroundJob.provider !== "hermes") {
+    return null;
+  }
+  const existing = parseHermesBridgeRecord(backgroundJob.metadata, backgroundJob.externalJobId);
+  if (!hermesBridgeNeedsHydration(existing) || !deps.hermesJobApiUrl) {
+    return existing;
+  }
+  try {
+    const { job } = await fetchHermesJob(deps.hermesJobApiUrl, deps.hermesJobApiToken, backgroundJob.externalJobId);
+    const hydrated = buildHermesBridgeRecord(job);
+    await deps.store.updateBackgroundJob(backgroundJob.id, {
+      metadata: {
+        ...backgroundJob.metadata,
+        ...hydrated,
+      },
+    });
+    return hydrated;
+  } catch {
+    return existing;
+  }
+}
+
+async function buildSessionBridgePayload(
+  deps: AppDeps,
+  session: SessionRecord,
+) {
+  const runs = await deps.store.listRuns(session.id);
+  const bridges = await Promise.all(
+    runs.map(async (run) => {
+      const [toolCalls, backgroundJob] = await Promise.all([
+        deps.store.listToolCalls(run.id),
+        deps.store.getLatestBackgroundJobForRun(run.id),
+      ]);
+      const runContext = await resolveRunRuntimeContext(deps, session.id, run, toolCalls);
+      const artifactSummaries = await loadRunArtifactSummaries(deps, session.id, run.id, runContext.runtimeIds);
+      const documentArtifacts = await loadRunDocumentArtifacts(deps, session.id, run.id, runContext.runtimeIds);
+      const bridge = await resolveHermesBridgeRecord(deps, backgroundJob);
+      return {
+        run,
+        backgroundJob,
+        bridge,
+        artifactCount: artifactSummaries.length,
+        artifacts: artifactSummaries,
+        documents: documentArtifacts,
+      };
+    }),
+  );
+  return {
+    session,
+    runs: bridges,
   };
 }
 
@@ -8242,6 +8344,15 @@ type HermesArchiveManifest = {
   files?: HermesArchiveManifestFile[];
 };
 
+type HermesBridgeRecord = {
+  externalJobId: string;
+  wrapperRunDir: string | null;
+  innerRunDir: string | null;
+  innerRunId: string | null;
+  archivePrefix: string | null;
+  hermesSessionId: string | null;
+};
+
 function shouldUseHermesBackend(
   deps: AppDeps,
   input: {
@@ -8321,6 +8432,48 @@ function loadHermesArchiveSummary(job: HermesJobSummary) {
     manifestKey: typeof archive?.manifestKey === "string" ? archive.manifestKey : null,
     fileCount: typeof archive?.fileCount === "number" ? archive.fileCount : null,
     updatedAt: typeof archive?.updatedAt === "string" ? archive.updatedAt : null,
+  };
+}
+
+function canonicalHermesSessionId(
+  job: Pick<HermesJobSummary, "hermesSessionId">,
+  finalSnapshot?: HermesSessionSnapshot | null,
+) {
+  const fromJob = typeof job.hermesSessionId === "string" ? job.hermesSessionId.trim() : "";
+  if (fromJob) {
+    return fromJob;
+  }
+  const fromSnapshot = typeof finalSnapshot?.session_id === "string" ? finalSnapshot.session_id.trim() : "";
+  return fromSnapshot || null;
+}
+
+function buildHermesBridgeRecord(
+  job: HermesJobSummary,
+  options?: {
+    archivePrefix?: string | null;
+    finalSnapshot?: HermesSessionSnapshot | null;
+  },
+): HermesBridgeRecord {
+  const archiveSummary = loadHermesArchiveSummary(job);
+  const wrapperRunDir =
+    typeof job.wrapperRunDir === "string" && job.wrapperRunDir.trim().length > 0
+      ? job.wrapperRunDir.trim()
+      : typeof job.runDir === "string" && job.runDir.trim().length > 0
+        ? job.runDir.trim()
+        : null;
+  const archivePrefix =
+    typeof options?.archivePrefix === "string" && options.archivePrefix.trim().length > 0
+      ? options.archivePrefix.trim()
+      : typeof job.archivePrefix === "string" && job.archivePrefix.trim().length > 0
+        ? job.archivePrefix.trim()
+        : archiveSummary.prefix;
+  return {
+    externalJobId: job.id,
+    wrapperRunDir,
+    innerRunDir: typeof job.innerRunDir === "string" && job.innerRunDir.trim().length > 0 ? job.innerRunDir.trim() : null,
+    innerRunId: typeof job.innerRunId === "string" && job.innerRunId.trim().length > 0 ? job.innerRunId.trim() : null,
+    archivePrefix: archivePrefix ?? null,
+    hermesSessionId: canonicalHermesSessionId(job, options?.finalSnapshot),
   };
 }
 
@@ -9016,6 +9169,9 @@ async function finalizeHermesRun(
   const finalAnswer = buildHermesCompletionAnswer(finalSnapshot, archiveManifest, hitsIndexText);
 
   const archiveSummary = loadHermesArchiveSummary(params.job);
+  const bridge = buildHermesBridgeRecord(params.job, {
+    finalSnapshot,
+  });
   const manifestStatus = typeof params.job.manifestStatus === "string" ? params.job.manifestStatus.trim() : "";
   const runSucceeded =
     params.job.state === "completed"
@@ -9042,9 +9198,7 @@ async function finalizeHermesRun(
         progressPct: params.job.phaseProgressPct ?? null,
         error: failureMessage,
         metadata: {
-          hermesSessionId: params.job.hermesSessionId ?? null,
-          innerRunId: params.job.innerRunId ?? null,
-          innerRunDir: params.job.innerRunDir ?? null,
+          ...bridge,
           manifestStatus: params.job.manifestStatus ?? null,
         },
       });
@@ -9054,10 +9208,12 @@ async function finalizeHermesRun(
       runId: currentRun.id,
       hermes: {
         jobId: params.job.id,
-        sessionId: params.job.hermesSessionId ?? finalSnapshot?.session_id ?? null,
+        sessionId: bridge.hermesSessionId,
         model: params.job.model ?? deps.hermesModel ?? null,
-        innerRunId: params.job.innerRunId ?? null,
-        innerRunDir: params.job.innerRunDir ?? null,
+        wrapperRunDir: bridge.wrapperRunDir,
+        innerRunId: bridge.innerRunId,
+        innerRunDir: bridge.innerRunDir,
+        archivePrefix: bridge.archivePrefix,
         estimatedCostUsd: params.job.cost?.estimatedCostUsd ?? null,
         archive: archiveSummary,
       },
@@ -9077,10 +9233,12 @@ async function finalizeHermesRun(
         error: failureMessage,
         hermes: {
           jobId: params.job.id,
-          sessionId: params.job.hermesSessionId ?? finalSnapshot?.session_id ?? null,
+          sessionId: bridge.hermesSessionId,
           model: params.job.model ?? deps.hermesModel ?? null,
-          innerRunId: params.job.innerRunId ?? null,
-          innerRunDir: params.job.innerRunDir ?? null,
+          wrapperRunDir: bridge.wrapperRunDir,
+          innerRunId: bridge.innerRunId,
+          innerRunDir: bridge.innerRunDir,
+          archivePrefix: bridge.archivePrefix,
           estimatedCostUsd: params.job.cost?.estimatedCostUsd ?? null,
           manifestStatus: manifestStatus || null,
           archive: archiveSummary,
@@ -9101,9 +9259,7 @@ async function finalizeHermesRun(
       progressPct: params.job.phaseProgressPct ?? null,
       error: null,
       metadata: {
-        hermesSessionId: params.job.hermesSessionId ?? null,
-        innerRunId: params.job.innerRunId ?? null,
-        innerRunDir: params.job.innerRunDir ?? null,
+        ...bridge,
         manifestStatus: params.job.manifestStatus ?? null,
       },
     });
@@ -9118,10 +9274,12 @@ async function finalizeHermesRun(
     extraMetadata: {
       hermes: {
         jobId: params.job.id,
-        sessionId: params.job.hermesSessionId ?? finalSnapshot?.session_id ?? null,
+        sessionId: bridge.hermesSessionId,
         model: params.job.model ?? deps.hermesModel ?? null,
-        innerRunId: params.job.innerRunId ?? null,
-        innerRunDir: params.job.innerRunDir ?? null,
+        wrapperRunDir: bridge.wrapperRunDir,
+        innerRunId: bridge.innerRunId,
+        innerRunDir: bridge.innerRunDir,
+        archivePrefix: bridge.archivePrefix,
         estimatedCostUsd: params.job.cost?.estimatedCostUsd ?? null,
         archive: archiveSummary,
       },
@@ -9141,10 +9299,12 @@ async function finalizeHermesRun(
       completionMode: "agentic",
       hermes: {
         jobId: params.job.id,
-        sessionId: params.job.hermesSessionId ?? finalSnapshot?.session_id ?? null,
+        sessionId: bridge.hermesSessionId,
         model: params.job.model ?? deps.hermesModel ?? null,
-        innerRunId: params.job.innerRunId ?? null,
-        innerRunDir: params.job.innerRunDir ?? null,
+        wrapperRunDir: bridge.wrapperRunDir,
+        innerRunId: bridge.innerRunId,
+        innerRunDir: bridge.innerRunDir,
+        archivePrefix: bridge.archivePrefix,
         estimatedCostUsd: params.job.cost?.estimatedCostUsd ?? null,
         archive: archiveSummary,
       },
@@ -9184,10 +9344,9 @@ async function syncHermesBackgroundJob(
   ]);
 
   const nextStatus = backgroundJobStatusFromHermesJob(job);
+  const bridge = buildHermesBridgeRecord(job);
   const nextMetadata = {
-    hermesSessionId: job.hermesSessionId ?? null,
-    innerRunId: job.innerRunId ?? null,
-    innerRunDir: job.innerRunDir ?? null,
+    ...bridge,
     manifestStatus: job.manifestStatus ?? null,
     chosenScope: job.chosenScope ?? null,
     scopeRationale: job.scopeRationale ?? null,
@@ -9493,15 +9652,18 @@ async function runHermesConversation(
     if (!planMessageId) {
       return;
     }
+    const bridge = buildHermesBridgeRecord(job);
     await deps.store.updateMessageMetadata(planMessageId, {
       phase: "plan",
       runId: run.id,
       hermes: {
         jobId: job.id,
-        sessionId: job.hermesSessionId,
+        sessionId: bridge.hermesSessionId,
         model: job.model,
-        innerRunId: job.innerRunId,
-        innerRunDir: job.innerRunDir,
+        wrapperRunDir: bridge.wrapperRunDir,
+        innerRunId: bridge.innerRunId,
+        innerRunDir: bridge.innerRunDir,
+        archivePrefix: bridge.archivePrefix,
         estimatedCostUsd: job.cost?.estimatedCostUsd ?? null,
       },
       toolCalls: compactPlanToolTraceEntriesForPersistence(cloneLiveToolTraceEntries(liveToolTrace)),
@@ -9567,6 +9729,9 @@ async function runHermesConversation(
     };
     const launchResult = await createHermesJob(deps.hermesJobApiUrl, deps.hermesJobApiToken, launchPayload);
     job = launchResult.job;
+    const bridge = buildHermesBridgeRecord(job, {
+      archivePrefix,
+    });
     const backgroundJob = await deps.store.createBackgroundJob({
       runId: run.id,
       sessionId: activeSession.id,
@@ -9579,9 +9744,7 @@ async function runHermesConversation(
       lastHeartbeatAt: job.heartbeatAt ?? null,
       startedAt: job.startedAt ?? null,
       metadata: {
-        hermesSessionId: job.hermesSessionId ?? null,
-        innerRunId: job.innerRunId ?? null,
-        innerRunDir: job.innerRunDir ?? null,
+        ...bridge,
         manifestStatus: job.manifestStatus ?? null,
       },
     });
@@ -9803,9 +9966,7 @@ async function runHermesConversation(
             ? (job.finishedAt ?? new Date().toISOString())
             : null,
           metadata: {
-            hermesSessionId: job.hermesSessionId ?? null,
-            innerRunId: job.innerRunId ?? null,
-            innerRunDir: job.innerRunDir ?? null,
+            ...buildHermesBridgeRecord(job),
             manifestStatus: job.manifestStatus ?? null,
             chosenScope: job.chosenScope ?? null,
             scopeRationale: job.scopeRationale ?? null,
@@ -14431,6 +14592,30 @@ export function createApp(inputDeps: CreateAppInput) {
       runtimeInstances,
       artifacts,
     });
+  });
+
+  app.get("/sessions/:sessionId/bridge", async (c) => {
+    const sessionId = c.req.param("sessionId");
+    const session = await deps.store.getSession(sessionId);
+    if (!session) {
+      return c.json({ error: "Session not found." }, 404);
+    }
+    if (!(await canAccessSession(c, session))) {
+      return c.json({ error: "Not authorized for this session." }, 403);
+    }
+    return c.json(await buildSessionBridgePayload(deps, session));
+  });
+
+  app.get("/api/v1/sessions/:sessionId/bridge", async (c) => {
+    const sessionId = c.req.param("sessionId");
+    const session = await deps.store.getSession(sessionId);
+    if (!session) {
+      return c.json({ error: "Session not found." }, 404);
+    }
+    if (!(await canAccessSession(c, session))) {
+      return c.json({ error: "Not authorized for this session." }, 403);
+    }
+    return c.json(await buildSessionBridgePayload(deps, session));
   });
 
   app.get("/sessions/:sessionId/runs/:runId/debug", async (c) => {

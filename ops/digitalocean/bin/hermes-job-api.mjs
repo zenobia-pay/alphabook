@@ -289,6 +289,7 @@ function getRunSummary(runDir) {
   const status = readJson(path.join(runDir, "status.json")) || {};
   const summary = readJson(path.join(runDir, "summary.json")) || {};
   const index = readJson(path.join(runDir, "index.json")) || {};
+  const bridge = (index.bridge && typeof index.bridge === "object") ? index.bridge : {};
   const effective = { ...summary, ...status };
   const pid = effective.pid ?? null;
   const innerRunDir = index.inner_run_dir || effective.inner_run_dir || inferInnerRunDir(runDir);
@@ -303,6 +304,7 @@ function getRunSummary(runDir) {
     id: jobId,
     jobType: index.job_type || effective.job_type || null,
     runDir,
+    wrapperRunDir: typeof bridge.wrapperRunDir === "string" ? bridge.wrapperRunDir : runDir,
     innerRunDir,
     innerRunId: index.inner_run_id || effective.inner_run_id || (innerRunDir ? path.basename(innerRunDir) : null),
     state: effectiveState,
@@ -315,8 +317,11 @@ function getRunSummary(runDir) {
     startedAt: effective.started_at || null,
     finishedAt: effective.finished_at || null,
     indexFile: path.join(runDir, "index.json"),
-    hermesSessionId: index.session?.primary_session_id || effective.hermes_session_id || null,
+    hermesSessionId: typeof bridge.hermesSessionId === "string" ? bridge.hermesSessionId : (effective.hermes_session_id || null),
     hermesSessionFile: index.session?.session_snapshot_file || effective.hermes_session_file || null,
+    archivePrefix: typeof bridge.archivePrefix === "string"
+      ? bridge.archivePrefix
+      : (typeof effective.archive_prefix === "string" ? effective.archive_prefix : null),
     exitCode: effective.exit_code ?? null,
     heartbeatAt: parseHeartbeatAt(runDir),
     phase: innerStatus?.phase || null,

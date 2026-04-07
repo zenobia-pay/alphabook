@@ -70,7 +70,6 @@ def collect_session_info(run_dir: Path) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "hermes_home": str(hermes_home),
         "sessions_dir": str(sessions_dir),
-        "session_files": [str(path) for path in session_files],
     }
     if session_files:
         latest = session_files[-1]
@@ -164,10 +163,26 @@ def main() -> None:
 
     session_info = collect_session_info(run_dir)
     openai_info = collect_openai_requests(run_dir, job_id)
+    canonical_hermes_session_id = session_info.get("primary_session_id")
+    archive_prefix = status.get("archive_prefix") if isinstance(status.get("archive_prefix"), str) else summary.get("archive_prefix")
+    bridge_payload = {
+        "externalJobId": job_id,
+        "wrapperRunDir": str(run_dir),
+        "innerRunDir": str(inner_run_dir) if inner_run_dir else None,
+        "innerRunId": inner_run_dir.name if inner_run_dir else None,
+        "archivePrefix": archive_prefix if isinstance(archive_prefix, str) else None,
+        "hermesSessionId": canonical_hermes_session_id if isinstance(canonical_hermes_session_id, str) else None,
+        "alphabookSessionId": status.get("alphabook_session_id") if isinstance(status.get("alphabook_session_id"), str) else None,
+        "alphabookRunId": status.get("alphabook_run_id") if isinstance(status.get("alphabook_run_id"), str) else None,
+    }
+    bridge_file = run_dir / "bridge.json"
+    bridge_file.write_text(json.dumps(bridge_payload, indent=2) + "\n")
 
     index_payload = {
         "job_id": job_id,
         "run_dir": str(run_dir),
+        "bridge_file": str(bridge_file),
+        "bridge": bridge_payload,
         "status_file": str(run_dir / "status.json"),
         "summary_file": str(run_dir / "summary.json"),
         "prompt_file": str(run_dir / "prompt.txt"),
@@ -210,8 +225,9 @@ def main() -> None:
             status["pid"] = pid
     status["inner_run_dir"] = str(inner_run_dir) if inner_run_dir else None
     status["inner_run_id"] = inner_run_dir.name if inner_run_dir else None
-    status["hermes_session_id"] = session_info.get("primary_session_id")
+    status["hermes_session_id"] = bridge_payload["hermesSessionId"]
     status["hermes_session_file"] = session_info.get("session_snapshot_file") or session_info.get("primary_session_file")
+    status["bridge_file"] = str(bridge_file)
     status["openai_requests_file"] = openai_info["requests_index_file"]
     status["openai_request_count"] = openai_info["request_count"]
     if openai_info["estimated_total_cost_usd"] is not None:
