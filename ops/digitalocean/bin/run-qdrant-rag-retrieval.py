@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import time
 import urllib.error
 import urllib.request
 from collections import defaultdict
@@ -115,6 +116,46 @@ def ensure_output_dir(path: str) -> Path:
     output_dir = Path(path)
     output_dir.mkdir(parents=True, exist_ok=True)
     return output_dir
+
+
+def append_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        return
+    with path.open("a", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def log_event(path: Path, event: dict[str, Any]) -> None:
+    payload = {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), **event}
+    append_jsonl(path, [payload])
+
+
+def write_progress_summary(
+    path: Path,
+    *,
+    query: str,
+    total_variants: int,
+    completed_variants: int,
+    dense_match_count: int,
+    elapsed_seconds: float,
+) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "query": query,
+                "total_variants": total_variants,
+                "completed_variants": completed_variants,
+                "dense_match_count": dense_match_count,
+                "elapsed_seconds": round(elapsed_seconds, 3),
+                "state": "running" if completed_variants < total_variants else "dense_retrieval_complete",
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def parse_scope_file(path: str | None) -> set[str]:
@@ -371,14 +412,18 @@ def search_qdrant_variant(
     args: argparse.Namespace,
     variant: str,
     scoped_ids: set[str],
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     if not args.qdrant_url or not args.collection:
         raise SystemExit("QDRANT_URL and QDRANT_COLLECTION are required")
+    started_at = time.time()
     vector = embed_query(args, variant)
+    embedding_elapsed = time.time() - started_at
     matches: list[dict[str, Any]] = []
     payload_filter = build_qdrant_filter(args, scoped_ids)
     offset = 0
-    for _ in range(max(1, args.max_pages)):
+    page_timings: list[dict[str, Any]] = []
+    for page_index in range(max(1, args.max_pages)):
+        page_started_at = time.time()
         request_body: dict[str, Any] = {
             "vector": vector,
             "limit": max(1, args.vector_limit),
@@ -396,13 +441,27 @@ def search_qdrant_variant(
             bearer=False,
         )
         result = payload.get("result") or []
+        page_timings.append(
+            {
+                "page_index": page_index + 1,
+                "offset": offset,
+                "result_count": len(result),
+                "elapsed_seconds": round(time.time() - page_started_at, 3),
+            }
+        )
         if not result:
             break
         matches.extend(result)
         if len(result) < args.vector_limit:
             break
         offset += args.vector_limit
-    return matches
+    return matches, {
+        "variant": variant,
+        "embedding_elapsed_seconds": round(embedding_elapsed, 3),
+        "pages": page_timings,
+        "match_count": len(matches),
+        "elapsed_seconds": round(time.time() - started_at, 3),
+    }
 
 
 def hydrate_hits(
@@ -663,11 +722,37 @@ def main() -> int:
         raise SystemExit("The bounded scope resolved to zero Gutenberg ids")
 
     variants = expand_query_variants(args, output_dir)
+    timing_log_path = output_dir / "timing-log.jsonl"
+    dense_matches_path = output_dir / "dense-matches.jsonl"
+    progress_summary_path = output_dir / "progress-summary.json"
+    dense_matches_path.write_text("", encoding="utf-8")
+    timing_log_path.write_text("", encoding="utf-8")
 
     dense_rows: list[dict[str, Any]] = []
     chunk_hits: list[ChunkHit] = []
-    for variant in variants:
-        matches = search_qdrant_variant(args, variant, scoped_ids)
+    dense_started_at = time.time()
+    for variant_index, variant in enumerate(variants, start=1):
+        log_event(
+            timing_log_path,
+            {
+                "event": "variant_started",
+                "variant_index": variant_index,
+                "variant": variant,
+                "total_variants": len(variants),
+            },
+        )
+        matches, variant_stats = search_qdrant_variant(args, variant, scoped_ids)
+        for page in variant_stats["pages"]:
+            log_event(
+                timing_log_path,
+                {
+                    "event": "variant_page",
+                    "variant_index": variant_index,
+                    "variant": variant,
+                    **page,
+                },
+            )
+        variant_rows: list[dict[str, Any]] = []
         for match in matches:
             payload = match.get("payload") or {}
             gutenberg_id = str(payload.get("gutenberg_id") or "").strip()
@@ -687,7 +772,7 @@ def main() -> int:
                 corpus_chunk_id=str(payload.get("corpus_chunk_id")).strip() if payload.get("corpus_chunk_id") else None,
             )
             chunk_hits.append(chunk_hit)
-            dense_rows.append(
+            row = (
                 {
                     "variant": variant,
                     "gutenberg_id": gutenberg_id,
@@ -698,10 +783,31 @@ def main() -> int:
                     "authors": chunk_hit.authors,
                     "corpus_chunk_id": chunk_hit.corpus_chunk_id,
                     "qdrant_point_id": match.get("id"),
-                },
+                }
             )
-
-    write_jsonl(output_dir / "dense-matches.jsonl", dense_rows)
+            dense_rows.append(row)
+            variant_rows.append(row)
+        append_jsonl(dense_matches_path, variant_rows)
+        log_event(
+            timing_log_path,
+            {
+                "event": "variant_completed",
+                "variant_index": variant_index,
+                "variant": variant,
+                "embedding_elapsed_seconds": variant_stats["embedding_elapsed_seconds"],
+                "match_count": variant_stats["match_count"],
+                "written_dense_rows": len(variant_rows),
+                "elapsed_seconds": variant_stats["elapsed_seconds"],
+            },
+        )
+        write_progress_summary(
+            progress_summary_path,
+            query=args.query,
+            total_variants=len(variants),
+            completed_variants=variant_index,
+            dense_match_count=len(dense_rows),
+            elapsed_seconds=time.time() - dense_started_at,
+        )
 
     hydrated_hits, chunk_cache = hydrate_hits(metadata_rows, chunk_hits, args.chunk_target_chars)
     write_jsonl(output_dir / "hydrated-hits.jsonl", hydrated_hits)
