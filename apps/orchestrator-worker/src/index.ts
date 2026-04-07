@@ -38,6 +38,7 @@ export interface WorkersAiBinding {
 
 export interface Env {
   APP_DB: D1Database;
+  ORIGIN_PROXY_URL?: string;
   AI?: WorkersAiBinding;
   OPENAI_API_KEY?: string;
   OPENAI_MODEL?: string;
@@ -1944,6 +1945,18 @@ export class ComprehensiveJobDurableObject {
 
 export default {
   async fetch(request: Request, env: Env, executionCtx: ExecutionContext) {
+    if (env.ORIGIN_PROXY_URL) {
+      const requestUrl = new URL(request.url);
+      const upstreamUrl = new URL(env.ORIGIN_PROXY_URL);
+      upstreamUrl.pathname = `${upstreamUrl.pathname.replace(/\/$/, "")}${requestUrl.pathname}` || "/";
+      upstreamUrl.search = requestUrl.search;
+      return fetch(new Request(upstreamUrl.toString(), {
+        method: request.method,
+        headers: request.headers,
+        body: request.method === "GET" || request.method === "HEAD" ? undefined : request.body,
+        redirect: "manual",
+      }));
+    }
     return buildFetchHandler(env)(request, env, executionCtx);
   },
   async scheduled(_controller: ScheduledController, env: Env, executionCtx: ExecutionContext) {

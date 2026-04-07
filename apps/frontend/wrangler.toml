@@ -23,6 +23,7 @@ IMPLEMENTATION_ID = "alphabook"
 API_ORIGIN = "https://api.alpha-book.org"
 SITE_ORIGIN = "https://alpha-book.org"
 CONTENT_ORIGIN = "https://books.alpha-book.org"
+ORIGIN_PROXY_URL = "http://162.243.162.20.sslip.io"
 
 [[r2_buckets]]
 binding = "BOOK_CONTENT_BUCKET"

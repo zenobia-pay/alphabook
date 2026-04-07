@@ -1,9 +1,20 @@
 :80 {
   encode zstd gzip
 
-  @api path /api/* /chat /health /me /notifications* /auth/* /claim/* /skill.md /v1/*
-  reverse_proxy @api alphabook-api:8787
+  route {
+    handle_path /api/* {
+      reverse_proxy alphabook-api:8787
+    }
 
-  root * /srv/frontend
-  file_server
+    @api path /chat /health /me /notifications* /auth/* /claim/* /skill.md /v1/*
+    handle @api {
+      reverse_proxy alphabook-api:8787
+    }
+
+    handle {
+      root * /srv/frontend
+      try_files {path} /index.html
+      file_server
+    }
+  }
 }

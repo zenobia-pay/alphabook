@@ -6,6 +6,7 @@ export interface Env {
     fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
   };
   BOOK_CONTENT_BUCKET: R2Bucket;
+  ORIGIN_PROXY_URL?: string;
   API_ORIGIN?: string;
   SITE_ORIGIN?: string;
   CONTENT_ORIGIN?: string;
@@ -89,6 +90,19 @@ function resolveCanonicalUrl(requestUrl: URL, env: Env) {
     return new URL(`${requestUrl.pathname}${requestUrl.hash}`, siteOrigin).toString();
   }
   return `${siteOrigin}/`;
+}
+
+function buildProxyRequest(request: Request, originBase: string) {
+  const requestUrl = new URL(request.url);
+  const upstreamUrl = new URL(originBase);
+  upstreamUrl.pathname = `${upstreamUrl.pathname.replace(/\/$/, "")}${requestUrl.pathname}` || "/";
+  upstreamUrl.search = requestUrl.search;
+  return new Request(upstreamUrl.toString(), {
+    method: request.method,
+    headers: request.headers,
+    body: request.method === "GET" || request.method === "HEAD" ? undefined : request.body,
+    redirect: "manual",
+  });
 }
 
 function escapeInlineJson(value: unknown) {
@@ -576,6 +590,10 @@ async function loadWorkPageBootstrap(request: Request, env: Env, url: URL): Prom
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    if (env.ORIGIN_PROXY_URL) {
+      return fetch(buildProxyRequest(request, env.ORIGIN_PROXY_URL));
+    }
+
     const url = new URL(request.url);
 
     const staticContentRoutePrefix = resolveStaticContentRoutePrefix(env);

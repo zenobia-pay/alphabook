@@ -14,6 +14,7 @@ enabled = true
 crons = ["* * * * *"]
 
 [vars]
+ORIGIN_PROXY_URL = "http://162.243.162.20.sslip.io/api"
 OPENAI_MODEL = "gpt-5.2"
 OPENAI_SYNTH_MODEL = "gpt-5.2"
 HERMES_JOB_API_URL = "https://134.209.116.167.sslip.io"
