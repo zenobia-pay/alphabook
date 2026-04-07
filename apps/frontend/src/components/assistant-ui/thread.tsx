@@ -23,6 +23,7 @@ import {
   ArrowDownIcon,
   ArrowUpIcon,
   CheckIcon,
+  ChevronDownIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   CopyIcon,
@@ -187,113 +188,109 @@ export const Thread: FC<{
         ["--composer-padding" as string]: "8px",
       }}
     >
-      <ThreadPrimitive.Viewport
-        ref={viewportRef}
-        turnAnchor="top"
-        className="aui-thread-viewport relative flex flex-1 flex-col overflow-x-auto overflow-y-auto px-4 pt-4"
-      >
-        <AuiIf condition={(s) => s.thread.isEmpty && showWelcome && !isRunning}>
-          <ThreadWelcome />
-        </AuiIf>
+      <div className="assistant-thread-layout">
+        <ThreadPrimitive.Viewport
+          ref={viewportRef}
+          turnAnchor="top"
+          className="aui-thread-viewport assistant-thread-main relative flex flex-1 flex-col overflow-x-auto overflow-y-auto px-4 pt-4"
+        >
+          <AuiIf condition={(s) => s.thread.isEmpty && showWelcome && !isRunning}>
+            <ThreadWelcome />
+          </AuiIf>
 
-        <ThreadPrimitive.Messages
-          components={{
-            UserMessage,
-            AssistantMessage,
-          }}
-        />
-
-        <ThreadAutoFollow active={isRunning} viewportRef={viewportRef} shouldAutoFollowRef={shouldAutoFollowRef} />
-
-        {showArtifacts && artifacts.length > 0 ? <ThreadArtifacts artifacts={artifacts} /> : null}
-
-        <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 mx-auto mt-auto flex w-full max-w-(--thread-max-width) flex-col gap-3 overflow-visible pb-3 md:pb-4">
-          <ThreadScrollToBottom />
-          <Composer
-            isRunning={isRunning}
-            onCancel={onCancel}
-            disabled={composerDisabled}
-            notice={composerDisabledNotice}
+          <ThreadPrimitive.Messages
+            components={{
+              UserMessage,
+              AssistantMessage,
+            }}
           />
-          {showWelcome && isEmpty && !isRunning && suggestions.length > 0 ? (
-            <ThreadSuggestions suggestions={suggestions} onSuggestionSelect={onSuggestionSelect} disabled={composerDisabled} />
-          ) : null}
-        </ThreadPrimitive.ViewportFooter>
-      </ThreadPrimitive.Viewport>
+
+          <ThreadAutoFollow active={isRunning} viewportRef={viewportRef} shouldAutoFollowRef={shouldAutoFollowRef} />
+
+          <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 mx-auto mt-auto flex w-full max-w-(--thread-max-width) flex-col gap-3 overflow-visible pb-3 md:pb-4">
+            <ThreadScrollToBottom />
+            <Composer
+              isRunning={isRunning}
+              onCancel={onCancel}
+              disabled={composerDisabled}
+              notice={composerDisabledNotice}
+            />
+            {showWelcome && isEmpty && !isRunning && suggestions.length > 0 ? (
+              <ThreadSuggestions suggestions={suggestions} onSuggestionSelect={onSuggestionSelect} disabled={composerDisabled} />
+            ) : null}
+          </ThreadPrimitive.ViewportFooter>
+        </ThreadPrimitive.Viewport>
+
+        {showArtifacts && artifacts.length > 0 ? <ThreadOutputs artifacts={artifacts} /> : null}
+      </div>
     </ThreadPrimitive.Root>
   );
 };
 
-const ThreadArtifacts: FC<{
+const ThreadOutputs: FC<{
   artifacts: RunArtifactRecord[];
 }> = ({ artifacts }) => {
   const visibleArtifacts = useMemo(() => selectVisibleArtifacts(artifacts), [artifacts]);
-  const [selectedPath, setSelectedPath] = useState<string | null>(visibleArtifacts[0]?.filename ?? null);
-
-  useEffect(() => {
-    if (!visibleArtifacts.some((artifact) => artifact.filename === selectedPath)) {
-      setSelectedPath(visibleArtifacts[0]?.filename ?? null);
-    }
-  }, [selectedPath, visibleArtifacts]);
+  const [isExpanded, setIsExpanded] = useState(false);
 
   if (visibleArtifacts.length === 0) {
     return null;
   }
 
-  const selectedArtifact = visibleArtifacts.find((artifact) => artifact.filename === selectedPath) ?? visibleArtifacts[0]!;
-  const selectedContent = typeof selectedArtifact.content === "string" ? selectedArtifact.content.trim() : "";
+  const handleOpenArtifact = useCallback((artifact: RunArtifactRecord) => {
+    const content = typeof artifact.content === "string" ? artifact.content : "";
+    if (!content.trim()) {
+      return;
+    }
+    const blob = new Blob([content], { type: artifact.mimeType || "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    window.open(url, "_blank", "noopener,noreferrer");
+    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  }, []);
 
   return (
-    <section className="assistant-artifact-explorer" aria-label="Run files">
-      <div className="assistant-artifact-explorer-header">
-        <div>
-          <div className="assistant-artifact-explorer-eyebrow">Artifacts</div>
-          <h2 className="assistant-artifact-explorer-title">Run Files</h2>
-        </div>
-        <div className="assistant-artifact-explorer-count">{visibleArtifacts.length}</div>
+    <aside className={cn("assistant-outputs-rail", isExpanded && "is-expanded")} aria-label="Outputs">
+      <button
+        type="button"
+        className="assistant-outputs-toggle"
+        aria-expanded={isExpanded}
+        onClick={() => setIsExpanded((current) => !current)}
+      >
+        <span className="assistant-outputs-toggle-copy">
+          <span className="assistant-outputs-label">Outputs</span>
+          <span className="assistant-outputs-count">{visibleArtifacts.length}</span>
+        </span>
+        <ChevronDownIcon className="assistant-outputs-toggle-icon" />
+      </button>
+      <div className="assistant-outputs-list" role="list">
+        {visibleArtifacts.map((artifact) => {
+          const disabled = typeof artifact.content !== "string" || artifact.content.trim().length === 0;
+          return (
+            <button
+              key={`${artifact.r2Key ?? artifact.filename}-${artifact.createdAt ?? ""}`}
+              type="button"
+              className="assistant-output-link"
+              role="listitem"
+              onClick={() => handleOpenArtifact(artifact)}
+              disabled={disabled}
+              title={disabled ? "This output is not available inline yet." : artifact.filename}
+            >
+              <FileTextIcon className="assistant-output-link-icon" />
+              <span className="assistant-output-link-name">{formatArtifactLabel(artifact, visibleArtifacts)}</span>
+            </button>
+          );
+        })}
       </div>
-      <div className="assistant-artifact-explorer-body">
-        <div className="assistant-artifact-explorer-list" role="listbox" aria-label="Artifact files">
-          {visibleArtifacts.map((artifact) => {
-            const isSelected = artifact.filename === selectedArtifact.filename;
-            return (
-              <button
-                key={`${artifact.r2Key ?? artifact.filename}-${artifact.createdAt ?? ""}`}
-                type="button"
-                className={cn("assistant-artifact-row", isSelected && "is-selected")}
-                aria-selected={isSelected}
-                onClick={() => setSelectedPath(artifact.filename)}
-              >
-                <FileTextIcon className="assistant-artifact-row-icon" />
-                <span className="assistant-artifact-row-copy">
-                  <span className="assistant-artifact-row-name">{artifact.filename}</span>
-                  <span className="assistant-artifact-row-meta">
-                    {formatArtifactMeta(artifact)}
-                  </span>
-                </span>
-              </button>
-            );
-          })}
-        </div>
-        <div className="assistant-artifact-preview">
-          <div className="assistant-artifact-preview-header">
-            <div className="assistant-artifact-preview-title">{selectedArtifact.filename}</div>
-            <div className="assistant-artifact-preview-meta">{formatArtifactMeta(selectedArtifact)}</div>
-          </div>
-          {selectedContent ? (
-            <pre className="assistant-artifact-preview-content">{selectedContent}</pre>
-          ) : (
-            <div className="assistant-artifact-preview-empty">Preview unavailable. The file is stored for this run, but not inlined into the session payload.</div>
-          )}
-        </div>
-      </div>
-    </section>
+    </aside>
   );
 };
 
 function selectVisibleArtifacts(artifacts: RunArtifactRecord[]) {
   const byFilename = new Map<string, RunArtifactRecord>();
   for (const artifact of artifacts) {
+    if (!isVisibleOutputArtifact(artifact)) {
+      continue;
+    }
     if (!byFilename.has(artifact.filename)) {
       byFilename.set(artifact.filename, artifact);
     }
@@ -319,15 +316,29 @@ function selectVisibleArtifacts(artifacts: RunArtifactRecord[]) {
   });
 }
 
-function formatArtifactMeta(artifact: RunArtifactRecord) {
-  const pieces: string[] = [];
-  if (typeof artifact.byteSize === "number" && Number.isFinite(artifact.byteSize)) {
-    pieces.push(formatBytes(artifact.byteSize));
+function isVisibleOutputArtifact(artifact: RunArtifactRecord) {
+  const kind = typeof artifact.metadata?.kind === "string" ? artifact.metadata.kind.trim() : "";
+  if (kind === "tool_stream_raw" || kind === "research_document" || kind === "hermes_archive_manifest") {
+    return false;
   }
-  if (typeof artifact.metadata?.kind === "string" && artifact.metadata.kind.trim().length > 0) {
-    pieces.push(artifact.metadata.kind.trim().replace(/_/gu, " "));
+  const normalized = artifact.filename.trim().toLowerCase();
+  if (!normalized) {
+    return false;
   }
-  return pieces.join(" • ") || "artifact";
+  if (normalized.endsWith("tool-stream.jsonl") || normalized.endsWith("archive-manifest.json")) {
+    return false;
+  }
+  return true;
+}
+
+function formatArtifactLabel(artifact: RunArtifactRecord, artifacts: RunArtifactRecord[]) {
+  const filename = artifact.filename.trim();
+  const base = filename.split("/").at(-1) ?? filename;
+  const duplicateBaseCount = artifacts.filter((candidate) => {
+    const candidateBase = candidate.filename.trim().split("/").at(-1) ?? candidate.filename.trim();
+    return candidateBase === base;
+  }).length;
+  return duplicateBaseCount > 1 ? filename : base;
 }
 
 function formatBytes(bytes: number) {
