@@ -5,9 +5,7 @@ import PgBoss from "pg-boss";
 import { type ResearchTaskQueueMessage } from "./app";
 import { createBillingService } from "./billing";
 import { buildLinuxAppDeps, loadLinuxEnv } from "./linux-env";
-import { createResearchTaskLeaseRenewer, runQueuedWorkspaceResearchTask } from "./queued-research";
-
-const RESEARCH_TASK_LEASE_MS = 90_000;
+import { runQueuedWorkspaceResearchTask } from "./queued-research";
 
 async function processResearchTaskMessage(
   deps: ReturnType<typeof buildLinuxAppDeps>,
@@ -17,18 +15,7 @@ async function processResearchTaskMessage(
     return;
   }
   const task = await deps.store.getResearchTask(message.taskId);
-  if (!task) {
-    return;
-  }
-  const heartbeatAt = new Date().toISOString();
-  const leaseExpiresAt = new Date(Date.now() + RESEARCH_TASK_LEASE_MS).toISOString();
-  const leaseOwner = `pgboss:${message.taskId}:${Date.now()}`;
-  const claimed = await deps.store.claimResearchTaskLease(task.id, {
-    leaseOwner,
-    lastHeartbeatAt: heartbeatAt,
-    leaseExpiresAt,
-  });
-  if (!claimed) {
+  if (!task || task.status !== "queued") {
     return;
   }
 
@@ -53,14 +40,6 @@ async function processResearchTaskMessage(
   }
 
   let progressSeq = task.progressSeq;
-  const leaseRenewer = createResearchTaskLeaseRenewer(async () => {
-    await deps.store.updateResearchTask(task.id, {
-      status: "running",
-      lastHeartbeatAt: new Date().toISOString(),
-      leaseOwner,
-      leaseExpiresAt: new Date(Date.now() + RESEARCH_TASK_LEASE_MS).toISOString(),
-    });
-  });
 
   const reportProgress = async (
     toolName: "semantic_deep_search" | "run_workspace_task",
@@ -69,7 +48,6 @@ async function processResearchTaskMessage(
     runtimeId?: string | null,
   ) => {
     progressSeq += 1;
-    const currentHeartbeat = new Date().toISOString();
     await deps.store.appendRunEvent(run.id, session.id, "tool.progress", {
       runId: run.id,
       toolCallId: toolCall.id,
@@ -82,22 +60,15 @@ async function processResearchTaskMessage(
       status: "running",
       progressSeq,
       runtimeId: runtimeId ?? task.runtimeId ?? null,
-      lastHeartbeatAt: currentHeartbeat,
       checkpointJson: detail ?? task.checkpointJson,
-      startedAt: task.startedAt ?? currentHeartbeat,
-      leaseOwner,
-      leaseExpiresAt: new Date(Date.now() + RESEARCH_TASK_LEASE_MS).toISOString(),
+      startedAt: task.startedAt ?? new Date().toISOString(),
     });
   };
 
   try {
-    leaseRenewer.start();
     await deps.store.updateResearchTask(task.id, {
       status: "starting",
       startedAt: task.startedAt ?? new Date().toISOString(),
-      lastHeartbeatAt: new Date().toISOString(),
-      leaseOwner,
-      leaseExpiresAt: new Date(Date.now() + RESEARCH_TASK_LEASE_MS).toISOString(),
     });
 
     let result: Record<string, unknown>;
@@ -159,7 +130,6 @@ async function processResearchTaskMessage(
       });
     }
 
-    await leaseRenewer.stop();
     await deps.store.finishToolCall(toolCall.id, "completed", result);
     await deps.store.updateResearchTask(task.id, {
       status: "succeeded",
@@ -170,12 +140,8 @@ async function processResearchTaskMessage(
           : null,
       errorJson: null,
       completedAt: new Date().toISOString(),
-      lastHeartbeatAt: new Date().toISOString(),
-      leaseOwner,
-      leaseExpiresAt: null,
     });
   } catch (error) {
-    await leaseRenewer.stop();
     const messageText = error instanceof Error ? error.message : "Durable research task failed.";
     await deps.store.finishToolCall(toolCall.id, "failed", {
       ok: false,
@@ -185,24 +151,12 @@ async function processResearchTaskMessage(
       status: "failed",
       errorJson: { error: messageText },
       completedAt: new Date().toISOString(),
-      lastHeartbeatAt: new Date().toISOString(),
-      leaseOwner,
-      leaseExpiresAt: null,
     });
   }
 }
 
-async function runMaintenanceTick(deps: ReturnType<typeof buildLinuxAppDeps>, boss: PgBoss) {
+async function runMaintenanceTick(deps: ReturnType<typeof buildLinuxAppDeps>, _boss: PgBoss) {
   await deps.store.refreshExploreFeedSnapshot();
-
-  const claimableResearchTasks = await deps.store.listClaimableResearchTasks(100);
-  for (const task of claimableResearchTasks) {
-    await boss.send(deps.queues.jobsName, {
-      type: "research_task_requested",
-      taskId: task.id,
-      queuedAt: new Date().toISOString(),
-    } satisfies ResearchTaskQueueMessage);
-  }
 }
 
 const env = await loadLinuxEnv(process.cwd());

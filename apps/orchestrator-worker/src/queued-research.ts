@@ -4,7 +4,6 @@ import { generateText } from "ai";
 import { createSemanticSearchJob, fetchHermesArtifact, fetchHermesJob, fetchHermesJobLogs } from "./hermes-job-client";
 import type { AppStore } from "./store";
 
-const RESEARCH_TASK_LEASE_RENEW_INTERVAL_MS = 30_000;
 const REMOTE_SEMANTIC_JOB_POLL_INTERVAL_MS = 1_500;
 
 export interface RemoteSemanticSearchEnv {
@@ -229,44 +228,6 @@ async function buildRemoteSemanticSearchResult(
     iterations: [],
     totalChunksConsidered: packets.length,
   } satisfies Record<string, unknown>;
-}
-
-export function createResearchTaskLeaseRenewer(
-  renewLease: () => Promise<void>,
-  intervalMs = RESEARCH_TASK_LEASE_RENEW_INTERVAL_MS,
-) {
-  let timer: ReturnType<typeof setInterval> | null = null;
-  let stopped = false;
-  let inFlight = Promise.resolve();
-
-  const tick = () => {
-    if (stopped) {
-      return;
-    }
-    inFlight = inFlight.then(async () => {
-      if (stopped) {
-        return;
-      }
-      await renewLease();
-    }).catch(() => {});
-  };
-
-  return {
-    start() {
-      if (timer || stopped) {
-        return;
-      }
-      timer = setInterval(tick, Math.max(1, intervalMs));
-    },
-    async stop() {
-      stopped = true;
-      if (timer) {
-        clearInterval(timer);
-        timer = null;
-      }
-      await inFlight;
-    },
-  };
 }
 
 export async function runQueuedRemoteSemanticSearch(

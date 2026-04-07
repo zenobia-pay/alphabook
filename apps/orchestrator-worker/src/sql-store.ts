@@ -141,6 +141,17 @@ function isClassificationLikeSubject(label: string) {
   return EXPLORE_CLASSIFICATION_CODE_RE.test(normalized);
 }
 
+function parseSiteStatJson<T>(value: unknown): T | null {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return null;
+  }
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return null;
+  }
+}
+
 function buildSqlExploreOrderBy(idExpression: string, randomSeed: ReturnType<typeof normalizeSqlExploreSeed>, fallbackOrder: string) {
   if (randomSeed == null) {
     return {
@@ -375,9 +386,6 @@ function mapResearchTaskRow(row: {
   task_spec_json: string | Record<string, unknown>;
   checkpoint_json: string | Record<string, unknown> | null;
   progress_seq: number;
-  last_heartbeat_at: string | null;
-  lease_owner: string | null;
-  lease_expires_at: string | null;
   result_artifact_key: string | null;
   error_json: string | Record<string, unknown> | null;
   created_at: string;
@@ -395,9 +403,6 @@ function mapResearchTaskRow(row: {
     taskSpecJson: parseJsonObject(row.task_spec_json),
     checkpointJson: row.checkpoint_json ? parseJsonObject(row.checkpoint_json) : null,
     progressSeq: Number(row.progress_seq ?? 0),
-    lastHeartbeatAt: row.last_heartbeat_at ?? null,
-    leaseOwner: row.lease_owner ?? null,
-    leaseExpiresAt: row.lease_expires_at ?? null,
     resultArtifactKey: row.result_artifact_key ?? null,
     errorJson: row.error_json ? parseJsonObject(row.error_json) : null,
     createdAt: row.created_at,
@@ -554,6 +559,94 @@ export class SqlAppStore implements AppStore {
     return {
       clause: clauses.join("\n"),
       params,
+    };
+  }
+
+  private hasDatasetExploreFilters(filters: ExploreWorksFilters = {}) {
+    return Boolean(filters.language || filters.subject || filters.bookshelf);
+  }
+
+  private async getSiteStat<T>(key: string): Promise<T | null> {
+    const result = await this.db.query<{ value_json: string | null }>(
+      "SELECT value_json FROM site_stats WHERE key = ? LIMIT 1",
+      [key],
+    );
+    return parseSiteStatJson<T>(result.rows[0]?.value_json ?? null);
+  }
+
+  private async setSiteStat(key: string, value: unknown) {
+    await this.db.query(
+      `
+        INSERT INTO site_stats (key, value_json, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at
+      `,
+      [key, JSON.stringify(value), nowIso()],
+    );
+  }
+
+  private async queryLiveWorkCount(filters: ExploreWorksFilters = {}) {
+    const filterClause = this.buildExploreFilterClause(filters, "w");
+    const result = await this.db.query<{ count: string | number }>(
+      `SELECT COUNT(*) AS count FROM works w WHERE 1 = 1 ${this.adapterWorkClause("w")} ${filterClause.clause}`,
+      filterClause.params,
+    );
+    return Number.parseInt(String(result.rows[0]?.count ?? "0"), 10) || 0;
+  }
+
+  private async queryLiveWorkFacets(filters: ExploreWorksFilters = {}): Promise<ExploreWorkFacets> {
+    const filterClause = this.buildExploreFilterClause(filters, "w");
+    const [languages, subjects, bookshelves] = await Promise.all([
+      this.db.query<{ label: string | null; count: string | number }>(
+        `
+          SELECT w.language AS label, COUNT(*) AS count
+          FROM works w
+          WHERE w.language IS NOT NULL AND TRIM(w.language) <> '' ${this.adapterWorkClause("w")} ${filterClause.clause}
+          GROUP BY w.language
+          ORDER BY COUNT(*) DESC, w.language ASC
+          LIMIT 256
+        `,
+        filterClause.params,
+      ),
+      this.db.query<{ label: string | null; count: string | number }>(
+        `
+          SELECT s.label AS label, COUNT(DISTINCT w.id) AS count
+          FROM works w
+          JOIN work_subjects ws ON ws.work_id = w.id
+          JOIN subjects s ON s.id = ws.subject_id
+          WHERE 1 = 1 ${this.adapterWorkClause("w")} ${filterClause.clause}
+          GROUP BY s.label
+          ORDER BY COUNT(DISTINCT w.id) DESC, s.label ASC
+          LIMIT 40
+        `,
+        filterClause.params,
+      ),
+      this.db.query<{ label: string | null; count: string | number }>(
+        `
+          SELECT shelf.value AS label, COUNT(DISTINCT w.id) AS count
+          FROM works w
+          JOIN json_each(COALESCE(json_extract(w.metadata_json, '$.bookshelves'), '[]')) shelf
+          WHERE 1 = 1 ${this.adapterWorkClause("w")} ${filterClause.clause}
+          GROUP BY shelf.value
+          ORDER BY COUNT(DISTINCT w.id) DESC, shelf.value ASC
+          LIMIT 40
+        `,
+        filterClause.params,
+      ),
+    ]);
+    return {
+      languages: languages.rows
+        .filter((row): row is { label: string; count: string | number } => typeof row.label === "string" && row.label.trim().length > 0)
+        .filter((row) => isPlausibleExploreLanguageLabel(row.label))
+        .slice(0, 12)
+        .map((row) => ({ label: row.label, count: Number(row.count) || 0 })),
+      subjects: subjects.rows
+        .filter((row): row is { label: string; count: string | number } => typeof row.label === "string" && row.label.trim().length > 0)
+        .filter((row) => !isClassificationLikeSubject(row.label))
+        .map((row) => ({ label: row.label, count: Number(row.count) || 0 })),
+      bookshelves: bookshelves.rows
+        .filter((row): row is { label: string; count: string | number } => typeof row.label === "string" && row.label.trim().length > 0)
+        .map((row) => ({ label: row.label, count: Number(row.count) || 0 })),
     };
   }
 
@@ -1696,44 +1789,6 @@ export class SqlAppStore implements AppStore {
     );
   }
 
-  async claimRunLease(runId: string, options: {
-    ownerInstanceId: string;
-    heartbeatAt: string;
-    leaseExpiresAt: string;
-  }): Promise<boolean> {
-    await this.ensureRunLifecycleColumns();
-    await this.db.query(
-      `
-        UPDATE runs
-        SET owner_instance_id = ?, heartbeat_at = ?, lease_expires_at = ?
-        WHERE id = ?
-          AND status IN ('running', 'queued')
-          AND (
-            owner_instance_id IS NULL
-            OR owner_instance_id = ?
-            OR lease_expires_at IS NULL
-            OR lease_expires_at <= ?
-          )
-      `,
-      [
-        options.ownerInstanceId,
-        options.heartbeatAt,
-        options.leaseExpiresAt,
-        runId,
-        options.ownerInstanceId,
-        options.heartbeatAt,
-      ],
-    );
-    const run = await this.getRun(runId);
-    return Boolean(
-      run
-      && (run.status === "running" || run.status === "queued")
-      && run.ownerInstanceId === options.ownerInstanceId
-      && run.heartbeatAt === options.heartbeatAt
-      && run.leaseExpiresAt === options.leaseExpiresAt,
-    );
-  }
-
   async startToolCall(runId: string, toolName: ToolName, argsJson: Record<string, unknown>): Promise<ToolCallRecord> {
     const id = crypto.randomUUID();
     const startedAt = nowIso();
@@ -1900,7 +1955,7 @@ export class SqlAppStore implements AppStore {
     const offset = options.offset ?? 0;
     const limit = options.limit ?? 12;
     const filters = options.filters ?? {};
-    const hasDatasetFilters = Boolean(filters.language || filters.subject || filters.bookshelf || filters.randomSeed);
+    const hasDatasetFilters = this.hasDatasetExploreFilters(filters) || Boolean(filters.randomSeed);
     if (hasDatasetFilters) {
       return this.queryRankedWorks(offset, limit, filters);
     }
@@ -1974,78 +2029,31 @@ export class SqlAppStore implements AppStore {
   }
 
   async countWorks(filters: ExploreWorksFilters = {}) {
-    const filterClause = this.buildExploreFilterClause(filters, "w");
-    const result = await this.db.query<{ count: string | number }>(
-      `SELECT COUNT(*) AS count FROM works w WHERE 1 = 1 ${this.adapterWorkClause("w")} ${filterClause.clause}`,
-      filterClause.params,
-    );
-    return Number.parseInt(String(result.rows[0]?.count ?? "0"), 10) || 0;
+    if (!this.hasDatasetExploreFilters(filters)) {
+      const cached = await this.getSiteStat<{ count?: number }>("corpus_work_count");
+      if (typeof cached?.count === "number" && Number.isFinite(cached.count)) {
+        return cached.count;
+      }
+    }
+    return this.queryLiveWorkCount(filters);
   }
   async listWorkFacets(filters: ExploreWorksFilters = {}): Promise<ExploreWorkFacets> {
-    const filterClause = this.buildExploreFilterClause(filters, "w");
-    const [languages, subjects, bookshelves] = await Promise.all([
-      this.db.query<{ label: string | null; count: string | number }>(
-        `
-          SELECT w.language AS label, COUNT(*) AS count
-          FROM works w
-          WHERE w.language IS NOT NULL AND TRIM(w.language) <> '' ${this.adapterWorkClause("w")} ${filterClause.clause}
-          GROUP BY w.language
-          ORDER BY COUNT(*) DESC, w.language ASC
-          LIMIT 256
-        `,
-        filterClause.params,
-      ),
-      this.db.query<{ label: string | null; count: string | number }>(
-        `
-          SELECT s.label AS label, COUNT(DISTINCT w.id) AS count
-          FROM works w
-          JOIN work_subjects ws ON ws.work_id = w.id
-          JOIN subjects s ON s.id = ws.subject_id
-          WHERE 1 = 1 ${this.adapterWorkClause("w")} ${filterClause.clause}
-          GROUP BY s.label
-          ORDER BY COUNT(DISTINCT w.id) DESC, s.label ASC
-          LIMIT 40
-        `,
-        filterClause.params,
-      ),
-      this.db.query<{ label: string | null; count: string | number }>(
-        `
-          SELECT shelf.value AS label, COUNT(DISTINCT w.id) AS count
-          FROM works w
-          JOIN json_each(COALESCE(json_extract(w.metadata_json, '$.bookshelves'), '[]')) shelf
-          WHERE 1 = 1 ${this.adapterWorkClause("w")} ${filterClause.clause}
-          GROUP BY shelf.value
-          ORDER BY COUNT(DISTINCT w.id) DESC, shelf.value ASC
-          LIMIT 40
-        `,
-        filterClause.params,
-      ),
-    ]);
-    return {
-      languages: languages.rows
-        .filter((row): row is { label: string; count: string | number } => typeof row.label === "string" && row.label.trim().length > 0)
-        .filter((row) => isPlausibleExploreLanguageLabel(row.label))
-        .slice(0, 12)
-        .map((row) => ({ label: row.label, count: Number(row.count) || 0 })),
-      subjects: subjects.rows
-        .filter((row): row is { label: string; count: string | number } => typeof row.label === "string" && row.label.trim().length > 0)
-        .filter((row) => !isClassificationLikeSubject(row.label))
-        .map((row) => ({ label: row.label, count: Number(row.count) || 0 })),
-      bookshelves: bookshelves.rows
-        .filter((row): row is { label: string; count: string | number } => typeof row.label === "string" && row.label.trim().length > 0)
-        .map((row) => ({ label: row.label, count: Number(row.count) || 0 })),
-    };
+    if (!this.hasDatasetExploreFilters(filters)) {
+      const cached = await this.getSiteStat<ExploreWorkFacets>("explore_work_facets");
+      if (cached && Array.isArray(cached.languages) && Array.isArray(cached.subjects) && Array.isArray(cached.bookshelves)) {
+        return cached;
+      }
+    }
+    return this.queryLiveWorkFacets(filters);
   }
   async listDocuments(offset?: number, limit?: number) { return (await this.corpusStore()).listDocuments(offset, limit); }
   async countDocuments() { return (await this.corpusStore()).countDocuments(); }
   async refreshExploreFeedSnapshot(limit = 512) {
-    const [rankedRows, countResult] = await Promise.all([
+    const [rankedRows, totalCount, facets] = await Promise.all([
       this.queryRankedWorkRows(0, limit),
-      this.db.query<{ count: string | number }>(
-        `SELECT COUNT(*) AS count FROM works w WHERE 1 = 1 ${this.adapterWorkClause("w")}`,
-      ),
+      this.queryLiveWorkCount(),
+      this.queryLiveWorkFacets(),
     ]);
-    const totalCount = Number.parseInt(String(countResult.rows[0]?.count ?? "0"), 10) || 0;
 
     await this.db.query("DELETE FROM feed_works");
     for (const [index, row] of rankedRows.rows.entries()) {
@@ -2074,14 +2082,8 @@ export class SqlAppStore implements AppStore {
         ],
       );
     }
-    await this.db.query(
-      `
-        INSERT INTO site_stats (key, value_json, updated_at)
-        VALUES ('corpus_work_count', ?, ?)
-        ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at
-      `,
-      [JSON.stringify({ count: totalCount }), nowIso()],
-    );
+    await this.setSiteStat("corpus_work_count", { count: totalCount });
+    await this.setSiteStat("explore_work_facets", facets);
   }
   async getWorkById(workId: string): Promise<WorkDetailRecord | null> {
     const row = await this.queryWorkDetailRow(workId);
@@ -2206,8 +2208,6 @@ export class SqlAppStore implements AppStore {
     kind: ResearchTaskRecord["kind"];
     taskSpecJson: Record<string, unknown>;
     checkpointJson?: Record<string, unknown> | null;
-    leaseOwner?: string | null;
-    leaseExpiresAt?: string | null;
   }): Promise<ResearchTaskRecord> {
     await this.ensureResearchTasksTable();
     const record: ResearchTaskRecord = {
@@ -2221,9 +2221,6 @@ export class SqlAppStore implements AppStore {
       taskSpecJson: input.taskSpecJson,
       checkpointJson: input.checkpointJson ?? null,
       progressSeq: 0,
-      lastHeartbeatAt: null,
-      leaseOwner: input.leaseOwner ?? null,
-      leaseExpiresAt: input.leaseExpiresAt ?? null,
       resultArtifactKey: null,
       errorJson: null,
       createdAt: nowIso(),
@@ -2246,9 +2243,9 @@ export class SqlAppStore implements AppStore {
         JSON.stringify(record.taskSpecJson),
         record.checkpointJson ? JSON.stringify(record.checkpointJson) : null,
         record.progressSeq,
-        record.lastHeartbeatAt,
-        record.leaseOwner,
-        record.leaseExpiresAt,
+        null,
+        null,
+        null,
         record.resultArtifactKey,
         record.errorJson ? JSON.stringify(record.errorJson) : null,
         record.createdAt,
@@ -2280,24 +2277,11 @@ export class SqlAppStore implements AppStore {
     return rows.rows.map(mapResearchTaskRow);
   }
 
-  async listClaimableResearchTasks(limit = 50): Promise<ResearchTaskRecord[]> {
-    await this.ensureResearchTasksTable();
-    const rows = await this.db.query<any>(
-      `SELECT * FROM research_tasks
-       WHERE status IN ('queued', 'starting', 'running')
-         AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
-       ORDER BY created_at ASC
-       LIMIT ?`,
-      [nowIso(), Math.max(0, limit)],
-    );
-    return rows.rows.map(mapResearchTaskRow);
-  }
-
   async updateResearchTask(
     taskId: string,
     updates: Partial<Pick<
       ResearchTaskRecord,
-      "runtimeId" | "status" | "checkpointJson" | "progressSeq" | "lastHeartbeatAt" | "leaseOwner" | "leaseExpiresAt" | "resultArtifactKey" | "errorJson" | "startedAt" | "completedAt"
+      "runtimeId" | "status" | "checkpointJson" | "progressSeq" | "resultArtifactKey" | "errorJson" | "startedAt" | "completedAt"
     >>,
   ): Promise<void> {
     await this.ensureResearchTasksTable();
@@ -2309,9 +2293,6 @@ export class SqlAppStore implements AppStore {
           status = CASE WHEN ? THEN ? ELSE status END,
           checkpoint_json = CASE WHEN ? THEN ? ELSE checkpoint_json END,
           progress_seq = CASE WHEN ? THEN ? ELSE progress_seq END,
-          last_heartbeat_at = CASE WHEN ? THEN ? ELSE last_heartbeat_at END,
-          lease_owner = CASE WHEN ? THEN ? ELSE lease_owner END,
-          lease_expires_at = CASE WHEN ? THEN ? ELSE lease_expires_at END,
           result_artifact_key = CASE WHEN ? THEN ? ELSE result_artifact_key END,
           error_json = CASE WHEN ? THEN ? ELSE error_json END,
           started_at = CASE WHEN ? THEN ? ELSE started_at END,
@@ -2327,12 +2308,6 @@ export class SqlAppStore implements AppStore {
         updates.checkpointJson ? JSON.stringify(updates.checkpointJson) : null,
         updates.progressSeq !== undefined ? 1 : 0,
         updates.progressSeq ?? null,
-        updates.lastHeartbeatAt !== undefined ? 1 : 0,
-        updates.lastHeartbeatAt ?? null,
-        updates.leaseOwner !== undefined ? 1 : 0,
-        updates.leaseOwner ?? null,
-        updates.leaseExpiresAt !== undefined ? 1 : 0,
-        updates.leaseExpiresAt ?? null,
         updates.resultArtifactKey !== undefined ? 1 : 0,
         updates.resultArtifactKey ?? null,
         updates.errorJson !== undefined ? 1 : 0,
@@ -2343,44 +2318,6 @@ export class SqlAppStore implements AppStore {
         updates.completedAt ?? null,
         taskId,
       ],
-    );
-  }
-
-  async claimResearchTaskLease(taskId: string, options: {
-    leaseOwner: string;
-    lastHeartbeatAt: string;
-    leaseExpiresAt: string;
-  }): Promise<boolean> {
-    await this.ensureResearchTasksTable();
-    await this.db.query(
-      `
-        UPDATE research_tasks
-        SET lease_owner = ?, last_heartbeat_at = ?, lease_expires_at = ?
-        WHERE id = ?
-          AND status IN ('queued', 'starting', 'running')
-          AND (
-            lease_owner IS NULL
-            OR lease_owner = ?
-            OR lease_expires_at IS NULL
-            OR lease_expires_at <= ?
-          )
-      `,
-      [
-        options.leaseOwner,
-        options.lastHeartbeatAt,
-        options.leaseExpiresAt,
-        taskId,
-        options.leaseOwner,
-        options.lastHeartbeatAt,
-      ],
-    );
-    const task = await this.getResearchTask(taskId);
-    return Boolean(
-      task
-      && ["queued", "starting", "running"].includes(task.status)
-      && task.leaseOwner === options.leaseOwner
-      && task.lastHeartbeatAt === options.lastHeartbeatAt
-      && task.leaseExpiresAt === options.leaseExpiresAt,
     );
   }
 

@@ -2495,9 +2495,6 @@ export type RunOrchestratorOptions = {
 
 type AuditLogger = (event: string, payload: Record<string, unknown>) => void;
 
-const RUN_LEASE_MS = 90_000;
-const RUN_HEARTBEAT_INTERVAL_MS = 15_000;
-
 function decorateWork(c: Context, work: WorkSummary): WorkSummary {
   const metadata = "metadata" in work && work.metadata && typeof work.metadata === "object"
     ? (work.metadata as Record<string, unknown>)
@@ -4807,14 +4804,7 @@ export async function finalizeStaleRun(
   }
 
   const activeResearchTask = researchTasks.some((task) => {
-    if (task.status !== "queued" && task.status !== "starting" && task.status !== "running") {
-      return false;
-    }
-    const taskLeaseActive = Boolean(task.leaseExpiresAt && Date.parse(task.leaseExpiresAt) > Date.now());
-    const taskHeartbeatFresh = Boolean(
-      task.lastHeartbeatAt && (Date.now() - Date.parse(task.lastHeartbeatAt)) < RUN_LEASE_MS,
-    );
-    return taskLeaseActive || taskHeartbeatFresh;
+    return task.status === "queued" || task.status === "starting" || task.status === "running";
   });
   if (activeResearchTask) {
     return run;
@@ -4929,50 +4919,6 @@ function terminalResearchTaskError(task: { checkpointJson?: unknown; errorJson?:
     }
   }
   return null;
-}
-
-function semanticStepFailureLabel(step: string) {
-  switch (step) {
-    case "model_selected":
-      return "while selecting the semantic ranking model";
-    case "embed_query":
-      return "while embedding a semantic query";
-    case "vector_query":
-      return "while querying the vector index";
-    case "hydrate_chunks":
-      return "while loading matched passages";
-    case "alphaloop_stream_start":
-      return "while starting AlphaLoop";
-    case "write_answer":
-      return "while writing the final answer";
-    default:
-      return "during semantic retrieval";
-  }
-}
-
-function stalledResearchTaskError(task: {
-  kind?: string;
-  checkpointJson?: unknown;
-}) {
-  const checkpoint = task.checkpointJson;
-  if (checkpoint && typeof checkpoint === "object" && !Array.isArray(checkpoint)) {
-    const record = checkpoint as Record<string, unknown>;
-    if (task.kind === "semantic_research") {
-      if (record.type === "semantic.step" && typeof record.step === "string") {
-        return `Semantic search stopped making progress ${semanticStepFailureLabel(record.step)}.`;
-      }
-      if (record.type === "semantic.alphaloop") {
-        return "Semantic search stopped making progress while AlphaLoop was reviewing the retrieved passages.";
-      }
-      if (record.type === "research.note" && typeof record.note === "string" && record.note.trim().length > 0) {
-        return `Semantic search stopped making progress after: ${record.note.trim()}`;
-      }
-    }
-  }
-  if (task.kind === "semantic_research") {
-    return "Semantic search stopped making progress and lost its worker lease.";
-  }
-  return "This long-running research task stopped making progress and lost its worker lease.";
 }
 
 function normalizedComparisonText(value: string) {
@@ -6337,11 +6283,8 @@ function terminalRunStateUpdate(status: "completed" | "failed" | "timed_out", co
   return {
     status,
     completedAt,
-    ownerInstanceId: null,
-    heartbeatAt: completedAt,
-    leaseExpiresAt: null,
     activeToolCallId: null,
-  } satisfies Partial<Pick<RunRecord, "status" | "completedAt" | "ownerInstanceId" | "heartbeatAt" | "leaseExpiresAt" | "activeToolCallId">>;
+  } satisfies Partial<Pick<RunRecord, "status" | "completedAt" | "activeToolCallId">>;
 }
 
 function backgroundJobIsTerminal(status: BackgroundJobRecord["status"]) {
@@ -6676,14 +6619,13 @@ export async function reapExpiredRuntimeInstances(
 
 export async function reapStaleRuns(
   deps: AppDeps,
-  context: { runId: string },
+  _context: { runId: string },
   limit = 100,
 ) {
   const allRuns = await deps.store.listAllRuns();
   const staleRuns = allRuns
     .filter((run) => run.status === "running" || run.status === "queued")
     .slice(0, limit);
-  const janitorRequest = new Request(`${apiOrigin(deps)}/internal/janitor`);
   for (const run of staleRuns) {
     const runRecord = await deps.store.getRun(run.id);
     if (!runRecord) {
@@ -6700,34 +6642,6 @@ export async function reapStaleRuns(
       } catch {
         // Best-effort sync for active delegated jobs.
       }
-      continue;
-    }
-    const leaseExpired = !runRecord.leaseExpiresAt || Date.parse(runRecord.leaseExpiresAt) <= Date.now();
-    if (!leaseExpired) {
-      continue;
-    }
-    try {
-      const claimed = await deps.store.claimRunLease(run.id, {
-        ownerInstanceId: `janitor:${context.runId}:${run.id}`,
-        heartbeatAt: new Date().toISOString(),
-        leaseExpiresAt: new Date(Date.now() + RUN_LEASE_MS).toISOString(),
-      });
-      if (!claimed) {
-        continue;
-      }
-      const claimedRun = await deps.store.getRun(run.id);
-      if (!claimedRun) {
-        continue;
-      }
-      await appendRunLifecycleEvent(deps, claimedRun, "run.recovery.claimed", {
-        claimedBy: context.runId,
-        previousOwnerInstanceId: runRecord.ownerInstanceId,
-        previousHeartbeatAt: runRecord.heartbeatAt,
-        previousLeaseExpiresAt: runRecord.leaseExpiresAt,
-      });
-      await finalizeStaleRun(deps, janitorRequest, claimedRun);
-    } catch {
-      // Best-effort janitor pass; the next schedule can retry this run.
     }
   }
 }
@@ -9470,9 +9384,6 @@ async function runHermesConversation(
       ...run,
       status,
       completedAt,
-      ownerInstanceId: null,
-      heartbeatAt: completedAt,
-      leaseExpiresAt: null,
       activeToolCallId: null,
     };
   };
@@ -10232,9 +10143,6 @@ export async function runOrchestrator(
     } else if (event === "run.completed") {
       currentActiveToolCallId = null;
     }
-    if (persistableRunEventNames.has(event)) {
-      await renewRunLease();
-    }
     const nowMs = deps.now?.() ?? Date.now();
     if (event === "tool.started") {
       const toolName = typeof data.toolName === "string" ? data.toolName : "";
@@ -10805,14 +10713,7 @@ export async function runOrchestrator(
   }
   const sessionMessages = await deps.store.listMessages(activeSession.id);
   const conversationHistory = formatConversationHistory(sessionMessages);
-  const initialHeartbeatAt = new Date().toISOString();
-  const initialLeaseExpiresAt = new Date(Date.now() + RUN_LEASE_MS).toISOString();
-  const runOwnerInstanceId = `run:${activeSession.id}:${Date.now()}:${input.userId}`;
-  run = await deps.store.createRun(activeSession.id, {
-    ownerInstanceId: runOwnerInstanceId,
-    heartbeatAt: initialHeartbeatAt,
-    leaseExpiresAt: initialLeaseExpiresAt,
-  });
+  run = await deps.store.createRun(activeSession.id);
   runCreated = true;
   activeRuns.set(run.id, {
     sessionId: activeSession.id,
@@ -10823,27 +10724,7 @@ export async function runOrchestrator(
     subscribers: new Map(),
   });
   let currentActiveToolCallId: string | null = null;
-  let lastLeaseHeartbeatAtMs = Date.now();
-  const renewRunLease = async (force = false) => {
-    if (!run) {
-      return;
-    }
-    if (isTerminalRunStatus(run.status)) {
-      return;
-    }
-    const nowMs = Date.now();
-    if (!force && nowMs - lastLeaseHeartbeatAtMs < RUN_HEARTBEAT_INTERVAL_MS / 2) {
-      return;
-    }
-    lastLeaseHeartbeatAtMs = nowMs;
-    await deps.store.updateRun(run.id, {
-      ownerInstanceId: runOwnerInstanceId,
-      heartbeatAt: new Date(nowMs).toISOString(),
-      leaseExpiresAt: new Date(nowMs + RUN_LEASE_MS).toISOString(),
-      activeToolCallId: currentActiveToolCallId,
-    });
-  };
-  const clearRunLease = async (status: "completed" | "failed" | "timed_out") => {
+  const finalizeRunState = async (status: "completed" | "failed" | "timed_out") => {
     if (!run) {
       return;
     }
@@ -10853,15 +10734,9 @@ export async function runOrchestrator(
       ...run,
       status,
       completedAt,
-      ownerInstanceId: null,
-      heartbeatAt: completedAt,
-      leaseExpiresAt: null,
       activeToolCallId: null,
     };
   };
-  const leaseHeartbeatTimer = setInterval(() => {
-    void renewRunLease(true).catch(() => {});
-  }, RUN_HEARTBEAT_INTERVAL_MS);
   scheduleRawLogPersist(true);
   await send("run.started", {
     runId: run.id,
@@ -10949,9 +10824,7 @@ export async function runOrchestrator(
     toolCallId: string,
   ) => {
     let lastSequence = (await deps.store.listRunEvents(run.id)).at(-1)?.sequence ?? 0;
-    let lastRecoveryEnqueueAt = 0;
     while (true) {
-      await renewRunLease();
       lastSequence = await forwardPersistedToolEvents(lastSequence, toolCallId);
       const task = await deps.store.getResearchTask(taskId);
       if (!task) {
@@ -10965,8 +10838,6 @@ export async function runOrchestrator(
             status: toolCall.status === "completed" ? "succeeded" : "failed",
             errorJson: toolCall.status === "failed" ? toolCall.resultJson : null,
             completedAt,
-            lastHeartbeatAt: completedAt,
-            leaseExpiresAt: null,
           });
         }
         return {
@@ -10974,42 +10845,12 @@ export async function runOrchestrator(
           result: toolCall.resultJson,
         };
       }
-      const leaseExpired = !task.leaseExpiresAt || Date.parse(task.leaseExpiresAt) <= Date.now();
-      if ((task.status === "starting" || task.status === "running") && leaseExpired) {
-        const staleError = stalledResearchTaskError(task);
-        await deps.store.updateResearchTask(task.id, {
-          status: "failed",
-          errorJson: { error: staleError },
-          completedAt: new Date().toISOString(),
-          lastHeartbeatAt: new Date().toISOString(),
-          leaseExpiresAt: null,
-        });
-        return {
-          status: "failed",
-          result: { ok: false, error: staleError },
-        } as const;
-      }
-      if (
-        deps.enqueueJob
-        && task.status === "queued"
-        && leaseExpired
-        && Date.now() - lastRecoveryEnqueueAt >= 30_000
-      ) {
-        lastRecoveryEnqueueAt = Date.now();
-        await deps.enqueueJob({
-          type: "research_task_requested",
-          taskId: task.id,
-          queuedAt: new Date().toISOString(),
-        });
-      }
       const terminalError = terminalResearchTaskError(task);
       if (terminalError && (task.status === "queued" || task.status === "starting" || task.status === "running")) {
         await deps.store.updateResearchTask(task.id, {
           status: "failed",
           errorJson: { error: terminalError },
           completedAt: new Date().toISOString(),
-          lastHeartbeatAt: new Date().toISOString(),
-          leaseExpiresAt: null,
         });
         return {
           status: "failed",
@@ -11217,7 +11058,7 @@ export async function runOrchestrator(
       send,
     );
     runFinalized = true;
-    await clearRunLease("completed");
+    await finalizeRunState("completed");
     await send("run.completed", {
       runId: run.id,
       sessionId: activeSession.id,
@@ -12105,7 +11946,7 @@ export async function runOrchestrator(
         ...(routeDecision.workflowHint ? { workflowHint: routeDecision.workflowHint } : {}),
         ...(experimentProposal ? { experimentProposal } : {}),
       });
-      await clearRunLease("completed");
+      await finalizeRunState("completed");
       await streamAssistantText(routeDecision.answer, send);
       await send("assistant.completed", {
         answer: routeDecision.answer,
@@ -12278,7 +12119,7 @@ export async function runOrchestrator(
         await deps.store.updateRun(run.id, {
           plannerTurns: turn,
         });
-        await clearRunLease("completed");
+        await finalizeRunState("completed");
         await synthesizeAnswer(
           deps,
           {
@@ -12498,7 +12339,6 @@ export async function runOrchestrator(
             status: existing?.status === "queued" ? "running" : existing?.status ?? "running",
             runtimeId: typeof (options.runtimeId ?? startedRuntimeId) === "string" ? options.runtimeId ?? startedRuntimeId : existing?.runtimeId ?? null,
             progressSeq: nextSeq,
-            lastHeartbeatAt: new Date().toISOString(),
             checkpointJson: checkpointFromToolProgressDetail(detail),
             ...(existing?.startedAt ? {} : { startedAt: new Date().toISOString() }),
           });
@@ -12704,12 +12544,11 @@ export async function runOrchestrator(
                 error: typeof result.error === "string" ? result.error : "Long-running research failed.",
               },
           completedAt: new Date().toISOString(),
-          lastHeartbeatAt: new Date().toISOString(),
         });
       }
 
       if (activeRuns.get(run.id)?.cancelRequested) {
-        await clearRunLease("failed");
+        await finalizeRunState("failed");
         await send("run.completed", {
           runId: run.id,
           sessionId: session.id,
@@ -12751,7 +12590,7 @@ export async function runOrchestrator(
     if (completedBriefing) {
       await completeRunFromBriefing(completedBriefing, "standard");
     } else {
-      await clearRunLease("timed_out");
+      await finalizeRunState("timed_out");
       const timeoutMessage = "The run hit its hard limits before it produced a valid answer.";
       const timeoutResearchDocumentHtml = await appendFinalAnswerResearchDocumentHtml(
         deps,
@@ -12817,7 +12656,7 @@ export async function runOrchestrator(
           error: error instanceof Error ? error.message : "Unknown orchestrator error",
         })),
     );
-    await clearRunLease("failed");
+    await finalizeRunState("failed");
 
     const failureMessage = userFacingRunFailureMessage(error);
     const failureResearchDocumentHtml = await appendFinalAnswerResearchDocumentHtml(
@@ -12858,7 +12697,6 @@ export async function runOrchestrator(
     });
     return;
   } finally {
-    clearInterval(leaseHeartbeatTimer);
     await harvestPendingWorkspace(true);
     if (runFinalized) {
       return;

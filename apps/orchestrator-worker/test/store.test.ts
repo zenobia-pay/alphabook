@@ -463,7 +463,7 @@ test("in-memory store stores runtime manifests by reference and still returns th
   assert.deepEqual(hydrated.manifestJson, manifest);
 });
 
-test("research tasks support lease claims and checkpoint updates", async () => {
+test("research tasks support checkpoint updates", async () => {
   const store = new InMemoryAppStore();
 
   const task = await store.createResearchTask({
@@ -475,13 +475,6 @@ test("research tasks support lease claims and checkpoint updates", async () => {
   });
 
   assert.equal(task.status, "queued");
-
-  const claimed = await store.claimResearchTaskLease(task.id, {
-    leaseOwner: "worker-1",
-    lastHeartbeatAt: "2026-03-28T03:24:15.366Z",
-    leaseExpiresAt: "2026-03-28T03:25:45.366Z",
-  });
-  assert.equal(claimed, true);
 
   await store.updateResearchTask(task.id, {
     status: "running",
@@ -503,5 +496,5 @@ test("research tasks support lease claims and checkpoint updates", async () => {
 
   const runTasks = await store.listResearchTasksForRun("run-1");
   assert.equal(runTasks.length, 1);
-  assert.equal(runTasks[0]?.leaseOwner, "worker-1");
+  assert.equal(runTasks[0]?.status, "running");
 });

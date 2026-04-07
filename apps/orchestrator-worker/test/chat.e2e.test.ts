@@ -4304,15 +4304,12 @@ test("reapStaleRuns does not fail a stale semantic run with an active durable re
       query: "grief",
       maxResults: 8,
     },
-    leaseOwner: "queue:test-task",
-    leaseExpiresAt: new Date(Date.now() + 30_000).toISOString(),
   });
   const researchTask = await store.getLatestResearchTaskForToolCall(toolCall.id);
   assert.ok(researchTask);
   await store.updateResearchTask(researchTask.id, {
     status: "running",
     startedAt: new Date(Date.now() - 20_000).toISOString(),
-    lastHeartbeatAt: new Date().toISOString(),
   });
 
   await reapStaleRuns({
@@ -4614,7 +4611,6 @@ test("durable workspace waits honor a terminal tool call even if the research ta
       await store.updateResearchTask(task.id, {
         status: "running",
         startedAt: new Date().toISOString(),
-        lastHeartbeatAt: new Date().toISOString(),
       });
       assert.ok(task.toolCallId);
       await store.finishToolCall(task.toolCallId, "failed", {
@@ -4658,7 +4654,7 @@ test("durable workspace waits honor a terminal tool call even if the research ta
   assert.equal(researchTask?.status, "failed");
 });
 
-test("durable semantic waits fail explicitly when a running research task loses its lease", async () => {
+test("durable semantic waits fail explicitly when a running research task reports an error", async () => {
   const store = new InMemoryAppStore([], []);
   const app = createApp({
     store,
@@ -4708,18 +4704,11 @@ test("durable semantic waits fail explicitly when a running research task loses 
       if (message.type !== "research_task_requested") {
         return;
       }
-      const staleAt = new Date(Date.now() - 120_000).toISOString();
       await store.updateResearchTask(message.taskId, {
         status: "running",
-        startedAt: staleAt,
-        lastHeartbeatAt: staleAt,
-        leaseOwner: "queue:stalled-semantic",
-        leaseExpiresAt: new Date(Date.now() - 1_000).toISOString(),
-        checkpointJson: {
-          type: "semantic.step",
-          step: "embed_query",
-          subqueryId: "sq_006",
-          query: "Abstract/adjacent autobiographical life-writing",
+        startedAt: new Date().toISOString(),
+        errorJson: {
+          error: "Semantic search stopped making progress while embedding a semantic query.",
         },
       });
     },

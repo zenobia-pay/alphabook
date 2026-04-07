@@ -372,9 +372,6 @@ export interface ResearchTaskRecord {
   taskSpecJson: Record<string, unknown>;
   checkpointJson: Record<string, unknown> | null;
   progressSeq: number;
-  lastHeartbeatAt: string | null;
-  leaseOwner: string | null;
-  leaseExpiresAt: string | null;
   resultArtifactKey: string | null;
   errorJson: Record<string, unknown> | null;
   createdAt: string;
@@ -523,11 +520,6 @@ export interface AppStore {
     createdAt: string;
   }>>;
   updateRun(runId: string, updates: Partial<Pick<RunRecord, "status" | "plannerTurns" | "completedAt" | "ownerInstanceId" | "heartbeatAt" | "leaseExpiresAt" | "activeToolCallId">>): Promise<void>;
-  claimRunLease(runId: string, options: {
-    ownerInstanceId: string;
-    heartbeatAt: string;
-    leaseExpiresAt: string;
-  }): Promise<boolean>;
   startToolCall(runId: string, toolName: ToolName, argsJson: Record<string, unknown>): Promise<ToolCallRecord>;
   listToolCalls(runId: string): Promise<ToolCallRecord[]>;
   finishToolCall(toolCallId: string, status: ToolCallRecord["status"], resultJson: Record<string, unknown>): Promise<void>;
@@ -585,25 +577,17 @@ export interface AppStore {
     kind: ResearchTaskRecord["kind"];
     taskSpecJson: Record<string, unknown>;
     checkpointJson?: Record<string, unknown> | null;
-    leaseOwner?: string | null;
-    leaseExpiresAt?: string | null;
   }): Promise<ResearchTaskRecord>;
   getResearchTask(taskId: string): Promise<ResearchTaskRecord | null>;
   getLatestResearchTaskForToolCall(toolCallId: string): Promise<ResearchTaskRecord | null>;
   listResearchTasksForRun(runId: string): Promise<ResearchTaskRecord[]>;
-  listClaimableResearchTasks(limit?: number): Promise<ResearchTaskRecord[]>;
   updateResearchTask(
     taskId: string,
     updates: Partial<Pick<
       ResearchTaskRecord,
-      "runtimeId" | "status" | "checkpointJson" | "progressSeq" | "lastHeartbeatAt" | "leaseOwner" | "leaseExpiresAt" | "resultArtifactKey" | "errorJson" | "startedAt" | "completedAt"
+      "runtimeId" | "status" | "checkpointJson" | "progressSeq" | "resultArtifactKey" | "errorJson" | "startedAt" | "completedAt"
     >>,
   ): Promise<void>;
-  claimResearchTaskLease(taskId: string, options: {
-    leaseOwner: string;
-    lastHeartbeatAt: string;
-    leaseExpiresAt: string;
-  }): Promise<boolean>;
   listRuntimeInstances(sessionId: string): Promise<RuntimeInstanceRecord[]>;
   listExpiredRuntimeInstances(limit?: number): Promise<RuntimeInstanceRecord[]>;
   getRuntimeInstance(runtimeId: string): Promise<RuntimeInstanceRecord | null>;
@@ -2872,27 +2856,6 @@ export class InMemoryAppStore implements AppStore {
     this.runs.set(runId, run);
   }
 
-  async claimRunLease(runId: string, options: {
-    ownerInstanceId: string;
-    heartbeatAt: string;
-    leaseExpiresAt: string;
-  }): Promise<boolean> {
-    const run = this.runs.get(runId);
-    if (!run || (run.status !== "running" && run.status !== "queued")) {
-      return false;
-    }
-    const leaseExpired = !run.leaseExpiresAt || Date.parse(run.leaseExpiresAt) <= Date.now();
-    const alreadyOwned = run.ownerInstanceId === options.ownerInstanceId;
-    if (!leaseExpired && !alreadyOwned && run.ownerInstanceId) {
-      return false;
-    }
-    run.ownerInstanceId = options.ownerInstanceId;
-    run.heartbeatAt = options.heartbeatAt;
-    run.leaseExpiresAt = options.leaseExpiresAt;
-    this.runs.set(runId, run);
-    return true;
-  }
-
   async startToolCall(runId: string, toolName: ToolName, argsJson: Record<string, unknown>): Promise<ToolCallRecord> {
     const toolCallId = crypto.randomUUID();
     const argsRef = shouldSpillPayload(argsJson)
@@ -3388,8 +3351,6 @@ export class InMemoryAppStore implements AppStore {
     kind: ResearchTaskRecord["kind"];
     taskSpecJson: Record<string, unknown>;
     checkpointJson?: Record<string, unknown> | null;
-    leaseOwner?: string | null;
-    leaseExpiresAt?: string | null;
   }): Promise<ResearchTaskRecord> {
     const record: ResearchTaskRecord = {
       id: crypto.randomUUID(),
@@ -3402,9 +3363,6 @@ export class InMemoryAppStore implements AppStore {
       taskSpecJson: structuredClone(input.taskSpecJson),
       checkpointJson: input.checkpointJson ? structuredClone(input.checkpointJson) : null,
       progressSeq: 0,
-      lastHeartbeatAt: null,
-      leaseOwner: input.leaseOwner ?? null,
-      leaseExpiresAt: input.leaseExpiresAt ?? null,
       resultArtifactKey: null,
       errorJson: null,
       createdAt: nowIso(),
@@ -3434,25 +3392,11 @@ export class InMemoryAppStore implements AppStore {
       .map((candidate) => structuredClone(candidate));
   }
 
-  async listClaimableResearchTasks(limit = 50): Promise<ResearchTaskRecord[]> {
-    return [...this.researchTasks.values()]
-      .filter((candidate) =>
-        (candidate.status === "queued" || candidate.status === "starting" || candidate.status === "running")
-        && (
-          !candidate.leaseExpiresAt
-          || Date.parse(candidate.leaseExpiresAt) <= Date.now()
-        ),
-      )
-      .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
-      .slice(0, Math.max(0, limit))
-      .map((candidate) => structuredClone(candidate));
-  }
-
   async updateResearchTask(
     taskId: string,
     updates: Partial<Pick<
       ResearchTaskRecord,
-      "runtimeId" | "status" | "checkpointJson" | "progressSeq" | "lastHeartbeatAt" | "leaseOwner" | "leaseExpiresAt" | "resultArtifactKey" | "errorJson" | "startedAt" | "completedAt"
+      "runtimeId" | "status" | "checkpointJson" | "progressSeq" | "resultArtifactKey" | "errorJson" | "startedAt" | "completedAt"
     >>,
   ): Promise<void> {
     const existing = this.researchTasks.get(taskId);
@@ -3465,35 +3409,6 @@ export class InMemoryAppStore implements AppStore {
       checkpointJson: updates.checkpointJson === undefined ? existing.checkpointJson : updates.checkpointJson,
       errorJson: updates.errorJson === undefined ? existing.errorJson : updates.errorJson,
     });
-  }
-
-  async claimResearchTaskLease(taskId: string, options: {
-    leaseOwner: string;
-    lastHeartbeatAt: string;
-    leaseExpiresAt: string;
-  }): Promise<boolean> {
-    const existing = this.researchTasks.get(taskId);
-    if (!existing) {
-      return false;
-    }
-    if (!["queued", "starting", "running"].includes(existing.status)) {
-      return false;
-    }
-    if (
-      existing.leaseOwner
-      && existing.leaseOwner !== options.leaseOwner
-      && existing.leaseExpiresAt
-      && Date.parse(existing.leaseExpiresAt) > Date.now()
-    ) {
-      return false;
-    }
-    this.researchTasks.set(taskId, {
-      ...existing,
-      leaseOwner: options.leaseOwner,
-      lastHeartbeatAt: options.lastHeartbeatAt,
-      leaseExpiresAt: options.leaseExpiresAt,
-    });
-    return true;
   }
 
   async listRuntimeInstances(sessionId: string): Promise<RuntimeInstanceRecord[]> {
