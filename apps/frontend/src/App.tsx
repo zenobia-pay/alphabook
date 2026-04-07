@@ -1,4 +1,4 @@
-import { Component, createContext, type ComponentType, type CSSProperties, type ErrorInfo, type FormEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type UIEvent, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Component, createContext, type ComponentType, type CSSProperties, type ErrorInfo, type FormEvent, type ReactNode, type UIEvent, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReadonlyJSONObject, ReadonlyJSONValue } from "assistant-stream/utils";
 import type { AgentationProps } from "agentation";
 import { ChevronsLeft, ChevronsRight, Dices, Link2, LoaderCircle, MessageSquarePlus, X } from "lucide-react";
@@ -203,10 +203,7 @@ declare global {
 }
 
 const USER_STORAGE_KEY = "alphabook.localUserId";
-const BOOK_ASSISTANT_WIDTH_STORAGE_KEY = "alphabook.bookAssistantWidth";
 const RECENT_SESSIONS_STORAGE_KEY = "alphabook.recentSessions";
-const BOOK_ASSISTANT_MIN_WIDTH = 320;
-const BOOK_ASSISTANT_MAX_WIDTH = 720;
 const IMPLEMENTATION = resolveFrontendImplementation();
 const IMPLEMENTATION_ID = IMPLEMENTATION.id;
 const PRODUCT_NAME = IMPLEMENTATION.productName;
@@ -2348,49 +2345,6 @@ function currentResearchDocumentHtml(
   return "";
 }
 
-function AssistantSessionToolbar({
-  sessions,
-  selectedSessionId,
-  onSelectSession,
-  onStartNewChat,
-}: {
-  sessions: ChatSessionSummary[];
-  selectedSessionId: string | null | undefined;
-  onSelectSession: (sessionId: string | null) => void;
-  onStartNewChat: () => void;
-}) {
-  return (
-    <div className="book-assistant-toolbar">
-      <label className="book-assistant-session-picker">
-        <span className="sr-only">Assistant session</span>
-        <select
-          value={selectedSessionId ?? ""}
-          onChange={(event) => onSelectSession(event.currentTarget.value || null)}
-          aria-label="Assistant session"
-        >
-          <option value="">New chat</option>
-          {sessions.map((session) => (
-            <option key={session.id} value={session.id}>
-              {sessionDisplayTitle(session).slice(0, 72)}
-            </option>
-          ))}
-        </select>
-      </label>
-
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon"
-        className="book-assistant-new-chat"
-        onClick={onStartNewChat}
-        aria-label="Start a new chat"
-      >
-        <MessageSquarePlus />
-      </Button>
-    </div>
-  );
-}
-
 function appendProgressDetail(
   details: Array<Record<string, unknown>> | undefined,
   detail: Record<string, unknown>,
@@ -3383,14 +3337,6 @@ export default function App() {
     debugEnabled: initialUrlState.debugEnabled,
     gutenbergId: initialWorkPageBootstrap?.work?.gutenbergId ?? null,
   });
-  const [bookAssistantWidth, setBookAssistantWidth] = useState(() => {
-    if (typeof window === "undefined") {
-      return 420;
-    }
-    const saved = Number.parseInt(window.localStorage.getItem(BOOK_ASSISTANT_WIDTH_STORAGE_KEY) ?? "", 10);
-    return Number.isFinite(saved) ? Math.min(BOOK_ASSISTANT_MAX_WIDTH, Math.max(BOOK_ASSISTANT_MIN_WIDTH, saved)) : 420;
-  });
-  const [isDraggingBookAssistant, setIsDraggingBookAssistant] = useState(false);
   const [publicProfile, setPublicProfile] = useState<PublicProfileResponse | null>(null);
   const [publicProfileLoading, setPublicProfileLoading] = useState(false);
   const [profileStats, setProfileStats] = useState<UserProfileStats | null>(null);
@@ -3450,10 +3396,6 @@ export default function App() {
   const reconnectRunStreamAbortControllerRef = useRef<AbortController | null>(null);
   const activeRunIdRef = useRef<string | null>(null);
   const selectedSessionIdRef = useRef<string | null | undefined>(selectedSessionId);
-  const bookPageRef = useRef<HTMLElement | null>(null);
-  const bookAssistantResizeStartRef = useRef<{ pointerX: number; width: number; maxWidth: number } | null>(null);
-  const bookAssistantRafRef = useRef<number | null>(null);
-  const bookAssistantPendingWidthRef = useRef<number | null>(null);
   const pendingUrlWriteModeRef = useRef<UrlWriteMode>("replace");
   const suppressNextUrlWriteRef = useRef(false);
 
@@ -4357,59 +4299,6 @@ export default function App() {
       target.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   }, [activePassageId]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-    window.localStorage.setItem(BOOK_ASSISTANT_WIDTH_STORAGE_KEY, String(bookAssistantWidth));
-  }, [bookAssistantWidth]);
-
-  useEffect(() => {
-    if (!isDraggingBookAssistant) {
-      return;
-    }
-
-    const handlePointerMove = (event: PointerEvent) => {
-      const start = bookAssistantResizeStartRef.current;
-      const page = bookPageRef.current;
-      if (!start || !page) {
-        return;
-      }
-      const delta = start.pointerX - event.clientX;
-      const nextWidth = Math.min(start.maxWidth, Math.max(BOOK_ASSISTANT_MIN_WIDTH, start.width + delta));
-      bookAssistantPendingWidthRef.current = nextWidth;
-      if (bookAssistantRafRef.current === null) {
-        bookAssistantRafRef.current = window.requestAnimationFrame(() => {
-          const pendingWidth = bookAssistantPendingWidthRef.current;
-          if (pendingWidth != null) {
-            page.style.setProperty("--book-assistant-width", `${pendingWidth}px`);
-          }
-          bookAssistantRafRef.current = null;
-        });
-      }
-    };
-    const stopDragging = () => {
-      const pendingWidth = bookAssistantPendingWidthRef.current;
-      setIsDraggingBookAssistant(false);
-      bookAssistantResizeStartRef.current = null;
-      if (bookAssistantRafRef.current !== null) {
-        cancelAnimationFrame(bookAssistantRafRef.current);
-        bookAssistantRafRef.current = null;
-      }
-      bookAssistantPendingWidthRef.current = null;
-      if (pendingWidth != null) {
-        setBookAssistantWidth(pendingWidth);
-      }
-    };
-
-    window.addEventListener("pointermove", handlePointerMove);
-    window.addEventListener("pointerup", stopDragging);
-    return () => {
-      window.removeEventListener("pointermove", handlePointerMove);
-      window.removeEventListener("pointerup", stopDragging);
-    };
-  }, [isDraggingBookAssistant]);
 
   useEffect(() => {
     messagesRef.current = messages;
@@ -5801,38 +5690,6 @@ export default function App() {
     }
   }
 
-  function startBookAssistantResize(event: ReactPointerEvent<HTMLDivElement>) {
-    if (window.innerWidth <= 980) {
-      return;
-    }
-    event.preventDefault();
-    const rect = bookPageRef.current?.getBoundingClientRect();
-    const maxWidth = rect
-      ? Math.min(BOOK_ASSISTANT_MAX_WIDTH, Math.max(BOOK_ASSISTANT_MIN_WIDTH, rect.width - 360))
-      : BOOK_ASSISTANT_MAX_WIDTH;
-    bookAssistantResizeStartRef.current = {
-      pointerX: event.clientX,
-      width: bookAssistantWidth,
-      maxWidth,
-    };
-    bookAssistantPendingWidthRef.current = bookAssistantWidth;
-    setIsDraggingBookAssistant(true);
-  }
-
-  function openBookSession(sessionId: string | null) {
-    pendingUrlWriteModeRef.current = "push";
-    detachActiveAssistantStreams();
-    setConversationHydrated(sessionId == null);
-    setMessages([]);
-    setSessionRuns([]);
-    setRunArtifacts([]);
-    setRecoveredActiveRunId(null);
-    selectedSessionIdRef.current = sessionId;
-    setSelectedSessionId(sessionId);
-    setLoadError(null);
-    setActiveView("book");
-  }
-
   function renderAssistantSurface(props: {
     messages: UiMessage[];
     isSending: boolean;
@@ -5955,27 +5812,8 @@ export default function App() {
   }
 
   function renderBookView() {
-    const bookPromptHandler = async (prompt: string) => {
-      if (!activeWorkId) {
-        return;
-      }
-      const activePassage = activePassageId
-        ? readerPassages.find((passage) => passage.id === activePassageId) ?? null
-        : null;
-      await sendPrompt(prompt, {
-        sessionIdOverride: selectedSessionId ?? null,
-        workIdsOverride: [activeWorkId],
-        viewOverride: "book",
-        transportMessageOverride: buildBookAssistantPrompt(prompt, activeWork, activePassage),
-      });
-    };
-
     return (
-      <section
-        ref={bookPageRef}
-        className={cn("book-page", isDraggingBookAssistant && "is-resizing")}
-        style={{ ["--book-assistant-width" as string]: `${bookAssistantWidth}px` }}
-      >
+      <section className="book-page">
         <div className="book-reader-pane">
           {activeWorkId ? (
             <div className="book-reader-surface">
@@ -5996,44 +5834,6 @@ export default function App() {
             </div>
           ) : null}
         </div>
-
-        <div
-          className="book-assistant-divider"
-          onPointerDown={startBookAssistantResize}
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Resize assistant panel"
-        />
-
-        <aside className="book-assistant-pane">
-          <div className="book-assistant-shell" data-testid="book-thread">
-            <AssistantSessionToolbar
-              sessions={sessions}
-              selectedSessionId={selectedSessionId}
-              onSelectSession={openBookSession}
-              onStartNewChat={startNewBookChat}
-            />
-            {authLocked && !authPending ? (
-              <LockedState
-                compact
-                title="Sign in to ask about this book."
-              />
-            ) : (
-              renderAssistantSurface({
-                messages: visibleMessages,
-                isSending: isSending || recoveredActiveRunId !== null,
-                streamingAssistantId,
-                artifacts: runArtifacts,
-                onPrompt: bookPromptHandler,
-                onCancel: cancelActiveRun,
-                suggestions: ASSISTANT_WELCOME_SUGGESTIONS,
-                composerDisabled: bookComposerDisabled,
-                composerDisabledNotice: bookComposerDisabledNotice,
-                componentKey: `book-${activeWorkId ?? "unknown"}-${selectedSessionId ?? "new-thread"}`,
-              })
-            )}
-          </div>
-        </aside>
       </section>
     );
   }
