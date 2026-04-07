@@ -3300,6 +3300,7 @@ export default function App() {
   ));
   const [loadError, setLoadError] = useState<string | null>(initialAssistantSessionBootstrap?.error ?? null);
   const [streamingAssistantId, setStreamingAssistantId] = useState<string | null>(null);
+  const streamingAssistantIdRef = useRef<string | null>(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [debugEnabled, setDebugEnabled] = useState(initialUrlState.debugEnabled);
@@ -4292,6 +4293,10 @@ export default function App() {
   }, [messages]);
 
   useEffect(() => {
+    streamingAssistantIdRef.current = streamingAssistantId;
+  }, [streamingAssistantId]);
+
+  useEffect(() => {
     if (activeView !== "assistant" || !selectedSessionId) {
       return;
     }
@@ -4451,9 +4456,25 @@ export default function App() {
             || event.event === "tool.started"
             || event.event === "tool.progress"
             || event.event === "tool.completed"
+            || event.event === "assistant.delta"
             || event.event === "assistant.completed"
           ) {
             setStreamConnected(true);
+          }
+          if (event.event === "assistant.delta" && typeof event.data.text === "string") {
+            appendStreamingAssistantDelta(selectedSessionId, event.data.text);
+            return;
+          }
+          if (event.event === "assistant.plan" && typeof event.data.text === "string") {
+            appendAssistantPlan(selectedSessionId, event.data.text);
+          }
+          if (event.event === "assistant.completed" && typeof event.data.answer === "string") {
+            completeStreamingAssistantAnswer(
+              selectedSessionId,
+              event.data.answer,
+              Array.isArray(event.data.citations) ? event.data.citations as Citation[] : [],
+              typeof event.data.phase === "string" ? event.data.phase : "answer",
+            );
           }
           if (
             event.event === "assistant.plan"
@@ -4705,6 +4726,150 @@ export default function App() {
     ));
   }
 
+  function appendStreamingAssistantDelta(sessionId: string | null | undefined, text: string) {
+    if (!text) {
+      return;
+    }
+    const resolvedSessionId = sessionId ?? selectedSessionIdRef.current ?? "pending";
+    const activeStreamingMessage = [...messagesRef.current].reverse().find((message) =>
+      message.role === "assistant" && (
+        message.id === streamingAssistantIdRef.current
+        || message.metadata?.streaming === true
+      )
+    );
+    const targetMessageId = activeStreamingMessage?.id ?? streamingAssistantIdRef.current ?? crypto.randomUUID();
+    if (streamingAssistantIdRef.current !== targetMessageId) {
+      streamingAssistantIdRef.current = targetMessageId;
+      setStreamingAssistantId(targetMessageId);
+    }
+    setMessages((current) => {
+      const targetIndex = current.findIndex((message) => message.id === targetMessageId);
+
+      if (targetIndex === -1) {
+        return [
+          ...current,
+          {
+            id: targetMessageId,
+            sessionId: resolvedSessionId,
+            role: "assistant",
+            content: text,
+            metadata: {
+              phase: "answer",
+              streaming: true,
+              optimistic: true,
+            },
+            createdAt: new Date().toISOString(),
+            citations: [],
+            toolCalls: [],
+          },
+        ];
+      }
+
+      return current.map((message, index) =>
+        index === targetIndex
+          ? {
+              ...message,
+              content: `${message.content ?? ""}${text}`,
+              metadata: {
+                ...(message.metadata ?? {}),
+                phase: "answer",
+                streaming: true,
+                optimistic: true,
+              },
+            }
+          : message,
+      );
+    });
+  }
+
+  function appendAssistantPlan(sessionId: string | null | undefined, text: string) {
+    if (!text) {
+      return;
+    }
+    const resolvedSessionId = sessionId ?? selectedSessionIdRef.current ?? "pending";
+    setMessages((current) => {
+      const lastAssistant = [...current].reverse().find((message) => message.role === "assistant");
+      if (lastAssistant?.metadata?.phase === "plan") {
+        return current.map((message) =>
+          message.id === lastAssistant.id
+            ? {
+                ...message,
+                content: text,
+                metadata: {
+                  ...(message.metadata ?? {}),
+                  phase: "plan",
+                  optimistic: true,
+                },
+              }
+            : message,
+        );
+      }
+      return [
+        ...current,
+        {
+          id: crypto.randomUUID(),
+          sessionId: resolvedSessionId,
+          role: "assistant",
+          content: text,
+          metadata: {
+            phase: "plan",
+            optimistic: true,
+          },
+          createdAt: new Date().toISOString(),
+          citations: [],
+          toolCalls: [],
+        },
+      ];
+    });
+  }
+
+  function completeStreamingAssistantAnswer(
+    sessionId: string | null | undefined,
+    answer: string,
+    citations: Citation[] = [],
+    phase: string | null = "answer",
+  ) {
+    const resolvedSessionId = sessionId ?? selectedSessionIdRef.current ?? "pending";
+    const targetMessageId = streamingAssistantIdRef.current;
+    streamingAssistantIdRef.current = null;
+    setStreamingAssistantId(null);
+    setMessages((current) => {
+      const targetIndex = targetMessageId
+        ? current.findIndex((message) => message.id === targetMessageId)
+        : -1;
+      if (targetIndex === -1) {
+        return [
+          ...current,
+          {
+            id: crypto.randomUUID(),
+            sessionId: resolvedSessionId,
+            role: "assistant",
+            content: answer,
+            metadata: phase ? { phase } : {},
+            createdAt: new Date().toISOString(),
+            citations,
+            toolCalls: [],
+          },
+        ];
+      }
+      return current.map((message, index) =>
+        index === targetIndex
+          ? {
+              ...message,
+              content: answer,
+              metadata: {
+                ...(message.metadata ?? {}),
+                ...(phase ? { phase } : {}),
+                streaming: false,
+                optimistic: true,
+              },
+              citations,
+            }
+          : message,
+      );
+    });
+  }
+
   function detachActiveAssistantStreams() {
     activeRunTokenRef.current += 1;
     activeChatAbortControllerRef.current?.abort();
@@ -4713,6 +4878,7 @@ export default function App() {
     reconnectRunStreamAbortControllerRef.current = null;
     activeRunIdRef.current = null;
     setIsSending(false);
+    streamingAssistantIdRef.current = null;
     setStreamingAssistantId(null);
     setStreamConnected(false);
   }
@@ -5118,6 +5284,7 @@ export default function App() {
             }
 
             if (event.event === "assistant.plan" && typeof event.data.text === "string") {
+              appendAssistantPlan(workingSessionId, event.data.text);
               if (workingSessionId) {
                 void refreshAssistantConversation(workingSessionId);
               }
@@ -5153,11 +5320,20 @@ export default function App() {
             }
 
             if (event.event === "assistant.delta" && typeof event.data.text === "string") {
+              appendStreamingAssistantDelta(workingSessionId, event.data.text);
               scheduleStreamIdleSettle();
               return;
             }
 
             if (event.event === "assistant.completed") {
+              if (typeof event.data.answer === "string") {
+                completeStreamingAssistantAnswer(
+                  workingSessionId,
+                  event.data.answer,
+                  Array.isArray(event.data.citations) ? event.data.citations as Citation[] : [],
+                  typeof event.data.phase === "string" ? event.data.phase : "answer",
+                );
+              }
               if (workingSessionId) {
                 void refreshAssistantConversation(workingSessionId);
               }

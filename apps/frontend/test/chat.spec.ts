@@ -985,6 +985,7 @@ test("assistant.completed replaces a partial streamed answer with the final answ
   await expect(page.locator(".aui-assistant-message-root").first()).toContainText("Search quote references.");
 });
 
+
 test("sidebar recents shows and clears the spinner during an optimistic send lifecycle", async ({ page }) => {
   const sessionId = "11111111-1111-4111-8111-111111111213";
   const planMessageId = "33333333-3333-4333-8333-333333333335";

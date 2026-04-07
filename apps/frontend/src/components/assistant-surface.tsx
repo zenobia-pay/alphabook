@@ -62,7 +62,7 @@ export default function AssistantSurface({
   composerDisabledNotice,
 }: AssistantSurfaceProps) {
   const shouldShowRuntimePlaceholder =
-    isSending && !messages.some((message) => message.role === "assistant");
+    isSending && !streamingAssistantId && !messages.some((message) => message.role === "assistant");
   const runtime = useExternalStoreRuntime({
     isRunning: shouldShowRuntimePlaceholder,
     messages: messages.filter((message) => message.role === "user" || message.role === "assistant"),
