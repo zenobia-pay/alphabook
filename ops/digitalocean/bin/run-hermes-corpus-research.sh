@@ -361,12 +361,8 @@ User follow-up:
 
 prompt = f"""You are on a DigitalOcean droplet with a prepared Project Gutenberg corpus at {corpus_root}.
 
-The reusable text-only manifest directory for this corpus lives at {precomputed_index_dir}.
-Important:
-- `{precomputed_index_dir}` is a directory, not a file.
-- The primary searchable file list is `{precomputed_index_dir}/all-text-files.tsv`.
-- The metadata table is typically `{precomputed_index_dir}/metadata-table.jsonl`.
-- Do not try to read `{precomputed_index_dir}` itself as a file.
+Use {precomputed_index_dir}/all-text-files.tsv as the source of truth for searchable raw text files.
+Use {precomputed_index_dir}/metadata-table.jsonl for metadata lookup.
 
 A user has submitted this research request:
 

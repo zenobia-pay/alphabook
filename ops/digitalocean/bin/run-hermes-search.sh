@@ -264,7 +264,8 @@ effort = int(sys.argv[5])
 
 prompt = f"""You are on a DigitalOcean droplet with a prepared Project Gutenberg corpus at {corpus_root}.
 
-The reusable text-only manifest for this corpus lives at {precomputed_index_dir}.
+Use {precomputed_index_dir}/all-text-files.tsv as the source of truth for searchable raw text files.
+Use {precomputed_index_dir}/metadata-table.jsonl for metadata lookup.
 
 Search for evidence related to the following:
 
