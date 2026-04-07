@@ -150,7 +150,7 @@ export const ChatRequestSchema = z.object({
   message: z.string().min(1),
   workIds: z.array(z.string()).optional(),
   stream: z.boolean().optional(),
-  mode: z.enum(["semantic", "comprehensive", "agentic", "hermes"]).optional(),
+  mode: z.enum(["semantic", "comprehensive", "agentic"]).optional(),
   workflow: z.enum(["auto", "search", "design_experiment"]).optional(),
   intensityOverride: z.enum(["normal", "high", "maximum"]).optional(),
   researchMode: z.enum(["default", "sprite_fanout"]).optional(),
@@ -406,10 +406,19 @@ export const UserProfileStatsResponseSchema = z.object({
 
 export type UserProfileStatsResponse = z.infer<typeof UserProfileStatsResponseSchema>;
 
+export const WorkFacetCountsSchema = z.object({
+  languages: z.array(ProfileFacetStatSchema),
+  subjects: z.array(ProfileFacetStatSchema),
+  bookshelves: z.array(ProfileFacetStatSchema),
+});
+
+export type WorkFacetCounts = z.infer<typeof WorkFacetCountsSchema>;
+
 export const WorkListResponseSchema = z.object({
   works: z.array(WorkSummarySchema),
   nextOffset: z.number().nullable(),
   totalCount: z.number().int().nonnegative(),
+  facets: WorkFacetCountsSchema,
 });
 
 export type WorkListResponse = z.infer<typeof WorkListResponseSchema>;

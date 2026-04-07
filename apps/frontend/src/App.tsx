@@ -1,9 +1,9 @@
 import { Component, createContext, type ComponentType, type CSSProperties, type ErrorInfo, type FormEvent, type ReactNode, type UIEvent, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReadonlyJSONObject, ReadonlyJSONValue } from "assistant-stream/utils";
 import type { AgentationProps } from "agentation";
-import { ChevronsLeft, ChevronsRight, Dices, Link2, LoaderCircle, MessageSquarePlus, X } from "lucide-react";
+import { ChevronsLeft, ChevronsRight, Dices, Funnel, Link2, LoaderCircle, MessageSquarePlus, X } from "lucide-react";
 
-import { ChatSessionSummarySchema, getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type NotificationRecord, type ProfileBookStat, type ProfileFacetStat, type ProfileQueryStat, type PublicProfileResponse, type UserProfile, type UserProfileStats, type WorkDetail, type WorkSource, type WorkSummary } from "@alphabook/shared";
+import { ChatSessionSummarySchema, getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type NotificationRecord, type ProfileBookStat, type ProfileFacetStat, type ProfileQueryStat, type PublicProfileResponse, type UserProfile, type UserProfileStats, type WorkDetail, type WorkFacetCounts, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
 import { ApiError, buildSignInUrl, buildSignOutUrl, cancelRun, claimGuestProfile, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchAssistantDocumentState, fetchAssistantSessionBootstrap, fetchCurrentUser, fetchMessages, fetchNotifications, fetchProfile, fetchProfileStats, fetchRunState, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, getErrorMessage, markNotificationRead, queryAdminAnalytics, sendAnalyticsEvent, streamChat, streamRun, unfollowProfile, type PersistedRunEventRecord, type RunArtifactRecord, type SessionRunRecord } from "./api";
 import type { AssistantSurfaceProps } from "./components/assistant-surface";
@@ -76,29 +76,6 @@ type WorkPageBootstrapPayload = {
   errorStatus?: number;
 };
 
-function formatDisplayLanguage(value: unknown): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-  const normalized = value.trim().replace(/\s+/gu, " ");
-  if (!normalized) {
-    return null;
-  }
-  if (/\b(fiction|poetry|stories|story|drama|novel|novels|essays|letters|adventure|fantasy|humorous|romance|biography|speeches|literature|history|philosophy|mythology|religion|politics)\b/iu.test(normalized)) {
-    return null;
-  }
-  if (/--|\d/u.test(normalized)) {
-    return null;
-  }
-  if (!/^[A-Za-z][A-Za-z -]{0,39}$/u.test(normalized)) {
-    return null;
-  }
-  if (normalized.split(/\s+/u).length > 3) {
-    return null;
-  }
-  return normalized;
-}
-
 type ResearchDocumentEntryKind = "title" | "log" | "book" | "chunk";
 
 type CitationNavigationContextValue = {
@@ -165,12 +142,6 @@ type AdminIncidentsState = {
   payload: Record<string, unknown> | null;
 };
 
-type ExploreFacetOption = {
-  value: string;
-  label: string;
-  count: number;
-};
-
 type NotificationsState = {
   loading: boolean;
   error: string | null;
@@ -183,6 +154,12 @@ type ThreadSuggestion = {
   title: string;
   description?: string;
   prompt: string;
+};
+
+type ExploreFilterState = {
+  language: string;
+  subject: string;
+  bookshelf: string;
 };
 
 type ReaderPassageKind = "heading" | "paragraph" | "quote" | "list-item" | "preformatted";
@@ -222,9 +199,17 @@ const WORDMARK_MONOGRAM = `${WORDMARK
   .map((part) => part[0]?.toLowerCase() ?? "")
   .join("")
   .slice(0, 2)}.`;
-let hasAttemptedInitialFeedLoad = false;
+const EMPTY_WORK_FACETS: WorkFacetCounts = {
+  languages: [],
+  subjects: [],
+  bookshelves: [],
+};
+const DEFAULT_EXPLORE_FILTERS: ExploreFilterState = {
+  language: "all",
+  subject: "all",
+  bookshelf: "all",
+};
 const GUEST_CLAIM_STORAGE_PREFIX = `${IMPLEMENTATION_ID}:guest-claimed:`;
-const ASSISTANT_WELCOME_SUGGESTIONS: ThreadSuggestion[] = IMPLEMENTATION.assistantWelcomeSuggestions;
 
 type SeoDocumentState = {
   title: string;
@@ -1565,39 +1550,6 @@ function formatCompactCount(value: number | null | undefined) {
   return value.toLocaleString("en-US");
 }
 
-function buildFacetOptions(
-  works: WorkSummary[],
-  getValues: (work: WorkSummary) => string[],
-  options?: { formatLabel?: (value: string) => string | null; limit?: number },
-): ExploreFacetOption[] {
-  const counts = new Map<string, number>();
-  for (const work of works) {
-    const uniqueValues = new Set(
-      getValues(work)
-        .map((value) => value.trim())
-        .filter((value) => value.length > 0),
-    );
-    for (const value of uniqueValues) {
-      counts.set(value, (counts.get(value) ?? 0) + 1);
-    }
-  }
-
-  return [...counts.entries()]
-    .map(([value, count]) => ({
-      value,
-      label: options?.formatLabel?.(value) ?? value,
-      count,
-    }))
-    .filter((option) => option.label.trim().length > 0)
-    .sort((left, right) => {
-      if (right.count !== left.count) {
-        return right.count - left.count;
-      }
-      return left.label.localeCompare(right.label);
-    })
-    .slice(0, options?.limit ?? 40);
-}
-
 function describeError(message: string): { title: string; body: string } {
   const normalized = message.trim();
   const lower = normalized.toLowerCase();
@@ -1685,39 +1637,6 @@ function buildExplorePrompt(question: string, works: WorkSummary[]) {
     return `Give me a concise overview of ${titles}.`;
   }
   return `${normalized}\n\nFocus on these books: ${titles}.`;
-}
-
-function buildBookAssistantPrompt(
-  question: string,
-  work: WorkDetail | null,
-  activePassage: ReaderPassage | null,
-) {
-  const normalized = question.trim();
-  if (!normalized || !work) {
-    return normalized;
-  }
-
-  const header = [
-    "You are answering about the book currently open in the reading view.",
-    `Title: ${work.title}`,
-    work.subtitle ? `Subtitle: ${work.subtitle}` : null,
-    work.authors.length > 0 ? `Authors: ${work.authors.join(", ")}` : null,
-    work.language ? `Language: ${work.language}` : null,
-    activePassage
-      ? [
-          "Current open passage:",
-          `Passage id: ${activePassage.id}`,
-          `Passage kind: ${activePassage.kind}`,
-          `Passage text: ${activePassage.text.slice(0, 1400)}`,
-        ].join("\n")
-      : "No specific passage is currently selected.",
-    "",
-    `User question: ${normalized}`,
-    "",
-    "Answer using this current book context unless the user explicitly asks to switch books.",
-  ].filter(Boolean).join("\n");
-
-  return header;
 }
 
 function messageToThreadMessage(
@@ -3303,15 +3222,14 @@ export default function App() {
   const [feedWorks, setFeedWorks] = useState<WorkSummary[]>([]);
   const [feedNextOffset, setFeedNextOffset] = useState<number | null>(0);
   const [feedTotalCount, setFeedTotalCount] = useState<number | null>(null);
+  const [feedFacets, setFeedFacets] = useState<WorkFacetCounts>(EMPTY_WORK_FACETS);
   const [feedLoading, setFeedLoading] = useState(false);
   const [feedInitialLoadState, setFeedInitialLoadState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [selectedWorkIds, setSelectedWorkIds] = useState<string[]>([]);
-  const [exploreLanguageFilter, setExploreLanguageFilter] = useState("all");
-  const [exploreAuthorFilter, setExploreAuthorFilter] = useState("all");
-  const [exploreSubjectFilter, setExploreSubjectFilter] = useState("all");
-  const [exploreBookshelfFilter, setExploreBookshelfFilter] = useState("all");
-  const [exploreYearFilter, setExploreYearFilter] = useState("all");
-  const [exploreRightsFilter, setExploreRightsFilter] = useState("all");
+  const [exploreFilterOpen, setExploreFilterOpen] = useState(false);
+  const [exploreAppliedFilters, setExploreAppliedFilters] = useState<ExploreFilterState>(DEFAULT_EXPLORE_FILTERS);
+  const [exploreDraftFilters, setExploreDraftFilters] = useState<ExploreFilterState>(DEFAULT_EXPLORE_FILTERS);
+  const [exploreRandomSeed, setExploreRandomSeed] = useState<number | null>(null);
   const [activeWorkId, setActiveWorkId] = useState<string | null | undefined>(initialUrlState.workId);
   const [activeProfileUserId, setActiveProfileUserId] = useState<string | null | undefined>(initialUrlState.profileUserId);
   const [activeWork, setActiveWork] = useState<WorkDetail | null>(() => initialWorkPageBootstrap?.work ?? null);
@@ -3420,83 +3338,15 @@ export default function App() {
     () => feedWorks.filter((work) => selectedWorkIds.includes(work.id)),
     [feedWorks, selectedWorkIds],
   );
-  const languageFacetOptions = useMemo(
-    () => buildFacetOptions(feedWorks, (work) => {
-      const formatted = formatDisplayLanguage(work.language);
-      return formatted ? [formatted] : [];
-    }),
-    [feedWorks],
-  );
-  const authorFacetOptions = useMemo(
-    () => buildFacetOptions(feedWorks, (work) => work.authors, { limit: 48 }),
-    [feedWorks],
-  );
-  const subjectFacetOptions = useMemo(
-    () => buildFacetOptions(feedWorks, (work) => work.subjects, { limit: 48 }),
-    [feedWorks],
-  );
-  const bookshelfFacetOptions = useMemo(
-    () => buildFacetOptions(feedWorks, (work) => work.bookshelves ?? [], { limit: 48 }),
-    [feedWorks],
-  );
-  const yearFacetOptions = useMemo(
-    () => buildFacetOptions(feedWorks, (work) => {
-      const year = formatReleaseYear(work.releaseDate);
-      return year ? [year] : [];
-    }, {
-      limit: 80,
-      formatLabel: (value) => value,
-    }).sort((left, right) => Number(right.value) - Number(left.value)),
-    [feedWorks],
-  );
-  const rightsFacetOptions = useMemo(
-    () => buildFacetOptions(feedWorks, (work) => (work.rightsStatus ? [work.rightsStatus] : []), {
-      formatLabel: (value) => value.replaceAll("_", " "),
-      limit: 12,
-    }),
-    [feedWorks],
-  );
-  const filteredFeedWorks = useMemo(
-    () => feedWorks.filter((work) => {
-      const displayLanguage = formatDisplayLanguage(work.language);
-      const releaseYear = formatReleaseYear(work.releaseDate);
-      if (exploreLanguageFilter !== "all" && displayLanguage !== exploreLanguageFilter) {
-        return false;
-      }
-      if (exploreAuthorFilter !== "all" && !work.authors.includes(exploreAuthorFilter)) {
-        return false;
-      }
-      if (exploreSubjectFilter !== "all" && !work.subjects.includes(exploreSubjectFilter)) {
-        return false;
-      }
-      if (exploreBookshelfFilter !== "all" && !(work.bookshelves ?? []).includes(exploreBookshelfFilter)) {
-        return false;
-      }
-      if (exploreYearFilter !== "all" && releaseYear !== exploreYearFilter) {
-        return false;
-      }
-      if (exploreRightsFilter !== "all" && work.rightsStatus !== exploreRightsFilter) {
-        return false;
-      }
-      return true;
-    }),
-    [
-      exploreAuthorFilter,
-      exploreBookshelfFilter,
-      exploreLanguageFilter,
-      exploreRightsFilter,
-      exploreSubjectFilter,
-      exploreYearFilter,
-      feedWorks,
-    ],
-  );
   const hasActiveExploreFilters = (
-    exploreLanguageFilter !== "all"
-    || exploreAuthorFilter !== "all"
-    || exploreSubjectFilter !== "all"
-    || exploreBookshelfFilter !== "all"
-    || exploreYearFilter !== "all"
-    || exploreRightsFilter !== "all"
+    exploreAppliedFilters.language !== "all"
+    || exploreAppliedFilters.subject !== "all"
+    || exploreAppliedFilters.bookshelf !== "all"
+  );
+  const activeExploreFilterCount = (
+    (exploreAppliedFilters.language !== "all" ? 1 : 0)
+    + (exploreAppliedFilters.subject !== "all" ? 1 : 0)
+    + (exploreAppliedFilters.bookshelf !== "all" ? 1 : 0)
   );
   const assistantMessages = useMemo(() => messages.filter((message) => message.role === "assistant"), [messages]);
   const citationCount = useMemo(() => messages.reduce((count, message) => count + message.citations.length, 0), [messages]);
@@ -3525,13 +3375,6 @@ export default function App() {
     && Boolean(activeWorkId)
     && initialWorkPageBootstrap?.workId === activeWorkId
     && Boolean(initialWorkPageBootstrap?.work);
-  const bookComposerDisabled = authPending || authLocked;
-  const bookComposerDisabledNotice = authLocked ? (
-    <>
-      Sign in to ask about this book.{" "}
-      <a className="font-medium underline underline-offset-4" href={buildSignInUrl(window.location.href)}>Sign in</a>
-    </>
-  ) : undefined;
   const navigationItems = adminAccess.allowed
     ? [...NAV_ITEMS, { id: "admin" as const, label: "Admin", icon: ProfileIcon }]
     : NAV_ITEMS;
@@ -3926,29 +3769,43 @@ export default function App() {
     };
   }, [currentUserId]);
 
-  async function loadInitialWorks() {
-    if (
-      hasAttemptedInitialFeedLoad
-      || feedLoading
-      || feedInitialLoadState === "loading"
-      || feedInitialLoadState === "ready"
-      || feedWorks.length > 0
-      || feedNextOffset === null
-    ) {
+  async function loadExploreWorks(reset = false) {
+    const offset = reset ? 0 : feedNextOffset;
+    if (offset === null || (feedLoading && !reset)) {
       return;
     }
-
     try {
-      hasAttemptedInitialFeedLoad = true;
-      setFeedInitialLoadState("loading");
+      if (reset) {
+        setFeedInitialLoadState("loading");
+        setFeedWorks([]);
+        setFeedNextOffset(0);
+      }
       setFeedLoading(true);
-      const next = await fetchWorks({ offset: 0, limit: 12 });
-      setFeedWorks(next.works);
+      const next = await fetchWorks({
+        offset,
+        limit: 12,
+        language: exploreAppliedFilters.language === "all" ? null : exploreAppliedFilters.language,
+        subject: exploreAppliedFilters.subject === "all" ? null : exploreAppliedFilters.subject,
+        bookshelf: exploreAppliedFilters.bookshelf === "all" ? null : exploreAppliedFilters.bookshelf,
+        randomSeed: exploreRandomSeed,
+      });
+      setFeedWorks((current) => {
+        if (reset) {
+          return next.works;
+        }
+        const seen = new Set(current.map((work) => work.id));
+        return [...current, ...next.works.filter((work) => !seen.has(work.id))];
+      });
       setFeedNextOffset(next.nextOffset);
       setFeedTotalCount(next.totalCount);
-      setFeedInitialLoadState("ready");
+      setFeedFacets(next.facets);
+      if (reset) {
+        setFeedInitialLoadState("ready");
+      }
     } catch (error) {
-      setFeedInitialLoadState("error");
+      if (reset) {
+        setFeedInitialLoadState("error");
+      }
       setLoadError(getErrorMessage(error, "We couldn't load the corpus feed."));
     } finally {
       setFeedLoading(false);
@@ -3956,11 +3813,15 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (activeView !== "explore" || feedInitialLoadState !== "idle") {
+    if (activeView !== "explore") {
       return;
     }
-    void loadInitialWorks();
-  }, [activeView, feedInitialLoadState]);
+    void loadExploreWorks(true);
+  }, [activeView, exploreAppliedFilters, exploreRandomSeed]);
+
+  useEffect(() => {
+    setExploreDraftFilters(exploreAppliedFilters);
+  }, [exploreAppliedFilters]);
 
   useEffect(() => {
     if (!activeWorkId) {
@@ -5444,38 +5305,20 @@ export default function App() {
     if (feedLoading || feedNextOffset === null) {
       return;
     }
-
-    try {
-      setFeedLoading(true);
-      const next = await fetchWorks({ offset: feedNextOffset, limit: 12 });
-      setFeedWorks((current) => {
-        const seen = new Set(current.map((work) => work.id));
-        return [...current, ...next.works.filter((work) => !seen.has(work.id))];
-      });
-      setFeedNextOffset(next.nextOffset);
-      setFeedTotalCount(next.totalCount);
-    } catch (error) {
-      setLoadError(getErrorMessage(error, "We couldn't load more books."));
-    } finally {
-      setFeedLoading(false);
-    }
+    await loadExploreWorks(false);
   }
 
   function retryInitialWorksLoad() {
     if (feedLoading) {
       return;
     }
-    hasAttemptedInitialFeedLoad = false;
-    setFeedInitialLoadState("idle");
+    void loadExploreWorks(true);
   }
 
   function resetExploreFilters() {
-    setExploreLanguageFilter("all");
-    setExploreAuthorFilter("all");
-    setExploreSubjectFilter("all");
-    setExploreBookshelfFilter("all");
-    setExploreYearFilter("all");
-    setExploreRightsFilter("all");
+    setExploreDraftFilters(DEFAULT_EXPLORE_FILTERS);
+    setExploreAppliedFilters(DEFAULT_EXPLORE_FILTERS);
+    setExploreFilterOpen(false);
   }
 
   function startNewChat() {
@@ -5521,16 +5364,13 @@ export default function App() {
     });
   }
 
-  function openRandomFilteredWork() {
-    if (filteredFeedWorks.length === 0) {
-      return;
-    }
-    const index = Math.floor(Math.random() * filteredFeedWorks.length);
-    const work = filteredFeedWorks[index];
-    if (!work) {
-      return;
-    }
-    openWork(work.id);
+  function rerollExploreFeed() {
+    setExploreRandomSeed(Date.now());
+  }
+
+  function applyExploreFilters() {
+    setExploreAppliedFilters(exploreDraftFilters);
+    setExploreFilterOpen(false);
   }
 
   function submitExplorePrompt(event?: FormEvent<HTMLFormElement>) {
@@ -5866,6 +5706,92 @@ export default function App() {
           <form className="explore-composer-shell" onSubmit={submitExplorePrompt}>
             <Card className="explore-composer-root">
               <CardContent className="p-0">
+              <div className="explore-composer-toolbar">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="explore-tool-button"
+                  onClick={rerollExploreFeed}
+                  aria-label="Randomize feed"
+                >
+                  <Dices size={16} />
+                </Button>
+
+                <div className="explore-filter-menu">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="explore-tool-button"
+                    onClick={() => setExploreFilterOpen((current) => !current)}
+                    aria-label="Open filters"
+                    aria-expanded={exploreFilterOpen}
+                  >
+                    <Funnel size={16} />
+                    {activeExploreFilterCount > 0 ? (
+                      <span className="explore-tool-badge">{activeExploreFilterCount}</span>
+                    ) : null}
+                  </Button>
+
+                  {exploreFilterOpen ? (
+                    <div className="explore-filter-popover" aria-label="Book filters">
+                      {feedFacets.languages.length > 1 ? (
+                        <label className="explore-filter-field">
+                          <span>Language</span>
+                          <select
+                            value={exploreDraftFilters.language}
+                            onChange={(event) => setExploreDraftFilters((current) => ({ ...current, language: event.currentTarget.value }))}
+                          >
+                            <option value="all">All languages</option>
+                            {feedFacets.languages.map((option) => (
+                              <option key={option.label} value={option.label}>{option.label} ({option.count})</option>
+                            ))}
+                          </select>
+                        </label>
+                      ) : null}
+
+                      {feedFacets.subjects.length > 0 ? (
+                        <label className="explore-filter-field">
+                          <span>Subject</span>
+                          <select
+                            value={exploreDraftFilters.subject}
+                            onChange={(event) => setExploreDraftFilters((current) => ({ ...current, subject: event.currentTarget.value }))}
+                          >
+                            <option value="all">All subjects</option>
+                            {feedFacets.subjects.map((option) => (
+                              <option key={option.label} value={option.label}>{option.label} ({option.count})</option>
+                            ))}
+                          </select>
+                        </label>
+                      ) : null}
+
+                      {feedFacets.bookshelves.length > 0 ? (
+                        <label className="explore-filter-field">
+                          <span>Bookshelf</span>
+                          <select
+                            value={exploreDraftFilters.bookshelf}
+                            onChange={(event) => setExploreDraftFilters((current) => ({ ...current, bookshelf: event.currentTarget.value }))}
+                          >
+                            <option value="all">All bookshelves</option>
+                            {feedFacets.bookshelves.map((option) => (
+                              <option key={option.label} value={option.label}>{option.label} ({option.count})</option>
+                            ))}
+                          </select>
+                        </label>
+                      ) : null}
+
+                      <div className="explore-filter-actions">
+                        {hasActiveExploreFilters ? (
+                          <Button type="button" variant="ghost" onClick={resetExploreFilters}>Reset</Button>
+                        ) : <span />}
+                        <Button type="button" variant="default" onClick={applyExploreFilters}>Apply filters</Button>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+
               {selectedWorks.length > 0 ? (
                 <div className="explore-selection-row mb-3 flex flex-wrap gap-2">
                   {selectedWorks.map((work) => (
@@ -5917,108 +5843,7 @@ export default function App() {
         </section>
 
         <section className="work-feed" aria-label="Corpus feed">
-          <div className="explore-feed-toolbar">
-            <div className="explore-feed-toolbar-copy">
-              <p className="explore-feed-kicker">Browse by metadata</p>
-              <p className="explore-feed-results">
-                Showing {formatCompactCount(filteredFeedWorks.length) ?? "0"} of {formatCompactCount(feedWorks.length) ?? "0"} loaded {CORPUS_LABEL_PLURAL}.
-              </p>
-            </div>
-
-            <div className="explore-feed-actions">
-              <Button
-                type="button"
-                variant="outline"
-                className="explore-random-button"
-                onClick={openRandomFilteredWork}
-                disabled={filteredFeedWorks.length === 0}
-              >
-                <Dices size={16} />
-                Random
-              </Button>
-              {hasActiveExploreFilters ? (
-                <Button type="button" variant="ghost" className="explore-clear-filters" onClick={resetExploreFilters}>
-                  Clear filters
-                </Button>
-              ) : null}
-            </div>
-          </div>
-
-          <div className="explore-filter-grid" aria-label="Book filters">
-            {languageFacetOptions.length > 1 ? (
-              <label className="explore-filter-field">
-                <span>Language</span>
-                <select value={exploreLanguageFilter} onChange={(event) => setExploreLanguageFilter(event.currentTarget.value)}>
-                  <option value="all">All languages</option>
-                  {languageFacetOptions.map((option) => (
-                    <option key={option.value} value={option.value}>{option.label} ({option.count})</option>
-                  ))}
-                </select>
-              </label>
-            ) : null}
-
-            {authorFacetOptions.length > 1 ? (
-              <label className="explore-filter-field">
-                <span>Author</span>
-                <select value={exploreAuthorFilter} onChange={(event) => setExploreAuthorFilter(event.currentTarget.value)}>
-                  <option value="all">All authors</option>
-                  {authorFacetOptions.map((option) => (
-                    <option key={option.value} value={option.value}>{option.label} ({option.count})</option>
-                  ))}
-                </select>
-              </label>
-            ) : null}
-
-            {subjectFacetOptions.length > 1 ? (
-              <label className="explore-filter-field">
-                <span>Subject</span>
-                <select value={exploreSubjectFilter} onChange={(event) => setExploreSubjectFilter(event.currentTarget.value)}>
-                  <option value="all">All subjects</option>
-                  {subjectFacetOptions.map((option) => (
-                    <option key={option.value} value={option.value}>{option.label} ({option.count})</option>
-                  ))}
-                </select>
-              </label>
-            ) : null}
-
-            {bookshelfFacetOptions.length > 1 ? (
-              <label className="explore-filter-field">
-                <span>Bookshelf</span>
-                <select value={exploreBookshelfFilter} onChange={(event) => setExploreBookshelfFilter(event.currentTarget.value)}>
-                  <option value="all">All bookshelves</option>
-                  {bookshelfFacetOptions.map((option) => (
-                    <option key={option.value} value={option.value}>{option.label} ({option.count})</option>
-                  ))}
-                </select>
-              </label>
-            ) : null}
-
-            {yearFacetOptions.length > 1 ? (
-              <label className="explore-filter-field">
-                <span>Release year</span>
-                <select value={exploreYearFilter} onChange={(event) => setExploreYearFilter(event.currentTarget.value)}>
-                  <option value="all">All years</option>
-                  {yearFacetOptions.map((option) => (
-                    <option key={option.value} value={option.value}>{option.label} ({option.count})</option>
-                  ))}
-                </select>
-              </label>
-            ) : null}
-
-            {rightsFacetOptions.length > 1 ? (
-              <label className="explore-filter-field">
-                <span>Rights</span>
-                <select value={exploreRightsFilter} onChange={(event) => setExploreRightsFilter(event.currentTarget.value)}>
-                  <option value="all">All rights</option>
-                  {rightsFacetOptions.map((option) => (
-                    <option key={option.value} value={option.value}>{option.label} ({option.count})</option>
-                  ))}
-                </select>
-              </label>
-            ) : null}
-          </div>
-
-          {filteredFeedWorks.map((work) => {
+          {feedWorks.map((work) => {
             const selected = selectedWorkIds.includes(work.id);
             const previewMeta = [formatReleaseYear(work.releaseDate), work.publisher].filter(Boolean).join(" · ");
             const secondaryTags = work.bookshelves?.length
@@ -6061,7 +5886,7 @@ export default function App() {
             );
           })}
 
-          {!feedLoading && filteredFeedWorks.length === 0 && feedWorks.length > 0 ? (
+          {!feedLoading && feedWorks.length === 0 && feedInitialLoadState === "ready" ? (
             <div className="feed-status">
               <p>No books match the current metadata filters.</p>
               {hasActiveExploreFilters ? (

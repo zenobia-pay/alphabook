@@ -20,6 +20,7 @@ import {
   type PublicProfileResponse,
   type StreamEvent,
   type UserProfileStats,
+  type WorkFacetCounts,
   type WorkDetailResponse,
   type WorkSource,
   type WorkSummary,
@@ -463,13 +464,32 @@ export async function unfollowProfile(userId: string): Promise<FollowProfileResp
   return FollowProfileResponseSchema.parse(await response.json());
 }
 
-export async function fetchWorks(options: { offset?: number; limit?: number } = {}): Promise<{ works: WorkSummary[]; nextOffset: number | null; totalCount: number }> {
+export async function fetchWorks(options: {
+  offset?: number;
+  limit?: number;
+  language?: string | null;
+  subject?: string | null;
+  bookshelf?: string | null;
+  randomSeed?: number | null;
+} = {}): Promise<{ works: WorkSummary[]; nextOffset: number | null; totalCount: number; facets: WorkFacetCounts }> {
   const params = new URLSearchParams();
   if (options.offset !== undefined) {
     params.set("offset", String(options.offset));
   }
   if (options.limit !== undefined) {
     params.set("limit", String(options.limit));
+  }
+  if (options.language) {
+    params.set("language", options.language);
+  }
+  if (options.subject) {
+    params.set("subject", options.subject);
+  }
+  if (options.bookshelf) {
+    params.set("bookshelf", options.bookshelf);
+  }
+  if (typeof options.randomSeed === "number" && Number.isFinite(options.randomSeed)) {
+    params.set("randomSeed", String(options.randomSeed));
   }
   const response = await ensureOk(
     await fetch(`${API_BASE}/works${params.size ? `?${params.toString()}` : ""}`, {
@@ -540,7 +560,7 @@ export async function streamChat(
     sessionId?: string;
     message: string;
     workIds?: string[];
-    mode?: "semantic" | "comprehensive" | "agentic" | "hermes";
+    mode?: "semantic" | "comprehensive" | "agentic";
     workflow?: "auto" | "search" | "design_experiment";
     intensityOverride?: "normal" | "high" | "maximum";
     researchMode?: "default" | "sprite_fanout";

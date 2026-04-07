@@ -5,7 +5,7 @@ import { artifactKeys, buildCorpusChunkId, parseCorpusChunkId } from "@alphabook
 import { workDetailToDocumentDetail } from "@alphabook/platform";
 import type { ChunkSearchResult, NotificationType, ToolName, WorkSummary } from "@alphabook/shared";
 
-import { InMemoryAppStore, type AdminRunRecord, type AdminSessionRecord, type AdminUserRecord, type AgentIdentityRecord, type AnalyticsEventRecord, type AppStore, type ArtifactRecord, type BillingEventRecord, type BillingSpendSummary, type DocumentTextRecord, type MessageRecord, type NotificationRecord, type PassageSearchFilters, type ResearchScopeEstimate, type ResearchTaskRecord, type RunEventRecord, type RunRecord, type RuntimeInstanceRecord, type SeedChunk, type SeedWork, type SessionRecord, type SessionSummaryRecord, type ToolCallRecord, type UserProfileStatsRecord, type UserRecord, type WorkDetailRecord, type WorkFileKind, type WorkFileRecord, type WorkSetSizeEstimate } from "./store";
+import { InMemoryAppStore, type AdminRunRecord, type AdminSessionRecord, type AdminUserRecord, type AgentIdentityRecord, type AnalyticsEventRecord, type AppStore, type ArtifactRecord, type BillingEventRecord, type BillingSpendSummary, type DocumentTextRecord, type ExploreWorkFacets, type ExploreWorksFilters, type MessageRecord, type NotificationRecord, type PassageSearchFilters, type ResearchScopeEstimate, type ResearchTaskRecord, type RunEventRecord, type RunRecord, type RuntimeInstanceRecord, type SeedChunk, type SeedWork, type SessionRecord, type SessionSummaryRecord, type ToolCallRecord, type UserProfileStatsRecord, type UserRecord, type WorkDetailRecord, type WorkFileKind, type WorkFileRecord, type WorkSetSizeEstimate } from "./store";
 import { MemoryBlobStore, type BlobStore } from "./r2";
 
 const INLINE_PAYLOAD_MAX_BYTES = 4_096;
@@ -470,7 +470,44 @@ export class D1AppStore implements AppStore {
     return ` AND COALESCE(json_extract(${alias}.metadata_json, '$.corpusAdapterId'), '') = '${this.adapterId}'`;
   }
 
-  private async queryRankedWorkRows(offset = 0, limit = 12) {
+  private buildExploreFilterClause(filters: ExploreWorksFilters = {}, alias = "w") {
+    const clauses: string[] = [];
+    const params: Array<string | number> = [];
+    if (typeof filters.language === "string" && filters.language.trim().length > 0) {
+      clauses.push(`AND ${alias}.language = ?`);
+      params.push(filters.language.trim());
+    }
+    if (typeof filters.subject === "string" && filters.subject.trim().length > 0) {
+      clauses.push(`AND EXISTS (
+        SELECT 1
+        FROM work_subjects ws_filter
+        JOIN subjects s_filter ON s_filter.id = ws_filter.subject_id
+        WHERE ws_filter.work_id = ${alias}.id AND s_filter.label = ?
+      )`);
+      params.push(filters.subject.trim());
+    }
+    if (typeof filters.bookshelf === "string" && filters.bookshelf.trim().length > 0) {
+      clauses.push(`AND EXISTS (
+        SELECT 1
+        FROM json_each(COALESCE(json_extract(${alias}.metadata_json, '$.bookshelves'), '[]')) shelf_filter
+        WHERE shelf_filter.value = ?
+      )`);
+      params.push(filters.bookshelf.trim());
+    }
+    return {
+      clause: clauses.join("\n"),
+      params,
+    };
+  }
+
+  private async queryRankedWorkRows(offset = 0, limit = 12, filters: ExploreWorksFilters = {}) {
+    const filterClause = this.buildExploreFilterClause(filters, "w");
+    const randomSeed = typeof filters.randomSeed === "number" && Number.isFinite(filters.randomSeed)
+      ? Math.abs(Math.trunc(filters.randomSeed)) || 1
+      : null;
+    const orderByClause = randomSeed == null
+      ? "ORDER BY score DESC, CASE WHEN w.release_date IS NULL THEN 1 ELSE 0 END, w.release_date DESC, w.title ASC"
+      : "ORDER BY ABS(((COALESCE(w.gutenberg_id, length(w.id) * 7919) * 1103515245) + ?) % 2147483647) ASC, score DESC, w.title ASC";
     return this.db.query<{
       id: string;
       gutenberg_id: number | string | null;
@@ -526,16 +563,25 @@ export class D1AppStore implements AppStore {
         LEFT JOIN work_subjects ws ON ws.work_id = w.id
         LEFT JOIN subjects s ON s.id = ws.subject_id
         WHERE 1 = 1 ${this.adapterWorkClause("w")}
+        ${filterClause.clause}
         GROUP BY w.id, w.gutenberg_id, w.title, w.language, w.release_date, w.rights_status, w.summary, w.metadata_json
-        ORDER BY score DESC, CASE WHEN w.release_date IS NULL THEN 1 ELSE 0 END, w.release_date DESC, w.title ASC
+        ${orderByClause}
         LIMIT ? OFFSET ?
       `,
-      [this.feedLabels.summary, this.feedLabels.taxonomy, this.feedLabels.fallback, limit, offset],
+      [
+        this.feedLabels.summary,
+        this.feedLabels.taxonomy,
+        this.feedLabels.fallback,
+        ...filterClause.params,
+        ...(randomSeed == null ? [] : [randomSeed]),
+        limit,
+        offset,
+      ],
     );
   }
 
-  private async queryRankedWorks(offset = 0, limit = 12): Promise<WorkSummary[]> {
-    const result = await this.queryRankedWorkRows(offset, limit);
+  private async queryRankedWorks(offset = 0, limit = 12, filters: ExploreWorksFilters = {}): Promise<WorkSummary[]> {
+    const result = await this.queryRankedWorkRows(offset, limit, filters);
     return result.rows.map(mapFeedWorkRowToSummary);
   }
 
@@ -1545,7 +1591,20 @@ export class D1AppStore implements AppStore {
     return all.slice(Math.max(0, all.length - Math.max(1, limit)));
   }
 
-  async listWorks(offset = 0, limit = 12) {
+  async listWorks(
+    optionsOrOffset: { offset?: number; limit?: number; filters?: ExploreWorksFilters } | number = {},
+    limitArg?: number,
+  ) {
+    const options = typeof optionsOrOffset === "number"
+      ? { offset: optionsOrOffset, limit: limitArg }
+      : optionsOrOffset;
+    const offset = options.offset ?? 0;
+    const limit = options.limit ?? 12;
+    const filters = options.filters ?? {};
+    const hasDatasetFilters = Boolean(filters.language || filters.subject || filters.bookshelf || filters.randomSeed);
+    if (hasDatasetFilters) {
+      return this.queryRankedWorks(offset, limit, filters);
+    }
     const snapshot = await this.db.query<{
       work_id: string;
       gutenberg_id: number | string | null;
@@ -1575,10 +1634,21 @@ export class D1AppStore implements AppStore {
           score,
           feed_label
         FROM feed_works
-        ORDER BY rank ASC
+        WHERE 1 = 1
+          ${typeof filters.language === "string" && filters.language.trim().length > 0 ? "AND language = ?" : ""}
+          ${typeof filters.subject === "string" && filters.subject.trim().length > 0 ? "AND EXISTS (SELECT 1 FROM json_each(COALESCE(subjects_json, '[]')) subject_filter WHERE subject_filter.value = ?)" : ""}
+          ${typeof filters.bookshelf === "string" && filters.bookshelf.trim().length > 0 ? "AND EXISTS (SELECT 1 FROM json_each(COALESCE(json_extract(metadata_json, '$.bookshelves'), '[]')) shelf_filter WHERE shelf_filter.value = ?)" : ""}
+        ORDER BY ${typeof filters.randomSeed === "number" && Number.isFinite(filters.randomSeed) ? "ABS(((COALESCE(gutenberg_id, length(work_id) * 7919) * 1103515245) + ?) % 2147483647) ASC, rank ASC" : "rank ASC"}
         LIMIT ? OFFSET ?
       `,
-      [limit, offset],
+      [
+        ...(typeof filters.language === "string" && filters.language.trim().length > 0 ? [filters.language.trim()] : []),
+        ...(typeof filters.subject === "string" && filters.subject.trim().length > 0 ? [filters.subject.trim()] : []),
+        ...(typeof filters.bookshelf === "string" && filters.bookshelf.trim().length > 0 ? [filters.bookshelf.trim()] : []),
+        ...(typeof filters.randomSeed === "number" && Number.isFinite(filters.randomSeed) ? [Math.abs(Math.trunc(filters.randomSeed)) || 1] : []),
+        limit,
+        offset,
+      ],
     );
     if (snapshot.rows.length > 0) {
       return snapshot.rows.map((row) => mapFeedWorkRowToSummary({
@@ -1596,14 +1666,68 @@ export class D1AppStore implements AppStore {
         feed_label: row.feed_label,
       }));
     }
-    return this.queryRankedWorks(offset, limit);
+    return this.queryRankedWorks(offset, limit, filters);
   }
 
-  async countWorks() {
+  async countWorks(filters: ExploreWorksFilters = {}) {
+    const filterClause = this.buildExploreFilterClause(filters, "w");
     const result = await this.db.query<{ count: string | number }>(
-      `SELECT COUNT(*) AS count FROM works w WHERE 1 = 1 ${this.adapterWorkClause("w")}`,
+      `SELECT COUNT(*) AS count FROM works w WHERE 1 = 1 ${this.adapterWorkClause("w")} ${filterClause.clause}`,
+      filterClause.params,
     );
     return Number.parseInt(String(result.rows[0]?.count ?? "0"), 10) || 0;
+  }
+  async listWorkFacets(filters: ExploreWorksFilters = {}): Promise<ExploreWorkFacets> {
+    const filterClause = this.buildExploreFilterClause(filters, "w");
+    const [languages, subjects, bookshelves] = await Promise.all([
+      this.db.query<{ label: string | null; count: string | number }>(
+        `
+          SELECT w.language AS label, COUNT(*) AS count
+          FROM works w
+          WHERE w.language IS NOT NULL AND TRIM(w.language) <> '' ${this.adapterWorkClause("w")} ${filterClause.clause}
+          GROUP BY w.language
+          ORDER BY COUNT(*) DESC, w.language ASC
+          LIMIT 12
+        `,
+        filterClause.params,
+      ),
+      this.db.query<{ label: string | null; count: string | number }>(
+        `
+          SELECT s.label AS label, COUNT(DISTINCT w.id) AS count
+          FROM works w
+          JOIN work_subjects ws ON ws.work_id = w.id
+          JOIN subjects s ON s.id = ws.subject_id
+          WHERE 1 = 1 ${this.adapterWorkClause("w")} ${filterClause.clause}
+          GROUP BY s.label
+          ORDER BY COUNT(DISTINCT w.id) DESC, s.label ASC
+          LIMIT 40
+        `,
+        filterClause.params,
+      ),
+      this.db.query<{ label: string | null; count: string | number }>(
+        `
+          SELECT shelf.value AS label, COUNT(DISTINCT w.id) AS count
+          FROM works w
+          JOIN json_each(COALESCE(json_extract(w.metadata_json, '$.bookshelves'), '[]')) shelf
+          WHERE 1 = 1 ${this.adapterWorkClause("w")} ${filterClause.clause}
+          GROUP BY shelf.value
+          ORDER BY COUNT(DISTINCT w.id) DESC, shelf.value ASC
+          LIMIT 40
+        `,
+        filterClause.params,
+      ),
+    ]);
+    return {
+      languages: languages.rows
+        .filter((row): row is { label: string; count: string | number } => typeof row.label === "string" && row.label.trim().length > 0)
+        .map((row) => ({ label: row.label, count: Number(row.count) || 0 })),
+      subjects: subjects.rows
+        .filter((row): row is { label: string; count: string | number } => typeof row.label === "string" && row.label.trim().length > 0)
+        .map((row) => ({ label: row.label, count: Number(row.count) || 0 })),
+      bookshelves: bookshelves.rows
+        .filter((row): row is { label: string; count: string | number } => typeof row.label === "string" && row.label.trim().length > 0)
+        .map((row) => ({ label: row.label, count: Number(row.count) || 0 })),
+    };
   }
   async listDocuments(offset?: number, limit?: number) { return (await this.corpusStore()).listDocuments(offset, limit); }
   async countDocuments() { return (await this.corpusStore()).countDocuments(); }

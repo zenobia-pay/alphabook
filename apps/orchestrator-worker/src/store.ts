@@ -27,6 +27,24 @@ export interface PassageSearchFilters {
   genre?: string[];
 }
 
+export interface ExploreWorksFilters {
+  language?: string;
+  subject?: string;
+  bookshelf?: string;
+  randomSeed?: number;
+}
+
+export interface ExploreFacetStatRecord {
+  label: string;
+  count: number;
+}
+
+export interface ExploreWorkFacets {
+  languages: ExploreFacetStatRecord[];
+  subjects: ExploreFacetStatRecord[];
+  bookshelves: ExploreFacetStatRecord[];
+}
+
 export interface ResearchShardDescriptor {
   shardId: string;
   index: number;
@@ -469,8 +487,12 @@ export interface AppStore {
   appendRunEvent(runId: string, sessionId: string, event: string, dataJson: Record<string, unknown>): Promise<RunEventRecord>;
   listRunEvents(runId: string): Promise<RunEventRecord[]>;
   listRecentRunEvents(runId: string, limit: number): Promise<RunEventRecord[]>;
-  listWorks(offset?: number, limit?: number): Promise<WorkSummary[]>;
-  countWorks(): Promise<number>;
+  listWorks(
+    optionsOrOffset?: { offset?: number; limit?: number; filters?: ExploreWorksFilters } | number,
+    limit?: number,
+  ): Promise<WorkSummary[]>;
+  countWorks(filters?: ExploreWorksFilters): Promise<number>;
+  listWorkFacets(filters?: ExploreWorksFilters): Promise<ExploreWorkFacets>;
   listDocuments(offset?: number, limit?: number): Promise<CorpusDocumentRecord[]>;
   countDocuments(): Promise<number>;
   refreshExploreFeedSnapshot(limit?: number): Promise<void>;
@@ -1100,6 +1122,61 @@ function workMatchesSearchFilters(
     }
   }
   return true;
+}
+
+function normalizeExploreSeed(seed: number | undefined) {
+  if (typeof seed !== "number" || !Number.isFinite(seed)) {
+    return null;
+  }
+  return Math.abs(Math.trunc(seed)) || 1;
+}
+
+function hashTextSeed(value: string, seed: number) {
+  let hash = seed | 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = Math.imul(hash ^ value.charCodeAt(index), 16777619);
+  }
+  return hash >>> 0;
+}
+
+function workMatchesExploreFilters(
+  work: Pick<SeedWork, "language" | "subjects" | "metadata">,
+  filters: ExploreWorksFilters = {},
+) {
+  if (typeof filters.language === "string" && filters.language.length > 0 && work.language !== filters.language) {
+    return false;
+  }
+  if (typeof filters.subject === "string" && filters.subject.length > 0 && !(work.subjects ?? []).includes(filters.subject)) {
+    return false;
+  }
+  if (typeof filters.bookshelf === "string" && filters.bookshelf.length > 0) {
+    const bookshelves = readMetadataTextList(work.metadata ?? {}, ["bookshelves"]);
+    if (!bookshelves.includes(filters.bookshelf)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function computeExploreFacets(works: SeedWork[], limit = 40): ExploreWorkFacets {
+  const tally = (values: string[][], max = limit): ExploreFacetStatRecord[] => {
+    const counts = new Map<string, number>();
+    for (const row of values) {
+      for (const value of new Set(row.map((item) => item.trim()).filter(Boolean))) {
+        counts.set(value, (counts.get(value) ?? 0) + 1);
+      }
+    }
+    return [...counts.entries()]
+      .map(([label, count]) => ({ label, count }))
+      .sort((left, right) => right.count - left.count || left.label.localeCompare(right.label))
+      .slice(0, max);
+  };
+
+  return {
+    languages: tally(works.map((work) => work.language ? [work.language] : []), 12),
+    subjects: tally(works.map((work) => work.subjects ?? []), 40),
+    bookshelves: tally(works.map((work) => readMetadataTextList(work.metadata ?? {}, ["bookshelves"])), 40),
+  };
 }
 
 function lexicalScore(query: string, text: string): number {
@@ -2797,8 +2874,18 @@ export class InMemoryAppStore implements AppStore {
     })));
   }
 
-  async listWorks(offset = 0, limit = 12): Promise<WorkSummary[]> {
-    return [...this.works]
+  async listWorks(
+    optionsOrOffset: { offset?: number; limit?: number; filters?: ExploreWorksFilters } | number = {},
+    limitArg?: number,
+  ): Promise<WorkSummary[]> {
+    const options = typeof optionsOrOffset === "number"
+      ? { offset: optionsOrOffset, limit: limitArg }
+      : optionsOrOffset;
+    const offset = options.offset ?? 0;
+    const limit = options.limit ?? 12;
+    const filteredWorks = this.works.filter((work) => workMatchesExploreFilters(work, options.filters));
+    const randomSeed = normalizeExploreSeed(options.filters?.randomSeed);
+    const rankedWorks = filteredWorks
       .map((work) => {
         const metadata = work.metadata ?? {};
         const hasCover = Boolean(
@@ -2818,6 +2905,12 @@ export class InMemoryAppStore implements AppStore {
         return { ...work, score, feedLabel };
       })
       .sort((left, right) => {
+        if (randomSeed != null) {
+          const delta = hashTextSeed(left.id, randomSeed) - hashTextSeed(right.id, randomSeed);
+          if (delta !== 0) {
+            return delta;
+          }
+        }
         const scoreDelta = (right.score ?? 0) - (left.score ?? 0);
         if (scoreDelta !== 0) {
           return scoreDelta;
@@ -2829,16 +2922,20 @@ export class InMemoryAppStore implements AppStore {
         }
         return left.title.localeCompare(right.title);
       })
-      .slice(offset, offset + limit)
-      .map((work) => toWorkSummary(work));
+      .slice(offset, offset + limit);
+    return rankedWorks.map((work) => toWorkSummary(work));
   }
 
-  async countWorks(): Promise<number> {
-    return this.works.length;
+  async countWorks(filters?: ExploreWorksFilters): Promise<number> {
+    return this.works.filter((work) => workMatchesExploreFilters(work, filters)).length;
+  }
+
+  async listWorkFacets(filters?: ExploreWorksFilters): Promise<ExploreWorkFacets> {
+    return computeExploreFacets(this.works.filter((work) => workMatchesExploreFilters(work, filters)));
   }
 
   async listDocuments(offset = 0, limit = 50): Promise<CorpusDocumentRecord[]> {
-    const works = await this.listWorks(offset, limit);
+    const works = await this.listWorks({ offset, limit });
     return works.map(mapWorkSummaryToDocument);
   }
 

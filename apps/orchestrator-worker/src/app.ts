@@ -32,7 +32,7 @@ import {
 import { MemoryBlobStore, type BlobStore } from "./r2";
 import type { Planner, PlannerContext } from "./planner";
 import { FallbackPlanner, parseToolCall } from "./planner";
-import type { Router } from "./router";
+import type { Router, RouterDecision } from "./router";
 import type { SemanticSearchService } from "./semantic-search";
 import { cleanupToolStreamWithWorkersAi, type ToolStreamCleanupLine } from "./tool-stream-cleanup";
 import type { Synthesizer, ToolHistoryEntry } from "./synthesizer";
@@ -1146,11 +1146,11 @@ function searchPlanFromEstimate(
 }
 
 function requestedAssistantMode(input: {
-  mode?: "semantic" | "comprehensive" | "agentic" | "hermes";
+  mode?: "semantic" | "comprehensive" | "agentic";
   workflow?: "auto" | "search" | "design_experiment";
   researchMode?: "default" | "sprite_fanout";
 }): "semantic" | "comprehensive" | "agentic" {
-  if (input.mode === "agentic" || input.mode === "hermes") {
+  if (input.mode === "agentic") {
     return "agentic";
   }
   if (input.mode === "comprehensive" || input.researchMode === "sprite_fanout") {
@@ -1164,7 +1164,7 @@ function requestedAssistantMode(input: {
 
 function inferExplicitAssistantMode(message: string): "semantic" | "comprehensive" | "agentic" | undefined {
   const normalized = message.toLowerCase();
-  if (/\b(agentic|hermes)\b/u.test(normalized)) {
+  if (/\bagentic\b/u.test(normalized)) {
     return "agentic";
   }
   if (/\b(comprehensive|deep research|deeper research|sprite fanout|sprite_fanout)\b/u.test(normalized)) {
@@ -1177,7 +1177,7 @@ function inferExplicitAssistantMode(message: string): "semantic" | "comprehensiv
 }
 
 function requestedIntensityOverride(input: {
-  mode?: "semantic" | "comprehensive" | "agentic" | "hermes";
+  mode?: "semantic" | "comprehensive" | "agentic";
   workflow?: "auto" | "search" | "design_experiment";
   intensityOverride?: "normal" | "high" | "maximum";
   researchMode?: "default" | "sprite_fanout";
@@ -1194,7 +1194,7 @@ function requestedIntensityOverride(input: {
 function hermesSearchEffort(input: {
   workflow?: "auto" | "search" | "design_experiment";
   intensityOverride?: "normal" | "high" | "maximum";
-  mode?: "semantic" | "comprehensive" | "agentic" | "hermes";
+  mode?: "semantic" | "comprehensive" | "agentic";
   researchMode?: "default" | "sprite_fanout";
 }): number | undefined {
   if (input.workflow !== "search") {
@@ -2487,6 +2487,7 @@ export type ActiveRunState = {
 };
 
 export type RunOrchestratorOptions = {
+  precomputedRouteDecision?: RouterDecision;
   recovery?: {
     skipUserMessageAppend?: boolean;
   };
@@ -5973,7 +5974,7 @@ function fallbackExperimentProposalFromAnswer(answer: string, userMessage: strin
 function initialWorkflowPlan(intent: {
   workflow: "search" | "design_experiment";
   routedQuery: string;
-  executionMode?: "semantic" | "comprehensive" | "agentic" | "hermes";
+  executionMode?: "semantic" | "comprehensive" | "agentic";
 }) {
   const normalizedMessage = intent.routedQuery.trim();
   if (intent.workflow === "design_experiment") {
@@ -5986,7 +5987,7 @@ function initialWorkflowPlan(intent: {
       ? `I’ve selected Search for “${normalizedMessage}.” I’m going broad, pulling the strongest passages, and building a grounded briefing.`
       : "I’ve selected Search. I’m going broad, pulling the strongest passages, and building a grounded briefing.";
   }
-  if (intent.executionMode === "agentic" || intent.executionMode === "hermes") {
+  if (intent.executionMode === "agentic") {
     return normalizedMessage
       ? `I’ve selected Agentic search for “${normalizedMessage}.” I’m starting with the agentic evidence pass and will expand from there.`
       : "I’ve selected Agentic search. I’m starting with the agentic evidence pass and will expand from there.";
@@ -8304,7 +8305,7 @@ type HermesArchiveManifest = {
 function shouldUseHermesBackend(
   deps: AppDeps,
   input: {
-    mode?: "semantic" | "comprehensive" | "agentic" | "hermes";
+    mode?: "semantic" | "comprehensive" | "agentic";
     researchMode?: "default" | "sprite_fanout";
   },
 ) {
@@ -9161,7 +9162,7 @@ async function finalizeHermesRun(
         runId: currentRun.id,
         sessionId: params.session.id,
         status: "failed",
-        completionMode: "hermes",
+        completionMode: "agentic",
         error: failureMessage,
         hermes: {
           jobId: params.job.id,
@@ -9209,7 +9210,7 @@ async function finalizeHermesRun(
       runId: currentRun.id,
       sessionId: params.session.id,
       status: "completed",
-      completionMode: "hermes",
+      completionMode: "agentic",
       hermes: {
         jobId: params.job.id,
         sessionId: params.job.hermesSessionId ?? finalSnapshot?.session_id ?? null,
@@ -9258,10 +9259,10 @@ async function runHermesConversation(
   activeRuns: Map<string, ActiveRunState>,
 ) {
   if (!input.userId) {
-    throw new Error("A userId is required to start a Hermes run.");
+    throw new Error("A userId is required to start an Agentic search run.");
   }
   if (!deps.hermesJobApiUrl) {
-    throw new Error("Hermes job API is not configured.");
+    throw new Error("Agentic search job API is not configured.");
   }
 
   await deps.store.ensureUser(input.userId);
@@ -9379,7 +9380,7 @@ async function runHermesConversation(
       runId: run.id,
       sessionId: activeSession.id,
       status: "failed",
-      completionMode: "hermes",
+      completionMode: "agentic",
       error: message,
     });
   };
@@ -10696,7 +10697,7 @@ export async function runOrchestrator(
     workflow: HighLevelWorkflow;
     routedQuery: string;
     rationale: string;
-    executionMode?: "semantic" | "comprehensive" | "agentic" | "hermes";
+    executionMode?: "semantic" | "comprehensive" | "agentic";
     designSummary?: string;
   };
   let initialWorkflowIntent: InitialWorkflowIntent | null = null;
@@ -11823,9 +11824,9 @@ export async function runOrchestrator(
       sessionId: session.id,
       message: input.message,
     });
-    let routeDecision;
+    let routeDecision: RouterDecision;
     try {
-      routeDecision = input.workflow === "search"
+      routeDecision = options.precomputedRouteDecision ?? (input.workflow === "search"
         ? {
             type: "search" as const,
             fullQuery: input.message.trim(),
@@ -11855,7 +11856,7 @@ export async function runOrchestrator(
                 type: "search" as const,
                 fullQuery: input.message,
                 executionMode: input.mode ?? "agentic",
-              };
+              });
     } catch (error) {
       recordRawLog("router.failed", {
         runId: run.id,
@@ -11863,6 +11864,14 @@ export async function runOrchestrator(
         error: error instanceof Error ? error.message : "Unknown router error",
       });
       throw error;
+    }
+    if (options.precomputedRouteDecision) {
+      recordRawLog("router.reused", {
+        runId: run.id,
+        sessionId: session.id,
+        type: routeDecision.type,
+        fullQuery: routeDecision.type === "search" ? routeDecision.fullQuery : null,
+      });
     }
     await send("router.completed", {
       runId: run.id,
@@ -11945,15 +11954,22 @@ export async function runOrchestrator(
     const routedQuery = routeDecision.fullQuery.trim() || input.message;
     routedQueryRef.current = routedQuery;
     input.mode = routeDecision.executionMode ?? input.mode ?? "agentic";
+    if (input.mode === "agentic") {
+      recordRawLog("router.dispatch_mismatch", {
+        runId: run.id,
+        sessionId: session.id,
+        routedQuery,
+        executionMode: input.mode,
+      });
+      throw new Error("Agentic search was routed into the semantic orchestrator path.");
+    }
     initialWorkflowIntent = {
       workflow: "search",
       routedQuery,
       rationale: routeDecision.rationale
         ?? (input.mode === "comprehensive"
           ? "I’ve selected Search and this query needs the broader corpus pass."
-          : input.mode === "agentic" || input.mode === "hermes"
-            ? "I’ve selected Agentic search and I’m starting with the agentic evidence pass."
-            : "I’ve selected Search and I’m starting with the fast evidence pass."),
+          : "I’ve selected Search and I’m starting with the fast evidence pass."),
       executionMode: input.mode,
     };
     await ensureInitialPlanSent(routedQuery);
@@ -12014,10 +12030,12 @@ export async function runOrchestrator(
       });
 
       const assistantMode = requestedAssistantMode(input);
-      const plannerMode: "semantic" | "comprehensive" = assistantMode === "agentic" ? "semantic" : assistantMode;
+      if (assistantMode === "agentic") {
+        throw new Error("Agentic search reached the semantic planner loop.");
+      }
       const plannerContext: PlannerContext = {
         userMessage: routedQuery,
-        mode: plannerMode,
+        mode: assistantMode,
         conversationHistory,
         turns: turn,
         toolHistory,
@@ -13514,8 +13532,9 @@ export function createApp(inputDeps: CreateAppInput) {
         requestPayload.mode = inferredMode;
       }
     }
+    let existingSession: SessionRecord | null = null;
     if (requestPayload.sessionId) {
-      const existingSession = await deps.store.getSession(requestPayload.sessionId);
+      existingSession = await deps.store.getSession(requestPayload.sessionId);
       if (existingSession && existingSession.userId !== requestPayload.userId) {
         return c.json({ error: "Not authorized for this session." }, 403);
       }
@@ -13555,24 +13574,47 @@ export function createApp(inputDeps: CreateAppInput) {
     const response = streamQueuedEventsResponse(
       async (send) => {
         let executionCtx: ExecutionContext | null = null;
+        let precomputedRouteDecision: RouterDecision | undefined;
         try {
           executionCtx = c.executionCtx;
         } catch {
           executionCtx = null;
         }
+        if (!requestPayload.mode && requestPayload.workflow !== "search" && requestPayload.workflow !== "design_experiment" && deps.router) {
+          const conversationHistory = existingSession
+            ? formatConversationHistory(await deps.store.listMessages(existingSession.id))
+            : [];
+          precomputedRouteDecision = await deps.router.decide({
+            userMessage: requestPayload.message,
+            requestedWorkflow: requestPayload.workflow,
+            conversationHistory,
+          });
+          if (precomputedRouteDecision.type === "search") {
+            requestPayload.mode = precomputedRouteDecision.executionMode ?? "agentic";
+          }
+        }
         if (requestedAssistantMode(requestPayload) === "agentic" && !deps.hermesJobApiUrl) {
           throw new Error("Agentic search mode is not configured for this environment.");
         }
-        const runner = shouldUseHermesBackend(deps, requestPayload) ? runHermesConversation : runOrchestrator;
-        const runPromise = runner(
-          deps,
-          c.req.raw,
-          requestPayload,
-          usePlatformChatContract
-            ? async (event, data) => send(event, toPlatformEventPayload(data) as Record<string, unknown>)
-            : send,
-          activeRuns,
-        );
+        const sendEvent = usePlatformChatContract
+          ? async (event: string, data: Record<string, unknown>) => send(event, toPlatformEventPayload(data) as Record<string, unknown>)
+          : send;
+        const runPromise = shouldUseHermesBackend(deps, requestPayload)
+          ? runHermesConversation(
+              deps,
+              c.req.raw,
+              requestPayload,
+              sendEvent,
+              activeRuns,
+            )
+          : runOrchestrator(
+              deps,
+              c.req.raw,
+              requestPayload,
+              sendEvent,
+              activeRuns,
+              { precomputedRouteDecision },
+            );
         if (executionCtx && typeof executionCtx.waitUntil === "function") {
           executionCtx.waitUntil(runPromise);
         }
@@ -14443,14 +14485,24 @@ export function createApp(inputDeps: CreateAppInput) {
   app.get("/works", async (c) => {
     const offset = Math.max(0, Number.parseInt(c.req.query("offset") ?? "0", 10) || 0);
     const limit = Math.min(24, Math.max(1, Number.parseInt(c.req.query("limit") ?? "12", 10) || 12));
-    const [works, totalCount] = await Promise.all([
-      deps.store.listWorks(offset, limit),
-      deps.store.countWorks(),
+    const filters = {
+      ...(typeof c.req.query("language") === "string" && c.req.query("language")!.trim().length > 0 ? { language: c.req.query("language")!.trim() } : {}),
+      ...(typeof c.req.query("subject") === "string" && c.req.query("subject")!.trim().length > 0 ? { subject: c.req.query("subject")!.trim() } : {}),
+      ...(typeof c.req.query("bookshelf") === "string" && c.req.query("bookshelf")!.trim().length > 0 ? { bookshelf: c.req.query("bookshelf")!.trim() } : {}),
+      ...(typeof c.req.query("randomSeed") === "string" && c.req.query("randomSeed")!.trim().length > 0
+        ? { randomSeed: Number.parseInt(c.req.query("randomSeed")!, 10) || 0 }
+        : {}),
+    };
+    const [works, totalCount, facets] = await Promise.all([
+      deps.store.listWorks({ offset, limit, filters }),
+      deps.store.countWorks(filters),
+      deps.store.listWorkFacets(filters),
     ]);
     return c.json({
       works: works.map((work) => decorateWork(c, work)),
       nextOffset: works.length === limit ? offset + works.length : null,
       totalCount,
+      facets,
     });
   });
 
