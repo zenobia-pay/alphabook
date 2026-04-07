@@ -8748,6 +8748,12 @@ function normalizeHermesArtifactFilename(relativePath: string) {
 function titleForHermesArtifact(relativePath: string) {
   const normalized = normalizeHermesArtifactFilename(relativePath);
   const base = normalized.split("/").at(-1) ?? normalized;
+  if (normalized.endsWith("hits/index.json")) {
+    return "Search Hits Index";
+  }
+  if (/\/hits\/hit-\d+\.md$/u.test(normalized) || /^hits\/hit-\d+\.md$/u.test(normalized)) {
+    return base.replace(/\.md$/u, "").replace(/-/gu, " ").replace(/\b\w/gu, (char) => char.toUpperCase());
+  }
   if (base === "briefing.md") {
     return "Briefing";
   }
@@ -8770,7 +8776,14 @@ function titleForHermesArtifact(relativePath: string) {
 }
 
 function kindForHermesArtifact(relativePath: string) {
-  const base = normalizeHermesArtifactFilename(relativePath).split("/").at(-1) ?? "";
+  const normalized = normalizeHermesArtifactFilename(relativePath);
+  const base = normalized.split("/").at(-1) ?? "";
+  if (normalized.endsWith("hits/index.json")) {
+    return "hermes_search_hits_index";
+  }
+  if (/\/hits\/hit-\d+\.md$/u.test(normalized) || /^hits\/hit-\d+\.md$/u.test(normalized)) {
+    return "hermes_search_hit";
+  }
   if (base === "briefing.md") {
     return "briefing_markdown";
   }
@@ -8885,7 +8898,7 @@ async function persistHermesFallbackArtifacts(
       deps.hermesJobApiUrl!,
       deps.hermesJobApiToken,
       job.id,
-      normalizeHermesArtifactName(name.split("/").at(-1) ?? name),
+      normalizeHermesArtifactName(name),
     ).catch(() => null);
     const content = artifact?.artifact.content ?? null;
     if (typeof content !== "string") {
@@ -8920,6 +8933,7 @@ async function persistHermesFallbackArtifacts(
 function buildHermesCompletionAnswer(
   finalSnapshot: HermesSessionSnapshot | null,
   archiveManifest: HermesArchiveManifest | null,
+  hitsIndexText?: string | null,
 ) {
   const finalMessages = Array.isArray(finalSnapshot?.messages) ? finalSnapshot.messages : [];
   const finalAssistantMessage = [...finalMessages]
@@ -8928,10 +8942,23 @@ function buildHermesCompletionAnswer(
   if (typeof finalAssistantMessage?.content === "string" && finalAssistantMessage.content.trim().length > 0) {
     return finalAssistantMessage.content.trim();
   }
+  const parsedHits = parseHermesJsonRecord(hitsIndexText ?? "");
+  const keptHitCount =
+    typeof parsedHits?.kept_hit_count === "number"
+      ? parsedHits.kept_hit_count
+      : Array.isArray(parsedHits?.hits)
+        ? parsedHits.hits.length
+        : null;
+  if (keptHitCount !== null) {
+    return keptHitCount > 0
+      ? `Completed. Open the files panel to inspect \`inner/hits/index.json\` and ${keptHitCount} saved evidence hits.`
+      : "Completed. Open the files panel to inspect `inner/hits/index.json`.";
+  }
   const importantFiles = (archiveManifest?.files ?? [])
     .map((file) => normalizeHermesArtifactFilename(file.relativePath))
     .filter((path) =>
       path.endsWith("briefing.md")
+      || path.endsWith("hits/index.json")
       || path.endsWith("dataset.csv")
       || path.endsWith("citation-index.json"),
     )
@@ -9006,6 +9033,15 @@ async function finalizeHermesRun(
       normalizeHermesArtifactName("briefing.md"),
     ).then((response) => response.artifact.content.trim()).catch(() => "");
 
+  const hitsIndexText =
+    await loadHermesArchiveText(deps, archiveManifest, (file) => normalizeHermesArtifactFilename(file.relativePath).endsWith("hits/index.json"))
+    ?? await fetchHermesArtifact(
+      deps.hermesJobApiUrl!,
+      deps.hermesJobApiToken,
+      params.job.id,
+      normalizeHermesArtifactName("hits/index.json"),
+    ).then((response) => response.artifact.content).catch(() => null);
+
   if (briefingMarkdown) {
     const briefingHtml = await renderBriefingHtml(deps, params.session.id, briefingMarkdown);
     await persistResearchDocumentArtifact(deps, params.session.id, currentRun.id, briefingHtml);
@@ -9020,7 +9056,7 @@ async function finalizeHermesRun(
       normalizeHermesArtifactName("hermes.session.json"),
     ).then((response) => response.artifact.content).catch(() => null);
   const finalSnapshot = parseHermesJsonRecord(sessionArtifactText ?? "") as HermesSessionSnapshot | null;
-  const finalAnswer = buildHermesCompletionAnswer(finalSnapshot, archiveManifest);
+  const finalAnswer = buildHermesCompletionAnswer(finalSnapshot, archiveManifest, hitsIndexText);
 
   const archiveSummary = loadHermesArchiveSummary(params.job);
   const manifestStatus = typeof params.job.manifestStatus === "string" ? params.job.manifestStatus.trim() : "";
@@ -9029,6 +9065,7 @@ async function finalizeHermesRun(
     && (params.job.exitCode == null || params.job.exitCode === 0)
     && (
       Boolean(briefingMarkdown)
+      || Boolean(hitsIndexText)
       || /^completed/iu.test(manifestStatus)
       || (archiveSummary.fileCount ?? 0) > 0
     );

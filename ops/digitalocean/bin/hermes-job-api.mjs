@@ -34,6 +34,13 @@ const PRIMARY_ARTIFACTS = [
   "hermes.session.json",
 ];
 
+function normalizeArtifactName(input) {
+  return decodeURIComponent(String(input || ""))
+    .replaceAll("\\", "/")
+    .replace(/^\/+/u, "")
+    .trim();
+}
+
 await fsp.mkdir(API_LOG_ROOT, { recursive: true });
 const serverLogPath = path.join(API_LOG_ROOT, "server.log");
 
@@ -197,19 +204,49 @@ function summarizeArtifacts(innerRunDir) {
   if (!innerRunDir) {
     return [];
   }
-  return PRIMARY_ARTIFACTS.map((name) => {
+  const artifacts = [];
+  const seen = new Set();
+  for (const name of PRIMARY_ARTIFACTS) {
     const filePath = path.join(innerRunDir, name);
     const stat = statSafe(filePath);
     if (!stat || !stat.isFile()) {
-      return null;
+      continue;
     }
-    return {
+    artifacts.push({
       name,
       path: filePath,
       bytes: stat.size,
       updatedAt: stat.mtime.toISOString(),
-    };
-  }).filter(Boolean);
+    });
+    seen.add(name);
+  }
+  const hitsDir = path.join(innerRunDir, "hits");
+  try {
+    for (const entry of fs.readdirSync(hitsDir, { withFileTypes: true })) {
+      if (!entry.isFile()) {
+        continue;
+      }
+      const relativeName = `hits/${entry.name}`;
+      if (seen.has(relativeName)) {
+        continue;
+      }
+      const filePath = path.join(hitsDir, entry.name);
+      const stat = statSafe(filePath);
+      if (!stat || !stat.isFile()) {
+        continue;
+      }
+      artifacts.push({
+        name: relativeName,
+        path: filePath,
+        bytes: stat.size,
+        updatedAt: stat.mtime.toISOString(),
+      });
+      seen.add(relativeName);
+    }
+  } catch {
+    // Ignore missing search hit directories.
+  }
+  return artifacts;
 }
 
 function summarizeArchive(runDir) {
@@ -328,15 +365,18 @@ function resolveLauncherConfig(payload) {
 }
 
 function resolveArtifactPath(runDir, artifactName) {
-  const safeName = path.basename(String(artifactName || ""));
-  if (!safeName || safeName === "." || safeName === "..") {
+  const normalizedName = normalizeArtifactName(artifactName);
+  if (!normalizedName || normalizedName === "." || normalizedName === ".." || normalizedName.includes("../")) {
     return null;
   }
   const innerRunDir = inferInnerRunDir(runDir);
   const candidates = [
-    path.join(runDir, safeName),
-    path.join(runDir, "openai-proxy", safeName),
-    innerRunDir ? path.join(innerRunDir, safeName) : null,
+    path.join(runDir, normalizedName),
+    path.join(runDir, "openai-proxy", normalizedName),
+    innerRunDir ? path.join(innerRunDir, normalizedName) : null,
+    path.join(runDir, path.basename(normalizedName)),
+    path.join(runDir, "openai-proxy", path.basename(normalizedName)),
+    innerRunDir ? path.join(innerRunDir, path.basename(normalizedName)) : null,
   ].filter(Boolean);
   for (const candidate of candidates) {
     const stat = statSafe(candidate);
@@ -878,7 +918,7 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 200, {
         jobId: artifactMatch[1],
         artifact: {
-          name: path.basename(artifactPath),
+          name: normalizeArtifactName(artifactMatch[2]) || path.basename(artifactPath),
           path: artifactPath,
           bytes: stat?.size ?? null,
           updatedAt: stat?.mtime?.toISOString?.() ?? null,
