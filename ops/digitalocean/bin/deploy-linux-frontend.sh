@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-TARGET_HOST="${ALPHABOOK_WEB_HOST:-162.243.162.20}"
-TARGET_USER="${ALPHABOOK_WEB_USER:-root}"
+TARGET_HOST="${ALPHABOOK_FRONTEND_HOST:-178.128.159.197}"
+TARGET_USER="${ALPHABOOK_FRONTEND_USER:-root}"
 TARGET_DIR="${ALPHABOOK_FRONTEND_DIR:-/srv/alphabook/frontend}"
 SSH_OPTS=(
   -o BatchMode=yes
@@ -11,6 +11,7 @@ SSH_OPTS=(
 )
 
 cd "$ROOT_DIR"
+
 npm run build -w @alphabook/frontend
 
 rsync -az --delete -e "ssh ${SSH_OPTS[*]}" \
