@@ -70,6 +70,11 @@ CREATE TABLE IF NOT EXISTS run_events (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS run_event_sequences (
+  run_id TEXT PRIMARY KEY,
+  next_sequence INTEGER NOT NULL
+);
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_run_events_run_id_sequence ON run_events(run_id, sequence);
 CREATE INDEX IF NOT EXISTS idx_run_events_run_id_created_at ON run_events(run_id, created_at ASC);
 

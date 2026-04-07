@@ -126,24 +126,25 @@ test("document aliases expose neutral corpus records without changing work stora
   assert.equal(chunks[0]?.documentId, "work-1");
 });
 
-test("appendRunEvent uses a single insert-select query for sequence allocation", async () => {
+test("appendRunEvent persists the allocated sequence into run_events", async () => {
   const queries: Array<{ sql: string; params?: unknown[] }> = [];
   const db: DbClient = {
     async query<T = Record<string, unknown>>(sql: string, params?: unknown[]) {
       queries.push({ sql, params });
       if (
         sql.includes("CREATE TABLE IF NOT EXISTS run_events")
+        || sql.includes("CREATE TABLE IF NOT EXISTS run_event_sequences")
         || sql.includes("CREATE UNIQUE INDEX IF NOT EXISTS idx_run_events_run_id_sequence")
         || sql.includes("CREATE INDEX IF NOT EXISTS idx_run_events_run_id_created_at")
         || sql.startsWith("ALTER TABLE ")
       ) {
         return { rows: [] as T[] };
       }
-      if (sql.includes("INSERT INTO run_events") && sql.includes("COALESCE(MAX(sequence), 0) + 1")) {
-        return { rows: [] as T[] };
+      if (sql.includes("INSERT INTO run_event_sequences")) {
+        return { rows: [{ next_sequence: 7 }] as T[] };
       }
-      if (sql.includes("SELECT sequence FROM run_events WHERE id = ? LIMIT 1")) {
-        return { rows: [{ sequence: 7 }] as T[] };
+      if (sql.includes("INSERT INTO run_events")) {
+        return { rows: [] as T[] };
       }
       throw new Error(`Unexpected query: ${sql}`);
     },
@@ -159,33 +160,33 @@ test("appendRunEvent uses a single insert-select query for sequence allocation",
   );
 
   assert.equal(event.sequence, 7);
+  const sequenceQuery = queries.find((entry) => entry.sql.includes("INSERT INTO run_event_sequences"));
+  assert.ok(sequenceQuery);
   const insertQuery = queries.find((entry) => entry.sql.includes("INSERT INTO run_events"));
   assert.ok(insertQuery);
-  assert.match(insertQuery!.sql, /COALESCE\(MAX\(sequence\), 0\) \+ 1/);
+  assert.match(insertQuery!.sql, /VALUES \(\?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?, \?\)/);
   assert.equal(queries.filter((entry) => entry.sql.includes("INSERT INTO run_events")).length, 1);
 });
 
-test("appendRunEvent retries on run event sequence conflicts", async () => {
-  let insertAttempts = 0;
+test("appendRunEvent allocates sequence numbers from the dedicated counter table", async () => {
+  let sequenceAllocations = 0;
   const db: DbClient = {
     async query<T = Record<string, unknown>>(sql: string, params?: unknown[]) {
       if (
         sql.includes("CREATE TABLE IF NOT EXISTS run_events")
+        || sql.includes("CREATE TABLE IF NOT EXISTS run_event_sequences")
         || sql.includes("CREATE UNIQUE INDEX IF NOT EXISTS idx_run_events_run_id_sequence")
         || sql.includes("CREATE INDEX IF NOT EXISTS idx_run_events_run_id_created_at")
         || sql.startsWith("ALTER TABLE ")
       ) {
         return { rows: [] as T[] };
       }
-      if (sql.includes("INSERT INTO run_events") && sql.includes("COALESCE(MAX(sequence), 0) + 1")) {
-        insertAttempts += 1;
-        if (insertAttempts === 1) {
-          throw new Error("duplicate key value violates unique constraint \"idx_run_events_run_id_sequence\"");
-        }
-        return { rows: [] as T[] };
+      if (sql.includes("INSERT INTO run_event_sequences")) {
+        sequenceAllocations += 1;
+        return { rows: [{ next_sequence: 8 }] as T[] };
       }
-      if (sql.includes("SELECT sequence FROM run_events WHERE id = ? LIMIT 1")) {
-        return { rows: [{ sequence: 8 }] as T[] };
+      if (sql.includes("INSERT INTO run_events")) {
+        return { rows: [] as T[] };
       }
       throw new Error(`Unexpected query: ${sql} :: ${JSON.stringify(params ?? [])}`);
     },
@@ -200,7 +201,7 @@ test("appendRunEvent retries on run event sequence conflicts", async () => {
     { status: "running" },
   );
 
-  assert.equal(insertAttempts, 2);
+  assert.equal(sequenceAllocations, 1);
   assert.equal(event.sequence, 8);
 });
 

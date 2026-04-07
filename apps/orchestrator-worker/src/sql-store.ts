@@ -57,13 +57,6 @@ function parseJsonStringList(value: unknown): string[] {
     .filter((entry) => entry.length > 0 && entry !== "null" && entry !== "undefined");
 }
 
-function isRunEventSequenceConflict(error: unknown) {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.includes("idx_run_events_run_id_sequence")
-    || /run_events.*run_id.*sequence/iu.test(message)
-    || (/duplicate key value/iu.test(message) && /sequence/iu.test(message));
-}
-
 function splitSubtitleFromTitle(title: string): { title: string; subtitle: string | null } {
   const match = title.match(/^(.+?)(?:\s+[:;]\s+|\s+[—-]\s+)(.+)$/u);
   if (!match) {
@@ -423,6 +416,7 @@ export class SqlAppStore implements AppStore {
   private runLifecycleColumnsReady: Promise<void> | null = null;
   private backgroundJobsTableReady: Promise<void> | null = null;
   private researchTasksTableReady: Promise<void> | null = null;
+  private runEventSequencesTableReady: Promise<void> | null = null;
 
   constructor(
     private readonly db: DbClient,
@@ -880,6 +874,33 @@ export class SqlAppStore implements AppStore {
       `).then(() => undefined);
     }
     await this.backgroundJobsTableReady;
+  }
+
+  private async ensureRunEventSequencesTable() {
+    if (!this.runEventSequencesTableReady) {
+      this.runEventSequencesTableReady = this.db.query(`
+        CREATE TABLE IF NOT EXISTS run_event_sequences (
+          run_id TEXT PRIMARY KEY,
+          next_sequence INTEGER NOT NULL
+        )
+      `).then(() => undefined);
+    }
+    await this.runEventSequencesTableReady;
+  }
+
+  private async allocateRunEventSequence(runId: string) {
+    await this.ensureRunEventSequencesTable();
+    const result = await this.db.query<{ next_sequence: number | string }>(
+      `
+        INSERT INTO run_event_sequences (run_id, next_sequence)
+        VALUES (?, 1)
+        ON CONFLICT(run_id) DO UPDATE
+        SET next_sequence = run_event_sequences.next_sequence + 1
+        RETURNING next_sequence
+      `,
+      [runId],
+    );
+    return Number(result.rows[0]?.next_sequence ?? 1);
   }
 
   private async loadCorpusStore() {
@@ -1854,6 +1875,7 @@ export class SqlAppStore implements AppStore {
   async appendRunEvent(runId: string, sessionId: string, event: string, dataJson: Record<string, unknown>): Promise<RunEventRecord> {
     const id = crypto.randomUUID();
     const createdAt = nowIso();
+    const sequence = await this.allocateRunEventSequence(runId);
     const payloadRef = shouldSpillPayload(dataJson) ? `runs/${runId}/events/${id}.json` : null;
     const summaryText = summarizePayload(dataJson, event);
     const phase = typeof dataJson.phase === "string" ? dataJson.phase : null;
@@ -1864,44 +1886,28 @@ export class SqlAppStore implements AppStore {
     if (payloadRef) {
       await this.blobStore.putJson(payloadRef, dataJson);
     }
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      try {
-        await this.db.query(
-          `
-            INSERT INTO run_events (id, run_id, session_id, sequence, event, data_json, payload_ref, summary_text, phase, status, tool_call_id, runtime_id, retention_class, created_at)
-            SELECT ?, ?, ?, COALESCE(MAX(sequence), 0) + 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-            FROM run_events
-            WHERE run_id = ?
-          `,
-          [
-            id,
-            runId,
-            sessionId,
-            event,
-            JSON.stringify(payloadRef ? buildInlinePayload(dataJson) : dataJson),
-            payloadRef,
-            summaryText,
-            phase,
-            status,
-            toolCallId,
-            runtimeId,
-            retentionClass,
-            createdAt,
-            runId,
-          ],
-        );
-        break;
-      } catch (error) {
-        if (!isRunEventSequenceConflict(error) || attempt === 4) {
-          throw error;
-        }
-      }
-    }
-    const inserted = await this.db.query<{ sequence: number }>(
-      "SELECT sequence FROM run_events WHERE id = ? LIMIT 1",
-      [id],
+    await this.db.query(
+      `
+        INSERT INTO run_events (id, run_id, session_id, sequence, event, data_json, payload_ref, summary_text, phase, status, tool_call_id, runtime_id, retention_class, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        id,
+        runId,
+        sessionId,
+        sequence,
+        event,
+        JSON.stringify(payloadRef ? buildInlinePayload(dataJson) : dataJson),
+        payloadRef,
+        summaryText,
+        phase,
+        status,
+        toolCallId,
+        runtimeId,
+        retentionClass,
+        createdAt,
+      ],
     );
-    const sequence = Number(inserted.rows[0]?.sequence ?? 1);
     return {
       id,
       runId,
