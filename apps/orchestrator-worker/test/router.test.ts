@@ -157,3 +157,42 @@ test("OpenAIRouter falls back to a safe search when the router returns a usable 
     rationale: "Router response was malformed, but it included a search query so the request can continue safely.",
   });
 });
+
+test("OpenAIRouter preserves an explicit Hermes request even when the router returns semantic mode", async () => {
+  const auditEvents: Array<{ event: string; payload: Record<string, unknown> }> = [];
+  const router = new OpenAIRouter(
+    "test-key",
+    "test-model",
+    async () => new Response(JSON.stringify({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            type: "search",
+            fullQuery: "Search the corpus for personal diaries and journals.",
+            executionMode: "semantic",
+          }),
+        },
+      }],
+    }), {
+      status: 200,
+      headers: {
+        "content-type": "application/json",
+      },
+    }),
+  );
+
+  const decision = await router.decide({
+    userMessage: "search for personal diaries and use hermes search",
+    conversationHistory: [],
+    auditLog: (event, payload) => {
+      auditEvents.push({ event, payload });
+    },
+  });
+
+  assert.deepEqual(decision, {
+    type: "search",
+    fullQuery: "Search the corpus for personal diaries and journals.",
+    executionMode: "hermes",
+  });
+  assert.equal(auditEvents.at(-1)?.event, "router.output.override");
+});

@@ -36,6 +36,22 @@ type SearchExecutionMode = "semantic" | "comprehensive" | "hermes";
 type RouterAuditLog = (event: string, payload: Record<string, unknown>) => void;
 const SearchExecutionModeSchema = z.enum(["semantic", "comprehensive", "hermes"]);
 
+function inferExplicitExecutionMode(userMessage: string): SearchExecutionMode | undefined {
+  const normalized = userMessage.toLowerCase();
+  if (/\bhermes\b/.test(normalized)) {
+    return "hermes";
+  }
+  if (
+    /\b(comprehensive|deep research|deeper research|sprite fanout|sprite_fanout)\b/.test(normalized)
+  ) {
+    return "comprehensive";
+  }
+  if (/\bsemantic\b/.test(normalized)) {
+    return "semantic";
+  }
+  return undefined;
+}
+
 export interface RouterContext {
   userMessage: string;
   requestedWorkflow?: "auto" | "search" | "design_experiment";
@@ -101,6 +117,7 @@ export class OpenAIRouter implements Router {
     const rationale = typeof candidate.rationale === "string" && candidate.rationale.trim().length > 0
       ? candidate.rationale.trim()
       : undefined;
+    const explicitExecutionMode = inferExplicitExecutionMode(context.userMessage);
     const workflowHint = candidate.workflowHint === "search" || candidate.workflowHint === "design_experiment"
       ? candidate.workflowHint
       : undefined;
@@ -140,15 +157,18 @@ export class OpenAIRouter implements Router {
     }
 
     if (rawType === "search") {
+      const coercedExecutionMode = explicitExecutionMode ?? executionMode ?? "semantic";
       return {
         decision: {
           type: "search",
           fullQuery: fullQuery ?? userMessage,
           ...(rationale ? { rationale } : {}),
-          executionMode: executionMode ?? "semantic",
+          executionMode: coercedExecutionMode,
         },
-        fallbackKind: executionMode ? "sanitized" : "defaulted",
-        reason: executionMode
+        fallbackKind: explicitExecutionMode || executionMode ? "sanitized" : "defaulted",
+        reason: explicitExecutionMode
+          ? `Router returned search, but the user explicitly requested ${explicitExecutionMode} mode so the decision was corrected.`
+          : executionMode
           ? "Router returned search with recoverable schema drift."
           : "Router returned search with an invalid or missing executionMode; defaulted to semantic.",
       };
@@ -168,11 +188,12 @@ export class OpenAIRouter implements Router {
     }
 
     if (fullQuery) {
+      const coercedExecutionMode = explicitExecutionMode ?? executionMode ?? "semantic";
       return {
         decision: {
           type: "search",
           fullQuery,
-          executionMode: executionMode ?? "semantic",
+          executionMode: coercedExecutionMode,
           rationale: "Router response was malformed, but it included a search query so the request can continue safely.",
         },
         fallbackKind: "defaulted",
@@ -197,8 +218,10 @@ export class OpenAIRouter implements Router {
         decision: {
           type: "search",
           fullQuery: userMessage,
-          executionMode: "semantic",
-          rationale: "Router response was malformed, so the request fell back to a semantic search using the user message.",
+          executionMode: explicitExecutionMode ?? "semantic",
+          rationale: explicitExecutionMode
+            ? `Router response was malformed, so the request fell back to the user's explicit ${explicitExecutionMode} mode.`
+            : "Router response was malformed, so the request fell back to a semantic search using the user message.",
         },
         fallbackKind: "defaulted",
         reason: "Router response was unusable and the caller explicitly requested search.",
@@ -336,6 +359,20 @@ export class OpenAIRouter implements Router {
     const parsed = parseModelJsonObject<unknown>(content);
     const validated = RouterDecisionSchema.safeParse(parsed);
     if (validated.success) {
+      const explicitExecutionMode = inferExplicitExecutionMode(context.userMessage);
+      if (validated.data.type === "search" && explicitExecutionMode && validated.data.executionMode !== explicitExecutionMode) {
+        const correctedDecision: RouterDecision = {
+          ...validated.data,
+          executionMode: explicitExecutionMode,
+        };
+        context.auditLog?.("router.output.override", {
+          reason: "User explicitly requested an execution mode that overrode the router response.",
+          requestedExecutionMode: explicitExecutionMode,
+          routerExecutionMode: validated.data.executionMode ?? null,
+          decision: correctedDecision,
+        });
+        return correctedDecision;
+      }
       return validated.data;
     }
     const fallback = this.coerceDecision(parsed, context);
