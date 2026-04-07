@@ -2,7 +2,7 @@ import process from "node:process";
 
 import PgBoss from "pg-boss";
 
-import { reapExpiredRuntimeInstances, reapStaleRuns, type ResearchTaskQueueMessage } from "./app";
+import { type ResearchTaskQueueMessage } from "./app";
 import { createBillingService } from "./billing";
 import { buildLinuxAppDeps, loadLinuxEnv } from "./linux-env";
 import { createResearchTaskLeaseRenewer, runQueuedWorkspaceResearchTask } from "./queued-research";
@@ -192,10 +192,8 @@ async function processResearchTaskMessage(
   }
 }
 
-async function runJanitorTick(deps: ReturnType<typeof buildLinuxAppDeps>, boss: PgBoss) {
+async function runMaintenanceTick(deps: ReturnType<typeof buildLinuxAppDeps>, boss: PgBoss) {
   await deps.store.refreshExploreFeedSnapshot();
-  await reapExpiredRuntimeInstances(deps, { runId: `linux-janitor-${new Date().toISOString()}` });
-  await reapStaleRuns(deps, { runId: `linux-janitor-${new Date().toISOString()}` });
 
   const claimableResearchTasks = await deps.store.listClaimableResearchTasks(100);
   for (const task of claimableResearchTasks) {
@@ -225,10 +223,10 @@ await boss.work<ResearchTaskQueueMessage>(deps.queues.jobsName, async (jobs) => 
 });
 
 const intervalMs = Math.max(10_000, Number(env.JANITOR_INTERVAL_MS ?? "60000"));
-await runJanitorTick(deps, boss);
+await runMaintenanceTick(deps, boss);
 setInterval(() => {
-  void runJanitorTick(deps, boss).catch((error) => {
-    console.error("linux janitor tick failed", error);
+  void runMaintenanceTick(deps, boss).catch((error) => {
+    console.error("linux worker maintenance tick failed", error);
   });
 }, intervalMs);
 

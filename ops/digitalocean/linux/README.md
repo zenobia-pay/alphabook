@@ -73,6 +73,7 @@ Shared:
 Worker-specific:
 
 - `JANITOR_INTERVAL_MS`
+  Worker maintenance/dispatch interval. This no longer auto-fails stale runs.
 - `QUEUE_JOBS_NAME`
 
 Web-specific:
