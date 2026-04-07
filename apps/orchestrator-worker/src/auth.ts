@@ -256,7 +256,7 @@ export class WorkOSAuth {
     const cookieDomain = deriveCookieDomain(requestUrl, this.config);
     const returnTo = safeReturnTo(c.req.query("returnTo"), deriveFrontendOrigin(requestUrl, this.config), this.config);
     const redirectUri = `${deriveApiOrigin(requestUrl, this.config)}/auth/callback`;
-    const prompt = c.req.query("prompt") || (screenHint === "sign-in" ? "login" : undefined);
+    const prompt = c.req.query("prompt") || (screenHint === "sign-in" ? "select_account" : undefined);
     const { url, state, codeVerifier } = await this.workos.userManagement.getAuthorizationUrlWithPKCE({
       provider: "authkit",
       clientId: this.config.workosClientId,
