@@ -361,7 +361,12 @@ User follow-up:
 
 prompt = f"""You are on a DigitalOcean droplet with a prepared Project Gutenberg corpus at {corpus_root}.
 
-The reusable text-only manifest for this corpus lives at {precomputed_index_dir}.
+The reusable text-only manifest directory for this corpus lives at {precomputed_index_dir}.
+Important:
+- `{precomputed_index_dir}` is a directory, not a file.
+- The primary searchable file list is `{precomputed_index_dir}/all-text-files.tsv`.
+- The metadata table is typically `{precomputed_index_dir}/metadata-table.jsonl`.
+- Do not try to read `{precomputed_index_dir}` itself as a file.
 
 A user has submitted this research request:
 
@@ -456,6 +461,10 @@ Process requirements:
 - When you pass a regex from Python into a shell command, interpolate the pattern value directly. Do not use `repr()`, `!r`, or JSON-escaped string literals when constructing the `--pattern` argument.
 - Run ripgrep only against text files listed in `{precomputed_index_dir}/all-text-files.tsv` or a scoped TSV derived from it.
 - If you derive a scoped subset, write it as `size_bytes<TAB>absolute_path` TSV before calling the ripgrep helper.
+- `partition-file-list.sh` accepts either:
+  - `--file-list <tsv> --output-dir <dir> --max-files <n>`
+  - or the legacy positional form `<tsv> <dir> <n>`
+  Prefer the flag form.
 - Never call `run-ripgrep-progress.sh` on more than 5000 files from Hermes. The helper should receive `--max-total-files 5000` and `--batch-size 500`.
 - When the scope is larger than 5000 files, make many helper calls, one partition at a time or in parallel, and persist each partition's output in its own subdirectory.
 - The wrapper exported an explicit handoff file path in `$WRAPPER_INNER_RUN_FILE`. After you create the inner corpus run directory, write that absolute path into `$WRAPPER_INNER_RUN_FILE` immediately so the wrapper can associate the run without parsing logs.

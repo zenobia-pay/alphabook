@@ -38,6 +38,17 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     *)
+      if [[ -z "$FILE_LIST" && $# -ge 2 ]]; then
+        FILE_LIST="$1"
+        OUTPUT_DIR="$2"
+        if [[ $# -ge 3 ]]; then
+          MAX_FILES_PER_PARTITION="$3"
+          shift 3
+        else
+          shift 2
+        fi
+        continue
+      fi
       echo "Unknown argument: $1" >&2
       usage
       ;;
