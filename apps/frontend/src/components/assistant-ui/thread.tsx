@@ -287,6 +287,7 @@ export const Thread: FC<{
 
           <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 mx-auto mt-auto flex w-full max-w-(--thread-max-width) flex-col gap-3 overflow-visible pb-3 md:pb-4">
             <ThreadScrollToBottom />
+            {isRunning ? <ThreadRunningDot /> : null}
             <Composer
               isRunning={isRunning}
               onCancel={onCancel}
@@ -473,6 +474,14 @@ const ThreadScrollToBottom: FC = () => {
         <ArrowDownIcon />
       </TooltipIconButton>
     </ThreadPrimitive.ScrollToBottom>
+  );
+};
+
+const ThreadRunningDot: FC = () => {
+  return (
+    <div className="aui-thread-running-footer" aria-label="Run in progress">
+      <span className="aui-thread-running-footer-dot" aria-hidden="true" />
+    </div>
   );
 };
 
@@ -766,16 +775,10 @@ const AssistantMessage: FC = () => {
         <MessagePrimitive.Parts components={TOOL_PART_COMPONENTS} />
         {hasPlanToolTrace ? <PlanToolTraceCard trace={planToolTrace} isRunning={isRunning} detailText={planToolTraceDetailText || progressText} /> : null}
         {experimentProposal ? <ExperimentApprovalCard proposal={experimentProposal} disabled={isRunning} /> : null}
-        {isRunning && !hasVisibleParts && !experimentProposal ? (
-          <div className="aui-assistant-running-indicator" aria-label="Assistant is thinking">
-            <span className="aui-assistant-running-indicator-dot" aria-hidden="true" />
-          </div>
-        ) : null}
         <MessageError />
       </div>
 
       <div className="aui-assistant-message-footer mt-1 ml-2 flex min-h-6 items-center">
-        <BranchPicker />
         <AssistantActionBar />
       </div>
     </MessagePrimitive.Root>

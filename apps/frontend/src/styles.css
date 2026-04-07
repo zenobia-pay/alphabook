@@ -871,14 +871,13 @@ button {
   min-width: 0;
 }
 
-.aui-assistant-running-indicator {
-  display: inline-flex;
-  align-items: center;
-  min-height: 1.25rem;
-  padding-left: 0.1rem;
+.aui-thread-running-footer {
+  display: flex;
+  justify-content: flex-start;
+  padding-left: 0.55rem;
 }
 
-.aui-assistant-running-indicator-dot {
+.aui-thread-running-footer-dot {
   width: 0.42rem;
   height: 0.42rem;
   border-radius: 999px;
