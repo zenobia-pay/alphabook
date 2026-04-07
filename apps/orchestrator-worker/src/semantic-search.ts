@@ -22,6 +22,7 @@ type AlphaloopEvent = { type: string } & Record<string, unknown>;
 const SEMANTIC_SEARCH_STEP_TIMEOUT_MS = 30_000;
 const SEMANTIC_SEARCH_MAX_PARALLEL_SUBQUERIES = 2;
 const SEMANTIC_ALPHALOOP_NEXT_TIMEOUT_MS = 120_000;
+export type SemanticModelProvider = "openai" | "google";
 
 export interface SemanticSearchService {
   search(args: {
@@ -31,7 +32,7 @@ export interface SemanticSearchService {
     backend?: "alphaloop" | "context1";
     billingContext?: BillingContext;
     onProgress?: (text: string, detail?: Record<string, unknown>) => Promise<void>;
-    auditLog?: (event: string, payload: Record<string, unknown>) => void;
+    auditLog?: (event: string, payload: Record<string, unknown>) => void | Promise<void>;
   }): Promise<{
     briefing: string;
     citations: Citation[];
@@ -111,20 +112,42 @@ function progressTextFromEvent(event: AlphaloopEvent) {
   }
 }
 
-function buildLanguageModel(options: SemanticSearchOptions): LanguageModel {
+export function resolveSemanticModelProvider(options: SemanticSearchOptions): SemanticModelProvider {
+  if (options.openAIApiKey) {
+    return "openai";
+  }
   if (options.googleAIApiKey) {
+    return "google";
+  }
+  throw new Error("Semantic search requires either OPENAI_API_KEY or GOOGLE_AI_API_KEY.");
+}
+
+function buildLanguageModel(options: SemanticSearchOptions): {
+  model: LanguageModel;
+  provider: SemanticModelProvider;
+  modelName: string;
+} {
+  const provider = resolveSemanticModelProvider(options);
+  if (provider === "google") {
     const google = createGoogleGenerativeAI({
       apiKey: options.googleAIApiKey,
     });
-    return google(options.googleModel ?? "gemini-2.5-flash");
-  }
-  if (!options.openAIApiKey) {
-    throw new Error("Semantic search requires either OPENAI_API_KEY or GOOGLE_AI_API_KEY.");
+    const modelName = options.googleModel ?? "gemini-2.5-flash";
+    return {
+      model: google(modelName),
+      provider,
+      modelName,
+    };
   }
   const openai = createOpenAI({
     apiKey: options.openAIApiKey,
   });
-  return openai(options.openAIModel ?? "gpt-5.2");
+  const modelName = options.openAIModel ?? "gpt-5.2";
+  return {
+    model: openai(modelName),
+    provider,
+    modelName,
+  };
 }
 
 async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -189,9 +212,14 @@ function createConcurrencyLimiter(limit: number) {
 
 export class AlphaloopSemanticSearchService implements SemanticSearchService {
   private readonly model: LanguageModel;
+  private readonly modelProvider: SemanticModelProvider;
+  private readonly modelName: string;
 
   constructor(private readonly options: SemanticSearchOptions) {
-    this.model = buildLanguageModel(options);
+    const resolvedModel = buildLanguageModel(options);
+    this.model = resolvedModel.model;
+    this.modelProvider = resolvedModel.provider;
+    this.modelName = resolvedModel.modelName;
   }
 
   async search(args: {
@@ -201,14 +229,25 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
     backend?: "alphaloop" | "context1";
     billingContext?: BillingContext;
     onProgress?: (text: string, detail?: Record<string, unknown>) => Promise<void>;
-    auditLog?: (event: string, payload: Record<string, unknown>) => void;
+    auditLog?: (event: string, payload: Record<string, unknown>) => void | Promise<void>;
   }) {
     const searchStartedAt = Date.now();
     args.auditLog?.("semantic.search.started", {
       query: args.query,
       scopedWorkCount: Array.isArray(args.workIds) ? args.workIds.length : 0,
       maxResults: args.maxResults ?? 8,
+      modelProvider: this.modelProvider,
+      modelName: this.modelName,
     });
+    await args.onProgress?.(
+      `Semantic search is using ${this.modelProvider === "openai" ? "OpenAI" : "Google"} ${this.modelName} to review and rank retrieved passages.`,
+      {
+        type: "semantic.step",
+        step: "model_selected",
+        modelProvider: this.modelProvider,
+        modelName: this.modelName,
+      },
+    );
     const searchLimiter = createConcurrencyLimiter(SEMANTIC_SEARCH_MAX_PARALLEL_SUBQUERIES);
     let subquerySequence = 0;
     const loop = createAlphaloop({
@@ -424,11 +463,15 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
 
     args.auditLog?.("semantic.search.alphaloop.stream.started", {
       query: args.query,
+      modelProvider: this.modelProvider,
+      modelName: this.modelName,
     });
     await args.onProgress?.("AlphaLoop is reviewing the strongest candidate passages.", {
       type: "semantic.step",
       step: "alphaloop_stream_start",
       query: args.query,
+      modelProvider: this.modelProvider,
+      modelName: this.modelName,
     });
     const stream = loop.stream(args.query);
     const alphaloopEvents: AlphaloopEvent[] = [];
@@ -438,6 +481,8 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
         args.auditLog?.("semantic.search.alphaloop.next.started", {
           query: args.query,
           observedEventCount: alphaloopEvents.length,
+          modelProvider: this.modelProvider,
+          modelName: this.modelName,
         });
         const next = await withTimeout(
           stream.next(),
@@ -478,6 +523,8 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
         elapsedMs: elapsedMs(searchStartedAt),
         eventCount: alphaloopEvents.length,
         error: message,
+        modelProvider: this.modelProvider,
+        modelName: this.modelName,
       });
       await args.onProgress?.(message, {
         type: "semantic.error",
@@ -967,7 +1014,7 @@ export class Context1SemanticSearchService implements SemanticSearchService {
     backend?: "alphaloop" | "context1";
     billingContext?: BillingContext;
     onProgress?: (text: string, detail?: Record<string, unknown>) => Promise<void>;
-    auditLog?: (event: string, payload: Record<string, unknown>) => void;
+    auditLog?: (event: string, payload: Record<string, unknown>) => void | Promise<void>;
   }) {
     const retained = new Map<string, Context1RetainedChunk>();
     const encounteredChunkIds = new Set<string>();
@@ -1168,7 +1215,7 @@ export class DelegatingSemanticSearchService implements SemanticSearchService {
     backend?: "alphaloop" | "context1";
     billingContext?: BillingContext;
     onProgress?: (text: string, detail?: Record<string, unknown>) => Promise<void>;
-    auditLog?: (event: string, payload: Record<string, unknown>) => void;
+    auditLog?: (event: string, payload: Record<string, unknown>) => void | Promise<void>;
   }) {
     const backend = args.backend ?? this.defaultBackend;
     const service = backend === "context1" ? this.backends.context1 : this.backends.alphaloop;

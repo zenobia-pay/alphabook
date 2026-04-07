@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { runQueuedWorkspaceResearchTask } from "../src/index";
+import { createResearchTaskLeaseRenewer, runQueuedWorkspaceResearchTask } from "../src/index";
 
 test("queued workspace research dispatches sprite fanout tasks to the sprite runtime lane", async () => {
   const calls: string[] = [];
@@ -67,4 +67,20 @@ test("queued workspace research dispatches non-sprite tasks to the normal runtim
   assert.deepEqual(calls, ["workspace"]);
   assert.equal((result as Record<string, unknown>).ok, true);
   assert.equal((result as Record<string, unknown>).runtimeId, "runtime-1");
+});
+
+test("research task lease renewer keeps refreshing during long waits and stops cleanly", async () => {
+  let renewals = 0;
+  const renewer = createResearchTaskLeaseRenewer(async () => {
+    renewals += 1;
+  }, 10);
+
+  renewer.start();
+  await new Promise((resolve) => setTimeout(resolve, 35));
+  await renewer.stop();
+  const observedRenewals = renewals;
+  await new Promise((resolve) => setTimeout(resolve, 25));
+
+  assert.ok(observedRenewals >= 2);
+  assert.equal(renewals, observedRenewals);
 });

@@ -20,6 +20,9 @@ import { D1AppStore } from "./d1-store";
 import { OpenAISynthesizer } from "./synthesizer";
 import { CloudflareVectorizeIndex, QdrantVectorIndex, type VectorSearchIndex } from "./vectorize";
 
+const RESEARCH_TASK_LEASE_MS = 90_000;
+const RESEARCH_TASK_LEASE_RENEW_INTERVAL_MS = 30_000;
+
 export interface WorkersAiBinding {
   run<ModelInput extends Record<string, unknown>, ModelOutput = unknown>(
     model: string,
@@ -125,6 +128,44 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): P
       clearTimeout(timeoutId);
     }
   }
+}
+
+export function createResearchTaskLeaseRenewer(
+  renewLease: () => Promise<void>,
+  intervalMs = RESEARCH_TASK_LEASE_RENEW_INTERVAL_MS,
+) {
+  let timer: ReturnType<typeof setInterval> | null = null;
+  let stopped = false;
+  let inFlight = Promise.resolve();
+
+  const tick = () => {
+    if (stopped) {
+      return;
+    }
+    inFlight = inFlight.then(async () => {
+      if (stopped) {
+        return;
+      }
+      await renewLease();
+    }).catch(() => {});
+  };
+
+  return {
+    start() {
+      if (timer || stopped) {
+        return;
+      }
+      timer = setInterval(tick, Math.max(1, intervalMs));
+    },
+    async stop() {
+      stopped = true;
+      if (timer) {
+        clearInterval(timer);
+        timer = null;
+      }
+      await inFlight;
+    },
+  };
 }
 
 function resolveRuntimeGateway(
@@ -588,7 +629,7 @@ async function processResearchTaskMessage(env: Env, message: ResearchTaskQueueMe
     return;
   }
   const heartbeatAt = new Date().toISOString();
-  const leaseExpiresAt = new Date(Date.now() + 90_000).toISOString();
+  const leaseExpiresAt = new Date(Date.now() + RESEARCH_TASK_LEASE_MS).toISOString();
   const leaseOwner = `queue:${message.taskId}:${Date.now()}`;
   const claimed = await store.claimResearchTaskLease(task.id, {
     leaseOwner,
@@ -620,6 +661,22 @@ async function processResearchTaskMessage(env: Env, message: ResearchTaskQueueMe
   }
 
   let progressSeq = task.progressSeq;
+  const refreshResearchTaskLease = async (updates?: {
+    status?: "starting" | "running";
+    startedAt?: string | null;
+  }) => {
+    const heartbeatAtIso = new Date().toISOString();
+    await store.updateResearchTask(task.id, {
+      status: "running",
+      lastHeartbeatAt: heartbeatAtIso,
+      leaseOwner,
+      leaseExpiresAt: new Date(Date.now() + RESEARCH_TASK_LEASE_MS).toISOString(),
+      ...updates,
+    });
+  };
+  const leaseRenewer = createResearchTaskLeaseRenewer(async () => {
+    await refreshResearchTaskLease();
+  });
   const reportProgress = async (
     toolName: "semantic_deep_search" | "run_workspace_task",
     text: string,
@@ -644,17 +701,18 @@ async function processResearchTaskMessage(env: Env, message: ResearchTaskQueueMe
       checkpointJson: detail ?? task.checkpointJson,
       startedAt: task.startedAt ?? currentHeartbeat,
       leaseOwner,
-      leaseExpiresAt: new Date(Date.now() + 90_000).toISOString(),
+      leaseExpiresAt: new Date(Date.now() + RESEARCH_TASK_LEASE_MS).toISOString(),
     });
   };
 
   try {
+    leaseRenewer.start();
     await store.updateResearchTask(task.id, {
       status: "starting",
       startedAt: task.startedAt ?? new Date().toISOString(),
       lastHeartbeatAt: new Date().toISOString(),
       leaseOwner,
-      leaseExpiresAt: new Date(Date.now() + 90_000).toISOString(),
+      leaseExpiresAt: new Date(Date.now() + RESEARCH_TASK_LEASE_MS).toISOString(),
     });
 
     let result: Record<string, unknown>;
@@ -705,12 +763,26 @@ async function processResearchTaskMessage(env: Env, message: ResearchTaskQueueMe
           onProgress: async (text, detail) => {
             await reportProgress("semantic_deep_search", text, detail);
           },
+          auditLog: (event, payload) => {
+            void store.appendRunEvent(run.id, session.id, "tool.audit", {
+              runId: run.id,
+              toolCallId: toolCall.id,
+              toolName: "semantic_deep_search",
+              text: event,
+              detail: {
+                type: "semantic.audit",
+                event,
+                ...payload,
+              },
+            });
+          },
         }),
         researchTaskTimeoutMs,
         "Semantic research task",
       );
     }
 
+    await leaseRenewer.stop();
     await store.finishToolCall(toolCall.id, "completed", result);
     await store.updateResearchTask(task.id, {
       status: "succeeded",
@@ -726,6 +798,7 @@ async function processResearchTaskMessage(env: Env, message: ResearchTaskQueueMe
       leaseExpiresAt: null,
     });
   } catch (error) {
+    await leaseRenewer.stop();
     const messageText = error instanceof Error ? error.message : "Durable research task failed.";
     await store.finishToolCall(toolCall.id, "failed", {
       ok: false,
