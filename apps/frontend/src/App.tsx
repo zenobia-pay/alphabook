@@ -1738,11 +1738,11 @@ function ErrorNotice({
         className="app-error-notice-dismiss"
         aria-label="Dismiss error"
         onClick={() => {
+          setDismissed(true);
           if (onDismiss) {
             onDismiss();
             return;
           }
-          setDismissed(true);
         }}
       >
         <CloseIcon />
@@ -5874,6 +5874,90 @@ export default function App() {
           </h1>
 
           <form className="explore-composer-shell" onSubmit={submitExplorePrompt}>
+            <div className="explore-composer-toolbar" aria-label="Explore controls">
+              <Button
+                type="button"
+                variant="ghost"
+                className="explore-tool-button"
+                onClick={rerollExploreFeed}
+                aria-label="Randomize feed"
+              >
+                <Dices size={16} />
+              </Button>
+
+              <div className="explore-filter-menu">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="explore-tool-button"
+                  onClick={() => setExploreFilterOpen((current) => !current)}
+                  aria-label="Open filters"
+                  aria-expanded={exploreFilterOpen}
+                >
+                  <Funnel size={16} />
+                  {activeExploreFilterCount > 0 ? (
+                    <span className="explore-tool-badge">{activeExploreFilterCount}</span>
+                  ) : null}
+                </Button>
+
+                {exploreFilterOpen ? (
+                  <div className="explore-filter-popover" aria-label="Book filters">
+                    {feedFacets.languages.length > 1 ? (
+                      <label className="explore-filter-field">
+                        <span>Language</span>
+                        <select
+                          value={exploreDraftFilters.language}
+                          onChange={(event) => setExploreDraftFilters((current) => ({ ...current, language: event.currentTarget.value }))}
+                        >
+                          <option value="all">All languages</option>
+                          {feedFacets.languages.map((option) => (
+                            <option key={option.label} value={option.label}>{option.label} ({option.count})</option>
+                          ))}
+                        </select>
+                      </label>
+                    ) : null}
+
+                    {feedFacets.subjects.length > 0 ? (
+                      <label className="explore-filter-field">
+                        <span>Subject</span>
+                        <select
+                          value={exploreDraftFilters.subject}
+                          onChange={(event) => setExploreDraftFilters((current) => ({ ...current, subject: event.currentTarget.value }))}
+                        >
+                          <option value="all">All subjects</option>
+                          {feedFacets.subjects.map((option) => (
+                            <option key={option.label} value={option.label}>{option.label} ({option.count})</option>
+                          ))}
+                        </select>
+                      </label>
+                    ) : null}
+
+                    {feedFacets.bookshelves.length > 0 ? (
+                      <label className="explore-filter-field">
+                        <span>Bookshelf</span>
+                        <select
+                          value={exploreDraftFilters.bookshelf}
+                          onChange={(event) => setExploreDraftFilters((current) => ({ ...current, bookshelf: event.currentTarget.value }))}
+                        >
+                          <option value="all">All bookshelves</option>
+                          {feedFacets.bookshelves.map((option) => (
+                            <option key={option.label} value={option.label}>{option.label} ({option.count})</option>
+                          ))}
+                        </select>
+                      </label>
+                    ) : null}
+
+                    <div className="explore-filter-actions">
+                      {hasActiveExploreFilters ? (
+                        <Button type="button" variant="ghost" onClick={resetExploreFilters}>Reset</Button>
+                      ) : <span />}
+                      <Button type="button" variant="default" onClick={applyExploreFilters}>Apply filters</Button>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+
             <div className="explore-composer-layout">
               <Card className="explore-composer-root">
                 <CardContent className="p-0">
@@ -5924,92 +6008,6 @@ export default function App() {
                   </div>
                 </CardContent>
               </Card>
-
-              <div className="explore-composer-tools" aria-label="Explore controls">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  className="explore-tool-button"
-                  onClick={rerollExploreFeed}
-                  aria-label="Randomize feed"
-                >
-                  <Dices size={16} />
-                  <span>Surprise me</span>
-                </Button>
-
-                <div className="explore-filter-menu">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    className="explore-tool-button"
-                    onClick={() => setExploreFilterOpen((current) => !current)}
-                    aria-label="Open filters"
-                    aria-expanded={exploreFilterOpen}
-                  >
-                    <Funnel size={16} />
-                    <span>Filters</span>
-                    {activeExploreFilterCount > 0 ? (
-                      <span className="explore-tool-badge">{activeExploreFilterCount}</span>
-                    ) : null}
-                  </Button>
-
-                  {exploreFilterOpen ? (
-                    <div className="explore-filter-popover" aria-label="Book filters">
-                      {feedFacets.languages.length > 1 ? (
-                        <label className="explore-filter-field">
-                          <span>Language</span>
-                          <select
-                            value={exploreDraftFilters.language}
-                            onChange={(event) => setExploreDraftFilters((current) => ({ ...current, language: event.currentTarget.value }))}
-                          >
-                            <option value="all">All languages</option>
-                            {feedFacets.languages.map((option) => (
-                              <option key={option.label} value={option.label}>{option.label} ({option.count})</option>
-                            ))}
-                          </select>
-                        </label>
-                      ) : null}
-
-                      {feedFacets.subjects.length > 0 ? (
-                        <label className="explore-filter-field">
-                          <span>Subject</span>
-                          <select
-                            value={exploreDraftFilters.subject}
-                            onChange={(event) => setExploreDraftFilters((current) => ({ ...current, subject: event.currentTarget.value }))}
-                          >
-                            <option value="all">All subjects</option>
-                            {feedFacets.subjects.map((option) => (
-                              <option key={option.label} value={option.label}>{option.label} ({option.count})</option>
-                            ))}
-                          </select>
-                        </label>
-                      ) : null}
-
-                      {feedFacets.bookshelves.length > 0 ? (
-                        <label className="explore-filter-field">
-                          <span>Bookshelf</span>
-                          <select
-                            value={exploreDraftFilters.bookshelf}
-                            onChange={(event) => setExploreDraftFilters((current) => ({ ...current, bookshelf: event.currentTarget.value }))}
-                          >
-                            <option value="all">All bookshelves</option>
-                            {feedFacets.bookshelves.map((option) => (
-                              <option key={option.label} value={option.label}>{option.label} ({option.count})</option>
-                            ))}
-                          </select>
-                        </label>
-                      ) : null}
-
-                      <div className="explore-filter-actions">
-                        {hasActiveExploreFilters ? (
-                          <Button type="button" variant="ghost" onClick={resetExploreFilters}>Reset</Button>
-                        ) : <span />}
-                        <Button type="button" variant="default" onClick={applyExploreFilters}>Apply filters</Button>
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
-              </div>
             </div>
           </form>
         </section>
