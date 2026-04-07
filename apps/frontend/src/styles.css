@@ -948,6 +948,127 @@ button {
   color: rgba(236, 241, 247, 0.9);
 }
 
+.aui-agentic-card {
+  display: grid;
+  overflow: hidden;
+  border: 1px solid rgba(22, 28, 38, 0.1);
+  border-radius: 18px;
+  background: rgba(248, 246, 243, 0.9);
+}
+
+.aui-agentic-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  width: 100%;
+  padding: 0.95rem 1rem;
+  text-align: left;
+  background: transparent;
+}
+
+.aui-agentic-card-heading {
+  min-width: 0;
+  display: grid;
+  gap: 0.28rem;
+}
+
+.aui-agentic-card-kicker {
+  font-size: 0.7rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(68, 63, 56, 0.52);
+}
+
+.aui-agentic-card-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+}
+
+.aui-agentic-card-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: rgba(27, 25, 22, 0.92);
+}
+
+.aui-agentic-card-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.55rem;
+  padding: 0.16rem 0.52rem;
+  border-radius: 999px;
+  background: rgba(35, 111, 72, 0.08);
+  color: rgba(35, 111, 72, 0.86);
+  font-size: 0.74rem;
+  font-weight: 600;
+}
+
+.aui-agentic-card-status.is-error {
+  background: rgba(153, 57, 43, 0.08);
+  color: rgba(153, 57, 43, 0.9);
+}
+
+.aui-agentic-card-status.is-complete {
+  background: rgba(33, 88, 160, 0.08);
+  color: rgba(33, 88, 160, 0.88);
+}
+
+.aui-agentic-card-chevron {
+  width: 1rem;
+  height: 1rem;
+  color: rgba(74, 68, 60, 0.7);
+  transition: transform 140ms ease;
+}
+
+.aui-agentic-card-chevron.is-open {
+  transform: rotate(180deg);
+}
+
+.aui-agentic-card-body {
+  border-top: 1px solid rgba(22, 28, 38, 0.07);
+  padding: 0.3rem 0.35rem 0.45rem;
+}
+
+.aui-agentic-card-lines {
+  display: grid;
+  gap: 0.18rem;
+  max-height: 16rem;
+  overflow: auto;
+  padding: 0.35rem;
+}
+
+.aui-agentic-card-line {
+  display: grid;
+  grid-template-columns: 0.7rem minmax(0, 1fr);
+  gap: 0.55rem;
+  align-items: start;
+  padding: 0.45rem 0.35rem;
+  border-radius: 12px;
+}
+
+.aui-agentic-card-line:nth-child(odd) {
+  background: rgba(255, 255, 255, 0.56);
+}
+
+.aui-agentic-card-line-dot {
+  width: 0.34rem;
+  height: 0.34rem;
+  margin-top: 0.52rem;
+  border-radius: 999px;
+  background: rgba(76, 71, 64, 0.42);
+}
+
+.aui-agentic-card-line-text {
+  min-width: 0;
+  color: rgba(41, 38, 34, 0.86);
+  font-size: 0.93rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .aui-assistant-message-root[data-error-message="true"] .aui-assistant-message-content > .aui-md:first-child {
   border: 1px solid rgba(180, 66, 54, 0.22);
   background: rgba(180, 66, 54, 0.08);

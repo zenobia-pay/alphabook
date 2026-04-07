@@ -56,6 +56,16 @@ type MessagePartRecord = {
   isError?: boolean;
 };
 
+type PlanToolTraceRecord = {
+  id?: string;
+  label?: string;
+  rationale?: string;
+  progress?: string[];
+  result?: Record<string, unknown>;
+  state?: "running" | "completed" | "error";
+  isError?: boolean;
+};
+
 function readStringList(value: unknown) {
   if (!Array.isArray(value)) {
     return [];
@@ -122,6 +132,43 @@ function assistantMessageToMarkdown(parts: readonly MessagePartRecord[]) {
   });
 
   return sections.join("\n\n");
+}
+
+function readPlanToolTrace(value: unknown) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((entry): entry is PlanToolTraceRecord => Boolean(entry) && typeof entry === "object");
+}
+
+function summarizePlanToolLine(entry: PlanToolTraceRecord) {
+  const progress = Array.isArray(entry.progress)
+    ? entry.progress.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    : [];
+  const latestProgress = progress.length > 0 ? progress[progress.length - 1] : "";
+  const rationale = typeof entry.rationale === "string" ? entry.rationale.trim() : "";
+  const error =
+    entry.result && typeof entry.result.error === "string" && entry.result.error.trim().length > 0
+      ? entry.result.error.trim()
+      : "";
+  const label = typeof entry.label === "string" && entry.label.trim().length > 0 ? entry.label.trim() : "Step";
+
+  if (error) {
+    return `${label} — ${error}`;
+  }
+  if (latestProgress) {
+    return `${label} — ${latestProgress}`;
+  }
+  if (rationale) {
+    return `${label} — ${rationale}`;
+  }
+  if (entry.state === "completed") {
+    return `${label} — Completed`;
+  }
+  if (entry.state === "error" || entry.isError) {
+    return `${label} — Failed`;
+  }
+  return `${label} — Running`;
 }
 
 type ThreadSuggestion = {
@@ -662,6 +709,14 @@ const AssistantMessage: FC = () => {
     });
     return textParts.join("\n\n").trim();
   });
+  const planToolTrace = useAuiState((state) => {
+    const metadata = state.message.metadata;
+    const custom = metadata && typeof metadata === "object" && "custom" in metadata
+      ? metadata.custom as Record<string, unknown>
+      : null;
+    return readPlanToolTrace(custom?.toolCalls);
+  });
+  const hasPlanToolTrace = phase === "plan" && planToolTrace.length > 0;
 
   return (
     <MessagePrimitive.Root
@@ -672,6 +727,7 @@ const AssistantMessage: FC = () => {
     >
       <div className="aui-assistant-message-content wrap-break-word px-2 text-foreground leading-relaxed">
         {phase === "progress" ? <ProgressMessageCard text={progressText} /> : <MessagePrimitive.Parts components={TOOL_PART_COMPONENTS} />}
+        {hasPlanToolTrace ? <PlanToolTraceCard trace={planToolTrace} isRunning={isRunning} /> : null}
         {experimentProposal ? <ExperimentApprovalCard proposal={experimentProposal} disabled={isRunning} /> : null}
         {isRunning && !hasVisibleParts && !experimentProposal ? (
           <div className="aui-assistant-running-indicator" aria-label="Assistant is thinking">
@@ -701,6 +757,61 @@ const ProgressMessageCard: FC<{
       <div className="aui-progress-card-body">
         <pre className="aui-progress-card-pre">{text}</pre>
       </div>
+    </section>
+  );
+};
+
+const PlanToolTraceCard: FC<{
+  trace: PlanToolTraceRecord[];
+  isRunning: boolean;
+}> = ({ trace, isRunning }) => {
+  const [collapsed, setCollapsed] = useState(false);
+  const lines = useMemo(
+    () => trace.map((entry) => summarizePlanToolLine(entry)).filter((line, index, all) => line && all.indexOf(line) === index),
+    [trace],
+  );
+  const statusLabel = trace.some((entry) => entry.state === "error" || entry.isError)
+    ? "Failed"
+    : isRunning || trace.some((entry) => entry.state === "running")
+      ? "In Progress"
+      : "Completed";
+
+  return (
+    <section className="aui-agentic-card" aria-label="Agentic Search run">
+      <button
+        type="button"
+        className="aui-agentic-card-header"
+        aria-expanded={!collapsed}
+        onClick={() => setCollapsed((current) => !current)}
+      >
+        <div className="aui-agentic-card-heading">
+          <div className="aui-agentic-card-kicker">For this run</div>
+          <div className="aui-agentic-card-title-row">
+            <span className="aui-agentic-card-title">Agentic Search</span>
+            <span className={cn(
+              "aui-agentic-card-status",
+              statusLabel === "Failed" && "is-error",
+              statusLabel === "Completed" && "is-complete",
+            )}
+            >
+              {statusLabel}
+            </span>
+          </div>
+        </div>
+        <ChevronDownIcon className={cn("aui-agentic-card-chevron", !collapsed && "is-open")} />
+      </button>
+      {!collapsed ? (
+        <div className="aui-agentic-card-body">
+          <div className="aui-agentic-card-lines" role="list">
+            {lines.map((line, index) => (
+              <div key={`${line}-${index}`} className="aui-agentic-card-line" role="listitem">
+                <span className="aui-agentic-card-line-dot" aria-hidden="true" />
+                <span className="aui-agentic-card-line-text">{line}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 };

@@ -14344,7 +14344,22 @@ export function createApp(inputDeps: CreateAppInput) {
   app.get("/sessions/:sessionId/messages", handleListMessages);
   app.get("/api/v1/sessions/:sessionId/messages", handleListMessages);
 
-  const buildRunStatePayload = async (sessionId: string, runId: string) => {
+  const buildRunStatePayload = async (
+    sessionId: string,
+    runId: string,
+    options: {
+      includeArtifacts?: boolean;
+      includeRuntimeInstances?: boolean;
+      includeBackgroundJob?: boolean;
+      runEventLimit?: number | null;
+    } = {},
+  ) => {
+    const includeArtifacts = options.includeArtifacts ?? true;
+    const includeRuntimeInstances = options.includeRuntimeInstances ?? true;
+    const includeBackgroundJob = options.includeBackgroundJob ?? true;
+    const runEventLimit = typeof options.runEventLimit === "number" && options.runEventLimit >= 0
+      ? Math.floor(options.runEventLimit)
+      : null;
     const initialRun = await deps.store.getRun(runId);
     if (!initialRun || initialRun.sessionId !== sessionId) {
       return null;
@@ -14366,23 +14381,35 @@ export function createApp(inputDeps: CreateAppInput) {
       }
     }
     const toolCalls = await deps.store.listToolCalls(run.id);
-    const backgroundJob = await deps.store.getLatestBackgroundJobForRun(run.id);
-    const [{ runtimeInstances, runEvents, runtimeIds }, planMessage] = await Promise.all([
+    const backgroundJobPromise = includeBackgroundJob
+      ? deps.store.getLatestBackgroundJobForRun(run.id)
+      : Promise.resolve(null);
+    const [{ runtimeInstances, runEvents: fullRunEvents, runtimeIds }, planMessage, backgroundJob] = await Promise.all([
       resolveRunRuntimeContext(deps, sessionId, run, toolCalls),
       deps.store.getLatestPlanMessageForRun(sessionId, run.id),
+      backgroundJobPromise,
     ]);
-    const artifacts = await loadRunDocumentArtifacts(deps, sessionId, run.id, runtimeIds);
+    const runEvents = runEventLimit === null
+      ? fullRunEvents
+      : runEventLimit === 0
+        ? []
+        : fullRunEvents.length > runEventLimit
+          ? fullRunEvents.slice(-runEventLimit)
+          : fullRunEvents;
+    const artifacts = includeArtifacts
+      ? await loadRunDocumentArtifacts(deps, sessionId, run.id, runtimeIds)
+      : [];
     const toolTrace = planMessage?.metadata && typeof planMessage.metadata === "object"
       ? readPersistedPlanToolTrace(planMessage.metadata as Record<string, unknown>)
       : [];
 
     return {
       run,
-      backgroundJob: backgroundJob ?? undefined,
+      ...(includeBackgroundJob && backgroundJob ? { backgroundJob } : {}),
       toolCalls,
       runEvents,
       toolTrace,
-      runtimeInstances,
+      ...(includeRuntimeInstances ? { runtimeInstances } : {}),
       artifacts,
     };
   };
@@ -14411,7 +14438,14 @@ export function createApp(inputDeps: CreateAppInput) {
       runs.find((run) => run.status === "running" || run.status === "queued")
       ?? [...runs].sort((left, right) => right.startedAt.localeCompare(left.startedAt))[0]
       ?? null;
-    const runState = preferredRun ? await buildRunStatePayload(sessionId, preferredRun.id) : null;
+    const runState = preferredRun
+      ? await buildRunStatePayload(sessionId, preferredRun.id, {
+          includeArtifacts: false,
+          includeRuntimeInstances: false,
+          includeBackgroundJob: false,
+          runEventLimit: preferredRun.status === "running" || preferredRun.status === "queued" ? 160 : 0,
+        })
+      : null;
 
     return c.json({
       sessionId,
