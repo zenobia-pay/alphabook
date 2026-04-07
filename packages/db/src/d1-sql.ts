@@ -280,7 +280,6 @@ CREATE INDEX IF NOT EXISTS idx_tool_calls_run_id ON tool_calls(run_id);
 CREATE INDEX IF NOT EXISTS idx_work_authors_work_id ON work_authors(work_id);
 CREATE INDEX IF NOT EXISTS idx_work_subjects_work_id ON work_subjects(work_id);
 CREATE INDEX IF NOT EXISTS idx_work_files_work_id ON work_files(work_id);
-CREATE INDEX IF NOT EXISTS idx_chunks_work_id ON chunks(work_id);
 CREATE INDEX IF NOT EXISTS idx_runtime_instances_session_id ON runtime_instances(session_id);
 CREATE INDEX IF NOT EXISTS idx_artifacts_session_id ON artifacts(session_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_status_run_after ON jobs(status, run_after);
