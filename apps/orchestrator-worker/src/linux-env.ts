@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import process from "node:process";
 import { resolve } from "node:path";
 
-import { createPostgresDb, createWranglerD1Db, loadLocalDevVars, type DbClient } from "@alphabook/db";
+import { createPostgresDb, type DbClient } from "@alphabook/db";
 import {
   buildPlannerPrompt,
   buildRouterPrompt,
@@ -22,7 +22,7 @@ import { AlphaloopSemanticSearchService, Context1SemanticSearchService, Delegati
 import { D1AppStore } from "./d1-store";
 import { OpenAISynthesizer } from "./synthesizer";
 import { QdrantVectorIndex } from "./vectorize";
-import { FlyMachinesRuntimeGateway, HttpRuntimeGateway } from "./runtime";
+import { HttpRuntimeGateway } from "./runtime";
 
 type LinuxEnv = Record<string, string | undefined>;
 
@@ -51,7 +51,7 @@ async function loadEnvFile(path: string) {
 
 export async function loadLinuxEnv(cwd = process.cwd()) {
   await loadEnvFile(resolve(cwd, ".env"));
-  await loadLocalDevVars(cwd);
+  await loadEnvFile(resolve(cwd, ".env.local"));
   return process.env as LinuxEnv;
 }
 
@@ -72,22 +72,19 @@ function buildQueueNames(env: LinuxEnv, implementationId: string) {
 }
 
 function resolveDb(env: LinuxEnv): DbClient {
-  if (env.DATABASE_URL) {
-    return createPostgresDb({ connectionString: env.DATABASE_URL });
+  if (!env.DATABASE_URL) {
+    throw new Error("DATABASE_URL is required for the Linux deployment path.");
   }
-  return createWranglerD1Db({
-    databaseName: env.D1_DATABASE_NAME ?? "alphabook-app",
-    wranglerConfig: env.D1_WRANGLER_CONFIG ?? "apps/orchestrator-worker/wrangler.toml",
-  });
+  return createPostgresDb({ connectionString: env.DATABASE_URL });
 }
 
 function resolveBlobStore(env: LinuxEnv) {
-  const bucketName = env.SPACES_BUCKET_NAME ?? env.S3_BUCKET_NAME ?? env.R2_BUCKET_NAME;
-  const endpoint = env.SPACES_ENDPOINT ?? env.S3_ENDPOINT ?? env.R2_ENDPOINT;
-  const accessKeyId = env.SPACES_ACCESS_KEY_ID ?? env.S3_ACCESS_KEY_ID ?? env.R2_ACCESS_KEY_ID;
-  const secretAccessKey = env.SPACES_SECRET_ACCESS_KEY ?? env.S3_SECRET_ACCESS_KEY ?? env.R2_SECRET_ACCESS_KEY;
+  const bucketName = env.SPACES_BUCKET_NAME ?? env.S3_BUCKET_NAME;
+  const endpoint = env.SPACES_ENDPOINT ?? env.S3_ENDPOINT;
+  const accessKeyId = env.SPACES_ACCESS_KEY_ID ?? env.S3_ACCESS_KEY_ID;
+  const secretAccessKey = env.SPACES_SECRET_ACCESS_KEY ?? env.S3_SECRET_ACCESS_KEY;
   if (!bucketName || !endpoint || !accessKeyId || !secretAccessKey) {
-    throw new Error("SPACES/S3 configuration is required for the Linux deployment path.");
+    throw new Error("S3-compatible object storage configuration is required for the Linux deployment path.");
   }
   return new S3BlobStore({
     bucketName,
@@ -100,45 +97,11 @@ function resolveBlobStore(env: LinuxEnv) {
 
 function resolveRuntimeGateway(
   env: LinuxEnv,
-  store: D1AppStore,
-  blobStore: ReturnType<typeof resolveBlobStore>,
-  apiOrigin: string,
 ) {
-  if (
-    env.FLY_API_TOKEN &&
-    env.FLY_RUNTIME_APP_NAME &&
-    env.FLY_RUNTIME_IMAGE &&
-    env.FLY_RUNTIME_REGION &&
-    env.FLY_RUNTIME_SHARED_TOKEN &&
-    env.R2_ENDPOINT &&
-    env.R2_ACCESS_KEY_ID &&
-    env.R2_SECRET_ACCESS_KEY
-  ) {
-    return new FlyMachinesRuntimeGateway(store, blobStore, {
-      apiToken: env.FLY_API_TOKEN,
-      appName: env.FLY_RUNTIME_APP_NAME,
-      runtimeAppUrl: env.FLY_RUNTIME_APP_URL,
-      openAIApiKey: env.OPENAI_API_KEY,
-      runtimeAgentModel: env.RUNTIME_AGENT_MODEL,
-      image: env.FLY_RUNTIME_IMAGE,
-      region: env.FLY_RUNTIME_REGION,
-      runtimeSharedToken: env.FLY_RUNTIME_SHARED_TOKEN,
-      machineCpuKind: env.FLY_RUNTIME_MACHINE_CPU_KIND === "performance" ? "performance" : "shared",
-      machineCpus: env.FLY_RUNTIME_MACHINE_CPUS ? Number(env.FLY_RUNTIME_MACHINE_CPUS) : undefined,
-      machineMemoryMb: env.FLY_RUNTIME_MACHINE_MEMORY_MB ? Number(env.FLY_RUNTIME_MACHINE_MEMORY_MB) : undefined,
-      codexOpenAIBaseUrl: env.RUNTIME_CODEX_OPENAI_BASE_URL,
-      codexProxyUpstreamBaseUrl: env.RUNTIME_OPENAI_PROXY_UPSTREAM_BASE_URL,
-      workspaceDownloadBaseUrl: apiOrigin,
-      r2BucketName: env.RUNTIME_R2_BUCKET_NAME ?? env.R2_BUCKET_NAME ?? env.SPACES_BUCKET_NAME ?? "alphabook",
-      r2Endpoint: env.R2_ENDPOINT,
-      r2AccessKeyId: env.R2_ACCESS_KEY_ID,
-      r2SecretAccessKey: env.R2_SECRET_ACCESS_KEY,
-    });
-  }
   if (env.RUNTIME_SERVICE_URL && env.RUNTIME_SERVICE_TOKEN) {
     return new HttpRuntimeGateway(env.RUNTIME_SERVICE_URL, env.RUNTIME_SERVICE_TOKEN);
   }
-  throw new Error("Runtime gateway is not configured.");
+  throw new Error("RUNTIME_SERVICE_URL and RUNTIME_SERVICE_TOKEN are required for the Linux deployment path.");
 }
 
 function resolveEmbedder(env: LinuxEnv, billing: ReturnType<typeof createBillingService>) {
@@ -186,7 +149,7 @@ export function buildLinuxAppDeps(env: LinuxEnv, options: { boss?: PgBoss } = {}
     blobStore,
     feedLabels: implementation.feedLabels,
   });
-  const runtimeGateway = resolveRuntimeGateway(env, store, blobStore, implementation.apiOrigin);
+  const runtimeGateway = resolveRuntimeGateway(env);
   const billing = createBillingService(store, {
     monthlyLimitUsd: env.BILLING_MONTHLY_LIMIT_USD ? Number(env.BILLING_MONTHLY_LIMIT_USD) : undefined,
     modelPricing: env.BILLING_MODEL_PRICING_JSON
@@ -291,7 +254,7 @@ export function buildLinuxAppDeps(env: LinuxEnv, options: { boss?: PgBoss } = {}
     hermesJobApiToken: env.HERMES_JOB_API_TOKEN,
     hermesModel: env.HERMES_MODEL ?? "gpt-5.4",
     hermesMaxTurns: env.HERMES_MAX_TURNS ? Number(env.HERMES_MAX_TURNS) : undefined,
-    runtimeSharedToken: env.FLY_RUNTIME_SHARED_TOKEN ?? env.RUNTIME_SERVICE_TOKEN,
+    runtimeSharedToken: env.RUNTIME_SERVICE_TOKEN,
     toolStreamCleanupModel: env.TOOL_STREAM_CLEANUP_MODEL,
     errorAlertWebhookUrl: env.ERROR_ALERT_WEBHOOK_URL,
     resendApiKey: env.RESEND_API_KEY,

@@ -1,14 +1,12 @@
 import process from "node:process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { spawn } from "node:child_process";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 
-import { D1_SCHEMA_SQL, runPostgresMigrations } from "@alphabook/db";
+import { runPostgresMigrations } from "@alphabook/db";
 
-async function loadLocalEnvFile() {
+async function loadEnvFile(path: string) {
   try {
-    const envText = await readFile(resolve(process.cwd(), ".dev.vars"), "utf8");
+    const envText = await readFile(path, "utf8");
     for (const line of envText.split("\n")) {
       const trimmed = line.trim();
       if (!trimmed || trimmed.startsWith("#")) {
@@ -26,48 +24,19 @@ async function loadLocalEnvFile() {
       process.env[key] = value;
     }
   } catch {
-    // Local env loading is optional.
+    // Optional local env file.
   }
-}
-
-async function runWrangler(args: string[]) {
-  await new Promise<void>((resolvePromise, reject) => {
-    const child = spawn("npx", ["wrangler", ...args], {
-      stdio: "inherit",
-      shell: process.platform === "win32",
-    });
-    child.on("exit", (code) => {
-      if (code === 0) {
-        resolvePromise();
-        return;
-      }
-      reject(new Error(`wrangler ${args.join(" ")} exited with code ${code ?? -1}`));
-    });
-    child.on("error", reject);
-  });
 }
 
 async function main() {
-  await loadLocalEnvFile();
+  await loadEnvFile(resolve(process.cwd(), ".env"));
+  await loadEnvFile(resolve(process.cwd(), ".env.local"));
 
-  if (process.env.DATABASE_URL) {
-    await runPostgresMigrations({ connectionString: process.env.DATABASE_URL });
-    console.log("Applied AlphaBook schema to Postgres.");
-    return;
+  if (!process.env.DATABASE_URL) {
+    throw new Error("DATABASE_URL is required. Linux deployments no longer fall back to Wrangler/D1 migrations.");
   }
-
-  const databaseName = process.argv[2] ?? process.env.D1_DATABASE_NAME ?? "alphabook-app";
-  const remoteFlag = process.argv.includes("--local") ? "--local" : "--remote";
-
-  const tempDir = await mkdtemp(join(tmpdir(), "alphabook-d1-migrate-"));
-  const schemaPath = join(tempDir, "schema.sql");
-  try {
-    await writeFile(schemaPath, `${D1_SCHEMA_SQL.trim()}\n`, "utf8");
-    await runWrangler(["d1", "execute", databaseName, remoteFlag, "--file", schemaPath]);
-    console.log(`Applied AlphaBook D1 schema to ${databaseName}.`);
-  } finally {
-    await rm(tempDir, { recursive: true, force: true });
-  }
+  await runPostgresMigrations({ connectionString: process.env.DATABASE_URL });
+  console.log("Applied AlphaBook schema to Postgres.");
 }
 
 main().catch((error) => {

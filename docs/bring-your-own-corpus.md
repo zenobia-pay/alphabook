@@ -2,7 +2,7 @@
 
 This repo can support another text corpus without changing AlphaBook's live book product, but the integration path is still developer-oriented.
 
-Before you start, read [implementation-isolation.md](implementation-isolation.md). The intended default is that each implementation gets its own wrappers, buckets, queues, runtime app, and branded config.
+Before you start, read [implementation-isolation.md](implementation-isolation.md). The intended default is that each implementation gets its own wrappers, storage bucket, queues, runtime service, and branded config.
 
 ## What Stays AlphaBook-Specific
 
@@ -33,8 +33,8 @@ When you finish adding a new corpus, the expected shape is:
 - a new source package under `packages/`
 - a new implementation entry in `packages/implementations`
 - isolated wrapper apps under `apps/`
-- isolated Cloudflare resources
-- isolated runtime app config
+- isolated infra resources
+- isolated runtime service config
 - a working ingest path
 - a working deployed surface whose `/health`, `/api/v1/documents`, and content URLs all resolve without borrowing another implementation's resources
 
@@ -57,9 +57,9 @@ Examples:
 That id will be reused for:
 
 - wrapper directory names
-- Cloudflare queue names
-- Cloudflare R2 bucket names
-- runtime app names
+- queue names
+- object storage bucket names
+- runtime service names
 - cookie namespace
 - implementation config lookup
 
@@ -138,7 +138,7 @@ Implement a repository that can return:
 
 For a lightweight setup, use an in-memory or fixture repository first.
 
-For a real deployment, the active path should read from the relational store and R2 through the existing neutral repository/store interfaces in `apps/orchestrator-worker`.
+For a real deployment, the active path should read from the relational store and object storage through the existing neutral repository/store interfaces in `apps/orchestrator-worker`.
 
 ### 6. Add ingest wiring
 
@@ -147,7 +147,7 @@ Add a new ingest command in `apps/ingest/src/index.ts`.
 There are two useful phases:
 
 1. local preview mode
-2. real persistence mode to the relational store and R2
+2. real persistence mode to the relational store and object storage
 
 Preview mode is valuable because it lets you validate:
 
@@ -177,7 +177,7 @@ That usually means:
 
 If plain text retrieval is enough, you can start without a rich reader surface and add rendered artifacts later.
 
-### 8. Scaffold isolated wrapper apps
+### 8. Scaffold isolated frontend and deployment config
 
 If the new corpus should be its own product, scaffold the wrapper shape first.
 
@@ -189,21 +189,18 @@ npm run implementation:scaffold -- \
   --product-name "MyCorpus" \
   --site-origin https://mycorpus.org \
   --api-origin https://api.mycorpus.org \
-  --content-origin https://content.mycorpus.org \
-  --account-id <cloudflare-account-id>
+  --content-origin https://content.mycorpus.org
 ```
 
 This creates:
 
 - `apps/mycorpus-frontend`
-- `apps/mycorpus-content`
-- `apps/mycorpus-orchestrator`
+- `apps/mycorpus-deployment`
 - `apps/mycorpus-runtime`
 
-Those wrappers point at shared code, but they default to isolated resource names like:
+Those files point at shared code, but they default to isolated resource names like:
 
 - `mycorpus-corpus`
-- `mycorpus-corpus-preview`
 - `mycorpus-ingest`
 - `mycorpus-jobs`
 - `mycorpus-runtime`
@@ -238,41 +235,39 @@ At minimum, the implementation config should define:
 For a real deployed corpus, make sure these exist:
 
 - a relational database with the current `packages/db` migrations applied
-- R2 bucket for raw / clean / chunks / rendered artifacts
-- preview R2 bucket
-- implementation-specific Worker queues
-- Worker env vars and secrets
-- runtime app config if workspace analysis is enabled
+- an S3-compatible bucket for raw / clean / chunks / rendered artifacts
+- implementation-specific queues
+- API env vars and secrets
+- runtime service config if workspace analysis is enabled
 
 The shared env list lives in `docs/environment.md`.
 
 The practical minimum for ingest persistence is:
 
-- `D1_DATABASE_NAME`
-- `R2_BUCKET_NAME`
-- `R2_ENDPOINT`
-- `R2_ACCESS_KEY_ID`
-- `R2_SECRET_ACCESS_KEY`
+- `DATABASE_URL`
+- `S3_BUCKET_NAME` or `SPACES_BUCKET_NAME`
+- `S3_ENDPOINT` or `SPACES_ENDPOINT`
+- `S3_ACCESS_KEY_ID` or `SPACES_ACCESS_KEY_ID`
+- `S3_SECRET_ACCESS_KEY` or `SPACES_SECRET_ACCESS_KEY`
 
 The practical minimum for the deployed orchestrator is:
 
-- `D1_DATABASE_NAME`
+- `DATABASE_URL`
 - `OPENAI_API_KEY`
 - `OPENAI_MODEL`
 - `OPENAI_SYNTH_MODEL`
 - `OPENAI_EMBEDDING_MODEL`
-- R2 bindings / credentials
-- runtime configuration if using Fly machines
+- S3-compatible storage credentials
+- runtime service configuration
 
 For a separate branded implementation, do not reuse another implementation's bucket, queue, or runtime names. The wrapper config should point at implementation-scoped resources.
 
 Practical resource checklist for implementation id `mycorpus`:
 
-- R2 bucket: `mycorpus-corpus`
-- R2 preview bucket: `mycorpus-corpus-preview`
+- object storage bucket: `mycorpus-corpus`
 - queue: `mycorpus-ingest`
 - queue: `mycorpus-jobs`
-- runtime app: `mycorpus-runtime`
+- runtime service: `mycorpus-runtime`
 
 ### 11. Configure secrets and environment
 
@@ -280,22 +275,22 @@ Before deploy, make sure the implementation wrappers and ingest path have the ri
 
 At minimum:
 
-- `D1_DATABASE_NAME`
+- `DATABASE_URL`
 - `OPENAI_API_KEY`
-- `R2_BUCKET_NAME`
-- `R2_ENDPOINT`
-- `R2_ACCESS_KEY_ID`
-- `R2_SECRET_ACCESS_KEY`
+- `S3_BUCKET_NAME` or `SPACES_BUCKET_NAME`
+- `S3_ENDPOINT` or `SPACES_ENDPOINT`
+- `S3_ACCESS_KEY_ID` or `SPACES_ACCESS_KEY_ID`
+- `S3_SECRET_ACCESS_KEY` or `SPACES_SECRET_ACCESS_KEY`
 
 Source-specific examples:
 
 - `COURTLISTENER_API_TOKEN` for Supreme Court ingestion
 - `GUTENBERG_MIRROR_ROOT` for Gutenberg mirror ingestion
 
-For Cloudflare Workers, verify both:
+For Linux deployments, verify both:
 
-1. Wrangler config points at the correct implementation-specific resource names
-2. Wrangler secrets are uploaded for the actual deployed Worker, not just present in a local `.env` or `.dev.vars`
+1. the API/worker env files point at implementation-scoped resource names
+2. the deployed services have the same env values that you tested locally
 
 ### 12. Validate locally
 
@@ -311,28 +306,28 @@ If you added wrappers, also run their typechecks explicitly.
 
 Also verify that the scaffolded wrapper files still point at isolated names after any manual edits.
 
-### 13. Deploy each wrapper explicitly
+### 13. Deploy each service explicitly
 
-Deploy each implementation wrapper separately.
+Deploy each implementation surface separately.
 
 For implementation id `mycorpus`, that usually means:
 
 ```bash
-npm run deploy -w @alphabook/mycorpus-content
-npm run deploy -w @alphabook/mycorpus-frontend
-npm run deploy -w @alphabook/mycorpus-orchestrator
+npm run build -w @alphabook/mycorpus-frontend
+DATABASE_URL=postgres://... npm run migrate
+docker compose up -d
 ```
 
-If you use the runtime path, deploy or provision the `mycorpus-runtime` app as well.
+If you use the runtime path, deploy or provision the `mycorpus-runtime` service as well.
 
-Do not treat a successful frontend deploy as proof the implementation is complete.
+Do not treat a successful frontend build as proof the implementation is complete.
 
 ### 14. Verify the live surface
 
 Before calling the new corpus ready, check all of these:
 
 1. the frontend loads
-2. the Worker `/health` route succeeds
+2. the API `/health` route succeeds
 3. `/api/v1/documents` returns your new documents
 4. retrieval returns relevant chunks
 5. rendered content URLs resolve when enabled
@@ -355,7 +350,7 @@ Search for:
 
 If any of those appear in the new implementation wrapper config or setup docs, treat that as a bug until proven intentional.
 
-Do not treat a successful frontend deploy as a complete launch. A corpus deployment is only real when the Worker, DB, and blob store are all wired correctly.
+Do not treat a successful frontend build as a complete launch. A corpus deployment is only real when the API, DB, queue, and object store are all wired correctly.
 
 ## Short Checklist
 
@@ -368,11 +363,11 @@ Use this as the implementation checklist:
 5. add repository support
 6. add ingest command(s)
 7. add rendered artifact generation if needed
-8. scaffold isolated wrapper apps
+8. scaffold isolated frontend and deployment config
 9. add implementation config
-10. provision DB, implementation-scoped R2, preview R2, queues, secrets, and runtime config
+10. provision DB, implementation-scoped object storage, queues, secrets, and runtime config
 11. run `npm run validate:oss`
-12. deploy content, frontend, orchestrator, and runtime as needed
+12. deploy frontend, API, worker, and runtime as needed
 13. verify live `health`, `documents`, retrieval, `skill.md`, and content endpoints
 14. run the overlap check
 

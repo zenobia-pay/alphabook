@@ -1,6 +1,6 @@
 # DigitalOcean Linux Deployment
 
-This directory contains the first Linux-native AlphaBook deployment scaffolding for the staged migration off Cloudflare application infrastructure.
+This directory contains the Linux-native AlphaBook deployment scaffolding for the staged migration onto generic Linux infrastructure.
 
 Target boxes:
 
@@ -64,6 +64,7 @@ Web-specific:
 
 ## Notes
 
-- The Linux API path uses `DATABASE_URL` when present and falls back to D1 only for local compatibility.
-- Canonical blobs are expected to live in DO Spaces via the S3-compatible blob store.
+- The Linux API path is Postgres-only. It does not fall back to D1 or Wrangler.
+- Canonical blobs are expected to live in DO Spaces or another S3-compatible object store.
 - The Linux worker uses `pg-boss` for durable research task execution.
+- The Linux worker expects a normal HTTP runtime service on the private network. It does not launch Fly Machines.

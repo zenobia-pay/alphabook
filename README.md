@@ -23,7 +23,7 @@ Run the supported OSS validation matrix:
 npm run validate:oss
 ```
 
-Try the Supreme Court demo corpus without provisioning DB or R2:
+Try the Supreme Court demo corpus without provisioning Postgres or object storage:
 
 ```bash
 npx tsx apps/ingest/src/index.ts ingest-supreme-court-demo
@@ -38,7 +38,7 @@ npx tsx apps/ingest/src/index.ts count-supreme-court
 npx tsx apps/ingest/src/index.ts backfill-supreme-court - 25
 ```
 
-That path requires `COURTLISTENER_API_TOKEN` plus the normal DB and R2 ingest variables.
+That path requires `COURTLISTENER_API_TOKEN` plus the normal database and object-storage ingest variables.
 
 If you want the full operator path for setting up associative deep research on your own large corpus, use [docs/deep-research-setup.md](docs/deep-research-setup.md).
 
@@ -67,11 +67,11 @@ If you want to reuse the generic internals, start with:
 
 The repo is structured as a shared core-plus-implementations monorepo:
 
-- `apps/frontend`: Cloudflare Pages frontend
+- `apps/frontend`: Vite frontend
 - `apps/alphajustice-frontend`: AlphaJustice frontend wrapper over the shared frontend app
-- `apps/orchestrator-worker`: Cloudflare Worker API on `api.<domain>`
-- `apps/alphajustice-orchestrator`: AlphaJustice API wrapper over the shared orchestrator Worker
-- `apps/runtime`: Fly Machine runtime service for filesystem-backed analysis
+- `apps/orchestrator-worker`: Linux API and worker service, plus the legacy Worker entrypoint during migration
+- `apps/alphajustice-orchestrator`: AlphaJustice API wrapper over the shared orchestrator app surface
+- `apps/runtime`: Linux runtime service for filesystem-backed analysis
 - `apps/ingest`: adapter-aware ingest service with Gutenberg production flows plus fixture and CourtListener-backed Supreme Court ingest paths
 - `packages/corpus-core`: generic runtime limits and artifact key helpers
 - `packages/corpus-text`: generic text embedding helpers
@@ -106,9 +106,9 @@ The additive neutral API and compatibility contract details live in [docs/api-co
 ## Current Status
 
 - Implemented:
-  - Worker chat and health endpoints
+  - Linux API chat and health endpoints
   - retrieval, workspace hydration, and cited synthesis flow
-  - Fly runtime creation and reuse
+  - Linux runtime service integration
   - neutral document API plus AlphaBook compatibility API
   - adapter-aware ingest helpers
   - separate AlphaBook and AlphaJustice deployments
@@ -167,7 +167,7 @@ The shared frontend in `apps/frontend` now ships a real chat interface:
 
 - ChatGPT-style session sidebar
 - one persistent assistant thread per session
-- streaming answers from the Worker over SSE
+- streaming answers from the API over SSE
 - inline research log showing retrieval, workspace creation, runtime search, and synthesis
 - screenshot-tested empty, active-thread, and history-reopen states
 
@@ -208,22 +208,17 @@ Operational runbooks:
 
 Core variables include:
 
-- `D1_DATABASE_NAME`
+- `DATABASE_URL`
 - `OPENAI_API_KEY`
 - `OPENAI_MODEL`
 - `OPENAI_SYNTH_MODEL`
 - `OPENAI_EMBEDDING_MODEL`
 - `TOOL_STREAM_CLEANUP_MODEL`
-- `R2_BUCKET_NAME`
-- `FLY_API_TOKEN`
-- `FLY_RUNTIME_APP_NAME`
-- `FLY_RUNTIME_APP_URL`
-- `FLY_RUNTIME_IMAGE`
-- `FLY_RUNTIME_REGION`
-- `FLY_RUNTIME_SHARED_TOKEN`
-- `R2_ENDPOINT`
-- `R2_ACCESS_KEY_ID`
-- `R2_SECRET_ACCESS_KEY`
+- `S3_BUCKET_NAME` or `SPACES_BUCKET_NAME`
+- `S3_ENDPOINT` or `SPACES_ENDPOINT`
+- `S3_ACCESS_KEY_ID` or `SPACES_ACCESS_KEY_ID`
+- `S3_SECRET_ACCESS_KEY` or `SPACES_SECRET_ACCESS_KEY`
+- `S3_REGION` or `SPACES_REGION`
 - `GUTENBERG_MIRROR_ROOT`
 - `RUNTIME_SERVICE_URL`
 - `RUNTIME_SERVICE_TOKEN`
@@ -236,14 +231,13 @@ Core variables include:
 Run database migrations:
 
 ```bash
-D1_DATABASE_NAME=alphabook-app npm run migrate
+DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/alphabook npm run migrate
 ```
 
-Run the Worker locally:
+Run the Linux API locally:
 
 ```bash
-cd apps/orchestrator-worker
-npx wrangler dev
+npm run dev:linux -w @alphabook/orchestrator-worker
 ```
 
 Run the local Node-backed assistant API harness used by Playwright:
@@ -318,15 +312,13 @@ The request/response contracts are documented in [docs/api-contracts.md](docs/ap
 ## Notes
 
 - The frontend uses `assistant-ui` for the thread/composer surface and streams `POST /chat` responses over SSE.
-- The orchestrator Worker is now configured for Cloudflare Workers AI as well as OpenAI. The intended cheap lane is `@cf/zai-org/glm-4.7-flash` for future tool-stream cleanup and normalization, while the main research path remains on OpenAI.
+- The Linux API and worker path are the primary deployment target. The legacy Cloudflare Worker entrypoint remains in the repo only until the migration is fully retired.
 - `GET /me`, `/auth/sign-in`, `/auth/callback`, and `/auth/sign-out` provide the WorkOS-backed login flow.
 - `GET /sessions` plus `GET /sessions/:sessionId/messages` power the session history and sidebar reopening flow.
-- The runtime service is designed to sit behind a Fly app URL and uses the `fly-force-instance-id` header so the Worker can talk to a specific Machine.
-- The runtime service expects `RUNTIME_SHARED_TOKEN` plus R2 credentials so it can hydrate the workspace directly from R2 keys.
+- The runtime service is a normal private HTTP service and expects `RUNTIME_SHARED_TOKEN` plus S3-compatible storage credentials so it can hydrate the workspace directly from object-storage keys.
 - The runtime agent now writes `summary.md`, `search-plan.json`, `search-iterations.json`, and `evidence.json` for each long VM search.
 - The ingest service supports single-URL ingestion plus local Gutenberg mirror ingestion through `GUTENBERG_MIRROR_ROOT`.
-- `run-once` now processes a mirror batch, and `backfill-mirror` can drain the rsync mirror into the relational store + R2 with chunk embeddings.
-- `audit-r2-corpus` audits canonical Gutenberg R2 artifacts against D1 + Vectorize and reports missing books, artifact gaps, chunk mismatches, and orphaned R2 keys.
-- `rebuild-r2-corpus` rebuilds D1 corpus metadata/chunks from canonical R2 `metadata.json` + `chunks.jsonl` artifacts and regenerates Vectorize embeddings with Google `gemini-embedding-2-preview`.
+- `run-once` now processes a mirror batch, and `backfill-mirror` can drain the rsync mirror into the relational store + object storage with chunk embeddings.
+- Corpus audit and rebuild helpers still carry some legacy `r2` naming in command names, but the target storage layer is the generic S3-compatible blob store.
 - The Gutenberg mirror box bootstrap is documented in [ops/digitalocean/README.md](ops/digitalocean/README.md).
 - Daily feed diffing is still the remaining ingest gap.

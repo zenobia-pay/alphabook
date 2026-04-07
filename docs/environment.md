@@ -1,48 +1,32 @@
 # Environment Variables
 
-For any new implementation, do not reuse another implementation's bucket, queue, runtime app, or content origin in committed config. Use implementation-scoped names such as `<implementation-id>-corpus`, `<implementation-id>-ingest`, `<implementation-id>-jobs`, and `<implementation-id>-runtime`.
+For any new implementation, do not reuse another implementation's storage bucket, queue, runtime service, or content origin in committed config. Use implementation-scoped names such as `<implementation-id>-corpus`, `<implementation-id>-ingest`, `<implementation-id>-jobs`, and `<implementation-id>-runtime`.
 
 ## Frontend
 
 - `VITE_API_BASE_URL`
 
-## Orchestrator Worker
+## Linux API / Worker
 
-- `D1_DATABASE_NAME`
+- `DATABASE_URL`
 - `OPENAI_API_KEY`
 - `OPENAI_MODEL`
 - `OPENAI_SYNTH_MODEL`
 - `OPENAI_EMBEDDING_MODEL`
 - `TOOL_STREAM_CLEANUP_MODEL`
-- `FLY_API_TOKEN`
-- `FLY_RUNTIME_APP_NAME`
-- `FLY_RUNTIME_APP_URL`
-- `FLY_RUNTIME_IMAGE`
-- `FLY_RUNTIME_REGION`
-- `FLY_RUNTIME_SHARED_TOKEN`
-- `FLY_RUNTIME_MACHINE_CPUS`
-- `FLY_RUNTIME_MACHINE_MEMORY_MB`
 - `RUNTIME_SERVICE_URL`
 - `RUNTIME_SERVICE_TOKEN`
 - `QUEUE_INGEST_NAME`
 - `QUEUE_JOBS_NAME`
-- `R2_BUCKET_NAME`
-- `R2_ENDPOINT`
-- `R2_ACCESS_KEY_ID`
-- `R2_SECRET_ACCESS_KEY`
+- `S3_BUCKET_NAME` or `SPACES_BUCKET_NAME`
+- `S3_ENDPOINT` or `SPACES_ENDPOINT`
+- `S3_ACCESS_KEY_ID` or `SPACES_ACCESS_KEY_ID`
+- `S3_SECRET_ACCESS_KEY` or `SPACES_SECRET_ACCESS_KEY`
+- `S3_REGION` or `SPACES_REGION`
 - `WORKOS_API_KEY`
 - `WORKOS_CLIENT_ID`
 - `AUTH_COOKIE_PASSWORD`
 - `ERROR_ALERT_WEBHOOK_URL`
-
-Cloudflare bindings:
-
-- `CORPUS_BUCKET`
-- `INGEST_QUEUE`
-- `JOBS_QUEUE`
-- `AI`
-
-`TOOL_STREAM_CLEANUP_MODEL` defaults to `@cf/zai-org/glm-4.7-flash` for the low-cost tool-log cleanup lane that will sit beside the main OpenAI planning/synthesis path.
 
 ## Runtime Service
 
@@ -50,20 +34,22 @@ Cloudflare bindings:
 - `RUNTIME_WORKSPACE_ROOT`
 - `RUNTIME_AGENT_COMMAND`
 - `RUNTIME_SHARED_TOKEN`
-- `R2_BUCKET_NAME`
-- `R2_ENDPOINT`
-- `R2_ACCESS_KEY_ID`
-- `R2_SECRET_ACCESS_KEY`
+- `S3_BUCKET_NAME` or `SPACES_BUCKET_NAME`
+- `S3_ENDPOINT` or `SPACES_ENDPOINT`
+- `S3_ACCESS_KEY_ID` or `SPACES_ACCESS_KEY_ID`
+- `S3_SECRET_ACCESS_KEY` or `SPACES_SECRET_ACCESS_KEY`
+- `S3_REGION` or `SPACES_REGION`
 
 `ERROR_ALERT_WEBHOOK_URL` sends unexpected orchestrator errors to a webhook in addition to recording them in the admin incident dashboard. Leave it unset if you only want the in-app admin view.
 
 ## Ingest Service
 
-- `D1_DATABASE_NAME`
-- `R2_BUCKET_NAME`
-- `R2_ENDPOINT`
-- `R2_ACCESS_KEY_ID`
-- `R2_SECRET_ACCESS_KEY`
+- `DATABASE_URL`
+- `S3_BUCKET_NAME` or `SPACES_BUCKET_NAME`
+- `S3_ENDPOINT` or `SPACES_ENDPOINT`
+- `S3_ACCESS_KEY_ID` or `SPACES_ACCESS_KEY_ID`
+- `S3_SECRET_ACCESS_KEY` or `SPACES_SECRET_ACCESS_KEY`
+- `S3_REGION` or `SPACES_REGION`
 - `COURTLISTENER_API_TOKEN`
 - `GUTENBERG_MIRROR_ROOT`
 - `GUTENBERG_METADATA_FEED_URL`
@@ -80,14 +66,6 @@ Cloudflare bindings:
 - `GUTENBERG_MIRROR_ROOT`
 - `PG_RSYNC_HOST`
 - `RSYNC_TIMEOUT`
-
-## Fly
-
-- `FLY_API_TOKEN`
-- `FLY_RUNTIME_APP_NAME`
-- `FLY_RUNTIME_APP_URL`
-- `FLY_RUNTIME_IMAGE`
-- `FLY_RUNTIME_REGION`
 
 ## Shared Operational Limits
 

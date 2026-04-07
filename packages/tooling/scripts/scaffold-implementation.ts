@@ -1,4 +1,4 @@
-import { mkdirSync, existsSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 type Args = {
@@ -7,7 +7,6 @@ type Args = {
   siteOrigin: string;
   apiOrigin: string;
   contentOrigin: string;
-  accountId: string;
 };
 
 function readArg(flag: string) {
@@ -33,17 +32,12 @@ function normalizeId(raw: string) {
 function buildArgs(): Args {
   const id = normalizeId(requiredArg("--id"));
   const productName = readArg("--product-name")?.trim() || id.split("-").map((part) => part[0]?.toUpperCase() + part.slice(1)).join("");
-  const siteOrigin = requiredArg("--site-origin");
-  const apiOrigin = requiredArg("--api-origin");
-  const contentOrigin = requiredArg("--content-origin");
-  const accountId = requiredArg("--account-id");
   return {
     id,
     productName,
-    siteOrigin,
-    apiOrigin,
-    contentOrigin,
-    accountId,
+    siteOrigin: requiredArg("--site-origin"),
+    apiOrigin: requiredArg("--api-origin"),
+    contentOrigin: requiredArg("--content-origin"),
   };
 }
 
@@ -62,13 +56,11 @@ function main() {
   const args = buildArgs();
   const repoRoot = process.cwd();
   const frontendDir = join(repoRoot, "apps", `${args.id}-frontend`);
-  const contentDir = join(repoRoot, "apps", `${args.id}-content`);
-  const orchestratorDir = join(repoRoot, "apps", `${args.id}-orchestrator`);
+  const deploymentDir = join(repoRoot, "apps", `${args.id}-deployment`);
   const runtimeDir = join(repoRoot, "apps", `${args.id}-runtime`);
 
   ensureDirectory(frontendDir);
-  ensureDirectory(contentDir);
-  ensureDirectory(orchestratorDir);
+  ensureDirectory(deploymentDir);
   ensureDirectory(runtimeDir);
 
   writeNewFile(join(frontendDir, "package.json"), JSON.stringify({
@@ -80,167 +72,123 @@ function main() {
       dev: "vite --config vite.config.ts",
       build: "vite build --config vite.config.ts",
       preview: "vite preview --config vite.config.ts",
-      deploy: "npm run build && wrangler deploy",
       typecheck: "tsc -p tsconfig.json --noEmit",
     },
   }, null, 2) + "\n");
 
-  writeNewFile(join(frontendDir, "wrangler.toml"), [
-    `name = "${args.id}-web"`,
-    'main = "../frontend/src/worker.ts"',
-    'compatibility_date = "2026-03-22"',
-    `account_id = "${args.accountId}"`,
-    "workers_dev = true",
-    "upload_source_maps = true",
-    "",
-    "[observability]",
-    "enabled = true",
-    "",
-    "[assets]",
-    'directory = "./dist"',
-    'binding = "ASSETS"',
-    'not_found_handling = "single-page-application"',
-    'html_handling = "auto-trailing-slash"',
-    "",
-    "[vars]",
-    `IMPLEMENTATION_ID = "${args.id}"`,
-    `API_ORIGIN = "${args.apiOrigin}"`,
-    `SITE_ORIGIN = "${args.siteOrigin}"`,
-    `CONTENT_ORIGIN = "${args.contentOrigin}"`,
-    "",
-    "[[r2_buckets]]",
-    'binding = "BOOK_CONTENT_BUCKET"',
-    `bucket_name = "${args.id}-corpus"`,
-    `preview_bucket_name = "${args.id}-corpus-preview"`,
-    "",
-  ].join("\n"));
-
-  writeNewFile(join(contentDir, "package.json"), JSON.stringify({
-    name: `@alphabook/${args.id}-content`,
-    version: "0.1.0",
-    private: true,
-    type: "module",
-    scripts: {
-      typecheck: "npm run typecheck -w @alphabook/book-content-worker",
-      deploy: "wrangler deploy",
-    },
+  writeNewFile(join(frontendDir, "tsconfig.json"), JSON.stringify({
+    extends: "../frontend/tsconfig.json",
+    include: ["vite.config.ts"],
   }, null, 2) + "\n");
 
-  writeNewFile(join(contentDir, "wrangler.toml"), [
-    `name = "${args.id}-content"`,
-    'main = "../book-content-worker/src/index.ts"',
-    'compatibility_date = "2026-03-22"',
-    `account_id = "${args.accountId}"`,
-    "workers_dev = true",
-    "upload_source_maps = true",
-    "",
-    "[observability]",
-    "enabled = true",
-    "",
-    "[vars]",
-    `IMPLEMENTATION_ID = "${args.id}"`,
-    `SITE_ORIGIN = "${args.siteOrigin}"`,
-    "",
-    "[[r2_buckets]]",
-    'binding = "BOOK_CONTENT_BUCKET"',
-    `bucket_name = "${args.id}-corpus"`,
-    `preview_bucket_name = "${args.id}-corpus-preview"`,
-    "",
-  ].join("\n"));
+  writeNewFile(join(frontendDir, "vite.config.ts"), `import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
+import path from "node:path";
 
-  writeNewFile(join(orchestratorDir, "package.json"), JSON.stringify({
-    name: `@alphabook/${args.id}-orchestrator`,
-    version: "0.1.0",
-    private: true,
-    type: "module",
-    scripts: {
-      typecheck: "npm run typecheck -w @alphabook/orchestrator-worker",
-      deploy: "wrangler deploy",
+const sharedFrontendRoot = path.resolve(__dirname, "../frontend");
+
+export default defineConfig({
+  root: sharedFrontendRoot,
+  envDir: __dirname,
+  plugins: [react(), tailwindcss()],
+  resolve: {
+    alias: {
+      "@": path.resolve(sharedFrontendRoot, "./src"),
     },
-  }, null, 2) + "\n");
+  },
+  build: {
+    outDir: path.resolve(__dirname, "./dist"),
+    emptyOutDir: true,
+  },
+  server: {
+    host: "127.0.0.1",
+    port: 4293,
+    proxy: {
+      "/api": {
+        target: "http://127.0.0.1:8787",
+        changeOrigin: true,
+        rewrite: (value) => value.replace(/^\\/api/, ""),
+      },
+    },
+  },
+  preview: {
+    host: "127.0.0.1",
+    port: 4293,
+  },
+});
+`);
 
-  writeNewFile(join(orchestratorDir, "wrangler.toml"), [
-    `name = "${args.id}-orchestrator-api"`,
-    'main = "../orchestrator-worker/src/index.ts"',
-    'compatibility_date = "2026-03-22"',
-    `account_id = "${args.accountId}"`,
-    "workers_dev = true",
-    "upload_source_maps = true",
-    "",
-    "[observability]",
-    "enabled = true",
-    "",
-    "[triggers]",
-    'crons = ["* * * * *"]',
-    "",
-    "[vars]",
-    `IMPLEMENTATION_ID = "${args.id}"`,
-    `SITE_ORIGIN = "${args.siteOrigin}"`,
-    `API_ORIGIN = "${args.apiOrigin}"`,
-    'OPENAI_MODEL = "gpt-5.2"',
-    'OPENAI_SYNTH_MODEL = "gpt-5.2"',
-    'OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"',
-    'TOOL_STREAM_CLEANUP_MODEL = "@cf/zai-org/glm-4.7-flash"',
-    'RUNTIME_AGENT_MODEL = "gpt-5.2-codex"',
-    'ORCHESTRATOR_MAX_TURNS = "40"',
-    'ORCHESTRATOR_MAX_RUNTIME_TASKS_PER_RUN = "16"',
-    'ORCHESTRATOR_MAX_RUN_WALL_CLOCK_SECONDS = "1800"',
-    'CHEAP_TOOL_TIMEOUT_SECONDS = "120"',
-    'RUNTIME_TOOL_TIMEOUT_SECONDS = "1500"',
-    `QUEUE_INGEST_NAME = "${args.id}-ingest"`,
-    `QUEUE_JOBS_NAME = "${args.id}-jobs"`,
-    `R2_BUCKET_NAME = "${args.id}-corpus"`,
-    `RUNTIME_R2_BUCKET_NAME = "${args.id}-corpus"`,
-    `FLY_RUNTIME_APP_NAME = "${args.id}-runtime"`,
-    `FLY_RUNTIME_APP_URL = "https://${args.id}-runtime.fly.dev"`,
-    `FLY_RUNTIME_IMAGE = "registry.fly.io/${args.id}-runtime:initial"`,
-    'FLY_RUNTIME_REGION = "iad"',
-    'FLY_RUNTIME_MACHINE_CPU_KIND = "shared"',
-    'FLY_RUNTIME_MACHINE_CPUS = "2"',
-    'FLY_RUNTIME_MACHINE_MEMORY_MB = "4096"',
-    "",
-    "[[r2_buckets]]",
-    'binding = "CORPUS_BUCKET"',
-    `bucket_name = "${args.id}-corpus"`,
-    `preview_bucket_name = "${args.id}-corpus-preview"`,
-    "",
-    "[[queues.producers]]",
-    'binding = "INGEST_QUEUE"',
-    `queue = "${args.id}-ingest"`,
-    "",
-    "[[queues.producers]]",
-    'binding = "JOBS_QUEUE"',
-    `queue = "${args.id}-jobs"`,
-    "",
-    "[ai]",
-    'binding = "AI"',
-    "",
-  ].join("\n"));
+  writeNewFile(join(frontendDir, ".env.example"), `VITE_IMPLEMENTATION_ID=${args.id}
+VITE_API_BASE_URL=${args.apiOrigin}
+VITE_PRODUCT_NAME=${args.productName}
+VITE_DEFAULT_READER_NAME=${args.productName} Reader
+VITE_SITE_NAME=${args.productName}
+VITE_SITE_ORIGIN=${args.siteOrigin}
+VITE_CONTENT_ORIGIN=${args.contentOrigin}
+VITE_SITE_DESCRIPTION=Grounded research over your corpus.
+VITE_THEME_COLOR=#eef2f7
+VITE_OG_IMAGE_URL=${args.siteOrigin}/social-card.svg
+`);
 
-  writeNewFile(join(runtimeDir, "fly.toml"), [
-    `app = "${args.id}-runtime"`,
-    'primary_region = "iad"',
-    "",
-    "[build]",
-    '  dockerfile = "../runtime/Dockerfile"',
-    "",
-    "[env]",
-    '  PORT = "8080"',
-    '  RUNTIME_WORKSPACE_ROOT = "/workspace"',
-    "",
-    "[http_service]",
-    '  internal_port = 8080',
-    '  force_https = true',
-    '  auto_stop_machines = "stop"',
-    '  auto_start_machines = true',
-    '  min_machines_running = 0',
-    "",
-    "[vm]",
-    '  cpu_kind = "shared"',
-    '  cpus = 2',
-    '  memory = "4096mb"',
-    "",
-  ].join("\n"));
+  writeNewFile(join(deploymentDir, ".env.api.example"), `IMPLEMENTATION_ID=${args.id}
+SITE_ORIGIN=${args.siteOrigin}
+API_ORIGIN=${args.apiOrigin}
+CONTENT_ORIGIN=${args.contentOrigin}
+DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/${args.id}
+OPENAI_API_KEY=
+OPENAI_MODEL=gpt-5.2
+OPENAI_SYNTH_MODEL=gpt-5.2
+OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+QUEUE_INGEST_NAME=${args.id}-ingest
+QUEUE_JOBS_NAME=${args.id}-jobs
+S3_BUCKET_NAME=${args.id}-corpus
+S3_ENDPOINT=https://nyc3.digitaloceanspaces.com
+S3_ACCESS_KEY_ID=
+S3_SECRET_ACCESS_KEY=
+S3_REGION=us-east-1
+RUNTIME_SERVICE_URL=http://10.0.0.12:8080
+RUNTIME_SERVICE_TOKEN=
+`);
+
+  writeNewFile(join(deploymentDir, ".env.runtime.example"), `PORT=8080
+RUNTIME_WORKSPACE_ROOT=/workspace
+RUNTIME_AGENT_COMMAND=codex
+RUNTIME_SHARED_TOKEN=
+S3_BUCKET_NAME=${args.id}-corpus
+S3_ENDPOINT=https://nyc3.digitaloceanspaces.com
+S3_ACCESS_KEY_ID=
+S3_SECRET_ACCESS_KEY=
+S3_REGION=us-east-1
+`);
+
+  writeNewFile(join(deploymentDir, "README.md"), `# ${args.productName} Linux Deployment
+
+This scaffold is Linux-first. It does not generate Cloudflare Workers, R2 buckets, or Fly runtimes.
+
+Create:
+
+- a frontend wrapper in \`apps/${args.id}-frontend\`
+- a Linux API env file in \`apps/${args.id}-deployment/.env.api.example\`
+- a Linux runtime env file in \`apps/${args.id}-deployment/.env.runtime.example\`
+
+Expected infra:
+
+- Postgres database
+- S3-compatible object storage bucket
+- queue names backed by Postgres and \`pg-boss\`
+- private runtime service
+- reverse proxy in front of the shared frontend build and API
+`);
+
+  writeNewFile(join(runtimeDir, "README.md"), `# ${args.productName} Runtime
+
+Point the shared runtime service at this implementation by setting:
+
+- \`IMPLEMENTATION_ID=${args.id}\`
+- the matching object storage bucket
+- the runtime shared token
+`);
 
   const implementationStub = [
     "Add an implementation entry to packages/implementations/src/index.ts with:",
@@ -252,14 +200,14 @@ function main() {
     `- adapterId: "<your-adapter-id>"`,
     "",
     "Provision these resources before deploy:",
-    `- R2 bucket: ${args.id}-corpus`,
-    `- R2 preview bucket: ${args.id}-corpus-preview`,
-    `- Queue: ${args.id}-ingest`,
-    `- Queue: ${args.id}-jobs`,
-    `- Fly app: ${args.id}-runtime`,
+    `- Postgres database: ${args.id}`,
+    `- Object storage bucket: ${args.id}-corpus`,
+    `- Queue name: ${args.id}-ingest`,
+    `- Queue name: ${args.id}-jobs`,
+    `- Runtime service: ${args.id}-runtime`,
   ].join("\n");
 
-  console.log(`Scaffolded isolated implementation wrappers for "${args.id}".`);
+  console.log(`Scaffolded Linux-first implementation files for "${args.id}".`);
   console.log("");
   console.log(implementationStub);
 }
