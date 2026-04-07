@@ -429,6 +429,49 @@ Artifacts written per run:
 - `openai-proxy/*.request.json`
 - `openai-proxy/*.response.json`
 
+## Hermes Search
+
+For bounded evidence retrieval, use the search launcher instead of the full research runner. It wraps Hermes with a narrower prompt: define scope, search for evidence related to the user query, keep exact chunks, and stop after the requested effort budget is reached.
+
+From the droplet repo:
+
+```bash
+cd /srv/alphabook/repo
+ops/digitalocean/bin/run-hermes-search.sh \
+  --effort 25 \
+  --corpus-root /mnt/alphabook_consolidation/final/latest \
+  --precomputed-index-dir /mnt/alphabook_consolidation/final/latest/research-corpus-index \
+  --user-prompt "how do authors deal with grief"
+```
+
+That command prints the wrapper run directory, for example:
+
+```text
+/srv/alphabook/logs/hermes-search/20260406T180000Z-deadbeef
+```
+
+Wrapper artifacts match the usual Hermes layout:
+
+- `index.json`
+- `prompt.txt`
+- `launcher.log`
+- `hermes.stdout.log`
+- `hermes.stderr.log`
+- `heartbeat.log`
+- `process.log`
+- `status.json`
+- `summary.json`
+- `hermes.pid`
+- `hermes-home/.hermes/config.yaml`
+- `hermes-home/.hermes/sessions/*`
+
+The Hermes prompt itself instructs the agent to create the inner search artifacts inside `/srv/alphabook/logs/corpus-search/<timestamp>-<run-id>/`, including:
+
+- `manifest.json`
+- `run.log`
+- `hits/`
+- `hits/index.json`
+
 The wrapper run ID is now the canonical handle for a Hermes job. `index.json` explicitly records:
 
 - wrapper run directory
