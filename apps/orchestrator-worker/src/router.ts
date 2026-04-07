@@ -47,194 +47,16 @@ export interface Router {
   decide(context: RouterContext): Promise<RouterDecision>;
 }
 
-type LegacyToolChainDecision = {
-  type: "tool_chain";
-  fullQuery: string;
-};
-
-function normalizeWorkflowHint(value: unknown): "search" | "design_experiment" | undefined {
-  if (value === "search" || value === "design_experiment") {
-    return value;
-  }
-  if (typeof value !== "string") {
-    return undefined;
-  }
-  const normalized = value.trim().toLowerCase();
-  if (!normalized) {
-    return undefined;
-  }
-  if (normalized.includes("design_experiment") || normalized.includes("design experiment") || normalized.includes("experiment")) {
-    return "design_experiment";
-  }
-  if (normalized.includes("search")) {
-    return "search";
-  }
-  return undefined;
-}
-
-function coerceRouterDecision(value: unknown): unknown {
-  if (!value || typeof value !== "object") {
-    return value;
-  }
-  const record = { ...(value as Record<string, unknown>) };
-  const type = typeof record.type === "string" ? record.type : null;
-  const workflowHint = normalizeWorkflowHint(record.workflowHint);
-  const answer = typeof record.answer === "string" ? record.answer : null;
-  const fullQuery = typeof record.fullQuery === "string" ? record.fullQuery : null;
-  const designSummary = typeof record.designSummary === "string" ? record.designSummary : null;
-  const executionPrompt = typeof record.executionPrompt === "string" ? record.executionPrompt : null;
-
-  if (type === "tool_chain" && fullQuery) {
-    return {
-      type: "search",
-      fullQuery,
-      ...(typeof record.rationale === "string" ? { rationale: record.rationale } : {}),
-    };
-  }
-
-  if (type === "direct_response" && answer) {
-    return {
-      type,
-      answer,
-      ...(workflowHint ? { workflowHint } : {}),
-      ...(record.experimentProposal && typeof record.experimentProposal === "object" ? { experimentProposal: record.experimentProposal } : {}),
-    };
-  }
-
-  if (type === "search" && fullQuery) {
-    return {
-      type,
-      fullQuery,
-      ...(typeof record.rationale === "string" ? { rationale: record.rationale } : {}),
-      ...((record.executionMode === "semantic" || record.executionMode === "comprehensive" || record.executionMode === "hermes")
-        ? { executionMode: record.executionMode }
-        : {}),
-    };
-  }
-
-  if (type === "design_experiment" && designSummary && executionPrompt) {
-    return {
-      type,
-      designSummary,
-      executionPrompt,
-      ...(typeof record.rationale === "string" ? { rationale: record.rationale } : {}),
-    };
-  }
-
-  if (answer) {
-    return {
-      type: "direct_response",
-      answer,
-      ...(workflowHint ? { workflowHint } : {}),
-      ...(record.experimentProposal && typeof record.experimentProposal === "object" ? { experimentProposal: record.experimentProposal } : {}),
-    };
-  }
-
-  if (fullQuery) {
-    return {
-      type: "search",
-      fullQuery,
-      ...(typeof record.rationale === "string" ? { rationale: record.rationale } : {}),
-    };
-  }
-
-  return record;
-}
-
-function shouldUseToolChain(message: string): boolean {
-  return /\b(book|books|novel|novels|story|stories|fiction|passage|passages|quote|quotes|theme|themes|motif|motifs|corpus|search|find|show me|look up|examples?|compare|contrast|which works?|which book|who writes|where does)\b/i.test(message);
-}
-
-function shouldDesignExperiment(message: string): boolean {
-  return /\b(experiment|label(?:ing)?|annotat(?:e|ion)|taxonomy|schema|aggregate|aggregation|paper|chart|dataset|subset|run (?:an )?experiment)\b/i.test(message);
-}
-
-function looksLikeApproval(message: string): boolean {
-  return /\b(yes|yep|yeah|looks good|sounds good|approved|approve|go ahead|run it|do it|ship it|that works|let's do it|lets do it)\b/i.test(message);
-}
-
-function fallbackDirectAnswer(message: string): string {
-  if (/\bwhat kind of things should i look up\b/i.test(message)) {
-    return "You could ask for themes, moods, character types, exact passages, comparisons between books, or examples of a feeling like grief, obsession, or reconciliation across the corpus.";
-  }
-  if (shouldDesignExperiment(message)) {
-    return "Before I run an experiment, I need the design to be concrete. Tell me the corpus scope, what should be labeled or extracted, how those labels should be aggregated, and what the final output should look like.";
-  }
-  if (/\bcan you help\b/i.test(message) || /\bwhat can you do\b/i.test(message)) {
-    return "I can help you search the corpus for books, themes, character patterns, comparisons, and specific passages, or I can help you design a corpus experiment before running it.";
-  }
-  return "I can respond directly when you are brainstorming or designing a study, and I can launch either a search run or an approved experiment when you are ready.";
-}
-
-function buildFallbackExperimentProposal(message: string) {
-  const normalized = message.trim() || "the proposed experiment";
-  return {
-    title: "Experiment Proposal",
-    summary: [
-      "Before I run this experiment, I want explicit approval.",
-      `Current request: ${normalized}`,
-      "I still need a concrete scope, labeling or extraction schema, aggregation plan, and target output before the runner starts.",
-    ].join("\n\n"),
-    approvalPrompt: `I approve this experiment plan. Build the scripts, run the labeling and aggregation workflow, and produce the paper draft and charts.\n\nExperiment request:\n${normalized}`,
-  };
-}
-
-export class FallbackRouter implements Router {
-  async decide(context: RouterContext): Promise<RouterDecision> {
-    if (context.requestedWorkflow === "search") {
-      return {
-        type: "search",
-        fullQuery: context.userMessage.trim(),
-        executionMode: "semantic",
-      };
-    }
-    if (context.requestedWorkflow === "design_experiment" || shouldDesignExperiment(context.userMessage)) {
-      const priorAssistant = [...context.conversationHistory].reverse().find((entry) => entry.role === "assistant")?.content ?? "";
-      if (looksLikeApproval(context.userMessage) && /\bexperiment|label|aggregate|paper|chart\b/i.test(priorAssistant)) {
-        return {
-          type: "design_experiment",
-          designSummary: priorAssistant.trim().slice(0, 800) || "Approved experiment design.",
-          executionPrompt: `Design and run the approved experiment over the AlphaBook corpus.\n\nLatest approval message: ${context.userMessage.trim()}\n\nApproved design:\n${priorAssistant.trim()}`,
-          rationale: "The experiment design appears approved, so the runner can start building and executing it.",
-        };
-      }
-      return {
-        type: "direct_response",
-        answer: fallbackDirectAnswer(context.userMessage),
-        workflowHint: "design_experiment",
-        experimentProposal: buildFallbackExperimentProposal(context.userMessage),
-      };
-    }
-    if (shouldUseToolChain(context.userMessage)) {
-      return {
-        type: "search",
-        fullQuery: context.userMessage.trim(),
-        executionMode: "semantic",
-      };
-    }
-    return {
-      type: "direct_response",
-      answer: fallbackDirectAnswer(context.userMessage),
-    };
-  }
-}
-
 export class ScriptedRouter implements Router {
   private cursor = 0;
 
-  constructor(private readonly script: Array<RouterDecision | LegacyToolChainDecision>) {}
+  constructor(private readonly script: RouterDecision[]) {}
 
   async decide(): Promise<RouterDecision> {
     const next = this.script[this.cursor];
     this.cursor += 1;
     if (!next) {
       throw new Error("Scripted router exhausted.");
-    }
-    if (next.type === "tool_chain") {
-      return {
-        type: "search",
-        fullQuery: next.fullQuery,
-      };
     }
     return next;
   }
@@ -266,16 +88,33 @@ export class OpenAIRouter implements Router {
             userMessage: context.userMessage,
             requestedWorkflow: context.requestedWorkflow ?? "auto",
             conversationHistory: context.conversationHistory,
-            outputShape: {
-              type: "direct_response | search | design_experiment",
-              answer: "string when using direct_response",
-              workflowHint: "optional search | design_experiment hint when using direct_response",
-              experimentProposal: "{ title, summary, approvalPrompt } when proposing an experiment for approval",
-              fullQuery: "string when using search",
-              rationale: "optional short explanation when using search or design_experiment",
-              executionMode: "optional semantic | comprehensive | hermes when using search",
-              designSummary: "string when using design_experiment",
-              executionPrompt: "string when using design_experiment",
+            outputContract: {
+              allowedTypes: ["direct_response", "search", "design_experiment"],
+              rules: [
+                "Return exactly one object.",
+                "Set type to one of the allowedTypes values.",
+                "Only include fields that belong to the chosen type.",
+                "For direct_response, include answer. Include workflowHint only when it is exactly search or design_experiment.",
+                "For direct_response experiment proposals, include experimentProposal with title, summary, and approvalPrompt.",
+                "For search, include fullQuery and optionally rationale or executionMode.",
+                "For design_experiment, include designSummary and executionPrompt and optionally rationale.",
+              ],
+              examples: [
+                {
+                  type: "direct_response",
+                  answer: "Tell me which kind of grief examples you want and I can narrow the corpus search.",
+                },
+                {
+                  type: "search",
+                  fullQuery: "Find novels in the corpus that portray grief through obsession or spiritual crisis.",
+                  executionMode: "semantic",
+                },
+                {
+                  type: "design_experiment",
+                  designSummary: "Label a selected corpus slice for grief framing, then aggregate the labels into charts for a paper draft.",
+                  executionPrompt: "Create and run the approved labeling and aggregation workflow over the selected corpus slice, then produce the paper draft and charts.",
+                },
+              ],
             },
           }),
         },
@@ -334,12 +173,7 @@ export class OpenAIRouter implements Router {
     if (!content) {
       throw new Error("Router response was empty.");
     }
-    const parsed = coerceRouterDecision(parseModelJsonObject<unknown>(content));
-    const result = RouterDecisionSchema.safeParse(parsed);
-    if (result.success) {
-      return result.data;
-    }
-    const fallbackRouter = new FallbackRouter();
-    return fallbackRouter.decide(context);
+    const parsed = parseModelJsonObject<unknown>(content);
+    return RouterDecisionSchema.parse(parsed);
   }
 }

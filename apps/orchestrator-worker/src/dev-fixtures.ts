@@ -7,7 +7,7 @@ import { createBillingService } from "./billing";
 import { HashEmbedder } from "./embeddings";
 import { FallbackPlanner } from "./planner";
 import { MemoryBlobStore } from "./r2";
-import { FallbackRouter } from "./router";
+import type { Router, RouterContext, RouterDecision } from "./router";
 import { InMemoryAppStore } from "./store";
 import { FallbackSynthesizer } from "./synthesizer";
 
@@ -173,6 +173,35 @@ class DemoRuntimeGateway implements RuntimeToolGateway {
   }
 }
 
+class DemoRouter implements Router {
+  async decide(context: RouterContext): Promise<RouterDecision> {
+    const message = context.userMessage.trim();
+    if (/\b(experiment|label(?:ing)?|annotat(?:e|ion)|aggregate|paper|chart|dataset)\b/i.test(message)) {
+      return {
+        type: "direct_response",
+        answer: "Before I run an experiment, I need a concrete design and your explicit approval.",
+        workflowHint: "design_experiment",
+        experimentProposal: {
+          title: "Experiment Proposal",
+          summary: `Proposed request: ${message || "Experiment design needed."}`,
+          approvalPrompt: `I approve this experiment plan.\n\nRequest:\n${message || "Experiment design needed."}`,
+        },
+      };
+    }
+    if (/\b(book|books|novel|novels|passage|passages|quote|quotes|theme|themes|search|find|compare|contrast)\b/i.test(message)) {
+      return {
+        type: "search",
+        fullQuery: message,
+        executionMode: "semantic",
+      };
+    }
+    return {
+      type: "direct_response",
+      answer: "I can help you search the corpus or design an experiment before running it.",
+    };
+  }
+}
+
 export function createDemoDeps(): AppDeps {
   const store = new InMemoryAppStore(DEMO_WORKS, DEMO_CHUNKS);
   const blobStore = new MemoryBlobStore();
@@ -187,7 +216,7 @@ export function createDemoDeps(): AppDeps {
   return {
     store,
     billing: createBillingService(store),
-    router: new FallbackRouter(),
+    router: new DemoRouter(),
     planner: new FallbackPlanner(),
     embedder: new HashEmbedder(),
     synthesizer: new FallbackSynthesizer(),

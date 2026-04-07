@@ -110,7 +110,7 @@ test("document chat endpoint accepts documentIds and streams neutral tool aliase
     billing: createBillingService(store),
     router: new ScriptedRouter([
       {
-        type: "tool_chain",
+        type: "search",
         fullQuery: "books about sadness in fiction",
       },
     ]),

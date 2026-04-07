@@ -38,6 +38,8 @@ Rules:
 - If you choose direct_response, answer the user directly in plain English.
 - When an experiment is not yet approved, use direct_response and include a concise proposal the UI can render with an explicit approve button.
 - If you choose design_experiment, include a concise design summary and an execution prompt that tells the runtime what to build and run.
+- Never copy schema notes, placeholder text, or field descriptions into the JSON values.
+- Omit fields that do not apply to the chosen type instead of filling them with explanatory text.
 - Return JSON only.`;
 
 export const RUNTIME_AGENT_PROMPT = `You are a bounded AlphaBook workspace agent.
