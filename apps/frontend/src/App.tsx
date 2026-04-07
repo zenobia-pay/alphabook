@@ -6038,7 +6038,16 @@ export default function App() {
                         <img src={work.coverImageUrl} alt="" loading="lazy" />
                       </div>
                     ) : (
-                      <div className="work-feed-cover work-feed-cover-placeholder" aria-hidden="true" />
+                      <div className="work-feed-cover work-feed-cover-placeholder" aria-hidden="true">
+                        <div className="work-feed-cover-spine" />
+                        <div className="work-feed-cover-fallback-copy">
+                          <p className="work-feed-cover-kicker">alpha book</p>
+                          <p className="work-feed-cover-title">{work.title}</p>
+                          {primaryAuthor ? (
+                            <p className="work-feed-cover-author">{primaryAuthor}</p>
+                          ) : null}
+                        </div>
+                      </div>
                     )}
                   </div>
                   <div className="work-feed-copy">

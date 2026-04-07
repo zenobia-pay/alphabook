@@ -1132,9 +1132,70 @@ button {
 
 .work-feed-cover-placeholder {
   aspect-ratio: 3 / 4;
+  display: flex;
+  align-items: stretch;
+  isolation: isolate;
+  border: 1px solid rgba(73, 55, 40, 0.14);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.84), rgba(243, 238, 228, 0.95)),
+    radial-gradient(circle at top left, rgba(255, 255, 255, 0.95), transparent 42%),
+    linear-gradient(180deg, rgba(250, 244, 233, 0.98), rgba(234, 220, 199, 0.98)),
     rgba(39, 37, 34, 0.05);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.72),
+    0 10px 24px rgba(61, 42, 31, 0.08);
+}
+
+.work-feed-cover-spine {
+  width: 12%;
+  min-width: 14px;
+  background:
+    linear-gradient(180deg, rgba(114, 82, 55, 0.92), rgba(87, 61, 41, 0.98)),
+    rgba(39, 37, 34, 0.08);
+  box-shadow:
+    inset -1px 0 0 rgba(255, 255, 255, 0.22),
+    inset -5px 0 10px rgba(33, 22, 17, 0.22);
+}
+
+.work-feed-cover-fallback-copy {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 14px 14px;
+}
+
+.work-feed-cover-kicker {
+  margin: 0;
+  font-size: 0.58rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgba(87, 61, 41, 0.68);
+}
+
+.work-feed-cover-title {
+  margin: 0;
+  font-family: "Newsreader", serif;
+  font-size: clamp(1rem, 1.4vw, 1.32rem);
+  line-height: 1.05;
+  letter-spacing: -0.035em;
+  color: rgba(31, 22, 17, 0.94);
+  display: -webkit-box;
+  -webkit-line-clamp: 6;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.work-feed-cover-author {
+  margin: 0;
+  font-size: 0.72rem;
+  line-height: 1.3;
+  color: rgba(64, 46, 34, 0.72);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .work-feed-copy {
