@@ -914,6 +914,6 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-  logLine(`server_started host=${HOST} port=${PORT} run_root=${RUN_ROOT}`);
+  logLine(`server_started host=${HOST} port=${PORT} run_roots=${getWrapperRunRoots().join(",")}`);
   console.log(`Hermes job API listening on http://${HOST}:${PORT}`);
 });
