@@ -513,6 +513,22 @@ button {
   gap: 12px;
 }
 
+.explore-feed-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-self: center;
+  gap: 8px;
+  min-height: 24px;
+  font-size: 0.82rem;
+  color: rgba(52, 46, 40, 0.68);
+}
+
+.explore-feed-indicator-spinner {
+  width: 0.9rem;
+  height: 0.9rem;
+  flex: 0 0 auto;
+}
+
 .explore-composer-toolbar {
   display: flex;
   justify-content: flex-end;
@@ -1029,9 +1045,17 @@ button {
 
 .work-feed {
   width: min(1240px, 100%);
-  column-count: 4;
-  column-gap: 28px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 30px 28px;
+  align-items: start;
   padding-bottom: 48px;
+}
+
+@media (max-width: 1180px) {
+  .work-feed {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
 .explore-filter-field {
@@ -1073,8 +1097,7 @@ button {
 
 .work-feed-card {
   width: 100%;
-  break-inside: avoid;
-  margin: 0 0 30px;
+  margin: 0;
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -1083,6 +1106,7 @@ button {
   text-align: left;
   box-shadow: none;
   transition: opacity 120ms ease, transform 120ms ease;
+  align-self: start;
 }
 
 .work-feed-card:hover {
@@ -1223,7 +1247,19 @@ button {
   margin: 18px 0 0;
   color: var(--text-muted);
   text-align: center;
-  column-span: all;
+  grid-column: 1 / -1;
+}
+
+.feed-status-loading {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 38px;
+}
+
+.feed-status-loading p {
+  margin: 0;
 }
 
 .feature-card,
@@ -3580,17 +3616,13 @@ button {
   }
 
   .work-feed {
-    column-count: 2;
-    column-gap: 18px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 22px 18px;
   }
 
   .explore-filter-popover {
     right: -2px;
     width: min(300px, calc(100vw - 32px));
-  }
-
-  .work-feed-card {
-    margin-bottom: 22px;
   }
 
   .work-feed-copy h2 {

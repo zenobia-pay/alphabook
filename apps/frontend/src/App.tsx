@@ -102,6 +102,8 @@ type UrlState = {
   runId: string | null | undefined;
   adminSection: "runs" | "users" | "analytics" | "incidents" | "logs";
   debugEnabled: boolean;
+  exploreFilters: ExploreFilterState;
+  exploreRandomSeed: number | null;
 };
 
 type AdminAccessState = {
@@ -209,6 +211,7 @@ const DEFAULT_EXPLORE_FILTERS: ExploreFilterState = {
   subject: "all",
   bookshelf: "all",
 };
+const EXPLORE_PAGE_SIZE = 24;
 const GUEST_CLAIM_STORAGE_PREFIX = `${IMPLEMENTATION_ID}:guest-claimed:`;
 
 type SeoDocumentState = {
@@ -387,6 +390,8 @@ function readUrlState(): UrlState {
       runId: undefined,
       adminSection: "runs",
       debugEnabled: false,
+      exploreFilters: DEFAULT_EXPLORE_FILTERS,
+      exploreRandomSeed: null,
     };
   }
 
@@ -400,6 +405,8 @@ function readUrlState(): UrlState {
   const params = new URLSearchParams(window.location.search);
   const rawView = params.get("view");
   const resolvedView = rawView === "library" ? "explore" : rawView;
+  const rawExploreSeed = params.get("exploreSeed");
+  const parsedExploreSeed = rawExploreSeed ? Number.parseInt(rawExploreSeed, 10) : Number.NaN;
   return {
     view: pathnameMatch ? "book" : profilePathMatch ? "profile" : pathnameView ?? (isViewMode(resolvedView) ? resolvedView : "assistant"),
     sessionId: params.has("session") ? params.get("session") || null : undefined,
@@ -415,6 +422,12 @@ function readUrlState(): UrlState {
           ? "logs"
           : "runs",
     debugEnabled: params.get("debug") === "true",
+    exploreFilters: {
+      language: params.get("exploreLanguage") || DEFAULT_EXPLORE_FILTERS.language,
+      subject: params.get("exploreSubject") || DEFAULT_EXPLORE_FILTERS.subject,
+      bookshelf: params.get("exploreBookshelf") || DEFAULT_EXPLORE_FILTERS.bookshelf,
+    },
+    exploreRandomSeed: Number.isInteger(parsedExploreSeed) && parsedExploreSeed > 0 ? parsedExploreSeed : null,
   };
 }
 
@@ -483,6 +496,33 @@ function writeUrlState(next: UrlState, mode: UrlWriteMode = "replace") {
     url.searchParams.set("debug", "true");
   } else {
     url.searchParams.delete("debug");
+  }
+  if (next.view === "explore") {
+    if (next.exploreFilters.language !== "all") {
+      url.searchParams.set("exploreLanguage", next.exploreFilters.language);
+    } else {
+      url.searchParams.delete("exploreLanguage");
+    }
+    if (next.exploreFilters.subject !== "all") {
+      url.searchParams.set("exploreSubject", next.exploreFilters.subject);
+    } else {
+      url.searchParams.delete("exploreSubject");
+    }
+    if (next.exploreFilters.bookshelf !== "all") {
+      url.searchParams.set("exploreBookshelf", next.exploreFilters.bookshelf);
+    } else {
+      url.searchParams.delete("exploreBookshelf");
+    }
+    if (next.exploreRandomSeed) {
+      url.searchParams.set("exploreSeed", String(next.exploreRandomSeed));
+    } else {
+      url.searchParams.delete("exploreSeed");
+    }
+  } else {
+    url.searchParams.delete("exploreLanguage");
+    url.searchParams.delete("exploreSubject");
+    url.searchParams.delete("exploreBookshelf");
+    url.searchParams.delete("exploreSeed");
   }
 
   const nextUrl = `${url.pathname}${url.search}${url.hash}`;
@@ -3373,9 +3413,9 @@ export default function App() {
   const [feedInitialLoadState, setFeedInitialLoadState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [selectedWorkIds, setSelectedWorkIds] = useState<string[]>([]);
   const [exploreFilterOpen, setExploreFilterOpen] = useState(false);
-  const [exploreAppliedFilters, setExploreAppliedFilters] = useState<ExploreFilterState>(DEFAULT_EXPLORE_FILTERS);
-  const [exploreDraftFilters, setExploreDraftFilters] = useState<ExploreFilterState>(DEFAULT_EXPLORE_FILTERS);
-  const [exploreRandomSeed, setExploreRandomSeed] = useState<number | null>(null);
+  const [exploreAppliedFilters, setExploreAppliedFilters] = useState<ExploreFilterState>(initialUrlState.exploreFilters);
+  const [exploreDraftFilters, setExploreDraftFilters] = useState<ExploreFilterState>(initialUrlState.exploreFilters);
+  const [exploreRandomSeed, setExploreRandomSeed] = useState<number | null>(initialUrlState.exploreRandomSeed);
   const [activeWorkId, setActiveWorkId] = useState<string | null | undefined>(initialUrlState.workId);
   const [activeProfileUserId, setActiveProfileUserId] = useState<string | null | undefined>(initialUrlState.profileUserId);
   const [activeWork, setActiveWork] = useState<WorkDetail | null>(() => initialWorkPageBootstrap?.work ?? null);
@@ -3745,6 +3785,9 @@ export default function App() {
       setAdminSection(next.adminSection);
       setAdminRunInput(next.runId ?? "");
       setDebugEnabled(next.debugEnabled);
+      setExploreAppliedFilters(next.exploreFilters);
+      setExploreDraftFilters(next.exploreFilters);
+      setExploreRandomSeed(next.exploreRandomSeed);
       setMobileNavOpen(false);
     };
 
@@ -3768,9 +3811,11 @@ export default function App() {
       runId: selectedAdminRunId,
       adminSection,
       debugEnabled,
+      exploreFilters: exploreAppliedFilters,
+      exploreRandomSeed,
     }, pendingUrlWriteModeRef.current);
     pendingUrlWriteModeRef.current = "replace";
-  }, [activeView, selectedSessionId, activeWorkId, activeReaderPath, activeChunkId, activeProfileUserId, selectedAdminRunId, adminSection, debugEnabled]);
+  }, [activeView, selectedSessionId, activeWorkId, activeReaderPath, activeChunkId, activeProfileUserId, selectedAdminRunId, adminSection, debugEnabled, exploreAppliedFilters, exploreRandomSeed]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -3929,7 +3974,7 @@ export default function App() {
       setFeedLoading(true);
       const next = await fetchWorks({
         offset,
-        limit: 12,
+        limit: EXPLORE_PAGE_SIZE,
         language: exploreAppliedFilters.language === "all" ? null : exploreAppliedFilters.language,
         subject: exploreAppliedFilters.subject === "all" ? null : exploreAppliedFilters.subject,
         bookshelf: exploreAppliedFilters.bookshelf === "all" ? null : exploreAppliedFilters.bookshelf,
@@ -5486,6 +5531,7 @@ export default function App() {
   }
 
   function resetExploreFilters() {
+    pendingUrlWriteModeRef.current = "push";
     setExploreDraftFilters(DEFAULT_EXPLORE_FILTERS);
     setExploreAppliedFilters(DEFAULT_EXPLORE_FILTERS);
     setExploreFilterOpen(false);
@@ -5535,10 +5581,12 @@ export default function App() {
   }
 
   function rerollExploreFeed() {
+    pendingUrlWriteModeRef.current = "push";
     setExploreRandomSeed(generateExploreRandomSeed());
   }
 
   function applyExploreFilters() {
+    pendingUrlWriteModeRef.current = "push";
     setExploreAppliedFilters(exploreDraftFilters);
     setExploreFilterOpen(false);
   }
@@ -5864,6 +5912,8 @@ export default function App() {
 
   function renderExploreView() {
     const formattedCorpusCount = formatCompactCount(feedTotalCount);
+    const isFeedRefreshing = feedInitialLoadState === "loading";
+    const isFeedAppending = feedLoading && !isFeedRefreshing && feedWorks.length > 0;
     return (
       <div className="view-shell explore-view" onScroll={handleExploreScroll}>
         <section className="explore-hero">
@@ -6018,10 +6068,17 @@ export default function App() {
                 </CardContent>
               </Card>
             </div>
+
+            {isFeedRefreshing ? (
+              <div className="explore-feed-indicator" role="status" aria-live="polite">
+                <LoaderCircle aria-hidden="true" className="explore-feed-indicator-spinner animate-spin" />
+                <span>Loading books</span>
+              </div>
+            ) : null}
           </form>
         </section>
 
-        <section className="work-feed" aria-label="Corpus feed">
+        <section className="work-feed" aria-label="Corpus feed" aria-busy={feedLoading}>
           {feedWorks.map((work) => {
             const selected = selectedWorkIds.includes(work.id);
             const primaryAuthor = work.authors[0] ?? null;
@@ -6080,6 +6137,13 @@ export default function App() {
               <p>
                 {IMPLEMENTATION.emptyCorpusMessage}
               </p>
+            </div>
+          ) : null}
+
+          {isFeedAppending ? (
+            <div className="feed-status feed-status-loading" role="status" aria-live="polite">
+              <LoaderCircle aria-hidden="true" className="explore-feed-indicator-spinner animate-spin" />
+              <p>Loading more books</p>
             </div>
           ) : null}
         </section>
