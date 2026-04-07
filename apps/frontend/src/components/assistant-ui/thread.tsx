@@ -588,7 +588,14 @@ const MessageError: FC = () => {
 
 const AssistantMessage: FC = () => {
   const isRunning = useAuiState((state) => state.message.status?.type === "running");
-  const { phase, experimentProposal } = useAuiState((state) => {
+  const phase = useAuiState((state) => {
+    const metadata = state.message.metadata;
+    const custom = metadata && typeof metadata === "object" && "custom" in metadata
+      ? metadata.custom as Record<string, unknown>
+      : null;
+    return typeof custom?.phase === "string" ? custom.phase : null;
+  });
+  const experimentProposalJson = useAuiState((state) => {
     const metadata = state.message.metadata;
     const custom = metadata && typeof metadata === "object" && "custom" in metadata
       ? metadata.custom as Record<string, unknown>
@@ -596,20 +603,29 @@ const AssistantMessage: FC = () => {
     const proposal = custom?.experimentProposal && typeof custom.experimentProposal === "object"
       ? custom.experimentProposal as Record<string, unknown>
       : null;
-    return {
-      phase: typeof custom?.phase === "string" ? custom.phase : null,
-      experimentProposal: proposal
-        && typeof proposal.title === "string"
-        && typeof proposal.summary === "string"
-        && typeof proposal.approvalPrompt === "string"
-        ? {
-            title: proposal.title,
-            summary: proposal.summary,
-            approvalPrompt: proposal.approvalPrompt,
-          }
-        : null,
-    };
+    if (
+      !proposal
+      || typeof proposal.title !== "string"
+      || typeof proposal.summary !== "string"
+      || typeof proposal.approvalPrompt !== "string"
+    ) {
+      return null;
+    }
+    return JSON.stringify({
+      title: proposal.title,
+      summary: proposal.summary,
+      approvalPrompt: proposal.approvalPrompt,
+    });
   });
+  const experimentProposal = useMemo(() => (
+    experimentProposalJson
+      ? JSON.parse(experimentProposalJson) as {
+          title: string;
+          summary: string;
+          approvalPrompt: string;
+        }
+      : null
+  ), [experimentProposalJson]);
   const isErrorMessage = phase === "error";
 
   return (
