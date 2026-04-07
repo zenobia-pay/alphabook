@@ -243,6 +243,18 @@ function normalizeCorpusLanguage(
   if (disallowedValues.some((entry) => entry.trim().toLowerCase() === lower)) {
     return null;
   }
+  if (/\b(fiction|poetry|stories?|story|drama|novels?|essays?|letters?|adventure|fantasy|humou?r|romance|biograph(?:y|ies)|speeches?|literature|history|mythology|religion|politics|juvenile|periodicals?)\b/iu.test(normalized)) {
+    return null;
+  }
+  if (/--|\d/u.test(normalized)) {
+    return null;
+  }
+  if (!/^[A-Za-z][A-Za-z ()-]{0,39}$/u.test(normalized) && !/^[a-z]{2,3}(?:-[a-z]{2,4})?$/iu.test(normalized)) {
+    return null;
+  }
+  if (!/^[a-z]{2,3}(?:-[a-z]{2,4})?$/iu.test(normalized) && normalized.split(/\s+/u).length > 3) {
+    return null;
+  }
   return normalized;
 }
 

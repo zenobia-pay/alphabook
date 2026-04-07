@@ -14,6 +14,8 @@ cd "$ROOT_DIR"
 
 npm run build -w @alphabook/frontend
 
+ssh "${SSH_OPTS[@]}" "${TARGET_USER}@${TARGET_HOST}" "mkdir -p '${TARGET_DIR}'"
+
 rsync -az --delete -e "ssh ${SSH_OPTS[*]}" \
   "$ROOT_DIR/apps/frontend/dist/" \
   "${TARGET_USER}@${TARGET_HOST}:${TARGET_DIR}/"

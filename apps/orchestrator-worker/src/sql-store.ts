@@ -12,6 +12,8 @@ const INLINE_PAYLOAD_MAX_BYTES = 4_096;
 const INLINE_STRING_MAX_LENGTH = 1_200;
 const INLINE_ARRAY_MAX_ITEMS = 12;
 const INLINE_OBJECT_MAX_KEYS = 24;
+const EXPLORE_LANGUAGE_CODE_RE = /^[a-z]{2,3}(?:-[a-z]{2,4})?$/iu;
+const EXPLORE_CLASSIFICATION_CODE_RE = /^(?:[A-Z]{1,3}\d{0,4}(?:\.\d+)?|[A-Z]{1,3})$/u;
 
 type RetentionClass = "product-critical" | "debug-index" | "debug-blob";
 
@@ -121,6 +123,22 @@ function normalizeSqlExploreSeed(value: number | null | undefined) {
     secondaryFactor: (Math.floor(seed / 97) % 46326) + 1,
     secondaryOffset: (Math.floor(seed / 193) % 46327),
   };
+}
+
+function isPlausibleExploreLanguageLabel(label: string) {
+  const normalized = label.trim();
+  if (!normalized) {
+    return false;
+  }
+  return EXPLORE_LANGUAGE_CODE_RE.test(normalized);
+}
+
+function isClassificationLikeSubject(label: string) {
+  const normalized = label.trim();
+  if (!normalized) {
+    return false;
+  }
+  return EXPLORE_CLASSIFICATION_CODE_RE.test(normalized);
 }
 
 function buildSqlExploreOrderBy(idExpression: string, randomSeed: ReturnType<typeof normalizeSqlExploreSeed>, fallbackOrder: string) {
@@ -1973,7 +1991,7 @@ export class SqlAppStore implements AppStore {
           WHERE w.language IS NOT NULL AND TRIM(w.language) <> '' ${this.adapterWorkClause("w")} ${filterClause.clause}
           GROUP BY w.language
           ORDER BY COUNT(*) DESC, w.language ASC
-          LIMIT 12
+          LIMIT 256
         `,
         filterClause.params,
       ),
@@ -2006,9 +2024,12 @@ export class SqlAppStore implements AppStore {
     return {
       languages: languages.rows
         .filter((row): row is { label: string; count: string | number } => typeof row.label === "string" && row.label.trim().length > 0)
+        .filter((row) => isPlausibleExploreLanguageLabel(row.label))
+        .slice(0, 12)
         .map((row) => ({ label: row.label, count: Number(row.count) || 0 })),
       subjects: subjects.rows
         .filter((row): row is { label: string; count: string | number } => typeof row.label === "string" && row.label.trim().length > 0)
+        .filter((row) => !isClassificationLikeSubject(row.label))
         .map((row) => ({ label: row.label, count: Number(row.count) || 0 })),
       bookshelves: bookshelves.rows
         .filter((row): row is { label: string; count: string | number } => typeof row.label === "string" && row.label.trim().length > 0)

@@ -213,6 +213,9 @@ const DEFAULT_EXPLORE_FILTERS: ExploreFilterState = {
 };
 const EXPLORE_PAGE_SIZE = 24;
 const GUEST_CLAIM_STORAGE_PREFIX = `${IMPLEMENTATION_ID}:guest-claimed:`;
+const LANGUAGE_DISPLAY_NAMES = typeof Intl !== "undefined"
+  ? new Intl.DisplayNames(["en"], { type: "language" })
+  : null;
 
 type SeoDocumentState = {
   title: string;
@@ -540,6 +543,23 @@ function ensureLocalUserId(): string {
   const created = crypto.randomUUID();
   window.localStorage.setItem(USER_STORAGE_KEY, created);
   return created;
+}
+
+function formatExploreLanguageLabel(value: string) {
+  const normalized = value.trim();
+  if (!normalized) {
+    return value;
+  }
+  if (/^[a-z]{2,3}(?:-[a-z]{2,4})?$/iu.test(normalized)) {
+    const display = LANGUAGE_DISPLAY_NAMES?.of(normalized.toLowerCase());
+    if (display && display.toLowerCase() !== normalized.toLowerCase()) {
+      return display;
+    }
+  }
+  return normalized
+    .split(/\s+/u)
+    .map((part) => (part ? part[0]!.toUpperCase() + part.slice(1) : part))
+    .join(" ");
 }
 
 function readCachedSessions(): ChatSessionSummary[] {
@@ -5964,7 +5984,7 @@ export default function App() {
                         >
                           <option value="all">All languages</option>
                           {feedFacets.languages.map((option) => (
-                            <option key={option.label} value={option.label}>{option.label} ({option.count})</option>
+                            <option key={option.label} value={option.label}>{formatExploreLanguageLabel(option.label)} ({option.count})</option>
                           ))}
                         </select>
                       </label>
@@ -5972,7 +5992,7 @@ export default function App() {
 
                     {feedFacets.subjects.length > 0 ? (
                       <label className="explore-filter-field">
-                        <span>Subject</span>
+                        <span>Topic</span>
                         <select
                           value={exploreDraftFilters.subject}
                           onChange={(event) => {
@@ -5980,7 +6000,7 @@ export default function App() {
                             setExploreDraftFilters((current) => ({ ...current, subject: value }));
                           }}
                         >
-                          <option value="all">All subjects</option>
+                          <option value="all">All topics</option>
                           {feedFacets.subjects.map((option) => (
                             <option key={option.label} value={option.label}>{option.label} ({option.count})</option>
                           ))}
