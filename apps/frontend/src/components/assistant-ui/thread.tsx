@@ -172,6 +172,36 @@ function summarizePlanToolLine(entry: PlanToolTraceRecord) {
   return `${label} — Running`;
 }
 
+function buildPlanToolTraceDetailText(trace: PlanToolTraceRecord[]) {
+  const lines: string[] = [];
+  for (const entry of trace) {
+    const label = typeof entry.label === "string" && entry.label.trim().length > 0 ? entry.label.trim() : "Step";
+    const rationale = typeof entry.rationale === "string" ? entry.rationale.trim() : "";
+    const progress = Array.isArray(entry.progress)
+      ? entry.progress.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      : [];
+    const result = entry.result && typeof entry.result === "object" ? entry.result as Record<string, unknown> : null;
+    const summary = result && typeof result.__summary === "string" ? result.__summary.trim() : "";
+    const error = result && typeof result.error === "string" ? result.error.trim() : "";
+    const header = `${label}${entry.state ? ` [${entry.state}]` : ""}`;
+    lines.push(header);
+    if (rationale) {
+      lines.push(`rationale: ${rationale}`);
+    }
+    for (const item of progress) {
+      lines.push(item);
+    }
+    if (summary) {
+      lines.push(`summary: ${summary}`);
+    }
+    if (error) {
+      lines.push(error);
+    }
+    lines.push("");
+  }
+  return lines.join("\n").trim();
+}
+
 type ThreadSuggestion = {
   icon?: "search" | "heart";
   title: string;
@@ -718,6 +748,7 @@ const AssistantMessage: FC = () => {
     return custom?.toolCalls;
   });
   const planToolTrace = useMemo(() => readPlanToolTrace(rawPlanToolTrace), [rawPlanToolTrace]);
+  const planToolTraceDetailText = useMemo(() => buildPlanToolTraceDetailText(planToolTrace), [planToolTrace]);
   const hasPlanToolTrace = phase === "plan" && planToolTrace.length > 0;
 
   return (
@@ -729,7 +760,7 @@ const AssistantMessage: FC = () => {
     >
       <div className="aui-assistant-message-content wrap-break-word px-2 text-foreground leading-relaxed">
         {phase === "progress" && !hasPlanToolTrace ? <ProgressMessageCard text={progressText} /> : <MessagePrimitive.Parts components={TOOL_PART_COMPONENTS} />}
-        {hasPlanToolTrace ? <PlanToolTraceCard trace={planToolTrace} isRunning={isRunning} detailText={progressText} /> : null}
+        {hasPlanToolTrace ? <PlanToolTraceCard trace={planToolTrace} isRunning={isRunning} detailText={planToolTraceDetailText || progressText} /> : null}
         {experimentProposal ? <ExperimentApprovalCard proposal={experimentProposal} disabled={isRunning} /> : null}
         {isRunning && !hasVisibleParts && !experimentProposal ? (
           <div className="aui-assistant-running-indicator" aria-label="Assistant is thinking">
