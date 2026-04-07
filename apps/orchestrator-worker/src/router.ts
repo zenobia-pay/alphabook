@@ -21,7 +21,7 @@ const RouterDecisionSchema = z.union([
     type: z.literal("search"),
     fullQuery: z.string().min(1),
     rationale: z.string().min(1).optional(),
-    executionMode: z.enum(["semantic", "comprehensive", "agentic", "hermes"]).optional(),
+    executionMode: z.enum(["semantic", "comprehensive", "agentic"]).optional(),
   }),
   z.object({
     type: z.literal("design_experiment"),
@@ -32,13 +32,13 @@ const RouterDecisionSchema = z.union([
 ]);
 
 export type RouterDecision = z.infer<typeof RouterDecisionSchema>;
-type SearchExecutionMode = "semantic" | "comprehensive" | "agentic" | "hermes";
+type SearchExecutionMode = "semantic" | "comprehensive" | "agentic";
 type RouterAuditLog = (event: string, payload: Record<string, unknown>) => void;
-const SearchExecutionModeSchema = z.enum(["semantic", "comprehensive", "agentic", "hermes"]);
+const SearchExecutionModeSchema = z.enum(["semantic", "comprehensive", "agentic"]);
 
 function inferExplicitExecutionMode(userMessage: string): SearchExecutionMode | undefined {
   const normalized = userMessage.toLowerCase();
-  if (/\b(agentic|hermes)\b/.test(normalized)) {
+  if (/\bagentic\b/.test(normalized)) {
     return "agentic";
   }
   if (
@@ -124,7 +124,7 @@ export class OpenAIRouter implements Router {
     const rawExecutionMode = SearchExecutionModeSchema.safeParse(candidate.executionMode).success
       ? candidate.executionMode as SearchExecutionMode
       : undefined;
-    const executionMode = rawExecutionMode === "hermes" ? "agentic" : rawExecutionMode;
+    const executionMode = rawExecutionMode;
     const experimentProposalCandidate = candidate.experimentProposal
       && typeof candidate.experimentProposal === "object"
       && !Array.isArray(candidate.experimentProposal)

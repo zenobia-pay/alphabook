@@ -112,6 +112,7 @@ test("document chat endpoint accepts documentIds and streams neutral tool aliase
       {
         type: "search",
         fullQuery: "books about sadness in fiction",
+        executionMode: "semantic",
       },
     ]),
     planner: new ScriptedPlanner([
@@ -373,7 +374,215 @@ test("document chat infers Agentic mode from the raw message before runner selec
     assert.equal(response.status, 200);
     const body = await response.text();
     assert.match(body, /Starting an Agentic search run on this thread/);
-    assert.match(body, /"completionMode":"hermes"/);
+    assert.match(body, /"completionMode":"agentic"/);
+    assert.doesNotMatch(body, /semantic_deep_search/);
+    assert.equal(hermesLaunchPayloads.length, 1);
+    assert.equal((hermesLaunchPayloads[0] as { workflow?: string }).workflow, "search");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("document chat launches Agentic search from the router decision instead of falling through to semantic search", async () => {
+  const originalFetch = globalThis.fetch;
+  const hermesLaunchPayloads: unknown[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    if (url === "https://hermes.example.test/v1/jobs" && init?.method === "POST") {
+      hermesLaunchPayloads.push(init.body ? JSON.parse(String(init.body)) : null);
+      return new Response(JSON.stringify({
+        job: {
+          id: "job-agentic-from-router",
+          state: "completed",
+          running: false,
+          pid: 1234,
+          userPrompt: "what journals do you have in here? whose journals? Anyone interesting you can find for me? search for personal diaries",
+          model: "gpt-5.4",
+          maxTurns: 60,
+          launchedAt: new Date().toISOString(),
+          startedAt: new Date().toISOString(),
+          finishedAt: new Date().toISOString(),
+          innerRunDir: "/srv/alphabook/logs/corpus-search/job-agentic-from-router",
+          innerRunId: "job-agentic-from-router",
+          hermesSessionId: "agentic-session",
+          exitCode: 0,
+          heartbeatAt: new Date().toISOString(),
+          phase: "completed",
+          phaseProgressPct: 100,
+          detail: null,
+          manifestStatus: "completed",
+          chosenScope: "full corpus",
+          scopeRationale: null,
+          recordCounts: null,
+        },
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url === "https://hermes.example.test/v1/jobs/job-agentic-from-router") {
+      return new Response(JSON.stringify({
+        job: {
+          id: "job-agentic-from-router",
+          state: "completed",
+          running: false,
+          pid: 1234,
+          userPrompt: "what journals do you have in here? whose journals? Anyone interesting you can find for me? search for personal diaries",
+          model: "gpt-5.4",
+          maxTurns: 60,
+          launchedAt: new Date().toISOString(),
+          startedAt: new Date().toISOString(),
+          finishedAt: new Date().toISOString(),
+          innerRunDir: "/srv/alphabook/logs/corpus-search/job-agentic-from-router",
+          innerRunId: "job-agentic-from-router",
+          hermesSessionId: "agentic-session",
+          exitCode: 0,
+          heartbeatAt: new Date().toISOString(),
+          phase: "completed",
+          phaseProgressPct: 100,
+          detail: null,
+          manifestStatus: "completed",
+          chosenScope: "full corpus",
+          scopeRationale: null,
+          recordCounts: null,
+        },
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.startsWith("https://hermes.example.test/v1/jobs/job-agentic-from-router/logs")) {
+      return new Response(JSON.stringify({
+        jobId: "job-agentic-from-router",
+        sources: [],
+        nextCursor: "",
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url === "https://hermes.example.test/v1/jobs/job-agentic-from-router/artifacts") {
+      return new Response(JSON.stringify({
+        jobId: "job-agentic-from-router",
+        runDir: "/srv/alphabook/logs/corpus-search/job-agentic-from-router",
+        innerRunDir: "/srv/alphabook/logs/corpus-search/job-agentic-from-router",
+        artifacts: [
+          {
+            name: "briefing.md",
+            path: "/srv/alphabook/logs/corpus-search/job-agentic-from-router/briefing.md",
+            bytes: 32,
+            updatedAt: new Date().toISOString(),
+          },
+          {
+            name: "hits/index.json",
+            path: "/srv/alphabook/logs/corpus-search/job-agentic-from-router/hits/index.json",
+            bytes: 11,
+            updatedAt: new Date().toISOString(),
+          },
+          {
+            name: "hermes.session.json",
+            path: "/srv/alphabook/logs/corpus-search/job-agentic-from-router/hermes.session.json",
+            bytes: 84,
+            updatedAt: new Date().toISOString(),
+          },
+        ],
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url === "https://hermes.example.test/v1/jobs/job-agentic-from-router/artifacts/briefing.md") {
+      return new Response(JSON.stringify({
+        jobId: "job-agentic-from-router",
+        artifact: {
+          name: "briefing.md",
+          path: "/srv/alphabook/logs/corpus-search/job-agentic-from-router/briefing.md",
+          bytes: 32,
+          updatedAt: new Date().toISOString(),
+          content: "# Briefing\nJournal inventory ready",
+        },
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url === "https://hermes.example.test/v1/jobs/job-agentic-from-router/artifacts/hits%2Findex.json") {
+      return new Response(JSON.stringify({
+        jobId: "job-agentic-from-router",
+        artifact: {
+          name: "hits/index.json",
+          path: "/srv/alphabook/logs/corpus-search/job-agentic-from-router/hits/index.json",
+          bytes: 11,
+          updatedAt: new Date().toISOString(),
+          content: "{\"hits\":[]}",
+        },
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url === "https://hermes.example.test/v1/jobs/job-agentic-from-router/artifacts/hermes.session.json") {
+      return new Response(JSON.stringify({
+        jobId: "job-agentic-from-router",
+        artifact: {
+          name: "hermes.session.json",
+          path: "/srv/alphabook/logs/corpus-search/job-agentic-from-router/hermes.session.json",
+          bytes: 94,
+          updatedAt: new Date().toISOString(),
+          content: JSON.stringify({
+            session_id: "agentic-session",
+            messages: [
+              {
+                role: "assistant",
+                content: "The agentic run searched the journal corpus directly.",
+              },
+            ],
+          }),
+        },
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(`Unhandled fetch: ${url}`, { status: 500 });
+  }) as typeof fetch;
+
+  try {
+    const store = new InMemoryAppStore();
+    const app = createApp({
+      store,
+      billing: createBillingService(store),
+      blobStore: new MemoryBlobStore(),
+      router: new ScriptedRouter([
+        {
+          type: "search",
+          fullQuery: "what journals do you have in here? whose journals? Anyone interesting you can find for me? search for personal diaries",
+          executionMode: "agentic",
+        },
+      ]),
+      hermesJobApiUrl: "https://hermes.example.test",
+      hermesJobApiToken: "test-token",
+      queues: {
+        ingestName: "alphabook-ingest",
+        jobsName: "alphabook-jobs",
+      },
+    });
+
+    const response = await app.request("/api/v1/documents/chat", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        userId: "11111111-1111-1111-1111-111111111111",
+        message: "what journals do you have in here? whose journals? Anyone interesting you can find for me? search for personal diaries",
+      }),
+    });
+
+    assert.equal(response.status, 200);
+    const body = await response.text();
+    assert.match(body, /Starting an Agentic search run on this thread/);
+    assert.match(body, /"completionMode":"agentic"/);
     assert.doesNotMatch(body, /semantic_deep_search/);
     assert.equal(hermesLaunchPayloads.length, 1);
     assert.equal((hermesLaunchPayloads[0] as { workflow?: string }).workflow, "search");

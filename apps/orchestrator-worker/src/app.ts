@@ -9486,6 +9486,10 @@ async function runHermesConversation(
       label: "Agentic Search Progress",
       rationale: "Streaming wrapper and inner-run progress while agentic search is running.",
       progress: ["Agentic search launched."],
+      sourceArgs: {
+        __toolName: "run_workspace_task",
+        __hermesSyntheticProgress: true,
+      },
       args: canonicalToolArgs(
         "run_workspace_task",
         {
