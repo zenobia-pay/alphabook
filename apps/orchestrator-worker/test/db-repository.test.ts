@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { D1CorpusDbRepository } from "../src/db-repository";
 
-test("D1 corpus repository maps work rows into neutral document and file records", async () => {
+test("SQL corpus repository maps work rows into neutral document and file records", async () => {
   const queries: string[] = [];
   const repository = new D1CorpusDbRepository({
     async query(sql: string) {

@@ -19,7 +19,7 @@ import { OpenAIPlanner } from "./planner";
 import { OpenAIRouter } from "./router";
 import { S3BlobStore } from "./s3-store";
 import { AlphaloopSemanticSearchService, Context1SemanticSearchService, DelegatingSemanticSearchService } from "./semantic-search";
-import { D1AppStore } from "./d1-store";
+import { SqlAppStore } from "./sql-store";
 import { OpenAISynthesizer } from "./synthesizer";
 import { QdrantVectorIndex } from "./vectorize";
 import { HttpRuntimeGateway } from "./runtime";
@@ -144,7 +144,7 @@ export function buildLinuxAppDeps(env: LinuxEnv, options: { boss?: PgBoss } = {}
   const queueNames = buildQueueNames(env, implementation.id);
   const db = resolveDb(env);
   const blobStore = resolveBlobStore(env);
-  const store = new D1AppStore(db, {
+  const store = new SqlAppStore(db, {
     adapterId: implementation.adapterId,
     blobStore,
     feedLabels: implementation.feedLabels,

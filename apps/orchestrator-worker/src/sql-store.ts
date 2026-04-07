@@ -382,7 +382,7 @@ function mapResearchTaskRow(row: {
   };
 }
 
-export class D1AppStore implements AppStore {
+export class SqlAppStore implements AppStore {
   private readonly blobStore: BlobStore;
   private readonly adapterId: string | null;
   private readonly feedLabels: { summary: string; taxonomy: string; fallback: string };

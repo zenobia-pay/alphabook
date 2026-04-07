@@ -12,7 +12,7 @@ export interface BlobStore {
   putJson(key: string, value: unknown): Promise<void>;
 }
 
-export class CloudflareR2Store implements BlobStore {
+export class R2BlobStore implements BlobStore {
   constructor(private readonly bucket: R2Bucket) {}
 
   async getText(key: string): Promise<string | null> {

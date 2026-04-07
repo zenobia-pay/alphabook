@@ -4210,7 +4210,7 @@ function redactSensitiveText(text: string): string {
     .replace(/\bBearer\s+[A-Za-z0-9._-]+\b/giu, "Bearer [redacted]")
     .replace(/\b(?:R2|AWS|OPENAI|CLOUDFLARE|ALPHABOOK)_[A-Z0-9_]*?(?:KEY|TOKEN|SECRET|COOKIE|PASSWORD)\s*=\s*[^\s]+/gu, "[redacted]")
     .replace(/\b(?:R2|AWS|OPENAI|CLOUDFLARE|ALPHABOOK)\s+(?:ACCESS KEY ID|SECRET ACCESS KEY|SESSION COOKIE|API KEY)\s*=\s*[^\s]+/giu, "[redacted]")
-    .replace(/\bhttps?:\/\/[A-Za-z0-9.-]+\.r2\.cloudflarestorage\.com\b/giu, "[redacted]")
+    .replace(/\bhttps?:\/\/[A-Za-z0-9.-]+\.(?:digitaloceanspaces\.com|amazonaws\.com)\b/giu, "[redacted]")
     .replace(/\b[A-Fa-f0-9]{32,}\b/gu, "[redacted]")
     .replace(/([A-Za-z0-9+/]{32,}={0,2})/gu, "[redacted]");
 }
@@ -4220,7 +4220,7 @@ function containsSensitiveUserFacingText(text: string): boolean {
     /\b(?:access key|secret access key|api key|session cookie|authorization token|bearer token)\b/iu.test(text)
     || /\b(?:R2|AWS|OPENAI|CLOUDFLARE|ALPHABOOK)_[A-Z0-9_]*?(?:KEY|TOKEN|SECRET|COOKIE|PASSWORD)\b/u.test(text)
     || /\b(?:R2|AWS|OPENAI|CLOUDFLARE|ALPHABOOK)\s+(?:ACCESS KEY ID|SECRET ACCESS KEY|SESSION COOKIE|API KEY)\b/iu.test(text)
-    || /\bhttps?:\/\/[A-Za-z0-9.-]+\.r2\.cloudflarestorage\.com\b/iu.test(text)
+    || /\bhttps?:\/\/[A-Za-z0-9.-]+\.(?:digitaloceanspaces\.com|amazonaws\.com)\b/iu.test(text)
   );
 }
 
@@ -13062,7 +13062,7 @@ export function createApp(inputDeps: CreateAppInput) {
     init?: RequestInit,
   ) {
     if (!deps.comprehensiveJobs) {
-      throw new Error("Comprehensive job Durable Object is not configured.");
+      throw new Error("Comprehensive job coordinator is not configured.");
     }
     const stub = deps.comprehensiveJobs.get(deps.comprehensiveJobs.idFromName(jobId));
     return stub.fetch(`https://comprehensive-job.internal${pathname}`, init);

@@ -166,7 +166,7 @@ export interface VectorizeBindingLike {
   ): Promise<unknown>;
 }
 
-export class CloudflareVectorizeIndex implements VectorSearchIndex {
+export class BindingVectorIndex implements VectorSearchIndex {
   constructor(private readonly binding: VectorizeBindingLike) {}
 
   async query(

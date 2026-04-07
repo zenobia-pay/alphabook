@@ -4,7 +4,7 @@ import { dirname, resolve } from "node:path";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { createWranglerD1Db, loadLocalDevVars } from "@alphabook/db";
 import { getImplementationConfig } from "@alphabook/implementations";
-import { D1AppStore } from "../../../apps/orchestrator-worker/src/d1-store";
+import { SqlAppStore } from "../../../apps/orchestrator-worker/src/sql-store";
 
 const DEFAULT_MAX_SHARD_SIZE = 1000;
 const DEFAULT_MIN_SHARD_SIZE = 25;
@@ -31,7 +31,7 @@ async function main() {
   const requestedShardSize = readArg("--shard-size");
 
   const implementation = getImplementationConfig(implementationId);
-  const store = new D1AppStore(createWranglerD1Db({
+  const store = new SqlAppStore(createWranglerD1Db({
     cwd: process.cwd(),
     databaseName: process.env.D1_DATABASE_NAME ?? "alphabook-app",
     wranglerConfig: process.env.D1_WRANGLER_CONFIG ?? "ops/cloudflare/resources.toml",

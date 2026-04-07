@@ -7,7 +7,7 @@ import { createWranglerD1Db, loadLocalDevVars } from "@alphabook/db";
 import { getImplementationConfig } from "@alphabook/implementations";
 import { listMirrorIds } from "@alphabook/source-gutenberg/mirror";
 
-import { D1AppStore } from "../../../apps/orchestrator-worker/src/d1-store";
+import { SqlAppStore } from "../../../apps/orchestrator-worker/src/sql-store";
 import { MAX_SPRITE_SHARD_SIZE, type SpriteShardCatalog, type SpriteShardManifest } from "../../../apps/orchestrator-worker/src/sprite-fanout";
 import { FlyMachinesRuntimeGateway } from "../../../apps/orchestrator-worker/src/runtime";
 import type { BlobObject, BlobStore } from "../../../apps/orchestrator-worker/src/r2";
@@ -229,7 +229,7 @@ async function loadMirrorIds(
 }
 
 async function lookupWorksByGutenbergId(
-  store: D1AppStore,
+  store: SqlAppStore,
   gutenbergIds: string[],
 ): Promise<Map<string, { workId: string; byteSize: number }>> {
   const db = createWranglerD1Db({
@@ -274,7 +274,7 @@ async function lookupWorksByGutenbergId(
 }
 
 async function buildMirrorBackedCatalog(
-  store: D1AppStore,
+  store: SqlAppStore,
   blobStore: BlobStore,
   implementationId: string,
   shardSize: number,
@@ -367,7 +367,7 @@ async function main() {
     },
   });
   const blobStore = new S3BlobStore(s3, bucketName);
-  const store = new D1AppStore(createWranglerD1Db({
+  const store = new SqlAppStore(createWranglerD1Db({
     cwd: process.cwd(),
     databaseName: process.env.D1_DATABASE_NAME ?? "alphabook-app",
     wranglerConfig: process.env.D1_WRANGLER_CONFIG ?? "ops/cloudflare/resources.toml",

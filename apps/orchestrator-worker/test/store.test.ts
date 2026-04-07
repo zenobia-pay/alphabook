@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import type { DbClient } from "@alphabook/db";
 
-import { D1AppStore } from "../src/d1-store";
+import { SqlAppStore } from "../src/sql-store";
 import { InMemoryAppStore } from "../src/store";
 
 test("upsertUserProfile updates the existing user when the auth id is stable", async () => {
@@ -149,7 +149,7 @@ test("appendRunEvent uses a single insert-select query for sequence allocation",
     },
     async end() {},
   };
-  const store = new D1AppStore(db);
+  const store = new SqlAppStore(db);
 
   const event = await store.appendRunEvent(
     "11111111-1111-1111-1111-111111111111",
@@ -192,7 +192,7 @@ test("appendRunEvent retries on run event sequence conflicts", async () => {
     async end() {},
   };
 
-  const store = new D1AppStore(db);
+  const store = new SqlAppStore(db);
   const event = await store.appendRunEvent(
     "11111111-1111-1111-1111-111111111111",
     "22222222-2222-2222-2222-222222222222",
@@ -204,7 +204,7 @@ test("appendRunEvent retries on run event sequence conflicts", async () => {
   assert.equal(event.sequence, 8);
 });
 
-test("D1 store serves explore works from feed snapshots without hydrating the full corpus", async () => {
+test("SQL store serves explore works from feed snapshots without hydrating the full corpus", async () => {
   const queries: Array<{ sql: string; params?: unknown[] }> = [];
   const db: DbClient = {
     async query<T = Record<string, unknown>>(sql: string, params?: unknown[]) {
@@ -242,7 +242,7 @@ test("D1 store serves explore works from feed snapshots without hydrating the fu
     async end() {},
   };
 
-  const store = new D1AppStore(db);
+  const store = new SqlAppStore(db);
   const [works, count] = await Promise.all([
     store.listWorks(0, 12),
     store.countWorks(),
@@ -260,7 +260,7 @@ test("D1 store serves explore works from feed snapshots without hydrating the fu
   assert.ok(queries.some((entry) => entry.sql.includes("COUNT(*) AS count")));
 });
 
-test("D1 store resolves single-work detail and files without hydrating the full corpus", async () => {
+test("SQL store resolves single-work detail and files without hydrating the full corpus", async () => {
   const queries: Array<{ sql: string; params?: unknown[] }> = [];
   const db: DbClient = {
     async query<T = Record<string, unknown>>(sql: string, params?: unknown[]) {
@@ -306,7 +306,7 @@ test("D1 store resolves single-work detail and files without hydrating the full 
     async end() {},
   };
 
-  const store = new D1AppStore(db);
+  const store = new SqlAppStore(db);
   const [work, document, files] = await Promise.all([
     store.getWorkById("work-1"),
     store.getDocumentById("work-1"),
@@ -325,7 +325,7 @@ test("D1 store resolves single-work detail and files without hydrating the full 
   assert.ok(queries.some((entry) => entry.sql.includes("FROM work_files wf")));
 });
 
-test("D1 store hydrates chunks by id without preloading the full corpus", async () => {
+test("SQL store hydrates chunks by id without preloading the full corpus", async () => {
   const queries: Array<{ sql: string; params?: unknown[] }> = [];
   const db: DbClient = {
     async query<T = Record<string, unknown>>(sql: string, params?: unknown[]) {
@@ -389,7 +389,7 @@ test("D1 store hydrates chunks by id without preloading the full corpus", async 
     },
   };
 
-  const store = new D1AppStore(db, { blobStore: blobStore as never });
+  const store = new SqlAppStore(db, { blobStore: blobStore as never });
   const chunks = await store.getChunksByIds(["gutenberg:42:0"]);
 
   assert.equal(chunks.length, 1);
