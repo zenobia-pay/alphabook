@@ -11,6 +11,11 @@ const RouterDecisionSchema = z.union([
     type: z.literal("direct_response"),
     answer: z.string().min(1),
     workflowHint: z.enum(["search", "design_experiment"]).nullable().optional(),
+    experimentProposal: z.object({
+      title: z.string().min(1),
+      summary: z.string().min(1),
+      approvalPrompt: z.string().min(1),
+    }).optional(),
   }),
   z.object({
     type: z.literal("search"),
@@ -72,6 +77,19 @@ function fallbackDirectAnswer(message: string): string {
   return "I can respond directly when you are brainstorming or designing a study, and I can launch either a search run or an approved experiment when you are ready.";
 }
 
+function buildFallbackExperimentProposal(message: string) {
+  const normalized = message.trim() || "the proposed experiment";
+  return {
+    title: "Experiment Proposal",
+    summary: [
+      "Before I run this experiment, I want explicit approval.",
+      `Current request: ${normalized}`,
+      "I still need a concrete scope, labeling or extraction schema, aggregation plan, and target output before the runner starts.",
+    ].join("\n\n"),
+    approvalPrompt: `I approve this experiment plan. Build the scripts, run the labeling and aggregation workflow, and produce the paper draft and charts.\n\nExperiment request:\n${normalized}`,
+  };
+}
+
 export class FallbackRouter implements Router {
   async decide(context: RouterContext): Promise<RouterDecision> {
     if (context.requestedWorkflow === "search") {
@@ -95,6 +113,7 @@ export class FallbackRouter implements Router {
         type: "direct_response",
         answer: fallbackDirectAnswer(context.userMessage),
         workflowHint: "design_experiment",
+        experimentProposal: buildFallbackExperimentProposal(context.userMessage),
       };
     }
     if (shouldUseToolChain(context.userMessage)) {
@@ -162,6 +181,7 @@ export class OpenAIRouter implements Router {
               type: "direct_response | search | design_experiment",
               answer: "string when using direct_response",
               workflowHint: "optional search | design_experiment hint when using direct_response",
+              experimentProposal: "{ title, summary, approvalPrompt } when proposing an experiment for approval",
               fullQuery: "string when using search",
               rationale: "optional short explanation when using search or design_experiment",
               executionMode: "optional semantic | comprehensive | hermes when using search",

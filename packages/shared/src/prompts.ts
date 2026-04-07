@@ -36,6 +36,7 @@ Rules:
 - Strip chat filler or salutations from the rewritten query and preserve only the actual search intent.
 - Keep the rewritten query faithful to the user's meaning. Do not add new goals.
 - If you choose direct_response, answer the user directly in plain English.
+- When an experiment is not yet approved, use direct_response and include a concise proposal the UI can render with an explicit approve button.
 - If you choose design_experiment, include a concise design summary and an execution prompt that tells the runtime what to build and run.
 - Return JSON only.`;
 

@@ -5880,6 +5880,16 @@ function initialSemanticAssistantPlan(userMessage: string) {
     : "I’m running AlphaLoop now and will answer from the strongest passages it finds.";
 }
 
+function fallbackExperimentProposalFromAnswer(answer: string, userMessage: string) {
+  const normalizedAnswer = answer.trim() || "Experiment proposal ready for approval.";
+  const normalizedRequest = userMessage.trim() || normalizedAnswer;
+  return {
+    title: "Experiment Proposal",
+    summary: normalizedAnswer,
+    approvalPrompt: `I approve this experiment plan. Build the scripts, run the labels and aggregation, and produce the paper draft and charts.\n\nApproved experiment request:\n${normalizedRequest}\n\nApproved plan:\n${normalizedAnswer}`,
+  };
+}
+
 function initialWorkflowPlan(intent: {
   workflow: "search" | "design_experiment";
   routedQuery: string;
@@ -11678,6 +11688,9 @@ export async function runOrchestrator(
     });
 
     if (routeDecision.type === "direct_response") {
+      const experimentProposal = routeDecision.workflowHint === "design_experiment"
+        ? routeDecision.experimentProposal ?? fallbackExperimentProposalFromAnswer(routeDecision.answer, input.message)
+        : undefined;
       const artifactKey = await persistFinalArtifact(deps, session.id, run.id, routeDecision.answer, []);
       const directResearchDocumentHtml = await appendFinalAnswerResearchDocumentHtml(
         deps,
@@ -11695,6 +11708,8 @@ export async function runOrchestrator(
       await deps.store.appendMessage(session.id, "assistant", routeDecision.answer, {
         artifactKey,
         route: "direct_response",
+        ...(routeDecision.workflowHint ? { workflowHint: routeDecision.workflowHint } : {}),
+        ...(experimentProposal ? { experimentProposal } : {}),
       });
       await clearRunLease("completed");
       await streamAssistantText(routeDecision.answer, send);

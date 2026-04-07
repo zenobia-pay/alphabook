@@ -6,6 +6,7 @@ import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { SemanticSearchToolUI, ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import {
   ActionBarMorePrimitive,
@@ -22,7 +23,6 @@ import {
   ArrowDownIcon,
   ArrowUpIcon,
   CheckIcon,
-  ChevronDownIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   CopyIcon,
@@ -40,8 +40,6 @@ import type { RunArtifactRecord } from "@/api";
 import { resolveFrontendImplementation } from "@/implementation";
 
 const AUTO_FOLLOW_THRESHOLD_PX = 96;
-
-type AssistantWorkflow = "auto" | "search" | "design_experiment";
 
 const IMPLEMENTATION = resolveFrontendImplementation();
 const SITE_ORIGIN = IMPLEMENTATION.siteOrigin;
@@ -137,24 +135,6 @@ const suggestionIconMap = {
   heart: HeartIcon,
 } satisfies Record<NonNullable<ThreadSuggestion["icon"]>, typeof SearchIcon>;
 
-const EFFORT_OPTIONS = [
-  {
-    value: "auto",
-    label: "Auto",
-  },
-  {
-    value: "search",
-    label: "Search",
-  },
-  {
-    value: "design_experiment",
-    label: "Experiment",
-  },
-] satisfies Array<{
-  value: AssistantWorkflow;
-  label: string;
-}>;
-
 export const Thread: FC<{
   isRunning?: boolean;
   artifacts?: RunArtifactRecord[];
@@ -163,8 +143,6 @@ export const Thread: FC<{
   suggestions?: ThreadSuggestion[];
   onSuggestionSelect?: (prompt: string) => void;
   onCancel?: () => void;
-  effortLevel: AssistantWorkflow;
-  onEffortLevelChange: (value: AssistantWorkflow) => void;
   composerDisabled?: boolean;
   composerDisabledNotice?: React.ReactNode;
 }> = ({
@@ -175,8 +153,6 @@ export const Thread: FC<{
   suggestions = [],
   onSuggestionSelect,
   onCancel,
-  effortLevel,
-  onEffortLevelChange,
   composerDisabled = false,
   composerDisabledNotice,
 }) => {
@@ -236,8 +212,6 @@ export const Thread: FC<{
           <Composer
             isRunning={isRunning}
             onCancel={onCancel}
-            effortLevel={effortLevel}
-            onEffortLevelChange={onEffortLevelChange}
             disabled={composerDisabled}
             notice={composerDisabledNotice}
           />
@@ -526,11 +500,9 @@ const ThreadSuggestionItem: FC<{
 const Composer: FC<{
   isRunning?: boolean;
   onCancel?: () => void;
-  effortLevel: AssistantWorkflow;
-  onEffortLevelChange: (value: AssistantWorkflow) => void;
   disabled?: boolean;
   notice?: React.ReactNode;
-}> = ({ isRunning = false, onCancel, effortLevel, onEffortLevelChange, disabled = false, notice }) => {
+}> = ({ isRunning = false, onCancel, disabled = false, notice }) => {
   return (
     <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
       <ComposerPrimitive.AttachmentDropzone asChild>
@@ -550,8 +522,6 @@ const Composer: FC<{
           <ComposerAction
             isRunning={isRunning}
             onCancel={onCancel}
-            effortLevel={effortLevel}
-            onEffortLevelChange={onEffortLevelChange}
             disabled={disabled}
           />
           {disabled && notice ? <div className="aui-composer-disabled-note px-1.5 pb-1 text-sm text-muted-foreground">{notice}</div> : null}
@@ -564,106 +534,14 @@ const Composer: FC<{
 const ComposerAction: FC<{
   isRunning?: boolean;
   onCancel?: () => void;
-  effortLevel: AssistantWorkflow;
-  onEffortLevelChange: (value: AssistantWorkflow) => void;
   disabled?: boolean;
 }> = ({
   isRunning = false,
   onCancel,
-  effortLevel,
-  onEffortLevelChange,
   disabled = false,
 }) => {
-  const [isEffortMenuOpen, setIsEffortMenuOpen] = useState(false);
-  const effortMenuRef = useRef<HTMLDivElement | null>(null);
-  const selectedOption = EFFORT_OPTIONS.find((option) => option.value === effortLevel) ?? EFFORT_OPTIONS[0];
-
-  useEffect(() => {
-    if (!isEffortMenuOpen) {
-      return;
-    }
-
-    const handlePointerDown = (event: PointerEvent) => {
-      if (!effortMenuRef.current?.contains(event.target as Node)) {
-        setIsEffortMenuOpen(false);
-      }
-    };
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setIsEffortMenuOpen(false);
-      }
-    };
-
-    window.addEventListener("pointerdown", handlePointerDown);
-    window.addEventListener("keydown", handleKeyDown);
-    return () => {
-      window.removeEventListener("pointerdown", handlePointerDown);
-      window.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [isEffortMenuOpen]);
-
-  useEffect(() => {
-    if (isRunning || disabled) {
-      setIsEffortMenuOpen(false);
-    }
-  }, [disabled, isRunning]);
-
   return (
     <div className="aui-composer-action-wrapper relative flex items-center gap-2">
-      <div className="relative ml-1 shrink-0" ref={effortMenuRef}>
-        <Button
-          type="button"
-          variant="ghost"
-          className={cn(
-            "h-8 rounded-full border border-transparent bg-neutral-100/95 px-4 text-left shadow-none transition hover:bg-neutral-200/90 disabled:bg-neutral-100/70",
-            isEffortMenuOpen && "bg-neutral-200/95",
-          )}
-          aria-label="Workflow"
-          aria-haspopup="listbox"
-          aria-expanded={isEffortMenuOpen}
-          disabled={isRunning || disabled}
-          onClick={() => setIsEffortMenuOpen((open) => !open)}
-        >
-          <span className="flex items-center gap-1.5">
-            <span className="truncate text-[0.82rem] font-medium leading-none text-foreground">{selectedOption.label}</span>
-            <ChevronDownIcon className="size-3.5 shrink-0 text-muted-foreground" />
-          </span>
-        </Button>
-        {isEffortMenuOpen ? (
-          <div
-            className="absolute bottom-full left-0 z-30 mb-2 min-w-44 overflow-hidden rounded-3xl border border-black/12 bg-white/98 p-1.5 shadow-[0_14px_36px_rgba(15,23,42,0.12)] backdrop-blur-xl"
-            role="listbox"
-            aria-label="Effort options"
-          >
-            <div className="px-2.5 pb-1.5 pt-1 text-[0.8rem] font-medium text-muted-foreground">
-              Select workflow
-            </div>
-            {EFFORT_OPTIONS.map((option) => {
-              const isSelected = option.value === effortLevel;
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  role="option"
-                  aria-selected={isSelected}
-                  className={cn(
-                    "flex w-full items-center gap-3 rounded-2xl px-3 py-2.5 text-left transition",
-                    isSelected ? "bg-neutral-100 text-foreground" : "text-foreground hover:bg-neutral-50",
-                  )}
-                  onClick={() => {
-                    onEffortLevelChange(option.value);
-                    setIsEffortMenuOpen(false);
-                  }}
-                >
-                  <span className="min-w-0 flex-1 text-[0.95rem] font-medium leading-none">{option.label}</span>
-                  {isSelected ? <CheckIcon className="size-3.5 shrink-0" /> : null}
-                </button>
-              );
-            })}
-          </div>
-        ) : null}
-      </div>
       <AuiIf condition={() => !isRunning}>
         <ComposerPrimitive.Send asChild>
           <TooltipIconButton
@@ -710,12 +588,27 @@ const MessageError: FC = () => {
 
 const AssistantMessage: FC = () => {
   const isRunning = useAuiState((state) => state.message.status?.type === "running");
-  const phase = useAuiState((state) => {
+  const { phase, experimentProposal } = useAuiState((state) => {
     const metadata = state.message.metadata;
     const custom = metadata && typeof metadata === "object" && "custom" in metadata
       ? metadata.custom as Record<string, unknown>
       : null;
-    return typeof custom?.phase === "string" ? custom.phase : null;
+    const proposal = custom?.experimentProposal && typeof custom.experimentProposal === "object"
+      ? custom.experimentProposal as Record<string, unknown>
+      : null;
+    return {
+      phase: typeof custom?.phase === "string" ? custom.phase : null,
+      experimentProposal: proposal
+        && typeof proposal.title === "string"
+        && typeof proposal.summary === "string"
+        && typeof proposal.approvalPrompt === "string"
+        ? {
+            title: proposal.title,
+            summary: proposal.summary,
+            approvalPrompt: proposal.approvalPrompt,
+          }
+        : null,
+    };
   });
   const isErrorMessage = phase === "error";
 
@@ -728,6 +621,7 @@ const AssistantMessage: FC = () => {
     >
       <div className="aui-assistant-message-content wrap-break-word px-2 text-foreground leading-relaxed">
         <MessagePrimitive.Parts components={TOOL_PART_COMPONENTS} />
+        {experimentProposal ? <ExperimentApprovalCard proposal={experimentProposal} disabled={isRunning} /> : null}
         {isRunning ? (
           <div className="aui-assistant-running-indicator" aria-label="Assistant is thinking">
             <span className="aui-assistant-running-indicator-dot" aria-hidden="true" />
@@ -741,6 +635,41 @@ const AssistantMessage: FC = () => {
         <AssistantActionBar />
       </div>
     </MessagePrimitive.Root>
+  );
+};
+
+const ExperimentApprovalCard: FC<{
+  proposal: {
+    title: string;
+    summary: string;
+    approvalPrompt: string;
+  };
+  disabled?: boolean;
+}> = ({ proposal, disabled = false }) => {
+  const handleApprove = useCallback(() => {
+    window.dispatchEvent(new CustomEvent("alphabook:approve-experiment", {
+      detail: {
+        displayText: `Approve experiment: ${proposal.title}`,
+        transportMessage: proposal.approvalPrompt,
+      },
+    }));
+  }, [proposal.approvalPrompt, proposal.title]);
+
+  return (
+    <Card className="mt-4 border-black/10 bg-neutral-50/90 shadow-none">
+      <CardContent className="space-y-3 p-4">
+        <div>
+          <div className="text-[0.72rem] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Approval required</div>
+          <h3 className="mt-1 text-base font-semibold text-foreground">{proposal.title}</h3>
+        </div>
+        <div className="whitespace-pre-wrap text-sm leading-6 text-foreground/90">{proposal.summary}</div>
+        <div className="flex justify-end">
+          <Button type="button" onClick={handleApprove} disabled={disabled}>
+            Approve
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
   );
 };
 

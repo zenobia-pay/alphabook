@@ -30,8 +30,6 @@ type ThreadSuggestion = {
   prompt: string;
 };
 
-type AssistantWorkflow = "auto" | "search" | "design_experiment";
-
 export type AssistantSurfaceProps = {
   messages: UiMessage[];
   isSending: boolean;
@@ -39,8 +37,6 @@ export type AssistantSurfaceProps = {
   artifacts: RunArtifactRecord[];
   showArtifacts?: boolean;
   showWelcome?: boolean;
-  effortLevel: AssistantWorkflow;
-  onEffortLevelChange: (value: AssistantWorkflow) => void;
   onPrompt: (prompt: string) => Promise<void>;
   onCancel: () => Promise<void>;
   convertMessage: (message: UiMessage, streamingAssistantId: string | null, isSending: boolean) => unknown;
@@ -57,8 +53,6 @@ export default function AssistantSurface({
   artifacts,
   showArtifacts = true,
   showWelcome = true,
-  effortLevel,
-  onEffortLevelChange,
   onPrompt,
   onCancel,
   convertMessage,
@@ -94,8 +88,6 @@ export default function AssistantSurface({
         showArtifacts={showArtifacts}
         showWelcome={showWelcome}
         suggestions={suggestions}
-        effortLevel={effortLevel}
-        onEffortLevelChange={onEffortLevelChange}
         composerDisabled={composerDisabled}
         composerDisabledNotice={composerDisabledNotice}
         onCancel={() => {

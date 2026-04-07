@@ -179,8 +179,6 @@ type ThreadSuggestion = {
   prompt: string;
 };
 
-type AssistantWorkflow = "auto" | "search" | "design_experiment";
-
 type ReaderPassageKind = "heading" | "paragraph" | "quote" | "list-item" | "preformatted";
 
 type ReaderPassage = {
@@ -200,11 +198,6 @@ declare global {
 
 const USER_STORAGE_KEY = "alphabook.localUserId";
 const BOOK_ASSISTANT_WIDTH_STORAGE_KEY = "alphabook.bookAssistantWidth";
-const ASSISTANT_EFFORT_STORAGE_KEY = "alphabook.assistantWorkflow";
-
-function normalizeAssistantEffort(value: string | null): AssistantWorkflow {
-  return value === "search" || value === "design_experiment" || value === "auto" ? value : "auto";
-}
 const RECENT_SESSIONS_STORAGE_KEY = "alphabook.recentSessions";
 const BOOK_ASSISTANT_MIN_WIDTH = 320;
 const BOOK_ASSISTANT_MAX_WIDTH = 720;
@@ -1701,6 +1694,10 @@ function messageToThreadMessage(
     custom: {
       citations: message.citations,
       phase: typeof message.metadata?.phase === "string" ? message.metadata.phase : null,
+      experimentProposal:
+        message.metadata?.experimentProposal && typeof message.metadata.experimentProposal === "object"
+          ? message.metadata.experimentProposal
+          : null,
     },
   };
 
@@ -3295,12 +3292,6 @@ export default function App() {
   const [isSending, setIsSending] = useState(false);
   const [recoveredActiveRunId, setRecoveredActiveRunId] = useState<string | null>(initialBootstrapPreferredRun?.id ?? null);
   const [streamConnected, setStreamConnected] = useState(false);
-  const [assistantEffort, setAssistantEffort] = useState<AssistantWorkflow>(() => {
-    if (typeof window === "undefined") {
-      return "auto";
-    }
-    return normalizeAssistantEffort(window.localStorage.getItem(ASSISTANT_EFFORT_STORAGE_KEY));
-  });
   const [sessionRuns, setSessionRuns] = useState<SessionRunRecord[]>(initialBootstrapRuns);
   const [runArtifacts, setRunArtifacts] = useState<RunArtifactRecord[]>(() => (
     Array.isArray(initialAssistantSessionBootstrap?.runState?.artifacts)
@@ -4251,13 +4242,6 @@ export default function App() {
   }, [bookAssistantWidth]);
 
   useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-    window.localStorage.setItem(ASSISTANT_EFFORT_STORAGE_KEY, assistantEffort);
-  }, [assistantEffort]);
-
-  useEffect(() => {
     if (!isDraggingBookAssistant) {
       return;
     }
@@ -4981,7 +4965,13 @@ export default function App() {
 
   async function sendPrompt(
     question: string,
-    options: { sessionIdOverride?: string | null; workIdsOverride?: string[]; viewOverride?: ViewMode; transportMessageOverride?: string } = {},
+    options: {
+      sessionIdOverride?: string | null;
+      workIdsOverride?: string[];
+      viewOverride?: ViewMode;
+      transportMessageOverride?: string;
+      workflowOverride?: "auto" | "search" | "design_experiment";
+    } = {},
   ) {
     const normalizedQuestion = question.trim();
     if (!normalizedQuestion || isSending || authState.loading) {
@@ -5057,7 +5047,7 @@ export default function App() {
           userId: authState.authConfigured ? undefined : currentUserId,
           message: transportQuestion,
           workIds: options.workIdsOverride,
-          workflow: assistantEffort,
+          workflow: options.workflowOverride ?? "auto",
         },
         {
           onEvent: (event) => {
@@ -5238,6 +5228,25 @@ export default function App() {
       }
     }
   }
+
+  useEffect(() => {
+    const handleApproveExperiment = (event: Event) => {
+      const detail = event instanceof CustomEvent && event.detail && typeof event.detail === "object"
+        ? event.detail as Record<string, unknown>
+        : null;
+      const displayText = typeof detail?.displayText === "string" ? detail.displayText : "Approve experiment";
+      const transportMessage = typeof detail?.transportMessage === "string" ? detail.transportMessage : "";
+      void sendPrompt(displayText, {
+        transportMessageOverride: transportMessage || displayText,
+        workflowOverride: "design_experiment",
+      });
+    };
+
+    window.addEventListener("alphabook:approve-experiment", handleApproveExperiment as EventListener);
+    return () => {
+      window.removeEventListener("alphabook:approve-experiment", handleApproveExperiment as EventListener);
+    };
+  }, [currentUserId, authState.loading, selectedSessionId, activeView, isSending]);
 
   function handleSignOut() {
     window.location.assign(buildSignOutUrl(window.location.href));
@@ -5511,8 +5520,6 @@ export default function App() {
     artifacts: RunArtifactRecord[];
     showArtifacts?: boolean;
     showWelcome?: boolean;
-    effortLevel: AssistantWorkflow;
-    onEffortLevelChange: (value: AssistantWorkflow) => void;
     onPrompt: (prompt: string) => Promise<void>;
     onCancel: () => Promise<void>;
     suggestions?: ThreadSuggestion[];
@@ -5538,8 +5545,6 @@ export default function App() {
         artifacts={props.artifacts}
         showArtifacts={props.showArtifacts}
         showWelcome={props.showWelcome}
-        effortLevel={props.effortLevel}
-        onEffortLevelChange={props.onEffortLevelChange}
         onPrompt={props.onPrompt}
         onCancel={props.onCancel}
         suggestions={props.suggestions}
@@ -5585,8 +5590,6 @@ export default function App() {
               streamingAssistantId: null,
               artifacts: [],
               showWelcome: false,
-              effortLevel: assistantEffort,
-              onEffortLevelChange: setAssistantEffort,
               onPrompt: sendPrompt,
               onCancel: cancelActiveRun,
               composerDisabled: authLocked,
@@ -5605,8 +5608,6 @@ export default function App() {
               isSending: false,
               streamingAssistantId: null,
               artifacts: [],
-              effortLevel: assistantEffort,
-              onEffortLevelChange: setAssistantEffort,
               onPrompt: sendPrompt,
               onCancel: cancelActiveRun,
               composerDisabled: authLocked,
@@ -5621,8 +5622,6 @@ export default function App() {
               isSending: isSending || recoveredActiveRunId !== null,
               streamingAssistantId,
               artifacts: runArtifacts,
-              effortLevel: assistantEffort,
-              onEffortLevelChange: setAssistantEffort,
               onPrompt: sendPrompt,
               onCancel: cancelActiveRun,
               composerDisabled: authLocked,
@@ -5705,8 +5704,6 @@ export default function App() {
                 isSending: isSending || recoveredActiveRunId !== null,
                 streamingAssistantId,
                 artifacts: runArtifacts,
-                effortLevel: assistantEffort,
-                onEffortLevelChange: setAssistantEffort,
                 onPrompt: bookPromptHandler,
                 onCancel: cancelActiveRun,
                 suggestions: ASSISTANT_WELCOME_SUGGESTIONS,
