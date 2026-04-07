@@ -1,7 +1,7 @@
 services:
   alphabook-runtime:
     build:
-      context: ../../..
+      context: ../../../..
       dockerfile: apps/runtime/Dockerfile
     restart: unless-stopped
     env_file:
@@ -13,7 +13,7 @@ services:
 
   alphabook-worker:
     build:
-      context: ../../..
+      context: ../../../..
       dockerfile: apps/orchestrator-worker/Dockerfile.linux
     restart: unless-stopped
     env_file:
