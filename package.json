@@ -50,6 +50,7 @@
     "dev:alphajustice:orchestrator": "wrangler dev -c apps/alphajustice-orchestrator/wrangler.toml",
     "dev:orchestrator:node": "npm run dev:node -w @alphabook/orchestrator-worker",
     "deploy:orchestrator": "npm run deploy -w @alphabook/orchestrator-worker",
+    "deploy:frontend": "npm run deploy -w @alphabook/frontend",
     "deploy:content": "npm run deploy -w @alphabook/book-content-worker",
     "deploy:alphajustice:frontend": "npm run deploy -w @alphabook/alphajustice-frontend",
     "deploy:alphajustice:content": "npm run deploy -w @alphabook/alphajustice-content",

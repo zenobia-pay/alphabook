@@ -28,7 +28,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "deploy": "npm run build && wrangler deploy",
+    "deploy": "bash ../../ops/digitalocean/bin/deploy-linux-frontend.sh",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:e2e": "playwright test"
   }

@@ -64,6 +64,7 @@ Web-specific:
 
 ## Notes
 
+- The main AlphaBook web and API path is Linux-native behind a DNS proxy. Do not deploy the primary AlphaBook session UI or API through Cloudflare Workers.
 - The Linux API path is Postgres-only. It does not fall back to D1 or Wrangler.
 - Canonical blobs are expected to live in DO Spaces or another S3-compatible object store.
 - The Linux worker uses `pg-boss` for durable research task execution.
