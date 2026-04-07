@@ -5,7 +5,7 @@ import { artifactKeys, buildCorpusChunkId, parseCorpusChunkId } from "@alphabook
 import { workDetailToDocumentDetail } from "@alphabook/platform";
 import type { ChunkSearchResult, NotificationType, ToolName, WorkSummary } from "@alphabook/shared";
 
-import { InMemoryAppStore, type AdminRunRecord, type AdminSessionRecord, type AdminUserRecord, type AgentIdentityRecord, type AnalyticsEventRecord, type AppStore, type ArtifactRecord, type BillingEventRecord, type BillingSpendSummary, type DocumentTextRecord, type ExploreWorkFacets, type ExploreWorksFilters, type MessageRecord, type NotificationRecord, type PassageSearchFilters, type ResearchScopeEstimate, type ResearchTaskRecord, type RunEventRecord, type RunRecord, type RuntimeInstanceRecord, type SeedChunk, type SeedWork, type SessionRecord, type SessionSummaryRecord, type ToolCallRecord, type UserProfileStatsRecord, type UserRecord, type WorkDetailRecord, type WorkFileKind, type WorkFileRecord, type WorkSetSizeEstimate } from "./store";
+import { InMemoryAppStore, type AdminRunRecord, type AdminSessionRecord, type AdminUserRecord, type AgentIdentityRecord, type AnalyticsEventRecord, type AppStore, type ArtifactRecord, type BackgroundJobRecord, type BillingEventRecord, type BillingSpendSummary, type DocumentTextRecord, type ExploreWorkFacets, type ExploreWorksFilters, type MessageRecord, type NotificationRecord, type PassageSearchFilters, type ResearchScopeEstimate, type ResearchTaskRecord, type RunEventRecord, type RunRecord, type RuntimeInstanceRecord, type SeedChunk, type SeedWork, type SessionRecord, type SessionSummaryRecord, type ToolCallRecord, type UserProfileStatsRecord, type UserRecord, type WorkDetailRecord, type WorkFileKind, type WorkFileRecord, type WorkSetSizeEstimate } from "./store";
 import { MemoryBlobStore, type BlobStore } from "./r2";
 
 const INLINE_PAYLOAD_MAX_BYTES = 4_096;
@@ -360,6 +360,7 @@ export class D1AppStore implements AppStore {
   private readonly workIdByExternalRef = new Map<string, string>();
   private readonly chunkManifestCache = new Map<string, ChunkManifestEntry[]>();
   private runLifecycleColumnsReady: Promise<void> | null = null;
+  private backgroundJobsTableReady: Promise<void> | null = null;
   private researchTasksTableReady: Promise<void> | null = null;
 
   constructor(
@@ -703,6 +704,33 @@ export class D1AppStore implements AppStore {
       `).then(() => undefined);
     }
     await this.researchTasksTableReady;
+  }
+
+  private async ensureBackgroundJobsTable() {
+    if (!this.backgroundJobsTableReady) {
+      this.backgroundJobsTableReady = this.db.query(`
+        CREATE TABLE IF NOT EXISTS background_jobs (
+          id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          session_id TEXT NOT NULL,
+          provider TEXT NOT NULL,
+          external_job_id TEXT NOT NULL,
+          status TEXT NOT NULL,
+          phase TEXT,
+          detail TEXT,
+          progress_pct REAL,
+          log_cursor TEXT,
+          last_heartbeat_at TEXT,
+          error_text TEXT,
+          metadata_json TEXT,
+          started_at TEXT,
+          completed_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+      `).then(() => undefined);
+    }
+    await this.backgroundJobsTableReady;
   }
 
   private async loadCorpusStore() {
@@ -1260,6 +1288,158 @@ export class D1AppStore implements AppStore {
     };
   }
 
+  async createBackgroundJob(input: {
+    runId: string;
+    sessionId: string;
+    provider: BackgroundJobRecord["provider"];
+    externalJobId: string;
+    status: BackgroundJobRecord["status"];
+    phase?: string | null;
+    detail?: string | null;
+    progressPct?: number | null;
+    logCursor?: string | null;
+    lastHeartbeatAt?: string | null;
+    error?: string | null;
+    startedAt?: string | null;
+    completedAt?: string | null;
+    metadata?: Record<string, unknown>;
+  }): Promise<BackgroundJobRecord> {
+    await this.ensureBackgroundJobsTable();
+    const id = crypto.randomUUID();
+    const createdAt = nowIso();
+    const updatedAt = createdAt;
+    await this.db.query(
+      `INSERT INTO background_jobs (
+        id, run_id, session_id, provider, external_job_id, status, phase, detail, progress_pct, log_cursor,
+        last_heartbeat_at, error_text, metadata_json, started_at, completed_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        input.runId,
+        input.sessionId,
+        input.provider,
+        input.externalJobId,
+        input.status,
+        input.phase ?? null,
+        input.detail ?? null,
+        input.progressPct ?? null,
+        input.logCursor ?? null,
+        input.lastHeartbeatAt ?? null,
+        input.error ?? null,
+        JSON.stringify(input.metadata ?? {}),
+        input.startedAt ?? null,
+        input.completedAt ?? null,
+        createdAt,
+        updatedAt,
+      ],
+    );
+    return {
+      id,
+      runId: input.runId,
+      sessionId: input.sessionId,
+      provider: input.provider,
+      externalJobId: input.externalJobId,
+      status: input.status,
+      phase: input.phase ?? null,
+      detail: input.detail ?? null,
+      progressPct: input.progressPct ?? null,
+      logCursor: input.logCursor ?? null,
+      lastHeartbeatAt: input.lastHeartbeatAt ?? null,
+      error: input.error ?? null,
+      startedAt: input.startedAt ?? null,
+      completedAt: input.completedAt ?? null,
+      metadata: input.metadata ?? {},
+      createdAt,
+      updatedAt,
+    };
+  }
+
+  async getBackgroundJob(jobId: string): Promise<BackgroundJobRecord | null> {
+    await this.ensureBackgroundJobsTable();
+    const rows = await this.db.query<{
+      id: string;
+      run_id: string;
+      session_id: string;
+      provider: BackgroundJobRecord["provider"];
+      external_job_id: string;
+      status: BackgroundJobRecord["status"];
+      phase: string | null;
+      detail: string | null;
+      progress_pct: number | null;
+      log_cursor: string | null;
+      last_heartbeat_at: string | null;
+      error_text: string | null;
+      metadata_json: string | Record<string, unknown> | null;
+      started_at: string | null;
+      completed_at: string | null;
+      created_at: string;
+      updated_at: string;
+    }>("SELECT * FROM background_jobs WHERE id = ? LIMIT 1", [jobId]);
+    const row = rows.rows[0];
+    return row ? {
+      id: row.id,
+      runId: row.run_id,
+      sessionId: row.session_id,
+      provider: row.provider,
+      externalJobId: row.external_job_id,
+      status: row.status,
+      phase: row.phase ?? null,
+      detail: row.detail ?? null,
+      progressPct: row.progress_pct ?? null,
+      logCursor: row.log_cursor ?? null,
+      lastHeartbeatAt: row.last_heartbeat_at ?? null,
+      error: row.error_text ?? null,
+      metadata: parseJsonObject(row.metadata_json),
+      startedAt: row.started_at ?? null,
+      completedAt: row.completed_at ?? null,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    } : null;
+  }
+
+  async getLatestBackgroundJobForRun(runId: string): Promise<BackgroundJobRecord | null> {
+    await this.ensureBackgroundJobsTable();
+    const rows = await this.db.query<{
+      id: string;
+      run_id: string;
+      session_id: string;
+      provider: BackgroundJobRecord["provider"];
+      external_job_id: string;
+      status: BackgroundJobRecord["status"];
+      phase: string | null;
+      detail: string | null;
+      progress_pct: number | null;
+      log_cursor: string | null;
+      last_heartbeat_at: string | null;
+      error_text: string | null;
+      metadata_json: string | Record<string, unknown> | null;
+      started_at: string | null;
+      completed_at: string | null;
+      created_at: string;
+      updated_at: string;
+    }>("SELECT * FROM background_jobs WHERE run_id = ? ORDER BY created_at DESC LIMIT 1", [runId]);
+    const row = rows.rows[0];
+    return row ? {
+      id: row.id,
+      runId: row.run_id,
+      sessionId: row.session_id,
+      provider: row.provider,
+      externalJobId: row.external_job_id,
+      status: row.status,
+      phase: row.phase ?? null,
+      detail: row.detail ?? null,
+      progressPct: row.progress_pct ?? null,
+      logCursor: row.log_cursor ?? null,
+      lastHeartbeatAt: row.last_heartbeat_at ?? null,
+      error: row.error_text ?? null,
+      metadata: parseJsonObject(row.metadata_json),
+      startedAt: row.started_at ?? null,
+      completedAt: row.completed_at ?? null,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    } : null;
+  }
+
   async getRun(runId: string): Promise<RunRecord | null> {
     await this.ensureRunLifecycleColumns();
     const rows = await this.db.query<{ id: string; session_id: string; status: RunRecord["status"]; started_at: string; completed_at: string | null; planner_turns: number; owner_instance_id: string | null; heartbeat_at: string | null; lease_expires_at: string | null; active_tool_call_id: string | null }>(
@@ -1402,6 +1582,60 @@ export class D1AppStore implements AppStore {
         updates.activeToolCallId !== undefined ? 1 : 0,
         updates.activeToolCallId ?? null,
         runId,
+      ],
+    );
+  }
+
+  async updateBackgroundJob(
+    jobId: string,
+    updates: Partial<
+      Pick<
+        BackgroundJobRecord,
+        "status" | "phase" | "detail" | "progressPct" | "logCursor" | "lastHeartbeatAt" | "error" | "startedAt" | "completedAt" | "metadata" | "updatedAt"
+      >
+    >,
+  ): Promise<void> {
+    await this.ensureBackgroundJobsTable();
+    await this.db.query(
+      `
+        UPDATE background_jobs
+        SET
+          status = CASE WHEN ? THEN ? ELSE status END,
+          phase = CASE WHEN ? THEN ? ELSE phase END,
+          detail = CASE WHEN ? THEN ? ELSE detail END,
+          progress_pct = CASE WHEN ? THEN ? ELSE progress_pct END,
+          log_cursor = CASE WHEN ? THEN ? ELSE log_cursor END,
+          last_heartbeat_at = CASE WHEN ? THEN ? ELSE last_heartbeat_at END,
+          error_text = CASE WHEN ? THEN ? ELSE error_text END,
+          started_at = CASE WHEN ? THEN ? ELSE started_at END,
+          completed_at = CASE WHEN ? THEN ? ELSE completed_at END,
+          metadata_json = CASE WHEN ? THEN ? ELSE metadata_json END,
+          updated_at = ?
+        WHERE id = ?
+      `,
+      [
+        updates.status !== undefined ? 1 : 0,
+        updates.status ?? null,
+        updates.phase !== undefined ? 1 : 0,
+        updates.phase ?? null,
+        updates.detail !== undefined ? 1 : 0,
+        updates.detail ?? null,
+        updates.progressPct !== undefined ? 1 : 0,
+        updates.progressPct ?? null,
+        updates.logCursor !== undefined ? 1 : 0,
+        updates.logCursor ?? null,
+        updates.lastHeartbeatAt !== undefined ? 1 : 0,
+        updates.lastHeartbeatAt ?? null,
+        updates.error !== undefined ? 1 : 0,
+        updates.error ?? null,
+        updates.startedAt !== undefined ? 1 : 0,
+        updates.startedAt ?? null,
+        updates.completedAt !== undefined ? 1 : 0,
+        updates.completedAt ?? null,
+        updates.metadata !== undefined ? 1 : 0,
+        JSON.stringify(updates.metadata ?? {}),
+        updates.updatedAt ?? nowIso(),
+        jobId,
       ],
     );
   }

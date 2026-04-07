@@ -226,6 +226,26 @@ export interface RunRecord {
   activeToolCallId: string | null;
 }
 
+export interface BackgroundJobRecord {
+  id: string;
+  runId: string;
+  sessionId: string;
+  provider: "hermes";
+  externalJobId: string;
+  status: "queued" | "starting" | "running" | "completed" | "failed" | "cancelled";
+  phase: string | null;
+  detail: string | null;
+  progressPct: number | null;
+  logCursor: string | null;
+  lastHeartbeatAt: string | null;
+  error: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface AdminRunRecord extends RunRecord {
   userId: string;
   userEmail: string | null;
@@ -457,6 +477,33 @@ export interface AppStore {
     heartbeatAt?: string | null;
     leaseExpiresAt?: string | null;
   }): Promise<RunRecord>;
+  createBackgroundJob(input: {
+    runId: string;
+    sessionId: string;
+    provider: BackgroundJobRecord["provider"];
+    externalJobId: string;
+    status: BackgroundJobRecord["status"];
+    phase?: string | null;
+    detail?: string | null;
+    progressPct?: number | null;
+    logCursor?: string | null;
+    lastHeartbeatAt?: string | null;
+    error?: string | null;
+    startedAt?: string | null;
+    completedAt?: string | null;
+    metadata?: Record<string, unknown>;
+  }): Promise<BackgroundJobRecord>;
+  getBackgroundJob(jobId: string): Promise<BackgroundJobRecord | null>;
+  getLatestBackgroundJobForRun(runId: string): Promise<BackgroundJobRecord | null>;
+  updateBackgroundJob(
+    jobId: string,
+    updates: Partial<
+      Pick<
+        BackgroundJobRecord,
+        "status" | "phase" | "detail" | "progressPct" | "logCursor" | "lastHeartbeatAt" | "error" | "startedAt" | "completedAt" | "metadata" | "updatedAt"
+      >
+    >,
+  ): Promise<void>;
   getRun(runId: string): Promise<RunRecord | null>;
   listRuns(sessionId: string): Promise<RunRecord[]>;
   listAllRuns(): Promise<AdminRunRecord[]>;
@@ -2131,6 +2178,7 @@ export class InMemoryAppStore implements AppStore {
   private readonly sessions = new Map<string, SessionRecord>();
   private readonly messages = new Map<string, MessageRecord[]>();
   private readonly runs = new Map<string, RunRecord>();
+  private readonly backgroundJobs = new Map<string, BackgroundJobRecord>();
   private readonly toolCalls = new Map<string, ToolCallRecord>();
   private readonly runEvents = new Map<string, RunEventRecord[]>();
   private readonly researchTasks = new Map<string, ResearchTaskRecord>();
@@ -2663,6 +2711,75 @@ export class InMemoryAppStore implements AppStore {
     };
     this.runs.set(run.id, run);
     return run;
+  }
+
+  async createBackgroundJob(input: {
+    runId: string;
+    sessionId: string;
+    provider: BackgroundJobRecord["provider"];
+    externalJobId: string;
+    status: BackgroundJobRecord["status"];
+    phase?: string | null;
+    detail?: string | null;
+    progressPct?: number | null;
+    logCursor?: string | null;
+    lastHeartbeatAt?: string | null;
+    error?: string | null;
+    startedAt?: string | null;
+    completedAt?: string | null;
+    metadata?: Record<string, unknown>;
+  }): Promise<BackgroundJobRecord> {
+    const now = nowIso();
+    const record: BackgroundJobRecord = {
+      id: crypto.randomUUID(),
+      runId: input.runId,
+      sessionId: input.sessionId,
+      provider: input.provider,
+      externalJobId: input.externalJobId,
+      status: input.status,
+      phase: input.phase ?? null,
+      detail: input.detail ?? null,
+      progressPct: input.progressPct ?? null,
+      logCursor: input.logCursor ?? null,
+      lastHeartbeatAt: input.lastHeartbeatAt ?? null,
+      error: input.error ?? null,
+      startedAt: input.startedAt ?? null,
+      completedAt: input.completedAt ?? null,
+      metadata: structuredClone(input.metadata ?? {}),
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.backgroundJobs.set(record.id, record);
+    return record;
+  }
+
+  async getBackgroundJob(jobId: string): Promise<BackgroundJobRecord | null> {
+    return this.backgroundJobs.get(jobId) ?? null;
+  }
+
+  async getLatestBackgroundJobForRun(runId: string): Promise<BackgroundJobRecord | null> {
+    return [...this.backgroundJobs.values()]
+      .filter((job) => job.runId === runId)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0] ?? null;
+  }
+
+  async updateBackgroundJob(
+    jobId: string,
+    updates: Partial<
+      Pick<
+        BackgroundJobRecord,
+        "status" | "phase" | "detail" | "progressPct" | "logCursor" | "lastHeartbeatAt" | "error" | "startedAt" | "completedAt" | "metadata" | "updatedAt"
+      >
+    >,
+  ): Promise<void> {
+    const existing = this.backgroundJobs.get(jobId);
+    if (!existing) {
+      return;
+    }
+    Object.assign(existing, updates, {
+      updatedAt: updates.updatedAt ?? nowIso(),
+    });
+    this.backgroundJobs.set(jobId, existing);
   }
 
   async getRun(runId: string): Promise<RunRecord | null> {

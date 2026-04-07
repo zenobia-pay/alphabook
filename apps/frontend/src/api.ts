@@ -122,6 +122,25 @@ export type SessionRunRecord = {
   completedAt: string | null;
 };
 
+export type BackgroundJobRecord = {
+  id: string;
+  runId: string;
+  sessionId: string;
+  provider: "hermes";
+  externalJobId: string;
+  status: "queued" | "starting" | "running" | "completed" | "failed" | "cancelled";
+  phase: string | null;
+  detail: string | null;
+  progressPct: number | null;
+  lastHeartbeatAt: string | null;
+  error: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type RunArtifactRecord = {
   id?: string;
   runtimeId?: string | null;
@@ -147,6 +166,7 @@ export type PersistedRunEventRecord = {
 
 export type RunStateRecord = {
   run?: SessionRunRecord;
+  backgroundJob?: BackgroundJobRecord;
   runEvents?: PersistedRunEventRecord[];
   toolTrace?: Array<Record<string, unknown>>;
   artifacts?: RunArtifactRecord[];

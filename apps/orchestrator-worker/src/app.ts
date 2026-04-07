@@ -36,7 +36,7 @@ import type { Router, RouterDecision } from "./router";
 import type { SemanticSearchService } from "./semantic-search";
 import { cleanupToolStreamWithWorkersAi, type ToolStreamCleanupLine } from "./tool-stream-cleanup";
 import type { Synthesizer, ToolHistoryEntry } from "./synthesizer";
-import type { AgentIdentityRecord, AnalyticsEventRecord, AppStore, ArtifactRecord, MessageRecord, NotificationRecord, PassageSearchFilters, RunEventRecord, RunRecord, RuntimeInstanceRecord, SessionRecord, ToolCallRecord, UserRecord, WorkDetailRecord } from "./store";
+import type { AgentIdentityRecord, AnalyticsEventRecord, AppStore, ArtifactRecord, BackgroundJobRecord, MessageRecord, NotificationRecord, PassageSearchFilters, RunEventRecord, RunRecord, RuntimeInstanceRecord, SessionRecord, ToolCallRecord, UserRecord, WorkDetailRecord } from "./store";
 import type { WorkersAiBinding } from "./index";
 import { parseModelJsonObject } from "./json";
 
@@ -4820,22 +4820,51 @@ export async function finalizeStaleRun(
     return run;
   }
 
-  const sessionMessages = await deps.store.listMessages(session.id);
-  const activeHermesThread = findHermesThreadMetadataForRun(sessionMessages, run.id);
-  if (activeHermesThread && deps.hermesJobApiUrl) {
+  const activeBackgroundJob = await deps.store.getLatestBackgroundJobForRun(run.id);
+  if (activeBackgroundJob && activeBackgroundJob.provider === "hermes" && backgroundJobIsActive(activeBackgroundJob.status)) {
     try {
-      const { job } = await fetchHermesJob(deps.hermesJobApiUrl, deps.hermesJobApiToken, activeHermesThread.jobId);
-      const hermesHeartbeatFresh = Boolean(
-        job.heartbeatAt && (Date.now() - Date.parse(job.heartbeatAt)) < RUN_LEASE_MS,
-      );
-      if (job.running || job.state === "running" || job.state === "launching" || hermesHeartbeatFresh) {
-        return run;
+      await syncHermesBackgroundJob(deps, activeRuns ?? new Map(), { session, run });
+      const refreshedRun = await deps.store.getRun(run.id);
+      if (refreshedRun && (refreshedRun.status === "running" || refreshedRun.status === "queued")) {
+        return refreshedRun;
       }
+      return refreshedRun ?? run;
     } catch {
-      // Ignore Hermes job lookup failures and fall back to the normal stale-run path.
+      return run;
     }
   }
 
+  const sessionMessages = await deps.store.listMessages(session.id);
+  const activeHermesThread = findHermesThreadMetadataForRun(sessionMessages, run.id);
+  if (!activeBackgroundJob && activeHermesThread && deps.hermesJobApiUrl) {
+    try {
+      const { job } = await fetchHermesJob(deps.hermesJobApiUrl, deps.hermesJobApiToken, activeHermesThread.jobId);
+      const nextStatus = backgroundJobStatusFromHermesJob(job);
+      if (backgroundJobIsActive(nextStatus)) {
+        await deps.store.createBackgroundJob({
+          runId: run.id,
+          sessionId: session.id,
+          provider: "hermes",
+          externalJobId: job.id,
+          status: nextStatus,
+          phase: job.phase ?? null,
+          detail: job.detail ?? null,
+          progressPct: job.phaseProgressPct ?? null,
+          lastHeartbeatAt: job.heartbeatAt ?? null,
+          startedAt: job.startedAt ?? null,
+          metadata: {
+            hermesSessionId: job.hermesSessionId ?? null,
+            innerRunId: job.innerRunId ?? null,
+            innerRunDir: job.innerRunDir ?? null,
+            manifestStatus: job.manifestStatus ?? null,
+          },
+        });
+        return run;
+      }
+    } catch {
+      // Best-effort migration fallback for legacy Hermes runs without a background job row.
+    }
+  }
   const failureMessage = "This run stopped before it wrote a terminal event.";
   await appendRunLifecycleEvent(deps, run, "run.recovery.failed", {
     reason: "lease_expired_without_terminal_event",
@@ -6346,6 +6375,30 @@ function terminalRunStateUpdate(status: "completed" | "failed" | "timed_out", co
   } satisfies Partial<Pick<RunRecord, "status" | "completedAt" | "ownerInstanceId" | "heartbeatAt" | "leaseExpiresAt" | "activeToolCallId">>;
 }
 
+function backgroundJobIsTerminal(status: BackgroundJobRecord["status"]) {
+  return status === "completed" || status === "failed" || status === "cancelled";
+}
+
+function backgroundJobIsActive(status: BackgroundJobRecord["status"]) {
+  return status === "queued" || status === "starting" || status === "running";
+}
+
+function backgroundJobStatusFromHermesJob(job: HermesJobSummary): BackgroundJobRecord["status"] {
+  if (job.state === "completed" && (job.exitCode == null || job.exitCode === 0)) {
+    return "completed";
+  }
+  if (job.state === "cancelled" || job.state === "cancelling") {
+    return "cancelled";
+  }
+  if (job.state === "failed" || (job.finishedAt && job.exitCode != null && job.exitCode !== 0)) {
+    return "failed";
+  }
+  if (job.state === "launching") {
+    return "starting";
+  }
+  return "running";
+}
+
 async function writeTerminalRunState(
   deps: AppDeps,
   runId: string,
@@ -6665,6 +6718,19 @@ export async function reapStaleRuns(
   for (const run of staleRuns) {
     const runRecord = await deps.store.getRun(run.id);
     if (!runRecord) {
+      continue;
+    }
+    const backgroundJob = await deps.store.getLatestBackgroundJobForRun(run.id);
+    if (backgroundJob && backgroundJob.provider === "hermes" && backgroundJobIsActive(backgroundJob.status)) {
+      const session = await deps.store.getSession(runRecord.sessionId);
+      if (!session) {
+        continue;
+      }
+      try {
+        await syncHermesBackgroundJob(deps, undefined, { session, run: runRecord });
+      } catch {
+        // Best-effort sync for active delegated jobs.
+      }
       continue;
     }
     const leaseExpired = !runRecord.leaseExpiresAt || Date.parse(runRecord.leaseExpiresAt) <= Date.now();
@@ -9043,6 +9109,7 @@ async function finalizeHermesRun(
   },
 ) {
   const currentRun = await deps.store.getRun(params.runId);
+  const backgroundJob = await deps.store.getLatestBackgroundJobForRun(params.runId);
   if (!currentRun || currentRun.sessionId !== params.session.id) {
     return { finalized: false, reason: "run_not_found" as const };
   }
@@ -9058,7 +9125,7 @@ async function finalizeHermesRun(
   for (const artifact of importedArtifacts) {
     await publishPersistedHermesEvent(
       deps,
-      activeRuns,
+      activeRuns ?? new Map(),
       currentRun.id,
       params.session.id,
       "artifact.created",
@@ -9074,7 +9141,7 @@ async function finalizeHermesRun(
   if (importedArtifacts.length > 0) {
     await publishPersistedHermesEvent(
       deps,
-      activeRuns,
+      activeRuns ?? new Map(),
       currentRun.id,
       params.session.id,
       "artifacts.updated",
@@ -9138,6 +9205,23 @@ async function finalizeHermesRun(
       finalAnswer && finalAnswer !== "Completed. Open the files panel to inspect the run artifacts."
         ? finalAnswer
         : "Hermes finished without producing the expected artifacts.";
+    if (backgroundJob) {
+      await deps.store.updateBackgroundJob(backgroundJob.id, {
+        status: "failed",
+        completedAt: params.job.finishedAt ?? new Date().toISOString(),
+        lastHeartbeatAt: params.job.heartbeatAt ?? null,
+        phase: params.job.phase ?? null,
+        detail: params.job.detail ?? null,
+        progressPct: params.job.phaseProgressPct ?? null,
+        error: failureMessage,
+        metadata: {
+          hermesSessionId: params.job.hermesSessionId ?? null,
+          innerRunId: params.job.innerRunId ?? null,
+          innerRunDir: params.job.innerRunDir ?? null,
+          manifestStatus: params.job.manifestStatus ?? null,
+        },
+      });
+    }
     await deps.store.appendMessage(params.session.id, "assistant", failureMessage, {
       phase: "error",
       runId: currentRun.id,
@@ -9154,7 +9238,7 @@ async function finalizeHermesRun(
     await deps.store.updateRun(currentRun.id, terminalRunStateUpdate("failed", new Date().toISOString()));
     await publishPersistedHermesEvent(
       deps,
-      activeRuns,
+      activeRuns ?? new Map(),
       currentRun.id,
       params.session.id,
       "run.completed",
@@ -9180,6 +9264,23 @@ async function finalizeHermesRun(
     return { finalized: true, status: "failed" as const };
   }
 
+  if (backgroundJob) {
+    await deps.store.updateBackgroundJob(backgroundJob.id, {
+      status: "completed",
+      completedAt: params.job.finishedAt ?? new Date().toISOString(),
+      lastHeartbeatAt: params.job.heartbeatAt ?? null,
+      phase: params.job.phase ?? null,
+      detail: params.job.detail ?? null,
+      progressPct: params.job.phaseProgressPct ?? null,
+      error: null,
+      metadata: {
+        hermesSessionId: params.job.hermesSessionId ?? null,
+        innerRunId: params.job.innerRunId ?? null,
+        innerRunDir: params.job.innerRunDir ?? null,
+        manifestStatus: params.job.manifestStatus ?? null,
+      },
+    });
+  }
   await persistCompletedAssistantAnswer(deps, {
     sessionId: params.session.id,
     runId: currentRun.id,
@@ -9224,6 +9325,140 @@ async function finalizeHermesRun(
     params.send,
   );
   return { finalized: true, status: "completed" as const };
+}
+
+async function syncHermesBackgroundJob(
+  deps: AppDeps,
+  activeRuns: Map<string, ActiveRunState> | undefined,
+  params: {
+    session: SessionRecord;
+    run: RunRecord;
+    send?: (event: string, data: Record<string, unknown>) => Promise<void>;
+  },
+) {
+  if (!deps.hermesJobApiUrl) {
+    return null;
+  }
+  const backgroundJob = await deps.store.getLatestBackgroundJobForRun(params.run.id);
+  if (!backgroundJob || backgroundJob.provider !== "hermes" || backgroundJobIsTerminal(backgroundJob.status)) {
+    return backgroundJob;
+  }
+
+  const [{ job }, logUpdate] = await Promise.all([
+    fetchHermesJob(deps.hermesJobApiUrl, deps.hermesJobApiToken, backgroundJob.externalJobId),
+    fetchHermesJobLogs(
+      deps.hermesJobApiUrl,
+      deps.hermesJobApiToken,
+      backgroundJob.externalJobId,
+      backgroundJob.logCursor ?? undefined,
+      120,
+      "curated",
+    ),
+  ]);
+
+  const nextStatus = backgroundJobStatusFromHermesJob(job);
+  const nextMetadata = {
+    hermesSessionId: job.hermesSessionId ?? null,
+    innerRunId: job.innerRunId ?? null,
+    innerRunDir: job.innerRunDir ?? null,
+    manifestStatus: job.manifestStatus ?? null,
+    chosenScope: job.chosenScope ?? null,
+    scopeRationale: job.scopeRationale ?? null,
+  } satisfies Record<string, unknown>;
+
+  await deps.store.updateBackgroundJob(backgroundJob.id, {
+    status: nextStatus,
+    phase: job.phase ?? null,
+    detail: job.detail ?? null,
+    progressPct: job.phaseProgressPct ?? null,
+    logCursor: logUpdate.nextCursor || backgroundJob.logCursor,
+    lastHeartbeatAt: job.heartbeatAt ?? null,
+    error: nextStatus === "failed" ? (job.detail ?? "Background job failed.") : null,
+    startedAt: job.startedAt ?? backgroundJob.startedAt,
+    completedAt: backgroundJobIsTerminal(nextStatus) ? (job.finishedAt ?? new Date().toISOString()) : null,
+    metadata: nextMetadata,
+  });
+
+  if (backgroundJob.status !== nextStatus) {
+    await publishPersistedHermesEvent(
+      deps,
+      activeRuns ?? new Map(),
+      params.run.id,
+      params.session.id,
+      nextStatus === "running" || nextStatus === "starting" ? "job.started" : "job.updated",
+      {
+        runId: params.run.id,
+        sessionId: params.session.id,
+        jobId: backgroundJob.id,
+        provider: backgroundJob.provider,
+        status: nextStatus,
+        phase: job.phase ?? null,
+        detail: job.detail ?? null,
+        progressPct: job.phaseProgressPct ?? null,
+      },
+      params.send,
+    );
+  } else if (
+    backgroundJob.phase !== job.phase
+    || backgroundJob.detail !== job.detail
+    || backgroundJob.progressPct !== job.phaseProgressPct
+  ) {
+    await publishPersistedHermesEvent(
+      deps,
+      activeRuns ?? new Map(),
+      params.run.id,
+      params.session.id,
+      "job.progress",
+      {
+        runId: params.run.id,
+        sessionId: params.session.id,
+        jobId: backgroundJob.id,
+        provider: backgroundJob.provider,
+        status: nextStatus,
+        phase: job.phase ?? null,
+        detail: job.detail ?? null,
+        progressPct: job.phaseProgressPct ?? null,
+      },
+      params.send,
+    );
+  }
+
+  for (const source of logUpdate.sources) {
+    for (const line of source.lines) {
+      const text = truncateHermesText(line.trim(), 280);
+      if (!text) {
+        continue;
+      }
+      await publishPersistedHermesEvent(
+        deps,
+        activeRuns ?? new Map(),
+        params.run.id,
+        params.session.id,
+        "job.log",
+        {
+          runId: params.run.id,
+          sessionId: params.session.id,
+          jobId: backgroundJob.id,
+          provider: backgroundJob.provider,
+          source: source.name,
+          updatedAt: source.updatedAt,
+          text,
+        },
+        params.send,
+      );
+    }
+  }
+
+  if (backgroundJobIsTerminal(nextStatus)) {
+    await finalizeHermesRun(deps, activeRuns ?? new Map(), {
+      session: params.session,
+      runId: params.run.id,
+      job,
+      send: params.send,
+    });
+  }
+
+  return await deps.store.getBackgroundJob(backgroundJob.id);
 }
 
 async function buildHermesUserPrompt(
@@ -9298,14 +9533,7 @@ async function runHermesConversation(
     phase: "user",
   });
 
-  const initialHeartbeatAt = new Date().toISOString();
-  const initialLeaseExpiresAt = new Date(Date.now() + RUN_LEASE_MS).toISOString();
-  const runOwnerInstanceId = `hermes:${activeSession.id}:${Date.now()}:${input.userId}`;
-  let run = await deps.store.createRun(activeSession.id, {
-    ownerInstanceId: runOwnerInstanceId,
-    heartbeatAt: initialHeartbeatAt,
-    leaseExpiresAt: initialLeaseExpiresAt,
-  });
+  let run = await deps.store.createRun(activeSession.id);
   activeRuns.set(run.id, {
     sessionId: activeSession.id,
     userId: activeSession.userId,
@@ -9314,8 +9542,6 @@ async function runHermesConversation(
     rawLog: [],
     subscribers: new Map(),
   });
-  let lastLeaseHeartbeatAtMs = Date.now();
-
   let planMessageId: string | null = null;
   let latestPlanTraceVersion = 0;
   let persistedPlanTraceVersion = 0;
@@ -9323,30 +9549,6 @@ async function runHermesConversation(
   let liveToolTrace: LiveToolTraceEntry[] = [];
   let currentToolCallId: string | null = null;
   const hermesProgressToolCallId = "hermes_progress";
-
-  const renewRunLease = async (force = false) => {
-    if (isTerminalRunStatus(run.status)) {
-      return;
-    }
-    const nowMs = Date.now();
-    if (!force && nowMs - lastLeaseHeartbeatAtMs < RUN_HEARTBEAT_INTERVAL_MS / 2) {
-      return;
-    }
-    lastLeaseHeartbeatAtMs = nowMs;
-    await deps.store.updateRun(run.id, {
-      ownerInstanceId: runOwnerInstanceId,
-      heartbeatAt: new Date(nowMs).toISOString(),
-      leaseExpiresAt: new Date(nowMs + RUN_LEASE_MS).toISOString(),
-      activeToolCallId: currentToolCallId,
-    });
-    run = {
-      ...run,
-      ownerInstanceId: runOwnerInstanceId,
-      heartbeatAt: new Date(nowMs).toISOString(),
-      leaseExpiresAt: new Date(nowMs + RUN_LEASE_MS).toISOString(),
-      activeToolCallId: currentToolCallId,
-    };
-  };
 
   const writeHermesTerminalRunState = async (status: "completed" | "failed" | "timed_out") => {
     const completedAt = new Date().toISOString();
@@ -9362,14 +9564,18 @@ async function runHermesConversation(
     };
   };
 
-  const leaseHeartbeatTimer = setInterval(() => {
-    void renewRunLease(true).catch(() => {});
-  }, RUN_HEARTBEAT_INTERVAL_MS);
-
   const failHermesRun = async (message: string) => {
     const currentRun = await deps.store.getRun(run.id);
     if (currentRun && isTerminalRunStatus(currentRun.status)) {
       return;
+    }
+    const backgroundJob = await deps.store.getLatestBackgroundJobForRun(run.id);
+    if (backgroundJob && !backgroundJobIsTerminal(backgroundJob.status)) {
+      await deps.store.updateBackgroundJob(backgroundJob.id, {
+        status: "failed",
+        completedAt: new Date().toISOString(),
+        error: message,
+      });
     }
     await deps.store.appendMessage(activeSession.id, "assistant", message, {
       phase: "error",
@@ -9410,6 +9616,10 @@ async function runHermesConversation(
     const persistable = new Set([
       "run.started",
       "assistant.plan",
+      "job.started",
+      "job.progress",
+      "job.log",
+      "job.updated",
       "tool.started",
       "tool.progress",
       "tool.completed",
@@ -9419,7 +9629,6 @@ async function runHermesConversation(
     if (persistable.has(event)) {
       await deps.store.appendRunEvent(run.id, activeSession.id, event, data);
     }
-    await renewRunLease();
     await send(event, data);
     const activeRun = activeRuns.get(run.id);
     if (!activeRun || activeRun.subscribers.size === 0) {
@@ -9514,9 +9723,10 @@ async function runHermesConversation(
     return entry;
   };
 
+  let backgroundJobId: string | null = null;
+
   try {
     const hermesUserPrompt = await buildHermesUserPrompt(deps, input);
-    const hermesCallbackUrl = new URL("/api/v1/hermes/callbacks/run-completed", apiOrigin(deps, request)).toString();
     const archivePrefix = artifactKeys.sessionArtifact(activeSession.id, `runs/${run.id}/hermes`);
     const launchPayload = {
       userPrompt: hermesUserPrompt,
@@ -9529,17 +9739,43 @@ async function runHermesConversation(
       maxTurns: deps.hermesMaxTurns,
       alphabookSessionId: activeSession.id,
       alphabookRunId: run.id,
-      callbackUrl: hermesCallbackUrl,
-      callbackToken: deps.hermesJobApiToken,
       archivePrefix,
     };
     const launchResult = await createHermesJob(deps.hermesJobApiUrl, deps.hermesJobApiToken, launchPayload);
     job = launchResult.job;
+    const backgroundJob = await deps.store.createBackgroundJob({
+      runId: run.id,
+      sessionId: activeSession.id,
+      provider: "hermes",
+      externalJobId: job.id,
+      status: backgroundJobStatusFromHermesJob(job),
+      phase: job.phase ?? null,
+      detail: job.detail ?? null,
+      progressPct: job.phaseProgressPct ?? null,
+      lastHeartbeatAt: job.heartbeatAt ?? null,
+      startedAt: job.startedAt ?? null,
+      metadata: {
+        hermesSessionId: job.hermesSessionId ?? null,
+        innerRunId: job.innerRunId ?? null,
+        innerRunDir: job.innerRunDir ?? null,
+        manifestStatus: job.manifestStatus ?? null,
+      },
+    });
+    backgroundJobId = backgroundJob.id;
+    await emit("job.started", {
+      runId: run.id,
+      sessionId: activeSession.id,
+      provider: "hermes",
+      externalJobId: job.id,
+      status: backgroundJobStatusFromHermesJob(job),
+      phase: job.phase ?? null,
+      detail: job.detail ?? null,
+      progressPct: job.phaseProgressPct ?? null,
+    });
     await updateHermesPlanMetadata();
   } catch (error) {
     const message = error instanceof Error ? error.message : "Hermes run failed before launch.";
     await failHermesRun(message);
-    clearInterval(leaseHeartbeatTimer);
     activeRuns.delete(run.id);
     return;
   }
@@ -9730,6 +9966,38 @@ async function runHermesConversation(
       ]);
       job = jobState.job;
       logCursor = logUpdate.nextCursor;
+      if (backgroundJobId) {
+        await deps.store.updateBackgroundJob(backgroundJobId, {
+          status: backgroundJobStatusFromHermesJob(job),
+          phase: job.phase ?? null,
+          detail: job.detail ?? null,
+          progressPct: job.phaseProgressPct ?? null,
+          logCursor: logCursor ?? null,
+          lastHeartbeatAt: job.heartbeatAt ?? null,
+          startedAt: job.startedAt ?? null,
+          completedAt: backgroundJobIsTerminal(backgroundJobStatusFromHermesJob(job))
+            ? (job.finishedAt ?? new Date().toISOString())
+            : null,
+          metadata: {
+            hermesSessionId: job.hermesSessionId ?? null,
+            innerRunId: job.innerRunId ?? null,
+            innerRunDir: job.innerRunDir ?? null,
+            manifestStatus: job.manifestStatus ?? null,
+            chosenScope: job.chosenScope ?? null,
+            scopeRationale: job.scopeRationale ?? null,
+          },
+        });
+        await emit("job.progress", {
+          runId: run.id,
+          sessionId: activeSession.id,
+          jobId: backgroundJobId,
+          provider: "hermes",
+          status: backgroundJobStatusFromHermesJob(job),
+          phase: job.phase ?? null,
+          detail: job.detail ?? null,
+          progressPct: job.phaseProgressPct ?? null,
+        });
+      }
       await updateHermesPlanMetadata();
 
       for (const source of logUpdate.sources) {
@@ -9740,6 +10008,17 @@ async function runHermesConversation(
           const text = line.trim();
           if (!text) {
             continue;
+          }
+          if (backgroundJobId) {
+            await emit("job.log", {
+              runId: run.id,
+              sessionId: activeSession.id,
+              jobId: backgroundJobId,
+              provider: "hermes",
+              source: source.name,
+              updatedAt: source.updatedAt,
+              text: truncateHermesText(text, 280),
+            });
           }
           await appendToolProgress(text, {
             source: source.name,
@@ -9786,7 +10065,6 @@ async function runHermesConversation(
     const message = error instanceof Error ? error.message : "Hermes run failed.";
     await failHermesRun(message);
   } finally {
-    clearInterval(leaseHeartbeatTimer);
     activeRuns.delete(run.id);
   }
 }
@@ -13868,16 +14146,22 @@ export function createApp(inputDeps: CreateAppInput) {
         }
 
         while (!stopped) {
-          const [nextRun, runEvents] = await Promise.all([
-            deps.store.getRun(runId),
-            deps.store.listRunEvents(runId),
-          ]);
+          let nextRun = await deps.store.getRun(runId);
           if (!nextRun || nextRun.sessionId !== sessionId) {
             await send("error", {
               message: "Run not found.",
             });
             return;
           }
+          if (nextRun.status === "running" || nextRun.status === "queued") {
+            try {
+              await syncHermesBackgroundJob(deps, activeRuns, { session, run: nextRun, send });
+              nextRun = await deps.store.getRun(runId) ?? nextRun;
+            } catch {
+              // Best-effort background job sync while streaming.
+            }
+          }
+          const runEvents = await deps.store.listRunEvents(runId);
 
           for (const runEvent of runEvents) {
             if (runEvent.sequence <= lastSequence) {
@@ -13929,16 +14213,22 @@ export function createApp(inputDeps: CreateAppInput) {
         }
 
         while (!stopped) {
-          const [nextRun, runEvents] = await Promise.all([
-            deps.store.getRun(runId),
-            deps.store.listRunEvents(runId),
-          ]);
+          let nextRun = await deps.store.getRun(runId);
           if (!nextRun || nextRun.sessionId !== sessionId) {
             await send("error", {
               message: "Run not found.",
             });
             return;
           }
+          if (nextRun.status === "running" || nextRun.status === "queued") {
+            try {
+              await syncHermesBackgroundJob(deps, activeRuns, { session, run: nextRun, send });
+              nextRun = await deps.store.getRun(runId) ?? nextRun;
+            } catch {
+              // Best-effort background job sync while streaming.
+            }
+          }
+          const runEvents = await deps.store.listRunEvents(runId);
 
           for (const runEvent of runEvents) {
             if (runEvent.sequence <= lastSequence) {
@@ -14040,6 +14330,15 @@ export function createApp(inputDeps: CreateAppInput) {
     if (activeRun) {
       activeRun.cancelRequested = true;
     }
+    const backgroundJob = await deps.store.getLatestBackgroundJobForRun(runId);
+    if (backgroundJob && backgroundJob.provider === "hermes" && deps.hermesJobApiUrl && backgroundJobIsActive(backgroundJob.status)) {
+      await cancelHermesJob(deps.hermesJobApiUrl, deps.hermesJobApiToken, backgroundJob.externalJobId).catch(() => {});
+      await deps.store.updateBackgroundJob(backgroundJob.id, {
+        status: "cancelled",
+        completedAt: new Date().toISOString(),
+        error: "Run cancelled by user.",
+      });
+    }
     const [toolCalls, persistedRuntimeIds] = await Promise.all([
       deps.store.listToolCalls(runId),
       listPersistedRunRuntimeIds(deps, session.id, runId),
@@ -14106,6 +14405,15 @@ export function createApp(inputDeps: CreateAppInput) {
     if (activeRun) {
       activeRun.cancelRequested = true;
     }
+    const backgroundJob = await deps.store.getLatestBackgroundJobForRun(runId);
+    if (backgroundJob && backgroundJob.provider === "hermes" && deps.hermesJobApiUrl && backgroundJobIsActive(backgroundJob.status)) {
+      await cancelHermesJob(deps.hermesJobApiUrl, deps.hermesJobApiToken, backgroundJob.externalJobId).catch(() => {});
+      await deps.store.updateBackgroundJob(backgroundJob.id, {
+        status: "cancelled",
+        completedAt: new Date().toISOString(),
+        error: "Run cancelled by user.",
+      });
+    }
     const [toolCalls, persistedRuntimeIds] = await Promise.all([
       deps.store.listToolCalls(runId),
       listPersistedRunRuntimeIds(deps, session.id, runId),
@@ -14171,11 +14479,24 @@ export function createApp(inputDeps: CreateAppInput) {
     if (!initialRun || initialRun.sessionId !== sessionId) {
       return null;
     }
-    const run = initialRun;
+    let run = initialRun;
     if (!run || run.sessionId !== sessionId) {
       return null;
     }
+    const session = await deps.store.getSession(sessionId);
+    if (!session) {
+      return null;
+    }
+    if (run.status === "running" || run.status === "queued") {
+      try {
+        await syncHermesBackgroundJob(deps, activeRuns, { session, run });
+        run = await deps.store.getRun(runId) ?? run;
+      } catch {
+        // Best-effort state sync for active external jobs.
+      }
+    }
     const toolCalls = await deps.store.listToolCalls(run.id);
+    const backgroundJob = await deps.store.getLatestBackgroundJobForRun(run.id);
     const [{ runtimeInstances, runEvents, runtimeIds }, planMessage] = await Promise.all([
       resolveRunRuntimeContext(deps, sessionId, run, toolCalls),
       deps.store.getLatestPlanMessageForRun(sessionId, run.id),
@@ -14187,6 +14508,7 @@ export function createApp(inputDeps: CreateAppInput) {
 
     return {
       run,
+      backgroundJob: backgroundJob ?? undefined,
       toolCalls,
       runEvents,
       toolTrace,

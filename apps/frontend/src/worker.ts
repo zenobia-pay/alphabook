@@ -275,6 +275,21 @@ function buildAssistantTranscriptMessages(bootstrap: AssistantSessionBootstrapPa
     let nextLine = "";
     if ((event.event === "tool.progress" || event.event === "tool.progress.raw") && typeof data.text === "string") {
       nextLine = data.text.trim();
+    } else if (event.event === "job.log" && typeof data.text === "string") {
+      nextLine = data.text.trim();
+    } else if (event.event === "job.started") {
+      nextLine = typeof data.detail === "string" && data.detail.trim()
+        ? data.detail.trim()
+        : "Background job started.";
+    } else if (event.event === "job.progress") {
+      const detail = typeof data.detail === "string" ? data.detail.trim() : "";
+      const phase = typeof data.phase === "string" ? data.phase.trim() : "";
+      const progressPct = typeof data.progressPct === "number" ? `${Math.round(data.progressPct)}%` : "";
+      nextLine = [detail, phase, progressPct].filter(Boolean).join(" ").trim();
+    } else if (event.event === "job.updated") {
+      const status = typeof data.status === "string" ? data.status.trim() : "";
+      const detail = typeof data.detail === "string" ? data.detail.trim() : "";
+      nextLine = [status, detail].filter(Boolean).join(": ").trim();
     } else if (event.event === "tool.started") {
       const label = firstNonEmptyString(data.label, data.toolName, "Tool");
       nextLine = label ? `${label} started.` : "";

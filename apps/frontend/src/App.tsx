@@ -663,6 +663,29 @@ function readRunEventText(event: PersistedRunEventRecord): string | null {
     return text.length > 0 ? text : null;
   }
 
+  if (event.event === "job.log" && typeof data.text === "string") {
+    const text = data.text.trim();
+    return text.length > 0 ? text : null;
+  }
+
+  if (event.event === "job.started") {
+    const detail = typeof data.detail === "string" ? data.detail.trim() : "";
+    return detail || "Background job started.";
+  }
+
+  if (event.event === "job.progress") {
+    const detail = typeof data.detail === "string" ? data.detail.trim() : "";
+    const phase = typeof data.phase === "string" ? data.phase.trim() : "";
+    const progressPct = typeof data.progressPct === "number" ? `${Math.round(data.progressPct)}%` : "";
+    return [detail, phase, progressPct].filter(Boolean).join(" ").trim() || null;
+  }
+
+  if (event.event === "job.updated") {
+    const status = typeof data.status === "string" ? data.status.trim() : "";
+    const detail = typeof data.detail === "string" ? data.detail.trim() : "";
+    return [status, detail].filter(Boolean).join(": ").trim() || null;
+  }
+
   if (event.event === "tool.started") {
     const label = typeof data.label === "string"
       ? data.label.trim()
@@ -4440,6 +4463,10 @@ export default function App() {
           if (
             event.event === "run.started"
             || event.event === "assistant.plan"
+            || event.event === "job.started"
+            || event.event === "job.progress"
+            || event.event === "job.log"
+            || event.event === "job.updated"
             || event.event === "tool.started"
             || event.event === "tool.progress"
             || event.event === "tool.completed"
@@ -4465,6 +4492,10 @@ export default function App() {
           }
           if (
             event.event === "assistant.plan"
+            || event.event === "job.started"
+            || event.event === "job.progress"
+            || event.event === "job.log"
+            || event.event === "job.updated"
             || event.event === "tool.started"
             || event.event === "tool.progress"
             || event.event === "tool.completed"
@@ -5270,6 +5301,18 @@ export default function App() {
 
             if (event.event === "assistant.plan" && typeof event.data.text === "string") {
               appendAssistantPlan(workingSessionId, event.data.text);
+              if (workingSessionId) {
+                void refreshAssistantConversation(workingSessionId);
+              }
+              return;
+            }
+
+            if (
+              event.event === "job.started"
+              || event.event === "job.progress"
+              || event.event === "job.log"
+              || event.event === "job.updated"
+            ) {
               if (workingSessionId) {
                 void refreshAssistantConversation(workingSessionId);
               }
