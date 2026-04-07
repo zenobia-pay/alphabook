@@ -1,5 +1,6 @@
 export type HermesJobSummary = {
   id: string;
+  jobType?: string | null;
   state: string;
   running: boolean;
   pid: number | null;
@@ -35,6 +36,25 @@ export type HermesJobSummary = {
     fileCount?: number | null;
     updatedAt?: string | null;
   } | null;
+};
+
+type RemoteJobCreatePayload = {
+  jobType?: "hermes" | "semantic_search";
+  userPrompt?: string;
+  query?: string;
+  workflow?: "search" | "design_experiment" | "auto";
+  effort?: number;
+  model?: string;
+  maxTurns?: number;
+  corpusRoot?: string;
+  alphabookSessionId?: string;
+  alphabookRunId?: string;
+  callbackUrl?: string;
+  callbackToken?: string;
+  archivePrefix?: string;
+  maxResults?: number;
+  backend?: "alphaloop" | "context1";
+  gutenbergIds?: string[];
 };
 
 export type HermesLogSource = {
@@ -87,19 +107,7 @@ async function ensureOk(response: Response) {
 export async function createHermesJob(
   baseUrl: string,
   token: string | undefined,
-  payload: {
-    userPrompt: string;
-    workflow?: "search" | "design_experiment" | "auto";
-    effort?: number;
-    model?: string;
-    maxTurns?: number;
-    corpusRoot?: string;
-    alphabookSessionId?: string;
-    alphabookRunId?: string;
-    callbackUrl?: string;
-    callbackToken?: string;
-    archivePrefix?: string;
-  },
+  payload: RemoteJobCreatePayload,
 ) {
   const response = await ensureOk(await fetch(`${baseUrl.replace(/\/$/, "")}/v1/jobs`, {
     method: "POST",
@@ -136,6 +144,36 @@ export async function resumeHermesJob(
   return await response.json() as { job: HermesJobSummary };
 }
 
+export async function createSemanticSearchJob(
+  baseUrl: string,
+  token: string | undefined,
+  payload: {
+    query: string;
+    maxResults?: number;
+    backend?: "alphaloop" | "context1";
+    gutenbergIds?: string[];
+    alphabookSessionId?: string;
+    alphabookRunId?: string;
+    callbackUrl?: string;
+    callbackToken?: string;
+    archivePrefix?: string;
+  },
+) {
+  return await createHermesJob(baseUrl, token, {
+    jobType: "semantic_search",
+    query: payload.query,
+    maxResults: payload.maxResults,
+    backend: payload.backend,
+    gutenbergIds: payload.gutenbergIds,
+    alphabookSessionId: payload.alphabookSessionId,
+    alphabookRunId: payload.alphabookRunId,
+    callbackUrl: payload.callbackUrl,
+    callbackToken: payload.callbackToken,
+    archivePrefix: payload.archivePrefix,
+    workflow: "search",
+  });
+}
+
 export async function fetchHermesJob(
   baseUrl: string,
   token: string | undefined,
@@ -153,9 +191,11 @@ export async function fetchHermesJobLogs(
   jobId: string,
   cursor?: string,
   limit = 200,
+  mode: "curated" | "all" = "curated",
 ) {
   const url = new URL(`${baseUrl.replace(/\/$/, "")}/v1/jobs/${encodeURIComponent(jobId)}/logs`);
   url.searchParams.set("limit", String(limit));
+  url.searchParams.set("mode", mode);
   if (cursor) {
     url.searchParams.set("cursor", cursor);
   }

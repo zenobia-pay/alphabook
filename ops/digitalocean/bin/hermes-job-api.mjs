@@ -13,6 +13,7 @@ const PORT = Number.parseInt(process.env.HERMES_JOB_API_PORT || "8788", 10);
 const ROOT_DIR = process.env.ROOT_DIR || "/srv/alphabook/repo";
 const RESEARCH_RUN_ROOT = process.env.RUN_ROOT || "/srv/alphabook/logs/hermes-corpus-research";
 const SEARCH_RUN_ROOT = process.env.SEARCH_RUN_ROOT || "/srv/alphabook/logs/hermes-search";
+const SEMANTIC_RUN_ROOT = process.env.SEMANTIC_RUN_ROOT || "/srv/alphabook/logs/semantic-search";
 const CORPUS_RUN_ROOT = process.env.CORPUS_RUN_ROOT || "/srv/alphabook/logs/corpus-research";
 const SEARCH_CORPUS_RUN_ROOT = process.env.SEARCH_CORPUS_RUN_ROOT || "/srv/alphabook/logs/corpus-search";
 const API_LOG_ROOT = process.env.API_LOG_ROOT || "/srv/alphabook/logs/hermes-job-api";
@@ -27,6 +28,13 @@ const PRIMARY_ARTIFACTS = [
   "dataset.csv",
   "citation-index.json",
   "cost-profile.json",
+  "query-expansion.json",
+  "progress-summary.json",
+  "summary.json",
+  "timing-log.jsonl",
+  "hydrated-hits.jsonl",
+  "review-packets.jsonl",
+  "reranked-packets.jsonl",
   "status.json",
   "run.log",
   "stream.log",
@@ -124,7 +132,7 @@ function isProcessAlive(pid) {
 }
 
 function getWrapperRunRoots() {
-  return [RESEARCH_RUN_ROOT, SEARCH_RUN_ROOT];
+  return [RESEARCH_RUN_ROOT, SEARCH_RUN_ROOT, SEMANTIC_RUN_ROOT];
 }
 
 function listRunDirs() {
@@ -293,6 +301,7 @@ function getRunSummary(runDir) {
 
   return {
     id: jobId,
+    jobType: index.job_type || effective.job_type || null,
     runDir,
     innerRunDir,
     innerRunId: index.inner_run_id || effective.inner_run_id || (innerRunDir ? path.basename(innerRunDir) : null),
@@ -341,11 +350,41 @@ function normalizeWorkflow(value) {
   return null;
 }
 
+function normalizeJobType(value) {
+  if (value === "semantic_search" || value === "hermes") {
+    return value;
+  }
+  return null;
+}
+
 function resolveLauncherConfig(payload) {
+  const jobType = normalizeJobType(payload.jobType);
   const workflow = normalizeWorkflow(payload.workflow);
   const effort = Number.parseInt(String(payload.effort ?? ""), 10);
+  if (jobType === "semantic_search") {
+    const maxResults = Number.parseInt(String(payload.maxResults ?? ""), 10);
+    return {
+      jobType: "semantic_search",
+      workflow: "search",
+      launcherPath: path.join(ROOT_DIR, "ops/digitalocean/bin/run-semantic-search-job.sh"),
+      runRoot: SEMANTIC_RUN_ROOT,
+      innerRunRoot: null,
+      promptArgName: "--query",
+      extraArgs: [
+        "--max-results",
+        String(Number.isFinite(maxResults) && maxResults > 0 ? maxResults : 8),
+        ...(payload.backend ? ["--backend", String(payload.backend)] : []),
+        ...(
+          Array.isArray(payload.gutenbergIds)
+            ? payload.gutenbergIds.flatMap((value) => String(value || "").trim() ? ["--gutenberg-id", String(value).trim()] : [])
+            : []
+        ),
+      ],
+    };
+  }
   if (workflow === "search") {
     return {
+      jobType: "hermes",
       workflow,
       launcherPath: path.join(ROOT_DIR, "ops/digitalocean/bin/run-hermes-search.sh"),
       runRoot: SEARCH_RUN_ROOT,
@@ -355,6 +394,7 @@ function resolveLauncherConfig(payload) {
     };
   }
   return {
+    jobType: "hermes",
     workflow: workflow ?? "auto",
     launcherPath: path.join(ROOT_DIR, "ops/digitalocean/bin/run-hermes-corpus-research.sh"),
     runRoot: RESEARCH_RUN_ROOT,
@@ -405,6 +445,16 @@ function getCuratedLogSources(runDir) {
       { name: "stream_log", path: path.join(innerRunDir, "stream.log") },
       { name: "inner_status", path: path.join(innerRunDir, "status.json") },
     );
+    for (const semanticSource of [
+      { name: "progress_summary", path: path.join(innerRunDir, "progress-summary.json") },
+      { name: "timing_log", path: path.join(innerRunDir, "timing-log.jsonl") },
+      { name: "query_expansion", path: path.join(innerRunDir, "query-expansion.json") },
+      { name: "retrieval_summary", path: path.join(innerRunDir, "summary.json") },
+    ]) {
+      if (statSafe(semanticSource.path)?.isFile()) {
+        sources.push(semanticSource);
+      }
+    }
     const searchDir = path.join(innerRunDir, "search");
     try {
       for (const entry of fs.readdirSync(searchDir, { withFileTypes: true })) {
@@ -619,13 +669,15 @@ async function parseBody(req) {
 }
 
 async function launchJob(payload) {
-  const userPrompt = String(payload.userPrompt || "").trim();
-  if (!userPrompt) {
-    throw new Error("userPrompt is required");
+  const launcher = resolveLauncherConfig(payload);
+  const promptValue = launcher.jobType === "semantic_search"
+    ? String(payload.query || "").trim()
+    : String(payload.userPrompt || "").trim();
+  if (!promptValue) {
+    throw new Error(launcher.jobType === "semantic_search" ? "query is required" : "userPrompt is required");
   }
 
-  const launcher = resolveLauncherConfig(payload);
-  const args = [launcher.launcherPath, launcher.promptArgName, userPrompt, ...launcher.extraArgs];
+  const args = [launcher.launcherPath, launcher.promptArgName, promptValue, ...launcher.extraArgs];
   if (payload.model) {
     args.push("--model", String(payload.model));
   }
@@ -701,7 +753,7 @@ async function resumeJob(payload) {
   const previousSummary = getRunSummary(previousRunDir);
   const resumeSessionId = String(payload.hermesSessionId || previousSummary.hermesSessionId || "").trim();
   const launcher = resolveLauncherConfig(payload);
-  if (launcher.workflow === "search") {
+  if (launcher.workflow === "search" || launcher.jobType === "semantic_search") {
     throw new Error("Hermes search jobs do not support resume yet.");
   }
   const args = [
@@ -842,7 +894,8 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && requestUrl.pathname === "/v1/jobs") {
       const payload = await parseBody(req);
       const job = await launchJob(payload);
-      logLine(`job_submitted id=${job.id} prompt_sha=${crypto.createHash("sha1").update(String(payload.userPrompt)).digest("hex").slice(0, 12)}`);
+      const logPrompt = String(payload.userPrompt || payload.query || "");
+      logLine(`job_submitted id=${job.id} type=${job.jobType || "unknown"} prompt_sha=${crypto.createHash("sha1").update(logPrompt).digest("hex").slice(0, 12)}`);
       sendJson(res, 202, { job });
       return;
     }
