@@ -1918,6 +1918,7 @@ function messageToThreadMessage(
     custom: {
       citations: message.citations,
       phase: typeof message.metadata?.phase === "string" ? message.metadata.phase : null,
+      toolCalls: message.toolCalls,
       experimentProposal:
         message.metadata?.experimentProposal && typeof message.metadata.experimentProposal === "object"
           ? message.metadata.experimentProposal
@@ -1927,40 +1928,42 @@ function messageToThreadMessage(
 
   if (message.role === "assistant") {
     const phase = typeof message.metadata?.phase === "string" ? message.metadata.phase : null;
-    const toolParts = message.toolCalls.map((entry) => {
-        const entryHasError =
-          entry.isError
-          || entry.state === "error"
-          || entry.result?.ok === false
-          || (typeof entry.result?.error === "string" && entry.result.error.trim().length > 0);
-        const args = toReadonlyJsonObject(entry.args);
-        return {
-          type: "tool-call" as const,
-          toolCallId: entry.id,
-          toolName: entry.label,
-          args,
-          argsText: JSON.stringify(args),
-          status:
-            entry.state === "running"
-              ? ({ type: "running" } as const)
-              : entryHasError
-                ? ({
-                    type: "incomplete",
-                    reason: "error",
-                    error:
-                      typeof entry.result?.error === "string"
-                        ? entry.result.error
-                        : "This step failed.",
-                  } as const)
-                : ({ type: "complete" } as const),
-          ...(entry.state === "running"
-            ? {}
-            : {
-                result: entry.result ?? { ok: !entryHasError },
-                isError: entryHasError,
-              }),
-        };
-      });
+    const toolParts = phase === "plan"
+      ? []
+      : message.toolCalls.map((entry) => {
+          const entryHasError =
+            entry.isError
+            || entry.state === "error"
+            || entry.result?.ok === false
+            || (typeof entry.result?.error === "string" && entry.result.error.trim().length > 0);
+          const args = toReadonlyJsonObject(entry.args);
+          return {
+            type: "tool-call" as const,
+            toolCallId: entry.id,
+            toolName: entry.label,
+            args,
+            argsText: JSON.stringify(args),
+            status:
+              entry.state === "running"
+                ? ({ type: "running" } as const)
+                : entryHasError
+                  ? ({
+                      type: "incomplete",
+                      reason: "error",
+                      error:
+                        typeof entry.result?.error === "string"
+                          ? entry.result.error
+                          : "This step failed.",
+                    } as const)
+                  : ({ type: "complete" } as const),
+            ...(entry.state === "running"
+              ? {}
+              : {
+                  result: entry.result ?? { ok: !entryHasError },
+                  isError: entryHasError,
+                }),
+          };
+        });
     const hasRunningTool = message.toolCalls.some((entry) => entry.state === "running");
     const textParts = message.content
       ? [
@@ -2862,8 +2865,8 @@ function appendBookVersionToReaderPath(readerPath: string) {
   return `${url.pathname}${url.search}${url.hash}`;
 }
 
-function normalizeReaderPath(readerPath: string | null | undefined, gutenbergId?: string | number | null) {
-  if (!readerPath || gutenbergId == null || String(gutenbergId).trim().length === 0) {
+function normalizeReaderPath(readerPath: string | null | undefined) {
+  if (!readerPath) {
     return null;
   }
   try {
@@ -2871,8 +2874,7 @@ function normalizeReaderPath(readerPath: string | null | undefined, gutenbergId?
     if (url.origin !== BOOK_CONTENT_ORIGIN) {
       return null;
     }
-    const prefix = `/${encodeURIComponent(String(gutenbergId))}/`;
-    if (!url.pathname.startsWith(prefix) && url.pathname !== prefix.slice(0, -1)) {
+    if (!/^\/\d+(?:\/|$)/u.test(url.pathname)) {
       return null;
     }
     url.searchParams.delete("v");
@@ -2883,8 +2885,8 @@ function normalizeReaderPath(readerPath: string | null | undefined, gutenbergId?
 }
 
 function buildWorkContentFrameHref(workId: string, gutenbergId?: string | number | null, passageId?: string | null, readerPath?: string | null) {
-  const normalizedReaderPath = normalizeReaderPath(readerPath, gutenbergId);
-  if (normalizedReaderPath && gutenbergId != null && String(gutenbergId).trim().length > 0) {
+  const normalizedReaderPath = normalizeReaderPath(readerPath);
+  if (normalizedReaderPath) {
     return `${BOOK_CONTENT_ORIGIN}${appendBookVersionToReaderPath(normalizedReaderPath)}`;
   }
   if (gutenbergId != null && String(gutenbergId).trim().length > 0 && passageId) {
@@ -3681,6 +3683,45 @@ export default function App() {
   }, [selectedSessionId]);
 
   useEffect(() => {
+    if (activeView !== "assistant" || !selectedSessionId || authState.loading) {
+      return;
+    }
+    const bootstrapRun = initialAssistantSessionBootstrap?.runState?.run;
+    if (!bootstrapRun || bootstrapRun.sessionId !== selectedSessionId) {
+      return;
+    }
+    if (Array.isArray(initialAssistantSessionBootstrap?.runState?.artifacts) && initialAssistantSessionBootstrap.runState.artifacts.length > 0) {
+      return;
+    }
+    if (recoveredActiveRunId && recoveredActiveRunId !== bootstrapRun.id) {
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const nextState = await fetchRunState(selectedSessionId, bootstrapRun.id);
+        if (cancelled || selectedSessionIdRef.current !== selectedSessionId) {
+          return;
+        }
+        setRunArtifacts(Array.isArray(nextState.artifacts) ? nextState.artifacts : []);
+        setMessages((current) => hydrateConversationMessages(selectedSessionId, current, nextState));
+      } catch {
+        // Best-effort backfill for lightweight bootstrap payloads.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeView,
+    authState.loading,
+    recoveredActiveRunId,
+    selectedSessionId,
+  ]);
+
+  useEffect(() => {
     if (activeView !== "assistant" || !selectedSessionId || !sessionNotifications.has(selectedSessionId)) {
       return;
     }
@@ -4356,7 +4397,7 @@ export default function App() {
       const path = typeof (data as { path?: unknown }).path === "string" ? (data as { path: string }).path : null;
       const historyMode = (data as { history?: unknown }).history === "push" ? "push" : "replace";
       const context = latestReaderContextRef.current;
-      const normalized = normalizeReaderPath(path, context.gutenbergId);
+      const normalized = normalizeReaderPath(path);
       if (!normalized || normalized === latestReaderPathRef.current) {
         return;
       }
@@ -4374,13 +4415,15 @@ export default function App() {
         runId: context.runId,
         adminSection: context.adminSection,
         debugEnabled: context.debugEnabled,
+        exploreFilters: exploreAppliedFilters,
+        exploreRandomSeed,
       }, historyMode);
       setActiveReaderPath(normalized);
     };
 
     window.addEventListener("message", handleReaderLocation);
     return () => window.removeEventListener("message", handleReaderLocation);
-  }, [activePassageId]);
+  }, [activePassageId, exploreAppliedFilters, exploreRandomSeed]);
 
   useEffect(() => {
     if (!activeWorkId) {
@@ -4397,14 +4440,11 @@ export default function App() {
   }, [pendingCitation]);
 
   useEffect(() => {
-    if (!activeWork?.gutenbergId) {
-      return;
-    }
-    const normalized = normalizeReaderPath(activeReaderPath, activeWork.gutenbergId);
+    const normalized = normalizeReaderPath(activeReaderPath);
     if (activeReaderPath && !normalized) {
       setActiveReaderPath(null);
     }
-  }, [activeReaderPath, activeWork?.gutenbergId]);
+  }, [activeReaderPath]);
 
   useEffect(() => {
     if (!activeReaderFrameHref) {
