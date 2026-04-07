@@ -5410,7 +5410,9 @@ export default function App() {
   }, [currentUserId, authState.loading, selectedSessionId, activeView, isSending]);
 
   function handleSignOut() {
-    window.location.assign(buildSignOutUrl(window.location.href));
+    const signedOutUrl = new URL("/", window.location.origin);
+    signedOutUrl.searchParams.set("signed_out", "1");
+    window.location.assign(buildSignOutUrl(signedOutUrl.toString()));
   }
 
   async function loadMoreWorks() {
@@ -6052,9 +6054,6 @@ export default function App() {
                   <div className="flex flex-wrap items-center justify-center gap-3">
                     <Button asChild className="signin-pill-button" size="lg">
                       <a href={buildSignInUrl(window.location.href)}>Sign in</a>
-                    </Button>
-                    <Button type="button" variant="ghost" className="profile-chip" onClick={handleSignOut}>
-                      Sign out
                     </Button>
                   </div>
                 )}

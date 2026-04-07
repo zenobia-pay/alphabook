@@ -253,6 +253,7 @@ export async function fetchCurrentUser(): Promise<CurrentUserResponse> {
   const response = await ensureOk(
     await fetch(`${API_BASE}/me`, {
       credentials: "include",
+      cache: "no-store",
     }),
   );
   return CurrentUserResponseSchema.parse(await response.json());

@@ -13043,6 +13043,9 @@ export function createApp(inputDeps: CreateAppInput) {
             agent: principal.kind === "agent" ? publicAgentIdentity(principal.agent) : null,
           }
         : null,
+    }, 200, {
+      "cache-control": "private, no-store, max-age=0",
+      pragma: "no-cache",
     });
   });
 
