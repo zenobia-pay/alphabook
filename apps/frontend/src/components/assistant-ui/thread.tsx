@@ -749,15 +749,35 @@ const AssistantMessage: FC = () => {
 const ProgressMessageCard: FC<{
   text: string;
 }> = ({ text }) => {
+  const handleOpen = useCallback(() => {
+    const popup = window.open("", "_blank", "noopener,noreferrer,width=900,height=700");
+    if (!popup) {
+      return;
+    }
+    const escaped = text
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+    popup.document.write(`<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Run Output</title>
+    <style>
+      body { margin: 0; padding: 20px; background: #ffffff; color: #1f1f1f; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+      pre { white-space: pre-wrap; word-break: break-word; line-height: 1.5; font-size: 13px; margin: 0; }
+    </style>
+  </head>
+  <body><pre>${escaped}</pre></body>
+</html>`);
+    popup.document.close();
+  }, [text]);
+
   return (
-    <section className="aui-progress-card" aria-label="Live run output">
-      <div className="aui-progress-card-header">
-        <span className="aui-progress-card-dot" aria-hidden="true" />
-        <span className="aui-progress-card-title">Streaming Run Output</span>
-      </div>
-      <div className="aui-progress-card-body">
-        <pre className="aui-progress-card-pre">{text}</pre>
-      </div>
+    <section className="aui-progress-link-shell" aria-label="Live run output">
+      <button type="button" className="aui-progress-link-button" onClick={handleOpen}>
+        View detailed run output
+      </button>
     </section>
   );
 };
@@ -778,19 +798,19 @@ const PlanToolTraceCard: FC<{
       : "Completed";
 
   return (
-    <section className="aui-agentic-card" aria-label="Agentic Search run">
+    <section className="aui-agentic-trace" aria-label="Agentic Search run">
       <button
         type="button"
-        className="aui-agentic-card-header"
+        className="aui-agentic-trace-header"
         aria-expanded={!collapsed}
         onClick={() => setCollapsed((current) => !current)}
       >
-        <div className="aui-agentic-card-heading">
-          <div className="aui-agentic-card-kicker">For this run</div>
-          <div className="aui-agentic-card-title-row">
-            <span className="aui-agentic-card-title">Agentic Search</span>
+        <div className="aui-agentic-trace-heading">
+          <div className="aui-agentic-trace-title-row">
+            <span className="aui-agentic-trace-title">Agentic Search</span>
+            {statusLabel === "In Progress" ? <span className="aui-agentic-trace-spinner" aria-hidden="true" /> : null}
             <span className={cn(
-              "aui-agentic-card-status",
+              "aui-agentic-trace-status",
               statusLabel === "Failed" && "is-error",
               statusLabel === "Completed" && "is-complete",
             )}
@@ -799,15 +819,15 @@ const PlanToolTraceCard: FC<{
             </span>
           </div>
         </div>
-        <ChevronDownIcon className={cn("aui-agentic-card-chevron", !collapsed && "is-open")} />
+        <ChevronDownIcon className={cn("aui-agentic-trace-chevron", !collapsed && "is-open")} />
       </button>
       {!collapsed ? (
-        <div className="aui-agentic-card-body">
-          <div className="aui-agentic-card-lines" role="list">
+        <div className="aui-agentic-trace-body">
+          <div className="aui-agentic-trace-lines" role="list">
             {lines.map((line, index) => (
-              <div key={`${line}-${index}`} className="aui-agentic-card-line" role="listitem">
-                <span className="aui-agentic-card-line-dot" aria-hidden="true" />
-                <span className="aui-agentic-card-line-text">{line}</span>
+              <div key={`${line}-${index}`} className="aui-agentic-trace-line" role="listitem">
+                <span className="aui-agentic-trace-line-dot" aria-hidden="true" />
+                <span className="aui-agentic-trace-line-text">{line}</span>
               </div>
             ))}
           </div>
