@@ -20,4 +20,6 @@ test("implementation prompt builders reflect implementation branding", () => {
   assert.match(buildPlannerPrompt(ALPHAJUSTICE_IMPLEMENTATION), /AlphaJustice/);
   assert.match(buildPlannerPrompt(ALPHAJUSTICE_IMPLEMENTATION), /United States Supreme Court cases/);
   assert.match(buildRouterPrompt(ALPHAJUSTICE_IMPLEMENTATION), /cases/);
+  assert.match(buildRouterPrompt(getImplementationConfig("alphabook")), /Project Gutenberg-derived library of public-domain books/);
+  assert.match(buildRouterPrompt(getImplementationConfig("alphabook")), /do not answer from broad world knowledge/i);
 });

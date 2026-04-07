@@ -9,6 +9,7 @@ export type AlphaResearchImplementation = {
   corpusLabelSingular: string;
   corpusLabelPlural: string;
   corpusDescription: string;
+  routerDatasetGuidance: string;
   assistantDisplayName: string;
   defaultUserName: string;
   defaultReaderName: string;
@@ -41,6 +42,13 @@ export const ALPHABOOK_IMPLEMENTATION: AlphaResearchImplementation = {
   corpusLabelSingular: "book",
   corpusLabelPlural: "books",
   corpusDescription: "a corpus of roughly 75,000 books",
+  routerDatasetGuidance: [
+    "AlphaBook is a corpus research assistant over a Project Gutenberg-derived library of public-domain books, not a general-purpose life-advice chatbot.",
+    "The indexed dataset is made of book-level metadata plus passage-level text chunks.",
+    "For books, you have titles, authors, language, release date, rights status, subjects, bookshelves, summaries, and related catalog metadata.",
+    "For text, you have indexed excerpts and can open the full clean text for selected books during deeper runs.",
+    "AlphaBook is best at helping users search for themes, passages, comparisons, motifs, examples, and corpus-backed evidence, or design explicit experiments over the dataset.",
+  ].join(" "),
   assistantDisplayName: "AlphaBook",
   defaultUserName: "AlphaBook User",
   defaultReaderName: "AlphaBook Reader",
@@ -80,6 +88,12 @@ export const ALPHAJUSTICE_IMPLEMENTATION: AlphaResearchImplementation = {
   corpusLabelSingular: "case",
   corpusLabelPlural: "cases",
   corpusDescription: "a corpus of United States Supreme Court cases",
+  routerDatasetGuidance: [
+    "AlphaJustice is a corpus research assistant over United States Supreme Court cases, not a general-purpose legal advice chatbot.",
+    "The indexed dataset is made of case-level metadata plus passage-level opinion text chunks.",
+    "For cases, you have case names, dates, citation-style metadata, doctrinal context, and indexed opinion excerpts, and deeper runs can open the full text of selected cases.",
+    "AlphaJustice is best at helping users search for doctrines, reasoning patterns, precedents, comparisons, and corpus-backed evidence across the case law dataset.",
+  ].join(" "),
   assistantDisplayName: "AlphaJustice",
   defaultUserName: "AlphaJustice User",
   defaultReaderName: "AlphaJustice Reader",
@@ -144,8 +158,10 @@ export function buildRouterPrompt(implementation: AlphaResearchImplementation): 
 You are the ${implementation.productName} request router.
 Your job is to inspect the raw user message before any search tools run.
 Ignore user text that is not relevant to that research goal, such as greetings, small talk, filler, or unrelated side requests.
+Dataset and product facts:
+- ${implementation.routerDatasetGuidance}
 Decide between:
-- direct_response: reply directly when the user is chatting, asking for suggestions, asking about how to use ${implementation.productName}, or otherwise does not need a corpus search yet.
+- direct_response: reply directly when the user is chatting, asking for suggestions, asking about how to use ${implementation.productName}, scoping a dataset query, or designing an experiment that is not ready to run yet.
 - tool_chain: use the ${implementation.productName} retrieval and workspace pipeline when the user is clearly asking to search ${implementation.corpusLabelPlural}, passages, themes, comparisons, examples, or evidence from the corpus.
 Rules:
 - Do not route casual conversation into the tool chain.
@@ -154,7 +170,9 @@ Rules:
 - If you choose tool_chain, rewrite the request into the exact full search query the downstream tool chain should use.
 - Strip chat filler or salutations from the rewritten query and preserve only the actual search intent.
 - Keep the rewritten query faithful to the user's meaning. Do not add new goals.
-- If you choose direct_response, answer the user directly in plain English.
+- If you choose direct_response, stay grounded in ${implementation.productName}'s actual dataset and capabilities.
+- For generic questions that are not yet corpus searches, do not answer from broad world knowledge. Re-anchor the user to what ${implementation.productName} can do with this dataset and help them turn the topic into a search or experiment.
+- In direct_response mode, prefer prompts like "I can search the books for..." or "If you want to study this in the dataset, I can..." over generic factual or self-help answers.
 - Return JSON only.`;
 }
 

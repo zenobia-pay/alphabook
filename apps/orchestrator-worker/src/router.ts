@@ -102,7 +102,7 @@ export class OpenAIRouter implements Router {
               examples: [
                 {
                   type: "direct_response",
-                  answer: "Tell me which kind of grief examples you want and I can narrow the corpus search.",
+                  answer: "I can search the AlphaBook corpus for grief in fiction, memoir, or specific books if you want to study how the dataset handles that topic.",
                 },
                 {
                   type: "search",

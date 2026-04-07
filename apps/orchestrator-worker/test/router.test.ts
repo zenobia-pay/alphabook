@@ -45,6 +45,8 @@ test("OpenAIRouter sends a concrete output contract instead of prose placeholder
 
   assert.deepEqual(routerPrompt.outputContract?.allowedTypes, ["direct_response", "search", "design_experiment"]);
   assert.ok(routerPrompt.outputContract?.rules?.some((rule) => rule.includes("Only include fields that belong to the chosen type.")));
+  assert.match(String(messages?.[0]?.content ?? ""), /Project Gutenberg-derived library of public-domain books/);
+  assert.match(String(messages?.[0]?.content ?? ""), /do not answer from broad world knowledge/i);
 });
 
 test("OpenAIRouter rejects malformed router JSON instead of silently coercing it", async () => {
