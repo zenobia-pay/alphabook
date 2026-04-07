@@ -1738,8 +1738,11 @@ function ErrorNotice({
         className="app-error-notice-dismiss"
         aria-label="Dismiss error"
         onClick={() => {
+          if (onDismiss) {
+            onDismiss();
+            return;
+          }
           setDismissed(true);
-          onDismiss?.();
         }}
       >
         <CloseIcon />

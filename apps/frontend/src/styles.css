@@ -2049,11 +2049,12 @@ button {
 }
 
 .thread-error-banner {
-  position: absolute;
-  top: 18px;
-  left: 20px;
-  width: min(560px, calc(100% - 40px));
-  z-index: 30;
+  position: fixed;
+  right: 24px;
+  bottom: calc(24px + var(--safe-bottom));
+  width: min(420px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
+  z-index: 80;
   pointer-events: none;
 }
 
@@ -2067,8 +2068,8 @@ button {
     linear-gradient(135deg, rgba(187, 73, 44, 0.08), rgba(255, 250, 247, 0.98)),
     rgba(255, 255, 255, 0.92);
   border-radius: 18px;
-  padding: 13px 16px;
-  box-shadow: 0 12px 28px rgba(131, 60, 41, 0.08);
+  padding: 14px 15px;
+  box-shadow: 0 18px 40px rgba(131, 60, 41, 0.14);
   width: 100%;
   max-width: 100%;
 }
@@ -2121,6 +2122,7 @@ button {
   background: rgba(187, 73, 44, 0.08);
   color: rgb(128, 48, 29);
   padding: 0;
+  flex: 0 0 auto;
   transition:
     background-color 140ms ease,
     color 140ms ease,
@@ -3354,9 +3356,10 @@ button {
   }
 
   .thread-error-banner {
-    top: calc(62px + var(--safe-top));
-    left: 12px;
-    width: min(560px, calc(100% - 24px));
+    right: 12px;
+    bottom: calc(12px + var(--safe-bottom));
+    width: min(380px, calc(100vw - 24px));
+    max-width: calc(100vw - 24px);
   }
 
   .profile-view {
