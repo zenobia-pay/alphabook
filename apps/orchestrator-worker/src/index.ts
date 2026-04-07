@@ -741,6 +741,7 @@ export function buildAppDeps(env: Env): AppDeps {
               cookiePassword: env.AUTH_COOKIE_PASSWORD,
               cookiePrefix: implementation.id,
               frontendOrigin: implementation.siteOrigin,
+              apiOrigin: implementation.apiOrigin,
               allowedHosts: [new URL(implementation.siteOrigin).hostname, "127.0.0.1", "localhost"],
               defaultReaderName: implementation.defaultReaderName,
             },

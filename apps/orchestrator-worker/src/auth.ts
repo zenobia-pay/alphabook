@@ -16,6 +16,7 @@ export interface AuthConfig {
   workosClientId: string;
   cookiePassword: string;
   frontendOrigin?: string;
+  apiOrigin?: string;
   cookieDomain?: string;
   cookiePrefix?: string;
   allowedHosts?: string[];
@@ -99,6 +100,13 @@ function deriveFrontendOrigin(url: URL, config?: AuthConfig): string {
     return `${url.protocol}//${url.hostname.slice(4)}`;
   }
   return `${url.protocol}//${url.hostname}`;
+}
+
+function deriveApiOrigin(url: URL, config?: AuthConfig): string {
+  if (config?.apiOrigin) {
+    return config.apiOrigin;
+  }
+  return url.origin;
 }
 
 function safeReturnTo(value: string | null | undefined, fallback: string, config?: AuthConfig): string {
@@ -247,7 +255,7 @@ export class WorkOSAuth {
     const requestUrl = new URL(c.req.url);
     const cookieDomain = deriveCookieDomain(requestUrl, this.config);
     const returnTo = safeReturnTo(c.req.query("returnTo"), deriveFrontendOrigin(requestUrl, this.config), this.config);
-    const redirectUri = `${requestUrl.origin}/auth/callback`;
+    const redirectUri = `${deriveApiOrigin(requestUrl, this.config)}/auth/callback`;
     const prompt = c.req.query("prompt") || (screenHint === "sign-in" ? "login" : undefined);
     const { url, state, codeVerifier } = await this.workos.userManagement.getAuthorizationUrlWithPKCE({
       provider: "authkit",
