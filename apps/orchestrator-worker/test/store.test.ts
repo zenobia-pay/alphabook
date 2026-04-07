@@ -286,6 +286,82 @@ test("D1 store resolves single-work detail and files without hydrating the full 
   assert.ok(queries.some((entry) => entry.sql.includes("FROM work_files wf")));
 });
 
+test("D1 store hydrates chunks by id without preloading the full corpus", async () => {
+  const queries: Array<{ sql: string; params?: unknown[] }> = [];
+  const db: DbClient = {
+    async query<T = Record<string, unknown>>(sql: string, params?: unknown[]) {
+      queries.push({ sql, params });
+      if (sql.includes("SELECT id FROM works WHERE gutenberg_id = ?")) {
+        return { rows: [{ id: "work-1" }] as T[] };
+      }
+      if (sql.includes("SELECT id, gutenberg_id, title, metadata_json FROM works WHERE id = ?")) {
+        return {
+          rows: [{
+            id: "work-1",
+            gutenberg_id: 42,
+            title: "Sample Diary",
+            metadata_json: JSON.stringify({ corpusAdapterId: "gutenberg", externalId: "42" }),
+          }] as T[],
+        };
+      }
+      if (sql.includes("SELECT a.name FROM work_authors")) {
+        return { rows: [{ name: "Jane Doe" }] as T[] };
+      }
+      if (sql.includes("SELECT kind, r2_key FROM work_files WHERE work_id = ?")) {
+        return {
+          rows: [{
+            kind: "chunks",
+            r2_key: "gutenberg/chunks/42/chunks.jsonl",
+          }] as T[],
+        };
+      }
+      if (sql.includes("FROM works ORDER BY title ASC") || sql.includes("FROM work_subjects")) {
+        throw new Error(`Unexpected corpus hydration query: ${sql}`);
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+    async end() {},
+  };
+
+  const blobStore = {
+    async getText(key: string) {
+      assert.equal(key, "gutenberg/chunks/42/chunks.jsonl");
+      return [
+        JSON.stringify({
+          id: "gutenberg:42:0",
+          chunk_index: 0,
+          text: "Dear diary, today was interesting.",
+          excerpt: "Dear diary, today was interesting.",
+          authors: ["Jane Doe"],
+        }),
+      ].join("\n");
+    },
+    async putText() {
+      throw new Error("Unexpected putText");
+    },
+    async getJson() {
+      return null;
+    },
+    async putJson() {
+      throw new Error("Unexpected putJson");
+    },
+    async delete() {
+      throw new Error("Unexpected delete");
+    },
+  };
+
+  const store = new D1AppStore(db, { blobStore: blobStore as never });
+  const chunks = await store.getChunksByIds(["gutenberg:42:0"]);
+
+  assert.equal(chunks.length, 1);
+  assert.equal(chunks[0]?.workId, "work-1");
+  assert.equal(chunks[0]?.workTitle, "Sample Diary");
+  assert.deepEqual(chunks[0]?.authors, ["Jane Doe"]);
+  assert.equal(chunks[0]?.r2Key, "gutenberg/chunks/42/chunks.jsonl");
+  assert.ok(queries.some((entry) => entry.sql.includes("SELECT id FROM works WHERE gutenberg_id = ?")));
+  assert.ok(!queries.some((entry) => entry.sql.includes("FROM works ORDER BY title ASC")));
+});
+
 test("in-memory store spills oversized run event payloads to blob storage and rehydrates them", async () => {
   const store = new InMemoryAppStore();
   const largeHtml = `<div>${"x".repeat(8_000)}</div>`;

@@ -386,6 +386,79 @@ export class D1AppStore implements AppStore {
     return this.corpusStorePromise;
   }
 
+  private async ensureWorkReferenceById(workId: string) {
+    if (this.workReferenceById.has(workId) && this.workChunksKeyById.has(workId)) {
+      return this.workReferenceById.get(workId) ?? null;
+    }
+    const workResult = await this.db.query<{
+      id: string;
+      gutenberg_id: number | string | null;
+      title: string;
+      metadata_json: string | Record<string, unknown> | null;
+    }>(
+      "SELECT id, gutenberg_id, title, metadata_json FROM works WHERE id = ? LIMIT 1",
+      [workId],
+    );
+    const row = workResult.rows[0];
+    if (!row) {
+      return null;
+    }
+    const metadata = parseJsonObject(row.metadata_json);
+    const adapterId = typeof metadata.corpusAdapterId === "string" ? metadata.corpusAdapterId : "gutenberg";
+    const externalId = typeof metadata.externalId === "string"
+      ? metadata.externalId
+      : row.gutenberg_id == null
+        ? row.id
+        : String(row.gutenberg_id);
+    const authorsResult = await this.db.query<{ name: string }>(
+      "SELECT a.name FROM work_authors wa JOIN authors a ON a.id = wa.author_id WHERE wa.work_id = ? ORDER BY a.name ASC",
+      [workId],
+    );
+    const fileRows = await this.db.query<{ kind: WorkFileKind; r2_key: string }>(
+      "SELECT kind, r2_key FROM work_files WHERE work_id = ? AND kind IN ('clean', 'chunks', 'raw')",
+      [workId],
+    );
+    for (const fileRow of fileRows.rows) {
+      if (fileRow.kind === "chunks") {
+        this.workChunksKeyById.set(workId, fileRow.r2_key);
+      }
+    }
+    const reference = {
+      adapterId,
+      externalId,
+      title: row.title,
+      authors: authorsResult.rows
+        .map((author) => author.name)
+        .filter((name): name is string => typeof name === "string" && name.trim().length > 0),
+    };
+    this.workReferenceById.set(workId, reference);
+    this.workIdByExternalRef.set(`${adapterId}:${externalId}`, workId);
+    return reference;
+  }
+
+  private async resolveWorkIdByExternalRef(adapterId: string, externalId: string) {
+    const cacheKey = `${adapterId}:${externalId}`;
+    const cached = this.workIdByExternalRef.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+    const rows = adapterId === "gutenberg"
+      ? await this.db.query<{ id: string }>(
+        "SELECT id FROM works WHERE gutenberg_id = ? LIMIT 1",
+        [Number.parseInt(externalId, 10)],
+      )
+      : await this.db.query<{ id: string }>(
+        "SELECT id FROM works WHERE json_extract(metadata_json, '$.corpusAdapterId') = ? AND json_extract(metadata_json, '$.externalId') = ? LIMIT 1",
+        [adapterId, externalId],
+      );
+    const workId = rows.rows[0]?.id ?? null;
+    if (!workId) {
+      return null;
+    }
+    await this.ensureWorkReferenceById(workId);
+    return workId;
+  }
+
   private hasScopedCorpus() {
     return Boolean(this.adapterId && this.adapterId !== "gutenberg");
   }
@@ -680,7 +753,7 @@ export class D1AppStore implements AppStore {
     if (cached) {
       return cached;
     }
-    await this.corpusStore();
+    await this.ensureWorkReferenceById(workId);
     const chunksKey = this.workChunksKeyById.get(workId);
     if (!chunksKey) {
       this.chunkManifestCache.set(workId, []);
@@ -1656,13 +1729,12 @@ export class D1AppStore implements AppStore {
   }
   async getDocumentFiles(documentIds: string[], kinds?: WorkFileKind[]) { return (await this.corpusStore()).getDocumentFiles(documentIds, kinds); }
   async getChunksByIds(chunkIds: string[]) {
-    await this.corpusStore();
     const chunks = await Promise.all(chunkIds.map(async (chunkId) => {
       const parsed = parseCorpusChunkId(chunkId);
       if (!parsed) {
         return null;
       }
-      const workId = this.workIdByExternalRef.get(`${parsed.adapterId}:${parsed.externalId}`);
+      const workId = await this.resolveWorkIdByExternalRef(parsed.adapterId, parsed.externalId);
       if (!workId) {
         return null;
       }
