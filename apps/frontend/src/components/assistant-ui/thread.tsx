@@ -751,6 +751,10 @@ const AssistantMessage: FC = () => {
   const planToolTraceDetailText = useMemo(() => buildPlanToolTraceDetailText(planToolTrace), [planToolTrace]);
   const hasPlanToolTrace = phase === "plan" && planToolTrace.length > 0;
 
+  if (phase === "progress") {
+    return null;
+  }
+
   return (
     <MessagePrimitive.Root
       className="aui-assistant-message-root fade-in slide-in-from-bottom-1 relative mx-auto w-full max-w-(--thread-max-width) animate-in py-3 duration-150"
@@ -759,7 +763,7 @@ const AssistantMessage: FC = () => {
       data-running-message={isRunning ? "true" : "false"}
     >
       <div className="aui-assistant-message-content wrap-break-word px-2 text-foreground leading-relaxed">
-        {phase === "progress" && !hasPlanToolTrace ? <ProgressMessageCard text={progressText} /> : <MessagePrimitive.Parts components={TOOL_PART_COMPONENTS} />}
+        <MessagePrimitive.Parts components={TOOL_PART_COMPONENTS} />
         {hasPlanToolTrace ? <PlanToolTraceCard trace={planToolTrace} isRunning={isRunning} detailText={planToolTraceDetailText || progressText} /> : null}
         {experimentProposal ? <ExperimentApprovalCard proposal={experimentProposal} disabled={isRunning} /> : null}
         {isRunning && !hasVisibleParts && !experimentProposal ? (
@@ -775,25 +779,6 @@ const AssistantMessage: FC = () => {
         <AssistantActionBar />
       </div>
     </MessagePrimitive.Root>
-  );
-};
-
-const ProgressMessageCard: FC<{
-  text: string;
-}> = ({ text }) => {
-  return (
-    <section className="aui-agentic-trace" aria-label="Agentic Search run">
-      <div className="aui-agentic-trace-header is-static">
-        <div className="aui-agentic-trace-heading">
-          <div className="aui-agentic-trace-title-row">
-            <span className="aui-agentic-trace-title">Agentic Search</span>
-            <span className="aui-agentic-trace-spinner" aria-hidden="true" />
-            <span className="aui-agentic-trace-status">In Progress</span>
-            {text.trim().length > 0 ? <DetailedRunOutputButton text={text} /> : null}
-          </div>
-        </div>
-      </div>
-    </section>
   );
 };
 
