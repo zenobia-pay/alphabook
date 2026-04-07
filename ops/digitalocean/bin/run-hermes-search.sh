@@ -532,25 +532,6 @@ printf '%s\n' "$watcher_pid" >"$watcher_pid_file"
 
 printf '%s pid=%s started attempt=%s\n' "$(date -u +%FT%TZ)" "$runner_pid" "$attempt_id" >>"$process_log"
 
-materialize_script="$ROOT_DIR/ops/digitalocean/bin/materialize-hermes-run-index.py"
-if [[ -x "$materialize_script" ]]; then
-  (
-    while kill -0 "$runner_pid" 2>/dev/null; do
-      python3 "$materialize_script" --run-dir "$run_dir" >/dev/null 2>&1 || true
-      sleep "$HEARTBEAT_SECONDS"
-    done
-    python3 "$materialize_script" --run-dir "$run_dir" >/dev/null 2>&1 || true
-    printf '%s pid=%s exited attempt=%s\n' "$(date -u +%FT%TZ)" "$runner_pid" "$attempt_id" >>"$process_log"
-  ) >/dev/null 2>&1 &
-else
-  (
-    while kill -0 "$runner_pid" 2>/dev/null; do
-      sleep "$HEARTBEAT_SECONDS"
-    done
-    printf '%s pid=%s exited attempt=%s\n' "$(date -u +%FT%TZ)" "$runner_pid" "$attempt_id" >>"$process_log"
-  ) >/dev/null 2>&1 &
-fi
-
 python3 - "$index_file" "$run_dir" "$attempt_id" "$job_id" "$USER_PROMPT" "$EFFORT" <<'PY'
 from pathlib import Path
 import json
@@ -591,5 +572,24 @@ for target in (Path(sys.argv[1]), Path(sys.argv[2])):
     data["index_file"] = str(Path(sys.argv[4]) / "index.json")
     target.write_text(json.dumps(data, indent=2) + "\n")
 PY
+
+materialize_script="$ROOT_DIR/ops/digitalocean/bin/materialize-hermes-run-index.py"
+if [[ -x "$materialize_script" ]]; then
+  (
+    while kill -0 "$runner_pid" 2>/dev/null; do
+      python3 "$materialize_script" --run-dir "$run_dir" >/dev/null 2>&1 || true
+      sleep "$HEARTBEAT_SECONDS"
+    done
+    python3 "$materialize_script" --run-dir "$run_dir" >/dev/null 2>&1 || true
+    printf '%s pid=%s exited attempt=%s\n' "$(date -u +%FT%TZ)" "$runner_pid" "$attempt_id" >>"$process_log"
+  ) >/dev/null 2>&1 &
+else
+  (
+    while kill -0 "$runner_pid" 2>/dev/null; do
+      sleep "$HEARTBEAT_SECONDS"
+    done
+    printf '%s pid=%s exited attempt=%s\n' "$(date -u +%FT%TZ)" "$runner_pid" "$attempt_id" >>"$process_log"
+  ) >/dev/null 2>&1 &
+fi
 
 printf '%s\n' "$run_dir"

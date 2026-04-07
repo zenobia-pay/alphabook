@@ -53,6 +53,16 @@ def infer_inner_run_dir(run_dir: Path) -> Path | None:
     return None
 
 
+def infer_wrapper_pid(run_dir: Path) -> int | None:
+    try:
+        value = (run_dir / "hermes.pid").read_text().strip()
+    except Exception:
+        return None
+    if not value.isdigit():
+        return None
+    return int(value)
+
+
 def collect_session_info(run_dir: Path) -> dict[str, Any]:
     hermes_home = (run_dir / "hermes-home").resolve() if (run_dir / "hermes-home").exists() else run_dir / "hermes-home"
     sessions_dir = hermes_home / ".hermes" / "sessions"
@@ -162,7 +172,7 @@ def main() -> None:
         "summary_file": str(run_dir / "summary.json"),
         "prompt_file": str(run_dir / "prompt.txt"),
         "wrapper_state": status.get("state"),
-        "wrapper_pid": status.get("pid"),
+        "wrapper_pid": status.get("pid") if isinstance(status.get("pid"), int) else infer_wrapper_pid(run_dir),
         "launched_at": status.get("launched_at"),
         "started_at": status.get("started_at"),
         "finished_at": status.get("finished_at"),
@@ -192,6 +202,12 @@ def main() -> None:
     (run_dir / "index.json").write_text(json.dumps(index_payload, indent=2) + "\n")
 
     status["job_id"] = job_id
+    if isinstance(status.get("pid"), int):
+        pid = status["pid"]
+    else:
+        pid = infer_wrapper_pid(run_dir)
+        if pid is not None:
+            status["pid"] = pid
     status["inner_run_dir"] = str(inner_run_dir) if inner_run_dir else None
     status["inner_run_id"] = inner_run_dir.name if inner_run_dir else None
     status["hermes_session_id"] = session_info.get("primary_session_id")
@@ -205,6 +221,7 @@ def main() -> None:
         summary.update(
             {
                 "job_id": job_id,
+                "pid": status.get("pid"),
                 "inner_run_dir": status["inner_run_dir"],
                 "inner_run_id": status["inner_run_id"],
                 "hermes_session_id": status["hermes_session_id"],
