@@ -5907,7 +5907,10 @@ export default function App() {
                         <span>Language</span>
                         <select
                           value={exploreDraftFilters.language}
-                          onChange={(event) => setExploreDraftFilters((current) => ({ ...current, language: event.currentTarget.value }))}
+                          onChange={(event) => {
+                            const value = event.currentTarget.value;
+                            setExploreDraftFilters((current) => ({ ...current, language: value }));
+                          }}
                         >
                           <option value="all">All languages</option>
                           {feedFacets.languages.map((option) => (
@@ -5922,7 +5925,10 @@ export default function App() {
                         <span>Subject</span>
                         <select
                           value={exploreDraftFilters.subject}
-                          onChange={(event) => setExploreDraftFilters((current) => ({ ...current, subject: event.currentTarget.value }))}
+                          onChange={(event) => {
+                            const value = event.currentTarget.value;
+                            setExploreDraftFilters((current) => ({ ...current, subject: value }));
+                          }}
                         >
                           <option value="all">All subjects</option>
                           {feedFacets.subjects.map((option) => (
@@ -5937,7 +5943,10 @@ export default function App() {
                         <span>Bookshelf</span>
                         <select
                           value={exploreDraftFilters.bookshelf}
-                          onChange={(event) => setExploreDraftFilters((current) => ({ ...current, bookshelf: event.currentTarget.value }))}
+                          onChange={(event) => {
+                            const value = event.currentTarget.value;
+                            setExploreDraftFilters((current) => ({ ...current, bookshelf: value }));
+                          }}
                         >
                           <option value="all">All bookshelves</option>
                           {feedFacets.bookshelves.map((option) => (
