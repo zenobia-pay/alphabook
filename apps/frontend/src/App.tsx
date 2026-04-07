@@ -98,6 +98,7 @@ type UrlState = {
   workId: string | null | undefined;
   readerPath: string | null | undefined;
   chunkId: string | null | undefined;
+  passageId: string | null | undefined;
   profileUserId: string | null | undefined;
   runId: string | null | undefined;
   adminSection: "runs" | "users" | "analytics" | "incidents" | "logs";
@@ -394,6 +395,7 @@ function readUrlState(): UrlState {
       workId: undefined,
       readerPath: undefined,
       chunkId: undefined,
+      passageId: undefined,
       profileUserId: undefined,
       runId: undefined,
       adminSection: "runs",
@@ -421,6 +423,7 @@ function readUrlState(): UrlState {
     workId: pathnameMatch ? decodeURIComponent(pathnameMatch[1]) : params.has("work") ? params.get("work") || null : undefined,
     readerPath: params.has("reader") ? params.get("reader") || null : undefined,
     chunkId: params.has("chunk") ? params.get("chunk") || null : undefined,
+    passageId: window.location.hash ? decodeURIComponent(window.location.hash.replace(/^#/, "").trim()) || null : undefined,
     profileUserId: profilePathMatch ? decodeURIComponent(profilePathMatch[1]) : params.has("profile") ? params.get("profile") || null : undefined,
     runId: params.has("run") ? params.get("run") || null : undefined,
     adminSection:
@@ -487,18 +490,23 @@ function writeUrlState(next: UrlState, mode: UrlWriteMode = "replace") {
   } else {
     url.searchParams.delete("session");
   }
-  if (next.view === "book" && next.readerPath) {
+  if (next.workId && next.readerPath) {
     url.searchParams.set("reader", next.readerPath);
   } else {
     url.searchParams.delete("reader");
   }
-  if (next.view === "book" && next.chunkId) {
+  if (next.workId && next.chunkId) {
     url.searchParams.set("chunk", next.chunkId);
   } else {
     url.searchParams.delete("chunk");
   }
   if (next.view !== "book" && next.workId) {
     url.searchParams.set("work", next.workId);
+  }
+  if (next.workId && next.passageId) {
+    url.hash = next.passageId;
+  } else {
+    url.hash = "";
   }
   if (next.debugEnabled) {
     url.searchParams.set("debug", "true");
@@ -3505,7 +3513,7 @@ export default function App() {
   const [activeReaderPath, setActiveReaderPath] = useState<string | null | undefined>(initialUrlState.readerPath);
   const [activeChunkId, setActiveChunkId] = useState<string | null | undefined>(initialUrlState.chunkId);
   const [pendingCitation, setPendingCitation] = useState<Citation | null>(null);
-  const [activePassageId, setActivePassageId] = useState<string | null>(null);
+  const [activePassageId, setActivePassageId] = useState<string | null>(initialUrlState.passageId ?? null);
   const [highlightedPassageExcerpt, setHighlightedPassageExcerpt] = useState<string | null>(null);
   const bookReaderFrameRef = useRef<HTMLIFrameElement | null>(null);
   const lastReaderFrameHrefRef = useRef<string | null>(null);
@@ -3860,6 +3868,8 @@ export default function App() {
       setActiveWorkId(next.workId);
       setActiveReaderPath(next.readerPath);
       setActiveChunkId(next.chunkId);
+      setActivePassageId(next.passageId ?? null);
+      setHighlightedPassageExcerpt(null);
       setActiveProfileUserId(next.profileUserId);
       setSelectedAdminRunId(next.runId);
       setAdminSection(next.adminSection);
@@ -3887,6 +3897,7 @@ export default function App() {
       workId: activeWorkId,
       readerPath: activeReaderPath,
       chunkId: activeChunkId,
+      passageId: activePassageId,
       profileUserId: activeProfileUserId,
       runId: selectedAdminRunId,
       adminSection,
@@ -3895,7 +3906,7 @@ export default function App() {
       exploreRandomSeed,
     }, pendingUrlWriteModeRef.current);
     pendingUrlWriteModeRef.current = "replace";
-  }, [activeView, selectedSessionId, activeWorkId, activeReaderPath, activeChunkId, activeProfileUserId, selectedAdminRunId, adminSection, debugEnabled, exploreAppliedFilters, exploreRandomSeed]);
+  }, [activeView, selectedSessionId, activeWorkId, activeReaderPath, activeChunkId, activePassageId, activeProfileUserId, selectedAdminRunId, adminSection, debugEnabled, exploreAppliedFilters, exploreRandomSeed]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -4319,14 +4330,12 @@ export default function App() {
 
     const match = findPassageForCitation(readerPassages, pendingCitation);
     if (match) {
+      pendingUrlWriteModeRef.current = "replace";
       setActivePassageId(match.passageId);
       setHighlightedPassageExcerpt(match.highlight);
       if (activeChunkId) {
         setActiveChunkId(null);
       }
-      const url = new URL(window.location.href);
-      url.hash = match.passageId;
-      window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
     }
     setPendingCitation(null);
   }, [activeWork, pendingCitation, readerPassages, activeChunkId]);
@@ -4360,6 +4369,7 @@ export default function App() {
         workId: context.workId,
         readerPath: normalized,
         chunkId: context.chunkId,
+        passageId: activePassageId,
         profileUserId: context.profileUserId,
         runId: context.runId,
         adminSection: context.adminSection,
@@ -4370,7 +4380,7 @@ export default function App() {
 
     window.addEventListener("message", handleReaderLocation);
     return () => window.removeEventListener("message", handleReaderLocation);
-  }, []);
+  }, [activePassageId]);
 
   useEffect(() => {
     if (!activeWorkId) {
@@ -5642,6 +5652,12 @@ export default function App() {
     setRunArtifacts([]);
     setRecoveredActiveRunId(null);
     setLoadError(null);
+    setActiveWorkId(null);
+    setActiveReaderPath(null);
+    setActiveChunkId(null);
+    setActivePassageId(null);
+    setHighlightedPassageExcerpt(null);
+    setPendingCitation(null);
     setActiveView("assistant");
   }
 
@@ -5656,6 +5672,8 @@ export default function App() {
     setRunArtifacts([]);
     setRecoveredActiveRunId(null);
     setLoadError(null);
+    setActiveReaderPath(null);
+    setActiveChunkId(null);
     setHighlightedPassageExcerpt(null);
     setActiveView("book");
   }
@@ -5707,6 +5725,10 @@ export default function App() {
     setMobileNavOpen(false);
     if (view !== "book") {
       setActiveWorkId(null);
+      setActiveReaderPath(null);
+      setActiveChunkId(null);
+      setActivePassageId(null);
+      setHighlightedPassageExcerpt(null);
       setPendingCitation(null);
     }
     if (view !== "profile") {
@@ -5765,6 +5787,9 @@ export default function App() {
     setMobileNavOpen(false);
     setPendingCitation(null);
     setActiveReaderPath(null);
+    setActiveChunkId(null);
+    setActivePassageId(null);
+    setHighlightedPassageExcerpt(null);
     setActiveProfileUserId(null);
     setActiveWorkId(workId);
     if (activeView === "explore") {
@@ -5780,6 +5805,9 @@ export default function App() {
     pendingUrlWriteModeRef.current = "push";
     setPendingCitation(null);
     setActiveReaderPath(null);
+    setActiveChunkId(null);
+    setActivePassageId(null);
+    setHighlightedPassageExcerpt(null);
     setActiveWorkId(null);
   }
 
@@ -5797,6 +5825,8 @@ export default function App() {
     setMobileNavOpen(false);
     setPendingCitation(citation);
     setActiveReaderPath(null);
+    setActivePassageId(null);
+    setHighlightedPassageExcerpt(null);
     setActiveProfileUserId(null);
     setActiveWorkId(citation.workId);
     setActiveView("book");
@@ -5806,6 +5836,10 @@ export default function App() {
     pendingUrlWriteModeRef.current = "push";
     setMobileNavOpen(false);
     setActiveWorkId(null);
+    setActiveReaderPath(null);
+    setActiveChunkId(null);
+    setActivePassageId(null);
+    setHighlightedPassageExcerpt(null);
     setPendingCitation(null);
     setActiveProfileUserId(userId ?? currentUserId ?? null);
     setActiveView("profile");
@@ -5842,16 +5876,9 @@ export default function App() {
         highlighted: Boolean(highlight),
       });
     }
+    pendingUrlWriteModeRef.current = replaceHistory ? "replace" : "push";
     setActivePassageId(passageId);
     setHighlightedPassageExcerpt(highlight);
-    const url = new URL(window.location.href);
-    url.hash = passageId;
-    const nextUrl = `${url.pathname}${url.search}${url.hash}`;
-    if (replaceHistory) {
-      window.history.replaceState({}, "", nextUrl);
-    } else {
-      window.history.pushState({}, "", nextUrl);
-    }
   }
 
   function renderAssistantSurface(props: {
