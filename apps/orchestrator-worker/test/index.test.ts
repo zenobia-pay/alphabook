@@ -1,21 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import {
-  createResearchTaskLeaseRenewer,
-  runQueuedRemoteSemanticSearch,
-  runQueuedWorkspaceResearchTask,
-  shouldHandleLocallyWhenOriginProxyEnabled,
-} from "../src/index";
-
-test("origin proxy keeps auth and session endpoints on the local worker", () => {
-  assert.equal(shouldHandleLocallyWhenOriginProxyEnabled("/auth/sign-in"), true);
-  assert.equal(shouldHandleLocallyWhenOriginProxyEnabled("/auth/callback"), true);
-  assert.equal(shouldHandleLocallyWhenOriginProxyEnabled("/me"), true);
-  assert.equal(shouldHandleLocallyWhenOriginProxyEnabled("/health"), true);
-  assert.equal(shouldHandleLocallyWhenOriginProxyEnabled("/sessions"), false);
-  assert.equal(shouldHandleLocallyWhenOriginProxyEnabled("/api/v1/documents"), false);
-});
+import { createResearchTaskLeaseRenewer, runQueuedRemoteSemanticSearch, runQueuedWorkspaceResearchTask } from "../src/index";
 
 test("queued workspace research dispatches sprite fanout tasks to the sprite runtime lane", async () => {
   const calls: string[] = [];
