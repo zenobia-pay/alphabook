@@ -599,6 +599,18 @@ const MessageError: FC = () => {
 
 const AssistantMessage: FC = () => {
   const isRunning = useAuiState((state) => state.message.status?.type === "running");
+  const hasVisibleParts = useAuiState((state) => state.message.content.some((part) => {
+    if (!part || typeof part !== "object") {
+      return false;
+    }
+    if ("type" in part && part.type === "text" && typeof part.text === "string" && part.text.trim().length > 0) {
+      return true;
+    }
+    if ("type" in part && part.type === "tool-call") {
+      return true;
+    }
+    return false;
+  }));
   const phase = useAuiState((state) => {
     const metadata = state.message.metadata;
     const custom = metadata && typeof metadata === "object" && "custom" in metadata
@@ -649,7 +661,7 @@ const AssistantMessage: FC = () => {
       <div className="aui-assistant-message-content wrap-break-word px-2 text-foreground leading-relaxed">
         <MessagePrimitive.Parts components={TOOL_PART_COMPONENTS} />
         {experimentProposal ? <ExperimentApprovalCard proposal={experimentProposal} disabled={isRunning} /> : null}
-        {isRunning ? (
+        {isRunning && !hasVisibleParts && !experimentProposal ? (
           <div className="aui-assistant-running-indicator" aria-label="Assistant is thinking">
             <span className="aui-assistant-running-indicator-dot" aria-hidden="true" />
           </div>
