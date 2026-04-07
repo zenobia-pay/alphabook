@@ -173,6 +173,11 @@ type ReaderPassage = {
   searchText: string;
 };
 
+type OverlayContentsEntry = {
+  id: string;
+  label: string;
+};
+
 declare global {
   interface Window {
     __ALPHABOOK_ASSISTANT_DOCUMENT_BOOTSTRAP__?: AssistantDocumentBootstrapPayload;
@@ -1145,6 +1150,61 @@ function buildReaderPassages(source: WorkSource | null): ReaderPassage[] {
   return source.format === "html"
     ? buildHtmlReaderPassages(source.content)
     : buildTextReaderPassages(source.content);
+}
+
+function buildOverlayContentsEntries(source: WorkSource | null, passages: ReaderPassage[]): OverlayContentsEntry[] {
+  const headingPassages = passages.filter((passage) => passage.kind === "heading");
+  const headingLookup = new Map(headingPassages.map((passage) => [passage.searchText, passage]));
+
+  if (source?.format === "html" && typeof DOMParser !== "undefined") {
+    const doc = new DOMParser().parseFromString(source.content, "text/html");
+    const tocRoots = Array.from(
+      doc.querySelectorAll(
+        [
+          "nav[epub\\:type='toc']",
+          "nav[role='doc-toc']",
+          "nav[aria-label*='contents' i]",
+          "[id*='contents' i]",
+          "[id*='toc' i]",
+          "[class*='contents' i]",
+          "[class*='toc' i]",
+        ].join(", "),
+      ),
+    );
+    const tocEntries = tocRoots.flatMap((root) =>
+      Array.from(root.querySelectorAll("a, li"))
+        .map((node) => normalizeReaderText(node.textContent?.replace(/\s+/g, " ") ?? ""))
+        .filter((text): text is string => Boolean(text) && text.length >= 3)
+        .filter((text, index, values) => values.indexOf(text) === index),
+    );
+    const matchedEntries = tocEntries
+      .map((label) => {
+        const search = toSearchText(label.replace(/^•\s*/, ""));
+        if (!search) {
+          return null;
+        }
+        const direct = headingLookup.get(search);
+        if (direct) {
+          return { id: direct.id, label };
+        }
+        const fuzzy = headingPassages.find(
+          (passage) => passage.searchText.includes(search) || search.includes(passage.searchText),
+        );
+        return fuzzy ? { id: fuzzy.id, label } : null;
+      })
+      .filter((entry): entry is OverlayContentsEntry => Boolean(entry))
+      .filter((entry, index, values) => values.findIndex((candidate) => candidate.id === entry.id) === index)
+      .slice(0, 24);
+
+    if (matchedEntries.length > 0) {
+      return matchedEntries;
+    }
+  }
+
+  return headingPassages.slice(0, 18).map((passage) => ({
+    id: passage.id,
+    label: passage.text,
+  }));
 }
 
 function findHighlightRange(rawText: string, candidates: string[]) {
@@ -2201,21 +2261,6 @@ function ProfileLoadingState({ publicView = false }: { publicView?: boolean }) {
 
 function BookLoadingState() {
   return <div className="book-reader-frame book-reader-frame-empty" aria-hidden="true" />;
-}
-
-function BookMetadataRow({
-  label,
-  value,
-}: {
-  label: string;
-  value: string;
-}) {
-  return (
-    <div className="book-overlay-meta-row">
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
 }
 
 function ProfileEmptyState({
@@ -5962,24 +6007,12 @@ export default function App() {
       return null;
     }
 
-    const headingPassages = readerPassages
-      .filter((passage) => passage.kind === "heading")
-      .slice(0, 14);
-    const fallbackPassages = headingPassages.length === 0
-      ? readerPassages.slice(0, 10)
-      : [];
-    const contentsPassages = headingPassages.length > 0 ? headingPassages : fallbackPassages;
+    const contentsEntries = buildOverlayContentsEntries(activeWorkSource, readerPassages);
     const authorLine = activeWork?.authors.join(", ") ?? "";
-    const metadataRows = [
-      activeWork?.gutenbergId ? ["Source", `Project Gutenberg #${activeWork.gutenbergId}`] : null,
-      activeWork?.language ? ["Language", formatExploreLanguageLabel(activeWork.language)] : null,
-      activeWork?.releaseDate ? ["Released", activeWork.releaseDate] : null,
-      activeWork?.rightsStatus ? ["Rights", activeWork.rightsStatus] : null,
-    ].filter((entry): entry is [string, string] => Array.isArray(entry) && entry[1].trim().length > 0);
 
     return (
-      <div className="book-overlay-shell" role="dialog" aria-modal="true" aria-label={activeWork?.title ?? "Book preview"}>
-        <button type="button" className="book-overlay-backdrop" aria-label="Close book preview" onClick={closeExploreWorkOverlay} />
+      <div className="book-overlay-shell" role="dialog" aria-modal="true" aria-label={activeWork?.title ?? "Book"}>
+        <button type="button" className="book-overlay-backdrop" aria-label="Close book" onClick={closeExploreWorkOverlay} />
         <section className="book-overlay-panel">
           <div className="book-overlay-stage">
             <div className="book-overlay-reader">
@@ -6006,7 +6039,7 @@ export default function App() {
                 <button
                   type="button"
                   className="book-overlay-close"
-                  aria-label="Close book preview"
+                  aria-label="Close book"
                   onClick={closeExploreWorkOverlay}
                 >
                   <CloseIcon />
@@ -6016,55 +6049,25 @@ export default function App() {
               {activeWork ? (
                 <>
                   <div className="book-overlay-header">
-                    <p className="book-overlay-kicker">Book preview</p>
                     <h2>{activeWork.title}</h2>
                     {authorLine ? <p className="book-overlay-authors">{authorLine}</p> : null}
                   </div>
 
-                  {activeWork.summary ? (
-                    <section className="book-overlay-section">
-                      <p className="book-overlay-summary">{activeWork.summary}</p>
-                    </section>
-                  ) : null}
-
-                  {metadataRows.length > 0 ? (
-                    <section className="book-overlay-section">
-                      <div className="book-overlay-meta-table">
-                        {metadataRows.map(([label, value]) => (
-                          <BookMetadataRow key={label} label={label} value={value} />
-                        ))}
-                      </div>
-                    </section>
-                  ) : null}
-
-                  {contentsPassages.length > 0 ? (
+                  {contentsEntries.length > 0 ? (
                     <section className="book-overlay-section">
                       <div className="book-overlay-section-header">
                         <h3>Contents</h3>
                       </div>
                       <div className="book-overlay-contents">
-                        {contentsPassages.map((passage) => (
+                        {contentsEntries.map((entry) => (
                           <button
-                            key={passage.id}
+                            key={entry.id}
                             type="button"
                             className="book-overlay-content-link"
-                            onClick={() => activatePassage(passage.id, null, false)}
+                            onClick={() => activatePassage(entry.id, null, false)}
                           >
-                            {passage.text}
+                            {entry.label}
                           </button>
-                        ))}
-                      </div>
-                    </section>
-                  ) : null}
-
-                  {activeWork.bookshelves.length > 0 ? (
-                    <section className="book-overlay-section">
-                      <div className="book-overlay-section-header">
-                        <h3>Shelves</h3>
-                      </div>
-                      <div className="book-overlay-tags">
-                        {activeWork.bookshelves.slice(0, 10).map((label) => (
-                          <span key={label} className="book-overlay-tag">{label}</span>
                         ))}
                       </div>
                     </section>
