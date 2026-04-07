@@ -27,7 +27,6 @@ import {
   fetchHermesJobArtifacts,
   fetchHermesJob,
   fetchHermesJobLogs,
-  resumeHermesJob,
   type HermesJobSummary,
 } from "./hermes-job-client";
 import { MemoryBlobStore, type BlobStore } from "./r2";
@@ -9287,23 +9286,8 @@ async function runHermesConversation(
   }
 
   const activeSession = session;
-  const sessionMessages = await deps.store.listMessages(activeSession.id);
-  const priorHermesThread = extractHermesThreadMetadata(sessionMessages);
-  let baselineHermesMessageCount = 0;
-  if (priorHermesThread?.jobId) {
-    try {
-      const priorSessionArtifact = await fetchHermesArtifact(
-        deps.hermesJobApiUrl,
-        deps.hermesJobApiToken,
-        priorHermesThread.jobId,
-        normalizeHermesArtifactName("hermes.session.json"),
-      );
-      const priorSnapshot = parseHermesJsonRecord(priorSessionArtifact.artifact.content) as HermesSessionSnapshot | null;
-      baselineHermesMessageCount = Array.isArray(priorSnapshot?.messages) ? priorSnapshot.messages.length : 0;
-    } catch {
-      baselineHermesMessageCount = 0;
-    }
-  }
+  const effectiveHermesWorkflow: "search" = "search";
+  const baselineHermesMessageCount = 0;
   await deps.store.appendMessage(activeSession.id, "user", input.message, {
     phase: "user",
   });
@@ -9444,12 +9428,7 @@ async function runHermesConversation(
     }));
   };
 
-  const shouldResumeHermesThread = Boolean(priorHermesThread?.jobId) && input.workflow !== "search";
-  const planText = shouldResumeHermesThread
-    ? "Resuming the existing Hermes thread and continuing the research run."
-    : input.workflow === "search"
-      ? "Starting a Hermes search run on this thread and streaming the tool activity here."
-      : "Starting a Hermes research run on this thread and streaming the tool activity here.";
+  const planText = "Starting a Hermes search run on this thread and streaming the tool activity here.";
   const planMessage = await deps.store.appendMessage(activeSession.id, "assistant", planText, {
     phase: "plan",
     runId: run.id,
@@ -9495,8 +9474,11 @@ async function runHermesConversation(
     const archivePrefix = artifactKeys.sessionArtifact(activeSession.id, `runs/${run.id}/hermes`);
     const launchPayload = {
       userPrompt: hermesUserPrompt,
-      workflow: input.workflow,
-      effort: hermesSearchEffort(input),
+      workflow: effectiveHermesWorkflow,
+      effort: hermesSearchEffort({
+        ...input,
+        workflow: effectiveHermesWorkflow,
+      }),
       model: deps.hermesModel,
       maxTurns: deps.hermesMaxTurns,
       alphabookSessionId: activeSession.id,
@@ -9505,13 +9487,7 @@ async function runHermesConversation(
       callbackToken: deps.hermesJobApiToken,
       archivePrefix,
     };
-    const launchResult = shouldResumeHermesThread
-      ? await resumeHermesJob(deps.hermesJobApiUrl, deps.hermesJobApiToken, {
-          previousJobId: priorHermesThread!.jobId,
-          hermesSessionId: priorHermesThread!.sessionId ?? undefined,
-          ...launchPayload,
-        })
-      : await createHermesJob(deps.hermesJobApiUrl, deps.hermesJobApiToken, launchPayload);
+    const launchResult = await createHermesJob(deps.hermesJobApiUrl, deps.hermesJobApiToken, launchPayload);
     job = launchResult.job;
     await updateHermesPlanMetadata();
   } catch (error) {
