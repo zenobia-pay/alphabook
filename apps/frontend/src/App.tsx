@@ -6024,10 +6024,7 @@ export default function App() {
         <section className="work-feed" aria-label="Corpus feed">
           {feedWorks.map((work) => {
             const selected = selectedWorkIds.includes(work.id);
-            const previewMeta = [formatReleaseYear(work.releaseDate), work.publisher].filter(Boolean).join(" · ");
-            const secondaryTags = work.bookshelves?.length
-              ? work.bookshelves.slice(0, 2)
-              : work.subjects.slice(0, 3);
+            const primaryAuthor = work.authors[0] ?? null;
             return (
               <article key={work.id} className={`work-feed-card ${selected ? "is-selected" : ""}`}>
                 <button
@@ -6035,31 +6032,19 @@ export default function App() {
                   className="work-feed-open"
                   onClick={() => openWork(work.id)}
                 >
-                  <div className="work-feed-heading">
+                  <div className="work-feed-artwork">
                     {work.coverImageUrl ? (
                       <div className="work-feed-cover">
                         <img src={work.coverImageUrl} alt="" loading="lazy" />
                       </div>
-                    ) : null}
-                    <div className="work-feed-copy">
-                      {previewMeta ? <p className="work-feed-meta">{previewMeta}</p> : null}
-                      <h2>{work.title}</h2>
-                      {work.subtitle ? <p className="work-feed-subtitle">{work.subtitle}</p> : null}
-                      {work.authors.length > 0 ? <p className="work-feed-authors">{work.authors.join(" · ")}</p> : null}
-                    </div>
+                    ) : (
+                      <div className="work-feed-cover work-feed-cover-placeholder" aria-hidden="true" />
+                    )}
                   </div>
-
-                  {work.summary ? <p className="work-feed-summary">{work.summary}</p> : null}
-
-                  {secondaryTags.length > 0 ? (
-                    <div className="work-feed-tags">
-                      {secondaryTags.map((subject) => (
-                        <span key={subject} className="tag-chip">
-                          {subject}
-                        </span>
-                      ))}
-                    </div>
-                  ) : null}
+                  <div className="work-feed-copy">
+                    <h2>{work.title}</h2>
+                    {primaryAuthor ? <p className="work-feed-authors">{primaryAuthor}</p> : null}
+                  </div>
                 </button>
               </article>
             );

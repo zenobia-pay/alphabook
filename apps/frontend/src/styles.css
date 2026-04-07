@@ -1028,9 +1028,9 @@ button {
 }
 
 .work-feed {
-  width: min(860px, 100%);
-  display: grid;
-  gap: 0;
+  width: min(1240px, 100%);
+  column-count: 4;
+  column-gap: 28px;
   padding-bottom: 48px;
 }
 
@@ -1073,12 +1073,13 @@ button {
 
 .work-feed-card {
   width: 100%;
+  break-inside: avoid;
+  margin: 0 0 30px;
   border: 0;
-  border-top: 1px solid rgba(26, 33, 52, 0.08);
   border-radius: 0;
   background: transparent;
   color: inherit;
-  padding: 20px 0 18px;
+  padding: 0;
   text-align: left;
   box-shadow: none;
   transition: opacity 120ms ease, transform 120ms ease;
@@ -1086,7 +1087,7 @@ button {
 
 .work-feed-card:hover {
   color: inherit;
-  opacity: 0.86;
+  opacity: 0.92;
 }
 
 .work-feed-card.is-selected {
@@ -1100,87 +1101,68 @@ button {
   color: inherit;
   padding: 0;
   text-align: left;
+  display: grid;
+  gap: 12px;
 }
 
-.work-feed-heading {
-  display: flex;
-  align-items: flex-start;
-  gap: 16px;
+.work-feed-artwork {
+  width: 100%;
 }
 
 .work-feed-cover {
-  width: 88px;
-  min-width: 88px;
-  aspect-ratio: 3 / 4;
-  border-radius: 14px;
+  width: 100%;
   overflow: hidden;
-  background: rgba(39, 37, 34, 0.08);
+  border-radius: 2px;
+  background: rgba(39, 37, 34, 0.06);
   box-shadow: none;
+  position: relative;
 }
 
 .work-feed-cover img {
   width: 100%;
-  height: 100%;
-  object-fit: cover;
+  height: auto;
   display: block;
+  object-fit: cover;
+  transition: transform 180ms ease, opacity 180ms ease;
+}
+
+.work-feed-open:hover .work-feed-cover img {
+  transform: scale(1.012);
+}
+
+.work-feed-cover-placeholder {
+  aspect-ratio: 3 / 4;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.84), rgba(243, 238, 228, 0.95)),
+    rgba(39, 37, 34, 0.05);
 }
 
 .work-feed-copy {
   min-width: 0;
   display: grid;
-  gap: 4px;
+  gap: 3px;
 }
 
-.work-feed-heading h2 {
+.work-feed-copy h2 {
   margin: 0;
   font-family: "Newsreader", serif;
-  font-size: clamp(1.38rem, 2vw, 1.82rem);
-  line-height: 1;
-  letter-spacing: -0.05em;
+  font-size: 1.1rem;
+  line-height: 1.08;
+  letter-spacing: -0.03em;
 }
 
-.work-feed-meta,
-.work-feed-subtitle,
 .work-feed-authors {
   margin: 0;
-  color: var(--text-muted);
-}
-
-.work-feed-meta {
-  font-size: 0.72rem;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: rgba(26, 33, 52, 0.54);
-}
-
-.work-feed-subtitle {
-  font-size: 0.95rem;
-  line-height: 1.4;
-}
-
-.work-feed-authors {
-  font-size: 0.9rem;
-}
-
-.work-feed-summary {
-  max-width: 66ch;
-  margin: 12px 0 0;
-  color: rgba(38, 26, 25, 0.8);
-  font-size: 0.93rem;
-  line-height: 1.58;
-}
-
-.work-feed-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 12px;
+  font-size: 0.82rem;
+  line-height: 1.35;
+  color: rgba(38, 26, 25, 0.66);
 }
 
 .feed-status {
   margin: 18px 0 0;
   color: var(--text-muted);
   text-align: center;
+  column-span: all;
 }
 
 .feature-card,
@@ -3536,8 +3518,9 @@ button {
     min-height: 104px;
   }
 
-  .work-feed-card {
-    padding: 18px 0 16px;
+  .work-feed {
+    column-count: 2;
+    column-gap: 18px;
   }
 
   .explore-filter-popover {
@@ -3545,22 +3528,12 @@ button {
     width: min(300px, calc(100vw - 32px));
   }
 
-  .work-feed-summary {
-    max-width: none;
+  .work-feed-card {
+    margin-bottom: 22px;
   }
 
-  .work-feed-heading {
-    gap: 12px;
-  }
-
-  .work-feed-cover {
-    width: 68px;
-    min-width: 68px;
-    border-radius: 12px;
-  }
-
-  .work-feed-heading h2 {
-    font-size: clamp(1.2rem, 6.2vw, 1.55rem);
+  .work-feed-copy h2 {
+    font-size: 1rem;
   }
 
   .profile-view-public {
@@ -3569,6 +3542,12 @@ button {
 
   .profile-toolbar-public {
     flex-wrap: wrap;
+  }
+}
+
+@media (min-width: 721px) and (max-width: 1120px) {
+  .work-feed {
+    column-count: 3;
   }
 }
 
