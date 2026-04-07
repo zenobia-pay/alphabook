@@ -5309,6 +5309,119 @@ type LiveToolTraceEntry = {
   isError?: boolean;
 };
 
+const PERSISTED_TRACE_STRING_MAX_LENGTH = 280;
+const PERSISTED_TRACE_ARRAY_MAX_ITEMS = 12;
+const PERSISTED_TRACE_OBJECT_MAX_KEYS = 24;
+
+function compactTraceInlineValue(value: unknown, depth = 0): unknown {
+  if (depth > 3) {
+    return undefined;
+  }
+  if (typeof value === "string") {
+    return value.length > PERSISTED_TRACE_STRING_MAX_LENGTH
+      ? `${value.slice(0, PERSISTED_TRACE_STRING_MAX_LENGTH)}…`
+      : value;
+  }
+  if (Array.isArray(value)) {
+    return value
+      .slice(0, PERSISTED_TRACE_ARRAY_MAX_ITEMS)
+      .map((entry) => compactTraceInlineValue(entry, depth + 1))
+      .filter((entry) => entry !== undefined);
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .slice(0, PERSISTED_TRACE_OBJECT_MAX_KEYS)
+        .map(([key, entry]) => [key, compactTraceInlineValue(entry, depth + 1)])
+        .filter(([, entry]) => entry !== undefined),
+    );
+  }
+  return value;
+}
+
+function compactProgressDetailsForPersistence(progressDetails?: Array<Record<string, unknown>>) {
+  if (!Array.isArray(progressDetails) || progressDetails.length === 0) {
+    return undefined;
+  }
+  const compacted = progressDetails
+    .slice(-PERSISTED_TRACE_ARRAY_MAX_ITEMS)
+    .map((detail) => compactTraceInlineValue(detail))
+    .filter((detail): detail is Record<string, unknown> => Boolean(detail) && typeof detail === "object");
+  return compacted.length > 0 ? compacted : undefined;
+}
+
+function compactToolResultForPersistence(
+  toolName: ToolName,
+  result: Record<string, unknown> | undefined,
+  state: LiveToolTraceEntry["state"],
+) {
+  if (!result) {
+    return undefined;
+  }
+  const compacted = canonicalToolResult(toolName, result, {
+    ok: state !== "error",
+  });
+  const preferredScalarFields = [
+    "__summary",
+    "status",
+    "error",
+    "exit_code",
+    "bytes_written",
+    "dirs_created",
+    "total_lines",
+    "file_size",
+    "truncated",
+    "hint",
+    "is_binary",
+    "is_image",
+    "path",
+    "size",
+    "success",
+  ] as const;
+  for (const field of preferredScalarFields) {
+    const value = result[field];
+    if (
+      typeof value === "string"
+      || typeof value === "number"
+      || typeof value === "boolean"
+    ) {
+      compacted[field] = compactTraceInlineValue(value);
+    }
+  }
+  return Object.keys(compacted).length > 0 ? compacted : undefined;
+}
+
+export function compactPlanToolTraceEntriesForPersistence(toolCalls: LiveToolTraceEntry[]) {
+  return toolCalls.map((entry) => {
+    const progress = entry.progress
+      .slice(-PERSISTED_TRACE_ARRAY_MAX_ITEMS)
+      .map((line) => truncateHermesText(line, PERSISTED_TRACE_STRING_MAX_LENGTH));
+    const progressDetails = compactProgressDetailsForPersistence(entry.progressDetails);
+    const compacted: Record<string, unknown> = {
+      id: entry.id,
+      toolName: entry.toolName,
+      label: entry.label,
+      progress,
+      args: compactTraceInlineValue(entry.args),
+      state: entry.state,
+    };
+    if (entry.rationale) {
+      compacted.rationale = truncateHermesText(entry.rationale, PERSISTED_TRACE_STRING_MAX_LENGTH);
+    }
+    if (progressDetails) {
+      compacted.progressDetails = progressDetails;
+    }
+    if (entry.isError === true) {
+      compacted.isError = true;
+    }
+    const result = compactToolResultForPersistence(entry.toolName, entry.result, entry.state);
+    if (result) {
+      compacted.result = result;
+    }
+    return compacted;
+  });
+}
+
 function canonicalToolArgs(
   toolName: ToolName,
   sourceArgs: Record<string, unknown>,
@@ -9107,7 +9220,7 @@ async function runHermesConversation(
       return;
     }
     const version = ++latestPlanTraceVersion;
-    const snapshot = cloneLiveToolTraceEntries(liveToolTrace);
+    const snapshot = compactPlanToolTraceEntriesForPersistence(cloneLiveToolTraceEntries(liveToolTrace));
     const queuedWrite = planTracePersistChain.then(async () => {
       if (version <= persistedPlanTraceVersion || version !== latestPlanTraceVersion) {
         return;
@@ -9210,7 +9323,7 @@ async function runHermesConversation(
         innerRunDir: job.innerRunDir,
         estimatedCostUsd: job.cost?.estimatedCostUsd ?? null,
       },
-      toolCalls: cloneLiveToolTraceEntries(liveToolTrace),
+      toolCalls: compactPlanToolTraceEntriesForPersistence(cloneLiveToolTraceEntries(liveToolTrace)),
     });
   };
 
@@ -9983,7 +10096,7 @@ export async function runOrchestrator(
       return;
     }
     const version = ++latestPlanTraceVersion;
-    const snapshot = cloneLiveToolTraceEntries(toolCalls);
+    const snapshot = compactPlanToolTraceEntriesForPersistence(cloneLiveToolTraceEntries(toolCalls));
     const queuedWrite = planTracePersistChain.then(async () => {
       if (version <= persistedPlanTraceVersion || version !== latestPlanTraceVersion) {
         return;

@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { artifactKeys } from "@alphabook/corpus-core";
 import { decodePaymentRequiredHeader, encodePaymentSignatureHeader } from "@x402/core/http";
 
-import { createApp, reapExpiredRuntimeInstances, reapStaleRuns } from "../src/app";
+import { compactPlanToolTraceEntriesForPersistence, createApp, reapExpiredRuntimeInstances, reapStaleRuns } from "../src/app";
 import { WorkOSAuth } from "../src/auth";
 import { createBillingService } from "../src/billing";
 import { GoogleAIEmbedder, HashEmbedder, OpenAIEmbedder } from "../src/embeddings";
@@ -4669,6 +4669,56 @@ test("persisted tool traces keep chunk results compact enough for refresh", asyn
   assert.equal(compactChunks.length, 1);
   assert.equal(compactChunks[0]?.workId, "work-1");
   assert.equal(compactChunks[0]?.chunkIndex, 472);
+});
+
+test("persisted plan traces drop oversized Hermes payload bodies before metadata writes", () => {
+  const hugeContent = "x".repeat(5_000_000);
+  const persisted = compactPlanToolTraceEntriesForPersistence([
+    {
+      id: "tool-1",
+      toolName: "run_workspace_task",
+      label: "Read File",
+      rationale: "Inspecting the scoped file list.",
+      progress: ["Reading a large file from the workspace."],
+      progressDetails: [
+        {
+          type: "codex.stdout",
+          content: hugeContent,
+        },
+      ],
+      sourceArgs: {
+        path: "/srv/alphabook/logs/corpus-research/scoped-text-files.tsv",
+        command: `cat ${hugeContent}`,
+      },
+      args: {
+        __toolName: "run_workspace_task",
+        path: "/srv/alphabook/logs/corpus-research/scoped-text-files.tsv",
+      },
+      result: {
+        content: hugeContent,
+        total_lines: 72_644,
+        file_size: 118_814_778,
+        truncated: true,
+        hint: "Use offset=4 to continue reading.",
+        __summary: "Read the first three lines of the scoped file list.",
+      },
+      state: "completed",
+    },
+  ] as any);
+
+  assert.equal(persisted.length, 1);
+  const serialized = JSON.stringify(persisted[0]);
+  assert.ok(serialized.length < 20_000);
+  assert.doesNotMatch(serialized, /x{1000}/);
+  assert.equal("sourceArgs" in persisted[0]!, false);
+  assert.deepEqual((persisted[0] as Record<string, unknown>).result, {
+    ok: true,
+    __summary: "Read the first three lines of the scoped file list.",
+    total_lines: 72644,
+    file_size: 118814778,
+    truncated: true,
+    hint: "Use offset=4 to continue reading.",
+  });
 });
 
 test("get_relevant_chunks tolerates null workIds from planner output", async () => {
