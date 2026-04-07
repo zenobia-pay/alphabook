@@ -1770,6 +1770,16 @@ function buildExplorePrompt(question: string, works: WorkSummary[]) {
   return `${normalized}\n\nFocus on these books: ${titles}.`;
 }
 
+function generateExploreRandomSeed() {
+  const maxSeed = 2147483646;
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    const values = new Uint32Array(1);
+    crypto.getRandomValues(values);
+    return (values[0] % maxSeed) + 1;
+  }
+  return Math.floor(Math.random() * maxSeed) + 1;
+}
+
 function messageToThreadMessage(
   message: UiMessage,
   activeAssistantId: string | null,
@@ -5525,7 +5535,7 @@ export default function App() {
   }
 
   function rerollExploreFeed() {
-    setExploreRandomSeed(Date.now());
+    setExploreRandomSeed(generateExploreRandomSeed());
   }
 
   function applyExploreFilters() {
@@ -5864,31 +5874,80 @@ export default function App() {
           </h1>
 
           <form className="explore-composer-shell" onSubmit={submitExplorePrompt}>
-            <Card className="explore-composer-root">
-              <CardContent className="p-0">
-              <div className="explore-composer-toolbar">
+            <div className="explore-composer-layout">
+              <Card className="explore-composer-root">
+                <CardContent className="p-0">
+                  {selectedWorks.length > 0 ? (
+                    <div className="explore-selection-row">
+                      {selectedWorks.map((work) => (
+                        <Button
+                          key={work.id}
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="explore-selection-chip"
+                          onClick={() => toggleSelectedWork(work.id)}
+                        >
+                          {work.title}
+                        </Button>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  <div className="explore-composer-surface">
+                    <Textarea
+                      className="explore-composer-input"
+                      placeholder={EXPLORE_PLACEHOLDER}
+                      value={exploreDraft}
+                      onChange={(event) => setExploreDraft(event.currentTarget.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" && !event.shiftKey) {
+                          event.preventDefault();
+                          submitExplorePrompt();
+                        }
+                      }}
+                    />
+
+                    <div className="explore-composer-footer">
+                      <span className="explore-composer-spacer" aria-hidden="true">+</span>
+                      <Button
+                        type="submit"
+                        variant="default"
+                        size="icon"
+                        className="explore-send"
+                        disabled={!exploreDraft.trim() && selectedWorks.length === 0}
+                        aria-label="Send prompt"
+                      >
+                        <ArrowUpIcon />
+                      </Button>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <div className="explore-composer-tools" aria-label="Explore controls">
                 <Button
                   type="button"
                   variant="ghost"
-                  size="icon"
                   className="explore-tool-button"
                   onClick={rerollExploreFeed}
                   aria-label="Randomize feed"
                 >
                   <Dices size={16} />
+                  <span>Surprise me</span>
                 </Button>
 
                 <div className="explore-filter-menu">
                   <Button
                     type="button"
                     variant="ghost"
-                    size="icon"
                     className="explore-tool-button"
                     onClick={() => setExploreFilterOpen((current) => !current)}
                     aria-label="Open filters"
                     aria-expanded={exploreFilterOpen}
                   >
                     <Funnel size={16} />
+                    <span>Filters</span>
                     {activeExploreFilterCount > 0 ? (
                       <span className="explore-tool-badge">{activeExploreFilterCount}</span>
                     ) : null}
@@ -5951,54 +6010,7 @@ export default function App() {
                   ) : null}
                 </div>
               </div>
-
-              {selectedWorks.length > 0 ? (
-                <div className="explore-selection-row mb-3 flex flex-wrap gap-2">
-                  {selectedWorks.map((work) => (
-                    <Button
-                      key={work.id}
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="explore-selection-chip"
-                      onClick={() => toggleSelectedWork(work.id)}
-                    >
-                      {work.title}
-                    </Button>
-                  ))}
-                </div>
-              ) : null}
-
-              <div className="explore-composer-surface">
-                <Textarea
-                  className="explore-composer-input"
-                  placeholder={EXPLORE_PLACEHOLDER}
-                  value={exploreDraft}
-                  onChange={(event) => setExploreDraft(event.currentTarget.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" && !event.shiftKey) {
-                      event.preventDefault();
-                      submitExplorePrompt();
-                    }
-                  }}
-                />
-
-                <div className="explore-composer-footer">
-                  <span className="explore-composer-spacer" aria-hidden="true">+</span>
-                  <Button
-                    type="submit"
-                    variant="default"
-                    size="icon"
-                    className="explore-send"
-                    disabled={!exploreDraft.trim() && selectedWorks.length === 0}
-                    aria-label="Send prompt"
-                  >
-                    <ArrowUpIcon />
-                  </Button>
-                </div>
-              </div>
-              </CardContent>
-            </Card>
+            </div>
           </form>
         </section>
 
