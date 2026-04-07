@@ -279,12 +279,12 @@ export class WorkOSAuth {
 
   async callback(c: Context) {
     const requestUrl = new URL(c.req.url);
-    const cookieDomain = deriveCookieDomain(requestUrl);
+    const cookieDomain = deriveCookieDomain(requestUrl, this.config);
     const code = c.req.query("code");
     const state = c.req.query("state");
     const pendingState = decodeStateCookie(getCookie(c, stateCookieName(this.config)));
-    const fallbackReturnTo = deriveFrontendOrigin(requestUrl);
-    const returnTo = safeReturnTo(pendingState?.returnTo, fallbackReturnTo);
+    const fallbackReturnTo = deriveFrontendOrigin(requestUrl, this.config);
+    const returnTo = safeReturnTo(pendingState?.returnTo, fallbackReturnTo, this.config);
 
     if (!code || !state || !pendingState || pendingState.state !== state) {
       clearAuthCookies(c, this.config, cookieDomain);
@@ -331,8 +331,8 @@ export class WorkOSAuth {
 
   async signOut(c: Context): Promise<string> {
     const requestUrl = new URL(c.req.url);
-    const cookieDomain = deriveCookieDomain(requestUrl);
-    const returnTo = safeReturnTo(c.req.query("returnTo"), deriveFrontendOrigin(requestUrl));
+    const cookieDomain = deriveCookieDomain(requestUrl, this.config);
+    const returnTo = safeReturnTo(c.req.query("returnTo"), deriveFrontendOrigin(requestUrl, this.config), this.config);
     const sessionData = getCookie(c, sessionCookieName(this.config));
 
     let logoutUrl = returnTo;
