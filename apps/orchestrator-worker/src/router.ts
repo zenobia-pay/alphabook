@@ -21,7 +21,7 @@ const RouterDecisionSchema = z.union([
     type: z.literal("search"),
     fullQuery: z.string().min(1),
     rationale: z.string().min(1).optional(),
-    executionMode: z.enum(["semantic", "comprehensive", "hermes"]).optional(),
+    executionMode: z.enum(["semantic", "comprehensive", "agentic", "hermes"]).optional(),
   }),
   z.object({
     type: z.literal("design_experiment"),
@@ -32,14 +32,14 @@ const RouterDecisionSchema = z.union([
 ]);
 
 export type RouterDecision = z.infer<typeof RouterDecisionSchema>;
-type SearchExecutionMode = "semantic" | "comprehensive" | "hermes";
+type SearchExecutionMode = "semantic" | "comprehensive" | "agentic" | "hermes";
 type RouterAuditLog = (event: string, payload: Record<string, unknown>) => void;
-const SearchExecutionModeSchema = z.enum(["semantic", "comprehensive", "hermes"]);
+const SearchExecutionModeSchema = z.enum(["semantic", "comprehensive", "agentic", "hermes"]);
 
 function inferExplicitExecutionMode(userMessage: string): SearchExecutionMode | undefined {
   const normalized = userMessage.toLowerCase();
-  if (/\bhermes\b/.test(normalized)) {
-    return "hermes";
+  if (/\b(agentic|hermes)\b/.test(normalized)) {
+    return "agentic";
   }
   if (
     /\b(comprehensive|deep research|deeper research|sprite fanout|sprite_fanout)\b/.test(normalized)
@@ -121,9 +121,10 @@ export class OpenAIRouter implements Router {
     const workflowHint = candidate.workflowHint === "search" || candidate.workflowHint === "design_experiment"
       ? candidate.workflowHint
       : undefined;
-    const executionMode = SearchExecutionModeSchema.safeParse(candidate.executionMode).success
+    const rawExecutionMode = SearchExecutionModeSchema.safeParse(candidate.executionMode).success
       ? candidate.executionMode as SearchExecutionMode
       : undefined;
+    const executionMode = rawExecutionMode === "hermes" ? "agentic" : rawExecutionMode;
     const experimentProposalCandidate = candidate.experimentProposal
       && typeof candidate.experimentProposal === "object"
       && !Array.isArray(candidate.experimentProposal)
@@ -157,7 +158,7 @@ export class OpenAIRouter implements Router {
     }
 
     if (rawType === "search") {
-      const coercedExecutionMode = explicitExecutionMode ?? executionMode ?? "semantic";
+      const coercedExecutionMode = explicitExecutionMode ?? executionMode ?? "agentic";
       return {
         decision: {
           type: "search",
@@ -170,7 +171,7 @@ export class OpenAIRouter implements Router {
           ? `Router returned search, but the user explicitly requested ${explicitExecutionMode} mode so the decision was corrected.`
           : executionMode
           ? "Router returned search with recoverable schema drift."
-          : "Router returned search with an invalid or missing executionMode; defaulted to semantic.",
+          : "Router returned search with an invalid or missing executionMode; defaulted to agentic.",
       };
     }
 
@@ -188,7 +189,7 @@ export class OpenAIRouter implements Router {
     }
 
     if (fullQuery) {
-      const coercedExecutionMode = explicitExecutionMode ?? executionMode ?? "semantic";
+      const coercedExecutionMode = explicitExecutionMode ?? executionMode ?? "agentic";
       return {
         decision: {
           type: "search",
@@ -218,10 +219,10 @@ export class OpenAIRouter implements Router {
         decision: {
           type: "search",
           fullQuery: userMessage,
-          executionMode: explicitExecutionMode ?? "semantic",
+          executionMode: explicitExecutionMode ?? "agentic",
           rationale: explicitExecutionMode
             ? `Router response was malformed, so the request fell back to the user's explicit ${explicitExecutionMode} mode.`
-            : "Router response was malformed, so the request fell back to a semantic search using the user message.",
+            : "Router response was malformed, so the request fell back to an agentic search using the user message.",
         },
         fallbackKind: "defaulted",
         reason: "Router response was unusable and the caller explicitly requested search.",
@@ -274,7 +275,7 @@ export class OpenAIRouter implements Router {
                 {
                   type: "search",
                   fullQuery: "Find novels in the corpus that portray grief through obsession or spiritual crisis.",
-                  executionMode: "semantic",
+                  executionMode: "agentic",
                 },
                 {
                   type: "design_experiment",

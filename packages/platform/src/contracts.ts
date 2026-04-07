@@ -88,7 +88,7 @@ export const PlatformChatRequestSchema = z.object({
   message: z.string().min(1),
   documentIds: z.array(z.string()).optional(),
   stream: z.boolean().optional(),
-  mode: z.enum(["semantic", "comprehensive", "hermes"]).optional(),
+  mode: z.enum(["semantic", "comprehensive", "agentic", "hermes"]).optional(),
   intensityOverride: z.enum(["normal", "high", "maximum"]).optional(),
   researchMode: z.enum(["default", "sprite_fanout"]).optional(),
 });
@@ -309,7 +309,7 @@ export function toPlatformChatRequest(input: {
   message: string;
   workIds?: string[];
   stream?: boolean;
-  mode?: "semantic" | "comprehensive" | "hermes";
+  mode?: "semantic" | "comprehensive" | "agentic" | "hermes";
   intensityOverride?: "normal" | "high" | "maximum";
   researchMode?: "default" | "sprite_fanout";
 }) {

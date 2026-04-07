@@ -119,7 +119,7 @@ test("OpenAIRouter sanitizes malformed search decisions instead of failing the r
   assert.deepEqual(decision, {
     type: "search",
     fullQuery: "Find interesting personal diaries and journals in the corpus.",
-    executionMode: "semantic",
+    executionMode: "agentic",
   });
 });
 
@@ -153,12 +153,12 @@ test("OpenAIRouter falls back to a safe search when the router returns a usable 
   assert.deepEqual(decision, {
     type: "search",
     fullQuery: "Find personal diaries by notable authors in the corpus.",
-    executionMode: "semantic",
+    executionMode: "agentic",
     rationale: "Router response was malformed, but it included a search query so the request can continue safely.",
   });
 });
 
-test("OpenAIRouter preserves an explicit Hermes request even when the router returns semantic mode", async () => {
+test("OpenAIRouter preserves an explicit agentic request even when the router returns semantic mode", async () => {
   const auditEvents: Array<{ event: string; payload: Record<string, unknown> }> = [];
   const router = new OpenAIRouter(
     "test-key",
@@ -182,7 +182,7 @@ test("OpenAIRouter preserves an explicit Hermes request even when the router ret
   );
 
   const decision = await router.decide({
-    userMessage: "search for personal diaries and use hermes search",
+    userMessage: "search for personal diaries and use agentic search",
     conversationHistory: [],
     auditLog: (event, payload) => {
       auditEvents.push({ event, payload });
@@ -192,7 +192,7 @@ test("OpenAIRouter preserves an explicit Hermes request even when the router ret
   assert.deepEqual(decision, {
     type: "search",
     fullQuery: "Search the corpus for personal diaries and journals.",
-    executionMode: "hermes",
+    executionMode: "agentic",
   });
   assert.equal(auditEvents.at(-1)?.event, "router.output.override");
 });

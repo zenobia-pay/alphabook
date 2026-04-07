@@ -1146,26 +1146,26 @@ function searchPlanFromEstimate(
 }
 
 function requestedAssistantMode(input: {
-  mode?: "semantic" | "comprehensive" | "hermes";
+  mode?: "semantic" | "comprehensive" | "agentic" | "hermes";
   workflow?: "auto" | "search" | "design_experiment";
   researchMode?: "default" | "sprite_fanout";
-}): "semantic" | "comprehensive" | "hermes" {
-  if (input.mode === "hermes") {
-    return "hermes";
+}): "semantic" | "comprehensive" | "agentic" {
+  if (input.mode === "agentic" || input.mode === "hermes") {
+    return "agentic";
   }
   if (input.mode === "comprehensive" || input.researchMode === "sprite_fanout") {
     return "comprehensive";
   }
   if (input.workflow === "search") {
-    return "semantic";
+    return "agentic";
   }
   return "semantic";
 }
 
-function inferExplicitAssistantMode(message: string): "semantic" | "comprehensive" | "hermes" | undefined {
+function inferExplicitAssistantMode(message: string): "semantic" | "comprehensive" | "agentic" | undefined {
   const normalized = message.toLowerCase();
-  if (/\bhermes\b/u.test(normalized)) {
-    return "hermes";
+  if (/\b(agentic|hermes)\b/u.test(normalized)) {
+    return "agentic";
   }
   if (/\b(comprehensive|deep research|deeper research|sprite fanout|sprite_fanout)\b/u.test(normalized)) {
     return "comprehensive";
@@ -1177,7 +1177,7 @@ function inferExplicitAssistantMode(message: string): "semantic" | "comprehensiv
 }
 
 function requestedIntensityOverride(input: {
-  mode?: "semantic" | "comprehensive" | "hermes";
+  mode?: "semantic" | "comprehensive" | "agentic" | "hermes";
   workflow?: "auto" | "search" | "design_experiment";
   intensityOverride?: "normal" | "high" | "maximum";
   researchMode?: "default" | "sprite_fanout";
@@ -1194,7 +1194,7 @@ function requestedIntensityOverride(input: {
 function hermesSearchEffort(input: {
   workflow?: "auto" | "search" | "design_experiment";
   intensityOverride?: "normal" | "high" | "maximum";
-  mode?: "semantic" | "comprehensive" | "hermes";
+  mode?: "semantic" | "comprehensive" | "agentic" | "hermes";
   researchMode?: "default" | "sprite_fanout";
 }): number | undefined {
   if (input.workflow !== "search") {
@@ -5973,7 +5973,7 @@ function fallbackExperimentProposalFromAnswer(answer: string, userMessage: strin
 function initialWorkflowPlan(intent: {
   workflow: "search" | "design_experiment";
   routedQuery: string;
-  executionMode?: "semantic" | "comprehensive" | "hermes";
+  executionMode?: "semantic" | "comprehensive" | "agentic" | "hermes";
 }) {
   const normalizedMessage = intent.routedQuery.trim();
   if (intent.workflow === "design_experiment") {
@@ -5985,6 +5985,11 @@ function initialWorkflowPlan(intent: {
     return normalizedMessage
       ? `I’ve selected Search for “${normalizedMessage}.” I’m going broad, pulling the strongest passages, and building a grounded briefing.`
       : "I’ve selected Search. I’m going broad, pulling the strongest passages, and building a grounded briefing.";
+  }
+  if (intent.executionMode === "agentic" || intent.executionMode === "hermes") {
+    return normalizedMessage
+      ? `I’ve selected Agentic search for “${normalizedMessage}.” I’m starting with the agentic evidence pass and will expand from there.`
+      : "I’ve selected Agentic search. I’m starting with the agentic evidence pass and will expand from there.";
   }
   return normalizedMessage
     ? `I’ve selected Search for “${normalizedMessage}.” I’m starting with the fast evidence pass and will widen if the query needs more depth.`
@@ -8299,11 +8304,11 @@ type HermesArchiveManifest = {
 function shouldUseHermesBackend(
   deps: AppDeps,
   input: {
-    mode?: "semantic" | "comprehensive" | "hermes";
+    mode?: "semantic" | "comprehensive" | "agentic" | "hermes";
     researchMode?: "default" | "sprite_fanout";
   },
 ) {
-  return requestedAssistantMode(input) === "hermes"
+  return requestedAssistantMode(input) === "agentic"
     && typeof deps.hermesJobApiUrl === "string"
     && deps.hermesJobApiUrl.trim().length > 0;
 }
@@ -9429,7 +9434,7 @@ async function runHermesConversation(
     }));
   };
 
-  const planText = "Starting a Hermes search run on this thread and streaming the tool activity here.";
+  const planText = "Starting an Agentic search run on this thread and streaming the tool activity here.";
   const planMessage = await deps.store.appendMessage(activeSession.id, "assistant", planText, {
     phase: "plan",
     runId: run.id,
@@ -9477,17 +9482,17 @@ async function runHermesConversation(
     const entry: LiveToolTraceEntry = {
       id: hermesProgressToolCallId,
       toolName: "run_workspace_task",
-      label: "Hermes Search Progress",
-      rationale: "Streaming wrapper and inner-run progress while Hermes search is running.",
-      progress: ["Hermes search launched."],
+      label: "Agentic Search Progress",
+      rationale: "Streaming wrapper and inner-run progress while agentic search is running.",
+      progress: ["Agentic search launched."],
       args: canonicalToolArgs(
         "run_workspace_task",
         {
           __toolName: "run_workspace_task",
           __hermesSyntheticProgress: true,
         },
-        "Streaming wrapper and inner-run progress while Hermes search is running.",
-        ["Hermes search launched."],
+        "Streaming wrapper and inner-run progress while agentic search is running.",
+        ["Agentic search launched."],
       ),
       state: "running",
     };
@@ -9751,7 +9756,7 @@ async function runHermesConversation(
       hermesProgressEntry.state = "completed";
       hermesProgressEntry.result = {
         ok: true,
-        __summary: "Hermes search progress stream completed.",
+        __summary: "Agentic search progress stream completed.",
       };
       await persistLatestPlanToolTrace();
       await emit("tool.completed", {
@@ -10691,7 +10696,7 @@ export async function runOrchestrator(
     workflow: HighLevelWorkflow;
     routedQuery: string;
     rationale: string;
-    executionMode?: "semantic" | "comprehensive" | "hermes";
+    executionMode?: "semantic" | "comprehensive" | "agentic" | "hermes";
     designSummary?: string;
   };
   let initialWorkflowIntent: InitialWorkflowIntent | null = null;
@@ -11824,7 +11829,7 @@ export async function runOrchestrator(
         ? {
             type: "search" as const,
             fullQuery: input.message.trim(),
-            executionMode: input.mode ?? "semantic",
+            executionMode: input.mode ?? "agentic",
             rationale: "The user explicitly asked to run a search.",
           }
         : deps.router
@@ -11844,12 +11849,12 @@ export async function runOrchestrator(
             ? {
                 type: "search" as const,
                 fullQuery: input.message,
-                executionMode: "hermes" as const,
+                executionMode: "agentic" as const,
               }
             : {
                 type: "search" as const,
                 fullQuery: input.message,
-                executionMode: input.mode ?? "semantic",
+                executionMode: input.mode ?? "agentic",
               };
     } catch (error) {
       recordRawLog("router.failed", {
@@ -11939,14 +11944,16 @@ export async function runOrchestrator(
 
     const routedQuery = routeDecision.fullQuery.trim() || input.message;
     routedQueryRef.current = routedQuery;
-    input.mode = routeDecision.executionMode ?? input.mode ?? "semantic";
+    input.mode = routeDecision.executionMode ?? input.mode ?? "agentic";
     initialWorkflowIntent = {
       workflow: "search",
       routedQuery,
       rationale: routeDecision.rationale
         ?? (input.mode === "comprehensive"
           ? "I’ve selected Search and this query needs the broader corpus pass."
-          : "I’ve selected Search and I’m starting with the fast evidence pass."),
+          : input.mode === "agentic" || input.mode === "hermes"
+            ? "I’ve selected Agentic search and I’m starting with the agentic evidence pass."
+            : "I’ve selected Search and I’m starting with the fast evidence pass."),
       executionMode: input.mode,
     };
     await ensureInitialPlanSent(routedQuery);
@@ -12007,7 +12014,7 @@ export async function runOrchestrator(
       });
 
       const assistantMode = requestedAssistantMode(input);
-      const plannerMode: "semantic" | "comprehensive" = assistantMode === "hermes" ? "semantic" : assistantMode;
+      const plannerMode: "semantic" | "comprehensive" = assistantMode === "agentic" ? "semantic" : assistantMode;
       const plannerContext: PlannerContext = {
         userMessage: routedQuery,
         mode: plannerMode,
@@ -13553,8 +13560,8 @@ export function createApp(inputDeps: CreateAppInput) {
         } catch {
           executionCtx = null;
         }
-        if (requestedAssistantMode(requestPayload) === "hermes" && !deps.hermesJobApiUrl) {
-          throw new Error("Hermes mode is not configured for this environment.");
+        if (requestedAssistantMode(requestPayload) === "agentic" && !deps.hermesJobApiUrl) {
+          throw new Error("Agentic search mode is not configured for this environment.");
         }
         const runner = shouldUseHermesBackend(deps, requestPayload) ? runHermesConversation : runOrchestrator;
         const runPromise = runner(

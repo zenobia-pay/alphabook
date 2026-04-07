@@ -150,7 +150,7 @@ export const ChatRequestSchema = z.object({
   message: z.string().min(1),
   workIds: z.array(z.string()).optional(),
   stream: z.boolean().optional(),
-  mode: z.enum(["semantic", "comprehensive", "hermes"]).optional(),
+  mode: z.enum(["semantic", "comprehensive", "agentic", "hermes"]).optional(),
   workflow: z.enum(["auto", "search", "design_experiment"]).optional(),
   intensityOverride: z.enum(["normal", "high", "maximum"]).optional(),
   researchMode: z.enum(["default", "sprite_fanout"]).optional(),

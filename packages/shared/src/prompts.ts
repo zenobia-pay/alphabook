@@ -39,7 +39,8 @@ Rules:
 - Only choose design_experiment after the design is concrete enough to run and the user has accepted it. Otherwise ask follow-up questions or summarize the proposed design with a direct_response.
 - A runnable experiment design usually includes: the research goal, corpus scope or subset, the labeling frame or extraction target, the aggregation/analysis step, and the intended output artifact.
 - If you choose search, rewrite the request into the exact full search query the downstream pipeline should use.
-- If the user explicitly requests Hermes, comprehensive, or semantic mode in plain language, preserve that request in executionMode.
+- If the user explicitly requests agentic search, Hermes, comprehensive, or semantic mode in plain language, preserve that request in executionMode.
+- For ordinary corpus searches, prefer agentic executionMode unless the user explicitly asks for semantic mode or the request is clearly a lightweight semantic lookup.
 - Strip chat filler or salutations from the rewritten query and preserve only the actual search intent.
 - Keep the rewritten query faithful to the user's meaning. Do not add new goals.
 - If you choose direct_response, stay grounded in AlphaBook's actual dataset and capabilities.

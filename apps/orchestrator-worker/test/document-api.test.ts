@@ -181,7 +181,7 @@ test("document chat endpoint accepts documentIds and streams neutral tool aliase
   assert.doesNotMatch(body, /"toolName":"search_works"/);
 });
 
-test("document chat infers Hermes mode from the raw message before runner selection", async () => {
+test("document chat infers Agentic mode from the raw message before runner selection", async () => {
   const originalFetch = globalThis.fetch;
   const hermesLaunchPayloads: unknown[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -194,7 +194,7 @@ test("document chat infers Hermes mode from the raw message before runner select
           state: "launching",
           running: true,
           pid: 1234,
-          userPrompt: "search for personal diaries and use hermes search",
+          userPrompt: "search for personal diaries and use agentic search",
           model: "gpt-5.4",
           maxTurns: 60,
           launchedAt: new Date().toISOString(),
@@ -225,7 +225,7 @@ test("document chat infers Hermes mode from the raw message before runner select
           state: "completed",
           running: false,
           pid: 1234,
-          userPrompt: "search for personal diaries and use hermes search",
+          userPrompt: "search for personal diaries and use agentic search",
           model: "gpt-5.4",
           maxTurns: 60,
           launchedAt: new Date().toISOString(),
@@ -366,13 +366,13 @@ test("document chat infers Hermes mode from the raw message before runner select
       },
       body: JSON.stringify({
         userId: "11111111-1111-1111-1111-111111111111",
-        message: "search for personal diaries and use hermes search",
+        message: "search for personal diaries and use agentic search",
       }),
     });
 
     assert.equal(response.status, 200);
     const body = await response.text();
-    assert.match(body, /Starting a Hermes search run on this thread/);
+    assert.match(body, /Starting an Agentic search run on this thread/);
     assert.match(body, /"completionMode":"hermes"/);
     assert.doesNotMatch(body, /semantic_deep_search/);
     assert.equal(hermesLaunchPayloads.length, 1);
@@ -382,7 +382,7 @@ test("document chat infers Hermes mode from the raw message before runner select
   }
 });
 
-test("document chat launches Hermes search even when the user only says use hermes", async () => {
+test("document chat launches Agentic search even when the user only says use agentic", async () => {
   const originalFetch = globalThis.fetch;
   const hermesLaunchPayloads: unknown[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -395,7 +395,7 @@ test("document chat launches Hermes search even when the user only says use herm
           state: "completed",
           running: false,
           pid: 1234,
-          userPrompt: "what journals do you have in here? use hermes.",
+          userPrompt: "what journals do you have in here? use agentic.",
           model: "gpt-5.4",
           maxTurns: 60,
           launchedAt: new Date().toISOString(),
@@ -426,7 +426,7 @@ test("document chat launches Hermes search even when the user only says use herm
           state: "completed",
           running: false,
           pid: 1234,
-          userPrompt: "what journals do you have in here? use hermes.",
+          userPrompt: "what journals do you have in here? use agentic.",
           model: "gpt-5.4",
           maxTurns: 60,
           launchedAt: new Date().toISOString(),
@@ -460,7 +460,7 @@ test("document chat launches Hermes search even when the user only says use herm
             bytes: 120,
             updatedAt: new Date().toISOString(),
             lines: [
-              "launching hermes search wrapper",
+              "launching agentic search wrapper",
             ],
           },
           {
@@ -532,14 +532,14 @@ test("document chat launches Hermes search even when the user only says use herm
       },
       body: JSON.stringify({
         userId: "11111111-1111-1111-1111-111111111111",
-        message: "what journals do you have in here? whose journals? use hermes.",
+        message: "what journals do you have in here? whose journals? use agentic.",
       }),
     });
 
     assert.equal(response.status, 200);
     const body = await response.text();
-    assert.match(body, /Starting a Hermes search run on this thread/);
-    assert.match(body, /Hermes Search Progress/);
+    assert.match(body, /Starting an Agentic search run on this thread/);
+    assert.match(body, /Agentic Search Progress/);
     assert.match(body, /Scoped 72644 files from the precomputed corpus index/);
     assert.equal(hermesLaunchPayloads.length, 1);
     assert.equal((hermesLaunchPayloads[0] as { workflow?: string }).workflow, "search");
@@ -585,7 +585,7 @@ test("document chat marks the run failed when Hermes launch fails before polling
       },
       body: JSON.stringify({
         userId: "11111111-1111-1111-1111-111111111111",
-        message: "search for personal diaries and use hermes search",
+        message: "search for personal diaries and use agentic search",
       }),
     });
 
