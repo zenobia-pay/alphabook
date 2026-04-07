@@ -6,6 +6,7 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    command: ["npm", "run", "dev:linux", "-w", "@alphabook/orchestrator-worker"]
     ports:
       - "8787:8787"
 
