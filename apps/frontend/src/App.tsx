@@ -2203,6 +2203,21 @@ function BookLoadingState() {
   return <div className="book-reader-frame book-reader-frame-empty" aria-hidden="true" />;
 }
 
+function BookMetadataRow({
+  label,
+  value,
+}: {
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="book-overlay-meta-row">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
 function ProfileEmptyState({
   title,
   copy,
@@ -3980,6 +3995,19 @@ export default function App() {
     };
   }, [currentUserId]);
 
+  useEffect(() => {
+    if (activeView !== "explore" || !activeWorkId) {
+      return;
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        closeExploreWorkOverlay();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [activeView, activeWorkId]);
+
   async function loadExploreWorks(reset = false) {
     const offset = reset ? 0 : feedNextOffset;
     if (offset === null || (feedLoading && !reset)) {
@@ -5694,7 +5722,20 @@ export default function App() {
     setActiveReaderPath(null);
     setActiveProfileUserId(null);
     setActiveWorkId(workId);
+    if (activeView === "explore") {
+      return;
+    }
     startNewBookChat();
+  }
+
+  function closeExploreWorkOverlay() {
+    if (activeView !== "explore") {
+      return;
+    }
+    pendingUrlWriteModeRef.current = "push";
+    setPendingCitation(null);
+    setActiveReaderPath(null);
+    setActiveWorkId(null);
   }
 
   function openCitation(citation: Citation) {
@@ -5913,6 +5954,129 @@ export default function App() {
           ) : null}
         </div>
       </section>
+    );
+  }
+
+  function renderExploreBookOverlay() {
+    if (activeView !== "explore" || !activeWorkId) {
+      return null;
+    }
+
+    const headingPassages = readerPassages
+      .filter((passage) => passage.kind === "heading")
+      .slice(0, 14);
+    const fallbackPassages = headingPassages.length === 0
+      ? readerPassages.slice(0, 10)
+      : [];
+    const contentsPassages = headingPassages.length > 0 ? headingPassages : fallbackPassages;
+    const authorLine = activeWork?.authors.join(", ") ?? "";
+    const metadataRows = [
+      activeWork?.gutenbergId ? ["Source", `Project Gutenberg #${activeWork.gutenbergId}`] : null,
+      activeWork?.language ? ["Language", formatExploreLanguageLabel(activeWork.language)] : null,
+      activeWork?.releaseDate ? ["Released", activeWork.releaseDate] : null,
+      activeWork?.rightsStatus ? ["Rights", activeWork.rightsStatus] : null,
+    ].filter((entry): entry is [string, string] => Array.isArray(entry) && entry[1].trim().length > 0);
+
+    return (
+      <div className="book-overlay-shell" role="dialog" aria-modal="true" aria-label={activeWork?.title ?? "Book preview"}>
+        <button type="button" className="book-overlay-backdrop" aria-label="Close book preview" onClick={closeExploreWorkOverlay} />
+        <section className="book-overlay-panel">
+          <div className="book-overlay-stage">
+            <div className="book-overlay-reader">
+              {activeWorkLoading ? (
+                <BookLoadingState />
+              ) : activeWork ? (
+                <iframe
+                  key={activeWorkId}
+                  ref={bookReaderFrameRef}
+                  className="book-reader-frame book-overlay-frame"
+                  src={activeReaderFrameHref ?? undefined}
+                  title={activeWork.title ? `${activeWork.title} text` : "Book text"}
+                  loading="eager"
+                />
+              ) : (
+                <div className="book-loading">Book not found.</div>
+              )}
+            </div>
+          </div>
+
+          <aside className="book-overlay-sidebar">
+            <div className="book-overlay-sidebar-scroll">
+              <div className="book-overlay-toolbar">
+                <button
+                  type="button"
+                  className="book-overlay-close"
+                  aria-label="Close book preview"
+                  onClick={closeExploreWorkOverlay}
+                >
+                  <CloseIcon />
+                </button>
+              </div>
+
+              {activeWork ? (
+                <>
+                  <div className="book-overlay-header">
+                    <p className="book-overlay-kicker">Book preview</p>
+                    <h2>{activeWork.title}</h2>
+                    {authorLine ? <p className="book-overlay-authors">{authorLine}</p> : null}
+                  </div>
+
+                  {activeWork.summary ? (
+                    <section className="book-overlay-section">
+                      <p className="book-overlay-summary">{activeWork.summary}</p>
+                    </section>
+                  ) : null}
+
+                  {metadataRows.length > 0 ? (
+                    <section className="book-overlay-section">
+                      <div className="book-overlay-meta-table">
+                        {metadataRows.map(([label, value]) => (
+                          <BookMetadataRow key={label} label={label} value={value} />
+                        ))}
+                      </div>
+                    </section>
+                  ) : null}
+
+                  {contentsPassages.length > 0 ? (
+                    <section className="book-overlay-section">
+                      <div className="book-overlay-section-header">
+                        <h3>Contents</h3>
+                      </div>
+                      <div className="book-overlay-contents">
+                        {contentsPassages.map((passage) => (
+                          <button
+                            key={passage.id}
+                            type="button"
+                            className="book-overlay-content-link"
+                            onClick={() => activatePassage(passage.id, null, false)}
+                          >
+                            {passage.text}
+                          </button>
+                        ))}
+                      </div>
+                    </section>
+                  ) : null}
+
+                  {activeWork.bookshelves.length > 0 ? (
+                    <section className="book-overlay-section">
+                      <div className="book-overlay-section-header">
+                        <h3>Shelves</h3>
+                      </div>
+                      <div className="book-overlay-tags">
+                        {activeWork.bookshelves.slice(0, 10).map((label) => (
+                          <span key={label} className="book-overlay-tag">{label}</span>
+                        ))}
+                      </div>
+                    </section>
+                  ) : null}
+                </>
+              ) : (
+                <div className="book-loading">Loading book…</div>
+              )}
+            </div>
+          </aside>
+        </section>
+      </div>
     );
   }
 
@@ -7439,6 +7603,8 @@ export default function App() {
         {loadError ? <ErrorNotice className="thread-error-banner" message={loadError} onDismiss={() => setLoadError(null)} /> : null}
         {renderMainView()}
       </main>
+
+      {renderExploreBookOverlay()}
 
       {debugEnabled && AgentationComponent ? (
         <AgentationComponent
