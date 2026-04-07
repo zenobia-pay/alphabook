@@ -377,3 +377,57 @@ test("document chat infers Hermes mode from the raw message before runner select
     globalThis.fetch = originalFetch;
   }
 });
+
+test("document chat marks the run failed when Hermes launch fails before polling starts", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    if (url === "https://hermes.example.test/v1/jobs" && init?.method === "POST") {
+      return new Response(JSON.stringify({
+        error: "internal_error",
+        message: "mkdir: cannot create directory '/srv/alphabook/logs/hermes-corpus-research/xyz': No space left on device",
+      }), {
+        status: 500,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(`Unhandled fetch: ${url}`, { status: 500 });
+  }) as typeof fetch;
+
+  try {
+    const store = new InMemoryAppStore();
+    const app = createApp({
+      store,
+      billing: createBillingService(store),
+      blobStore: new MemoryBlobStore(),
+      hermesJobApiUrl: "https://hermes.example.test",
+      hermesJobApiToken: "test-token",
+      queues: {
+        ingestName: "alphabook-ingest",
+        jobsName: "alphabook-jobs",
+      },
+    });
+
+    const response = await app.request("/api/v1/documents/chat", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        userId: "11111111-1111-1111-1111-111111111111",
+        message: "search for personal diaries and use hermes search",
+      }),
+    });
+
+    assert.equal(response.status, 200);
+    const body = await response.text();
+    assert.match(body, /"status":"failed"/);
+    assert.match(body, /No space left on device/);
+
+    const sessions = await store.listSessions("11111111-1111-1111-1111-111111111111");
+    const runs = await store.listRuns(sessions[0]!.id);
+    assert.equal(runs[0]?.status, "failed");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

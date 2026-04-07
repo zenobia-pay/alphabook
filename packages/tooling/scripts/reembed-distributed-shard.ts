@@ -1,5 +1,5 @@
 import { createWriteStream } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
 import { buildCorpusChunkId } from "@alphabook/corpus-core";
@@ -197,6 +197,7 @@ function usage() {
       "  --skip-wait",
       "  --skip-download",
       "  --skip-materialize",
+      "  --keep-scratch",
     ].join("\n") + "\n",
   );
 }
@@ -207,6 +208,22 @@ function sleep(ms: number) {
 
 function requestBatchSize() {
   return Math.max(1, Number(readArg("--request-batch-size") ?? process.env.OPENAI_EMBEDDING_BATCH_SIZE ?? DEFAULT_REQUEST_BATCH_SIZE));
+}
+
+async function cleanupShardEmbeddingScratch(outputDir: string, manifest: ShardEmbeddingBatchManifest) {
+  const targets = new Set<string>([
+    join(outputDir, "downloads"),
+    resolveSubmissionPath(join(outputDir, "manifest.json")),
+  ]);
+  for (const file of manifest.files) {
+    targets.add(file.requestPath);
+    targets.add(file.sidecarPath);
+  }
+  await Promise.all(
+    [...targets].map(async (target) => {
+      await rm(target, { recursive: true, force: true }).catch(() => {});
+    }),
+  );
 }
 
 async function prepareShardEmbeddingBatch(options: {
@@ -512,6 +529,9 @@ async function main() {
       model,
       dimensions: Number.isFinite(dimensions) ? dimensions : null,
     });
+    if (!hasFlag("--keep-scratch")) {
+      await cleanupShardEmbeddingScratch(outputDir, batchManifest.manifest);
+    }
   }
 
   printJson({
@@ -521,6 +541,7 @@ async function main() {
     submissionPath: await pathExists(submissionPath) ? submissionPath : null,
     downloadsDir: await pathExists(join(outputDir, "downloads")) ? join(outputDir, "downloads") : null,
     vectorSummary,
+    scratchKept: hasFlag("--keep-scratch"),
   });
 }
 
