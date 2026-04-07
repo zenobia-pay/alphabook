@@ -11676,6 +11676,7 @@ export async function runOrchestrator(
               userMessage: input.message,
               requestedWorkflow: input.workflow,
               conversationHistory,
+              auditLog: recordRawLog,
               billingContext: {
                 userId: session.userId,
                 sessionId: session.id,

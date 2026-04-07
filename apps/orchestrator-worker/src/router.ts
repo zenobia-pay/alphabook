@@ -32,6 +32,9 @@ const RouterDecisionSchema = z.union([
 ]);
 
 export type RouterDecision = z.infer<typeof RouterDecisionSchema>;
+type SearchExecutionMode = "semantic" | "comprehensive" | "hermes";
+type RouterAuditLog = (event: string, payload: Record<string, unknown>) => void;
+const SearchExecutionModeSchema = z.enum(["semantic", "comprehensive", "hermes"]);
 
 export interface RouterContext {
   userMessage: string;
@@ -41,6 +44,7 @@ export interface RouterContext {
     content: string;
   }>;
   billingContext?: BillingContext;
+  auditLog?: RouterAuditLog;
 }
 
 export interface Router {
@@ -70,6 +74,146 @@ export class OpenAIRouter implements Router {
     private readonly billing?: BillingService,
     private readonly systemPrompt: string = ROUTER_SYSTEM_PROMPT,
   ) {}
+
+  private coerceDecision(parsed: unknown, context: RouterContext): {
+    decision: RouterDecision;
+    fallbackKind: "sanitized" | "defaulted";
+    reason: string;
+  } | null {
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    const candidate = parsed as Record<string, unknown>;
+    const rawType = typeof candidate.type === "string" ? candidate.type : null;
+    const userMessage = context.userMessage.trim();
+    const answer = typeof candidate.answer === "string" && candidate.answer.trim().length > 0
+      ? candidate.answer.trim()
+      : null;
+    const fullQuery = typeof candidate.fullQuery === "string" && candidate.fullQuery.trim().length > 0
+      ? candidate.fullQuery.trim()
+      : null;
+    const designSummary = typeof candidate.designSummary === "string" && candidate.designSummary.trim().length > 0
+      ? candidate.designSummary.trim()
+      : null;
+    const executionPrompt = typeof candidate.executionPrompt === "string" && candidate.executionPrompt.trim().length > 0
+      ? candidate.executionPrompt.trim()
+      : null;
+    const rationale = typeof candidate.rationale === "string" && candidate.rationale.trim().length > 0
+      ? candidate.rationale.trim()
+      : undefined;
+    const workflowHint = candidate.workflowHint === "search" || candidate.workflowHint === "design_experiment"
+      ? candidate.workflowHint
+      : undefined;
+    const executionMode = SearchExecutionModeSchema.safeParse(candidate.executionMode).success
+      ? candidate.executionMode as SearchExecutionMode
+      : undefined;
+    const experimentProposalCandidate = candidate.experimentProposal
+      && typeof candidate.experimentProposal === "object"
+      && !Array.isArray(candidate.experimentProposal)
+      ? candidate.experimentProposal as Record<string, unknown>
+      : null;
+    const experimentProposal = experimentProposalCandidate
+      && typeof experimentProposalCandidate.title === "string"
+      && experimentProposalCandidate.title.trim().length > 0
+      && typeof experimentProposalCandidate.summary === "string"
+      && experimentProposalCandidate.summary.trim().length > 0
+      && typeof experimentProposalCandidate.approvalPrompt === "string"
+      && experimentProposalCandidate.approvalPrompt.trim().length > 0
+      ? {
+          title: experimentProposalCandidate.title.trim(),
+          summary: experimentProposalCandidate.summary.trim(),
+          approvalPrompt: experimentProposalCandidate.approvalPrompt.trim(),
+        }
+      : undefined;
+
+    if (rawType === "direct_response" && answer) {
+      return {
+        decision: {
+          type: "direct_response",
+          answer,
+          ...(workflowHint ? { workflowHint } : {}),
+          ...(experimentProposal ? { experimentProposal } : {}),
+        },
+        fallbackKind: "sanitized",
+        reason: "Router returned direct_response with extra or malformed optional fields.",
+      };
+    }
+
+    if (rawType === "search") {
+      return {
+        decision: {
+          type: "search",
+          fullQuery: fullQuery ?? userMessage,
+          ...(rationale ? { rationale } : {}),
+          executionMode: executionMode ?? "semantic",
+        },
+        fallbackKind: executionMode ? "sanitized" : "defaulted",
+        reason: executionMode
+          ? "Router returned search with recoverable schema drift."
+          : "Router returned search with an invalid or missing executionMode; defaulted to semantic.",
+      };
+    }
+
+    if (rawType === "design_experiment" && designSummary && executionPrompt) {
+      return {
+        decision: {
+          type: "design_experiment",
+          designSummary,
+          executionPrompt,
+          ...(rationale ? { rationale } : {}),
+        },
+        fallbackKind: "sanitized",
+        reason: "Router returned design_experiment with recoverable schema drift.",
+      };
+    }
+
+    if (fullQuery) {
+      return {
+        decision: {
+          type: "search",
+          fullQuery,
+          executionMode: executionMode ?? "semantic",
+          rationale: "Router response was malformed, but it included a search query so the request can continue safely.",
+        },
+        fallbackKind: "defaulted",
+        reason: "Router response was malformed but included a usable fullQuery.",
+      };
+    }
+
+    if (answer) {
+      return {
+        decision: {
+          type: "direct_response",
+          answer,
+          ...(workflowHint ? { workflowHint } : {}),
+        },
+        fallbackKind: "defaulted",
+        reason: "Router response was malformed but included a usable direct response.",
+      };
+    }
+
+    if (context.requestedWorkflow === "search" && userMessage.length > 0) {
+      return {
+        decision: {
+          type: "search",
+          fullQuery: userMessage,
+          executionMode: "semantic",
+          rationale: "Router response was malformed, so the request fell back to a semantic search using the user message.",
+        },
+        fallbackKind: "defaulted",
+        reason: "Router response was unusable and the caller explicitly requested search.",
+      };
+    }
+
+    return {
+      decision: {
+        type: "direct_response",
+        answer: "I hit a routing glitch, but I can still help. Tell me what you want to search for in the corpus and I’ll run it.",
+      },
+      fallbackKind: "defaulted",
+      reason: "Router response was unusable and there was no safe search payload to continue with.",
+    };
+  }
 
   async decide(context: RouterContext): Promise<RouterDecision> {
     const body = {
@@ -120,6 +264,10 @@ export class OpenAIRouter implements Router {
         },
       ],
     };
+    context.auditLog?.("router.openai.request", {
+      model: this.model,
+      request: body,
+    });
     let response: Response;
     try {
       response = await this.fetchImpl("https://api.openai.com/v1/chat/completions", {
@@ -139,6 +287,12 @@ export class OpenAIRouter implements Router {
     }
     if (!response.ok) {
       const text = await response.text();
+      context.auditLog?.("router.openai.response", {
+        ok: false,
+        status: response.status,
+        statusText: response.statusText,
+        body: text,
+      });
       throw new Error(`Router request failed: ${text}`);
     }
     const payload = (await response.json()) as {
@@ -150,6 +304,12 @@ export class OpenAIRouter implements Router {
       usage?: Record<string, unknown>;
       id?: string;
     };
+    context.auditLog?.("router.openai.response", {
+      ok: true,
+      status: response.status,
+      statusText: response.statusText,
+      body: payload,
+    });
     if (this.billing && context.billingContext) {
       const usage = openAIUsageFromResponse(payload as Record<string, unknown>);
       if (usage) {
@@ -174,6 +334,21 @@ export class OpenAIRouter implements Router {
       throw new Error("Router response was empty.");
     }
     const parsed = parseModelJsonObject<unknown>(content);
-    return RouterDecisionSchema.parse(parsed);
+    const validated = RouterDecisionSchema.safeParse(parsed);
+    if (validated.success) {
+      return validated.data;
+    }
+    const fallback = this.coerceDecision(parsed, context);
+    if (fallback) {
+      context.auditLog?.("router.output.fallback", {
+        fallbackKind: fallback.fallbackKind,
+        reason: fallback.reason,
+        parsed,
+        validationError: validated.error.message,
+        decision: fallback.decision,
+      });
+      return fallback.decision;
+    }
+    throw validated.error;
   }
 }
