@@ -965,6 +965,92 @@ button {
   padding-bottom: 48px;
 }
 
+.explore-feed-toolbar {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 18px;
+}
+
+.explore-feed-toolbar-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.explore-feed-kicker,
+.explore-feed-results {
+  margin: 0;
+}
+
+.explore-feed-kicker {
+  font-size: 0.72rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(26, 33, 52, 0.54);
+}
+
+.explore-feed-results {
+  color: rgba(38, 26, 25, 0.76);
+  font-size: 0.92rem;
+}
+
+.explore-feed-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.explore-random-button,
+.explore-clear-filters {
+  border-radius: 999px;
+}
+
+.explore-random-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.explore-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  padding: 0 0 20px;
+}
+
+.explore-filter-field {
+  display: grid;
+  gap: 6px;
+}
+
+.explore-filter-field span {
+  font-size: 0.72rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(26, 33, 52, 0.56);
+}
+
+.explore-filter-field select {
+  width: 100%;
+  min-width: 0;
+  appearance: none;
+  border: 1px solid rgba(26, 33, 52, 0.12);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.94);
+  color: var(--ink);
+  padding: 10px 12px;
+  font-size: 0.93rem;
+  line-height: 1.2;
+}
+
+.explore-filter-field select:focus-visible {
+  outline: 2px solid rgba(41, 91, 216, 0.18);
+  outline-offset: 1px;
+}
+
 .work-feed-card {
   width: 100%;
   border: 0;
@@ -3529,6 +3615,22 @@ button {
 
   .work-feed-card {
     padding: 18px 0 16px;
+  }
+
+  .explore-feed-toolbar {
+    align-items: start;
+    flex-direction: column;
+    padding-bottom: 16px;
+  }
+
+  .explore-feed-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .explore-filter-grid {
+    grid-template-columns: 1fr;
+    padding-bottom: 18px;
   }
 
   .work-feed-summary {

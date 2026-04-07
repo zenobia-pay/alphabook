@@ -1,7 +1,7 @@
 import { Component, createContext, type ComponentType, type CSSProperties, type ErrorInfo, type FormEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type UIEvent, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReadonlyJSONObject, ReadonlyJSONValue } from "assistant-stream/utils";
 import type { AgentationProps } from "agentation";
-import { ChevronsLeft, ChevronsRight, Link2, LoaderCircle, MessageSquarePlus, X } from "lucide-react";
+import { ChevronsLeft, ChevronsRight, Dices, Link2, LoaderCircle, MessageSquarePlus, X } from "lucide-react";
 
 import { ChatSessionSummarySchema, getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type NotificationRecord, type ProfileBookStat, type ProfileFacetStat, type ProfileQueryStat, type PublicProfileResponse, type UserProfile, type UserProfileStats, type WorkDetail, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
@@ -163,6 +163,12 @@ type AdminIncidentsState = {
   days: number;
   selectedFingerprint: string | null;
   payload: Record<string, unknown> | null;
+};
+
+type ExploreFacetOption = {
+  value: string;
+  label: string;
+  count: number;
 };
 
 type NotificationsState = {
@@ -1560,6 +1566,39 @@ function formatCompactCount(value: number | null | undefined) {
     return null;
   }
   return value.toLocaleString("en-US");
+}
+
+function buildFacetOptions(
+  works: WorkSummary[],
+  getValues: (work: WorkSummary) => string[],
+  options?: { formatLabel?: (value: string) => string | null; limit?: number },
+): ExploreFacetOption[] {
+  const counts = new Map<string, number>();
+  for (const work of works) {
+    const uniqueValues = new Set(
+      getValues(work)
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0),
+    );
+    for (const value of uniqueValues) {
+      counts.set(value, (counts.get(value) ?? 0) + 1);
+    }
+  }
+
+  return [...counts.entries()]
+    .map(([value, count]) => ({
+      value,
+      label: options?.formatLabel?.(value) ?? value,
+      count,
+    }))
+    .filter((option) => option.label.trim().length > 0)
+    .sort((left, right) => {
+      if (right.count !== left.count) {
+        return right.count - left.count;
+      }
+      return left.label.localeCompare(right.label);
+    })
+    .slice(0, options?.limit ?? 40);
 }
 
 function describeError(message: string): { title: string; body: string } {
@@ -3313,6 +3352,12 @@ export default function App() {
   const [feedLoading, setFeedLoading] = useState(false);
   const [feedInitialLoadState, setFeedInitialLoadState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [selectedWorkIds, setSelectedWorkIds] = useState<string[]>([]);
+  const [exploreLanguageFilter, setExploreLanguageFilter] = useState("all");
+  const [exploreAuthorFilter, setExploreAuthorFilter] = useState("all");
+  const [exploreSubjectFilter, setExploreSubjectFilter] = useState("all");
+  const [exploreBookshelfFilter, setExploreBookshelfFilter] = useState("all");
+  const [exploreYearFilter, setExploreYearFilter] = useState("all");
+  const [exploreRightsFilter, setExploreRightsFilter] = useState("all");
   const [activeWorkId, setActiveWorkId] = useState<string | null | undefined>(initialUrlState.workId);
   const [activeProfileUserId, setActiveProfileUserId] = useState<string | null | undefined>(initialUrlState.profileUserId);
   const [activeWork, setActiveWork] = useState<WorkDetail | null>(() => initialWorkPageBootstrap?.work ?? null);
@@ -3432,6 +3477,84 @@ export default function App() {
   const selectedWorks = useMemo(
     () => feedWorks.filter((work) => selectedWorkIds.includes(work.id)),
     [feedWorks, selectedWorkIds],
+  );
+  const languageFacetOptions = useMemo(
+    () => buildFacetOptions(feedWorks, (work) => {
+      const formatted = formatDisplayLanguage(work.language);
+      return formatted ? [formatted] : [];
+    }),
+    [feedWorks],
+  );
+  const authorFacetOptions = useMemo(
+    () => buildFacetOptions(feedWorks, (work) => work.authors, { limit: 48 }),
+    [feedWorks],
+  );
+  const subjectFacetOptions = useMemo(
+    () => buildFacetOptions(feedWorks, (work) => work.subjects, { limit: 48 }),
+    [feedWorks],
+  );
+  const bookshelfFacetOptions = useMemo(
+    () => buildFacetOptions(feedWorks, (work) => work.bookshelves ?? [], { limit: 48 }),
+    [feedWorks],
+  );
+  const yearFacetOptions = useMemo(
+    () => buildFacetOptions(feedWorks, (work) => {
+      const year = formatReleaseYear(work.releaseDate);
+      return year ? [year] : [];
+    }, {
+      limit: 80,
+      formatLabel: (value) => value,
+    }).sort((left, right) => Number(right.value) - Number(left.value)),
+    [feedWorks],
+  );
+  const rightsFacetOptions = useMemo(
+    () => buildFacetOptions(feedWorks, (work) => (work.rightsStatus ? [work.rightsStatus] : []), {
+      formatLabel: (value) => value.replaceAll("_", " "),
+      limit: 12,
+    }),
+    [feedWorks],
+  );
+  const filteredFeedWorks = useMemo(
+    () => feedWorks.filter((work) => {
+      const displayLanguage = formatDisplayLanguage(work.language);
+      const releaseYear = formatReleaseYear(work.releaseDate);
+      if (exploreLanguageFilter !== "all" && displayLanguage !== exploreLanguageFilter) {
+        return false;
+      }
+      if (exploreAuthorFilter !== "all" && !work.authors.includes(exploreAuthorFilter)) {
+        return false;
+      }
+      if (exploreSubjectFilter !== "all" && !work.subjects.includes(exploreSubjectFilter)) {
+        return false;
+      }
+      if (exploreBookshelfFilter !== "all" && !(work.bookshelves ?? []).includes(exploreBookshelfFilter)) {
+        return false;
+      }
+      if (exploreYearFilter !== "all" && releaseYear !== exploreYearFilter) {
+        return false;
+      }
+      if (exploreRightsFilter !== "all" && work.rightsStatus !== exploreRightsFilter) {
+        return false;
+      }
+      return true;
+    }),
+    [
+      exploreAuthorFilter,
+      exploreBookshelfFilter,
+      exploreLanguageFilter,
+      exploreRightsFilter,
+      exploreSubjectFilter,
+      exploreYearFilter,
+      feedWorks,
+    ],
+  );
+  const hasActiveExploreFilters = (
+    exploreLanguageFilter !== "all"
+    || exploreAuthorFilter !== "all"
+    || exploreSubjectFilter !== "all"
+    || exploreBookshelfFilter !== "all"
+    || exploreYearFilter !== "all"
+    || exploreRightsFilter !== "all"
   );
   const assistantMessages = useMemo(() => messages.filter((message) => message.role === "assistant"), [messages]);
   const citationCount = useMemo(() => messages.reduce((count, message) => count + message.citations.length, 0), [messages]);
@@ -5457,6 +5580,15 @@ export default function App() {
     setFeedInitialLoadState("idle");
   }
 
+  function resetExploreFilters() {
+    setExploreLanguageFilter("all");
+    setExploreAuthorFilter("all");
+    setExploreSubjectFilter("all");
+    setExploreBookshelfFilter("all");
+    setExploreYearFilter("all");
+    setExploreRightsFilter("all");
+  }
+
   function startNewChat() {
     pendingUrlWriteModeRef.current = "push";
     detachActiveAssistantStreams();
@@ -5498,6 +5630,18 @@ export default function App() {
       });
       return [...current, workId];
     });
+  }
+
+  function openRandomFilteredWork() {
+    if (filteredFeedWorks.length === 0) {
+      return;
+    }
+    const index = Math.floor(Math.random() * filteredFeedWorks.length);
+    const work = filteredFeedWorks[index];
+    if (!work) {
+      return;
+    }
+    openWork(work.id);
   }
 
   function submitExplorePrompt(event?: FormEvent<HTMLFormElement>) {
@@ -5973,7 +6117,108 @@ export default function App() {
         </section>
 
         <section className="work-feed" aria-label="Corpus feed">
-          {feedWorks.map((work) => {
+          <div className="explore-feed-toolbar">
+            <div className="explore-feed-toolbar-copy">
+              <p className="explore-feed-kicker">Browse by metadata</p>
+              <p className="explore-feed-results">
+                Showing {formatCompactCount(filteredFeedWorks.length) ?? "0"} of {formatCompactCount(feedWorks.length) ?? "0"} loaded {CORPUS_LABEL_PLURAL}.
+              </p>
+            </div>
+
+            <div className="explore-feed-actions">
+              <Button
+                type="button"
+                variant="outline"
+                className="explore-random-button"
+                onClick={openRandomFilteredWork}
+                disabled={filteredFeedWorks.length === 0}
+              >
+                <Dices size={16} />
+                Random
+              </Button>
+              {hasActiveExploreFilters ? (
+                <Button type="button" variant="ghost" className="explore-clear-filters" onClick={resetExploreFilters}>
+                  Clear filters
+                </Button>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="explore-filter-grid" aria-label="Book filters">
+            {languageFacetOptions.length > 1 ? (
+              <label className="explore-filter-field">
+                <span>Language</span>
+                <select value={exploreLanguageFilter} onChange={(event) => setExploreLanguageFilter(event.currentTarget.value)}>
+                  <option value="all">All languages</option>
+                  {languageFacetOptions.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label} ({option.count})</option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+
+            {authorFacetOptions.length > 1 ? (
+              <label className="explore-filter-field">
+                <span>Author</span>
+                <select value={exploreAuthorFilter} onChange={(event) => setExploreAuthorFilter(event.currentTarget.value)}>
+                  <option value="all">All authors</option>
+                  {authorFacetOptions.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label} ({option.count})</option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+
+            {subjectFacetOptions.length > 1 ? (
+              <label className="explore-filter-field">
+                <span>Subject</span>
+                <select value={exploreSubjectFilter} onChange={(event) => setExploreSubjectFilter(event.currentTarget.value)}>
+                  <option value="all">All subjects</option>
+                  {subjectFacetOptions.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label} ({option.count})</option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+
+            {bookshelfFacetOptions.length > 1 ? (
+              <label className="explore-filter-field">
+                <span>Bookshelf</span>
+                <select value={exploreBookshelfFilter} onChange={(event) => setExploreBookshelfFilter(event.currentTarget.value)}>
+                  <option value="all">All bookshelves</option>
+                  {bookshelfFacetOptions.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label} ({option.count})</option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+
+            {yearFacetOptions.length > 1 ? (
+              <label className="explore-filter-field">
+                <span>Release year</span>
+                <select value={exploreYearFilter} onChange={(event) => setExploreYearFilter(event.currentTarget.value)}>
+                  <option value="all">All years</option>
+                  {yearFacetOptions.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label} ({option.count})</option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+
+            {rightsFacetOptions.length > 1 ? (
+              <label className="explore-filter-field">
+                <span>Rights</span>
+                <select value={exploreRightsFilter} onChange={(event) => setExploreRightsFilter(event.currentTarget.value)}>
+                  <option value="all">All rights</option>
+                  {rightsFacetOptions.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label} ({option.count})</option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+          </div>
+
+          {filteredFeedWorks.map((work) => {
             const selected = selectedWorkIds.includes(work.id);
             const previewMeta = [formatReleaseYear(work.releaseDate), work.publisher].filter(Boolean).join(" · ");
             const secondaryTags = work.bookshelves?.length
@@ -6015,6 +6260,15 @@ export default function App() {
               </article>
             );
           })}
+
+          {!feedLoading && filteredFeedWorks.length === 0 && feedWorks.length > 0 ? (
+            <div className="feed-status">
+              <p>No books match the current metadata filters.</p>
+              {hasActiveExploreFilters ? (
+                <Button type="button" variant="ghost" onClick={resetExploreFilters}>Clear filters</Button>
+              ) : null}
+            </div>
+          ) : null}
 
           {!feedLoading && feedWorks.length === 0 && feedInitialLoadState === "error" ? (
             <div className="feed-status">
