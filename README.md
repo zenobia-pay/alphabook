@@ -25,13 +25,11 @@ Install dependencies:
 npm install
 ```
 
-Run the supported extensibility validation matrix:
+Run the repo checks for the supported extensible surface:
 
 ```bash
 npm run validate:extensible
 ```
-
-`npm run validate:oss` still exists as a compatibility alias, but `validate:extensible` is the clearer name for what the command actually does.
 
 Run the fixture corpus demo without provisioning Postgres or object storage:
 
@@ -96,7 +94,7 @@ The boundary is intentional:
 
 ## Validation
 
-The supported validation entry point for the reusable surface is:
+The main repo check for the reusable surface is:
 
 ```bash
 npm run validate:extensible

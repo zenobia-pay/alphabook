@@ -25,7 +25,7 @@ npm run validate:extensible
 
 For app-specific commands, start with [README.md](README.md).
 
-`npm run validate:extensible` is the supported validation entry point for the reusable platform surface. `npm run validate:oss` remains as a compatibility alias. If you change AlphaBook-specific app code outside that surface, run the relevant package-level checks too.
+`npm run validate:extensible` is the main repo check for the reusable platform surface. If you change AlphaBook-specific app code outside that surface, run the relevant package-level checks too.
 
 ## License
 

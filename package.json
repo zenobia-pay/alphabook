@@ -41,7 +41,6 @@
     "migrate": "tsx packages/tooling/scripts/migrate.ts",
     "migrate:d1:import": "node --import tsx packages/tooling/scripts/import-d1-sql.ts",
     "validate:extensible": "npm run typecheck -w @alphabook/implementations && npm run test -w @alphabook/implementations && npm run typecheck -w @alphabook/platform && npm run test -w @alphabook/platform && npm run typecheck -w @alphabook/db && npm run test -w @alphabook/db && npm run typecheck -w @alphabook/source-gutenberg && npm run test -w @alphabook/source-gutenberg && npm run typecheck -w @alphabook/source-fixture && npm run test -w @alphabook/source-fixture && npm run typecheck -w @alphabook/shared && npm run typecheck -w @alphabook/ingest && npm run test -w @alphabook/ingest && npm run typecheck -w @alphabook/orchestrator-worker && node --import tsx --test apps/orchestrator-worker/test/store.test.ts apps/orchestrator-worker/test/platform-repository.test.ts apps/orchestrator-worker/test/db-repository.test.ts apps/orchestrator-worker/test/document-api.test.ts",
-    "validate:oss": "npm run validate:extensible",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "build": "npm run build --workspaces --if-present",

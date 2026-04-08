@@ -23,7 +23,7 @@ The supported open-source integration surface is:
 - `apps/orchestrator-worker` repository, retrieval, and runtime seams used by the fixture and adapter tests
 - the neutral HTTP API under `/api/v1/documents/*`
 
-These are the packages and codepaths covered by `npm run validate:extensible` and the compatibility alias `npm run validate:oss`.
+These are the packages and codepaths covered by `npm run validate:extensible`.
 
 ## Compatibility Surface
 
@@ -88,13 +88,11 @@ To make the schema boundary explicit, the database now also exposes additive neu
 
 ## Validation Contract
 
-The supported extensibility validation entry point is:
+The main repo check for the supported extensible surface is:
 
 ```bash
 npm run validate:extensible
 ```
-
-`npm run validate:oss` remains as an alias for compatibility with older docs and CI wiring.
 
 That command covers:
 
