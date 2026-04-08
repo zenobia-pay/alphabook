@@ -60,9 +60,9 @@ interface ModelPricing {
 }
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
-const DEFAULT_FREE_MONTHLY_CREDITS = 3_333_330;
-const DEFAULT_STUDIO_MONTHLY_CREDITS = 50_000_000;
-const DEFAULT_CREDITS_PER_USD_COST = 333_333;
+const DEFAULT_FREE_MONTHLY_CREDITS = 1_000_000;
+const DEFAULT_STUDIO_MONTHLY_CREDITS = 15_000_000;
+const DEFAULT_CREDITS_PER_USD_COST = 100_000;
 const PAID_ACCESS_STATUSES = new Set(["active", "trialing", "past_due"]);
 
 const DEFAULT_MODEL_PRICING: Record<string, ModelPricing> = {

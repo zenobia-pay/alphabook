@@ -218,6 +218,8 @@ const BOOK_CONTENT_VERSION = "20260326g";
 const DEFAULT_SEO_DESCRIPTION = IMPLEMENTATION.siteDescription;
 const DEFAULT_OG_IMAGE_PATH = "/social-card.svg";
 const CORPUS_LABEL_PLURAL = IMPLEMENTATION.corpusLabelPlural;
+const FREE_TIER_MONTHLY_CREDITS = 1_000_000;
+const PRO_TIER_MONTHLY_CREDITS = 15_000_000;
 const EXPLORE_PLACEHOLDER = IMPLEMENTATION.explorePlaceholder;
 const WORDMARK = SEO_SITE_NAME;
 const WORDMARK_MONOGRAM = `${WORDMARK
@@ -1960,11 +1962,14 @@ function parseBillingLimitState(error: unknown): BillingLimitState | null {
   };
 }
 
-function formatCreditAmount(value: number | null | undefined) {
+function formatCompactCreditAmount(value: number | null | undefined) {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return null;
   }
-  return `${new Intl.NumberFormat("en-US").format(Math.max(0, Math.round(value)))} credits`;
+  return `${new Intl.NumberFormat("en-US", {
+    notation: "compact",
+    maximumFractionDigits: value >= 1_000_000 ? 1 : 0,
+  }).format(Math.max(0, Math.round(value)))} credits`;
 }
 
 function formatBillingWindowDate(value: string | null) {
@@ -1983,12 +1988,12 @@ function formatBillingWindowDate(value: string | null) {
 }
 
 function formatTierLabel(tier: "free" | "studio") {
-  return tier === "studio" ? "Studio" : "Free";
+  return tier === "studio" ? "Pro" : "Free";
 }
 
 function formatSubscriptionStatusLabel(status: string | null | undefined) {
-  if (!status) {
-    return "Free";
+  if (!status || status === "free") {
+    return "Free usage";
   }
   return status
     .split("_")
@@ -2007,75 +2012,73 @@ function BillingLimitDialog({
   onSubscribe: () => void;
   subscribing: boolean;
 }) {
-  const limit = formatCreditAmount(state.limitCredits);
-  const used = formatCreditAmount(state.usedCredits);
-  const remaining = formatCreditAmount(state.remainingCredits);
-  const windowDate = formatBillingWindowDate(state.windowStartedAt);
+  const limit = formatCompactCreditAmount(state.limitCredits);
+  const used = formatCompactCreditAmount(state.usedCredits);
   const windowEndDate = formatBillingWindowDate(state.windowEndsAt);
+  const blocked = typeof state.remainingCredits === "number" ? state.remainingCredits <= 0 : false;
+  const currentUsageSummary = used && limit ? `${used} used of ${limit} this month` : limit ? `${limit} included this month` : null;
 
   return (
-    <div className="billing-limit-shell" role="dialog" aria-modal="true" aria-label="Usage limit reached">
+    <div className="billing-limit-shell" role="dialog" aria-modal="true" aria-label="Upgrade to Pro">
       <button type="button" className="billing-limit-backdrop" aria-label="Close usage limit dialog" onClick={onClose} />
       <section className="billing-limit-panel">
         <div className="billing-limit-header">
-          <h2>Monthly Usage Limit Reached</h2>
+          <div>
+            <p className="billing-limit-eyebrow">{blocked ? "Free tier limit reached" : "Plans"}</p>
+            <h2>{blocked ? "Upgrade to Pro to keep going" : "Choose your plan"}</h2>
+          </div>
           <button type="button" className="billing-limit-close" aria-label="Close usage limit dialog" onClick={onClose}>
             <CloseIcon />
           </button>
         </div>
         <div className="billing-limit-copy">
-          <p>You’ve used this month’s credit budget for this account, so new runs are paused for now.</p>
-          {(limit || used || remaining) ? (
-            <dl className="billing-limit-stats">
-              <dt>Current tier</dt>
-              <dd>{formatTierLabel(state.tier)}</dd>
-              <dt>Status</dt>
-              <dd>{formatSubscriptionStatusLabel(state.subscriptionStatus)}</dd>
-              {used ? (
-                <>
-                  <dt>Credits used</dt>
-                  <dd>{used}</dd>
-                </>
-              ) : null}
-              {limit ? (
-                <>
-                  <dt>Monthly credits</dt>
-                  <dd>{limit}</dd>
-                </>
-              ) : null}
-              {remaining ? (
-                <>
-                  <dt>Credits remaining</dt>
-                  <dd>{remaining}</dd>
-                </>
-              ) : null}
-              {windowDate ? (
-                <>
-                  <dt>Current window started</dt>
-                  <dd>{windowDate}</dd>
-                </>
-              ) : null}
-              {windowEndDate ? (
-                <>
-                  <dt>Current window ends</dt>
-                  <dd>{windowEndDate}</dd>
-                </>
-              ) : null}
-            </dl>
-          ) : null}
           <p>
-            {state.tier === "free"
-              ? "Upgrade to Studio to unlock a much larger monthly credit pool."
-              : "When the billing window resets or your plan changes, you can start runs again."}
+            {blocked
+              ? "You’ve used this month’s Free Tier allowance. Upgrade to Pro for a much larger monthly budget and uninterrupted runs."
+              : "Free includes monthly usage for lighter research. Pro unlocks much more room for regular, heavier sessions."}
           </p>
+          {currentUsageSummary || windowEndDate ? (
+            <div className="billing-limit-summary">
+              {currentUsageSummary ? <span>{currentUsageSummary}</span> : null}
+              {windowEndDate ? <span>Resets {windowEndDate}</span> : null}
+            </div>
+          ) : null}
+          <div className="billing-plan-grid">
+            <article className={cn("billing-plan-card", state.tier === "free" && "is-current")}>
+              <span className="billing-plan-badge">Current plan</span>
+              <p className="billing-plan-kicker">Free Tier</p>
+              <h3>Free usage</h3>
+              <p className="billing-plan-price">$0 / month</p>
+              <p className="billing-plan-allowance">{formatCompactCreditAmount(FREE_TIER_MONTHLY_CREDITS)}</p>
+              <ul className="billing-plan-points">
+                <li>Monthly usage included</li>
+                <li>Best for occasional research</li>
+                <li>Status: {formatSubscriptionStatusLabel(state.subscriptionStatus)}</li>
+              </ul>
+            </article>
+            <article className={cn("billing-plan-card billing-plan-card-pro", state.tier === "studio" && "is-current")}>
+              <span className="billing-plan-badge">Recommended</span>
+              <p className="billing-plan-kicker">Pro Tier</p>
+              <h3>For regular usage</h3>
+              <p className="billing-plan-price">$500 / month</p>
+              <p className="billing-plan-allowance">{formatCompactCreditAmount(PRO_TIER_MONTHLY_CREDITS)}</p>
+              <ul className="billing-plan-points">
+                <li>Much larger monthly allowance</li>
+                <li>Better for longer research sessions</li>
+                <li>Upgrade when Free is no longer enough</li>
+              </ul>
+              {state.checkoutEligible ? (
+                <button type="button" className="billing-limit-button billing-limit-button-primary" onClick={onSubscribe} disabled={subscribing}>
+                  {subscribing ? "Redirecting…" : "Upgrade to Pro"}
+                </button>
+              ) : (
+                <div className="billing-plan-current-state">You’re already on Pro.</div>
+              )}
+            </article>
+          </div>
         </div>
         <div className="billing-limit-actions">
-          {state.checkoutEligible ? (
-            <button type="button" className="billing-limit-button" onClick={onSubscribe} disabled={subscribing}>
-              {subscribing ? "Redirecting…" : "Subscribe"}
-            </button>
-          ) : null}
-          <button type="button" className="billing-limit-button" onClick={onClose}>Close</button>
+          <button type="button" className="billing-limit-button billing-limit-button-secondary" onClick={onClose}>Close</button>
         </div>
       </section>
     </div>
@@ -6250,6 +6253,23 @@ export default function App() {
     setActiveView("profile");
   }
 
+  function openBillingDialog(overview = billingOverview) {
+    if (!overview) {
+      openProfile(currentUser?.id ?? null);
+      return;
+    }
+    setBillingLimitState({
+      tier: overview.subscription.tier,
+      subscriptionStatus: overview.subscription.status,
+      limitCredits: overview.usage.monthlyCredits,
+      usedCredits: overview.usage.usedCredits,
+      remainingCredits: overview.usage.remainingCredits,
+      windowStartedAt: overview.usage.windowStartedAt,
+      windowEndsAt: overview.usage.windowEndsAt,
+      checkoutEligible: overview.subscription.checkoutEligible,
+    });
+  }
+
   async function beginSubscriptionCheckout() {
     if (isStartingCheckout) {
       return;
@@ -7025,30 +7045,6 @@ export default function App() {
     const currentMeta = [profileTag, joinedLabel ? `joined ${joinedLabel}` : null].filter(Boolean).join(" • ");
     const stats = profileStats;
     const billing = billingOverview;
-    const metrics = stats
-      ? [
-        {
-          label: "Questions asked",
-          value: formatStatNumber(stats.counts.queryCount),
-          detail: `${formatStatNumber(stats.averages.queriesPerSession)} per session on average`,
-        },
-        {
-          label: "Books touched",
-          value: formatStatNumber(stats.counts.booksTouchedCount),
-          detail: `${formatStatNumber(stats.counts.uniqueBooksCitedCount)} cited and ${formatStatNumber(stats.counts.uniqueBooksOpenedCount)} opened`,
-        },
-        {
-          label: "Citations surfaced",
-          value: formatStatNumber(stats.counts.citationCount),
-          detail: `${formatStatNumber(stats.averages.citationsPerQuery)} per query`,
-        },
-        {
-          label: "Active days",
-          value: formatStatNumber(stats.counts.activeDayCount),
-          detail: `${formatStatNumber(stats.counts.runCount)} research runs completed`,
-        },
-      ]
-      : [];
 
     return (
       <div className="profile-view">
@@ -7084,11 +7080,6 @@ export default function App() {
             </article>
           </div>
           <div className="profile-actions">
-            {billing?.subscription.checkoutEligible ? (
-              <Button type="button" variant="ghost" className="profile-chip" onClick={() => void beginSubscriptionCheckout()} disabled={isStartingCheckout}>
-                {isStartingCheckout ? "Redirecting…" : "Subscribe"}
-              </Button>
-            ) : null}
             {authState.authConfigured && authState.user ? (
               <Button type="button" variant="ghost" className="profile-chip" onClick={handleSignOut}>
                 Log out
@@ -7100,94 +7091,55 @@ export default function App() {
         <section className="profile-section-card profile-section-card-hero">
           <div className="profile-section-header">
             <div>
-              <h2>Plan and credits</h2>
+              <h2>Plans</h2>
               <p>
                 {billing
-                  ? `${formatTierLabel(billing.subscription.tier)} tier • ${formatSubscriptionStatusLabel(billing.subscription.status)}`
+                  ? `${formatTierLabel(billing.subscription.tier)} Tier • ${formatSubscriptionStatusLabel(billing.subscription.status)}`
                   : "We are loading your subscription and monthly credit usage."}
               </p>
             </div>
+            {billing?.subscription.checkoutEligible ? (
+              <Button type="button" className="profile-upgrade-button" onClick={() => openBillingDialog()} disabled={isStartingCheckout}>
+                {isStartingCheckout ? "Redirecting…" : "Upgrade to Pro"}
+              </Button>
+            ) : null}
           </div>
           {billing ? (
-            <div className="profile-metric-grid">
-              <ProfileMetricCard
-                label="Current tier"
-                value={formatTierLabel(billing.subscription.tier)}
-                detail={formatSubscriptionStatusLabel(billing.subscription.status)}
-              />
-              <ProfileMetricCard
-                label="Credits used"
-                value={formatCreditAmount(billing.usage.usedCredits) ?? "0 credits"}
-                detail={`${formatCreditAmount(billing.usage.monthlyCredits) ?? "0 credits"} this month`}
-              />
-              <ProfileMetricCard
-                label="Credits remaining"
-                value={formatCreditAmount(billing.usage.remainingCredits) ?? "0 credits"}
-                detail={`Window resets ${formatBillingWindowDate(billing.usage.windowEndsAt) ?? "soon"}`}
-              />
-              <ProfileMetricCard
-                label="Billing window"
-                value={formatBillingWindowDate(billing.usage.windowStartedAt) ?? "This month"}
-                detail={`through ${formatBillingWindowDate(billing.usage.windowEndsAt) ?? "now"}`}
-              />
-            </div>
+            <>
+              <div className="profile-plan-grid">
+                <article className={cn("profile-plan-card", billing.subscription.tier === "free" && "is-current")}>
+                  <span>Free Tier</span>
+                  <strong>Free usage</strong>
+                  <p>{formatCompactCreditAmount(FREE_TIER_MONTHLY_CREDITS)} included each month.</p>
+                </article>
+                <article className={cn("profile-plan-card profile-plan-card-pro", billing.subscription.tier === "studio" && "is-current")}>
+                  <span>Pro Tier</span>
+                  <strong>$500 / month</strong>
+                  <p>{formatCompactCreditAmount(PRO_TIER_MONTHLY_CREDITS)} for heavier usage and longer sessions.</p>
+                </article>
+              </div>
+              <div className="profile-metric-grid">
+                <ProfileMetricCard
+                  label="Subscription"
+                  value={formatSubscriptionStatusLabel(billing.subscription.status)}
+                  detail={`${formatTierLabel(billing.subscription.tier)} Tier`}
+                />
+                <ProfileMetricCard
+                  label="Credit usage"
+                  value={formatCompactCreditAmount(billing.usage.usedCredits) ?? "0 credits"}
+                  detail={`of ${formatCompactCreditAmount(billing.usage.monthlyCredits) ?? "0 credits"} this month`}
+                />
+                <ProfileMetricCard
+                  label="Credits left"
+                  value={formatCompactCreditAmount(billing.usage.remainingCredits) ?? "0 credits"}
+                  detail={`Resets ${formatBillingWindowDate(billing.usage.windowEndsAt) ?? "soon"}`}
+                />
+              </div>
+            </>
           ) : (
             <p className="profile-section-empty">Loading your plan details…</p>
           )}
         </section>
-
-        <section className="profile-section-card profile-section-card-hero">
-          <div className="profile-section-header">
-            <div>
-              <h2>Your reading fingerprint</h2>
-              <p>
-                {stats
-                  ? `${pluralize(stats.counts.sessionCount, "session")}, ${pluralize(stats.counts.queryCount, "question")}, and ${pluralize(stats.counts.booksTouchedCount, "book")} shaped this profile.`
-                  : "We are assembling your corpus trail from sessions, citations, and books you have opened."}
-              </p>
-            </div>
-          </div>
-
-          {profileStatsLoading && !stats ? (
-            <p className="profile-section-empty">Loading your reader stats…</p>
-          ) : stats ? (
-            <>
-              <div className="profile-metric-grid">
-                {metrics.map((item) => (
-                  <ProfileMetricCard key={item.label} label={item.label} value={item.value} detail={item.detail} />
-                ))}
-              </div>
-              <div className="profile-fingerprint-grid">
-                <ProfileFacetRail label="Authors" items={stats.fingerprint.authors} />
-                <ProfileFacetRail label="Subjects" items={stats.fingerprint.subjects} />
-                <ProfileFacetRail label="Languages" items={stats.fingerprint.languages} />
-              </div>
-            </>
-          ) : (
-            <p className="profile-section-empty">Start opening books and asking grounded questions to build your stats.</p>
-          )}
-        </section>
-
-        <div className="profile-book-shelves">
-          <ProfileBookShelf
-            title="Recently touched"
-            items={stats?.books.recent ?? []}
-            emptyCopy="Recent books you open or cite will appear here."
-            onOpenWork={openWork}
-          />
-          <ProfileBookShelf
-            title="Most opened"
-            items={stats?.books.topOpened ?? []}
-            emptyCopy="Your most revisited books will show up here."
-            onOpenWork={openWork}
-          />
-          <ProfileBookShelf
-            title="Most cited"
-            items={stats?.books.topCited ?? []}
-            emptyCopy="Once answers start citing books, your anchor texts will show up here."
-            onOpenWork={openWork}
-          />
-        </div>
 
         <section className="profile-history">
           <div className="profile-section-header profile-section-header-inline">
@@ -8091,10 +8043,14 @@ export default function App() {
                 sidebarCollapsed && "size-12 justify-center p-0",
               )}
               onClick={() => {
-                openProfile(currentUser?.id ?? null);
+                if (billingOverview?.subscription.checkoutEligible) {
+                  openBillingDialog();
+                } else {
+                  openProfile(currentUser?.id ?? null);
+                }
                 setMobileNavOpen(false);
               }}
-              aria-label="Open profile"
+              aria-label={billingOverview?.subscription.checkoutEligible ? "Open upgrade dialog" : "Open profile"}
               title={displayProfileName}
             >
               <Avatar className="size-11 bg-white p-0.5">
@@ -8115,7 +8071,11 @@ export default function App() {
               {!sidebarCollapsed ? (
                 <div className="min-w-0 text-left">
                   <div className="truncate text-[1rem] font-medium text-[var(--ink)]">{displayProfileName}</div>
-                  <div className="truncate text-xs text-[var(--ink-soft)]">{hasAuthenticatedUser ? "Account" : "Guest reader"}</div>
+                  <div className="truncate text-xs text-[var(--ink-soft)]">
+                    {hasAuthenticatedUser
+                      ? (billingOverview?.subscription.checkoutEligible ? "Upgrade to Pro" : "Account")
+                      : "Guest reader"}
+                  </div>
                 </div>
               ) : null}
             </Button>
