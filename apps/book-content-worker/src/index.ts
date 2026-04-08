@@ -8,7 +8,7 @@ export interface Env {
   R2_UPLOAD_TOKEN?: string;
 }
 
-const CACHE_TTL_SECONDS = 60 * 60 * 4;
+const STATIC_CACHE_TTL_SECONDS = 60 * 60 * 24 * 365;
 
 function resolveImplementation(env: Env) {
   return getImplementationConfig(env.IMPLEMENTATION_ID);
@@ -110,7 +110,6 @@ async function serveStaticObject(
 ) {
   const cacheKey = new Request(request.url, {
     method: "GET",
-    headers: request.headers,
   });
   const edgeCache = caches as unknown as { default: Cache };
   const cached = await edgeCache.default.match(cacheKey);
@@ -121,7 +120,7 @@ async function serveStaticObject(
   const headers = new Headers();
   object.writeHttpMetadata(headers);
   headers.set("content-type", headers.get("content-type") ?? "text/html; charset=utf-8");
-  headers.set("cache-control", `public, max-age=${CACHE_TTL_SECONDS}`);
+  headers.set("cache-control", `public, max-age=${STATIC_CACHE_TTL_SECONDS}, immutable`);
   headers.set("x-alphabook-surface", surface);
   headers.set(
     "content-security-policy",

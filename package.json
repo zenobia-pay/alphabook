@@ -51,6 +51,7 @@
     "deploy:orchestrator": "npm run deploy:prod",
     "deploy:frontend": "npm run deploy -w @alphabook/frontend",
     "deploy:content": "npm run deploy -w @alphabook/book-content-worker",
+    "purge:content": "bash ops/cloudflare/bin/purge-book-content-cache.sh",
     "dev:runtime": "npm run dev -w @alphabook/runtime",
     "dev:ingest": "npm run dev -w @alphabook/ingest",
     "test:ui": "npm run test:e2e -w @alphabook/frontend"
