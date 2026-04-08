@@ -5,13 +5,12 @@ import { ChevronsLeft, ChevronsRight, Dices, Funnel, Link2, LoaderCircle, Messag
 
 import { ChatSessionSummarySchema, getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type NotificationRecord, type ProfileBookStat, type ProfileFacetStat, type ProfileQueryStat, type PublicProfileResponse, type UserProfile, type UserProfileStats, type WorkDetail, type WorkFacetCounts, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
-import { ApiError, buildSignInUrl, buildSignOutUrl, cancelRun, claimGuestProfile, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchAssistantDocumentState, fetchAssistantSessionBootstrap, fetchCurrentUser, fetchMessages, fetchNotifications, fetchProfile, fetchProfileStats, fetchRunState, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, getErrorMessage, markNotificationRead, queryAdminAnalytics, sendAnalyticsEvent, streamChat, streamRun, unfollowProfile, type PersistedRunEventRecord, type RunArtifactRecord, type RunStateRecord, type SessionRunRecord } from "./api";
+import { ApiError, buildSignInUrl, buildSignOutUrl, cancelRun, claimGuestProfile, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchAssistantDocumentState, fetchAssistantSessionBootstrap, fetchCurrentUser, fetchExploreSemanticSearch, fetchMessages, fetchNotifications, fetchProfile, fetchProfileStats, fetchRunState, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, getErrorMessage, markNotificationRead, queryAdminAnalytics, sendAnalyticsEvent, streamChat, streamRun, unfollowProfile, type PersistedRunEventRecord, type RunArtifactRecord, type RunStateRecord, type SessionRunRecord } from "./api";
 import type { AssistantSurfaceProps } from "./components/assistant-surface";
 import { Avatar, AvatarFallback, AvatarImage } from "./components/ui/avatar";
 import { Button } from "./components/ui/button";
 import { Card, CardContent } from "./components/ui/card";
 import { Skeleton } from "./components/ui/skeleton";
-import { Textarea } from "./components/ui/textarea";
 import { resolveFrontendImplementation } from "./implementation";
 import { cn } from "./lib/utils";
 
@@ -105,6 +104,7 @@ type UrlState = {
   debugEnabled: boolean;
   exploreFilters: ExploreFilterState;
   exploreRandomSeed: number | null;
+  exploreQuery: string;
 };
 
 type AdminAccessState = {
@@ -402,6 +402,7 @@ function readUrlState(): UrlState {
       debugEnabled: false,
       exploreFilters: DEFAULT_EXPLORE_FILTERS,
       exploreRandomSeed: null,
+      exploreQuery: "",
     };
   }
 
@@ -439,6 +440,7 @@ function readUrlState(): UrlState {
       bookshelf: params.get("exploreBookshelf") || DEFAULT_EXPLORE_FILTERS.bookshelf,
     },
     exploreRandomSeed: Number.isInteger(parsedExploreSeed) && parsedExploreSeed > 0 ? parsedExploreSeed : null,
+    exploreQuery: params.get("exploreQuery")?.trim() ?? "",
   };
 }
 
@@ -534,11 +536,17 @@ function writeUrlState(next: UrlState, mode: UrlWriteMode = "replace") {
     } else {
       url.searchParams.delete("exploreSeed");
     }
+    if (next.exploreQuery.trim().length > 0) {
+      url.searchParams.set("exploreQuery", next.exploreQuery.trim());
+    } else {
+      url.searchParams.delete("exploreQuery");
+    }
   } else {
     url.searchParams.delete("exploreLanguage");
     url.searchParams.delete("exploreSubject");
     url.searchParams.delete("exploreBookshelf");
     url.searchParams.delete("exploreSeed");
+    url.searchParams.delete("exploreQuery");
   }
 
   const nextUrl = `${url.pathname}${url.search}${url.hash}`;
@@ -1911,18 +1919,6 @@ function isConversationAccessIssue(message: string | null) {
     return false;
   }
   return /not authorized|do not have access|sign in/i.test(message);
-}
-
-function buildExplorePrompt(question: string, works: WorkSummary[]) {
-  const normalized = question.trim();
-  if (works.length === 0) {
-    return normalized;
-  }
-  const titles = works.map((work) => work.title).join(", ");
-  if (!normalized) {
-    return `Give me a concise overview of ${titles}.`;
-  }
-  return `${normalized}\n\nFocus on these books: ${titles}.`;
 }
 
 function generateExploreRandomSeed() {
@@ -3535,14 +3531,14 @@ export default function App() {
   const [debugEnabled, setDebugEnabled] = useState(initialUrlState.debugEnabled);
   const [AgentationComponent, setAgentationComponent] = useState<ComponentType<AgentationProps> | null>(null);
   const [AssistantSurfaceComponent, setAssistantSurfaceComponent] = useState<ComponentType<AssistantSurfaceProps> | null>(null);
-  const [exploreDraft, setExploreDraft] = useState("");
+  const [exploreDraft, setExploreDraft] = useState(initialUrlState.exploreQuery);
+  const [exploreQuery, setExploreQuery] = useState(initialUrlState.exploreQuery);
   const [feedWorks, setFeedWorks] = useState<WorkSummary[]>([]);
   const [feedNextOffset, setFeedNextOffset] = useState<number | null>(0);
   const [feedTotalCount, setFeedTotalCount] = useState<number | null>(null);
   const [feedFacets, setFeedFacets] = useState<WorkFacetCounts>(EMPTY_WORK_FACETS);
   const [feedLoading, setFeedLoading] = useState(false);
   const [feedInitialLoadState, setFeedInitialLoadState] = useState<"idle" | "loading" | "ready" | "error">("idle");
-  const [selectedWorkIds, setSelectedWorkIds] = useState<string[]>([]);
   const [exploreFilterOpen, setExploreFilterOpen] = useState(false);
   const [exploreAppliedFilters, setExploreAppliedFilters] = useState<ExploreFilterState>(initialUrlState.exploreFilters);
   const [exploreDraftFilters, setExploreDraftFilters] = useState<ExploreFilterState>(initialUrlState.exploreFilters);
@@ -3650,10 +3646,6 @@ export default function App() {
   const activeSession = useMemo(
     () => sessions.find((session) => session.id === selectedSessionId) ?? null,
     [selectedSessionId, sessions],
-  );
-  const selectedWorks = useMemo(
-    () => feedWorks.filter((work) => selectedWorkIds.includes(work.id)),
-    [feedWorks, selectedWorkIds],
   );
   const hasActiveExploreFilters = (
     exploreAppliedFilters.language !== "all"
@@ -3960,6 +3952,8 @@ export default function App() {
       setExploreAppliedFilters(next.exploreFilters);
       setExploreDraftFilters(next.exploreFilters);
       setExploreRandomSeed(next.exploreRandomSeed);
+      setExploreQuery(next.exploreQuery);
+      setExploreDraft(next.exploreQuery);
       setMobileNavOpen(false);
     };
 
@@ -3986,9 +3980,10 @@ export default function App() {
       debugEnabled,
       exploreFilters: exploreAppliedFilters,
       exploreRandomSeed,
+      exploreQuery,
     }, pendingUrlWriteModeRef.current);
     pendingUrlWriteModeRef.current = "replace";
-  }, [activeView, selectedSessionId, activeWorkId, activeReaderPath, activeChunkId, activePassageId, activeProfileUserId, selectedAdminRunId, adminSection, debugEnabled, exploreAppliedFilters, exploreRandomSeed]);
+  }, [activeView, selectedSessionId, activeWorkId, activeReaderPath, activeChunkId, activePassageId, activeProfileUserId, selectedAdminRunId, adminSection, debugEnabled, exploreAppliedFilters, exploreRandomSeed, exploreQuery]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -4158,24 +4153,37 @@ export default function App() {
         setFeedNextOffset(0);
       }
       setFeedLoading(true);
-      const next = await fetchWorks({
-        offset,
-        limit: EXPLORE_PAGE_SIZE,
-        language: exploreAppliedFilters.language === "all" ? null : exploreAppliedFilters.language,
-        subject: exploreAppliedFilters.subject === "all" ? null : exploreAppliedFilters.subject,
-        bookshelf: exploreAppliedFilters.bookshelf === "all" ? null : exploreAppliedFilters.bookshelf,
-        randomSeed: exploreRandomSeed,
-      });
-      setFeedWorks((current) => {
-        if (reset) {
-          return next.works;
-        }
-        const seen = new Set(current.map((work) => work.id));
-        return [...current, ...next.works.filter((work) => !seen.has(work.id))];
-      });
-      setFeedNextOffset(next.nextOffset);
-      setFeedTotalCount(next.totalCount);
-      setFeedFacets(next.facets);
+      if (exploreQuery.trim().length > 0) {
+        const next = await fetchExploreSemanticSearch({
+          query: exploreQuery.trim(),
+          limit: EXPLORE_PAGE_SIZE,
+          language: exploreAppliedFilters.language === "all" ? null : exploreAppliedFilters.language,
+          subject: exploreAppliedFilters.subject === "all" ? null : exploreAppliedFilters.subject,
+          bookshelf: exploreAppliedFilters.bookshelf === "all" ? null : exploreAppliedFilters.bookshelf,
+        });
+        setFeedWorks(next.works);
+        setFeedNextOffset(null);
+        setFeedTotalCount(next.works.length);
+      } else {
+        const next = await fetchWorks({
+          offset,
+          limit: EXPLORE_PAGE_SIZE,
+          language: exploreAppliedFilters.language === "all" ? null : exploreAppliedFilters.language,
+          subject: exploreAppliedFilters.subject === "all" ? null : exploreAppliedFilters.subject,
+          bookshelf: exploreAppliedFilters.bookshelf === "all" ? null : exploreAppliedFilters.bookshelf,
+          randomSeed: exploreRandomSeed,
+        });
+        setFeedWorks((current) => {
+          if (reset) {
+            return next.works;
+          }
+          const seen = new Set(current.map((work) => work.id));
+          return [...current, ...next.works.filter((work) => !seen.has(work.id))];
+        });
+        setFeedNextOffset(next.nextOffset);
+        setFeedTotalCount(next.totalCount);
+        setFeedFacets(next.facets);
+      }
       if (reset) {
         setFeedInitialLoadState("ready");
       }
@@ -4194,7 +4202,7 @@ export default function App() {
       return;
     }
     void loadExploreWorks(true);
-  }, [activeView, exploreAppliedFilters, exploreRandomSeed]);
+  }, [activeView, exploreAppliedFilters, exploreRandomSeed, exploreQuery]);
 
   useEffect(() => {
     setExploreDraftFilters(exploreAppliedFilters);
@@ -5731,7 +5739,7 @@ export default function App() {
   }
 
   async function loadMoreWorks() {
-    if (feedLoading || feedNextOffset === null) {
+    if (feedLoading || feedNextOffset === null || exploreQuery.trim().length > 0) {
       return;
     }
     await loadExploreWorks(false);
@@ -5789,21 +5797,10 @@ export default function App() {
     setActiveView("book");
   }
 
-  function toggleSelectedWork(workId: string) {
-    setSelectedWorkIds((current) => {
-      if (current.includes(workId)) {
-        return current.filter((id) => id !== workId);
-      }
-      track("book_selected_for_ask", {
-        workId,
-        source: "explore",
-      });
-      return [...current, workId];
-    });
-  }
-
   function rerollExploreFeed() {
     pendingUrlWriteModeRef.current = "push";
+    setExploreQuery("");
+    setExploreDraft("");
     setExploreRandomSeed(generateExploreRandomSeed());
   }
 
@@ -5815,13 +5812,13 @@ export default function App() {
 
   function submitExplorePrompt(event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault();
-    const finalPrompt = buildExplorePrompt(exploreDraft, selectedWorks);
-    if (!finalPrompt) {
+    const nextQuery = exploreDraft.trim();
+    if (!nextQuery) {
       return;
     }
-    setExploreDraft("");
-    setSelectedWorkIds([]);
-    queuePrompt(finalPrompt);
+    pendingUrlWriteModeRef.current = "push";
+    setExploreRandomSeed(null);
+    setExploreQuery(nextQuery);
   }
 
   function handleExploreScroll(event: UIEvent<HTMLDivElement>) {
@@ -5882,11 +5879,6 @@ export default function App() {
     setActiveProfileUserId(null);
     setPendingCitation(null);
     setActiveView("assistant");
-  }
-
-  function queuePrompt(prompt: string) {
-    startNewChat();
-    void sendPrompt(prompt, { sessionIdOverride: null });
   }
 
   function openWork(workId: string) {
@@ -6343,55 +6335,41 @@ export default function App() {
             </div>
 
             <div className="explore-composer-layout">
-              <Card className="explore-composer-root">
-                <CardContent className="p-0">
-                  {selectedWorks.length > 0 ? (
-                    <div className="explore-selection-row">
-                      {selectedWorks.map((work) => (
-                        <Button
-                          key={work.id}
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          className="explore-selection-chip"
-                          onClick={() => toggleSelectedWork(work.id)}
-                        >
-                          {work.title}
-                        </Button>
-                      ))}
-                    </div>
-                  ) : null}
-
-                  <div className="explore-composer-surface">
-                    <Textarea
-                      className="explore-composer-input"
-                      placeholder={EXPLORE_PLACEHOLDER}
-                      value={exploreDraft}
-                      onChange={(event) => setExploreDraft(event.currentTarget.value)}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter" && !event.shiftKey) {
-                          event.preventDefault();
-                          submitExplorePrompt();
-                        }
-                      }}
-                    />
-
-                    <div className="explore-composer-footer">
-                      <span className="explore-composer-spacer" aria-hidden="true">+</span>
-                      <Button
-                        type="submit"
-                        variant="default"
-                        size="icon"
-                        className="explore-send"
-                        disabled={!exploreDraft.trim() && selectedWorks.length === 0}
-                        aria-label="Send prompt"
-                      >
-                        <ArrowUpIcon />
-                      </Button>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
+              <label className="explore-search-label" htmlFor="explore-semantic-search">Semantic search</label>
+              <div className="explore-search-row">
+                <input
+                  id="explore-semantic-search"
+                  className="explore-search-input"
+                  type="text"
+                  placeholder={EXPLORE_PLACEHOLDER}
+                  value={exploreDraft}
+                  onChange={(event) => setExploreDraft(event.currentTarget.value)}
+                />
+                <Button
+                  type="submit"
+                  variant="default"
+                  className="explore-search-submit"
+                  disabled={!exploreDraft.trim()}
+                >
+                  Search
+                </Button>
+              </div>
+              {exploreQuery.trim().length > 0 ? (
+                <div className="explore-search-meta">
+                  <span>Showing semantic matches for “{exploreQuery.trim()}”</span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={() => {
+                      pendingUrlWriteModeRef.current = "push";
+                      setExploreQuery("");
+                      setExploreDraft("");
+                    }}
+                  >
+                    Clear search
+                  </Button>
+                </div>
+              ) : null}
             </div>
 
             {isFeedRefreshing ? (
@@ -6405,10 +6383,9 @@ export default function App() {
 
         <section className="work-feed" aria-label="Corpus feed" aria-busy={feedLoading}>
           {feedWorks.map((work) => {
-            const selected = selectedWorkIds.includes(work.id);
             const primaryAuthor = work.authors[0] ?? null;
             return (
-              <article key={work.id} className={`work-feed-card ${selected ? "is-selected" : ""}`}>
+              <article key={work.id} className="work-feed-card">
                 <button
                   type="button"
                   className="work-feed-open"

@@ -133,7 +133,7 @@ function resolveVectorIndex(env: LinuxEnv) {
       env.QDRANT_QUERY_TIMEOUT_MS ? Number(env.QDRANT_QUERY_TIMEOUT_MS) : 10_000,
     );
   }
-  return null;
+  return undefined;
 }
 
 export function buildLinuxAppDeps(env: LinuxEnv, options: { boss?: PgBoss } = {}): AppDeps {
@@ -223,6 +223,7 @@ export function buildLinuxAppDeps(env: LinuxEnv, options: { boss?: PgBoss } = {}
     planner,
     semanticSearch,
     embedder,
+    vectorIndex,
     synthesizer,
     blobStore,
     runtimeGateway,

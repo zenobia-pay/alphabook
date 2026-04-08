@@ -2921,14 +2921,15 @@ test("agent API keys can launch and poll dedicated research runs", async () => {
     assert.match(kickoffPayload.poll_url, /\/v1\/research\/runs\//);
     assert.match(kickoffPayload.logs_url, /\/v1\/research\/runs\/.+\/logs$/);
 
-    let resultPayload: {
+    type ResearchRunResultPayload = {
       status: string;
       result: {
         answer: string | null;
         citations: Array<{ workId: string; readerPath?: string }>;
         hits: Array<{ hitId: string; readerUrl?: string }>;
       } | null;
-    } | null = null;
+    };
+    let resultPayload: ResearchRunResultPayload | null = null;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const resultResponse = await app.request(`/v1/research/runs/${kickoffPayload.runId}`, {
         headers: {
@@ -2936,19 +2937,20 @@ test("agent API keys can launch and poll dedicated research runs", async () => {
         },
       });
       assert.equal(resultResponse.status, 200);
-      resultPayload = await resultResponse.json() as typeof resultPayload;
+      resultPayload = await resultResponse.json() as ResearchRunResultPayload;
       if (resultPayload?.status === "completed") {
         break;
       }
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
     assert.ok(resultPayload);
-    assert.equal(resultPayload.status, "completed");
-    assert.equal(resultPayload.result?.answer, "Jane Eyre treats grief as intimate and formative.");
-    assert.equal(resultPayload.result?.citations.length, 1);
-    assert.equal(resultPayload.result?.citations[0]?.workId, "work-jane-eyre");
-    assert.equal(resultPayload.result?.hits[0]?.hitId, "hit-0001");
-    assert.match(resultPayload.result?.hits[0]?.readerUrl ?? "", /^https:\/\/alpha-book\.org\//);
+    const resultPayloadFinal = resultPayload;
+    assert.equal(resultPayloadFinal.status, "completed");
+    assert.equal(resultPayloadFinal.result?.answer, "Jane Eyre treats grief as intimate and formative.");
+    assert.equal(resultPayloadFinal.result?.citations.length, 1);
+    assert.equal(resultPayloadFinal.result?.citations[0]?.workId, "work-jane-eyre");
+    assert.equal(resultPayloadFinal.result?.hits[0]?.hitId, "hit-0001");
+    assert.match(resultPayloadFinal.result?.hits[0]?.readerUrl ?? "", /^https:\/\/alpha-book\.org\//);
 
     const logsResponse = await app.request(`/v1/research/runs/${kickoffPayload.runId}/logs`, {
       headers: {

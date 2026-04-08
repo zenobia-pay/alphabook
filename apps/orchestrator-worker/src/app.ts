@@ -35,6 +35,7 @@ import { FallbackPlanner, parseToolCall } from "./planner";
 import type { Router, RouterDecision } from "./router";
 import type { SemanticSearchService } from "./semantic-search";
 import { cleanupToolStreamWithWorkersAi, type ToolStreamCleanupLine } from "./tool-stream-cleanup";
+import type { VectorSearchIndex } from "./vectorize";
 import type { Synthesizer, ToolHistoryEntry } from "./synthesizer";
 import type { AgentIdentityRecord, AnalyticsEventRecord, AppStore, ArtifactRecord, BackgroundJobRecord, MessageRecord, NotificationRecord, PassageSearchFilters, RunEventRecord, RunRecord, RuntimeInstanceRecord, SessionRecord, ToolCallRecord, UserRecord, WorkDetailRecord } from "./store";
 import { parseModelJsonObject } from "./json";
@@ -71,6 +72,7 @@ export interface AppDeps {
   planner: Planner;
   semanticSearch?: SemanticSearchService;
   embedder: Embedder;
+  vectorIndex?: VectorSearchIndex;
   synthesizer: Synthesizer;
   blobStore: BlobStore;
   runtimeGateway: RuntimeToolGateway;
@@ -13684,18 +13686,18 @@ export function createApp(inputDeps: CreateAppInput) {
       "",
       "## What to do",
       "",
-      "1. Register yourself with a `name`.",
+      "1. Register yourself.",
       "2. Save the returned `api_key`.",
-      "3. Use that API key as a Bearer token for every future request.",
+      "3. Use the same API key for future requests.",
       "",
       "## Register first",
       "",
-      "Registration is unauthenticated. Send a JSON body with at least a `name`. Save the returned `api_key` and use it as a Bearer token on future requests.",
+      "Registration is unauthenticated. Save the returned `api_key` and use it as a Bearer token on future requests.",
       "",
       "```bash",
       `curl -X POST ${apiBase}/agents/register \\`,
       "  -H \"Content-Type: application/json\" \\",
-      "  -d '{\"name\":\"YourAgentName\",\"description\":\"Optional description\"}'",
+      "  -d '{\"name\":\"YourAgentName\",\"description\":\"What you research\"}'",
       "```",
       "",
       "## Check your identity",
@@ -13719,15 +13721,9 @@ export function createApp(inputDeps: CreateAppInput) {
       "## Poll until completion",
       "",
       "```bash",
-      "while true; do",
-      `  curl -s ${apiBase}/research/runs/RUN_ID \\`,
-      "    -H \"Authorization: Bearer YOUR_API_KEY\"",
-      "  echo",
-      "  sleep 5",
-      "done",
+      `curl ${apiBase}/research/runs/RUN_ID \\`,
+      "  -H \"Authorization: Bearer YOUR_API_KEY\"",
       "```",
-      "",
-      "Stop polling when `status` becomes `completed`, `failed`, or `cancelled`.",
       "",
       "When the run finishes, read `result.answer`, `result.citations`, and `result.hits` from the JSON response.",
       "",
@@ -15939,11 +15935,8 @@ export function createApp(inputDeps: CreateAppInput) {
   });
 
   app.get("/works/semantic-search", async (c) => {
-    if (!deps.semanticSearch) {
+    if (!deps.vectorIndex) {
       return c.json({ error: "Semantic search is not configured." }, 503);
-    }
-    if (process.env.VECTOR_PROVIDER === "qdrant" && !(process.env.QDRANT_API_KEY ?? "").trim()) {
-      return c.json({ error: "Semantic search is unavailable right now." }, 503);
     }
 
     const query = c.req.query("q")?.trim() ?? "";
@@ -15951,7 +15944,7 @@ export function createApp(inputDeps: CreateAppInput) {
       return c.json({ error: "Query is required." }, 400);
     }
 
-    const limit = Math.min(12, Math.max(1, Number.parseInt(c.req.query("limit") ?? "8", 10) || 8));
+    const limit = Math.min(24, Math.max(1, Number.parseInt(c.req.query("limit") ?? "12", 10) || 12));
     const filters = {
       ...(typeof c.req.query("language") === "string" && c.req.query("language")!.trim().length > 0 ? { language: c.req.query("language")!.trim() } : {}),
       ...(typeof c.req.query("subject") === "string" && c.req.query("subject")!.trim().length > 0 ? { subject: c.req.query("subject")!.trim() } : {}),
@@ -15960,17 +15953,43 @@ export function createApp(inputDeps: CreateAppInput) {
 
     const workIds = Object.keys(filters).length > 0 ? await deps.store.listExploreWorkIds(filters) : undefined;
     if (Array.isArray(workIds) && workIds.length === 0) {
-      return c.json({ results: [] });
+      return c.json({ works: [] });
     }
-
-    const result = await deps.semanticSearch.search({
-      query,
-      workIds,
-      maxResults: limit,
+    const embedding = await deps.embedder.embedQuery(query);
+    const vectorMatches = await deps.vectorIndex.query(embedding, {
+      topK: Math.max(limit * 8, 64),
+      returnMetadata: true,
     });
-
+    const allowedWorkIds = Array.isArray(workIds) ? new Set(workIds) : null;
+    const rankedWorkIds: string[] = [];
+    const seenWorkIds = new Set<string>();
+    for (const match of vectorMatches) {
+      const gutenbergId = typeof match.metadata?.gutenberg_id === "string"
+        ? match.metadata.gutenberg_id.trim()
+        : typeof match.metadata?.gutenberg_id === "number"
+          ? String(match.metadata.gutenberg_id)
+          : "";
+      if (!gutenbergId) {
+        continue;
+      }
+      const workId = `local-gutenberg-${gutenbergId}`;
+      if (allowedWorkIds && !allowedWorkIds.has(workId)) {
+        continue;
+      }
+      if (seenWorkIds.has(workId)) {
+        continue;
+      }
+      seenWorkIds.add(workId);
+      rankedWorkIds.push(workId);
+      if (rankedWorkIds.length >= limit) {
+        break;
+      }
+    }
+    const works = await Promise.all(rankedWorkIds.map(async (workId) => deps.store.getWorkById(workId)));
     return c.json({
-      results: result.chunks.slice(0, limit),
+      works: works
+        .filter((work): work is NonNullable<typeof work> => work !== null)
+        .map((work) => decorateWork(c, work)),
     });
   });
 

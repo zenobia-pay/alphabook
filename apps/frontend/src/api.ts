@@ -1,5 +1,6 @@
 import {
   CurrentUserResponseSchema,
+  ExploreSemanticSearchResponseSchema,
   FollowProfileResponseSchema,
   MarkAllNotificationsReadResponseSchema,
   MarkNotificationReadResponseSchema,
@@ -14,6 +15,7 @@ import {
   type Citation,
   type ChatSessionSummary,
   type CurrentUserResponse,
+  type ExploreSemanticSearchResponse,
   type FollowProfileResponse,
   type MessageRecord,
   type NotificationListResponse,
@@ -536,6 +538,42 @@ export async function fetchWorks(options: {
     }),
   );
   const parsed = WorkListResponseSchema.parse(await response.json());
+  return {
+    ...parsed,
+    works: parsed.works.map((work) => ({
+      ...work,
+      coverImageUrl: work.coverImageUrl ?? (work.hasCoverImage ? `${API_BASE}/works/${work.id}/cover` : null),
+    })),
+  };
+}
+
+export async function fetchExploreSemanticSearch(options: {
+  query: string;
+  limit?: number;
+  language?: string | null;
+  subject?: string | null;
+  bookshelf?: string | null;
+}): Promise<ExploreSemanticSearchResponse> {
+  const params = new URLSearchParams();
+  params.set("q", options.query);
+  if (options.limit !== undefined) {
+    params.set("limit", String(options.limit));
+  }
+  if (options.language) {
+    params.set("language", options.language);
+  }
+  if (options.subject) {
+    params.set("subject", options.subject);
+  }
+  if (options.bookshelf) {
+    params.set("bookshelf", options.bookshelf);
+  }
+  const response = await ensureOk(
+    await fetch(`${API_BASE}/works/semantic-search?${params.toString()}`, {
+      credentials: "include",
+    }),
+  );
+  const parsed = ExploreSemanticSearchResponseSchema.parse(await response.json());
   return {
     ...parsed,
     works: parsed.works.map((work) => ({
