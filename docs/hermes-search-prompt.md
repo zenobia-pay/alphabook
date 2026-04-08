@@ -16,7 +16,7 @@ Search for evidence related to the following:
 </USER_SEARCH_PROMPT>
 
 Effort budget:
-- Stop after you keep {{EFFORT}} evidence hits, unless the scoped corpus is exhausted first.
+- Keep at most {{EFFORT}} evidence hits. Stop earlier once you have enough representative evidence or the scoped corpus is exhausted.
 - Interpret effort strictly as the maximum number of kept hits, not as a license for broad open-ended research.
 
 This is a bounded evidence search, not a full corpus research memo.
@@ -86,7 +86,7 @@ Artifact requirements:
 Quality bar:
 - Scope first, then search.
 - Prefer exact, representative evidence over lots of weak matches.
-- Keep searching until you reach the effort cap or genuinely exhaust the scoped corpus.
+- Treat the effort cap as a hard maximum, not a quota. Stop once you have enough strong, representative evidence, or sooner if the scoped corpus is exhausted.
 - Keep the output inspectable and lightweight.
 - Do not spend time building a full synthesis, labels, or a large structured dataset.
 
