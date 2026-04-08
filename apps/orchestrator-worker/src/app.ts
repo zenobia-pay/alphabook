@@ -6069,10 +6069,20 @@ async function trackHermesRunBillingEvent(
   job: HermesJobSummary,
   result: { status: "completed" | "failed" | "cancelled" },
 ) {
+  const openaiUsage = job.openai && typeof job.openai === "object"
+    ? job.openai as Record<string, unknown>
+    : null;
+  const promptTokens = Number(openaiUsage?.prompt_tokens ?? 0);
+  const completionTokens = Number(openaiUsage?.completion_tokens ?? 0);
+  const totalTokens = Number(openaiUsage?.total_tokens ?? promptTokens + completionTokens);
+  const cachedInputTokens = Number(openaiUsage?.cached_input_tokens ?? 0);
+  const proxyRequestCount = Number(openaiUsage?.request_count ?? 0);
+  const proxyCostUsd = Number(openaiUsage?.estimated_total_cost_usd ?? Number.NaN);
   const estimatedCostUsd = typeof job.cost?.estimatedCostUsd === "number" && Number.isFinite(job.cost.estimatedCostUsd)
     ? Math.max(0, job.cost.estimatedCostUsd)
     : null;
-  if (estimatedCostUsd == null) {
+  const resolvedCostUsd = Number.isFinite(proxyCostUsd) ? Math.max(0, proxyCostUsd) : estimatedCostUsd;
+  if (resolvedCostUsd == null) {
     return;
   }
   await deps.billing.track(
@@ -6084,14 +6094,14 @@ async function trackHermesRunBillingEvent(
     },
     {
       eventId: `background-run-cost:${job.id}`,
-      provider: "hermes",
+      provider: "openai-proxy",
       model: job.model ?? "unknown",
       operation: "background_run_cost",
-      costUsd: estimatedCostUsd,
-      totalTokens: 0,
-      inputTokens: 0,
-      outputTokens: 0,
-      cachedInputTokens: 0,
+      costUsd: resolvedCostUsd,
+      totalTokens: Number.isFinite(totalTokens) ? Math.max(0, totalTokens) : 0,
+      inputTokens: Number.isFinite(promptTokens) ? Math.max(0, promptTokens) : 0,
+      outputTokens: Number.isFinite(completionTokens) ? Math.max(0, completionTokens) : 0,
+      cachedInputTokens: Number.isFinite(cachedInputTokens) ? Math.max(0, cachedInputTokens) : 0,
       metadata: {
         externalJobId: job.id,
         state: job.state,
@@ -6103,6 +6113,8 @@ async function trackHermesRunBillingEvent(
         wrapperRunDir: job.wrapperRunDir ?? job.runDir ?? null,
         archivePrefix: job.archivePrefix ?? null,
         estimatedLlmCalls: job.cost?.llmCalls ?? null,
+        proxyRequestCount: Number.isFinite(proxyRequestCount) ? Math.max(0, proxyRequestCount) : 0,
+        costSource: Number.isFinite(proxyCostUsd) ? "openai_proxy_aggregate" : "job_estimate",
       },
       createdAt: job.finishedAt ?? job.startedAt ?? undefined,
     },
@@ -15998,6 +16010,7 @@ export function createApp(inputDeps: CreateAppInput) {
     }
 
     const limit = Math.min(24, Math.max(1, Number.parseInt(c.req.query("limit") ?? "12", 10) || 12));
+    const thinking = c.req.query("thinking") === "true" || c.req.query("thinking") === "1";
     const filters = {
       ...(typeof c.req.query("language") === "string" && c.req.query("language")!.trim().length > 0 ? { language: c.req.query("language")!.trim() } : {}),
       ...(typeof c.req.query("subject") === "string" && c.req.query("subject")!.trim().length > 0 ? { subject: c.req.query("subject")!.trim() } : {}),
@@ -16006,43 +16019,65 @@ export function createApp(inputDeps: CreateAppInput) {
 
     const workIds = Object.keys(filters).length > 0 ? await deps.store.listExploreWorkIds(filters) : undefined;
     if (Array.isArray(workIds) && workIds.length === 0) {
-      return c.json({ works: [] });
+      return c.json({ chunks: [], thinking });
     }
+    const allowedWorkIds = Array.isArray(workIds) ? new Set(workIds) : null;
+    if (thinking) {
+      if (!deps.semanticSearch) {
+        return c.json({ error: "Thinking mode is not configured." }, 503);
+      }
+      const result = await deps.semanticSearch.search({
+        query,
+        workIds,
+        maxResults: limit,
+        billingContext: {
+          source: "semantic_search",
+        },
+      });
+      const rankedChunks = (Array.isArray(result.rankedChunks) && result.rankedChunks.length > 0 ? result.rankedChunks : result.chunks)
+        .filter((chunk) => !allowedWorkIds || allowedWorkIds.has(chunk.workId))
+        .slice(0, limit);
+      return c.json({
+        chunks: rankedChunks,
+        thinking: true,
+      });
+    }
+
     const embedding = await deps.embedder.embedQuery(query);
     const vectorMatches = await deps.vectorIndex.query(embedding, {
       topK: Math.max(limit * 8, 64),
       returnMetadata: true,
     });
-    const allowedWorkIds = Array.isArray(workIds) ? new Set(workIds) : null;
-    const rankedWorkIds: string[] = [];
-    const seenWorkIds = new Set<string>();
+    const chunkIds = vectorMatches
+      .map((match) => (typeof match.id === "string" ? match.id.trim() : ""))
+      .filter((id): id is string => id.length > 0);
+    const chunks = await deps.store.getChunksByIds(chunkIds);
+    const chunkById = new Map(chunks.map((chunk) => [chunk.id, chunk]));
+    const rankedChunks = [];
+    const seenChunkIds = new Set<string>();
     for (const match of vectorMatches) {
-      const gutenbergId = typeof match.metadata?.gutenberg_id === "string"
-        ? match.metadata.gutenberg_id.trim()
-        : typeof match.metadata?.gutenberg_id === "number"
-          ? String(match.metadata.gutenberg_id)
-          : "";
-      if (!gutenbergId) {
+      const chunk = chunkById.get(match.id);
+      if (!chunk) {
         continue;
       }
-      const workId = `local-gutenberg-${gutenbergId}`;
-      if (allowedWorkIds && !allowedWorkIds.has(workId)) {
+      if (allowedWorkIds && !allowedWorkIds.has(chunk.workId)) {
         continue;
       }
-      if (seenWorkIds.has(workId)) {
+      if (seenChunkIds.has(chunk.id)) {
         continue;
       }
-      seenWorkIds.add(workId);
-      rankedWorkIds.push(workId);
-      if (rankedWorkIds.length >= limit) {
+      seenChunkIds.add(chunk.id);
+      rankedChunks.push({
+        ...chunk,
+        score: match.score,
+      });
+      if (rankedChunks.length >= limit) {
         break;
       }
     }
-    const works = await Promise.all(rankedWorkIds.map(async (workId) => deps.store.getWorkById(workId)));
     return c.json({
-      works: works
-        .filter((work): work is NonNullable<typeof work> => work !== null)
-        .map((work) => decorateWork(c, work)),
+      chunks: rankedChunks,
+      thinking: false,
     });
   });
 

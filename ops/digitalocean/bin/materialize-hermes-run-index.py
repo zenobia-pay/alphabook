@@ -108,7 +108,7 @@ def collect_session_info(run_dir: Path) -> dict[str, Any]:
     return payload
 
 
-def collect_openai_requests(run_dir: Path, job_id: str) -> dict[str, Any]:
+def collect_openai_requests(run_dir: Path, job_ids: list[str]) -> dict[str, Any]:
     proxy_root = Path("/srv/alphabook/logs/openai-proxy")
     requests_index_path = proxy_root / "requests.jsonl"
     output_index_path = run_dir / "openai-requests.jsonl"
@@ -116,6 +116,7 @@ def collect_openai_requests(run_dir: Path, job_id: str) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     matched_records: list[dict[str, Any]] = []
+    job_id_set = {value for value in job_ids if value}
     if requests_index_path.exists():
         for line in requests_index_path.read_text().splitlines():
             line = line.strip()
@@ -125,7 +126,7 @@ def collect_openai_requests(run_dir: Path, job_id: str) -> dict[str, Any]:
                 record = json.loads(line)
             except Exception:
                 continue
-            if record.get("proxyRunId") != job_id:
+            if record.get("proxyRunId") not in job_id_set:
                 continue
             matched_records.append(record)
 
@@ -136,6 +137,10 @@ def collect_openai_requests(run_dir: Path, job_id: str) -> dict[str, Any]:
     copied_files = []
     total_cost = 0.0
     total_cost_known = False
+    prompt_tokens = 0
+    completion_tokens = 0
+    total_tokens = 0
+    cached_input_tokens = 0
     for record in matched_records:
         for key in ("requestFile", "responseFile"):
             source = record.get(key)
@@ -150,6 +155,31 @@ def collect_openai_requests(run_dir: Path, job_id: str) -> dict[str, Any]:
         if record.get("estimatedCostUsd") is not None:
             total_cost += float(record["estimatedCostUsd"])
             total_cost_known = True
+        usage = record.get("usage")
+        if isinstance(usage, dict):
+            prompt = usage.get("prompt_tokens", usage.get("input_tokens", 0))
+            completion = usage.get("completion_tokens", usage.get("output_tokens", 0))
+            total = usage.get("total_tokens", None)
+            prompt_details = usage.get("prompt_tokens_details")
+            cached = 0
+            if isinstance(prompt_details, dict):
+                cached = prompt_details.get("cached_tokens", 0)
+            try:
+                prompt_tokens += int(prompt or 0)
+            except Exception:
+                pass
+            try:
+                completion_tokens += int(completion or 0)
+            except Exception:
+                pass
+            try:
+                cached_input_tokens += int(cached or 0)
+            except Exception:
+                pass
+            try:
+                total_tokens += int(total if total is not None else (int(prompt or 0) + int(completion or 0)))
+            except Exception:
+                pass
 
     return {
         "proxy_root": str(proxy_root),
@@ -157,6 +187,10 @@ def collect_openai_requests(run_dir: Path, job_id: str) -> dict[str, Any]:
         "request_count": len(matched_records),
         "request_ids": [record["requestId"] for record in matched_records],
         "copied_files": copied_files,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+        "cached_input_tokens": cached_input_tokens,
         "estimated_total_cost_usd": round(total_cost, 6) if total_cost_known else None,
     }
 
@@ -188,7 +222,7 @@ def main() -> None:
     inner_status = read_json(inner_run_dir / "status.json") if inner_run_dir else None
 
     session_info = collect_session_info(run_dir)
-    openai_info = collect_openai_requests(run_dir, job_id)
+    openai_info = collect_openai_requests(run_dir, [job_id, f"{job_id}-synthesis"])
     canonical_hermes_session_id = session_info.get("primary_session_id")
     archive_prefix = status.get("archive_prefix") if isinstance(status.get("archive_prefix"), str) else summary.get("archive_prefix")
     bridge_payload = {
