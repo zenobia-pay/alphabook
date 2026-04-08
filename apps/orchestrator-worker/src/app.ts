@@ -11044,6 +11044,7 @@ export async function runOrchestrator(
     return persistedToolCalls.some((toolCall) => toolCall.toolName === toolName);
   };
   let runFinalized = false;
+  let runCompletionPromise: Promise<void> | null = null;
   const forwardPersistedToolEvents = async (
     afterSequence: number,
     toolCallId: string,
@@ -11286,36 +11287,50 @@ export async function runOrchestrator(
     if (runFinalized) {
       return;
     }
-    await synthesizeAnswer(
-      deps,
-      {
-        request,
-        userId: activeSession.userId,
-        sessionId: activeSession.id,
+    if (runCompletionPromise) {
+      await runCompletionPromise;
+      return;
+    }
+    runCompletionPromise = (async () => {
+      await synthesizeAnswer(
+        deps,
+        {
+          request,
+          userId: activeSession.userId,
+          sessionId: activeSession.id,
+          runId: run.id,
+          userMessage: input.message,
+          conversationHistory,
+          plannerDraft: completedBriefing.answer,
+          plannerCitations: completedBriefing.citations,
+          toolHistory,
+          auditLog: recordRawLog,
+        },
+        send,
+      );
+      runFinalized = true;
+      await finalizeRunState("completed");
+      await send("run.completed", {
         runId: run.id,
-        userMessage: input.message,
-        conversationHistory,
-        plannerDraft: completedBriefing.answer,
-        plannerCitations: completedBriefing.citations,
-        toolHistory,
-        auditLog: recordRawLog,
-      },
-      send,
-    );
-    runFinalized = true;
-    await finalizeRunState("completed");
-    await send("run.completed", {
-      runId: run.id,
-      sessionId: activeSession.id,
-      status: "completed",
-      completionMode,
-    });
-    recordRawLog("run.completed", {
-      runId: run.id,
-      sessionId: activeSession.id,
-      status: "completed",
-      completionMode,
-    });
+        sessionId: activeSession.id,
+        status: "completed",
+        completionMode,
+      });
+      recordRawLog("run.completed", {
+        runId: run.id,
+        sessionId: activeSession.id,
+        status: "completed",
+        completionMode,
+      });
+    })();
+    try {
+      await runCompletionPromise;
+    } catch (error) {
+      if (!runFinalized) {
+        runCompletionPromise = null;
+      }
+      throw error;
+    }
   };
 
   const harvestPendingWorkspace = async (force = false) => {
