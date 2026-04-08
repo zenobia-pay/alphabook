@@ -7101,18 +7101,6 @@ export default function App() {
           </div>
           {billing ? (
             <>
-              <div className="profile-plan-grid">
-                <article className={cn("profile-plan-card", billing.subscription.tier === "free" && "is-current")}>
-                  <span>Free Tier</span>
-                  <strong>Free usage</strong>
-                  <p>{formatCompactCreditAmount(FREE_TIER_MONTHLY_CREDITS)} included each month.</p>
-                </article>
-                <article className={cn("profile-plan-card profile-plan-card-pro", billing.subscription.tier === "studio" && "is-current")}>
-                  <span>Pro Tier</span>
-                  <strong>$500 / month</strong>
-                  <p>{formatCompactCreditAmount(PRO_TIER_MONTHLY_CREDITS)} for heavier usage and longer sessions.</p>
-                </article>
-              </div>
               <div className="profile-metric-grid">
                 <ProfileMetricCard
                   label="Subscription"
