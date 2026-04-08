@@ -349,8 +349,6 @@ Required artifacts for this run:
 - {run_dir / "run.log"}
 - {run_dir / "experiment-plan.md"}
 - {run_dir / "results.json"}
-- {run_dir / "final-answer.md"}
-- {run_dir / "final-answer.json"}
 - At least one evidence artifact:
   - {run_dir / "evidence" / "index.json"}
   - {run_dir / "dataset.jsonl"}
@@ -366,17 +364,6 @@ Artifact requirements:
 - results.json:
   - valid JSON object
   - include question, method, findings, and artifacts
-- final-answer.md:
-  - direct user-facing answer
-  - readable prose, not a lab notebook
-  - include representative examples and citations
-- final-answer.json:
-  - valid JSON object with keys:
-    - user_prompt
-    - answer
-    - method
-    - findings
-    - citations
 - evidence/index.json if present:
   - valid JSON list or object describing the kept evidence used in the answer
 
@@ -415,6 +402,7 @@ PY
 
 ROOT_DIR="${ROOT_DIR:-/srv/alphabook/repo}"
 VALIDATOR="$ROOT_DIR/ops/digitalocean/bin/validate-design-experiment.py"
+SYNTHESIS_SCRIPT="$ROOT_DIR/ops/digitalocean/bin/run-codex-experiment-synthesis.sh"
 LAST_MESSAGE_FILE="$INNER_RUN_DIR/last-message.txt"
 FINAL_ANSWER_MD="$INNER_RUN_DIR/final-answer.md"
 FINAL_ANSWER_JSON="$INNER_RUN_DIR/final-answer.json"
@@ -499,6 +487,16 @@ PY
 )"
 
   if [[ "$validator_ok" == "true" ]]; then
+    write_status "running" "synthesizing" "$attempt" "Writing final experiment synthesis." ""
+    printf '%s attempt=%s synthesis_started\n' "$(date -u +%FT%TZ)" "$attempt" >>"$PROCESS_LOG"
+    "$SYNTHESIS_SCRIPT" \
+      --inner-run-dir "$INNER_RUN_DIR" \
+      --job-id "$JOB_ID-synthesis" \
+      --model "$MODEL" \
+      --root-dir "$ROOT_DIR" \
+      --user-prompt-file "$USER_PROMPT_FILE" >>"$STDOUT_LOG" 2>>"$STDERR_LOG"
+    printf '%s attempt=%s synthesis_completed\n' "$(date -u +%FT%TZ)" "$attempt" >>"$PROCESS_LOG"
+
     python3 - "$INNER_RUN_DIR/manifest.json" "$FINAL_ANSWER_MD" "$FINAL_ANSWER_JSON" "$INNER_RUN_DIR/results.json" "$INNER_RUN_DIR/experiment-plan.md" "$INNER_RUN_DIR/evidence/index.json" "$INNER_RUN_DIR/dataset.jsonl" "$INNER_RUN_DIR/dataset.csv" "$INNER_RUN_DIR/labels.jsonl" <<'PY'
 from pathlib import Path
 import json

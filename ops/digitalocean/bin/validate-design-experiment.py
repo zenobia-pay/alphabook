@@ -35,8 +35,6 @@ def main() -> None:
 
     run_dir = Path(args.run_dir)
     experiment_plan = run_dir / "experiment-plan.md"
-    final_answer_md = run_dir / "final-answer.md"
-    final_answer_json = run_dir / "final-answer.json"
     results_json = run_dir / "results.json"
     run_log = run_dir / "run.log"
     manifest_json = run_dir / "manifest.json"
@@ -50,8 +48,6 @@ def main() -> None:
 
     required_nonempty = {
         "experiment-plan.md": experiment_plan,
-        "final-answer.md": final_answer_md,
-        "final-answer.json": final_answer_json,
         "results.json": results_json,
         "run.log": run_log,
         "manifest.json": manifest_json,
@@ -69,16 +65,6 @@ def main() -> None:
     present_evidence = [label for label, path in evidence_artifacts.items() if nonempty_file(path)]
     if not present_evidence:
         missing.append("at least one evidence artifact (evidence/index.json, dataset.jsonl, dataset.csv, or labels.jsonl)")
-
-    final_answer_payload = read_json(final_answer_json)
-    if not isinstance(final_answer_payload, dict):
-        missing.append("final-answer.json must parse as a JSON object")
-    else:
-        if not isinstance(final_answer_payload.get("answer"), str) or not final_answer_payload["answer"].strip():
-            missing.append("final-answer.json.answer")
-        citations = final_answer_payload.get("citations")
-        if not isinstance(citations, list) or len(citations) == 0:
-            warnings.append("final-answer.json has no citations array entries")
 
     results_payload = read_json(results_json)
     if not isinstance(results_payload, dict):
@@ -116,8 +102,6 @@ def main() -> None:
         "evidenceCount": evidence_count,
         "files": {
             "experimentPlan": str(experiment_plan),
-            "finalAnswerMarkdown": str(final_answer_md),
-            "finalAnswerJson": str(final_answer_json),
             "resultsJson": str(results_json),
             "runLog": str(run_log),
             "manifestJson": str(manifest_json),
