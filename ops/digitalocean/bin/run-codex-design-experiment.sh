@@ -123,8 +123,9 @@ PRECOMPUTED_INDEX_DIR="$(resolve_precomputed_index_dir "$CORPUS_ROOT" "$PRECOMPU
 
 if [[ -f "$ENV_FILE" ]]; then
   export OPENAI_API_KEY="${OPENAI_API_KEY:-$(load_env_value "$ENV_FILE" "OPENAI_API_KEY")}"
-elif [[ -f "$FALLBACK_ENV_FILE" ]]; then
-  export OPENAI_API_KEY="${OPENAI_API_KEY:-$(load_env_value "$FALLBACK_ENV_FILE" "OPENAI_API_KEY")}"
+fi
+if [[ -z "${OPENAI_API_KEY:-}" && -f "$FALLBACK_ENV_FILE" ]]; then
+  export OPENAI_API_KEY="$(load_env_value "$FALLBACK_ENV_FILE" "OPENAI_API_KEY")"
 fi
 [[ -n "${OPENAI_API_KEY:-}" ]] || { echo "OPENAI_API_KEY is not available from $ENV_FILE or $FALLBACK_ENV_FILE" >&2; exit 1; }
 

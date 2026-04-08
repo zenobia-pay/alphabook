@@ -141,8 +141,11 @@ if [[ -f "$ENV_FILE" ]]; then
   export QDRANT_URL="${QDRANT_URL:-$(load_env_value "$ENV_FILE" "QDRANT_URL")}"
   export QDRANT_API_KEY="${QDRANT_API_KEY:-$(load_env_value "$ENV_FILE" "QDRANT_API_KEY")}"
   export QDRANT_COLLECTION="${QDRANT_COLLECTION:-$(load_env_value "$ENV_FILE" "QDRANT_COLLECTION")}"
-elif [[ -f "$FALLBACK_ENV_FILE" ]]; then
-  export OPENAI_API_KEY="${OPENAI_API_KEY:-$(load_env_value "$FALLBACK_ENV_FILE" "OPENAI_API_KEY")}"
+fi
+if [[ -f "$FALLBACK_ENV_FILE" ]]; then
+  if [[ -z "${OPENAI_API_KEY:-}" ]]; then
+    export OPENAI_API_KEY="$(load_env_value "$FALLBACK_ENV_FILE" "OPENAI_API_KEY")"
+  fi
   export R2_BUCKET_NAME="${R2_BUCKET_NAME:-$(load_env_value "$FALLBACK_ENV_FILE" "R2_BUCKET_NAME")}"
   export R2_ENDPOINT="${R2_ENDPOINT:-$(load_env_value "$FALLBACK_ENV_FILE" "R2_ENDPOINT")}"
   export R2_ACCESS_KEY_ID="${R2_ACCESS_KEY_ID:-$(load_env_value "$FALLBACK_ENV_FILE" "R2_ACCESS_KEY_ID")}"

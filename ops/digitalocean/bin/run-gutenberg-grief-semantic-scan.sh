@@ -28,8 +28,9 @@ PY
 }
 
 if [[ -f "$ENV_FILE" ]]; then
-  export OPENAI_API_KEY="$(load_key "$ENV_FILE")"
-elif [[ -f "$FALLBACK_ENV_FILE" ]]; then
+  export OPENAI_API_KEY="${OPENAI_API_KEY:-$(load_key "$ENV_FILE")}"
+fi
+if [[ -z "${OPENAI_API_KEY:-}" && -f "$FALLBACK_ENV_FILE" ]]; then
   export OPENAI_API_KEY="$(load_key "$FALLBACK_ENV_FILE")"
 fi
 

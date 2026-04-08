@@ -167,8 +167,11 @@ if [[ -f "$ENV_FILE" ]]; then
   export QDRANT_URL="${QDRANT_URL:-$(load_env_value "$ENV_FILE" "QDRANT_URL")}"
   export QDRANT_API_KEY="${QDRANT_API_KEY:-$(load_env_value "$ENV_FILE" "QDRANT_API_KEY")}"
   export QDRANT_COLLECTION="${QDRANT_COLLECTION:-$(load_env_value "$ENV_FILE" "QDRANT_COLLECTION")}"
-elif [[ -f "$FALLBACK_ENV_FILE" ]]; then
-  export OPENAI_API_KEY="${OPENAI_API_KEY:-$(load_env_value "$FALLBACK_ENV_FILE" "OPENAI_API_KEY")}"
+fi
+if [[ -f "$FALLBACK_ENV_FILE" ]]; then
+  if [[ -z "${OPENAI_API_KEY:-}" ]]; then
+    export OPENAI_API_KEY="$(load_env_value "$FALLBACK_ENV_FILE" "OPENAI_API_KEY")"
+  fi
   export OPENAI_BASE_URL="${OPENAI_BASE_URL:-$(load_env_value "$FALLBACK_ENV_FILE" "OPENAI_BASE_URL")}"
   export OPENAI_EMBEDDING_MODEL="${OPENAI_EMBEDDING_MODEL:-$(load_env_value "$FALLBACK_ENV_FILE" "OPENAI_EMBEDDING_MODEL")}"
   export OPENAI_EMBEDDING_DIMENSIONS="${OPENAI_EMBEDDING_DIMENSIONS:-$(load_env_value "$FALLBACK_ENV_FILE" "OPENAI_EMBEDDING_DIMENSIONS")}"
