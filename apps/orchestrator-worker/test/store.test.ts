@@ -264,6 +264,196 @@ test("SQL store serves explore works from feed snapshots without hydrating the f
   assert.ok(queries.some((entry) => entry.sql.includes("COUNT(*) AS count")));
 });
 
+test("SQL store admin rollups use persisted sessions, messages, tool calls, billing, and analytics data", async () => {
+  const db: DbClient = {
+    async query<T = Record<string, unknown>>(sql: string) {
+      if (sql.startsWith("ALTER TABLE runs ADD COLUMN ")) {
+        return { rows: [] as T[] };
+      }
+      if (sql === "SELECT id, email, name, avatar_url, created_at FROM users ORDER BY created_at DESC") {
+        return {
+          rows: [
+            {
+              id: "user-1",
+              email: "reader@example.com",
+              name: "Reader",
+              avatar_url: null,
+              created_at: "2026-03-01T00:00:00.000Z",
+            },
+          ] as T[],
+        };
+      }
+      if (sql === "SELECT follower_id, followed_id FROM user_follows") {
+        return { rows: [] as T[] };
+      }
+      if (sql === "SELECT id, user_id, created_at FROM chat_sessions") {
+        return {
+          rows: [
+            { id: "session-1", user_id: "user-1", created_at: "2026-03-20T09:00:00.000Z" },
+            { id: "session-2", user_id: "user-1", created_at: "2026-04-07T09:00:00.000Z" },
+          ] as T[],
+        };
+      }
+      if (sql === "SELECT session_id, started_at, completed_at FROM runs") {
+        return {
+          rows: [
+            { session_id: "session-1", started_at: "2026-03-20T09:05:00.000Z", completed_at: "2026-03-20T09:06:00.000Z" },
+            { session_id: "session-2", started_at: "2026-04-07T09:05:00.000Z", completed_at: null },
+          ] as T[],
+        };
+      }
+      if (sql === "SELECT session_id, created_at FROM messages") {
+        return {
+          rows: [
+            { session_id: "session-1", created_at: "2026-03-20T09:01:00.000Z" },
+            { session_id: "session-2", created_at: "2026-04-07T12:00:00.000Z" },
+          ] as T[],
+        };
+      }
+      if (sql === "SELECT user_id, session_id, cost_usd, created_at FROM billing_events") {
+        return {
+          rows: [
+            { user_id: "user-1", session_id: "session-1", cost_usd: 1, created_at: "2026-02-15T09:06:00.000Z" },
+            { user_id: "user-1", session_id: "session-1", cost_usd: 1.25, created_at: "2026-03-20T09:06:00.000Z" },
+            { user_id: null, session_id: "session-2", cost_usd: 2.5, created_at: "2026-04-07T10:00:00.000Z" },
+          ] as T[],
+        };
+      }
+      if (sql === "SELECT user_id, session_id, created_at FROM analytics_events") {
+        return {
+          rows: [
+            { user_id: null, session_id: "session-2", created_at: "2026-04-07T13:00:00.000Z" },
+          ] as T[],
+        };
+      }
+      if (sql === "SELECT id, user_id, title, created_at FROM chat_sessions ORDER BY created_at DESC") {
+        return {
+          rows: [
+            { id: "session-2", user_id: "user-1", title: "Recent session", created_at: "2026-04-07T09:00:00.000Z" },
+            { id: "session-1", user_id: "user-1", title: "Older session", created_at: "2026-03-20T09:00:00.000Z" },
+          ] as T[],
+        };
+      }
+      if (sql === "SELECT session_id FROM runs") {
+        return {
+          rows: [
+            { session_id: "session-1" },
+            { session_id: "session-2" },
+          ] as T[],
+        };
+      }
+      if (sql === "SELECT session_id, content, created_at FROM messages") {
+        return {
+          rows: [
+            { session_id: "session-1", content: "First question", created_at: "2026-03-20T09:01:00.000Z" },
+            { session_id: "session-1", content: "Older answer", created_at: "2026-03-20T09:02:00.000Z" },
+            { session_id: "session-2", content: "Recent question", created_at: "2026-04-07T12:00:00.000Z" },
+          ] as T[],
+        };
+      }
+      if (sql === "SELECT session_id, cost_usd FROM billing_events") {
+        return {
+          rows: [
+            { session_id: "session-1", cost_usd: 1.25 },
+            { session_id: "session-2", cost_usd: 2.5 },
+          ] as T[],
+        };
+      }
+      if (sql.includes("SELECT id, session_id, status, started_at, completed_at, planner_turns, owner_instance_id, heartbeat_at, lease_expires_at, active_tool_call_id FROM runs ORDER BY started_at DESC")) {
+        return {
+          rows: [
+            {
+              id: "run-2",
+              session_id: "session-2",
+              status: "running",
+              started_at: "2026-04-07T09:05:00.000Z",
+              completed_at: null,
+              planner_turns: 1,
+              owner_instance_id: null,
+              heartbeat_at: null,
+              lease_expires_at: null,
+              active_tool_call_id: null,
+            },
+            {
+              id: "run-1",
+              session_id: "session-1",
+              status: "completed",
+              started_at: "2026-03-20T09:05:00.000Z",
+              completed_at: "2026-03-20T09:06:00.000Z",
+              planner_turns: 2,
+              owner_instance_id: null,
+              heartbeat_at: null,
+              lease_expires_at: null,
+              active_tool_call_id: null,
+            },
+          ] as T[],
+        };
+      }
+      if (sql === "SELECT id, user_id, title FROM chat_sessions") {
+        return {
+          rows: [
+            { id: "session-1", user_id: "user-1", title: "Older session" },
+            { id: "session-2", user_id: "user-1", title: "Recent session" },
+          ] as T[],
+        };
+      }
+      if (sql === "SELECT run_id FROM tool_calls") {
+        return {
+          rows: [
+            { run_id: "run-1" },
+            { run_id: "run-1" },
+            { run_id: "run-2" },
+          ] as T[],
+        };
+      }
+      if (sql === "SELECT run_id, cost_usd FROM billing_events") {
+        return {
+          rows: [
+            { run_id: "run-1", cost_usd: 1.25 },
+            { run_id: "run-2", cost_usd: 2.5 },
+          ] as T[],
+        };
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+    async end() {},
+  };
+
+  const store = new SqlAppStore(db);
+  const [users, sessions, runs] = await Promise.all([
+    store.listUsers(),
+    store.listAdminSessions(),
+    store.listAllRuns(),
+  ]);
+
+  assert.equal(users.length, 1);
+  assert.equal(users[0]?.sessionCount, 2);
+  assert.equal(users[0]?.runCount, 2);
+  assert.equal(users[0]?.monthlySpendUsd, 3.75);
+  assert.equal(users[0]?.totalSpendUsd, 4.75);
+  assert.equal(users[0]?.billingEventCount, 3);
+  assert.equal(users[0]?.lastSeenAt, "2026-04-07T13:00:00.000Z");
+
+  assert.equal(sessions.length, 2);
+  assert.equal(sessions[0]?.id, "session-2");
+  assert.equal(sessions[0]?.runCount, 1);
+  assert.equal(sessions[0]?.messageCount, 1);
+  assert.equal(sessions[0]?.lastMessagePreview, "Recent question");
+  assert.equal(sessions[0]?.spendUsd, 2.5);
+  assert.equal(sessions[1]?.messageCount, 2);
+  assert.equal(sessions[1]?.spendUsd, 1.25);
+
+  assert.equal(runs.length, 2);
+  assert.equal(runs[0]?.id, "run-2");
+  assert.equal(runs[0]?.toolCallCount, 1);
+  assert.equal(runs[0]?.messageCount, 1);
+  assert.equal(runs[0]?.lastMessagePreview, "Recent question");
+  assert.equal(runs[0]?.spendUsd, 2.5);
+  assert.equal(runs[1]?.toolCallCount, 2);
+  assert.equal(runs[1]?.messageCount, 2);
+  assert.equal(runs[1]?.spendUsd, 1.25);
+});
+
 test("SQL store resolves single-work detail and files without hydrating the full corpus", async () => {
   const queries: Array<{ sql: string; params?: unknown[] }> = [];
   const db: DbClient = {

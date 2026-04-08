@@ -21,6 +21,10 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function roundUsd(value: number) {
+  return Math.round(value * 1_000_000) / 1_000_000;
+}
+
 function parseJsonObject(value: unknown): Record<string, unknown> {
   if (!value) {
     return {};
@@ -1401,15 +1405,19 @@ export class SqlAppStore implements AppStore {
 
   async listUsers(): Promise<AdminUserRecord[]> {
     const users = await this.queryUsers();
-    const sessions = await this.db.query<{ user_id: string }>("SELECT user_id FROM chat_sessions");
-    const runs = await this.db.query<{ session_id: string }>("SELECT session_id FROM runs");
-    const billing = await this.db.query<{ user_id: string; cost_usd: number | string; created_at: string }>("SELECT user_id, cost_usd, created_at FROM billing_events");
+    const [sessions, runs, messages, billing, analytics] = await Promise.all([
+      this.db.query<{ id: string; user_id: string; created_at: string }>("SELECT id, user_id, created_at FROM chat_sessions"),
+      this.db.query<{ session_id: string; started_at: string; completed_at: string | null }>("SELECT session_id, started_at, completed_at FROM runs"),
+      this.db.query<{ session_id: string; created_at: string }>("SELECT session_id, created_at FROM messages"),
+      this.db.query<{ user_id: string | null; session_id: string | null; cost_usd: number | string; created_at: string }>("SELECT user_id, session_id, cost_usd, created_at FROM billing_events"),
+      this.db.query<{ user_id: string | null; session_id: string | null; created_at: string }>("SELECT user_id, session_id, created_at FROM analytics_events"),
+    ]);
+    const monthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
     const sessionsByUser = new Map<string, number>();
     for (const row of sessions.rows) {
       sessionsByUser.set(row.user_id, (sessionsByUser.get(row.user_id) ?? 0) + 1);
     }
-    const sessionOwners = await this.db.query<{ id: string; user_id: string }>("SELECT id, user_id FROM chat_sessions");
-    const ownerBySession = new Map(sessionOwners.rows.map((row) => [row.id, row.user_id]));
+    const ownerBySession = new Map(sessions.rows.map((row) => [row.id, row.user_id]));
     const runsByUser = new Map<string, number>();
     for (const row of runs.rows) {
       const owner = ownerBySession.get(row.session_id);
@@ -1417,15 +1425,51 @@ export class SqlAppStore implements AppStore {
         runsByUser.set(owner, (runsByUser.get(owner) ?? 0) + 1);
       }
     }
+    const lastSeenByUser = new Map<string, string>();
+    const recordLastSeen = (userId: string | null | undefined, timestamp: string | null | undefined) => {
+      if (!userId || !timestamp) {
+        return;
+      }
+      const current = lastSeenByUser.get(userId);
+      if (!current || timestamp > current) {
+        lastSeenByUser.set(userId, timestamp);
+      }
+    };
+    for (const row of sessions.rows) {
+      recordLastSeen(row.user_id, row.created_at);
+    }
+    for (const row of messages.rows) {
+      recordLastSeen(ownerBySession.get(row.session_id) ?? null, row.created_at);
+    }
+    for (const row of runs.rows) {
+      recordLastSeen(ownerBySession.get(row.session_id) ?? null, row.completed_at ?? row.started_at);
+    }
+    for (const row of analytics.rows) {
+      recordLastSeen(row.user_id ?? (row.session_id ? ownerBySession.get(row.session_id) ?? null : null), row.created_at);
+    }
+    const billingByUser = new Map<string, Array<{ costUsd: number; createdAt: string }>>();
+    for (const row of billing.rows) {
+      const owner = row.user_id ?? (row.session_id ? ownerBySession.get(row.session_id) ?? null : null);
+      if (!owner) {
+        continue;
+      }
+      const bucket = billingByUser.get(owner) ?? [];
+      bucket.push({
+        costUsd: Number(row.cost_usd ?? 0),
+        createdAt: row.created_at,
+      });
+      billingByUser.set(owner, bucket);
+      recordLastSeen(owner, row.created_at);
+    }
     return users.map((user) => {
-      const userBilling = billing.rows.filter((row) => row.user_id === user.id);
+      const userBilling = billingByUser.get(user.id) ?? [];
       return {
         ...user,
         sessionCount: sessionsByUser.get(user.id) ?? 0,
         runCount: runsByUser.get(user.id) ?? 0,
-        lastSeenAt: null,
-        monthlySpendUsd: userBilling.reduce((sum, row) => sum + Number(row.cost_usd ?? 0), 0),
-        totalSpendUsd: userBilling.reduce((sum, row) => sum + Number(row.cost_usd ?? 0), 0),
+        lastSeenAt: lastSeenByUser.get(user.id) ?? null,
+        monthlySpendUsd: roundUsd(userBilling.reduce((sum, row) => sum + (row.createdAt >= monthAgo ? row.costUsd : 0), 0)),
+        totalSpendUsd: roundUsd(userBilling.reduce((sum, row) => sum + row.costUsd, 0)),
         billingEventCount: userBilling.length,
       };
     });
@@ -1517,22 +1561,51 @@ export class SqlAppStore implements AppStore {
   }
 
   async listAdminSessions(): Promise<AdminSessionRecord[]> {
-    const sessions = await this.db.query<{ id: string; user_id: string; title: string | null; created_at: string }>("SELECT id, user_id, title, created_at FROM chat_sessions ORDER BY created_at DESC");
-    const users = await this.queryUsers();
+    const [sessions, users, runs, messages, billing] = await Promise.all([
+      this.db.query<{ id: string; user_id: string; title: string | null; created_at: string }>("SELECT id, user_id, title, created_at FROM chat_sessions ORDER BY created_at DESC"),
+      this.queryUsers(),
+      this.db.query<{ session_id: string }>("SELECT session_id FROM runs"),
+      this.db.query<{ session_id: string; content: string; created_at: string }>("SELECT session_id, content, created_at FROM messages"),
+      this.db.query<{ session_id: string | null; cost_usd: number | string }>("SELECT session_id, cost_usd FROM billing_events"),
+    ]);
     const userById = new Map(users.map((user) => [user.id, user]));
-    return sessions.rows.map((session) => ({
-      id: session.id,
-      userId: session.user_id,
-      title: session.title,
-      createdAt: session.created_at,
-      userEmail: userById.get(session.user_id)?.email ?? null,
-      userName: userById.get(session.user_id)?.name ?? null,
-      runCount: 0,
-      messageCount: 0,
-      lastMessageAt: null,
-      lastMessagePreview: null,
-      spendUsd: 0,
-    }));
+    const runCountBySession = new Map<string, number>();
+    for (const row of runs.rows) {
+      runCountBySession.set(row.session_id, (runCountBySession.get(row.session_id) ?? 0) + 1);
+    }
+    const messagesBySession = new Map<string, Array<{ content: string; createdAt: string }>>();
+    for (const row of messages.rows) {
+      const bucket = messagesBySession.get(row.session_id) ?? [];
+      bucket.push({
+        content: row.content,
+        createdAt: row.created_at,
+      });
+      messagesBySession.set(row.session_id, bucket);
+    }
+    const spendBySession = new Map<string, number>();
+    for (const row of billing.rows) {
+      if (!row.session_id) {
+        continue;
+      }
+      spendBySession.set(row.session_id, (spendBySession.get(row.session_id) ?? 0) + Number(row.cost_usd ?? 0));
+    }
+    return sessions.rows.map((session) => {
+      const sessionMessages = messagesBySession.get(session.id) ?? [];
+      const lastMessage = sessionMessages.sort((left, right) => left.createdAt.localeCompare(right.createdAt))[sessionMessages.length - 1] ?? null;
+      return {
+        id: session.id,
+        userId: session.user_id,
+        title: session.title,
+        createdAt: session.created_at,
+        userEmail: userById.get(session.user_id)?.email ?? null,
+        userName: userById.get(session.user_id)?.name ?? null,
+        runCount: runCountBySession.get(session.id) ?? 0,
+        messageCount: sessionMessages.length,
+        lastMessageAt: lastMessage?.createdAt ?? null,
+        lastMessagePreview: lastMessage?.content.slice(0, 160) ?? null,
+        spendUsd: roundUsd(spendBySession.get(session.id) ?? 0),
+      };
+    });
   }
 
   async listMessages(sessionId: string): Promise<MessageRecord[]> {
@@ -1793,16 +1866,42 @@ export class SqlAppStore implements AppStore {
 
   async listAllRuns(): Promise<AdminRunRecord[]> {
     await this.ensureRunLifecycleColumns();
-    const runs = await this.db.query<{ id: string; session_id: string; status: RunRecord["status"]; started_at: string; completed_at: string | null; planner_turns: number; owner_instance_id: string | null; heartbeat_at: string | null; lease_expires_at: string | null; active_tool_call_id: string | null }>(
-      "SELECT id, session_id, status, started_at, completed_at, planner_turns, owner_instance_id, heartbeat_at, lease_expires_at, active_tool_call_id FROM runs ORDER BY started_at DESC",
-    );
-    const sessions = await this.db.query<{ id: string; user_id: string; title: string | null }>("SELECT id, user_id, title FROM chat_sessions");
-    const users = await this.queryUsers();
+    const [runs, sessions, users, messages, toolCalls, billing] = await Promise.all([
+      this.db.query<{ id: string; session_id: string; status: RunRecord["status"]; started_at: string; completed_at: string | null; planner_turns: number; owner_instance_id: string | null; heartbeat_at: string | null; lease_expires_at: string | null; active_tool_call_id: string | null }>(
+        "SELECT id, session_id, status, started_at, completed_at, planner_turns, owner_instance_id, heartbeat_at, lease_expires_at, active_tool_call_id FROM runs ORDER BY started_at DESC",
+      ),
+      this.db.query<{ id: string; user_id: string; title: string | null }>("SELECT id, user_id, title FROM chat_sessions"),
+      this.queryUsers(),
+      this.db.query<{ session_id: string; content: string; created_at: string }>("SELECT session_id, content, created_at FROM messages"),
+      this.db.query<{ run_id: string }>("SELECT run_id FROM tool_calls"),
+      this.db.query<{ run_id: string | null; cost_usd: number | string }>("SELECT run_id, cost_usd FROM billing_events"),
+    ]);
     const sessionById = new Map(sessions.rows.map((row) => [row.id, row]));
     const userById = new Map(users.map((row) => [row.id, row]));
+    const messagesBySession = new Map<string, Array<{ content: string; createdAt: string }>>();
+    for (const row of messages.rows) {
+      const bucket = messagesBySession.get(row.session_id) ?? [];
+      bucket.push({
+        content: row.content,
+        createdAt: row.created_at,
+      });
+      messagesBySession.set(row.session_id, bucket);
+    }
+    const toolCallCountByRun = new Map<string, number>();
+    for (const row of toolCalls.rows) {
+      toolCallCountByRun.set(row.run_id, (toolCallCountByRun.get(row.run_id) ?? 0) + 1);
+    }
+    const spendByRun = new Map<string, number>();
+    for (const row of billing.rows) {
+      if (!row.run_id) {
+        continue;
+      }
+      spendByRun.set(row.run_id, (spendByRun.get(row.run_id) ?? 0) + Number(row.cost_usd ?? 0));
+    }
     return runs.rows.map((row) => {
       const session = sessionById.get(row.session_id);
       const user = session ? userById.get(session.user_id) : null;
+      const sessionMessages = (messagesBySession.get(row.session_id) ?? []).sort((left, right) => left.createdAt.localeCompare(right.createdAt));
       return {
         id: row.id,
         sessionId: row.session_id,
@@ -1818,10 +1917,10 @@ export class SqlAppStore implements AppStore {
         userEmail: user?.email ?? null,
         userName: user?.name ?? null,
         sessionTitle: session?.title ?? null,
-        toolCallCount: 0,
-        messageCount: 0,
-        lastMessagePreview: null,
-        spendUsd: 0,
+        toolCallCount: toolCallCountByRun.get(row.id) ?? 0,
+        messageCount: sessionMessages.length,
+        lastMessagePreview: sessionMessages[sessionMessages.length - 1]?.content.slice(0, 160) ?? null,
+        spendUsd: roundUsd(spendByRun.get(row.id) ?? 0),
       };
     });
   }
