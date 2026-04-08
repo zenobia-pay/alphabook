@@ -9611,13 +9611,10 @@ async function synthesizeHermesArtifactAnswer(
       role: "user" | "assistant" | "system" | "tool";
       content: string;
     }>;
-    briefingMarkdown: string;
+    sourceMarkdown: string;
     citations: Citation[];
   },
 ) {
-  if (params.citations.length === 0) {
-    return null;
-  }
   const exactCitationLinks = await Promise.all(
     params.citations.slice(0, 16).map(async (citation) => ({
       workId: citation.workId,
@@ -9630,10 +9627,10 @@ async function synthesizeHermesArtifactAnswer(
   const synthesis = await deps.synthesizer.synthesize({
     userMessage: params.userMessage,
     conversationHistory: params.conversationHistory,
-    plannerDraft: params.briefingMarkdown,
+    plannerDraft: params.sourceMarkdown,
     plannerCitations: params.citations,
     toolHistory: [],
-    runtimeBriefing: params.briefingMarkdown,
+    runtimeBriefing: params.sourceMarkdown,
     exactCitationLinks,
     priorAnswerSummary: latestPriorAssistantSummaryFromConversation(params.conversationHistory),
     billingContext: {
@@ -9755,15 +9752,16 @@ async function finalizeHermesRun(
     .find((entry) => entry.role === "user" && entry.content.trim().length > 0)
     ?.content
     ?.trim() ?? params.job.userPrompt?.trim() ?? "";
+  const synthesisSourceMarkdown = compiledAnswerMarkdown || briefingMarkdown || "";
   let synthesizedHermesAnswer: string | null = null;
-  if (briefingMarkdown && hermesCitations.length > 0 && latestUserMessage) {
+  if (synthesisSourceMarkdown && latestUserMessage) {
     try {
       const synthesis = await synthesizeHermesArtifactAnswer(deps, {
         session: params.session,
         runId: currentRun.id,
         userMessage: latestUserMessage,
         conversationHistory,
-        briefingMarkdown,
+        sourceMarkdown: synthesisSourceMarkdown,
         citations: hermesCitations,
       });
       if (synthesis?.answer.trim()) {
