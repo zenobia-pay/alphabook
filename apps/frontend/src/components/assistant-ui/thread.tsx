@@ -500,11 +500,16 @@ const ThreadWelcome: FC = () => {
     <div data-testid="empty-state" className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
       <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-center">
         <div className="aui-thread-welcome-message flex size-full flex-col justify-center px-4">
+          <img
+            src="/man.png"
+            alt=""
+            className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in mx-auto mb-6 w-full max-w-2xl rounded-2xl object-cover duration-200"
+          />
           <h1 className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in fill-mode-both font-semibold text-2xl duration-200">
             {WELCOME_HEADING}
           </h1>
           <p className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in fill-mode-both text-base text-muted-foreground/70 delay-75 duration-200">
-            Or: Want your agent to use this? Copy{" "}
+            Or copy{" "}
             <button
               type="button"
               className="aui-thread-welcome-copy-button"

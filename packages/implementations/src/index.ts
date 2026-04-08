@@ -58,7 +58,7 @@ export const ALPHABOOK_IMPLEMENTATION: AlphaResearchImplementation = {
   themeColor: "#f5f0e8",
   ogImageUrl: "https://alpha-book.org/social-card.svg",
   explorePlaceholder: "Ask about a book, a theme, or the whole corpus...",
-  assistantWelcomeHeading: "Search for evidence and themes over 75,000 books.",
+  assistantWelcomeHeading: "What do you want to research over 75,000 books?",
   emptyCorpusMessage: "No books are loaded yet.",
   assistantWelcomeSuggestions: [
     {

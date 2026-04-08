@@ -185,7 +185,7 @@ test("logged out assistant keeps the normal shell while disabling the composer",
 
   await page.goto("/");
 
-  await expect(page.getByRole("heading", { name: "Search for evidence and themes over 75,000 books." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "What do you want to research over 75,000 books?" })).toBeVisible();
   await expect(page.locator(".aui-composer-input")).toBeDisabled();
   const thread = page.getByTestId("thread");
   await expect(thread.getByText("Sign in to start a research thread.")).toBeVisible();
