@@ -2046,7 +2046,6 @@ function BillingLimitDialog({
           ) : null}
           <div className="billing-plan-grid">
             <article className={cn("billing-plan-card", state.tier === "free" && "is-current")}>
-              <span className="billing-plan-badge">Current plan</span>
               <p className="billing-plan-kicker">Free Tier</p>
               <h3>Free usage</h3>
               <p className="billing-plan-price">$0 / month</p>
@@ -2058,7 +2057,6 @@ function BillingLimitDialog({
               </ul>
             </article>
             <article className={cn("billing-plan-card billing-plan-card-pro", state.tier === "studio" && "is-current")}>
-              <span className="billing-plan-badge">Recommended</span>
               <p className="billing-plan-kicker">Pro Tier</p>
               <h3>For regular usage</h3>
               <p className="billing-plan-price">$500 / month</p>
