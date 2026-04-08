@@ -857,6 +857,10 @@ function hydrateConversationMessages(
       }
       hydrated[index] = {
         ...message,
+        metadata: {
+          ...(message.metadata ?? {}),
+          runStatus: run.status,
+        },
         toolCalls: toolTrace.map((entry, traceIndex) =>
           normalizeToolTraceEntry(entry as Record<string, unknown>, traceIndex),
         ),
@@ -1944,6 +1948,7 @@ function messageToThreadMessage(
       toolCalls: message.toolCalls,
       runId: typeof message.metadata?.runId === "string" ? message.metadata.runId : null,
       sessionId: message.sessionId,
+      runStatus: typeof message.metadata?.runStatus === "string" ? message.metadata.runStatus : null,
       experimentProposal:
         message.metadata?.experimentProposal && typeof message.metadata.experimentProposal === "object"
           ? message.metadata.experimentProposal

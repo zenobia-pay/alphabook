@@ -726,6 +726,13 @@ const AssistantMessage: FC = () => {
       : null;
     return typeof custom?.sessionId === "string" ? custom.sessionId : null;
   });
+  const runStatus = useAuiState((state) => {
+    const metadata = state.message.metadata;
+    const custom = metadata && typeof metadata === "object" && "custom" in metadata
+      ? metadata.custom as Record<string, unknown>
+      : null;
+    return typeof custom?.runStatus === "string" ? custom.runStatus : null;
+  });
   const hasPlanToolTrace = phase === "plan" && planToolTrace.length > 0;
 
   if (phase === "progress") {
@@ -741,7 +748,7 @@ const AssistantMessage: FC = () => {
     >
       <div className="aui-assistant-message-content wrap-break-word px-2 text-foreground leading-relaxed">
         <MessagePrimitive.Parts components={TOOL_PART_COMPONENTS} />
-        {hasPlanToolTrace ? <PlanToolTraceCard trace={planToolTrace} isRunning={isRunning} runId={runId} sessionId={sessionId} /> : null}
+        {hasPlanToolTrace ? <PlanToolTraceCard trace={planToolTrace} isRunning={isRunning} runId={runId} sessionId={sessionId} runStatus={runStatus} /> : null}
         {experimentProposal ? <ExperimentApprovalCard proposal={experimentProposal} disabled={isRunning} /> : null}
         <MessageError />
       </div>
@@ -814,17 +821,20 @@ const PlanToolTraceCard: FC<{
   isRunning: boolean;
   sessionId: string | null;
   runId: string | null;
-}> = ({ trace, isRunning, sessionId, runId }) => {
+  runStatus: string | null;
+}> = ({ trace, isRunning, sessionId, runId, runStatus }) => {
   const [collapsed, setCollapsed] = useState(false);
   const lines = useMemo(
     () => trace.map((entry) => summarizePlanToolLine(entry)).filter((line) => line),
     [trace],
   );
-  const statusLabel = trace.some((entry) => entry.state === "error" || entry.isError)
-    ? "Failed"
-    : isRunning || trace.some((entry) => entry.state === "running")
-      ? "In Progress"
-      : "Completed";
+  const statusLabel =
+    runStatus === "failed" ? "Failed"
+      : runStatus === "cancelled" ? "Cancelled"
+        : runStatus === "completed" ? "Completed"
+          : runStatus === "queued" || runStatus === "running" || isRunning || trace.some((entry) => entry.state === "running")
+            ? "In Progress"
+            : "Completed";
 
   return (
     <section className="aui-agentic-trace" aria-label="Agentic Search run">
@@ -841,6 +851,7 @@ const PlanToolTraceCard: FC<{
             <span className={cn(
               "aui-agentic-trace-status",
               statusLabel === "Failed" && "is-error",
+              statusLabel === "Cancelled" && "is-error",
               statusLabel === "Completed" && "is-complete",
             )}
             >
