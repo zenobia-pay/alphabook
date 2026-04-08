@@ -45,6 +45,8 @@ That deploys the current production surface in order:
 2. Linux API containers to `alphabook-web-01`
 3. Linux worker/runtime containers to `alphabook-worker-01`
 
+The frontend deploy also refreshes the live Caddy config, sets long-lived origin cache headers for static assets, and purges the Cloudflare cache for the deployed frontend URLs so the HTML shell and public assets invalidate immediately after rollout.
+
 Do not use Cloudflare Worker deploys for the primary AlphaBook web or API path.
 
 ## Compose bundles
@@ -87,6 +89,7 @@ Web-specific:
 ## Notes
 
 - The main AlphaBook web and API path is Linux-native behind proxied Cloudflare DNS. Do not deploy the primary AlphaBook session UI or API through Cloudflare Workers.
+- Frontend cache purge during deploy reads `ALPHABOOK_CLOUDFLARE_API_TOKEN` first and falls back to `CLOUDFLARE_API_TOKEN`. Set `ALPHABOOK_CLOUDFLARE_ZONE_ID` to skip zone lookup, or `ALPHABOOK_CLOUDFLARE_ZONE_NAME` to override the default `alpha-book.org`.
 - The Linux API path is Postgres-only. It does not fall back to D1 or Wrangler.
 - Canonical blobs are expected to live in DO Spaces or another S3-compatible object store.
 - The Linux worker uses `pg-boss` for durable research task execution.

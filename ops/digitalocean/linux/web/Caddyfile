@@ -12,8 +12,22 @@ alpha-book.org, www.alpha-book.org, api.alpha-book.org {
       reverse_proxy alphabook-api:8787
     }
 
+    handle /assets/* {
+      root * /srv/frontend
+      header Cache-Control "public, max-age=31536000, immutable"
+      file_server
+    }
+
+    @static path_regexp static (?i).*\.(?:css|js|mjs|json|map|png|apng|jpg|jpeg|gif|svg|ico|webp|avif|woff2?|ttf|otf|eot|txt|xml|webmanifest|pdf|md)$
+    handle @static {
+      root * /srv/frontend
+      header Cache-Control "public, max-age=86400"
+      file_server
+    }
+
     handle {
       root * /srv/frontend
+      header Cache-Control "no-store"
       try_files {path} /index.html
       file_server
     }
@@ -33,8 +47,22 @@ http://origin.alpha-book.org {
       reverse_proxy alphabook-api:8787
     }
 
+    handle /assets/* {
+      root * /srv/frontend
+      header Cache-Control "public, max-age=31536000, immutable"
+      file_server
+    }
+
+    @static path_regexp static (?i).*\.(?:css|js|mjs|json|map|png|apng|jpg|jpeg|gif|svg|ico|webp|avif|woff2?|ttf|otf|eot|txt|xml|webmanifest|pdf|md)$
+    handle @static {
+      root * /srv/frontend
+      header Cache-Control "public, max-age=86400"
+      file_server
+    }
+
     handle {
       root * /srv/frontend
+      header Cache-Control "no-store"
       try_files {path} /index.html
       file_server
     }
