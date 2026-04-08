@@ -5,10 +5,9 @@ import {
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { SemanticSearchToolUI, ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
-import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { fetchRunOutput, type RunArtifactRecord } from "@/api";
+import { type RunArtifactRecord } from "@/api";
 import { cn } from "@/lib/utils";
 import {
   ActionBarMorePrimitive,
@@ -762,38 +761,6 @@ const AssistantMessage: FC = () => {
     return typeof custom?.runStatus === "string" ? custom.runStatus : null;
   });
   const hasPlanToolTrace = phase === "plan" && planToolTrace.length > 0;
-  const [runOutputDialogOpen, setRunOutputDialogOpen] = useState(false);
-  const [runOutputLoading, setRunOutputLoading] = useState(false);
-  const [runOutputError, setRunOutputError] = useState<string | null>(null);
-  const [runOutputText, setRunOutputText] = useState("");
-
-  useEffect(() => {
-    if (!runOutputDialogOpen || !sessionId || !runId || runOutputLoading || runOutputText.length > 0) {
-      return;
-    }
-    let cancelled = false;
-    setRunOutputLoading(true);
-    setRunOutputError(null);
-    void fetchRunOutput(sessionId, runId)
-      .then((payload) => {
-        if (!cancelled) {
-          setRunOutputText(typeof payload.text === "string" ? payload.text : "");
-        }
-      })
-      .catch((fetchError) => {
-        if (!cancelled) {
-          setRunOutputError(fetchError instanceof Error ? fetchError.message : "Failed to load run output.");
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setRunOutputLoading(false);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [runId, runOutputDialogOpen, runOutputLoading, runOutputText.length, sessionId]);
 
   if (phase === "progress") {
     return null;
@@ -806,26 +773,13 @@ const AssistantMessage: FC = () => {
       data-error-message={isErrorMessage ? "true" : "false"}
       data-running-message={isRunning ? "true" : "false"}
     >
-      <Dialog open={runOutputDialogOpen} onOpenChange={setRunOutputDialogOpen}>
-        <DialogContent className="aui-run-output-dialog">
-          <DialogTitle className="aui-run-output-dialog-title">
-            Detailed Run Output
-          </DialogTitle>
-          <div className="aui-run-output-dialog-body">
-            <pre className="aui-run-output-dialog-pre">{runOutputLoading ? "Loading run output..." : runOutputError ?? runOutputText}</pre>
-          </div>
-        </DialogContent>
-      </Dialog>
       <div className="aui-assistant-message-content wrap-break-word px-2 text-foreground leading-relaxed">
         <MessagePrimitive.Parts components={TOOL_PART_COMPONENTS} />
         {hasPlanToolTrace ? (
           <PlanToolTraceCard
             trace={planToolTrace}
             isRunning={isRunning}
-            runId={runId}
-            sessionId={sessionId}
             runStatus={runStatus}
-            onOpenDetailedOutput={() => setRunOutputDialogOpen(true)}
           />
         ) : null}
         {experimentProposal ? <ExperimentApprovalCard proposal={experimentProposal} disabled={isRunning} /> : null}
@@ -842,11 +796,8 @@ const AssistantMessage: FC = () => {
 const PlanToolTraceCard: FC<{
   trace: PlanToolTraceRecord[];
   isRunning: boolean;
-  sessionId: string | null;
-  runId: string | null;
   runStatus: string | null;
-  onOpenDetailedOutput: () => void;
-}> = ({ trace, isRunning, sessionId, runId, runStatus, onOpenDetailedOutput }) => {
+}> = ({ trace, isRunning, runStatus }) => {
   const [collapsed, setCollapsed] = useState(false);
   const lines = useMemo(
     () => trace.map((entry) => summarizePlanToolLine(entry)).filter((line) => line),
@@ -881,16 +832,6 @@ const PlanToolTraceCard: FC<{
             >
               {statusLabel}
             </span>
-            {sessionId && runId ? (
-              <span
-                className="aui-agentic-trace-inline-action"
-                onClick={(event) => event.stopPropagation()}
-              >
-                <button type="button" className="aui-progress-link-button" onClick={onOpenDetailedOutput}>
-                  View detailed run output
-                </button>
-              </span>
-            ) : null}
           </div>
         </div>
         <ChevronDownIcon className={cn("aui-agentic-trace-chevron", !collapsed && "is-open")} />
