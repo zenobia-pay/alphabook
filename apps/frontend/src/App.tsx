@@ -6401,7 +6401,6 @@ export default function App() {
         key={props.componentKey}
         messages={props.messages}
         isSending={props.isSending}
-        showRunningDot={isSending}
         streamingAssistantId={props.streamingAssistantId}
         artifacts={props.artifacts}
         showArtifacts={props.showArtifacts}
