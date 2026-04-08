@@ -277,7 +277,7 @@ const ThreadOutputs: FC<{
   artifacts: RunArtifactRecord[];
 }> = ({ artifacts }) => {
   const visibleArtifacts = useMemo(() => selectVisibleArtifacts(artifacts), [artifacts]);
-  const [isExpanded, setIsExpanded] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(true);
 
   if (visibleArtifacts.length === 0) {
     return null;
@@ -343,13 +343,22 @@ function selectVisibleArtifacts(artifacts: RunArtifactRecord[]) {
   }
 
   const priority = new Map<string, number>([
-    ["inner/briefing.md", 0],
-    ["briefing.md", 0],
-    ["inner/dataset.csv", 1],
-    ["dataset.csv", 1],
-    ["inner/citation-index.json", 2],
-    ["citation-index.json", 2],
-    ["wrapper/archive-manifest.json", 3],
+    ["inner/manifest.json", 0],
+    ["manifest.json", 0],
+    ["inner/run.log", 1],
+    ["run.log", 1],
+    ["inner/scoped-files.tsv", 2],
+    ["scoped-files.tsv", 2],
+    ["inner/hits/index.json", 3],
+    ["hits/index.json", 3],
+    ["inner/briefing.md", 4],
+    ["briefing.md", 4],
+    ["inner/dataset.csv", 5],
+    ["dataset.csv", 5],
+    ["inner/dataset.jsonl", 6],
+    ["dataset.jsonl", 6],
+    ["inner/citation-index.json", 7],
+    ["citation-index.json", 7],
   ]);
 
   return [...byFilename.values()].sort((left, right) => {
@@ -363,18 +372,30 @@ function selectVisibleArtifacts(artifacts: RunArtifactRecord[]) {
 }
 
 function isVisibleOutputArtifact(artifact: RunArtifactRecord) {
-  const kind = typeof artifact.metadata?.kind === "string" ? artifact.metadata.kind.trim() : "";
-  if (kind === "tool_stream_raw" || kind === "research_document" || kind === "hermes_archive_manifest") {
-    return false;
-  }
   const normalized = artifact.filename.trim().toLowerCase();
   if (!normalized) {
     return false;
   }
-  if (normalized.endsWith("tool-stream.jsonl") || normalized.endsWith("archive-manifest.json")) {
-    return false;
-  }
-  return true;
+  return (
+    normalized === "inner/manifest.json"
+    || normalized === "manifest.json"
+    || normalized === "inner/run.log"
+    || normalized === "run.log"
+    || normalized === "inner/scoped-files.tsv"
+    || normalized === "scoped-files.tsv"
+    || normalized === "inner/hits/index.json"
+    || normalized === "hits/index.json"
+    || normalized === "inner/briefing.md"
+    || normalized === "briefing.md"
+    || normalized === "inner/dataset.csv"
+    || normalized === "dataset.csv"
+    || normalized === "inner/dataset.jsonl"
+    || normalized === "dataset.jsonl"
+    || normalized === "inner/citation-index.json"
+    || normalized === "citation-index.json"
+    || /^inner\/hits\/hit-\d+\.md$/u.test(normalized)
+    || /^hits\/hit-\d+\.md$/u.test(normalized)
+  );
 }
 
 function formatArtifactLabel(artifact: RunArtifactRecord, artifacts: RunArtifactRecord[]) {

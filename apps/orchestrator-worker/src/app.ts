@@ -6108,6 +6108,65 @@ function artifactBelongsToRun(artifact: RunArtifactLike, runId: string, runtimeI
   return runtimeIdSet.has(artifact.runtimeId);
 }
 
+function hasUserFacingHermesArtifacts(artifacts: RunArtifactLike[]) {
+  return artifacts.some((artifact) => isUserFacingHermesArtifact(artifact.filename));
+}
+
+async function loadSupplementalHermesRunArtifacts(
+  deps: AppDeps,
+  sessionId: string,
+  runId: string,
+) {
+  const backgroundJob = await deps.store.getLatestBackgroundJobForRun(runId);
+  if (!backgroundJob || backgroundJob.provider !== "hermes") {
+    return [];
+  }
+  const archivePrefix =
+    typeof backgroundJob.metadata?.archivePrefix === "string" && backgroundJob.metadata.archivePrefix.trim().length > 0
+      ? backgroundJob.metadata.archivePrefix.trim()
+      : null;
+  if (!archivePrefix) {
+    return [];
+  }
+  const manifestText = await deps.blobStore.getText(`${archivePrefix}/archive-manifest.json`).catch(() => null);
+  const manifest = parseHermesArchiveManifest(manifestText);
+  if (!manifest?.files?.length) {
+    return [];
+  }
+  return manifest.files
+    .filter((file) => isUserFacingHermesArtifact(file.relativePath))
+    .map((file) => {
+      const relativePath = normalizeHermesArtifactFilename(file.relativePath);
+      const mimeType =
+        typeof file.mimeType === "string" && file.mimeType.trim().length > 0
+          ? file.mimeType
+          : defaultMimeTypeForHermesArtifact(relativePath);
+      return {
+        id: `synthetic:${file.r2Key}`,
+        sessionId,
+        runtimeId: null,
+        r2Key: file.r2Key,
+        blobRef: file.r2Key,
+        filename: relativePath,
+        mimeType,
+        byteSize: typeof file.byteSize === "number" ? file.byteSize : null,
+        summaryText: titleForHermesArtifact(relativePath),
+        metadata: {
+          kind: kindForHermesArtifact(relativePath),
+          title: titleForHermesArtifact(relativePath),
+          runId,
+          hermesJobId: backgroundJob.externalJobId,
+          relativePath,
+          sourcePath: typeof file.sourcePath === "string" ? file.sourcePath : null,
+          archivePrefix,
+          previewable: isTextArtifact(relativePath, mimeType),
+          synthesizedFromArchiveManifest: true,
+        },
+        createdAt: typeof file.uploadedAt === "string" ? file.uploadedAt : null,
+      } satisfies RunArtifactLike;
+    });
+}
+
 const INLINE_ARTIFACT_PREVIEW_MAX_BYTES = 96_000;
 
 function shouldInlineArtifactContent(artifact: RunArtifactLike) {
@@ -6129,8 +6188,11 @@ async function loadRunArtifacts(
   const runtimeIdSet = new Set(runtimeIds);
   const artifacts = await deps.store.listArtifacts(sessionId);
   const filtered = artifacts.filter((artifact) => artifactBelongsToRun(artifact, runId, runtimeIdSet));
+  const effective = hasUserFacingHermesArtifacts(filtered)
+    ? filtered
+    : [...filtered, ...await loadSupplementalHermesRunArtifacts(deps, sessionId, runId)];
   const hydrated = await Promise.all(
-    filtered.map(async (artifact) => ({
+    effective.map(async (artifact) => ({
       ...artifact,
       content: shouldInlineArtifactContent(artifact)
         ? await deps.blobStore.getText(artifact.r2Key).catch(() => null)
@@ -6148,7 +6210,10 @@ async function loadRunArtifactSummaries(
 ) {
   const runtimeIdSet = new Set(runtimeIds);
   const artifacts = await deps.store.listArtifacts(sessionId);
-  return artifacts.filter((artifact) => artifactBelongsToRun(artifact, runId, runtimeIdSet));
+  const filtered = artifacts.filter((artifact) => artifactBelongsToRun(artifact, runId, runtimeIdSet));
+  return hasUserFacingHermesArtifacts(filtered)
+    ? filtered
+    : [...filtered, ...await loadSupplementalHermesRunArtifacts(deps, sessionId, runId)];
 }
 
 async function loadRunDocumentArtifacts(
@@ -6583,8 +6648,11 @@ type RunArtifactLike = {
   content?: string | null;
   createdAt?: string | null;
   id?: string;
+  sessionId?: string;
   runtimeId?: string | null;
   r2Key?: string;
+  blobRef?: string | null;
+  summaryText?: string | null;
 };
 
 function synthesizeReferenceArtifacts(artifacts: RunArtifactLike[]) {
@@ -8992,6 +9060,24 @@ function kindForHermesArtifact(relativePath: string) {
   return "hermes_run_artifact";
 }
 
+function isUserFacingHermesArtifact(relativePath: string) {
+  const normalized = normalizeHermesArtifactFilename(relativePath).toLowerCase();
+  if (
+    normalized === "inner/manifest.json"
+    || normalized === "inner/run.log"
+    || normalized === "inner/scoped-files.tsv"
+    || normalized === "inner/briefing.md"
+    || normalized === "inner/dataset.csv"
+    || normalized === "inner/dataset.jsonl"
+    || normalized === "inner/citation-index.json"
+    || normalized === "inner/status.json"
+    || normalized === "inner/hits/index.json"
+  ) {
+    return true;
+  }
+  return /^inner\/hits\/hit-\d+\.md$/u.test(normalized);
+}
+
 async function persistHermesArchiveArtifacts(
   deps: AppDeps,
   sessionId: string,
@@ -9008,7 +9094,7 @@ async function persistHermesArchiveArtifacts(
   for (const file of manifest.files ?? []) {
     const r2Key = typeof file.r2Key === "string" ? file.r2Key.trim() : "";
     const relativePath = typeof file.relativePath === "string" ? normalizeHermesArtifactFilename(file.relativePath) : "";
-    if (!r2Key || !relativePath) {
+    if (!r2Key || !relativePath || !isUserFacingHermesArtifact(relativePath)) {
       continue;
     }
     const mimeType = typeof file.mimeType === "string" && file.mimeType.trim().length > 0
@@ -9040,27 +9126,6 @@ async function persistHermesArchiveArtifacts(
       existing.add(r2Key);
     }
   }
-  const archiveSummary = loadHermesArchiveSummary(job);
-  if (archiveSummary.manifestKey && !existing.has(archiveSummary.manifestKey)) {
-    imported.push(await deps.store.saveArtifact({
-      sessionId,
-      runtimeId: null,
-      r2Key: archiveSummary.manifestKey,
-      blobRef: archiveSummary.manifestKey,
-      filename: "wrapper/archive-manifest.json",
-      mimeType: "application/json; charset=utf-8",
-      metadata: {
-        kind: "hermes_archive_manifest",
-        title: "Archive Manifest",
-        runId,
-        hermesJobId: job.id,
-        relativePath: "wrapper/archive-manifest.json",
-        archivePrefix: manifest.archivePrefix ?? null,
-        previewable: true,
-      },
-    }));
-    existing.add(archiveSummary.manifestKey);
-  }
   return imported;
 }
 
@@ -9083,6 +9148,9 @@ async function persistHermesFallbackArtifacts(
       continue;
     }
     const relativePath = name.startsWith("wrapper/") || name.startsWith("inner/") ? name : `inner/${name}`;
+    if (!isUserFacingHermesArtifact(relativePath)) {
+      continue;
+    }
     const mimeType = defaultMimeTypeForHermesArtifact(relativePath);
     if (!isTextArtifact(relativePath, mimeType)) {
       continue;

@@ -50,6 +50,25 @@ def infer_inner_run_dir(run_dir: Path) -> Path | None:
         candidate = Path(value)
         if candidate.exists():
             return candidate
+    for candidate_file in ("index.json", "status.json", "summary.json"):
+        payload = read_json(run_dir / candidate_file)
+        if not isinstance(payload, dict):
+            continue
+        value = payload.get("inner_run_dir")
+        if isinstance(value, str) and value.strip():
+            candidate = Path(value.strip())
+            if candidate.is_dir():
+                return candidate
+    try:
+        import re
+        text = (run_dir / "hermes.stdout.log").read_text(errors="ignore")
+        matches = re.findall(r"/srv/alphabook/logs/corpus-(?:search|research)/[^\s\"'`]+", text)
+        for value in reversed(matches):
+            candidate = Path(value)
+            if candidate.is_dir():
+                return candidate
+    except Exception:
+        pass
     return None
 
 

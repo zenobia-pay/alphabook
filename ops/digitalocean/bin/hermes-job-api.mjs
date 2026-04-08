@@ -165,11 +165,45 @@ function inferInnerRunDir(runDir) {
       return explicitValue;
     }
   } catch {}
-  const wrapperIndex = readJson(path.join(runDir, "index.json"));
-  if (wrapperIndex?.inner_run_dir && fs.existsSync(wrapperIndex.inner_run_dir)) {
-    return wrapperIndex.inner_run_dir;
+  for (const filename of ["index.json", "status.json", "summary.json"]) {
+    const payload = readJson(path.join(runDir, filename));
+    if (payload?.inner_run_dir && statSafe(payload.inner_run_dir)?.isDirectory()) {
+      return payload.inner_run_dir;
+    }
   }
+  try {
+    const stdoutLog = fs.readFileSync(path.join(runDir, "hermes.stdout.log"), "utf8");
+    const matches = [...stdoutLog.matchAll(/\/srv\/alphabook\/logs\/corpus-(?:search|research)\/[^\s"'`]+/gu)];
+    for (let index = matches.length - 1; index >= 0; index -= 1) {
+      const candidate = matches[index]?.[0]?.trim();
+      if (candidate && statSafe(candidate)?.isDirectory()) {
+        return candidate;
+      }
+    }
+  } catch {}
   return null;
+}
+
+function isUserFacingHermesArtifactName(name) {
+  const normalized = String(name || "").replaceAll("\\", "/").replace(/^\/+/u, "").toLowerCase();
+  if (
+    normalized === "manifest.json"
+    || normalized === "run.log"
+    || normalized === "scoped-files.tsv"
+    || normalized === "briefing.md"
+    || normalized === "dataset.csv"
+    || normalized === "dataset.jsonl"
+    || normalized === "citation-index.json"
+    || normalized === "status.json"
+    || normalized === "hits/index.json"
+  ) {
+    return true;
+  }
+  return /^hits\/hit-\d+\.md$/u.test(normalized);
+}
+
+function summarizeUserFacingArtifacts(innerRunDir) {
+  return summarizeArtifacts(innerRunDir).filter((artifact) => isUserFacingHermesArtifactName(artifact.name));
 }
 
 function getCostSummary(innerRunDir) {
@@ -333,7 +367,7 @@ function getRunSummary(runDir) {
     recordCounts: innerManifest?.record_counts || null,
     cost,
     openai: index.openai || null,
-    artifacts: summarizeArtifacts(innerRunDir),
+    artifacts: summarizeUserFacingArtifacts(innerRunDir),
     archive: summarizeArchive(runDir),
   };
 }

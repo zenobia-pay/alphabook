@@ -83,8 +83,35 @@ async function inferInnerRunDir(runDir) {
       return explicit;
     }
   } catch {}
-  const index = await readJson(path.join(runDir, "index.json"));
-  return typeof index?.inner_run_dir === "string" ? index.inner_run_dir : null;
+  for (const filename of ["index.json", "status.json", "summary.json"]) {
+    const payload = await readJson(path.join(runDir, filename));
+    if (typeof payload?.inner_run_dir === "string" && payload.inner_run_dir.trim().length > 0) {
+      const candidate = payload.inner_run_dir.trim();
+      try {
+        const stat = await fs.stat(candidate);
+        if (stat.isDirectory()) {
+          return candidate;
+        }
+      } catch {}
+    }
+  }
+  try {
+    const stdoutLog = await fs.readFile(path.join(runDir, "hermes.stdout.log"), "utf8");
+    const matches = [...stdoutLog.matchAll(/\/srv\/alphabook\/logs\/corpus-(?:search|research)\/[^\s"'`]+/gu)];
+    for (let index = matches.length - 1; index >= 0; index -= 1) {
+      const candidate = matches[index]?.[0]?.trim();
+      if (!candidate) {
+        continue;
+      }
+      try {
+        const stat = await fs.stat(candidate);
+        if (stat.isDirectory()) {
+          return candidate;
+        }
+      } catch {}
+    }
+  } catch {}
+  return null;
 }
 
 function contentTypeFor(relativePath) {
