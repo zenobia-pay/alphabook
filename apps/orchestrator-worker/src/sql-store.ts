@@ -1947,8 +1947,35 @@ export class SqlAppStore implements AppStore {
   }
 
   async listRecentRunEvents(runId: string, limit: number): Promise<RunEventRecord[]> {
-    const all = await this.listRunEvents(runId);
-    return all.slice(Math.max(0, all.length - Math.max(1, limit)));
+    const normalizedLimit = Math.max(1, Math.floor(limit));
+    const rows = await this.db.query<any>(
+      `SELECT id, run_id, session_id, sequence, event, data_json, payload_ref, summary_text, phase, status, tool_call_id, runtime_id, retention_class, created_at
+       FROM (
+         SELECT id, run_id, session_id, sequence, event, data_json, payload_ref, summary_text, phase, status, tool_call_id, runtime_id, retention_class, created_at
+         FROM run_events
+         WHERE run_id = ?
+         ORDER BY sequence DESC
+         LIMIT ?
+       ) recent
+       ORDER BY sequence ASC`,
+      [runId, normalizedLimit],
+    );
+    return Promise.all(rows.rows.map(async (row) => ({
+      id: row.id,
+      runId: row.run_id,
+      sessionId: row.session_id,
+      sequence: Number(row.sequence),
+      event: row.event,
+      dataJson: row.payload_ref ? (await loadJsonBlob(this.blobStore, row.payload_ref) ?? parseJsonObject(row.data_json)) : parseJsonObject(row.data_json),
+      payloadRef: row.payload_ref,
+      summaryText: row.summary_text,
+      phase: row.phase,
+      status: row.status,
+      toolCallId: row.tool_call_id,
+      runtimeId: row.runtime_id,
+      retentionClass: row.retention_class,
+      createdAt: row.created_at,
+    })));
   }
 
   async listWorks(

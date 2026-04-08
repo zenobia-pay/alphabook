@@ -8,6 +8,7 @@ import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button
 import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { fetchRunLogs, type RunArtifactRecord } from "@/api";
 import { cn } from "@/lib/utils";
 import {
   ActionBarMorePrimitive,
@@ -35,7 +36,6 @@ import {
 } from "lucide-react";
 import { type FC, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuiState } from "@assistant-ui/store";
-import type { RunArtifactRecord } from "@/api";
 import { resolveFrontendImplementation } from "@/implementation";
 
 const AUTO_FOLLOW_THRESHOLD_PX = 96;
@@ -169,32 +169,58 @@ function summarizePlanToolLine(entry: PlanToolTraceRecord) {
   return `${label} — Running`;
 }
 
-function buildPlanToolTraceDetailText(trace: PlanToolTraceRecord[]) {
+function compactJson(value: unknown) {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function buildDetailedRunOutputTextFromPayload(payload: Record<string, unknown> | null) {
+  if (!payload) {
+    return "";
+  }
   const lines: string[] = [];
-  for (const entry of trace) {
-    const label = typeof entry.label === "string" && entry.label.trim().length > 0 ? entry.label.trim() : "Step";
-    const rationale = typeof entry.rationale === "string" ? entry.rationale.trim() : "";
-    const progress = Array.isArray(entry.progress)
-      ? entry.progress.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-      : [];
-    const result = entry.result && typeof entry.result === "object" ? entry.result as Record<string, unknown> : null;
-    const summary = result && typeof result.__summary === "string" ? result.__summary.trim() : "";
-    const error = result && typeof result.error === "string" ? result.error.trim() : "";
-    const header = `${label}${entry.state ? ` [${entry.state}]` : ""}`;
-    lines.push(header);
-    if (rationale) {
-      lines.push(`rationale: ${rationale}`);
+  const run = payload.run && typeof payload.run === "object" ? payload.run as Record<string, unknown> : null;
+  const backgroundJob = payload.backgroundJob && typeof payload.backgroundJob === "object"
+    ? payload.backgroundJob as Record<string, unknown>
+    : null;
+  const bridge = payload.bridge && typeof payload.bridge === "object"
+    ? payload.bridge as Record<string, unknown>
+    : null;
+  if (run) {
+    if (typeof run.id === "string") {
+      lines.push(`run_id=${run.id}`);
     }
-    for (const item of progress) {
-      lines.push(item);
+    if (typeof run.status === "string") {
+      lines.push(`status=${run.status}`);
     }
-    if (summary) {
-      lines.push(`summary: ${summary}`);
+  }
+  if (backgroundJob && typeof backgroundJob.status === "string") {
+    lines.push(`background_job_status=${backgroundJob.status}`);
+  }
+  if (bridge) {
+    for (const key of ["externalJobId", "wrapperRunDir", "innerRunDir", "innerRunId", "archivePrefix", "hermesSessionId"]) {
+      const value = bridge[key];
+      if (typeof value === "string" && value.trim().length > 0) {
+        lines.push(`${key}=${value}`);
+      }
     }
-    if (error) {
-      lines.push(error);
-    }
+  }
+  const rawLog = Array.isArray(payload.rawLog) ? payload.rawLog as Array<Record<string, unknown>> : [];
+  if (rawLog.length > 0 && lines.length > 0) {
     lines.push("");
+  }
+  for (const entry of rawLog) {
+    const timestamp = typeof entry.timestamp === "string"
+      ? entry.timestamp
+      : typeof entry.createdAt === "string"
+        ? entry.createdAt
+        : "";
+    const event = typeof entry.event === "string" ? entry.event : "log";
+    const data = "data" in entry ? compactJson(entry.data) : compactJson(entry);
+    lines.push(`${timestamp ? `${timestamp} ` : ""}${event}${data && data !== "{}" ? ` ${data}` : ""}`);
   }
   return lines.join("\n").trim();
 }
@@ -734,18 +760,6 @@ const AssistantMessage: FC = () => {
       : null
   ), [experimentProposalJson]);
   const isErrorMessage = phase === "error";
-  const progressText = useAuiState((state) => {
-    if (phase !== "progress") {
-      return "";
-    }
-    const textParts = state.message.content.flatMap((part) => {
-      if (part && typeof part === "object" && "type" in part && part.type === "text" && typeof part.text === "string") {
-        return [part.text];
-      }
-      return [];
-    });
-    return textParts.join("\n\n").trim();
-  });
   const rawPlanToolTrace = useAuiState((state) => {
     const metadata = state.message.metadata;
     const custom = metadata && typeof metadata === "object" && "custom" in metadata
@@ -754,7 +768,16 @@ const AssistantMessage: FC = () => {
     return custom?.toolCalls;
   });
   const planToolTrace = useMemo(() => readPlanToolTrace(rawPlanToolTrace), [rawPlanToolTrace]);
-  const planToolTraceDetailText = useMemo(() => buildPlanToolTraceDetailText(planToolTrace), [planToolTrace]);
+  const runRef = useAuiState((state) => {
+    const metadata = state.message.metadata;
+    const custom = metadata && typeof metadata === "object" && "custom" in metadata
+      ? metadata.custom as Record<string, unknown>
+      : null;
+    return {
+      runId: typeof custom?.runId === "string" ? custom.runId : null,
+      sessionId: typeof custom?.sessionId === "string" ? custom.sessionId : null,
+    };
+  });
   const hasPlanToolTrace = phase === "plan" && planToolTrace.length > 0;
 
   if (phase === "progress") {
@@ -770,7 +793,7 @@ const AssistantMessage: FC = () => {
     >
       <div className="aui-assistant-message-content wrap-break-word px-2 text-foreground leading-relaxed">
         <MessagePrimitive.Parts components={TOOL_PART_COMPONENTS} />
-        {hasPlanToolTrace ? <PlanToolTraceCard trace={planToolTrace} isRunning={isRunning} detailText={planToolTraceDetailText || progressText} /> : null}
+        {hasPlanToolTrace ? <PlanToolTraceCard trace={planToolTrace} isRunning={isRunning} runId={runRef.runId} sessionId={runRef.sessionId} /> : null}
         {experimentProposal ? <ExperimentApprovalCard proposal={experimentProposal} disabled={isRunning} /> : null}
         <MessageError />
       </div>
@@ -783,10 +806,44 @@ const AssistantMessage: FC = () => {
 };
 
 const DetailedRunOutputButton: FC<{
-  text: string;
-}> = ({ text }) => {
+  sessionId: string | null;
+  runId: string | null;
+}> = ({ sessionId, runId }) => {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [text, setText] = useState("");
+
+  useEffect(() => {
+    if (!open || !sessionId || !runId || loading || text.length > 0) {
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    void fetchRunLogs(sessionId, runId)
+      .then((payload) => {
+        if (!cancelled) {
+          setText(buildDetailedRunOutputTextFromPayload(payload));
+        }
+      })
+      .catch((fetchError) => {
+        if (!cancelled) {
+          setError(fetchError instanceof Error ? fetchError.message : "Failed to load run output.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [loading, open, runId, sessionId, text.length]);
+
   return (
-    <Dialog>
+    <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
         <button type="button" className="aui-progress-link-button">
           View detailed run output
@@ -797,7 +854,7 @@ const DetailedRunOutputButton: FC<{
           Detailed Run Output
         </DialogTitle>
         <div className="aui-run-output-dialog-body">
-          <pre className="aui-run-output-dialog-pre">{text}</pre>
+          <pre className="aui-run-output-dialog-pre">{loading ? "Loading run output..." : error ?? text}</pre>
         </div>
       </DialogContent>
     </Dialog>
@@ -807,8 +864,9 @@ const DetailedRunOutputButton: FC<{
 const PlanToolTraceCard: FC<{
   trace: PlanToolTraceRecord[];
   isRunning: boolean;
-  detailText?: string;
-}> = ({ trace, isRunning, detailText = "" }) => {
+  sessionId: string | null;
+  runId: string | null;
+}> = ({ trace, isRunning, sessionId, runId }) => {
   const [collapsed, setCollapsed] = useState(false);
   const lines = useMemo(
     () => trace.map((entry) => summarizePlanToolLine(entry)).filter((line) => line),
@@ -840,12 +898,12 @@ const PlanToolTraceCard: FC<{
             >
               {statusLabel}
             </span>
-            {detailText.trim().length > 0 ? (
+            {sessionId && runId ? (
               <span
                 className="aui-agentic-trace-inline-action"
                 onClick={(event) => event.stopPropagation()}
               >
-                <DetailedRunOutputButton text={detailText} />
+                <DetailedRunOutputButton sessionId={sessionId} runId={runId} />
               </span>
             ) : null}
           </div>

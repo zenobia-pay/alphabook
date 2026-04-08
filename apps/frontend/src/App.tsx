@@ -841,6 +841,29 @@ function hydrateConversationMessages(
   runState: AssistantSessionBootstrapPayload["runState"] | RunStateRecord | null | undefined,
 ): UiMessage[] {
   const hydrated = Array.isArray(rawMessages) ? rawMessages.map(hydrateStoredMessage) : [];
+  const run = runState?.run;
+  const toolTrace = Array.isArray(runState?.toolTrace) ? runState.toolTrace : [];
+  if (run && toolTrace.length > 0) {
+    for (let index = hydrated.length - 1; index >= 0; index -= 1) {
+      const message = hydrated[index];
+      if (message.role !== "assistant") {
+        continue;
+      }
+      if (message.metadata?.phase !== "plan") {
+        continue;
+      }
+      if (message.metadata?.runId !== run.id) {
+        continue;
+      }
+      hydrated[index] = {
+        ...message,
+        toolCalls: toolTrace.map((entry, traceIndex) =>
+          normalizeToolTraceEntry(entry as Record<string, unknown>, traceIndex),
+        ),
+      };
+      break;
+    }
+  }
   const progressMessage = buildPersistedRunLogMessage(sessionId, runState);
   if (!progressMessage) {
     return hydrated;
@@ -1919,6 +1942,8 @@ function messageToThreadMessage(
       citations: message.citations,
       phase: typeof message.metadata?.phase === "string" ? message.metadata.phase : null,
       toolCalls: message.toolCalls,
+      runId: typeof message.metadata?.runId === "string" ? message.metadata.runId : null,
+      sessionId: message.sessionId,
       experimentProposal:
         message.metadata?.experimentProposal && typeof message.metadata.experimentProposal === "object"
           ? message.metadata.experimentProposal

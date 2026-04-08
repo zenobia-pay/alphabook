@@ -5992,10 +5992,20 @@ async function resolveRunRuntimeContext(
   sessionId: string,
   run: RunRecord,
   _toolCalls: Awaited<ReturnType<AppStore["listToolCalls"]>>,
+  options: {
+    runEventLimit?: number | null;
+  } = {},
 ) {
+  const runEventLimit = typeof options.runEventLimit === "number" && options.runEventLimit >= 0
+    ? Math.floor(options.runEventLimit)
+    : null;
   const [runtimeInstances, runEvents, researchTasks] = await Promise.all([
     deps.store.listRuntimeInstances(sessionId),
-    deps.store.listRunEvents(run.id),
+    runEventLimit === 0
+      ? Promise.resolve([])
+      : runEventLimit === null
+        ? deps.store.listRunEvents(run.id)
+        : deps.store.listRecentRunEvents(run.id, runEventLimit),
     deps.store.listResearchTasksForRun(run.id),
   ]);
   const runtimeIds = collectRuntimeIdsFromRunEvents(runEvents);
@@ -14385,17 +14395,11 @@ export function createApp(inputDeps: CreateAppInput) {
       ? deps.store.getLatestBackgroundJobForRun(run.id)
       : Promise.resolve(null);
     const [{ runtimeInstances, runEvents: fullRunEvents, runtimeIds }, planMessage, backgroundJob] = await Promise.all([
-      resolveRunRuntimeContext(deps, sessionId, run, toolCalls),
+      resolveRunRuntimeContext(deps, sessionId, run, toolCalls, { runEventLimit }),
       deps.store.getLatestPlanMessageForRun(sessionId, run.id),
       backgroundJobPromise,
     ]);
-    const runEvents = runEventLimit === null
-      ? fullRunEvents
-      : runEventLimit === 0
-        ? []
-        : fullRunEvents.length > runEventLimit
-          ? fullRunEvents.slice(-runEventLimit)
-          : fullRunEvents;
+    const runEvents = fullRunEvents;
     const artifacts = includeArtifacts
       ? await loadRunDocumentArtifacts(deps, sessionId, run.id, runtimeIds)
       : [];
@@ -14414,6 +14418,26 @@ export function createApp(inputDeps: CreateAppInput) {
     };
   };
 
+  const stripBootstrapMessageToolTrace = (message: MessageRecord): MessageRecord => {
+    const metadata = message.metadata && typeof message.metadata === "object"
+      ? { ...(message.metadata as Record<string, unknown>) }
+      : {};
+    if ("toolCalls" in metadata) {
+      delete metadata.toolCalls;
+    }
+    const custom = metadata.custom && typeof metadata.custom === "object"
+      ? { ...(metadata.custom as Record<string, unknown>) }
+      : null;
+    if (custom && "toolCalls" in custom) {
+      delete custom.toolCalls;
+      metadata.custom = custom;
+    }
+    return {
+      ...message,
+      metadata,
+    };
+  };
+
   const handleAssistantSessionBootstrap = async (c: Context) => {
     const sessionId = c.req.param("sessionId") ?? "";
     const session = await deps.store.getSession(sessionId);
@@ -14429,11 +14453,12 @@ export function createApp(inputDeps: CreateAppInput) {
       return c.json({ error: "Authentication required." }, deps.auth?.isConfigured() ? 401 : 400);
     }
 
-    const [sessions, messages, runs] = await Promise.all([
+    const [sessions, rawMessages, runs] = await Promise.all([
       deps.store.listSessions(user.id),
       deps.store.listMessages(sessionId),
       deps.store.listRuns(sessionId),
     ]);
+    const messages = rawMessages.map(stripBootstrapMessageToolTrace);
     const preferredRun =
       runs.find((run) => run.status === "running" || run.status === "queued")
       ?? [...runs].sort((left, right) => right.startedAt.localeCompare(left.startedAt))[0]
