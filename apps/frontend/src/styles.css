@@ -688,6 +688,18 @@ button {
   border-radius: 999px;
 }
 
+.explore-search-submit:not(:disabled) {
+  background: #111111;
+  color: #ffffff;
+  border-color: #111111;
+}
+
+.explore-search-submit:not(:disabled):hover {
+  background: #1d1d1d;
+  color: #ffffff;
+  border-color: #1d1d1d;
+}
+
 .explore-search-submit svg {
   width: 16px;
   height: 16px;
@@ -697,41 +709,23 @@ button {
 .explore-thinking-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
   width: fit-content;
-  min-height: 32px;
-  padding: 0 12px;
-  border: 1px solid rgba(43, 93, 255, 0.12);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.82);
+  min-height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
   font-size: 0.92rem;
   color: rgba(52, 46, 40, 0.72);
   cursor: pointer;
-  transition: color 160ms ease, background 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+  transition: color 160ms ease;
 }
 
 .explore-thinking-toggle:hover {
-  border-color: rgba(43, 93, 255, 0.22);
   color: var(--accent-strong);
 }
 
 .explore-thinking-toggle.is-active {
-  border-color: rgba(43, 93, 255, 0.2);
-  background: rgba(43, 93, 255, 0.12);
   color: var(--accent-strong);
-  box-shadow: inset 0 0 0 1px rgba(43, 93, 255, 0.05);
-}
-
-.explore-thinking-toggle-indicator {
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: currentColor;
-  opacity: 0.42;
-}
-
-.explore-thinking-toggle.is-active .explore-thinking-toggle-indicator {
-  opacity: 1;
 }
 
 .explore-search-meta {

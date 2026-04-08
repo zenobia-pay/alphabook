@@ -240,6 +240,8 @@ const DEFAULT_EXPLORE_FILTERS: ExploreFilterState = {
 };
 const EXPLORE_PAGE_SIZE = 24;
 const GUEST_CLAIM_STORAGE_PREFIX = `${IMPLEMENTATION_ID}:guest-claimed:`;
+const PENDING_PROMPT_PARAM = "pendingPrompt";
+const PENDING_PROMPT_AUTO_SUBMIT_PARAM = "pendingPromptAuto";
 const LANGUAGE_DISPLAY_NAMES = typeof Intl !== "undefined"
   ? new Intl.DisplayNames(["en"], { type: "language" })
   : null;
@@ -593,6 +595,41 @@ function ensureLocalUserId(): string {
   const created = crypto.randomUUID();
   window.localStorage.setItem(USER_STORAGE_KEY, created);
   return created;
+}
+
+function buildPendingPromptReturnUrl(prompt: string) {
+  if (typeof window === "undefined") {
+    return "";
+  }
+  const url = new URL(window.location.href);
+  url.searchParams.set(PENDING_PROMPT_PARAM, prompt);
+  url.searchParams.set(PENDING_PROMPT_AUTO_SUBMIT_PARAM, "1");
+  return url.toString();
+}
+
+function readPendingPromptFromUrl() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  const url = new URL(window.location.href);
+  const prompt = url.searchParams.get(PENDING_PROMPT_PARAM)?.trim();
+  if (!prompt) {
+    return null;
+  }
+  return {
+    prompt,
+    autoSubmit: url.searchParams.get(PENDING_PROMPT_AUTO_SUBMIT_PARAM) === "1",
+  };
+}
+
+function clearPendingPromptFromUrl() {
+  if (typeof window === "undefined") {
+    return;
+  }
+  const url = new URL(window.location.href);
+  url.searchParams.delete(PENDING_PROMPT_PARAM);
+  url.searchParams.delete(PENDING_PROMPT_AUTO_SUBMIT_PARAM);
+  window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
 }
 
 function formatExploreLanguageLabel(value: string) {
@@ -3998,6 +4035,18 @@ export default function App() {
   }, [authState.loading, authState.user?.id]);
 
   useEffect(() => {
+    if (authState.loading || !authState.user || isSending) {
+      return;
+    }
+    const pendingPrompt = readPendingPromptFromUrl();
+    if (!pendingPrompt?.autoSubmit) {
+      return;
+    }
+    clearPendingPromptFromUrl();
+    void sendPrompt(pendingPrompt.prompt);
+  }, [authState.loading, authState.user, isSending]);
+
+  useEffect(() => {
     if (activeView === "assistant_document") {
       return;
     }
@@ -4458,7 +4507,14 @@ export default function App() {
       return;
     }
     void loadExploreWorks(true);
-  }, [activeView, exploreAppliedFilters, exploreRandomSeed, exploreQuery, exploreThinking]);
+  }, [activeView, exploreAppliedFilters, exploreRandomSeed, exploreQuery]);
+
+  useEffect(() => {
+    if (activeView !== "explore" || exploreQuery.trim().length === 0) {
+      return;
+    }
+    void loadExploreWorks(true);
+  }, [activeView, exploreThinking]);
 
   useEffect(() => {
     setExploreDraftFilters(exploreAppliedFilters);
@@ -5691,8 +5747,8 @@ export default function App() {
     if (!normalizedQuestion || isSending || authState.loading) {
       return;
     }
-    if (!currentUserId) {
-      window.location.href = buildSignInUrl(window.location.href);
+    if (authState.authConfigured && !authState.user) {
+      window.location.href = buildSignInUrl(buildPendingPromptReturnUrl(normalizedQuestion));
       return;
     }
 
@@ -6377,13 +6433,6 @@ export default function App() {
       && !isSending
       && recoveredActiveRunId == null
       && isConversationAccessIssue(loadError);
-    const assistantComposerNotice = authLocked ? (
-      <>
-        Sign in to start a research thread.{" "}
-        <a className="font-medium underline underline-offset-4" href={buildSignInUrl(window.location.href)}>Sign in</a>
-      </>
-    ) : undefined;
-
     return (
       <section className="assistant-page">
         {assistantSessionLoading ? (
@@ -6396,8 +6445,6 @@ export default function App() {
               showWelcome: false,
               onPrompt: sendPrompt,
               onCancel: cancelActiveRun,
-              composerDisabled: authLocked,
-              composerDisabledNotice: assistantComposerNotice,
               componentKey: `loading-${selectedSessionId ?? "new-thread"}`,
             })}
           </div>
@@ -6414,8 +6461,6 @@ export default function App() {
               artifacts: [],
               onPrompt: sendPrompt,
               onCancel: cancelActiveRun,
-              composerDisabled: authLocked,
-              composerDisabledNotice: assistantComposerNotice,
               componentKey: "assistant-landing",
             })}
           </div>
@@ -6428,8 +6473,6 @@ export default function App() {
               artifacts: runArtifacts,
               onPrompt: sendPrompt,
               onCancel: cancelActiveRun,
-              composerDisabled: authLocked,
-              composerDisabledNotice: assistantComposerNotice,
               componentKey: selectedSessionId ?? "new-thread",
             })}
           </div>
@@ -6687,8 +6730,7 @@ export default function App() {
                       setExploreThinking((current) => !current);
                     }}
                   >
-                    <span className="explore-thinking-toggle-indicator" aria-hidden="true" />
-                    <span>Thinking</span>
+                    <span>Thinking mode</span>
                   </button>
 
                   <Button
