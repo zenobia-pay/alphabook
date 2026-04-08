@@ -79,54 +79,8 @@ export const ALPHABOOK_IMPLEMENTATION: AlphaResearchImplementation = {
   },
 };
 
-export const ALPHAJUSTICE_IMPLEMENTATION: AlphaResearchImplementation = {
-  id: "alphajustice",
-  productName: "AlphaJustice",
-  siteName: "alpha justice",
-  siteOrigin: "https://alphajustice.org",
-  apiOrigin: "https://api.alphajustice.org",
-  contentOrigin: "https://cases.alphajustice.org",
-  siteDescription: "Search and compare United States Supreme Court cases with grounded, cited answers.",
-  corpusLabelSingular: "case",
-  corpusLabelPlural: "cases",
-  corpusDescription: "a corpus of United States Supreme Court cases",
-  routerDatasetGuidance: [
-    "AlphaJustice is a corpus research assistant over United States Supreme Court cases, not a general-purpose legal advice chatbot.",
-    "The indexed dataset is made of case-level metadata plus passage-level opinion text chunks.",
-    "For cases, you have case names, dates, citation-style metadata, doctrinal context, and indexed opinion excerpts, and deeper runs can open the full text of selected cases.",
-    "AlphaJustice is best at helping users search for doctrines, reasoning patterns, precedents, comparisons, and corpus-backed evidence across the case law dataset.",
-  ].join(" "),
-  assistantDisplayName: "AlphaJustice",
-  defaultUserName: "AlphaJustice User",
-  defaultReaderName: "AlphaJustice Reader",
-  adapterId: "supreme_court",
-  themeColor: "#eef2f7",
-  ogImageUrl: "https://alphajustice.org/social-card.svg",
-  explorePlaceholder: "Ask about a case, a doctrine, or the whole corpus...",
-  assistantWelcomeHeading: "Search and compare evidence across United States Supreme Court cases.",
-  emptyCorpusMessage: "No Supreme Court cases are loaded yet. Run the Supreme Court backfill to populate this implementation.",
-  assistantWelcomeSuggestions: [
-    {
-      icon: "search",
-      title: "Equal protection reasoning",
-      prompt: "Compare how the Supreme Court reasons about equal protection across major cases.",
-    },
-    {
-      icon: "heart",
-      title: "Free speech precedent",
-      prompt: "Find the strongest Supreme Court cases on political speech and explain the rule they establish.",
-    },
-  ],
-  feedLabels: {
-    summary: "Key precedent",
-    taxonomy: "Browse by doctrine",
-    fallback: "From the docket",
-  },
-};
-
 const IMPLEMENTATIONS = new Map<string, AlphaResearchImplementation>([
   [ALPHABOOK_IMPLEMENTATION.id, ALPHABOOK_IMPLEMENTATION],
-  [ALPHAJUSTICE_IMPLEMENTATION.id, ALPHAJUSTICE_IMPLEMENTATION],
 ]);
 
 export function getImplementationConfig(id?: string | null): AlphaResearchImplementation {

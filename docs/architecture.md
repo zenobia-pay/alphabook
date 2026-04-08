@@ -1,6 +1,6 @@
 # Architecture
 
-AlphaBook is now organized as a core-plus-reference-app monorepo.
+Alpha Research is organized as a core-plus-reference-app monorepo.
 
 ## Layers
 
@@ -21,6 +21,10 @@ AlphaBook is now organized as a core-plus-reference-app monorepo.
   - Gutenberg text cleanup and chunking
   - Gutenberg storage key conventions
   - Gutenberg-specific workspace schema description
+- `packages/source-fixture`
+  - minimal non-book adapter example
+  - minimal repository example
+  - local ingest preview/persistence example
 
 ### Reference app
 
@@ -45,10 +49,10 @@ Reasons:
 
 - the abstractions are still settling
 - AlphaBook is the primary proving ground
-- the Gutenberg adapter is the only real source adapter today
+- the production path is still optimized for the Gutenberg-backed reference app
 
 The current strategy is:
 
 1. Extract generic concerns into workspace packages.
 2. Keep AlphaBook running as the flagship implementation.
-3. Add more source adapters before considering a repo split.
+3. Keep the repo clearly extensible without pretending the platform is turnkey yet.

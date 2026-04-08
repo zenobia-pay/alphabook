@@ -17,6 +17,7 @@
 - ensure the adapter registry works with at least one non-book adapter
 - keep the fixture corpus adapter and repository example passing
 - keep the fixture ingest demo path passing
+- keep the implementation scaffold current with the docs
 - keep repository facade tests passing against the legacy store
 - keep the DB-backed neutral repository tests passing
 

@@ -172,6 +172,7 @@ test("document chat endpoint accepts documentIds and streams neutral tool aliase
       userId: "11111111-1111-1111-1111-111111111111",
       message: "Find me books about sadness",
       documentIds: ["work-1"],
+      mode: "semantic",
     }),
   });
 
@@ -373,7 +374,7 @@ test("document chat infers Agentic mode from the raw message before runner selec
 
     assert.equal(response.status, 200);
     const body = await response.text();
-    assert.match(body, /Starting an Agentic search run on this thread/);
+    assert.match(body, /I’ve selected Agentic search/);
     assert.match(body, /"completionMode":"agentic"/);
     assert.doesNotMatch(body, /semantic_deep_search/);
     assert.equal(hermesLaunchPayloads.length, 1);
@@ -581,7 +582,7 @@ test("document chat launches Agentic search from the router decision instead of 
 
     assert.equal(response.status, 200);
     const body = await response.text();
-    assert.match(body, /Starting an Agentic search run on this thread/);
+    assert.match(body, /I’ve selected Agentic search/);
     assert.match(body, /"completionMode":"agentic"/);
     assert.doesNotMatch(body, /semantic_deep_search/);
     assert.equal(hermesLaunchPayloads.length, 1);
@@ -747,7 +748,7 @@ test("document chat launches Agentic search even when the user only says use age
 
     assert.equal(response.status, 200);
     const body = await response.text();
-    assert.match(body, /Starting an Agentic search run on this thread/);
+    assert.match(body, /I’ve selected Agentic search/);
     assert.match(body, /Agentic Search Progress/);
     assert.match(body, /Scoped 72644 files from the precomputed corpus index/);
     assert.equal(hermesLaunchPayloads.length, 1);

@@ -1,15 +1,8 @@
 # Step-By-Step Setup For Deep Research On A Large Text Corpus
 
-This is the fastest end-to-end guide for getting Alpha Research running on a large text corpus.
+This is the fastest end-to-end guide for getting Alpha Research running on your own corpus.
 
-It is written for a developer who wants:
-
-- a retrieval layer over a corpus
-- runtime-backed deep research over hydrated source files
-- grounded answers with citations
-- a deployable implementation with its own branding and URL
-
-If you just want to validate the repo locally first, start with [oss-quickstart.md](oss-quickstart.md). If you want to bring your own dataset all the way through ingest, retrieval, and deployment, follow this guide.
+The repo is extensible, not turnkey. You can adapt it to another corpus, but you should expect to add adapter code, ingest wiring, implementation config, and deployment setup.
 
 ## What You Are Building
 
@@ -19,10 +12,12 @@ Alpha Research has three major layers:
 2. a research stack that retrieves evidence, hydrates runtime workspaces, and synthesizes cited answers
 3. an implementation layer that gives your dataset its own name, origins, prompts, and deployment wrappers
 
-The existing examples are:
+The reference points in this repo are:
 
-- AlphaBook: books via `packages/source-gutenberg`
-- AlphaJustice: Supreme Court cases via `packages/source-supreme-court`
+- `packages/source-gutenberg` for the production adapter path
+- `packages/source-fixture` for the smallest non-book example
+- `packages/implementations` for implementation metadata
+- `apps/ingest/src/index.ts` for ingest entrypoints
 
 ## Before You Start
 
@@ -32,18 +27,18 @@ You need:
 - a relational database for production-style ingest and retrieval
 - an R2-compatible object store
 - an OpenAI API key
-- Cloudflare credentials only if you plan to access D1, Vectorize, or the static content worker
+- Cloudflare credentials only if you plan to use D1, Vectorize, or the static content worker
 
-For local validation only, you can skip the relational DB and R2 and use the preview-mode ingest commands.
+For local validation only, you can skip the relational DB and R2 and use the preview-mode ingest command.
 
 ## Step 1: Install And Validate The Repo
 
 ```bash
 npm install
-npm run validate:oss
+npm run validate:extensible
 ```
 
-This confirms the supported OSS surface is healthy before you add your own dataset.
+This confirms the supported extensible surface is healthy before you add your own dataset.
 
 ## Step 2: Study The Reference Paths
 
@@ -51,19 +46,19 @@ Read these first:
 
 - [adapter-architecture.md](adapter-architecture.md)
 - [bring-your-own-corpus.md](bring-your-own-corpus.md)
-- [alphajustice.md](alphajustice.md)
+- [oss-supported-surface.md](oss-supported-surface.md)
 
-Then inspect the concrete examples:
+Then inspect:
 
 - `packages/source-fixture`
-- `packages/source-supreme-court`
+- `packages/source-gutenberg`
 - `packages/implementations`
 - `apps/ingest/src/index.ts`
 
 If you are choosing between examples:
 
-- start from `source-fixture` for the smallest possible non-book example
-- start from `source-supreme-court` if you want a more realistic second implementation with its own deployment wrappers
+- start from `source-fixture` for the smallest non-book example
+- start from `source-gutenberg` only when you need a production-scale adapter with source-specific ingest and artifact logic
 
 ## Step 3: Create A Source Adapter
 
@@ -76,8 +71,8 @@ packages/source-my-corpus/
 Your package should export:
 
 - a `CorpusAdapter`
-- example or real source records
-- a `CorpusRepository` implementation or mapping layer
+- source records or a mapping layer
+- a `CorpusRepository` implementation or repository adapter
 
 At minimum, your adapter should define:
 
@@ -89,16 +84,10 @@ At minimum, your adapter should define:
 - `text.normalizeText`
 - `text.chunkText`
 
-Optional but recommended:
-
-- `capabilities.renderedDocuments`
-- retrieval hooks for query expansion or metadata scoring
-- static content hints if your corpus has its own reader pages
-
 Use these as references:
 
 - `packages/source-fixture/src/index.ts`
-- `packages/source-supreme-court/src/index.ts`
+- `packages/source-gutenberg/src/adapter.ts`
 
 ## Step 4: Map Your Corpus Into Neutral Records
 
@@ -122,11 +111,11 @@ That is the minimum needed for retrieval plus runtime hydration.
 
 ## Step 5: Register The Adapter
 
-Add your adapter to the shared registry in:
+Add your adapter to the registry in:
 
 - `packages/shared/src/adapters.ts`
 
-If your corpus should become the active implementation default, make that choice in the implementation config layer, not by hardcoding it into the core platform.
+If your corpus should become the active implementation default, make that choice in the implementation config layer, not by hardcoding it into the platform packages.
 
 ## Step 6: Create An Implementation Config
 
@@ -147,27 +136,24 @@ This is where you define:
 - default reader/user naming
 - default adapter id
 
-This keeps the shared app code reusable while letting your corpus have its own identity.
-
 ## Step 7: Add Implementation Wrappers
 
-Create separate app wrappers for your implementation if you want separate deployment targets.
+If your corpus should have its own deployment surface, scaffold wrappers with:
 
-Typical pattern:
-
-```text
-apps/my-corpus-frontend/
-apps/my-corpus-orchestrator/
+```bash
+npm run implementation:scaffold -- \
+  --id mycorpus \
+  --product-name "MyCorpus" \
+  --site-origin https://mycorpus.org \
+  --api-origin https://api.mycorpus.org \
+  --content-origin https://content.mycorpus.org
 ```
 
-The existing example is:
+That creates:
 
-- `apps/alphajustice-frontend`
-
-These wrappers provide:
-
-- env/config for the shared frontend app
-- implementation-specific deploy targets and origins
+- `apps/mycorpus-frontend`
+- `apps/mycorpus-deployment`
+- `apps/mycorpus-runtime`
 
 ## Step 8: Wire Ingest For Your Corpus
 
@@ -178,24 +164,21 @@ Add a corpus-specific ingest command in:
 There are two useful levels:
 
 1. local preview mode
-   This prepares artifact keys, chunks, and metadata without requiring DB/R2.
 2. persistent ingest mode
-   This writes metadata, chunks, and artifacts into the relational store and R2.
 
 For a new corpus, get preview mode working first. Then add the production persistence path.
 
 Existing commands to copy:
 
 - `ingest-fixture`
-- `ingest-supreme-court-demo`
+- `ingest-gutenberg`
 
 ## Step 9: Test The Corpus Locally
 
-First verify preview mode:
+Verify preview mode:
 
 ```bash
 npx tsx apps/ingest/src/index.ts ingest-fixture
-npx tsx apps/ingest/src/index.ts ingest-supreme-court-demo
 ```
 
 Then run your new corpus command and confirm it emits:
@@ -208,10 +191,8 @@ Then run your new corpus command and confirm it emits:
 Next validate the repo again:
 
 ```bash
-npm run validate:oss
+npm run validate:extensible
 ```
-
-If your new implementation has its own wrappers, also run its app-specific checks.
 
 ## Step 10: Provision Infra For Production-Style Use
 
@@ -224,7 +205,7 @@ To run real deep research over a large corpus, provision:
 Apply DB migrations:
 
 ```bash
-D1_DATABASE_NAME=alphabook-app npm run migrate
+DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/alphabook npm run migrate
 ```
 
 Set the environment variables documented in [environment.md](environment.md).
@@ -237,8 +218,8 @@ Your end state should be:
 
 - corpus records in the relational store
 - chunk rows indexed for retrieval
-- artifact files in R2
-- optional rendered HTML/manifests in R2
+- artifact files in object storage
+- optional rendered HTML/manifests in object storage
 
 If your corpus is very large, plan for batch ingestion and resumable checkpoints rather than a single monolithic run.
 
@@ -250,12 +231,6 @@ Start the core services:
 npm run dev:orchestrator
 npm run dev:runtime
 npm run dev:frontend
-```
-
-If you prefer the Node-backed local API harness:
-
-```bash
-PORT=8788 npm run dev:node -w @alphabook/orchestrator-worker
 ```
 
 At this point the stack should be able to:
@@ -271,14 +246,10 @@ At this point the stack should be able to:
 If you want a separate public product, deploy:
 
 - your implementation frontend wrapper
-- your implementation orchestrator wrapper
+- your API and worker config from `apps/<id>-deployment`
+- your runtime service if deep workspace analysis is enabled
 
-This is the AlphaJustice pattern:
-
-- separate worker name
-- separate frontend worker
-- separate URL
-- shared core code underneath
+The scaffold is Linux-first. It is not a one-click deploy.
 
 ## Step 14: Make It Easy For The Next Person
 
@@ -294,25 +265,23 @@ If the only way to repeat your setup is “read the source,” the setup is not 
 
 ## Practical Checklist
 
-Use this checklist in order:
-
 1. `npm install`
-2. `npm run validate:oss`
+2. `npm run validate:extensible`
 3. read `adapter-architecture.md`
-4. clone `source-fixture` or `source-supreme-court`
+4. clone `source-fixture` or study `source-gutenberg`
 5. create a new adapter package
 6. create a repository layer for neutral document/chunk/file records
 7. register the adapter
 8. add an implementation config
-9. add frontend/orchestrator wrappers if needed
+9. add wrappers if needed
 10. add preview-mode ingest
 11. add persistent ingest
 12. run local deep research against the corpus
-13. deploy separate frontend/API targets
+13. deploy separate frontend/API/runtime targets as needed
 
 ## Where To Go Next
 
 - [oss-quickstart.md](oss-quickstart.md)
 - [bring-your-own-corpus.md](bring-your-own-corpus.md)
 - [adapter-architecture.md](adapter-architecture.md)
-- [alphajustice.md](alphajustice.md)
+- [oss-supported-surface.md](oss-supported-surface.md)

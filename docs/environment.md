@@ -50,7 +50,6 @@ For any new implementation, do not reuse another implementation's storage bucket
 - `S3_ACCESS_KEY_ID` or `SPACES_ACCESS_KEY_ID`
 - `S3_SECRET_ACCESS_KEY` or `SPACES_SECRET_ACCESS_KEY`
 - `S3_REGION` or `SPACES_REGION`
-- `COURTLISTENER_API_TOKEN`
 - `GUTENBERG_MIRROR_ROOT`
 - `GUTENBERG_METADATA_FEED_URL`
 - `OPENAI_API_KEY`
@@ -58,7 +57,6 @@ For any new implementation, do not reuse another implementation's storage bucket
 - `MIRROR_BATCH_SIZE`
 - `MIRROR_CHECKPOINT_PATH`
 - `BOOK_HTML_BATCH_SIZE`
-- `SUPREME_COURT_BATCH_SIZE`
 
 ## DigitalOcean Gutenberg Mirror Box
 

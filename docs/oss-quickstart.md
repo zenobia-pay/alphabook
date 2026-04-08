@@ -15,7 +15,7 @@ npm install
 ## 2. Run The Supported OSS Validation Matrix
 
 ```bash
-npm run validate:oss
+npm run validate:extensible
 ```
 
 This validates the supported reusable surface:
@@ -41,24 +41,7 @@ This exercises a non-book corpus path through:
 
 If `D1_DATABASE_NAME` and the R2 env vars are not set, this command falls back to a local preview mode and prints the prepared artifact keys and metadata payload instead of persisting them.
 
-## 4. Run The Supreme Court Demo
-
-```bash
-npx tsx apps/ingest/src/index.ts ingest-supreme-court-demo
-```
-
-This exercises a second implementation path that is not book-shaped:
-
-- the `supreme_court` corpus adapter
-- AlphaJustice implementation metadata
-- case-oriented rendered content keys
-- neutral repository search/chunk/file contracts
-
-Like the fixture command, this runs in local preview mode when DB and R2 env vars are absent.
-
-The implementation layout is documented in [alphajustice.md](alphajustice.md).
-
-## 5. Add Your Own Corpus
+## 4. Add Your Own Corpus
 
 Start from:
 
@@ -71,7 +54,7 @@ The shortest path is:
 1. add a new source adapter package
 2. implement metadata normalization, storage keys, and retrieval hooks
 3. wire that adapter into ingest and repository flows
-4. validate with `npm run validate:oss`
+4. validate with `npm run validate:extensible`
 
 If you want the full operational path, [bring-your-own-corpus.md](bring-your-own-corpus.md) now includes a step-by-step setup guide covering:
 
@@ -84,7 +67,7 @@ If you want the full operational path, [bring-your-own-corpus.md](bring-your-own
 - deployment verification
 - implementation isolation rules
 
-## 6. Understand The Product Boundary
+## 5. Understand The Product Boundary
 
 AlphaBook itself stays book-centric:
 

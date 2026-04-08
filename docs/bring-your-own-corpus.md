@@ -2,7 +2,7 @@
 
 This repo can support another text corpus without changing AlphaBook's live book product, but the integration path is still developer-oriented.
 
-Before you start, read [implementation-isolation.md](implementation-isolation.md). The intended default is that each implementation gets its own wrappers, storage bucket, queues, runtime service, and branded config.
+Before you start, read [implementation-isolation.md](implementation-isolation.md). New implementations should get their own wrappers, storage bucket, queues, runtime service, and branded config.
 
 ## What Stays AlphaBook-Specific
 
@@ -18,13 +18,13 @@ Before you start, read [implementation-isolation.md](implementation-isolation.md
 - runtime hydration and artifact flow
 - generic adapter registry and neutral document/tool contracts
 - the orchestrator repository facade in `apps/orchestrator-worker`
+- the ingest primitives in `apps/ingest`
 
 ## Current Examples
 
 - `packages/source-gutenberg`: production book corpus adapter
 - `packages/source-fixture`: minimal non-book corpus adapter and repository
-- `packages/source-supreme-court`: second non-book adapter, currently a demo corpus path
-- `apps/ingest`: local ingest entrypoints for fixture and Supreme Court demos
+- `apps/ingest`: local ingest entrypoints for the production adapter and fixture demo
 
 ## End-To-End Goal
 
@@ -32,23 +32,18 @@ When you finish adding a new corpus, the expected shape is:
 
 - a new source package under `packages/`
 - a new implementation entry in `packages/implementations`
-- isolated wrapper apps under `apps/`
+- isolated wrapper/config surfaces
 - isolated infra resources
-- isolated runtime service config
 - a working ingest path
 - a working deployed surface whose `/health`, `/api/v1/documents`, and content URLs all resolve without borrowing another implementation's resources
 
 If you cannot check each of those boxes, the implementation is not turnkey yet.
 
-## Step-By-Step Setup For Another Text Set
+## Step-By-Step Setup
 
-Use this sequence when adding a new corpus such as court opinions, transcripts, research papers, manuals, or internal documents.
+### 1. Pick the isolation id
 
-### 1. Pick the isolation id and product shape
-
-Decide the canonical implementation id before you write code. This id should be short, stable, and safe for resource names.
-
-Examples:
+Choose a short stable id such as:
 
 - `mycorpus`
 - `casebase`
@@ -60,10 +55,9 @@ That id will be reused for:
 - queue names
 - object storage bucket names
 - runtime service names
-- cookie namespace
 - implementation config lookup
 
-Do not start by copying AlphaBook or AlphaJustice resource names and planning to clean them up later.
+Do not start by copying AlphaBook resource names and planning to clean them up later.
 
 ### 2. Create a new source package
 
@@ -156,12 +150,10 @@ Preview mode is valuable because it lets you validate:
 - chunking behavior
 - rendered document output
 
-before you provision infrastructure.
-
 Follow the pattern used by:
 
 - `ingest-fixture`
-- `ingest-supreme-court-demo`
+- `ingest-gutenberg`
 
 If your corpus is production-sized, add a backfill path and a repeatable incremental ingest path instead of a one-shot demo command.
 
@@ -198,29 +190,11 @@ This creates:
 - `apps/mycorpus-deployment`
 - `apps/mycorpus-runtime`
 
-Those files point at shared code, but they default to isolated resource names like:
-
-- `mycorpus-corpus`
-- `mycorpus-ingest`
-- `mycorpus-jobs`
-- `mycorpus-runtime`
-
 ### 9. Add the implementation config
 
 If the new corpus should be its own product, add an implementation entry in `packages/implementations`.
 
-That config should define:
-
-- implementation id
-- site name / product name
-- site origin
-- API origin
-- content origin
-- theme / branding values
-
-If you only need the corpus inside an internal or single-product deployment, you may not need separate wrappers.
-
-At minimum, the implementation config should define:
+At minimum, that config should define:
 
 - implementation id
 - product and site names
@@ -240,27 +214,7 @@ For a real deployed corpus, make sure these exist:
 - API env vars and secrets
 - runtime service config if workspace analysis is enabled
 
-The shared env list lives in `docs/environment.md`.
-
-The practical minimum for ingest persistence is:
-
-- `DATABASE_URL`
-- `S3_BUCKET_NAME` or `SPACES_BUCKET_NAME`
-- `S3_ENDPOINT` or `SPACES_ENDPOINT`
-- `S3_ACCESS_KEY_ID` or `SPACES_ACCESS_KEY_ID`
-- `S3_SECRET_ACCESS_KEY` or `SPACES_SECRET_ACCESS_KEY`
-
-The practical minimum for the deployed orchestrator is:
-
-- `DATABASE_URL`
-- `OPENAI_API_KEY`
-- `OPENAI_MODEL`
-- `OPENAI_SYNTH_MODEL`
-- `OPENAI_EMBEDDING_MODEL`
-- S3-compatible storage credentials
-- runtime service configuration
-
-For a separate branded implementation, do not reuse another implementation's bucket, queue, or runtime names. The wrapper config should point at implementation-scoped resources.
+The shared env list lives in [environment.md](environment.md).
 
 Practical resource checklist for implementation id `mycorpus`:
 
@@ -269,44 +223,17 @@ Practical resource checklist for implementation id `mycorpus`:
 - queue: `mycorpus-jobs`
 - runtime service: `mycorpus-runtime`
 
-### 11. Configure secrets and environment
-
-Before deploy, make sure the implementation wrappers and ingest path have the right secrets.
-
-At minimum:
-
-- `DATABASE_URL`
-- `OPENAI_API_KEY`
-- `S3_BUCKET_NAME` or `SPACES_BUCKET_NAME`
-- `S3_ENDPOINT` or `SPACES_ENDPOINT`
-- `S3_ACCESS_KEY_ID` or `SPACES_ACCESS_KEY_ID`
-- `S3_SECRET_ACCESS_KEY` or `SPACES_SECRET_ACCESS_KEY`
-
-Source-specific examples:
-
-- `COURTLISTENER_API_TOKEN` for Supreme Court ingestion
-- `GUTENBERG_MIRROR_ROOT` for Gutenberg mirror ingestion
-
-For Linux deployments, verify both:
-
-1. the API/worker env files point at implementation-scoped resource names
-2. the deployed services have the same env values that you tested locally
-
-### 12. Validate locally
+### 11. Validate locally
 
 Run the supported validation matrix:
 
 ```bash
-npm run validate:oss
+npm run validate:extensible
 ```
 
 Then run your new ingest entrypoint in preview mode first, followed by persistence mode with real env vars.
 
-If you added wrappers, also run their typechecks explicitly.
-
-Also verify that the scaffolded wrapper files still point at isolated names after any manual edits.
-
-### 13. Deploy each service explicitly
+### 12. Deploy each service explicitly
 
 Deploy each implementation surface separately.
 
@@ -320,9 +247,7 @@ docker compose up -d
 
 If you use the runtime path, deploy or provision the `mycorpus-runtime` service as well.
 
-Do not treat a successful frontend build as proof the implementation is complete.
-
-### 14. Verify the live surface
+### 13. Verify the live surface
 
 Before calling the new corpus ready, check all of these:
 
@@ -333,28 +258,9 @@ Before calling the new corpus ready, check all of these:
 5. rendered content URLs resolve when enabled
 6. the runtime path works if deep analysis is enabled
 7. `/skill.md` is branded to the new implementation
-8. `/health` reports the new implementation service name and queue names
-9. no public endpoint leaks another implementation's bucket, queue, domain, or brand
-
-### 15. Run the overlap check
-
-Before merging, inspect the new implementation for accidental reuse.
-
-Search for:
-
-- another implementation's bucket name
-- another implementation's queue name
-- another implementation's runtime app name
-- another implementation's domain
-- another implementation's product name
-
-If any of those appear in the new implementation wrapper config or setup docs, treat that as a bug until proven intentional.
-
-Do not treat a successful frontend build as a complete launch. A corpus deployment is only real when the API, DB, queue, and object store are all wired correctly.
+8. no public endpoint leaks another implementation's bucket, queue, domain, or brand
 
 ## Short Checklist
-
-Use this as the implementation checklist:
 
 1. choose a stable implementation id
 2. create `packages/source-my-corpus`
@@ -366,10 +272,9 @@ Use this as the implementation checklist:
 8. scaffold isolated frontend and deployment config
 9. add implementation config
 10. provision DB, implementation-scoped object storage, queues, secrets, and runtime config
-11. run `npm run validate:oss`
+11. run `npm run validate:extensible`
 12. deploy frontend, API, worker, and runtime as needed
 13. verify live `health`, `documents`, retrieval, `skill.md`, and content endpoints
-14. run the overlap check
 
 ## What Is Still Required For A New Corpus
 
@@ -377,4 +282,4 @@ Use this as the implementation checklist:
 - a repository implementation or mapping layer that can return neutral document/chunk/file records
 - any source-specific scoring/query hooks you need
 
-The platform package is the stable starting point. AlphaBook-specific packages should only be used when you explicitly want the current book product behavior.
+The platform packages are the stable starting point. AlphaBook-specific packages should only be used when you explicitly want the current book product behavior.

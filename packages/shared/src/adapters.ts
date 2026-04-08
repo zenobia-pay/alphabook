@@ -1,9 +1,8 @@
 import { createCorpusAdapterRegistry } from "@alphabook/platform";
 import { gutenbergCorpusAdapter } from "@alphabook/source-gutenberg/adapter";
-import { supremeCourtCorpusAdapter } from "@alphabook/source-supreme-court/adapter";
 
 const adapterRegistry = createCorpusAdapterRegistry({
-  adapters: [gutenbergCorpusAdapter, supremeCourtCorpusAdapter],
+  adapters: [gutenbergCorpusAdapter],
   defaultAdapterId: gutenbergCorpusAdapter.id,
 });
 

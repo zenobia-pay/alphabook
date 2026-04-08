@@ -235,6 +235,9 @@ test("SQL store serves explore works from feed snapshots without hydrating the f
       if (sql.includes("COUNT(*) AS count")) {
         return { rows: [{ count: "33328" }] as T[] };
       }
+      if (sql.includes("FROM site_stats")) {
+        return { rows: [] as T[] };
+      }
       if (sql.includes("FROM works ORDER BY title ASC") || sql.includes("FROM work_authors") || sql.includes("FROM work_subjects")) {
         throw new Error(`Unexpected corpus hydration query: ${sql}`);
       }

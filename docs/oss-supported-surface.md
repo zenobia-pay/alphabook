@@ -6,7 +6,6 @@ This repository is open sourced as:
 
 - `Alpha Research`, the shared platform
 - `AlphaBook`, the book-centric reference app
-- `AlphaJustice`, a Supreme Court implementation on the same architecture
 
 That split is deliberate. `alpha-book.org` remains book-specific, and the live browser product is not being rebranded into a generic corpus UI.
 
@@ -20,14 +19,11 @@ The supported open-source integration surface is:
 - `packages/platform`
 - `packages/source-gutenberg`
 - `packages/source-fixture`
-- `packages/source-supreme-court`
 - `apps/ingest` via adapter-aware ingest flows
 - `apps/orchestrator-worker` repository, retrieval, and runtime seams used by the fixture and adapter tests
-- `apps/alphajustice-frontend`
-- `apps/alphajustice-runtime`
 - the neutral HTTP API under `/api/v1/documents/*`
 
-These are the packages and codepaths covered by the OSS validation matrix in `npm run validate:oss`.
+These are the packages and codepaths covered by `npm run validate:extensible` and the compatibility alias `npm run validate:oss`.
 
 ## Compatibility Surface
 
@@ -53,15 +49,10 @@ These parts of the repository are reference-app code, not generic platform requi
 
 - `apps/frontend`
 - `apps/book-content-worker`
-- `apps/alphajustice-frontend`
 - book-reader and static book HTML flows
 - AlphaBook auth and account UX
 - AlphaBook social/profile/feed features
 - production `alpha-book.org` routing and branding
-
-AlphaJustice is a second implementation rather than a generic shell. It shares the platform code, but still has its own implementation-specific branding, routes, deployment targets, and isolated resource names.
-
-They can stay book-centric without blocking reuse of the platform layer.
 
 ## Not Yet Generic
 
@@ -97,13 +88,13 @@ To make the schema boundary explicit, the database now also exposes additive neu
 
 ## Validation Contract
 
-The supported OSS validation entry point is:
+The supported extensibility validation entry point is:
 
 ```bash
-npm run validate:oss
+npm run validate:extensible
 ```
 
-This validation matrix also runs in CI through `.github/workflows/oss-validate.yml`.
+`npm run validate:oss` remains as an alias for compatibility with older docs and CI wiring.
 
 That command covers:
 
@@ -111,7 +102,6 @@ That command covers:
 - platform typechecks and tests
 - adapter typechecks and tests
 - ingest typechecks and tests
-- implementation frontend wrapper typechecks
 - shared compatibility typechecks
 - focused orchestrator repository/store tests
 

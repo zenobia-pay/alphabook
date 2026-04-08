@@ -4,6 +4,8 @@ __pycache__/
 *.pyc
 .wrangler/
 .dev.vars
+.env
+apps/**/.env
 node_modules/
 dist/
 coverage/
@@ -16,4 +18,5 @@ public/
 apps/frontend/public/@skill.md
 apps/frontend/public/skill.md
 data/
+output/
 .gstack/

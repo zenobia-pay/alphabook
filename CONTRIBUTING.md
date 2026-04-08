@@ -1,11 +1,10 @@
 # Contributing
 
-Alpha Research is an open-source corpus research platform with `AlphaBook` and `AlphaJustice` as reference implementations.
+Alpha Research is an open-source corpus research platform with `AlphaBook` as the current reference implementation.
 
 ## Repo Shape
 
 - `apps/frontend`: AlphaBook web app
-- `apps/alphajustice-frontend`: AlphaJustice web app wrapper
 - `apps/orchestrator-worker`: API and orchestration layer
 - `apps/runtime`: bounded runtime for hydrated workspace analysis
 - `apps/ingest`: ingest pipeline for source adapters
@@ -13,7 +12,7 @@ Alpha Research is an open-source corpus research platform with `AlphaBook` and `
 - `packages/corpus-text`: text embedding helpers
 - `packages/implementations`: implementation-specific origins, branding, and prompt configuration
 - `packages/source-gutenberg`: Project Gutenberg-specific ingest and storage adapter
-- `packages/source-supreme-court`: Supreme Court-specific ingest and storage adapter
+- `packages/source-fixture`: minimal non-book adapter used to validate extensibility
 - `packages/shared`: AlphaBook-facing compatibility contracts and exports
 - `packages/db`: database client and migrations
 
@@ -21,12 +20,12 @@ Alpha Research is an open-source corpus research platform with `AlphaBook` and `
 
 ```bash
 npm install
-npm run validate:oss
+npm run validate:extensible
 ```
 
 For app-specific commands, start with [README.md](README.md).
 
-`npm run validate:oss` is the supported validation entry point for the reusable open-source platform surface. If you change AlphaBook- or AlphaJustice-specific app code outside that surface, run the relevant package-level checks too.
+`npm run validate:extensible` is the supported validation entry point for the reusable platform surface. `npm run validate:oss` remains as a compatibility alias. If you change AlphaBook-specific app code outside that surface, run the relevant package-level checks too.
 
 ## License
 
