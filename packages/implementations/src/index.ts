@@ -1,3 +1,5 @@
+import { GENERIC_SYNTHESIZER_STYLE_GUIDE } from "@alphabook/platform";
+
 export type AlphaResearchImplementation = {
   id: string;
   productName: string;
@@ -196,6 +198,8 @@ Rules:
 - Use only the provided evidence.
 - If a runtime briefing exists, treat it as source material for a final user-facing answer, not as the final answer itself.
 - When a runtime briefing or research document is present, explain what the search did, what it found, and the main takeaway for the user.
+- Follow this style guide across every synthesis:
+${GENERIC_SYNTHESIZER_STYLE_GUIDE}
 - Prefer concise synthesis over chain-of-thought.
 - Quote or paraphrase exact passages only when supported by the evidence.
 - Surface uncertainty when evidence is thin or conflicting.

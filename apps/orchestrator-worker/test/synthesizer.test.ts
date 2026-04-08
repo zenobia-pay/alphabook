@@ -101,8 +101,11 @@ test("OpenAISynthesizer sends prompt-type-specific structure instructions", asyn
     ? (capturedBody as { messages: Array<Record<string, unknown>> }).messages
     : [];
   const messages = rawMessages;
+  const systemMessage = messages.find((message) => message.role === "system");
   const userMessage = messages.find((message) => message.role === "user");
+  assert.ok(systemMessage && typeof systemMessage.content === "string");
   assert.ok(userMessage && typeof userMessage.content === "string");
+  assert.match(systemMessage.content, /gleeful provocation/i);
   const parsed = JSON.parse(userMessage.content);
   assert.equal(parsed.synthesisMode, "hypothesis");
   assert.ok(Array.isArray(parsed.responseStructure));
