@@ -3671,6 +3671,7 @@ export default function App() {
   const bookReaderFrameRef = useRef<HTMLIFrameElement | null>(null);
   const lastReaderFrameHrefRef = useRef<string | null>(null);
   const latestReaderPathRef = useRef<string | null | undefined>(initialUrlState.readerPath);
+  const latestExploreRequestIdRef = useRef(0);
   const latestReaderContextRef = useRef({
     view: initialUrlState.view,
     sessionId: initialUrlState.sessionId,
@@ -4265,6 +4266,8 @@ export default function App() {
   }, [activeView, activeWorkId]);
 
   async function loadExploreWorks(reset = false) {
+    const requestId = latestExploreRequestIdRef.current + 1;
+    latestExploreRequestIdRef.current = requestId;
     const offset = reset ? 0 : feedNextOffset;
     if (offset === null || (feedLoading && !reset)) {
       return;
@@ -4285,6 +4288,9 @@ export default function App() {
           bookshelf: exploreAppliedFilters.bookshelf === "all" ? null : exploreAppliedFilters.bookshelf,
           thinking: exploreThinking,
         });
+        if (latestExploreRequestIdRef.current !== requestId) {
+          return;
+        }
         setSemanticResults(next.chunks);
         setFeedWorks([]);
         setFeedNextOffset(null);
@@ -4299,6 +4305,9 @@ export default function App() {
           bookshelf: exploreAppliedFilters.bookshelf === "all" ? null : exploreAppliedFilters.bookshelf,
           randomSeed: exploreRandomSeed,
         });
+        if (latestExploreRequestIdRef.current !== requestId) {
+          return;
+        }
         setFeedWorks((current) => {
           if (reset) {
             return next.works;
@@ -4314,12 +4323,17 @@ export default function App() {
         setFeedInitialLoadState("ready");
       }
     } catch (error) {
+      if (latestExploreRequestIdRef.current !== requestId) {
+        return;
+      }
       if (reset) {
         setFeedInitialLoadState("error");
       }
       setLoadError(getErrorMessage(error, "We couldn't load the corpus feed."));
     } finally {
-      setFeedLoading(false);
+      if (latestExploreRequestIdRef.current === requestId) {
+        setFeedLoading(false);
+      }
     }
   }
 

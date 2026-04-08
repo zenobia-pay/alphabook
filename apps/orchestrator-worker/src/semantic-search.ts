@@ -1,7 +1,7 @@
-import { generateText, type LanguageModel } from "ai";
+import { generateObject, generateText, type LanguageModel } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
-import { createAlphaloop } from "alphaloop";
+import { z } from "zod";
 
 import type { BillingContext } from "./billing";
 import { openAIUsageFromResponse, type BillingService } from "./billing";
@@ -284,6 +284,112 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
     this.modelName = resolvedModel.modelName;
   }
 
+  private async fetchSemanticMatches(
+    query: string,
+    topK: number,
+    args: {
+      workIds?: string[];
+      billingContext?: BillingContext;
+      auditLog?: (event: string, payload: Record<string, unknown>) => void | Promise<void>;
+    },
+    meta: {
+      subqueryId: string;
+      expansionQuery: boolean;
+    },
+  ) {
+    const boundedTopK = Math.max(12, Math.min(256, topK));
+    args.auditLog?.("semantic.search.embed.started", {
+      subqueryId: meta.subqueryId,
+      query,
+      scopedWorkCount: Array.isArray(args.workIds) ? args.workIds.length : 0,
+      expansionQuery: meta.expansionQuery,
+    });
+    const embedStartedAt = Date.now();
+    const embedding = await withTimeout(
+      this.options.embedder.embedQuery(query, args.billingContext),
+      SEMANTIC_SEARCH_STEP_TIMEOUT_MS,
+      "Semantic query embedding",
+    );
+    args.auditLog?.("semantic.search.embed.completed", {
+      subqueryId: meta.subqueryId,
+      query,
+      elapsedMs: elapsedMs(embedStartedAt),
+      dimensions: Array.isArray(embedding) ? embedding.length : 0,
+      expansionQuery: meta.expansionQuery,
+    });
+
+    args.auditLog?.("semantic.search.vector_query.started", {
+      subqueryId: meta.subqueryId,
+      query,
+      topK: boundedTopK,
+      expansionQuery: meta.expansionQuery,
+    });
+    const vectorQueryStartedAt = Date.now();
+    const matches = await withTimeout(
+      this.options.vectorIndex.query(embedding, {
+        topK: boundedTopK,
+        returnMetadata: true,
+      }),
+      SEMANTIC_SEARCH_STEP_TIMEOUT_MS,
+      "Semantic vector query",
+    );
+    args.auditLog?.("semantic.search.vector_query.completed", {
+      subqueryId: meta.subqueryId,
+      query,
+      topK: boundedTopK,
+      elapsedMs: elapsedMs(vectorQueryStartedAt),
+      matchCount: matches.length,
+      expansionQuery: meta.expansionQuery,
+    });
+
+    return rerankHydratedMatches(
+      this.options.store,
+      matches.map((match) => ({ id: match.id, score: match.score })),
+      args.workIds,
+    );
+  }
+
+  private async generateQueryVariants(
+    originalQuery: string,
+    contextChunks: ChunkSearchResult[],
+    count: number,
+    promptLabel: "query_expansion" | "iterative_search",
+  ) {
+    const schema = z.object({
+      queries: z.array(z.string()),
+    });
+    const context = contextChunks
+      .slice(0, 6)
+      .map((chunk, index) => `[${index + 1}] ${excerptForChunk(chunk).slice(0, 220)}`)
+      .join("\n---\n");
+    const prompt = promptLabel === "query_expansion"
+      ? [
+          `Original query: "${originalQuery}"`,
+          "",
+          context.length > 0 ? `Evidence snippets:\n${context}` : "No evidence snippets were found yet.",
+          "",
+          `Generate ${count} distinct semantic search queries that broaden recall while staying relevant.`,
+          "Focus on synonyms, related concepts, adjacent themes, and concrete phrasings found in the evidence.",
+          "Return JSON only.",
+        ].join("\n")
+      : [
+          `Original query: "${originalQuery}"`,
+          "",
+          `Top retrieved passages:\n${context}`,
+          "",
+          `Generate ${count} new search queries that follow promising themes discovered in the passages.`,
+          "Return JSON only.",
+        ].join("\n");
+    const { object } = await generateObject({
+      model: this.model,
+      schema,
+      prompt,
+    });
+    return object.queries
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0);
+  }
+
   async search(args: {
     query: string;
     workIds?: string[];
@@ -294,10 +400,37 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
     auditLog?: (event: string, payload: Record<string, unknown>) => void | Promise<void>;
   }) {
     const searchStartedAt = Date.now();
+    const maxResults = Math.max(1, Math.min(args.maxResults ?? 8, 12));
+    const initialTopK = Math.max(40, Math.min(200, maxResults * 10));
+    const alphaloopEvents: AlphaloopEvent[] = [];
+    const seenQueries = new Set<string>();
+    const retained = new Map<string, ChunkSearchResult & { rawScore: number; hitCount: number }>();
+    const iterations: IterationRecord[] = [];
+
+    const recordChunks = (chunks: ChunkSearchResult[]) => {
+      let added = 0;
+      for (const chunk of chunks) {
+        const existing = retained.get(chunk.id);
+        if (existing) {
+          existing.rawScore = Math.max(existing.rawScore, chunk.score ?? 0);
+          existing.hitCount += 1;
+          continue;
+        }
+        retained.set(chunk.id, {
+          ...chunk,
+          excerpt: excerptForChunk(chunk),
+          rawScore: chunk.score ?? 0,
+          hitCount: 1,
+        });
+        added += 1;
+      }
+      return added;
+    };
+
     args.auditLog?.("semantic.search.started", {
       query: args.query,
       scopedWorkCount: Array.isArray(args.workIds) ? args.workIds.length : 0,
-      maxResults: args.maxResults ?? 8,
+      maxResults,
       modelProvider: this.modelProvider,
       modelName: this.modelName,
     });
@@ -310,361 +443,120 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
         modelName: this.modelName,
       },
     );
-    const searchLimiter = createConcurrencyLimiter(SEMANTIC_SEARCH_MAX_PARALLEL_SUBQUERIES);
-    let subquerySequence = 0;
-    const loop = createAlphaloop({
-      model: this.model,
-      rerankModel: this.model,
-      initialTopK: Math.max(40, Math.min(200, (args.maxResults ?? 8) * 10)),
-      maxExpandedQueries: 6,
-      maxIterations: 2,
-      // Qdrant scores for solid corpus matches routinely land in the mid-teens,
-      // so the previous 0.35 cutoff was pruning the entire agentic result set.
-      relevanceThreshold: 0.12,
-      search: async (query, { topK }) => {
-        const expansionQuery = looksLikeExpansionQuery(args.query, query);
-        const subqueryId = `sq_${String(++subquerySequence).padStart(3, "0")}`;
-        const queuedAt = Date.now();
-        args.auditLog?.("semantic.search.subquery.queued", {
-          subqueryId,
-          query,
-          expansionQuery,
-          requestedTopK: topK,
-          activeSubqueries: searchLimiter.getActiveCount(),
-          queuedSubqueries: searchLimiter.getQueuedCount(),
-        });
-        return searchLimiter.run(async () => {
-          const subqueryStartedAt = Date.now();
-          args.auditLog?.("semantic.search.subquery.started", {
-            subqueryId,
-            query,
-            expansionQuery,
-            requestedTopK: topK,
-            queueWaitMs: elapsedMs(queuedAt),
-            activeSubqueries: searchLimiter.getActiveCount(),
-            queuedSubqueries: searchLimiter.getQueuedCount(),
-          });
-          await args.onProgress?.(
-            `Running semantic pass ${subqueryId} on “${summarizeSemanticQuery(query)}”.`,
-            {
-              type: "semantic.note",
-              phase: "subquery_started",
-              subqueryId,
-              query,
-              expansionQuery,
-            },
-          );
-          try {
-            args.auditLog?.("semantic.search.embed.started", {
-              subqueryId,
-              query,
-              scopedWorkCount: Array.isArray(args.workIds) ? args.workIds.length : 0,
-              expansionQuery,
-            });
-            await args.onProgress?.("Embedding the semantic query.", {
-              type: "semantic.step",
-              step: "embed_query",
-              query,
-              subqueryId,
-            });
-            const embedStartedAt = Date.now();
-            let embedding: number[];
-            try {
-              embedding = await withTimeout(
-                this.options.embedder.embedQuery(query, args.billingContext),
-                SEMANTIC_SEARCH_STEP_TIMEOUT_MS,
-                "Semantic query embedding",
-              );
-            } catch (error) {
-              args.auditLog?.("semantic.search.embed.failed", {
-                subqueryId,
-                query,
-                elapsedMs: elapsedMs(embedStartedAt),
-                error: error instanceof Error ? error.message : String(error),
-              });
-              throw error;
-            }
-            args.auditLog?.("semantic.search.embed.completed", {
-              subqueryId,
-              query,
-              elapsedMs: elapsedMs(embedStartedAt),
-              dimensions: Array.isArray(embedding) ? embedding.length : 0,
-              expansionQuery,
-            });
-            await args.onProgress?.("Querying the vector index.", {
-              type: "semantic.step",
-              step: "vector_query",
-              query,
-              topK: Math.max(12, Math.min(256, topK)),
-              subqueryId,
-            });
-            const boundedTopK = Math.max(12, Math.min(256, topK));
-            args.auditLog?.("semantic.search.vector_query.started", {
-              subqueryId,
-              query,
-              topK: boundedTopK,
-              expansionQuery,
-            });
-            const vectorQueryStartedAt = Date.now();
-            let matches: Awaited<ReturnType<VectorSearchIndex["query"]>>;
-            try {
-              matches = await withTimeout(
-                this.options.vectorIndex.query(embedding, {
-                  topK: boundedTopK,
-                }),
-                SEMANTIC_SEARCH_STEP_TIMEOUT_MS,
-                "Semantic vector query",
-              );
-            } catch (error) {
-              args.auditLog?.("semantic.search.vector_query.failed", {
-                subqueryId,
-                query,
-                topK: boundedTopK,
-                elapsedMs: elapsedMs(vectorQueryStartedAt),
-                error: error instanceof Error ? error.message : String(error),
-              });
-              throw error;
-            }
-            args.auditLog?.("semantic.search.vector_query.completed", {
-              subqueryId,
-              query,
-              topK: boundedTopK,
-              elapsedMs: elapsedMs(vectorQueryStartedAt),
-              matchCount: matches.length,
-              expansionQuery,
-            });
-            const candidateIds = matches.map((match) => match.id);
-            await args.onProgress?.(
-              candidateIds.length > 0
-                ? `Vector index returned ${candidateIds.length} candidate passages. Loading the matched passages.`
-                : "No semantic matches came back from the vector index.",
-              {
-                type: "semantic.step",
-                step: "hydrate_chunks",
-                candidateCount: candidateIds.length,
-                subqueryId,
-              },
-            );
-            args.auditLog?.("semantic.search.hydrate.started", {
-              subqueryId,
-              query,
-              candidateCount: candidateIds.length,
-            });
-            const hydrateStartedAt = Date.now();
-            let hydrated: Awaited<ReturnType<AppStore["getChunksByIds"]>>;
-            try {
-              hydrated = candidateIds.length > 0
-                ? await withTimeout(
-                  this.options.store.getChunksByIds(candidateIds),
-                  SEMANTIC_SEARCH_STEP_TIMEOUT_MS,
-                  "Semantic chunk hydration",
-                )
-                : [];
-            } catch (error) {
-              args.auditLog?.("semantic.search.hydrate.failed", {
-                subqueryId,
-                query,
-                candidateCount: candidateIds.length,
-                elapsedMs: elapsedMs(hydrateStartedAt),
-                error: error instanceof Error ? error.message : String(error),
-              });
-              throw error;
-            }
-            args.auditLog?.("semantic.search.hydrate.completed", {
-              subqueryId,
-              query,
-              candidateCount: candidateIds.length,
-              hydratedCount: hydrated.length,
-              elapsedMs: elapsedMs(hydrateStartedAt),
-              expansionQuery,
-            });
-            const hydratedById = new Map(hydrated.map((chunk) => [chunk.id, chunk]));
-            const candidates = matches
-              .map((match) => {
-                const chunk = hydratedById.get(match.id);
-                if (!chunk) {
-                  return null;
-                }
-                if (Array.isArray(args.workIds) && args.workIds.length > 0 && !args.workIds.includes(chunk.workId)) {
-                  return null;
-                }
-                return {
-                  id: chunk.id,
-                  text: chunk.text,
-                  score: match.score,
-                  metadata: {
-                    workId: chunk.workId,
-                    chunkIndex: chunk.chunkIndex,
-                    r2Key: chunk.r2Key,
-                    excerpt: excerptForChunk(chunk),
-                  },
-                };
-              });
-            const filteredCandidates = candidates.filter((chunk): chunk is NonNullable<typeof chunk> => Boolean(chunk));
-            args.auditLog?.("semantic.search.candidates.completed", {
-              subqueryId,
-              query,
-              candidateCount: filteredCandidates.length,
-              matchCount: matches.length,
-              hydratedCount: hydrated.length,
-              expansionQuery,
-            });
-            await args.onProgress?.(
-              `Semantic pass ${subqueryId} kept ${filteredCandidates.length} candidate passages after hydration.`,
-              {
-                type: "semantic.note",
-                phase: "subquery_completed",
-                subqueryId,
-                query,
-                candidateCount: filteredCandidates.length,
-                expansionQuery,
-              },
-            );
-            args.auditLog?.("semantic.search.subquery.completed", {
-              subqueryId,
-              query,
-              expansionQuery,
-              elapsedMs: elapsedMs(subqueryStartedAt),
-              candidateCount: filteredCandidates.length,
-              activeSubqueries: searchLimiter.getActiveCount(),
-              queuedSubqueries: searchLimiter.getQueuedCount(),
-            });
-            return filteredCandidates;
-          } catch (error) {
-            args.auditLog?.("semantic.search.subquery.failed", {
-              subqueryId,
-              query,
-              expansionQuery,
-              elapsedMs: elapsedMs(subqueryStartedAt),
-              error: error instanceof Error ? error.message : String(error),
-              activeSubqueries: searchLimiter.getActiveCount(),
-              queuedSubqueries: searchLimiter.getQueuedCount(),
-            });
-            throw error;
-          }
-        });
-      },
-    });
-
-    args.auditLog?.("semantic.search.alphaloop.stream.started", {
-      query: args.query,
-      modelProvider: this.modelProvider,
-      modelName: this.modelName,
-    });
-    await args.onProgress?.("AlphaLoop is reviewing the strongest candidate passages.", {
+    await args.onProgress?.("Thinking mode is running semantic retrieval passes over the vector index.", {
       type: "semantic.step",
       step: "alphaloop_stream_start",
       query: args.query,
       modelProvider: this.modelProvider,
       modelName: this.modelName,
     });
-    const stream = loop.stream(args.query);
-    const alphaloopEvents: AlphaloopEvent[] = [];
-    let finalResult: Awaited<ReturnType<typeof loop.run>> | null = null;
-    try {
-      while (true) {
-        args.auditLog?.("semantic.search.alphaloop.next.started", {
-          query: args.query,
-          observedEventCount: alphaloopEvents.length,
-          modelProvider: this.modelProvider,
-          modelName: this.modelName,
-        });
-        const next = await withTimeoutAndHeartbeat(
-          () => stream.next(),
-          SEMANTIC_ALPHALOOP_NEXT_TIMEOUT_MS,
-          "AlphaLoop stopped yielding the next semantic event",
-          async () => {
-            await args.onProgress?.(
-              "Still reviewing the retrieved passages and deciding whether to widen the semantic search.",
-              {
-                type: "research.note",
-                note: "Still reviewing the retrieved passages and deciding whether to widen the semantic search.",
-                phase: "alphaloop_wait",
-              },
-            );
-          },
-        );
-        if (next.done) {
-          finalResult = next.value;
-          args.auditLog?.("semantic.search.alphaloop.completed", {
-            query: args.query,
-            elapsedMs: elapsedMs(searchStartedAt),
-            eventCount: alphaloopEvents.length,
-            totalChunksConsidered: finalResult.totalChunksConsidered,
-            chunkCount: Array.isArray(finalResult.chunks) ? finalResult.chunks.length : 0,
-            iterationCount: Array.isArray(finalResult.iterations) ? finalResult.iterations.length : 0,
-          });
-          break;
-        }
-        const event = next.value as AlphaloopEvent;
-        alphaloopEvents.push(structuredClone(event));
-        args.auditLog?.("semantic.search.alphaloop.event", {
-          query: args.query,
-          eventType: typeof event.type === "string" ? event.type : "unknown",
-          eventIndex: alphaloopEvents.length,
-        });
-        const text = progressTextFromEvent(event);
-        if (text) {
-          await args.onProgress?.(text, {
-            type: "semantic.alphaloop",
-            event,
-          });
-        }
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      args.auditLog?.("semantic.search.alphaloop.failed", {
-        query: args.query,
-        elapsedMs: elapsedMs(searchStartedAt),
-        eventCount: alphaloopEvents.length,
-        error: message,
-        modelProvider: this.modelProvider,
-        modelName: this.modelName,
-      });
-      await args.onProgress?.(message, {
-        type: "semantic.error",
-        error: message,
-      });
-      throw error;
-    }
-    if (!finalResult) {
-      throw new Error("Semantic retrieval completed without returning a result.");
-    }
 
-    const rankedChunkIds = finalResult.chunks.map((chunk) => chunk.id);
-    args.auditLog?.("semantic.search.final_hydrate.started", {
-      query: args.query,
-      rankedChunkCount: rankedChunkIds.length,
+    const initialChunks = await this.fetchSemanticMatches(args.query, initialTopK, args, {
+      subqueryId: "sq_001",
+      expansionQuery: false,
     });
-    const hydratedChunks = rankedChunkIds.length > 0 ? await this.options.store.getChunksByIds(rankedChunkIds) : [];
-    args.auditLog?.("semantic.search.final_hydrate.completed", {
+    seenQueries.add(args.query.trim().toLowerCase());
+    recordChunks(initialChunks);
+    alphaloopEvents.push({
+      type: "embedding_search",
       query: args.query,
-      rankedChunkCount: rankedChunkIds.length,
-      hydratedChunkCount: hydratedChunks.length,
+      chunksFound: initialChunks.length,
     });
-    const hydratedById = new Map(hydratedChunks.map((chunk) => [chunk.id, chunk]));
-    const rankedChunks = finalResult.chunks
-      .map((ranked) => {
-        const hydrated = hydratedById.get(ranked.id);
-        if (!hydrated) {
-          return null;
+
+    const expansionQueries = (await this.generateQueryVariants(args.query, initialChunks, 4, "query_expansion"))
+      .filter((query) => {
+        const normalized = query.trim().toLowerCase();
+        if (!normalized || seenQueries.has(normalized)) {
+          return false;
         }
-        return {
-          ...hydrated,
-          score: ranked.relevance,
-          excerpt: excerptForChunk(hydrated),
-        };
+        seenQueries.add(normalized);
+        return true;
       })
-      .filter((chunk): chunk is ChunkSearchResult => Boolean(chunk));
-    const chunks = rankedChunks
-      .slice(0, Math.max(4, Math.min(args.maxResults ?? 8, 12)));
+      .slice(0, 4);
+    let expansionNewCount = 0;
+    for (let index = 0; index < expansionQueries.length; index += 1) {
+      const query = expansionQueries[index]!;
+      const chunks = await this.fetchSemanticMatches(query, Math.ceil(initialTopK / 2), args, {
+        subqueryId: `sq_${String(index + 2).padStart(3, "0")}`,
+        expansionQuery: true,
+      });
+      expansionNewCount += recordChunks(chunks);
+    }
+    alphaloopEvents.push({
+      type: "query_expansion",
+      queries: expansionQueries,
+      newChunksFound: expansionNewCount,
+      totalUnique: retained.size,
+    });
+
+    const iterativeSeedChunks = [...retained.values()]
+      .sort((left, right) => (right.rawScore - left.rawScore))
+      .slice(0, 8);
+    const iterativeQueries = iterativeSeedChunks.length > 0
+      ? (await this.generateQueryVariants(args.query, iterativeSeedChunks, 3, "iterative_search"))
+        .filter((query) => {
+          const normalized = query.trim().toLowerCase();
+          if (!normalized || seenQueries.has(normalized)) {
+            return false;
+          }
+          seenQueries.add(normalized);
+          return true;
+        })
+        .slice(0, 3)
+      : [];
+    let iterativeNewCount = 0;
+    for (let index = 0; index < iterativeQueries.length; index += 1) {
+      const query = iterativeQueries[index]!;
+      const chunks = await this.fetchSemanticMatches(query, Math.ceil(initialTopK / 3), args, {
+        subqueryId: `sq_${String(index + expansionQueries.length + 2).padStart(3, "0")}`,
+        expansionQuery: true,
+      });
+      iterativeNewCount += recordChunks(chunks);
+    }
+    iterations.push({
+      iteration: 1,
+      newQueries: iterativeQueries,
+      chunksFound: iterativeNewCount,
+      totalUniqueChunks: retained.size,
+    });
+    alphaloopEvents.push({
+      type: "iterative_search",
+      iteration: 1,
+      newQueries: iterativeQueries,
+      newChunksFound: iterativeNewCount,
+      totalUnique: retained.size,
+    });
+
+    const rankedChunks = [...retained.values()]
+      .map((chunk) => ({
+        ...chunk,
+        score: lexicalRerankScore(
+          args.query,
+          chunk,
+          chunk.rawScore + ((chunk.hitCount - 1) * 0.05),
+        ),
+      }))
+      .sort((left, right) => (right.score ?? 0) - (left.score ?? 0));
+    const chunks = rankedChunks.slice(0, Math.max(4, maxResults));
+    alphaloopEvents.push({
+      type: "rerank",
+      totalChunks: retained.size,
+      keptChunks: rankedChunks.length,
+      droppedChunks: 0,
+      topChunkPreview: rankedChunks[0]?.excerpt.slice(0, 100),
+    });
+    alphaloopEvents.push({
+      type: "complete",
+      totalChunks: rankedChunks.length,
+      iterations: iterations.length,
+    });
 
     if (chunks.length === 0) {
       args.auditLog?.("semantic.search.completed_without_chunks", {
         query: args.query,
         elapsedMs: elapsedMs(searchStartedAt),
-        totalChunksConsidered: finalResult.totalChunksConsidered,
-        iterationCount: finalResult.iterations.length,
+        totalChunksConsidered: retained.size,
+        iterationCount: iterations.length,
       });
       return {
         briefing: "I couldn’t find strong semantic matches for that question in the indexed corpus yet.",
@@ -672,8 +564,8 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
         chunks: [],
         rankedChunks: [],
         alphaloopEvents,
-        iterations: finalResult.iterations,
-        totalChunksConsidered: finalResult.totalChunksConsidered,
+        iterations,
+        totalChunksConsidered: retained.size,
       };
     }
 
@@ -720,8 +612,8 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
       chunks,
       rankedChunks,
       alphaloopEvents,
-      iterations: finalResult.iterations,
-      totalChunksConsidered: finalResult.totalChunksConsidered,
+      iterations,
+      totalChunksConsidered: retained.size,
     };
   }
 }
