@@ -2573,6 +2573,9 @@ test("agent API key routes also work on /v1 aliases and skill.md advertises the 
   assert.match(skillBody, /api_base":"https:\/\/api\.alpha-book\.org\/v1"/);
   assert.match(skillBody, /You are the AI agent that should connect to AlphaBook over the CLI\./);
   assert.match(skillBody, /Registration is unauthenticated\./);
+  assert.match(skillBody, /POST https:\/\/api\.alpha-book\.org\/v1\/research\/runs/);
+  assert.match(skillBody, /curl https:\/\/api\.alpha-book\.org\/v1\/research\/runs\/RUN_ID/);
+  assert.doesNotMatch(skillBody, /POST https:\/\/api\.alpha-book\.org\/v1\/documents\/chat/);
   assert.doesNotMatch(skillBody, /human/i);
   assert.doesNotMatch(skillBody, /Current architecture/);
 
@@ -2637,6 +2640,325 @@ test("agent API key routes also work on /v1 aliases and skill.md advertises the 
     },
   });
   assert.equal(logsResponse.status, 200);
+});
+
+test("agent API keys can launch and poll dedicated research runs", async () => {
+  const originalFetch = globalThis.fetch;
+  const now = new Date().toISOString();
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const method = init?.method ?? "GET";
+    if (url === "https://hermes.example.test/v1/jobs" && method === "POST") {
+      return new Response(JSON.stringify({
+        job: {
+          id: "job-hermes-research-1",
+          state: "running",
+          running: true,
+          pid: 4321,
+          userPrompt: "Find passages about grief and loss.",
+          model: "gpt-5.4",
+          maxTurns: 60,
+          launchedAt: now,
+          startedAt: now,
+          finishedAt: null,
+          innerRunDir: "/srv/alphabook/logs/corpus-research/example",
+          innerRunId: "example",
+          hermesSessionId: null,
+          archivePrefix: null,
+          exitCode: null,
+          heartbeatAt: now,
+          phase: "searching",
+          phaseProgressPct: 10,
+          detail: "Searching the scoped corpus.",
+          manifestStatus: "initialized",
+          chosenScope: "Jane Eyre; Great Expectations",
+          scopeRationale: "The query names both works explicitly.",
+          recordCounts: null,
+        },
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url === "https://hermes.example.test/v1/jobs/job-hermes-research-1" && method === "GET") {
+      return new Response(JSON.stringify({
+        job: {
+          id: "job-hermes-research-1",
+          state: "completed",
+          running: false,
+          pid: 4321,
+          userPrompt: "Find passages about grief and loss.",
+          model: "gpt-5.4",
+          maxTurns: 60,
+          launchedAt: now,
+          startedAt: now,
+          finishedAt: now,
+          innerRunDir: "/srv/alphabook/logs/corpus-research/example",
+          innerRunId: "example",
+          hermesSessionId: "hermes-session-1",
+          archivePrefix: null,
+          exitCode: 0,
+          heartbeatAt: now,
+          phase: "completed",
+          phaseProgressPct: 100,
+          detail: "Completed",
+          manifestStatus: "completed",
+          chosenScope: "Jane Eyre; Great Expectations",
+          scopeRationale: "The query names both works explicitly.",
+          recordCounts: null,
+        },
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.startsWith("https://hermes.example.test/v1/jobs/job-hermes-research-1/logs") && method === "GET") {
+      return new Response(JSON.stringify({
+        jobId: "job-hermes-research-1",
+        sources: [],
+        nextCursor: "",
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url === "https://hermes.example.test/v1/jobs/job-hermes-research-1/artifacts" && method === "GET") {
+      return new Response(JSON.stringify({
+        jobId: "job-hermes-research-1",
+        runDir: "/srv/alphabook/logs/corpus-research/example",
+        innerRunDir: "/srv/alphabook/logs/corpus-research/example/inner",
+        artifacts: [
+          { name: "briefing.md", path: "/tmp/briefing.md", bytes: 32, updatedAt: now },
+          { name: "hits/index.json", path: "/tmp/hits-index.json", bytes: 240, updatedAt: now },
+          { name: "hits/hit-0001.md", path: "/tmp/hit-0001.md", bytes: 120, updatedAt: now },
+          { name: "final-answer.md", path: "/tmp/final-answer.md", bytes: 180, updatedAt: now },
+          { name: "final-answer.json", path: "/tmp/final-answer.json", bytes: 220, updatedAt: now },
+          { name: "hermes.session.json", path: "/tmp/hermes.session.json", bytes: 80, updatedAt: now },
+        ],
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.endsWith("/artifacts/briefing.md") && method === "GET") {
+      return new Response(JSON.stringify({
+        jobId: "job-hermes-research-1",
+        artifact: {
+          name: "briefing.md",
+          path: "/tmp/briefing.md",
+          bytes: 32,
+          updatedAt: now,
+          content: "# Briefing\n\nFocused scope.",
+        },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.endsWith("/artifacts/hits%2Findex.json") && method === "GET") {
+      return new Response(JSON.stringify({
+        jobId: "job-hermes-research-1",
+        artifact: {
+          name: "hits/index.json",
+          path: "/tmp/hits-index.json",
+          bytes: 240,
+          updatedAt: now,
+          content: JSON.stringify({
+            kept_hit_count: 1,
+            hits: [
+              {
+                hit_id: "hit-0001",
+                work_id: "work-jane-eyre",
+                source_title: "Jane Eyre",
+                chunk_id: "chunk-1",
+                reader_path: "/1342/passages/grief-1",
+                alphabook_url: "https://alpha-book.org/?view=explore&work=work-jane-eyre",
+                quote: "I grieved to leave the garden.",
+              },
+            ],
+          }),
+        },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.endsWith("/artifacts/hits%2Fhit-0001.md") && method === "GET") {
+      return new Response(JSON.stringify({
+        jobId: "job-hermes-research-1",
+        artifact: {
+          name: "hits/hit-0001.md",
+          path: "/tmp/hit-0001.md",
+          bytes: 120,
+          updatedAt: now,
+          content: "# Hit 1\n\nI grieved to leave the garden.",
+        },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.endsWith("/artifacts/final-answer.md") && method === "GET") {
+      return new Response(JSON.stringify({
+        jobId: "job-hermes-research-1",
+        artifact: {
+          name: "final-answer.md",
+          path: "/tmp/final-answer.md",
+          bytes: 180,
+          updatedAt: now,
+          content: "Jane Eyre treats grief as intimate and formative. [Jane Eyre](https://alpha-book.org/?view=explore&work=work-jane-eyre) (hits/hit-0001.md)",
+        },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.endsWith("/artifacts/final-answer.json") && method === "GET") {
+      return new Response(JSON.stringify({
+        jobId: "job-hermes-research-1",
+        artifact: {
+          name: "final-answer.json",
+          path: "/tmp/final-answer.json",
+          bytes: 220,
+          updatedAt: now,
+          content: JSON.stringify({
+            answer: "Jane Eyre treats grief as intimate and formative.",
+            citations: [
+              {
+                hit: "hit-0001",
+                title: "Jane Eyre",
+                alphabook_url: "https://alpha-book.org/?view=explore&work=work-jane-eyre",
+              },
+            ],
+          }),
+        },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.endsWith("/artifacts/hermes.session.json") && method === "GET") {
+      return new Response(JSON.stringify({
+        jobId: "job-hermes-research-1",
+        artifact: {
+          name: "hermes.session.json",
+          path: "/tmp/hermes.session.json",
+          bytes: 80,
+          updatedAt: now,
+          content: JSON.stringify({ session_id: "hermes-session-1", messages: [] }),
+        },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    throw new Error(`Unexpected fetch: ${method} ${url}`);
+  }) as typeof fetch;
+
+  try {
+    const store = new InMemoryAppStore([], []);
+    const app = createApp({
+      store,
+      billing: createBillingService(store),
+      planner: new ScriptedPlanner([
+        {
+          type: "final_answer",
+          answer: "planner should not run",
+          citations: [],
+        },
+      ]),
+      embedder: new HashEmbedder(),
+      synthesizer: new EchoSynthesizer(),
+      blobStore: new MemoryBlobStore(),
+      runtimeGateway: {
+        async createWorkspace() {
+          return { ok: false, error: "disabled" };
+        },
+        async runWorkspaceTask() {
+          return { ok: false, error: "disabled" };
+        },
+        async readWorkspaceFile() {
+          return { ok: false, error: "disabled" };
+        },
+        async listWorkspaceFiles() {
+          return { ok: false, error: "disabled" };
+        },
+        async destroyWorkspace() {
+          return { ok: false, error: "disabled" };
+        },
+      },
+      hermesJobApiUrl: "https://hermes.example.test",
+      hermesJobApiToken: "test-token",
+      queues: {
+        ingestName: "alphabook-ingest",
+        jobsName: "alphabook-jobs",
+      },
+      implementation: {
+        id: "alphabook",
+        productName: "AlphaBook",
+        siteOrigin: "https://alpha-book.org",
+        apiOrigin: "https://api.alpha-book.org",
+        allowedWebOrigins: ["https://alpha-book.org"],
+        defaultUserName: "AlphaBook User",
+        defaultReaderName: "AlphaBook Reader",
+      },
+    });
+
+    const registrationResponse = await app.request("/v1/agents/register", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        name: "Codex",
+        description: "AlphaBook autonomous researcher",
+      }),
+    });
+    assert.equal(registrationResponse.status, 201);
+    const registrationPayload = await registrationResponse.json() as { api_key: string };
+
+    const kickoffResponse = await app.request("/v1/research/runs", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${registrationPayload.api_key}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        query: "Find passages about grief and loss in Jane Eyre.",
+        intensityOverride: "normal",
+      }),
+    });
+    assert.equal(kickoffResponse.status, 201);
+    const kickoffPayload = await kickoffResponse.json() as {
+      runId: string;
+      status: string;
+      poll_url: string;
+      logs_url: string;
+    };
+    assert.equal(kickoffPayload.status, "running");
+    assert.match(kickoffPayload.poll_url, /\/v1\/research\/runs\//);
+    assert.match(kickoffPayload.logs_url, /\/v1\/research\/runs\/.+\/logs$/);
+
+    let resultPayload: {
+      status: string;
+      result: {
+        answer: string | null;
+        citations: Array<{ workId: string; readerPath?: string }>;
+        hits: Array<{ hitId: string; readerUrl?: string }>;
+      } | null;
+    } | null = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const resultResponse = await app.request(`/v1/research/runs/${kickoffPayload.runId}`, {
+        headers: {
+          authorization: `Bearer ${registrationPayload.api_key}`,
+        },
+      });
+      assert.equal(resultResponse.status, 200);
+      resultPayload = await resultResponse.json() as typeof resultPayload;
+      if (resultPayload?.status === "completed") {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.ok(resultPayload);
+    assert.equal(resultPayload.status, "completed");
+    assert.equal(resultPayload.result?.answer, "Jane Eyre treats grief as intimate and formative.");
+    assert.equal(resultPayload.result?.citations.length, 1);
+    assert.equal(resultPayload.result?.citations[0]?.workId, "work-jane-eyre");
+    assert.equal(resultPayload.result?.hits[0]?.hitId, "hit-0001");
+    assert.match(resultPayload.result?.hits[0]?.readerUrl ?? "", /^https:\/\/alpha-book\.org\//);
+
+    const logsResponse = await app.request(`/v1/research/runs/${kickoffPayload.runId}/logs`, {
+      headers: {
+        authorization: `Bearer ${registrationPayload.api_key}`,
+      },
+    });
+    assert.equal(logsResponse.status, 200);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("auth sign-out route clears local cookies and returns the WorkOS logout redirect when session exists", async () => {

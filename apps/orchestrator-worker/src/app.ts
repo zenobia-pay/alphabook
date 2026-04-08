@@ -9418,6 +9418,54 @@ function citationsFromHermesResolvedHits(hits: HermesResolvedHitRecord[]): Citat
   }));
 }
 
+type ResearchRunHit = {
+  hitId: string;
+  title: string;
+  workId: string;
+  excerpt: string;
+  chunkId?: string;
+  readerPath?: string;
+  readerUrl?: string;
+};
+
+function latestRunAnswerMessage(messages: MessageRecord[], runId: string) {
+  return [...messages]
+    .reverse()
+    .find((message) =>
+      message.role === "assistant"
+      && typeof message.content === "string"
+      && message.content.trim().length > 0
+      && message.metadata?.runId === runId
+      && message.metadata?.phase === "answer");
+}
+
+function findRunArtifactContent(artifacts: RunArtifactLike[], filename: string) {
+  const match = artifacts.find((artifact) => artifact.filename.trim().toLowerCase().endsWith(filename.toLowerCase()));
+  return typeof match?.content === "string" ? match.content : null;
+}
+
+function parseStructuredResearchAnswer(artifacts: RunArtifactLike[]) {
+  const content = findRunArtifactContent(artifacts, "final-answer.json");
+  const parsed = parseHermesJsonRecord(content ?? "");
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return null;
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function extractResearchRunHits(artifacts: RunArtifactLike[]): ResearchRunHit[] {
+  const content = findRunArtifactContent(artifacts, "hits/index.json");
+  return extractHermesResolvedHits(content).map((hit) => ({
+    hitId: hit.hitId,
+    title: hit.title,
+    workId: hit.workId,
+    excerpt: hit.excerpt,
+    ...(hit.chunkId ? { chunkId: hit.chunkId } : {}),
+    ...(hit.readerPath ? { readerPath: hit.readerPath } : {}),
+    ...((hit.alphabookUrl ?? "").trim().length > 0 ? { readerUrl: hit.alphabookUrl!.trim() } : {}),
+  }));
+}
+
 async function finalizeHermesRun(
   deps: AppDeps,
   activeRuns: Map<string, ActiveRunState>,
@@ -13618,34 +13666,38 @@ export function createApp(inputDeps: CreateAppInput) {
       "## Run research from the CLI",
       "",
       "```bash",
-      `curl -N -X POST ${apiBase}/documents/chat \\`,
+      `curl -X POST ${apiBase}/research/runs \\`,
       "  -H \"Authorization: Bearer YOUR_API_KEY\" \\",
       "  -H \"Content-Type: application/json\" \\",
-      "  -d '{\"message\":\"Find cases about equal protection and segregation\"}'",
+      "  -d '{\"query\":\"Find passages about grief and loss in Jane Eyre and Great Expectations, with citations.\"}'",
       "```",
       "",
-      "## List sessions",
+      "The response includes a `runId`, `sessionId`, and polling URLs.",
+      "",
+      "## Poll until completion",
       "",
       "```bash",
-      `curl ${apiBase}/sessions \\`,
+      `curl ${apiBase}/research/runs/RUN_ID \\`,
       "  -H \"Authorization: Bearer YOUR_API_KEY\"",
       "```",
       "",
-      "## Inspect a run",
+      "When the run finishes, read `result.answer`, `result.citations`, and `result.hits` from the JSON response.",
+      "",
+      "## Inspect logs if needed",
       "",
       "```bash",
-      `curl ${apiBase}/sessions/SESSION_ID/runs/RUN_ID \\`,
+      `curl ${apiBase}/research/runs/RUN_ID/logs \\`,
       "  -H \"Authorization: Bearer YOUR_API_KEY\"",
       "```",
       "",
       "## Useful endpoints",
       "",
-      `- \`POST ${apiBase}/chat\` streams the compatibility API`,
-      `- \`POST ${apiBase}/documents/chat\` streams the neutral document API`,
+      `- \`POST ${apiBase}/research/runs\` starts an autonomous agentic research run`,
+      `- \`GET ${apiBase}/research/runs/:runId\` returns run status and the final research result`,
+      `- \`GET ${apiBase}/research/runs/:runId/logs\` returns the full transcript and artifacts`,
       `- \`GET ${apiBase}/sessions\` lists your sessions`,
       `- \`GET ${apiBase}/sessions/:sessionId/runs\` lists runs for a session`,
       `- \`GET ${apiBase}/sessions/:sessionId/runs/:runId\` returns run status, tool trace, and artifacts`,
-      `- \`GET ${apiBase}/sessions/:sessionId/runs/:runId/logs\` returns the full transcript and artifacts`,
       `- \`GET ${apiBase}/sessions/:sessionId/messages\` returns the transcript`,
       `- \`GET ${apiBase}/agents/me\` returns your agent identity`,
       "",
@@ -14173,6 +14225,163 @@ export function createApp(inputDeps: CreateAppInput) {
     });
   });
 
+  const ResearchRunRequestSchema = z.object({
+    query: z.string().trim().min(1),
+    sessionId: z.string().uuid().optional(),
+    userId: z.string().trim().min(1).optional(),
+    workIds: z.array(z.string().trim().min(1)).max(256).optional(),
+    intensityOverride: z.enum(["normal", "high", "maximum"]).optional(),
+  });
+
+  const attachPaymentHeaders = (response: Response, settledPayment: SettleResponse | null) => {
+    if (!settledPayment) {
+      return response;
+    }
+    response.headers.set("payment-response", encodePaymentResponseHeader(settledPayment));
+    response.headers.set("x-payment-response", encodeBase64Json(settledPayment));
+    return response;
+  };
+
+  const launchAgenticResearchRun = async (
+    c: Context,
+    requestPayload: ChatRequest,
+  ) => {
+    let executionCtx: { waitUntil?: (promise: Promise<unknown>) => void } | null = null;
+    try {
+      executionCtx = c.executionCtx as { waitUntil?: (promise: Promise<unknown>) => void } | null;
+    } catch {
+      executionCtx = null;
+    }
+
+    let settled = false;
+    let startedSessionId = "";
+    let startedRunId = "";
+    let jobStarted = false;
+    let resolveStarted!: (value: { session: SessionRecord; run: RunRecord }) => void;
+    let rejectStarted!: (reason?: unknown) => void;
+    const startedPromise = new Promise<{ session: SessionRecord; run: RunRecord }>((resolve, reject) => {
+      resolveStarted = resolve;
+      rejectStarted = reject;
+    });
+
+    const maybeResolveStarted = async () => {
+      if (settled || !jobStarted || !startedSessionId || !startedRunId) {
+        return;
+      }
+      settled = true;
+      try {
+        const [session, run] = await Promise.all([
+          deps.store.getSession(startedSessionId),
+          deps.store.getRun(startedRunId),
+        ]);
+        if (!session || !run || run.sessionId !== session.id) {
+          throw new Error("Research run started but its persisted state could not be loaded.");
+        }
+        resolveStarted({ session, run });
+      } catch (error) {
+        rejectStarted(error);
+      }
+    };
+
+    const send = async (event: string, data: Record<string, unknown>) => {
+      if (settled) {
+        return;
+      }
+      if (event === "run.started") {
+        startedSessionId = typeof data.sessionId === "string" ? data.sessionId : startedSessionId;
+        startedRunId = typeof data.runId === "string" ? data.runId : startedRunId;
+        await maybeResolveStarted();
+        return;
+      }
+      if (event === "job.started") {
+        jobStarted = true;
+        await maybeResolveStarted();
+      }
+    };
+
+    const runPromise = runHermesConversation(
+      deps,
+      c.req.raw,
+      requestPayload,
+      send,
+      activeRuns,
+    ).catch((error) => {
+      if (!settled) {
+        settled = true;
+        rejectStarted(error);
+      }
+      throw error;
+    });
+
+    if (executionCtx && typeof executionCtx.waitUntil === "function") {
+      executionCtx.waitUntil(runPromise);
+    } else {
+      void runPromise;
+    }
+
+    return await Promise.race([
+      startedPromise,
+      new Promise<{ session: SessionRecord; run: RunRecord }>((_, reject) => {
+        setTimeout(() => reject(new Error("Timed out waiting for the research run to start.")), 10_000);
+      }),
+    ]);
+  };
+
+  const buildResearchRunResponse = async (c: Context, session: SessionRecord, runId: string) => {
+    const payload = await buildRunStatePayload(session.id, runId, {
+      includeArtifacts: true,
+      includeBackgroundJob: true,
+      runEventLimit: 200,
+    });
+    if (!payload) {
+      return null;
+    }
+    const messages = await deps.store.listMessages(session.id);
+    const answerMessage = latestRunAnswerMessage(messages, runId);
+    const citations = answerMessage ? sanitizeAppCitations(answerMessage.metadata?.citations) : [];
+    const structured = parseStructuredResearchAnswer(payload.artifacts ?? []);
+    const hits = extractResearchRunHits(payload.artifacts ?? []);
+    const answer =
+      typeof answerMessage?.content === "string" && answerMessage.content.trim().length > 0
+        ? answerMessage.content.trim()
+        : typeof structured?.answer === "string" && structured.answer.trim().length > 0
+          ? structured.answer.trim()
+          : null;
+    const apiBase = `${apiOrigin(deps, c.req.raw)}/v1`;
+    return {
+      sessionId: session.id,
+      runId: payload.run.id,
+      status: payload.run.status,
+      poll_url: `${apiBase}/research/runs/${payload.run.id}`,
+      logs_url: `${apiBase}/research/runs/${payload.run.id}/logs`,
+      cancel_url: `${apiBase}/runs/${payload.run.id}/cancel`,
+      session_url: `${apiBase}/sessions/${session.id}`,
+      session_runs_url: `${apiBase}/sessions/${session.id}/runs`,
+      backgroundJob: payload.backgroundJob
+        ? {
+            id: payload.backgroundJob.id,
+            provider: payload.backgroundJob.provider,
+            externalJobId: payload.backgroundJob.externalJobId,
+            status: payload.backgroundJob.status,
+            phase: payload.backgroundJob.phase,
+            detail: payload.backgroundJob.detail,
+            progressPct: payload.backgroundJob.progressPct,
+            error: payload.backgroundJob.error,
+            startedAt: payload.backgroundJob.startedAt,
+            completedAt: payload.backgroundJob.completedAt,
+          }
+        : null,
+      result: isTerminalRunStatus(payload.run.status)
+        ? {
+            answer,
+            citations,
+            hits,
+            ...(structured ? { structured } : {}),
+          }
+        : null,
+    };
+  };
+
   const handleChatRequest = async (c: Context) => {
     const trustedRequest = requireTrustedBrowserRequest(c);
     if (trustedRequest) {
@@ -14300,8 +14509,7 @@ export function createApp(inputDeps: CreateAppInput) {
         }),
     );
     if (settledPayment) {
-      response.headers.set("payment-response", encodePaymentResponseHeader(settledPayment));
-      response.headers.set("x-payment-response", encodeBase64Json(settledPayment));
+      return attachPaymentHeaders(response, settledPayment);
     }
     return response;
   };
@@ -14311,6 +14519,117 @@ export function createApp(inputDeps: CreateAppInput) {
   app.post("/api/v1/chat", handleChatRequest);
   app.post("/v1/documents/chat", handleChatRequest);
   app.post("/api/v1/documents/chat", handleChatRequest);
+
+  const handleCreateResearchRun = async (c: Context) => {
+    const trustedRequest = requireTrustedBrowserRequest(c);
+    if (trustedRequest) {
+      return trustedRequest;
+    }
+    const payload = ResearchRunRequestSchema.parse(await c.req.json());
+    const principal = await resolvePrincipal(c);
+    const user = principal?.user ?? null;
+    if ((deps.auth?.isConfigured() ?? false) && !user && !bearerTokenFromRequest(c.req.raw)) {
+      return c.json({ error: "Authentication required." }, 401);
+    }
+    const ownerUserId = user?.id ?? payload.userId;
+    if (!ownerUserId) {
+      return c.json({ error: "userId is required when authentication is disabled." }, 400);
+    }
+    if (!deps.hermesJobApiUrl) {
+      return c.json({ error: "Agentic research runs are not configured for this environment." }, 501);
+    }
+    if (payload.sessionId) {
+      const existingSession = await deps.store.getSession(payload.sessionId);
+      if (existingSession && existingSession.userId !== ownerUserId) {
+        return c.json({ error: "Not authorized for this session." }, 403);
+      }
+    }
+    const billingCheck = await deps.billing.check(ownerUserId);
+    let settledPayment: SettleResponse | null = null;
+    if (!billingCheck.allowed) {
+      const x402Result = await verifyAndSettleX402Payment(deps, c.req.raw, billingCheck);
+      if (x402Result.ok) {
+        settledPayment = x402Result.settlement;
+      } else if (x402Result.response) {
+        return x402Result.response;
+      }
+      const paymentRequirements = await createX402PaymentRequirements(deps, c.req.raw, billingCheck);
+      const x402 = await createX402PaymentRequired(deps, c.req.raw);
+      if (paymentRequirements) {
+        if (x402) {
+          c.header("payment-required", encodePaymentRequiredHeader(x402.paymentRequired));
+        }
+        c.header("x-payment-required", encodeBase64Json(paymentRequirements));
+      }
+      if (!settledPayment) {
+        return c.json({
+          error: "Monthly AI usage limit reached.",
+          code: "billing_limit_exceeded",
+          limitUsd: billingCheck.limitUsd,
+          spendUsd: billingCheck.spendUsd,
+          windowStartedAt: billingCheck.windowStartedAt,
+          paymentRequirements,
+        }, 402);
+      }
+    }
+
+    const requestPayload: ChatRequest = {
+      userId: ownerUserId,
+      sessionId: payload.sessionId,
+      message: payload.query,
+      workIds: payload.workIds,
+      mode: "agentic",
+      workflow: "search",
+      intensityOverride: payload.intensityOverride,
+    };
+    const { session, run } = await launchAgenticResearchRun(c, requestPayload);
+    const response = c.json(await buildResearchRunResponse(c, session, run.id), 201);
+    return attachPaymentHeaders(response, settledPayment);
+  };
+
+  const handleGetResearchRun = async (c: Context) => {
+    const runId = c.req.param("runId") ?? "";
+    const run = await deps.store.getRun(runId);
+    if (!run) {
+      return c.json({ error: "Run not found." }, 404);
+    }
+    const session = await deps.store.getSession(run.sessionId);
+    if (!session) {
+      return c.json({ error: "Session not found." }, 404);
+    }
+    if (!(await canAccessSession(c, session))) {
+      return c.json({ error: "Not authorized for this run." }, 403);
+    }
+    const payload = await buildResearchRunResponse(c, session, run.id);
+    if (!payload) {
+      return c.json({ error: "Run not found." }, 404);
+    }
+    return c.json(payload);
+  };
+
+  const handleGetResearchRunLogs = async (c: Context) => {
+    const runId = c.req.param("runId") ?? "";
+    const run = await deps.store.getRun(runId);
+    if (!run) {
+      return c.json({ error: "Run not found." }, 404);
+    }
+    const session = await deps.store.getSession(run.sessionId);
+    if (!session) {
+      return c.json({ error: "Session not found." }, 404);
+    }
+    if (!(await canAccessSession(c, session))) {
+      return c.json({ error: "Not authorized for this run." }, 403);
+    }
+    const toolCalls = await deps.store.listToolCalls(runId);
+    return c.json(await buildRunLogsPayload(c, deps, session, run, toolCalls));
+  };
+
+  app.post("/v1/research/runs", handleCreateResearchRun);
+  app.post("/api/v1/research/runs", handleCreateResearchRun);
+  app.get("/v1/research/runs/:runId", handleGetResearchRun);
+  app.get("/api/v1/research/runs/:runId", handleGetResearchRun);
+  app.get("/v1/research/runs/:runId/logs", handleGetResearchRunLogs);
+  app.get("/api/v1/research/runs/:runId/logs", handleGetResearchRunLogs);
 
   const ComprehensiveJobRequestSchema = z.object({
     prompt: z.string().trim().min(1),
