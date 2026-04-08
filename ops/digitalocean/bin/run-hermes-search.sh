@@ -320,6 +320,8 @@ Required first step:
    - You may use the full corpus if the query is broad.
    - Narrow only when a subset clearly improves relevance or speed.
    - Record the chosen_scope and scope_rationale in the manifest before running ripgrep.
+   - If the scoped result is a tiny bounded set of exact works, for example 1 to 3 clearly identified books, treat that as a direct-reading handoff case rather than a normal bounded-hit retrieval case.
+   - In that tiny-scope case, you may stop after scope resolution and artifact setup instead of doing a full kept-hit search.
 3. Decide what should count as a kept evidence hit.
    - A kept hit must materially bear on the query, not merely contain a matching word.
    - Save exact text with enough surrounding context to stand alone.
@@ -366,6 +368,12 @@ Artifact requirements:
   - set `synthesis_mode` to `small_scope_direct_read`
   - set `synthesis_rationale` to explain why the final answer should be written from direct reading of the whole scoped work(s), not just the kept-hit subset
   - include `direct_source_files` listing the exact raw text files that should be read during synthesis if you can determine them
+  - if `resolved_work_count` is 1, 2, or 3 and the direct source files are known, you may finish the run immediately after writing:
+    - `manifest.json`
+    - `scoped-files.tsv`
+    - `run.log`
+    - a lightweight `hits/index.json` noting that synthesis should read the full scoped work(s) directly
+  - in that tiny-scope case, do not spend time forcing a normal kept-hit set just to satisfy the old retrieval pattern
 - Otherwise:
   - set `synthesis_mode` to `standard_hits`
   - set `synthesis_rationale` briefly
@@ -391,6 +399,7 @@ Quality bar:
 - Treat the effort cap as a hard maximum, not a quota. Stop once you have enough strong, representative evidence, or sooner if the scoped corpus is exhausted.
 - Keep the output inspectable and lightweight.
 - Do not spend time building a full synthesis, labels, or a large structured dataset.
+- If the query resolves to 1 to 3 exact books, prefer the tiny-scope direct-reading handoff over a normal capped evidence search.
 
 At the end:
 - Print the inner run directory path.
