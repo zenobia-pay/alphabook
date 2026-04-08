@@ -267,7 +267,7 @@ export const Thread: FC<{
           </ThreadPrimitive.ViewportFooter>
         </ThreadPrimitive.Viewport>
 
-        {showArtifacts && artifacts.length > 0 ? <ThreadOutputs artifacts={artifacts} /> : null}
+        {showArtifacts ? <ThreadOutputs artifacts={artifacts} /> : null}
       </div>
     </ThreadPrimitive.Root>
   );
@@ -278,10 +278,7 @@ const ThreadOutputs: FC<{
 }> = ({ artifacts }) => {
   const visibleArtifacts = useMemo(() => selectVisibleArtifacts(artifacts), [artifacts]);
   const [isExpanded, setIsExpanded] = useState(true);
-
-  if (visibleArtifacts.length === 0) {
-    return null;
-  }
+  const hasArtifacts = visibleArtifacts.length > 0;
 
   const handleOpenArtifact = useCallback((artifact: RunArtifactRecord) => {
     const content = typeof artifact.content === "string" ? artifact.content : "";
@@ -309,23 +306,35 @@ const ThreadOutputs: FC<{
         <ChevronDownIcon className="assistant-outputs-toggle-icon" />
       </button>
       <div className="assistant-outputs-list" role="list">
-        {visibleArtifacts.map((artifact) => {
-          const disabled = typeof artifact.content !== "string" || artifact.content.trim().length === 0;
-          return (
-            <button
-              key={`${artifact.r2Key ?? artifact.filename}-${artifact.createdAt ?? ""}`}
-              type="button"
-              className="assistant-output-link"
-              role="listitem"
-              onClick={() => handleOpenArtifact(artifact)}
-              disabled={disabled}
-              title={disabled ? "This output is not available inline yet." : artifact.filename}
-            >
-              <FileTextIcon className="assistant-output-link-icon" />
-              <span className="assistant-output-link-name">{formatArtifactLabel(artifact, visibleArtifacts)}</span>
-            </button>
-          );
-        })}
+        {hasArtifacts
+          ? visibleArtifacts.map((artifact) => {
+              const disabled = typeof artifact.content !== "string" || artifact.content.trim().length === 0;
+              return (
+                <button
+                  key={`${artifact.r2Key ?? artifact.filename}-${artifact.createdAt ?? ""}`}
+                  type="button"
+                  className="assistant-output-link"
+                  role="listitem"
+                  onClick={() => handleOpenArtifact(artifact)}
+                  disabled={disabled}
+                  title={disabled ? "This output is not available inline yet." : artifact.filename}
+                >
+                  <FileTextIcon className="assistant-output-link-icon" />
+                  <span className="assistant-output-link-name">{formatArtifactLabel(artifact, visibleArtifacts)}</span>
+                </button>
+              );
+            })
+          : Array.from({ length: 4 }, (_, index) => (
+              <div
+                key={`output-placeholder-${index}`}
+                className="assistant-output-placeholder"
+                role="listitem"
+                aria-hidden="true"
+              >
+                <span className="assistant-output-placeholder-icon" />
+                <span className="assistant-output-placeholder-line" />
+              </div>
+            ))}
       </div>
     </aside>
   );
