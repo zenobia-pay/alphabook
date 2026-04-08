@@ -9071,6 +9071,15 @@ function normalizeHermesArtifactFilename(relativePath: string) {
 function titleForHermesArtifact(relativePath: string) {
   const normalized = normalizeHermesArtifactFilename(relativePath);
   const base = normalized.split("/").at(-1) ?? normalized;
+  if (base === "final-answer.md") {
+    return "Final Answer";
+  }
+  if (base === "final-answer.json") {
+    return "Final Answer JSON";
+  }
+  if (base === "scope-report.json") {
+    return "Scope Report";
+  }
   if (normalized.endsWith("hits/index.json")) {
     return "Search Hits Index";
   }
@@ -9101,6 +9110,15 @@ function titleForHermesArtifact(relativePath: string) {
 function kindForHermesArtifact(relativePath: string) {
   const normalized = normalizeHermesArtifactFilename(relativePath);
   const base = normalized.split("/").at(-1) ?? "";
+  if (base === "final-answer.md") {
+    return "final_answer_markdown";
+  }
+  if (base === "final-answer.json") {
+    return "final_answer_json";
+  }
+  if (base === "scope-report.json") {
+    return "scope_report_json";
+  }
   if (normalized.endsWith("hits/index.json")) {
     return "hermes_search_hits_index";
   }
@@ -9126,6 +9144,9 @@ function isUserFacingHermesArtifact(relativePath: string) {
   const normalized = normalizeHermesArtifactFilename(relativePath).toLowerCase();
   if (
     normalized === "inner/manifest.json"
+    || normalized === "inner/scope-report.json"
+    || normalized === "inner/final-answer.md"
+    || normalized === "inner/final-answer.json"
     || normalized === "inner/run.log"
     || normalized === "inner/scoped-files.tsv"
     || normalized === "inner/briefing.md"
@@ -9254,10 +9275,14 @@ async function persistHermesFallbackArtifacts(
 }
 
 function buildHermesCompletionAnswer(
+  compiledAnswerText: string | null,
   finalSnapshot: HermesSessionSnapshot | null,
   archiveManifest: HermesArchiveManifest | null,
   hitsIndexText?: string | null,
 ) {
+  if (typeof compiledAnswerText === "string" && compiledAnswerText.trim().length > 0) {
+    return compiledAnswerText.trim();
+  }
   const finalMessages = Array.isArray(finalSnapshot?.messages) ? finalSnapshot.messages : [];
   const finalAssistantMessage = [...finalMessages]
     .reverse()
@@ -9280,7 +9305,9 @@ function buildHermesCompletionAnswer(
   const importantFiles = (archiveManifest?.files ?? [])
     .map((file) => normalizeHermesArtifactFilename(file.relativePath))
     .filter((path) =>
-      path.endsWith("briefing.md")
+      path.endsWith("final-answer.md")
+      || path.endsWith("scope-report.json")
+      || path.endsWith("briefing.md")
       || path.endsWith("hits/index.json")
       || path.endsWith("dataset.csv")
       || path.endsWith("citation-index.json"),
@@ -9371,6 +9398,15 @@ async function finalizeHermesRun(
     await persistResearchDocumentArtifact(deps, params.session.id, currentRun.id, briefingHtml);
   }
 
+  const compiledAnswerMarkdown =
+    await loadHermesArchiveText(deps, archiveManifest, (file) => normalizeHermesArtifactFilename(file.relativePath).endsWith("final-answer.md"))
+    ?? await fetchHermesArtifact(
+      deps.hermesJobApiUrl!,
+      deps.hermesJobApiToken,
+      params.job.id,
+      normalizeHermesArtifactName("final-answer.md"),
+    ).then((response) => response.artifact.content.trim()).catch(() => "");
+
   const sessionArtifactText =
     await loadHermesArchiveText(deps, archiveManifest, (file) => normalizeHermesArtifactFilename(file.relativePath).endsWith("hermes.session.json"))
     ?? await fetchHermesArtifact(
@@ -9380,7 +9416,7 @@ async function finalizeHermesRun(
       normalizeHermesArtifactName("hermes.session.json"),
     ).then((response) => response.artifact.content).catch(() => null);
   const finalSnapshot = parseHermesJsonRecord(sessionArtifactText ?? "") as HermesSessionSnapshot | null;
-  const finalAnswer = buildHermesCompletionAnswer(finalSnapshot, archiveManifest, hitsIndexText);
+  const finalAnswer = buildHermesCompletionAnswer(compiledAnswerMarkdown || null, finalSnapshot, archiveManifest, hitsIndexText);
 
   const archiveSummary = loadHermesArchiveSummary(params.job);
   const bridge = buildHermesBridgeRecord(params.job, {
@@ -9391,7 +9427,8 @@ async function finalizeHermesRun(
     params.job.state === "completed"
     && (params.job.exitCode == null || params.job.exitCode === 0)
     && (
-      Boolean(briefingMarkdown)
+      Boolean(compiledAnswerMarkdown)
+      || Boolean(briefingMarkdown)
       || Boolean(hitsIndexText)
       || /^completed/iu.test(manifestStatus)
       || (archiveSummary.fileCount ?? 0) > 0

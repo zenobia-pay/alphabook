@@ -343,22 +343,28 @@ function selectVisibleArtifacts(artifacts: RunArtifactRecord[]) {
   }
 
   const priority = new Map<string, number>([
-    ["inner/manifest.json", 0],
-    ["manifest.json", 0],
-    ["inner/run.log", 1],
-    ["run.log", 1],
-    ["inner/scoped-files.tsv", 2],
-    ["scoped-files.tsv", 2],
-    ["inner/hits/index.json", 3],
-    ["hits/index.json", 3],
-    ["inner/briefing.md", 4],
-    ["briefing.md", 4],
-    ["inner/dataset.csv", 5],
-    ["dataset.csv", 5],
-    ["inner/dataset.jsonl", 6],
-    ["dataset.jsonl", 6],
-    ["inner/citation-index.json", 7],
-    ["citation-index.json", 7],
+    ["inner/final-answer.md", 0],
+    ["final-answer.md", 0],
+    ["inner/final-answer.json", 1],
+    ["final-answer.json", 1],
+    ["inner/manifest.json", 2],
+    ["manifest.json", 2],
+    ["inner/scope-report.json", 3],
+    ["scope-report.json", 3],
+    ["inner/run.log", 4],
+    ["run.log", 4],
+    ["inner/scoped-files.tsv", 5],
+    ["scoped-files.tsv", 5],
+    ["inner/hits/index.json", 6],
+    ["hits/index.json", 6],
+    ["inner/briefing.md", 7],
+    ["briefing.md", 7],
+    ["inner/dataset.csv", 8],
+    ["dataset.csv", 8],
+    ["inner/dataset.jsonl", 9],
+    ["dataset.jsonl", 9],
+    ["inner/citation-index.json", 10],
+    ["citation-index.json", 10],
   ]);
 
   return [...byFilename.values()].sort((left, right) => {
@@ -377,8 +383,14 @@ function isVisibleOutputArtifact(artifact: RunArtifactRecord) {
     return false;
   }
   return (
-    normalized === "inner/manifest.json"
+    normalized === "inner/final-answer.md"
+    || normalized === "final-answer.md"
+    || normalized === "inner/final-answer.json"
+    || normalized === "final-answer.json"
+    || normalized === "inner/manifest.json"
     || normalized === "manifest.json"
+    || normalized === "inner/scope-report.json"
+    || normalized === "scope-report.json"
     || normalized === "inner/run.log"
     || normalized === "run.log"
     || normalized === "inner/scoped-files.tsv"

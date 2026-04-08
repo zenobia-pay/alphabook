@@ -23,6 +23,9 @@ const CORS_ORIGIN = process.env.HERMES_JOB_API_CORS_ORIGIN || "*";
 const PRIMARY_ARTIFACTS = [
   "index.json",
   "manifest.json",
+  "scope-report.json",
+  "final-answer.md",
+  "final-answer.json",
   "briefing.md",
   "dataset.jsonl",
   "dataset.csv",
@@ -188,6 +191,9 @@ function isUserFacingHermesArtifactName(name) {
   const normalized = String(name || "").replaceAll("\\", "/").replace(/^\/+/u, "").toLowerCase();
   if (
     normalized === "manifest.json"
+    || normalized === "scope-report.json"
+    || normalized === "final-answer.md"
+    || normalized === "final-answer.json"
     || normalized === "run.log"
     || normalized === "scoped-files.tsv"
     || normalized === "briefing.md"

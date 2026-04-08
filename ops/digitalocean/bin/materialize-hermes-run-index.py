@@ -10,6 +10,9 @@ from typing import Any
 
 PRIMARY_INNER_ARTIFACTS = [
     "manifest.json",
+    "scope-report.json",
+    "final-answer.md",
+    "final-answer.json",
     "briefing.md",
     "dataset.jsonl",
     "dataset.csv",

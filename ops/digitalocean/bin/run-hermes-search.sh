@@ -350,11 +350,13 @@ Quality bar:
 
 At the end:
 - Print the inner run directory path.
-- Print a short summary of:
+- Print a concise summary exactly once with:
   - chosen scope
   - searched file count
   - kept hit count
-  - output files
+  - a few representative example titles if available
+  - the main output files
+- Do not repeat the same summary block multiple times.
 """
 
 prompt_path.write_text(prompt)
@@ -470,6 +472,58 @@ if [[ -x "$materialize_script" ]]; then
 fi
 
 archive_script="${ROOT_DIR}/ops/digitalocean/bin/archive-hermes-run.mjs"
+synthesis_script="${ROOT_DIR}/ops/digitalocean/bin/run-codex-search-synthesis.sh"
+
+resolve_inner_run_dir() {
+  python3 - "$WRAPPER_INNER_RUN_FILE" "$STDOUT_LOG" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+inner_run_file = Path(sys.argv[1])
+stdout_log = Path(sys.argv[2])
+
+try:
+    value = inner_run_file.read_text(encoding="utf-8").strip()
+except Exception:
+    value = ""
+if value:
+    candidate = Path(value)
+    if candidate.is_dir():
+        print(candidate)
+        raise SystemExit
+
+try:
+    text = stdout_log.read_text(encoding="utf-8", errors="ignore")
+    matches = re.findall(r"/srv/alphabook/logs/corpus-search/[^\s\"'`]+", text)
+    for value in reversed(matches):
+        candidate = Path(value)
+        if candidate.is_dir():
+            print(candidate)
+            raise SystemExit
+except Exception:
+    pass
+PY
+}
+
+if [[ "$exit_code" -eq 0 && -x "$synthesis_script" ]]; then
+  inner_run_dir="$(resolve_inner_run_dir || true)"
+  if [[ -n "$inner_run_dir" && -d "$inner_run_dir" ]]; then
+    if "$synthesis_script" \
+      --root-dir "$ROOT_DIR" \
+      --inner-run-dir "$inner_run_dir" \
+      --job-id "${JOB_ID}-synthesis" \
+      --model "$MODEL" \
+      --user-prompt-file "$PROMPT_FILE" >>"$STDOUT_LOG" 2>>"$STDERR_LOG"; then
+      echo "codex_synthesis=completed" >>"$STDOUT_LOG"
+    else
+      echo "codex_synthesis=failed inner_run_dir=$inner_run_dir" >>"$STDERR_LOG"
+    fi
+  else
+    echo "codex_synthesis=skipped reason=missing_inner_run_dir" >>"$STDERR_LOG"
+  fi
+fi
+
 if [[ -n "${ARCHIVE_PREFIX:-}" && -n "${ALPHABOOK_SESSION_ID:-}" && -n "${ALPHABOOK_RUN_ID:-}" && -x "$archive_script" ]]; then
   archive_args=(
     --run-dir "$RUN_DIR"
