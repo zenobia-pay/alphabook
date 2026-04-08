@@ -9559,6 +9559,42 @@ function extractResearchRunHits(artifacts: RunArtifactLike[]): ResearchRunHit[] 
   }));
 }
 
+function recordFromUnknown(input: unknown): Record<string, unknown> | null {
+  return input && typeof input === "object" && !Array.isArray(input)
+    ? input as Record<string, unknown>
+    : null;
+}
+
+function hermesArchiveManifestKeyFromBackgroundJob(backgroundJob: BackgroundJobRecord | null | undefined) {
+  const metadata = recordFromUnknown(backgroundJob?.metadata);
+  if (!metadata) {
+    return null;
+  }
+  const archive = recordFromUnknown(metadata.archive);
+  if (typeof archive?.manifestKey === "string" && archive.manifestKey.trim().length > 0) {
+    return archive.manifestKey.trim();
+  }
+  if (typeof metadata.manifestKey === "string" && metadata.manifestKey.trim().length > 0) {
+    return metadata.manifestKey.trim();
+  }
+  if (typeof metadata.archivePrefix === "string" && metadata.archivePrefix.trim().length > 0) {
+    return `${metadata.archivePrefix.trim()}/archive-manifest.json`;
+  }
+  return null;
+}
+
+async function loadResearchRunArchiveManifest(
+  deps: AppDeps,
+  backgroundJob: BackgroundJobRecord | null | undefined,
+) {
+  const manifestKey = hermesArchiveManifestKeyFromBackgroundJob(backgroundJob);
+  if (!manifestKey) {
+    return null;
+  }
+  const text = await deps.blobStore.getText(manifestKey).catch(() => null);
+  return parseHermesArchiveManifest(text);
+}
+
 async function finalizeHermesRun(
   deps: AppDeps,
   activeRuns: Map<string, ActiveRunState>,
@@ -14447,9 +14483,51 @@ export function createApp(inputDeps: CreateAppInput) {
     }
     const messages = await deps.store.listMessages(session.id);
     const answerMessage = latestRunAnswerMessage(messages, runId);
-    const citations = answerMessage ? sanitizeAppCitations(answerMessage.metadata?.citations) : [];
-    const structured = parseStructuredResearchAnswer(payload.artifacts ?? []);
-    const hits = extractResearchRunHits(payload.artifacts ?? []);
+    const archiveManifest = await loadResearchRunArchiveManifest(deps, payload.backgroundJob ?? null);
+    const structuredFromArtifacts = parseStructuredResearchAnswer(payload.artifacts ?? []);
+    const hitsFromArtifacts = extractResearchRunHits(payload.artifacts ?? []);
+    const structuredFromArchive = !structuredFromArtifacts && archiveManifest
+      ? parseHermesJsonRecord(
+        await loadHermesArchiveText(
+          deps,
+          archiveManifest,
+          (file) => normalizeHermesArtifactFilename(file.relativePath).endsWith("final-answer.json"),
+        ) ?? "",
+      )
+      : null;
+    const hitsFromArchive = hitsFromArtifacts.length === 0 && archiveManifest
+      ? extractHermesResolvedHits(
+        await loadHermesArchiveText(
+          deps,
+          archiveManifest,
+          (file) => normalizeHermesArtifactFilename(file.relativePath).endsWith("hits/index.json"),
+        ) ?? "",
+      ).map((hit) => ({
+        hitId: hit.hitId,
+        title: hit.title,
+        workId: hit.workId,
+        excerpt: hit.excerpt,
+        ...(hit.chunkId ? { chunkId: hit.chunkId } : {}),
+        ...(hit.readerPath ? { readerPath: hit.readerPath } : {}),
+        ...((hit.alphabookUrl ?? "").trim().length > 0 ? { readerUrl: hit.alphabookUrl!.trim() } : {}),
+      }))
+      : [];
+    const citationsFromMessage = answerMessage ? sanitizeAppCitations(answerMessage.metadata?.citations) : [];
+    const structured = structuredFromArtifacts
+      ?? (structuredFromArchive && typeof structuredFromArchive === "object" && !Array.isArray(structuredFromArchive)
+        ? structuredFromArchive as Record<string, unknown>
+        : null);
+    const hits = hitsFromArtifacts.length > 0 ? hitsFromArtifacts : hitsFromArchive;
+    const citations = citationsFromMessage.length > 0
+      ? citationsFromMessage
+      : citationsFromHermesResolvedHits(hits.map((hit) => ({
+        hitId: hit.hitId,
+        title: hit.title,
+        workId: hit.workId,
+        excerpt: hit.excerpt,
+        ...(hit.chunkId ? { chunkId: hit.chunkId } : {}),
+        ...(hit.readerPath ? { readerPath: hit.readerPath } : {}),
+      })));
     const answer =
       typeof answerMessage?.content === "string" && answerMessage.content.trim().length > 0
         ? answerMessage.content.trim()
