@@ -9700,22 +9700,78 @@ async function syncHermesBackgroundJob(
 
 async function buildHermesUserPrompt(
   deps: AppDeps,
-  input: ChatRequest,
+  params: {
+    input: ChatRequest;
+    conversationHistory: Array<{
+      role: "user" | "assistant" | "system" | "tool";
+      content: string;
+    }>;
+  },
 ) {
+  const { input, conversationHistory } = params;
   const basePrompt = input.message.trim();
+  const conversationWindow = conversationHistory
+    .filter((entry) => (entry.role === "user" || entry.role === "assistant") && entry.content.trim().length > 0)
+    .slice(-8);
+
+  let resolvedPrompt = basePrompt;
+  if (deps.ai && conversationWindow.length > 1) {
+    try {
+      const payload = await deps.ai.run<{ messages: Array<{ role: "system" | "user"; content: string }> }, unknown>("@cf/meta/llama-3.1-8b-instruct", {
+        messages: [
+          {
+            role: "system",
+            content: [
+              "Rewrite the conversation into one standalone corpus-search brief for a retrieval agent.",
+              "Preserve the user's original research objective and incorporate later constraints or clarifications.",
+              "Keep it concise but complete.",
+              "Return plain text only.",
+              "Do not mention the conversation itself.",
+              "Do not explain your reasoning.",
+            ].join("\n"),
+          },
+          {
+            role: "user",
+            content: conversationWindow.map((entry) => `${entry.role.toUpperCase()}: ${entry.content.trim()}`).join("\n\n"),
+          },
+        ],
+      });
+      const generated = normalizeWorkersAiText(payload).trim();
+      if (generated.length > 0) {
+        resolvedPrompt = generated;
+      }
+    } catch {
+      const userTurns = conversationWindow
+        .filter((entry) => entry.role === "user")
+        .map((entry) => entry.content.trim())
+        .filter((value) => value.length > 0);
+      if (userTurns.length > 1) {
+        resolvedPrompt = userTurns.join("\n\nConstraints and clarifications:\n");
+      }
+    }
+  } else if (conversationWindow.length > 1) {
+    const userTurns = conversationWindow
+      .filter((entry) => entry.role === "user")
+      .map((entry) => entry.content.trim())
+      .filter((value) => value.length > 0);
+    if (userTurns.length > 1) {
+      resolvedPrompt = userTurns.join("\n\nConstraints and clarifications:\n");
+    }
+  }
+
   if (!Array.isArray(input.workIds) || input.workIds.length === 0) {
-    return basePrompt;
+    return resolvedPrompt;
   }
   const workMetadata = await deps.store.getWorkMetadata(input.workIds.slice(0, 12)).catch(() => []);
   if (!Array.isArray(workMetadata) || workMetadata.length === 0) {
-    return basePrompt;
+    return resolvedPrompt;
   }
   const contextLines = workMetadata.map((work) => {
     const authors = Array.isArray(work.authors) && work.authors.length > 0 ? work.authors.join(", ") : "Unknown author";
     return `- ${work.title} by ${authors} (${work.id})`;
   });
   return [
-    basePrompt,
+    resolvedPrompt,
     "",
     "AlphaBook context:",
     "The user currently has these works selected. Treat them as a strong prior when deciding scope and evidence:",
@@ -9769,6 +9825,8 @@ async function runHermesConversation(
   await deps.store.appendMessage(activeSession.id, "user", input.message, {
     phase: "user",
   });
+  const sessionMessages = await deps.store.listMessages(activeSession.id);
+  const conversationHistory = formatConversationHistory(sessionMessages);
 
   let run = await deps.store.createRun(activeSession.id);
   activeRuns.set(run.id, {
@@ -9963,7 +10021,10 @@ async function runHermesConversation(
   let backgroundJobId: string | null = null;
 
   try {
-    const hermesUserPrompt = await buildHermesUserPrompt(deps, input);
+    const hermesUserPrompt = await buildHermesUserPrompt(deps, {
+      input,
+      conversationHistory,
+    });
     const archivePrefix = artifactKeys.sessionArtifact(activeSession.id, `runs/${run.id}/hermes`);
     const launchPayload = {
       userPrompt: hermesUserPrompt,
