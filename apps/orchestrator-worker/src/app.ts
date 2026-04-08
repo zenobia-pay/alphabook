@@ -9601,6 +9601,54 @@ async function loadResearchRunArchiveManifest(
   return parseHermesArchiveManifest(text);
 }
 
+async function synthesizeHermesArtifactAnswer(
+  deps: AppDeps,
+  params: {
+    session: SessionRecord;
+    runId: string;
+    userMessage: string;
+    conversationHistory: Array<{
+      role: "user" | "assistant" | "system" | "tool";
+      content: string;
+    }>;
+    briefingMarkdown: string;
+    citations: Citation[];
+  },
+) {
+  if (params.citations.length === 0) {
+    return null;
+  }
+  const exactCitationLinks = await Promise.all(
+    params.citations.slice(0, 16).map(async (citation) => ({
+      workId: citation.workId,
+      ...(citation.chunkId ? { chunkId: citation.chunkId } : {}),
+      label: citation.label,
+      excerpt: citation.excerpt,
+      url: await buildCitationPassageUrl(deps, params.session.id, citation),
+    })),
+  );
+  const synthesis = await deps.synthesizer.synthesize({
+    userMessage: params.userMessage,
+    conversationHistory: params.conversationHistory,
+    plannerDraft: params.briefingMarkdown,
+    plannerCitations: params.citations,
+    toolHistory: [],
+    runtimeBriefing: params.briefingMarkdown,
+    exactCitationLinks,
+    priorAnswerSummary: latestPriorAssistantSummaryFromConversation(params.conversationHistory),
+    billingContext: {
+      userId: params.session.userId,
+      sessionId: params.session.id,
+      runId: params.runId,
+      source: "synthesizer",
+    },
+  });
+  return {
+    answer: synthesis.answer,
+    citations: ensureCitationBreadth(params.userMessage, synthesis.citations, params.citations),
+  };
+}
+
 async function finalizeHermesRun(
   deps: AppDeps,
   activeRuns: Map<string, ActiveRunState>,
@@ -9698,15 +9746,41 @@ async function finalizeHermesRun(
       normalizeHermesArtifactName("hermes.session.json"),
     ).then((response) => response.artifact.content).catch(() => null);
   const finalSnapshot = parseHermesJsonRecord(sessionArtifactText ?? "") as HermesSessionSnapshot | null;
-  const finalAnswer = buildHermesCompletionAnswer(
+  const hermesResolvedHits = extractHermesResolvedHits(hitsIndexText);
+  let hermesCitations = citationsFromHermesResolvedHits(hermesResolvedHits);
+  const sessionMessages = await deps.store.listMessages(params.session.id);
+  const conversationHistory = formatConversationHistory(sessionMessages);
+  const latestUserMessage = [...conversationHistory]
+    .reverse()
+    .find((entry) => entry.role === "user" && entry.content.trim().length > 0)
+    ?.content
+    ?.trim() ?? params.job.userPrompt?.trim() ?? "";
+  let synthesizedHermesAnswer: string | null = null;
+  if (briefingMarkdown && hermesCitations.length > 0 && latestUserMessage) {
+    try {
+      const synthesis = await synthesizeHermesArtifactAnswer(deps, {
+        session: params.session,
+        runId: currentRun.id,
+        userMessage: latestUserMessage,
+        conversationHistory,
+        briefingMarkdown,
+        citations: hermesCitations,
+      });
+      if (synthesis?.answer.trim()) {
+        synthesizedHermesAnswer = synthesis.answer.trim();
+        hermesCitations = synthesis.citations;
+      }
+    } catch {
+      // Fall back to the imported Hermes artifacts when app-side synthesis fails.
+    }
+  }
+  const finalAnswer = synthesizedHermesAnswer ?? buildHermesCompletionAnswer(
     compiledAnswerMarkdown || null,
     briefingMarkdown || null,
     finalSnapshot,
     archiveManifest,
     hitsIndexText,
   );
-  const hermesResolvedHits = extractHermesResolvedHits(hitsIndexText);
-  const hermesCitations = citationsFromHermesResolvedHits(hermesResolvedHits);
 
   const archiveSummary = loadHermesArchiveSummary(params.job);
   const bridge = buildHermesBridgeRecord(params.job, {

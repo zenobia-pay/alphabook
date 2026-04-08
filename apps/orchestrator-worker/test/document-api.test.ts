@@ -594,6 +594,230 @@ test("document chat launches Agentic search from the router decision instead of 
   }
 });
 
+test("document chat runs app-side synthesis for Hermes search results when evidence hits are available", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    if (url === "https://hermes.example.test/v1/jobs" && init?.method === "POST") {
+      return new Response(JSON.stringify({
+        job: {
+          id: "job-agentic-synthesized",
+          state: "completed",
+          running: false,
+          pid: 1234,
+          userPrompt: "find me an underrated railway story",
+          model: "gpt-5.4",
+          maxTurns: 60,
+          launchedAt: new Date().toISOString(),
+          startedAt: new Date().toISOString(),
+          finishedAt: new Date().toISOString(),
+          innerRunDir: "/srv/alphabook/logs/corpus-search/job-agentic-synthesized",
+          innerRunId: "job-agentic-synthesized",
+          hermesSessionId: "agentic-session",
+          exitCode: 0,
+          heartbeatAt: new Date().toISOString(),
+          phase: "completed",
+          phaseProgressPct: 100,
+          detail: null,
+          manifestStatus: "completed",
+          chosenScope: "railway manuals",
+          scopeRationale: null,
+          recordCounts: null,
+        },
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.startsWith("https://hermes.example.test/v1/jobs/job-agentic-synthesized/logs")) {
+      return new Response(JSON.stringify({
+        jobId: "job-agentic-synthesized",
+        sources: [],
+        nextCursor: "",
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url === "https://hermes.example.test/v1/jobs/job-agentic-synthesized") {
+      return new Response(JSON.stringify({
+        job: {
+          id: "job-agentic-synthesized",
+          state: "completed",
+          running: false,
+          pid: 1234,
+          userPrompt: "find me an underrated railway story",
+          model: "gpt-5.4",
+          maxTurns: 60,
+          launchedAt: new Date().toISOString(),
+          startedAt: new Date().toISOString(),
+          finishedAt: new Date().toISOString(),
+          innerRunDir: "/srv/alphabook/logs/corpus-search/job-agentic-synthesized",
+          innerRunId: "job-agentic-synthesized",
+          hermesSessionId: "agentic-session",
+          exitCode: 0,
+          heartbeatAt: new Date().toISOString(),
+          phase: "completed",
+          phaseProgressPct: 100,
+          detail: null,
+          manifestStatus: "completed",
+          chosenScope: "railway manuals",
+          scopeRationale: null,
+          recordCounts: null,
+        },
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url === "https://hermes.example.test/v1/jobs/job-agentic-synthesized/artifacts") {
+      return new Response(JSON.stringify({
+        jobId: "job-agentic-synthesized",
+        runDir: "/srv/alphabook/logs/corpus-search/job-agentic-synthesized",
+        innerRunDir: "/srv/alphabook/logs/corpus-search/job-agentic-synthesized",
+        artifacts: [
+          {
+            name: "briefing.md",
+            path: "/srv/alphabook/logs/corpus-search/job-agentic-synthesized/briefing.md",
+            bytes: 96,
+            updatedAt: new Date().toISOString(),
+          },
+          {
+            name: "hits/index.json",
+            path: "/srv/alphabook/logs/corpus-search/job-agentic-synthesized/hits/index.json",
+            bytes: 180,
+            updatedAt: new Date().toISOString(),
+          },
+        ],
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url === "https://hermes.example.test/v1/jobs/job-agentic-synthesized/artifacts/briefing.md") {
+      return new Response(JSON.stringify({
+        jobId: "job-agentic-synthesized",
+        artifact: {
+          name: "briefing.md",
+          path: "/srv/alphabook/logs/corpus-search/job-agentic-synthesized/briefing.md",
+          bytes: 96,
+          updatedAt: new Date().toISOString(),
+          content: "# Briefing\nA railway manual describes a rulebook failure that could split train orders.",
+        },
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url === "https://hermes.example.test/v1/jobs/job-agentic-synthesized/artifacts/hits%2Findex.json") {
+      return new Response(JSON.stringify({
+        jobId: "job-agentic-synthesized",
+        artifact: {
+          name: "hits/index.json",
+          path: "/srv/alphabook/logs/corpus-search/job-agentic-synthesized/hits/index.json",
+          bytes: 180,
+          updatedAt: new Date().toISOString(),
+          content: JSON.stringify({
+            hits: [
+              {
+                hit_id: "hit-0001",
+                source_title: "Train Dispatching",
+                work_id: "work-railway",
+                quote: "The fatal defect in the \"single order\" system is that the orders to the two trains...",
+                chunk_id: "chunk-railway-1",
+              },
+            ],
+          }),
+        },
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.includes("/chunks/chunk-railway-1")) {
+      return new Response(JSON.stringify({
+        chunk: {
+          id: "chunk-railway-1",
+          workId: "work-railway",
+          chunkIndex: 12,
+          readerPath: "/read/12",
+        },
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(`Unhandled fetch: ${url}`, { status: 500 });
+  }) as typeof fetch;
+
+  try {
+    const store = new InMemoryAppStore([
+      {
+        id: "work-railway",
+        gutenbergId: 17783,
+        title: "The Traveling Engineers' Association",
+        language: "en",
+        releaseDate: "1906-01-01",
+        rightsStatus: "public_domain",
+        summary: "Railway operating rules and exams.",
+        authors: ["Anonymous"],
+        subjects: ["railroads"],
+      } as never,
+    ]);
+    const app = createApp({
+      store,
+      billing: createBillingService(store),
+      blobStore: new MemoryBlobStore(),
+      router: new ScriptedRouter([
+        {
+          type: "search",
+          fullQuery: "find me an underrated railway story",
+          executionMode: "agentic",
+        },
+      ]),
+      synthesizer: {
+        async synthesize() {
+          return {
+            answer: "The app-side synthesis picked up the railway evidence and turned it into a real answer with a quote.",
+            citations: [
+              {
+                workId: "work-railway",
+                chunkId: "chunk-railway-1",
+                label: "Train Dispatching",
+                excerpt: "The fatal defect in the \"single order\" system is that the orders to the two trains...",
+              },
+            ],
+          };
+        },
+      },
+      hermesJobApiUrl: "https://hermes.example.test",
+      hermesJobApiToken: "test-token",
+      queues: {
+        ingestName: "alphabook-ingest",
+        jobsName: "alphabook-jobs",
+      },
+    });
+
+    const response = await app.request("/api/v1/documents/chat", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        userId: "11111111-1111-1111-1111-111111111111",
+        message: "find me an underrated railway story",
+      }),
+    });
+
+    assert.equal(response.status, 200);
+    const body = await response.text();
+    assert.match(body, /app-side synthesis picked up the railway evidence/i);
+    assert.doesNotMatch(body, /# Briefing/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("document chat launches Agentic search even when the user only says use agentic", async () => {
   const originalFetch = globalThis.fetch;
   const hermesLaunchPayloads: unknown[] = [];
