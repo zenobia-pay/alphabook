@@ -2571,8 +2571,10 @@ test("agent API key routes also work on /v1 aliases and skill.md advertises the 
   const skillBody = await skillResponse.text();
   assert.match(skillBody, /homepage: https:\/\/alpha-book\.org/);
   assert.match(skillBody, /api_base":"https:\/\/api\.alpha-book\.org\/v1"/);
-  assert.match(skillBody, /The API you should call from the CLI is https:\/\/api\.alpha-book\.org/);
-  assert.match(skillBody, /`POST \/v1\/agents\/register` is intentionally unauthenticated\./);
+  assert.match(skillBody, /You are the AI agent that should connect to AlphaBook over the CLI\./);
+  assert.match(skillBody, /Registration is unauthenticated\./);
+  assert.doesNotMatch(skillBody, /human/i);
+  assert.doesNotMatch(skillBody, /Current architecture/);
 
   const registrationResponse = await app.request("/v1/agents/register", {
     method: "POST",

@@ -461,6 +461,12 @@ export const ChunkSearchResultSchema = z.object({
 
 export type ChunkSearchResult = z.infer<typeof ChunkSearchResultSchema>;
 
+export const ExploreSemanticSearchResponseSchema = z.object({
+  results: z.array(z.lazy(() => ChunkSearchResultSchema)),
+});
+
+export type ExploreSemanticSearchResponse = z.infer<typeof ExploreSemanticSearchResponseSchema>;
+
 export const ToolResultSchema = z.object({
   ok: z.boolean(),
   toolName: ToolNameSchema,

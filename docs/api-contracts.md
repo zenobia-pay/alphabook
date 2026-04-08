@@ -62,9 +62,9 @@ Notes:
 
 Behavior:
 
-- returns the public markdown prompt that tells agents how to register, claim, and call the current implementation from the CLI
+- returns the public markdown prompt that tells agents how to register and call the current implementation from the CLI
 - on the live DigitalOcean deployment, the generated prompt points CLI agents at `https://api.alpha-book.org/v1`
-- the prompt now spells out that registration is unauthenticated, human claim uses WorkOS in the browser, and the CLI API key is the only credential needed after registration
+- the prompt is intentionally minimal and focuses on the autonomous agent flow: register, persist the API key, run queries, and inspect sessions/runs
 
 ### `POST /api/v1/agents/register`
 
