@@ -41,13 +41,24 @@ const API_BASE = resolveApiBase();
 
 export class ApiError extends Error {
   readonly status: number;
+  readonly data: unknown;
 
-  constructor(message: string, status = 0) {
+  constructor(message: string, status = 0, data: unknown = null) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.data = data;
   }
 }
+
+export type BillingLimitErrorPayload = {
+  error?: string;
+  code?: string;
+  limitUsd?: number;
+  spendUsd?: number;
+  windowStartedAt?: string;
+  paymentRequirements?: unknown;
+};
 
 function extractApiErrorText(raw: string): string | null {
   const trimmed = raw.trim();
@@ -192,9 +203,17 @@ async function ensureOk(response: Response): Promise<Response> {
     const fallback = response.status >= 500
       ? "Something went wrong on our side. Please try again."
       : "We couldn't complete that request. Please try again.";
+    const raw = await response.text();
+    let parsed: unknown = null;
+    try {
+      parsed = raw.trim() ? JSON.parse(raw) : null;
+    } catch {
+      parsed = null;
+    }
     throw new ApiError(
-      humanizeApiErrorText(extractApiErrorText(await response.text()) ?? "", fallback),
+      humanizeApiErrorText(extractApiErrorText(raw) ?? "", fallback),
       response.status,
+      parsed,
     );
   }
   return response;

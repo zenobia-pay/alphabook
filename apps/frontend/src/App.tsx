@@ -5,7 +5,7 @@ import { ChevronsLeft, ChevronsRight, Dices, Funnel, Link2, LoaderCircle, Messag
 
 import { ChatSessionSummarySchema, getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type NotificationRecord, type ProfileBookStat, type ProfileFacetStat, type ProfileQueryStat, type PublicProfileResponse, type UserProfile, type UserProfileStats, type WorkDetail, type WorkFacetCounts, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
-import { ApiError, buildSignInUrl, buildSignOutUrl, cancelRun, claimGuestProfile, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchAssistantDocumentState, fetchAssistantSessionBootstrap, fetchCurrentUser, fetchExploreSemanticSearch, fetchMessages, fetchNotifications, fetchProfile, fetchProfileStats, fetchRunState, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, getErrorMessage, markNotificationRead, queryAdminAnalytics, sendAnalyticsEvent, streamChat, streamRun, unfollowProfile, type PersistedRunEventRecord, type RunArtifactRecord, type RunStateRecord, type SessionRunRecord } from "./api";
+import { ApiError, buildSignInUrl, buildSignOutUrl, cancelRun, claimGuestProfile, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchAssistantDocumentState, fetchAssistantSessionBootstrap, fetchCurrentUser, fetchExploreSemanticSearch, fetchMessages, fetchNotifications, fetchProfile, fetchProfileStats, fetchRunState, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, getErrorMessage, markNotificationRead, queryAdminAnalytics, sendAnalyticsEvent, streamChat, streamRun, unfollowProfile, type BillingLimitErrorPayload, type PersistedRunEventRecord, type RunArtifactRecord, type RunStateRecord, type SessionRunRecord } from "./api";
 import type { AssistantSurfaceProps } from "./components/assistant-surface";
 import { Avatar, AvatarFallback, AvatarImage } from "./components/ui/avatar";
 import { Button } from "./components/ui/button";
@@ -177,6 +177,12 @@ type ReaderPassage = {
 type OverlayContentsEntry = {
   id: string;
   label: string;
+};
+
+type BillingLimitState = {
+  limitUsd: number | null;
+  spendUsd: number | null;
+  windowStartedAt: string | null;
 };
 
 declare global {
@@ -1914,6 +1920,102 @@ function ErrorNotice({
   );
 }
 
+function parseBillingLimitState(error: unknown): BillingLimitState | null {
+  if (!(error instanceof ApiError) || error.status !== 402 || !error.data || typeof error.data !== "object") {
+    return null;
+  }
+  const payload = error.data as BillingLimitErrorPayload;
+  if (payload.code !== "billing_limit_exceeded") {
+    return null;
+  }
+  return {
+    limitUsd: typeof payload.limitUsd === "number" ? payload.limitUsd : null,
+    spendUsd: typeof payload.spendUsd === "number" ? payload.spendUsd : null,
+    windowStartedAt: typeof payload.windowStartedAt === "string" ? payload.windowStartedAt : null,
+  };
+}
+
+function formatUsdAmount(value: number | null) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return null;
+  }
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: value >= 100 ? 0 : 2,
+  }).format(value);
+}
+
+function formatBillingWindowDate(value: string | null) {
+  if (!value) {
+    return null;
+  }
+  const timestamp = Date.parse(value);
+  if (Number.isNaN(timestamp)) {
+    return null;
+  }
+  return new Intl.DateTimeFormat("en-US", {
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  }).format(timestamp);
+}
+
+function BillingLimitDialog({
+  state,
+  onClose,
+}: {
+  state: BillingLimitState;
+  onClose: () => void;
+}) {
+  const limit = formatUsdAmount(state.limitUsd);
+  const spend = formatUsdAmount(state.spendUsd);
+  const windowDate = formatBillingWindowDate(state.windowStartedAt);
+
+  return (
+    <div className="billing-limit-shell" role="dialog" aria-modal="true" aria-label="Usage limit reached">
+      <button type="button" className="billing-limit-backdrop" aria-label="Close usage limit dialog" onClick={onClose} />
+      <section className="billing-limit-panel">
+        <div className="billing-limit-header">
+          <h2>Monthly Usage Limit Reached</h2>
+          <button type="button" className="billing-limit-close" aria-label="Close usage limit dialog" onClick={onClose}>
+            <CloseIcon />
+          </button>
+        </div>
+        <div className="billing-limit-copy">
+          <p>You’ve used this month’s AI credit budget for this account, so new runs are paused for now.</p>
+          {limit || spend ? (
+            <dl className="billing-limit-stats">
+              {spend ? (
+                <>
+                  <dt>Current spend</dt>
+                  <dd>{spend}</dd>
+                </>
+              ) : null}
+              {limit ? (
+                <>
+                  <dt>Monthly limit</dt>
+                  <dd>{limit}</dd>
+                </>
+              ) : null}
+              {windowDate ? (
+                <>
+                  <dt>Current window started</dt>
+                  <dd>{windowDate}</dd>
+                </>
+              ) : null}
+            </dl>
+          ) : null}
+          <p>When the limit is raised, the billing window resets, or payment is accepted, you can start runs again.</p>
+        </div>
+        <div className="billing-limit-actions">
+          <button type="button" className="billing-limit-button" onClick={onClose}>Close</button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function isConversationAccessIssue(message: string | null) {
   if (!message) {
     return false;
@@ -3524,6 +3626,7 @@ export default function App() {
       : []
   ));
   const [loadError, setLoadError] = useState<string | null>(initialAssistantSessionBootstrap?.error ?? null);
+  const [billingLimitState, setBillingLimitState] = useState<BillingLimitState | null>(null);
   const [streamingAssistantId, setStreamingAssistantId] = useState<string | null>(null);
   const streamingAssistantIdRef = useRef<string | null>(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -5454,6 +5557,7 @@ export default function App() {
     setIsSending(true);
     setStreamConnected(true);
     setLoadError(null);
+    setBillingLimitState(null);
     setStreamingAssistantId(null);
     setMessages((current) => [...current, userMessage]);
     activeChatAbortControllerRef.current?.abort();
@@ -5686,7 +5790,13 @@ export default function App() {
         return;
       }
       if (activeRunTokenRef.current === runToken) {
-        setLoadError(getErrorMessage(error, "We couldn't finish that assistant run."));
+        const billingLimit = parseBillingLimitState(error);
+        if (billingLimit) {
+          setBillingLimitState(billingLimit);
+          setLoadError(null);
+        } else {
+          setLoadError(getErrorMessage(error, "We couldn't finish that assistant run."));
+        }
         setStreamConnected(false);
       }
     } finally {
@@ -7736,6 +7846,13 @@ export default function App() {
       </main>
 
       {renderExploreBookOverlay()}
+
+      {billingLimitState ? (
+        <BillingLimitDialog
+          state={billingLimitState}
+          onClose={() => setBillingLimitState(null)}
+        />
+      ) : null}
 
       {debugEnabled && AgentationComponent ? (
         <AgentationComponent
