@@ -6062,6 +6062,53 @@ async function trackRuntimeBillingEvents(
   }
 }
 
+async function trackHermesRunBillingEvent(
+  deps: AppDeps,
+  session: { userId: string; id: string },
+  run: { id: string },
+  job: HermesJobSummary,
+  result: { status: "completed" | "failed" | "cancelled" },
+) {
+  const estimatedCostUsd = typeof job.cost?.estimatedCostUsd === "number" && Number.isFinite(job.cost.estimatedCostUsd)
+    ? Math.max(0, job.cost.estimatedCostUsd)
+    : null;
+  if (estimatedCostUsd == null) {
+    return;
+  }
+  await deps.billing.track(
+    {
+      userId: session.userId,
+      sessionId: session.id,
+      runId: run.id,
+      source: "background-run",
+    },
+    {
+      eventId: `background-run-cost:${job.id}`,
+      provider: "hermes",
+      model: job.model ?? "unknown",
+      operation: "background_run_cost",
+      costUsd: estimatedCostUsd,
+      totalTokens: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      metadata: {
+        externalJobId: job.id,
+        state: job.state,
+        resultStatus: result.status,
+        phase: job.phase ?? null,
+        manifestStatus: job.manifestStatus ?? null,
+        innerRunId: job.innerRunId ?? null,
+        innerRunDir: job.innerRunDir ?? null,
+        wrapperRunDir: job.wrapperRunDir ?? job.runDir ?? null,
+        archivePrefix: job.archivePrefix ?? null,
+        estimatedLlmCalls: job.cost?.llmCalls ?? null,
+      },
+      createdAt: job.finishedAt ?? job.startedAt ?? undefined,
+    },
+  );
+}
+
 async function resolveRunRuntimeContext(
   deps: AppDeps,
   sessionId: string,
@@ -9652,6 +9699,9 @@ async function finalizeHermesRun(
         archive: archiveSummary,
       },
     });
+    await trackHermesRunBillingEvent(deps, params.session, currentRun, params.job, {
+      status: params.job.state === "cancelled" ? "cancelled" : "failed",
+    });
     await deps.store.updateRun(currentRun.id, terminalRunStateUpdate("failed", new Date().toISOString()));
     await publishPersistedHermesEvent(
       deps,
@@ -9698,6 +9748,9 @@ async function finalizeHermesRun(
       },
     });
   }
+  await trackHermesRunBillingEvent(deps, params.session, currentRun, params.job, {
+    status: "completed",
+  });
   await persistCompletedAssistantAnswer(deps, {
     sessionId: params.session.id,
     runId: currentRun.id,

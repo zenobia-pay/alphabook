@@ -8,6 +8,7 @@ export interface BillingContext {
 }
 
 export interface BillingUsageEventInput {
+  eventId?: string;
   provider: string;
   model: string;
   operation: string;
@@ -15,6 +16,7 @@ export interface BillingUsageEventInput {
   outputTokens?: number;
   totalTokens?: number;
   cachedInputTokens?: number;
+  costUsd?: number;
   requestId?: string | null;
   requestJson?: Record<string, unknown> | null;
   responseJson?: Record<string, unknown> | null;
@@ -103,7 +105,7 @@ function computeCostUsd(
 }
 
 export function createBillingService(store: AppStore, config: BillingConfig = {}): BillingService {
-  const monthlyLimitUsd = config.monthlyLimitUsd ?? 50;
+  const monthlyLimitUsd = config.monthlyLimitUsd ?? 1_000_000;
   const pricing = {
     ...DEFAULT_MODEL_PRICING,
     ...(config.modelPricing ?? {}),
@@ -126,7 +128,10 @@ export function createBillingService(store: AppStore, config: BillingConfig = {}
       const outputTokens = Math.max(0, Math.trunc(event.outputTokens ?? 0));
       const cachedInputTokens = Math.max(0, Math.trunc(event.cachedInputTokens ?? 0));
       const totalTokens = Math.max(0, Math.trunc(event.totalTokens ?? inputTokens + outputTokens));
-      const costUsd = computeCostUsd(
+      const explicitCostUsd = typeof event.costUsd === "number" && Number.isFinite(event.costUsd)
+        ? roundUsd(Math.max(0, event.costUsd))
+        : null;
+      const costUsd = explicitCostUsd ?? computeCostUsd(
         {
           model: event.model,
           inputTokens,
@@ -137,6 +142,7 @@ export function createBillingService(store: AppStore, config: BillingConfig = {}
       );
 
       await store.createBillingEvent({
+        id: event.eventId,
         userId: context.userId,
         sessionId: context.sessionId ?? null,
         runId: context.runId ?? null,

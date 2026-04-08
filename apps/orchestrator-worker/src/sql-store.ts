@@ -2683,6 +2683,7 @@ export class SqlAppStore implements AppStore {
           id, user_id, session_id, run_id, source, provider, model, operation, input_tokens, output_tokens,
           total_tokens, cached_input_tokens, cost_usd, request_id, request_json, response_json, metadata_json, created_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (id) DO NOTHING
       `,
       [id, input.userId, input.sessionId, input.runId, input.source, input.provider, input.model, input.operation, input.inputTokens, input.outputTokens, input.totalTokens, input.cachedInputTokens, input.costUsd, input.requestId ?? null, JSON.stringify(input.requestJson ?? null), JSON.stringify(input.responseJson ?? null), JSON.stringify(input.metadata), createdAt],
     );
