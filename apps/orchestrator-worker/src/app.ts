@@ -7744,6 +7744,42 @@ async function rewriteAnswerWithHermesHitLinks(
   return rewritten;
 }
 
+async function rewriteAnswerWithHermesHitLinks(
+  deps: AppDeps,
+  sessionId: string,
+  answer: string,
+  hits: HermesResolvedHitRecord[],
+) {
+  if (!answer.trim() || hits.length === 0) {
+    return answer;
+  }
+  const linkByFile = new Map<string, string>();
+  for (const hit of hits) {
+    const fallbackCitation: Citation = {
+      workId: hit.workId,
+      label: hit.title,
+      excerpt: hit.excerpt,
+      ...(hit.chunkId ? { chunkId: hit.chunkId } : {}),
+      ...(hit.readerPath ? { readerPath: hit.readerPath } : {}),
+    };
+    const link = hit.alphabookUrl || await buildCitationPassageUrl(deps, sessionId, fallbackCitation);
+    linkByFile.set(`hits/${hit.hitId}.md`, link);
+    linkByFile.set(`inner/hits/${hit.hitId}.md`, link);
+  }
+
+  let rewritten = answer;
+  for (const [filename, link] of linkByFile.entries()) {
+    const patterns = [
+      new RegExp(`\`${escapeRegExp(filename)}\``, "gu"),
+      new RegExp(escapeRegExp(filename), "gu"),
+    ];
+    for (const pattern of patterns) {
+      rewritten = rewritten.replace(pattern, `[${filename}](${link})`);
+    }
+  }
+  return rewritten;
+}
+
 async function synthesizeAnswer(
   deps: AppDeps,
   params: {
@@ -9361,6 +9397,61 @@ function buildHermesCompletionAnswer(
     return `Completed. Open the files panel to inspect ${importantFiles.map((file) => `\`${file}\``).join(", ")}.`;
   }
   return "Completed. Open the files panel to inspect the run artifacts.";
+}
+
+type HermesResolvedHitRecord = {
+  hitId: string;
+  title: string;
+  workId: string;
+  excerpt: string;
+  chunkId?: string;
+  readerPath?: string;
+  alphabookUrl?: string;
+};
+
+function extractHermesResolvedHits(hitsIndexText: string | null | undefined): HermesResolvedHitRecord[] {
+  const parsed = parseHermesJsonRecord(hitsIndexText ?? "");
+  const candidates = Array.isArray(parsed)
+    ? parsed
+    : Array.isArray(parsed?.hits)
+      ? parsed.hits
+      : [];
+  const hits: HermesResolvedHitRecord[] = [];
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== "object") {
+      continue;
+    }
+    const record = candidate as Record<string, unknown>;
+    const hitId = typeof record.hit_id === "string" ? record.hit_id.trim() : "";
+    const workId = typeof record.work_id === "string" ? record.work_id.trim() : "";
+    const title = typeof record.source_title === "string" && record.source_title.trim().length > 0
+      ? record.source_title.trim()
+      : hitId;
+    const excerpt = typeof record.quote === "string" ? record.quote.trim() : "";
+    if (!hitId || !workId || !excerpt) {
+      continue;
+    }
+    hits.push({
+      hitId,
+      title,
+      workId,
+      excerpt,
+      ...(typeof record.chunk_id === "string" && record.chunk_id.trim().length > 0 ? { chunkId: record.chunk_id.trim() } : {}),
+      ...(typeof record.reader_path === "string" && record.reader_path.trim().length > 0 ? { readerPath: record.reader_path.trim() } : {}),
+      ...(typeof record.alphabook_url === "string" && record.alphabook_url.trim().length > 0 ? { alphabookUrl: record.alphabook_url.trim() } : {}),
+    });
+  }
+  return hits;
+}
+
+function citationsFromHermesResolvedHits(hits: HermesResolvedHitRecord[]): Citation[] {
+  return hits.map((hit) => ({
+    workId: hit.workId,
+    label: hit.title,
+    excerpt: hit.excerpt,
+    ...(hit.chunkId ? { chunkId: hit.chunkId } : {}),
+    ...(hit.readerPath ? { readerPath: hit.readerPath } : {}),
+  }));
 }
 
 type HermesResolvedHitRecord = {
