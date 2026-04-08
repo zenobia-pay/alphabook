@@ -235,7 +235,9 @@ Hard requirements:
 - If the evidence supports differences across periods, genres, or patterns, say so clearly.
 - Ground every claim in the kept evidence.
 - If a hit record includes `alphabook_url`, cite with a markdown link to that AlphaBook reader URL.
-- Also include the hit file name for auditability, for example `[Robinson Crusoe](https://alpha-book.org/?view=explore&...) (hits/hit-0001.md)`.
+- For each representative example, include a substantial raw quote excerpt directly under the bullet point.
+- Prefer a real quote plus a local artifact reference like `(hits/hit-0004.md)` over thin placeholder citation text.
+- Do not be shy about quoting; use enough of the passage to make the example vivid, while staying reasonably concise.
 - Do not dump raw file lists as the main answer.
 
 Write these required outputs:
@@ -247,7 +249,8 @@ Write these required outputs:
 - Then include short sections:
   - `## Main Patterns`
   - `## Representative Examples`
-  - `## Limits`
+  - `## Follow-Up`
+- Under `## Representative Examples`, each bullet should be followed by an indented quote block or short quoted passage from the source.
 - Keep it readable by a product user, not an engineer.
 - Prefer clickable AlphaBook reader links inline when available, with hit file names as secondary audit references.
 
@@ -257,7 +260,7 @@ Write these required outputs:
   - `answer`
   - `main_patterns`
   - `representative_examples`
-  - `limits`
+  - `follow_up`
   - `citations`
 - `main_patterns` should be an array of strings.
 - `representative_examples` should be an array of objects with:
@@ -265,11 +268,13 @@ Write these required outputs:
   - `author`
   - `period`
   - `point`
+  - `quote`
   - `citation`
 - `citations` should be an array of objects with:
   - `hit`
   - `title`
   - `alphabook_url`
+- `follow_up` should be a short string suggesting one or two natural next things the user could ask for.
 
 When finished:
 - Print a short confirmation mentioning `final-answer.md` and `final-answer.json`.
