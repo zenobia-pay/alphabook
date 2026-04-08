@@ -768,15 +768,19 @@ const AssistantMessage: FC = () => {
     return custom?.toolCalls;
   });
   const planToolTrace = useMemo(() => readPlanToolTrace(rawPlanToolTrace), [rawPlanToolTrace]);
-  const runRef = useAuiState((state) => {
+  const runId = useAuiState((state) => {
     const metadata = state.message.metadata;
     const custom = metadata && typeof metadata === "object" && "custom" in metadata
       ? metadata.custom as Record<string, unknown>
       : null;
-    return {
-      runId: typeof custom?.runId === "string" ? custom.runId : null,
-      sessionId: typeof custom?.sessionId === "string" ? custom.sessionId : null,
-    };
+    return typeof custom?.runId === "string" ? custom.runId : null;
+  });
+  const sessionId = useAuiState((state) => {
+    const metadata = state.message.metadata;
+    const custom = metadata && typeof metadata === "object" && "custom" in metadata
+      ? metadata.custom as Record<string, unknown>
+      : null;
+    return typeof custom?.sessionId === "string" ? custom.sessionId : null;
   });
   const hasPlanToolTrace = phase === "plan" && planToolTrace.length > 0;
 
@@ -793,7 +797,7 @@ const AssistantMessage: FC = () => {
     >
       <div className="aui-assistant-message-content wrap-break-word px-2 text-foreground leading-relaxed">
         <MessagePrimitive.Parts components={TOOL_PART_COMPONENTS} />
-        {hasPlanToolTrace ? <PlanToolTraceCard trace={planToolTrace} isRunning={isRunning} runId={runRef.runId} sessionId={runRef.sessionId} /> : null}
+        {hasPlanToolTrace ? <PlanToolTraceCard trace={planToolTrace} isRunning={isRunning} runId={runId} sessionId={sessionId} /> : null}
         {experimentProposal ? <ExperimentApprovalCard proposal={experimentProposal} disabled={isRunning} /> : null}
         <MessageError />
       </div>
