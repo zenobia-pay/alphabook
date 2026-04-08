@@ -4849,6 +4849,15 @@ function normalizeGeneratedSessionTitle(value: string): string | null {
   return normalized || null;
 }
 
+function fallbackSessionTitleFromMessage(message: string): string {
+  const normalized = normalizeGeneratedSessionTitle(message);
+  if (!normalized) {
+    return "Untitled chat";
+  }
+  const truncated = normalized.slice(0, 64).trim();
+  return truncated || "Untitled chat";
+}
+
 function normalizeWorkersAiText(payload: unknown): string {
   const extract = (value: unknown, depth = 0): string => {
     if (depth > 4 || value == null) {
@@ -4948,7 +4957,7 @@ async function createSessionTitle(deps: AppDeps, message: string, auditLog?: Aud
       model: DEFAULT_SESSION_TITLE_MODEL,
       reason: "workers_ai_unavailable",
     });
-    return "New chat";
+    return fallbackSessionTitleFromMessage(message);
   }
 
   auditLog?.("internal.session_title.started", {
@@ -9568,7 +9577,7 @@ async function runHermesConversation(
   }
 
   if (!session) {
-    session = await deps.store.createSession(input.userId);
+    session = await deps.store.createSession(input.userId, fallbackSessionTitleFromMessage(input.message));
     await send("session.created", {
       sessionId: session.id,
       title: session.title,
@@ -10896,7 +10905,7 @@ export async function runOrchestrator(
     throw new Error("Not authorized for this session.");
   }
   if (!session) {
-    session = await deps.store.createSession(input.userId);
+    session = await deps.store.createSession(input.userId, fallbackSessionTitleFromMessage(input.message));
     await send("session.created", {
       sessionId: session.id,
       title: session.title,

@@ -2341,10 +2341,21 @@ function SidebarProfileSkeleton({ collapsed = false }: { collapsed?: boolean }) 
   );
 }
 
+function isGenericSessionTitle(value: string | null | undefined) {
+  const normalized = value?.trim().toLowerCase() ?? "";
+  return normalized === "new chat" || normalized === "untitled chat";
+}
+
 function sessionDisplayTitle(session: ChatSessionSummary) {
   const explicitTitle = session.title?.trim();
-  if (explicitTitle) {
+  if (explicitTitle && !isGenericSessionTitle(explicitTitle)) {
     return explicitTitle;
+  }
+  if (explicitTitle) {
+    const previewTitle = session.lastMessagePreview?.trim();
+    if (previewTitle) {
+      return previewTitle.split(/\s+/).slice(0, 8).join(" ");
+    }
   }
   const previewTitle = session.lastMessagePreview?.trim();
   if (previewTitle) {
