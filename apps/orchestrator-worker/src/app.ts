@@ -6121,50 +6121,107 @@ async function loadSupplementalHermesRunArtifacts(
   if (!backgroundJob || backgroundJob.provider !== "hermes") {
     return [];
   }
+  const externalJobId =
+    typeof backgroundJob.externalJobId === "string" && backgroundJob.externalJobId.trim().length > 0
+      ? backgroundJob.externalJobId.trim()
+      : null;
   const archivePrefix =
     typeof backgroundJob.metadata?.archivePrefix === "string" && backgroundJob.metadata.archivePrefix.trim().length > 0
       ? backgroundJob.metadata.archivePrefix.trim()
       : null;
-  if (!archivePrefix) {
+  if (archivePrefix) {
+    const manifestText = await deps.blobStore.getText(`${archivePrefix}/archive-manifest.json`).catch(() => null);
+    const manifest = parseHermesArchiveManifest(manifestText);
+    if (manifest?.files?.length) {
+      const synthesized = manifest.files
+        .filter((file) => isUserFacingHermesArtifact(file.relativePath))
+        .map((file) => {
+          const relativePath = normalizeHermesArtifactFilename(file.relativePath);
+          const mimeType =
+            typeof file.mimeType === "string" && file.mimeType.trim().length > 0
+              ? file.mimeType
+              : defaultMimeTypeForHermesArtifact(relativePath);
+          return {
+            id: `synthetic:${file.r2Key}`,
+            sessionId,
+            runtimeId: null,
+            r2Key: file.r2Key,
+            blobRef: file.r2Key,
+            filename: relativePath,
+            mimeType,
+            byteSize: typeof file.byteSize === "number" ? file.byteSize : null,
+            summaryText: titleForHermesArtifact(relativePath),
+            metadata: {
+              kind: kindForHermesArtifact(relativePath),
+              title: titleForHermesArtifact(relativePath),
+              runId,
+              hermesJobId: backgroundJob.externalJobId,
+              relativePath,
+              sourcePath: typeof file.sourcePath === "string" ? file.sourcePath : null,
+              archivePrefix,
+              previewable: isTextArtifact(relativePath, mimeType),
+              synthesizedFromArchiveManifest: true,
+            },
+            createdAt: typeof file.uploadedAt === "string" ? file.uploadedAt : null,
+          } satisfies RunArtifactLike;
+        });
+      if (synthesized.length > 0) {
+        return synthesized;
+      }
+    }
+  }
+  if (!externalJobId || !deps.hermesJobApiUrl) {
     return [];
   }
-  const manifestText = await deps.blobStore.getText(`${archivePrefix}/archive-manifest.json`).catch(() => null);
-  const manifest = parseHermesArchiveManifest(manifestText);
-  if (!manifest?.files?.length) {
-    return [];
-  }
-  return manifest.files
-    .filter((file) => isUserFacingHermesArtifact(file.relativePath))
-    .map((file) => {
-      const relativePath = normalizeHermesArtifactFilename(file.relativePath);
-      const mimeType =
-        typeof file.mimeType === "string" && file.mimeType.trim().length > 0
-          ? file.mimeType
-          : defaultMimeTypeForHermesArtifact(relativePath);
+  const remote = await fetchHermesJob(deps.hermesJobApiUrl, deps.hermesJobApiToken, externalJobId).catch(() => null);
+  const remoteArtifacts = Array.isArray(remote?.job?.artifacts) ? remote.job.artifacts : [];
+  const userFacingRemote = remoteArtifacts
+    .map((entry) => {
+      const name = typeof entry.name === "string" ? normalizeHermesArtifactFilename(entry.name) : "";
+      const relativePath = name.startsWith("inner/") ? name : `inner/${name}`;
       return {
-        id: `synthetic:${file.r2Key}`,
-        sessionId,
-        runtimeId: null,
-        r2Key: file.r2Key,
-        blobRef: file.r2Key,
-        filename: relativePath,
-        mimeType,
-        byteSize: typeof file.byteSize === "number" ? file.byteSize : null,
-        summaryText: titleForHermesArtifact(relativePath),
-        metadata: {
-          kind: kindForHermesArtifact(relativePath),
-          title: titleForHermesArtifact(relativePath),
-          runId,
-          hermesJobId: backgroundJob.externalJobId,
-          relativePath,
-          sourcePath: typeof file.sourcePath === "string" ? file.sourcePath : null,
-          archivePrefix,
-          previewable: isTextArtifact(relativePath, mimeType),
-          synthesizedFromArchiveManifest: true,
-        },
-        createdAt: typeof file.uploadedAt === "string" ? file.uploadedAt : null,
-      } satisfies RunArtifactLike;
-    });
+        entry,
+        relativePath,
+      };
+    })
+    .filter(({ relativePath }) => isUserFacingHermesArtifact(relativePath));
+  const hydrated = await Promise.all(userFacingRemote.map(async ({ entry, relativePath }) => {
+    const artifactName = typeof entry.name === "string" ? entry.name : "";
+    const content = artifactName
+      ? await fetchHermesArtifact(
+        deps.hermesJobApiUrl!,
+        deps.hermesJobApiToken,
+        externalJobId,
+        artifactName,
+      ).then((response) => response.artifact.content).catch(() => null)
+      : null;
+    const mimeType = defaultMimeTypeForHermesArtifact(relativePath);
+    return {
+      id: `remote:${externalJobId}:${relativePath}`,
+      sessionId,
+      runtimeId: null,
+      r2Key: `remote:${externalJobId}:${relativePath}`,
+      blobRef: null,
+      filename: relativePath,
+      mimeType,
+      byteSize: typeof entry.bytes === "number" ? entry.bytes : null,
+      summaryText: titleForHermesArtifact(relativePath),
+      metadata: {
+        kind: kindForHermesArtifact(relativePath),
+        title: titleForHermesArtifact(relativePath),
+        runId,
+        hermesJobId: externalJobId,
+        relativePath,
+        sourcePath: typeof entry.path === "string" ? entry.path : null,
+        archivePrefix,
+        previewable: true,
+        synthesizedFromHermesJobApi: true,
+      },
+      createdAt: typeof entry.updatedAt === "string" ? entry.updatedAt : null,
+      content,
+    } satisfies RunArtifactLike;
+  }));
+  return hydrated;
 }
 
 const INLINE_ARTIFACT_PREVIEW_MAX_BYTES = 96_000;
@@ -6188,13 +6245,16 @@ async function loadRunArtifacts(
   const runtimeIdSet = new Set(runtimeIds);
   const artifacts = await deps.store.listArtifacts(sessionId);
   const filtered = artifacts.filter((artifact) => artifactBelongsToRun(artifact, runId, runtimeIdSet));
-  const effective = hasUserFacingHermesArtifacts(filtered)
-    ? filtered
-    : [...filtered, ...await loadSupplementalHermesRunArtifacts(deps, sessionId, runId)];
+  const supplemental = hasUserFacingHermesArtifacts(filtered)
+    ? []
+    : await loadSupplementalHermesRunArtifacts(deps, sessionId, runId);
+  const effective = supplemental.length > 0 ? supplemental : filtered;
   const hydrated = await Promise.all(
     effective.map(async (artifact) => ({
       ...artifact,
-      content: shouldInlineArtifactContent(artifact)
+      content: "content" in artifact && typeof artifact.content === "string"
+        ? artifact.content
+        : shouldInlineArtifactContent(artifact)
         ? await deps.blobStore.getText(artifact.r2Key).catch(() => null)
         : null,
     })),
@@ -6211,9 +6271,11 @@ async function loadRunArtifactSummaries(
   const runtimeIdSet = new Set(runtimeIds);
   const artifacts = await deps.store.listArtifacts(sessionId);
   const filtered = artifacts.filter((artifact) => artifactBelongsToRun(artifact, runId, runtimeIdSet));
-  return hasUserFacingHermesArtifacts(filtered)
-    ? filtered
-    : [...filtered, ...await loadSupplementalHermesRunArtifacts(deps, sessionId, runId)];
+  if (hasUserFacingHermesArtifacts(filtered)) {
+    return filtered;
+  }
+  const supplemental = await loadSupplementalHermesRunArtifacts(deps, sessionId, runId);
+  return supplemental.length > 0 ? supplemental : filtered;
 }
 
 async function loadRunDocumentArtifacts(
