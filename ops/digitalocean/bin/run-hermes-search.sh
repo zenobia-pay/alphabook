@@ -252,6 +252,38 @@ if [[ -f "$HERMES_ENV_SOURCE" ]]; then
   cp "$HERMES_ENV_SOURCE" "$hermes_home/.hermes/.env"
 fi
 
+if [[ ! -f "$hermes_home/.hermes/config.yaml" ]]; then
+  cat >"$hermes_home/.hermes/config.yaml" <<EOF
+model:
+  default: "$MODEL"
+  provider: "custom"
+  base_url: "http://127.0.0.1:8790/runs/$job_id/v1"
+EOF
+fi
+
+python3 - "$hermes_home/.hermes/config.yaml" "$MODEL" "$job_id" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+model = sys.argv[2]
+job_id = sys.argv[3]
+
+if re.search(r'^\s*default:\s*".*"$', text, flags=re.MULTILINE):
+    text = re.sub(r'^\s*default:\s*".*"$', f'  default: "{model}"', text, count=1, flags=re.MULTILINE)
+if re.search(r'^\s*provider:\s*".*"$', text, flags=re.MULTILINE):
+    text = re.sub(r'^\s*provider:\s*".*"$', '  provider: "custom"', text, count=1, flags=re.MULTILINE)
+else:
+    text += '\n  provider: "custom"\n'
+if re.search(r'^\s*base_url:\s*".*"$', text, flags=re.MULTILINE):
+    text = re.sub(r'^\s*base_url:\s*".*"$', f'  base_url: "http://127.0.0.1:8790/runs/{job_id}/v1"', text, count=1, flags=re.MULTILINE)
+else:
+    text += f'\n  base_url: "http://127.0.0.1:8790/runs/{job_id}/v1"\n'
+path.write_text(text)
+PY
+
 python3 - "$prompt_file" "$CORPUS_ROOT" "$PRECOMPUTED_INDEX_DIR" "$USER_PROMPT" "$EFFORT" <<'PY'
 from pathlib import Path
 import sys
@@ -598,6 +630,8 @@ chmod +x "$run_dir/watch-heartbeat.sh"
   CALLBACK_URL="$CALLBACK_URL" \
   CALLBACK_TOKEN="$CALLBACK_TOKEN" \
   ARCHIVE_PREFIX="$ARCHIVE_PREFIX" \
+  OPENAI_BASE_URL="http://127.0.0.1:8790/runs/$job_id/v1" \
+  OPENAI_API_KEY="${OPENAI_API_KEY:-}" \
   R2_BUCKET_NAME="${R2_BUCKET_NAME:-}" \
   R2_ENDPOINT="${R2_ENDPOINT:-}" \
   R2_ACCESS_KEY_ID="${R2_ACCESS_KEY_ID:-}" \
