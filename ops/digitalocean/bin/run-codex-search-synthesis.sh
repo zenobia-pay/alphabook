@@ -73,6 +73,7 @@ final_answer_json="$INNER_RUN_DIR/final-answer.json"
 
 python3 - "$prompt_file" "$USER_PROMPT_FILE" "$INNER_RUN_DIR" "$final_answer_md" "$final_answer_json" <<'PY'
 from pathlib import Path
+import json
 import sys
 
 prompt_path = Path(sys.argv[1])
@@ -83,8 +84,125 @@ final_answer_json = Path(sys.argv[5])
 
 scope_report_path = inner_run_dir / "scope-report.json"
 scope_report_line = f"- scope report: {scope_report_path}" if scope_report_path.exists() else "- scope report: not present"
+manifest_path = inner_run_dir / "manifest.json"
+hits_index_path = inner_run_dir / "hits" / "index.json"
+scoped_files_path = inner_run_dir / "scoped-files.tsv"
 
-prompt = f"""You are writing the final user-facing synthesis for a completed AlphaBook corpus-search run.
+manifest = {}
+try:
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+except Exception:
+    manifest = {}
+
+def extract_source_files_from_hits() -> list[str]:
+    try:
+        payload = json.loads(hits_index_path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if isinstance(payload, dict):
+        candidates = payload.get("hits")
+    else:
+        candidates = payload
+    if not isinstance(candidates, list):
+        return []
+    values: list[str] = []
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+        source_file = item.get("source_file")
+        if isinstance(source_file, str) and source_file.strip():
+            normalized = source_file.strip()
+            if normalized not in values:
+                values.append(normalized)
+    return values
+
+synthesis_mode = manifest.get("synthesis_mode") if isinstance(manifest, dict) else None
+synthesis_rationale = manifest.get("synthesis_rationale") if isinstance(manifest, dict) else None
+direct_source_files = manifest.get("direct_source_files") if isinstance(manifest, dict) else None
+if not isinstance(direct_source_files, list) or not all(isinstance(item, str) for item in direct_source_files):
+    direct_source_files = extract_source_files_from_hits()
+
+direct_sources_lines = "\n".join(f"- {value}" for value in direct_source_files[:12])
+if not direct_sources_lines:
+    direct_sources_lines = "- none recorded"
+
+if synthesis_mode == "small_scope_direct_read":
+    prompt = f"""You are writing the final user-facing synthesis for a completed AlphaBook corpus-search run.
+
+This run was explicitly marked as tiny bounded scope.
+
+You are already inside the run outputs directory:
+- run directory: {inner_run_dir}
+
+Original user request:
+
+<USER_RESEARCH_PROMPT>
+{user_prompt}
+</USER_RESEARCH_PROMPT>
+
+Tiny-scope synthesis handoff from retrieval:
+- synthesis_mode: {synthesis_mode}
+- synthesis_rationale: {synthesis_rationale or "not provided"}
+
+Available local artifacts:
+- manifest: {manifest_path}
+- run log: {inner_run_dir / "run.log"}
+{scope_report_line}
+- scoped files list: {scoped_files_path}
+- hits index: {hits_index_path}
+- hit files: {inner_run_dir / "hits"}
+- direct source files that may be read in full for synthesis:
+{direct_sources_lines}
+
+Hard requirements:
+- Do not rerun retrieval, grep, or corpus-search helpers.
+- Because the scope is tiny, you may read the full source text file(s) listed above, plus the saved hits and scoped-files artifact, to answer the question naturally.
+- Treat the kept hits as evidence pointers, not as the only material you are allowed to discuss.
+- Do not talk like this was a broad capped retrieval unless that is genuinely necessary.
+- Avoid boilerplate about hit caps, effort budgets, or generic limits when the whole scoped work can be read directly.
+- Prefer a compact, high-signal answer over a procedural report.
+- Focus on memorable passages, surprises, stories, or whatever the user actually asked for.
+- If a hit record includes `alphabook_url`, cite with a markdown link to that AlphaBook reader URL.
+- Also include the hit file name for auditability when you rely on a saved hit.
+
+Write these required outputs:
+1. {final_answer_md}
+2. {final_answer_json}
+
+`final-answer.md` requirements:
+- Open with a direct answer in prose.
+- Then include short sections:
+  - `## Main Patterns`
+  - `## Representative Examples`
+- Add `## Limits` only if there is a real limitation worth saying.
+- Keep it readable by a product user, not an engineer.
+- For tiny-scope runs, it should read like "I read this book and here is what stands out," not like a retrieval report.
+
+`final-answer.json` requirements:
+- Valid JSON object with keys:
+  - `user_prompt`
+  - `answer`
+  - `main_patterns`
+  - `representative_examples`
+  - `limits`
+  - `citations`
+- `main_patterns` should be an array of strings.
+- `representative_examples` should be an array of objects with:
+  - `title`
+  - `author`
+  - `period`
+  - `point`
+  - `citation`
+- `citations` should be an array of objects with:
+  - `hit`
+  - `title`
+  - `alphabook_url`
+
+When finished:
+- Print a short confirmation mentioning `final-answer.md` and `final-answer.json`.
+"""
+else:
+    prompt = f"""You are writing the final user-facing synthesis for a completed AlphaBook corpus-search run.
 
 You are already inside the run outputs directory:
 - run directory: {inner_run_dir}

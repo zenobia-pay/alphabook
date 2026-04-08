@@ -357,12 +357,24 @@ Artifact requirements:
   - chosen_scope
   - scope_rationale
   - search_strategy_summary
+  - resolved_work_count if inferable
+  - synthesis_mode
+  - synthesis_rationale
   - kept_hit_count
   - status
+- If the scope collapses to a tiny bounded set of exact works, for example one clearly identified book or a few exact books:
+  - set `synthesis_mode` to `small_scope_direct_read`
+  - set `synthesis_rationale` to explain why the final answer should be written from direct reading of the whole scoped work(s), not just the kept-hit subset
+  - include `direct_source_files` listing the exact raw text files that should be read during synthesis if you can determine them
+- Otherwise:
+  - set `synthesis_mode` to `standard_hits`
+  - set `synthesis_rationale` briefly
 - Save kept evidence chunks in:
   - `hits/`
 - Save a lightweight machine-readable index at:
   - `hits/index.json`
+- Save the final scoped searchable file list at:
+  - `scoped-files.tsv`
 - Each kept hit should get its own file in `hits/`, for example `hit-0001.md`.
 - Each hit file should include:
   - hit_id
