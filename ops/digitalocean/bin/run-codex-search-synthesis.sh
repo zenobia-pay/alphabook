@@ -163,7 +163,9 @@ Hard requirements:
 - Prefer a compact, high-signal answer over a procedural report.
 - Focus on memorable passages, surprises, stories, or whatever the user actually asked for.
 - If a hit record includes `alphabook_url`, cite with a markdown link to that AlphaBook reader URL.
-- Also include the hit file name for auditability when you rely on a saved hit.
+- For each representative example, include a short raw quote excerpt directly under the bullet point so the user can see the passage itself.
+- Do not use placeholder citations like `clean.txt lines 733-755` or `direct read, Chapter IV`.
+- If you do not have an AlphaBook reader link, prefer a short quoted excerpt plus the local artifact reference, for example `(hits/hit-0003.md)` or `(citation-index.json)`.
 
 Write these required outputs:
 1. {final_answer_md}
@@ -174,9 +176,11 @@ Write these required outputs:
 - Then include short sections:
   - `## Main Patterns`
   - `## Representative Examples`
-- Add `## Limits` only if there is a real limitation worth saying.
+- End with `## Follow-Up`
+- Under `## Representative Examples`, each bullet should be followed by an indented quote block or short quoted passage from the book.
 - Keep it readable by a product user, not an engineer.
 - For tiny-scope runs, it should read like "I read this book and here is what stands out," not like a retrieval report.
+- Do not include a `## Limits` section for tiny-scope runs.
 
 `final-answer.json` requirements:
 - Valid JSON object with keys:
@@ -184,7 +188,7 @@ Write these required outputs:
   - `answer`
   - `main_patterns`
   - `representative_examples`
-  - `limits`
+  - `follow_up`
   - `citations`
 - `main_patterns` should be an array of strings.
 - `representative_examples` should be an array of objects with:
@@ -192,11 +196,13 @@ Write these required outputs:
   - `author`
   - `period`
   - `point`
+  - `quote`
   - `citation`
 - `citations` should be an array of objects with:
   - `hit`
   - `title`
   - `alphabook_url`
+- `follow_up` should be a short string suggesting what the user could ask next, for example comparing another book, character, theme, or chapter.
 
 When finished:
 - Print a short confirmation mentioning `final-answer.md` and `final-answer.json`.
