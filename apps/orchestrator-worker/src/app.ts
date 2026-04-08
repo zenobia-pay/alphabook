@@ -238,9 +238,8 @@ function publicAgentIdentity(agent: AgentIdentityRecord) {
   };
 }
 
-function agentClaimUrl(request: Request, claimToken: string) {
-  const url = new URL(request.url);
-  return `${url.origin}/claim/${claimToken}`;
+function agentClaimUrl(deps: AppDeps, request: Request, claimToken: string) {
+  return `${apiOrigin(deps, request)}/claim/${claimToken}`;
 }
 
 function encodeBase64Json(value: unknown) {
@@ -463,7 +462,7 @@ async function registerAgentIdentity(
   });
   return {
     apiKey,
-    claimUrl: agentClaimUrl(request, record.claimToken),
+    claimUrl: agentClaimUrl(deps, request, record.claimToken),
     agent: record,
   };
 }
@@ -13475,14 +13474,15 @@ export function createApp(inputDeps: CreateAppInput) {
   });
 
   app.get("/skill.md", (c) => {
-    const apiBase = `${new URL(c.req.url).origin}/api/v1`;
+    const resolvedApiOrigin = apiOrigin(deps, c.req.raw);
+    const apiBase = `${resolvedApiOrigin}/v1`;
     const implementationId = deps.implementation?.id ?? "alphabook";
     const skill = [
       "---",
       `name: ${implementationId}`,
       "version: 1.0.0",
       `description: Agent-facing research access for ${productName(deps)}'s corpus and retrieval runtime.`,
-      `homepage: ${new URL(c.req.url).origin}`,
+      `homepage: ${siteOrigin(deps)}`,
       `metadata: ${JSON.stringify({ [implementationId]: { api_base: apiBase, category: "research" } })}`,
       "---",
       "",
@@ -13497,6 +13497,19 @@ export function createApp(inputDeps: CreateAppInput) {
       "3. Send the returned `claim_url` back to your human.",
       `4. Tell them to open the claim URL while signed into ${productName(deps)}.`,
       "5. Use the same API key for future research requests.",
+      "",
+      "## Current architecture",
+      "",
+      `- ${productName(deps)}'s public site runs at ${siteOrigin(deps)} behind Cloudflare.`,
+      `- The API you should call from the CLI is ${resolvedApiOrigin}, which is the Linux orchestrator running on DigitalOcean.`,
+      "- Browser sign-in uses WorkOS cookies for humans, but CLI agents use Bearer API keys instead.",
+      "- Longer-running retrieval and filesystem-backed analysis fan out to private worker/runtime services behind the orchestrator.",
+      "",
+      "## CLI auth model",
+      "",
+      "- `POST /v1/agents/register` is intentionally unauthenticated.",
+      "- The human claim step is the only part that requires a signed-in browser.",
+      "- After registration, use `Authorization: Bearer YOUR_API_KEY` on every CLI request.",
       "",
       "## Register first",
       "",
@@ -13633,7 +13646,36 @@ export function createApp(inputDeps: CreateAppInput) {
     }, 201);
   });
 
+  app.post("/v1/agents/register", async (c) => {
+    const payload = AgentRegistrationRequestSchema.parse(await c.req.json());
+    const registration = await registerAgentIdentity(deps, c.req.raw, payload);
+    return c.json({
+      api_key: registration.apiKey,
+      claim_url: registration.claimUrl,
+      verification_code: registration.agent.verificationCode,
+      status: registration.agent.status,
+      agent: {
+        ...publicAgentIdentity(registration.agent),
+        claimUrl: registration.claimUrl,
+        verificationCode: registration.agent.verificationCode,
+      },
+    }, 201);
+  });
+
   app.get("/api/v1/agents/me", async (c) => {
+    const principal = await resolvePrincipal(c);
+    if (!principal || principal.kind !== "agent") {
+      return c.json({ error: "Agent API key required." }, 401);
+    }
+    return c.json({
+      authenticated: true,
+      authType: "agent",
+      user: principal.user,
+      agent: publicAgentIdentity(principal.agent),
+    });
+  });
+
+  app.get("/v1/agents/me", async (c) => {
     const principal = await resolvePrincipal(c);
     if (!principal || principal.kind !== "agent") {
       return c.json({ error: "Agent API key required." }, 401);
@@ -14162,7 +14204,9 @@ export function createApp(inputDeps: CreateAppInput) {
   };
 
   app.post("/chat", handleChatRequest);
+  app.post("/v1/chat", handleChatRequest);
   app.post("/api/v1/chat", handleChatRequest);
+  app.post("/v1/documents/chat", handleChatRequest);
   app.post("/api/v1/documents/chat", handleChatRequest);
 
   const ComprehensiveJobRequestSchema = z.object({
@@ -14493,6 +14537,73 @@ export function createApp(inputDeps: CreateAppInput) {
     );
   });
 
+  app.get("/v1/sessions/:sessionId/runs/:runId/stream", async (c) => {
+    const sessionId = c.req.param("sessionId");
+    const runId = c.req.param("runId");
+    const session = await deps.store.getSession(sessionId);
+    if (!session) {
+      return c.json({ error: "Session not found." }, 404);
+    }
+    if (!(await canAccessSession(c, session))) {
+      return c.json({ error: "Not authorized for this session." }, 403);
+    }
+    const run = await deps.store.getRun(runId);
+    if (!run || run.sessionId !== sessionId) {
+      return c.json({ error: "Run not found." }, 404);
+    }
+
+    let stopped = false;
+
+    return streamResponse(
+      async (send) => {
+        let lastSequence = 0;
+        const existingEvents = await deps.store.listRunEvents(runId);
+        if (existingEvents.length > 0) {
+          lastSequence = existingEvents[existingEvents.length - 1]!.sequence;
+        }
+
+        while (!stopped) {
+          let nextRun = await deps.store.getRun(runId);
+          if (!nextRun || nextRun.sessionId !== sessionId) {
+            await send("error", {
+              message: "Run not found.",
+            });
+            return;
+          }
+          if (nextRun.status === "running" || nextRun.status === "queued") {
+            try {
+              await syncHermesBackgroundJob(deps, activeRuns, { session, run: nextRun, send });
+              nextRun = await deps.store.getRun(runId) ?? nextRun;
+            } catch {
+              // Best-effort background job sync while streaming.
+            }
+          }
+          const runEvents = await deps.store.listRunEvents(runId);
+
+          for (const runEvent of runEvents) {
+            if (runEvent.sequence <= lastSequence) {
+              continue;
+            }
+            lastSequence = runEvent.sequence;
+            await send(runEvent.event, runEvent.dataJson);
+          }
+
+          if (nextRun.status !== "running" && nextRun.status !== "queued") {
+            return;
+          }
+
+          await new Promise((resolve) => {
+            setTimeout(resolve, 1000);
+          });
+        }
+      },
+      undefined,
+      () => {
+        stopped = true;
+      },
+    );
+  });
+
   app.post("/runs/:runId/cancel", async (c) => {
     const trustedRequest = requireTrustedBrowserRequest(c);
     if (trustedRequest) {
@@ -14643,6 +14754,81 @@ export function createApp(inputDeps: CreateAppInput) {
     });
   });
 
+  app.post("/v1/runs/:runId/cancel", async (c) => {
+    const trustedRequest = requireTrustedBrowserRequest(c);
+    if (trustedRequest) {
+      return trustedRequest;
+    }
+    const runId = c.req.param("runId");
+    const run = await deps.store.getRun(runId);
+    if (!run) {
+      return c.json({ error: "Run not found." }, 404);
+    }
+    const session = await deps.store.getSession(run.sessionId);
+    if (!session) {
+      return c.json({ error: "Session not found." }, 404);
+    }
+    if (!(await canAccessSession(c, session))) {
+      return c.json({ error: "Not authorized for this run." }, 403);
+    }
+
+    const activeRun = activeRuns.get(runId);
+    const runAlreadyTerminal = isTerminalRunStatus(run.status);
+    if (runAlreadyTerminal) {
+      return c.json({
+        ok: true,
+        runId,
+        cancelled: false,
+        alreadyTerminal: true,
+        status: run.status,
+        active: false,
+        runtimeIds: [],
+      });
+    }
+    if (activeRun) {
+      activeRun.cancelRequested = true;
+    }
+    const backgroundJob = await deps.store.getLatestBackgroundJobForRun(runId);
+    if (backgroundJob && backgroundJob.provider === "hermes" && deps.hermesJobApiUrl && backgroundJobIsActive(backgroundJob.status)) {
+      await cancelHermesJob(deps.hermesJobApiUrl, deps.hermesJobApiToken, backgroundJob.externalJobId).catch(() => {});
+      await deps.store.updateBackgroundJob(backgroundJob.id, {
+        status: "cancelled",
+        completedAt: new Date().toISOString(),
+        error: "Run cancelled by user.",
+      });
+    }
+    const [toolCalls, persistedRuntimeIds] = await Promise.all([
+      deps.store.listToolCalls(runId),
+      listPersistedRunRuntimeIds(deps, session.id, runId),
+    ]);
+    const runtimeIds = new Set<string>([
+      ...Array.from(activeRun?.runtimeIds ?? []),
+      ...persistedRuntimeIds,
+    ]);
+    await Promise.all(
+      Array.from(runtimeIds).map((runtimeId) =>
+        deps.runtimeGateway.cancelWorkspaceTask?.({ runtimeId }).catch(() => {}),
+      ),
+    );
+    await Promise.all(
+      toolCalls
+        .filter((toolCall) => toolCall.status === "running" || toolCall.status === "queued")
+        .map((toolCall) => deps.store.finishToolCall(toolCall.id, "failed", {
+          ok: false,
+          error: "Run cancelled by user.",
+        })),
+    );
+    await writeTerminalRunState(deps, runId, "failed");
+
+    return c.json({
+      ok: true,
+      runId,
+      cancelled: true,
+      active: Boolean(activeRun) || run.status === "running" || run.status === "queued",
+      runtimeIds: Array.from(runtimeIds),
+    });
+  });
+
   const handleListSessions = async (c: Context) => {
     const user = await resolveUser(c);
     if (!user) {
@@ -14653,6 +14839,7 @@ export function createApp(inputDeps: CreateAppInput) {
   };
 
   app.get("/sessions", handleListSessions);
+  app.get("/v1/sessions", handleListSessions);
   app.get("/api/v1/sessions", handleListSessions);
 
   const handleListMessages = async (c: Context) => {
@@ -14669,6 +14856,7 @@ export function createApp(inputDeps: CreateAppInput) {
   };
 
   app.get("/sessions/:sessionId/messages", handleListMessages);
+  app.get("/v1/sessions/:sessionId/messages", handleListMessages);
   app.get("/api/v1/sessions/:sessionId/messages", handleListMessages);
 
   const buildRunStatePayload = async (
@@ -14799,6 +14987,7 @@ export function createApp(inputDeps: CreateAppInput) {
   };
 
   app.get("/sessions/:sessionId/bootstrap", handleAssistantSessionBootstrap);
+  app.get("/v1/sessions/:sessionId/bootstrap", handleAssistantSessionBootstrap);
   app.get("/api/v1/sessions/:sessionId/bootstrap", handleAssistantSessionBootstrap);
 
   app.get("/sessions/:sessionId/runs", async (c) => {
@@ -14815,6 +15004,19 @@ export function createApp(inputDeps: CreateAppInput) {
   });
 
   app.get("/api/v1/sessions/:sessionId/runs", async (c) => {
+    const sessionId = c.req.param("sessionId");
+    const session = await deps.store.getSession(sessionId);
+    if (!session) {
+      return c.json({ error: "Session not found." }, 404);
+    }
+    if (!(await canAccessSession(c, session))) {
+      return c.json({ error: "Not authorized for this session." }, 403);
+    }
+    const runs = await deps.store.listRuns(sessionId);
+    return c.json({ runs });
+  });
+
+  app.get("/v1/sessions/:sessionId/runs", async (c) => {
     const sessionId = c.req.param("sessionId");
     const session = await deps.store.getSession(sessionId);
     if (!session) {
@@ -14896,7 +15098,58 @@ export function createApp(inputDeps: CreateAppInput) {
     return c.json(payload);
   });
 
+  app.get("/v1/sessions/:sessionId/runs/:runId", async (c) => {
+    const sessionId = c.req.param("sessionId");
+    const runId = c.req.param("runId");
+    const session = await deps.store.getSession(sessionId);
+    if (!session) {
+      return c.json({ error: "Session not found." }, 404);
+    }
+    if (!(await canAccessSession(c, session))) {
+      return c.json({ error: "Not authorized for this session." }, 403);
+    }
+
+    const payload = await buildRunStatePayload(sessionId, runId);
+    if (!payload) {
+      return c.json({ error: "Run not found." }, 404);
+    }
+    return c.json(payload);
+  });
+
   app.get("/api/v1/sessions/:sessionId/runs/:runId/document", async (c) => {
+    const sessionId = c.req.param("sessionId");
+    const runId = c.req.param("runId");
+    const session = await deps.store.getSession(sessionId);
+    if (!session) {
+      return c.json({ error: "Session not found." }, 404);
+    }
+    if (!(await canAccessSession(c, session))) {
+      return c.json({ error: "Not authorized for this session." }, 403);
+    }
+
+    const run = await deps.store.getRun(runId);
+    if (!run || run.sessionId !== sessionId) {
+      return c.json({ error: "Run not found." }, 404);
+    }
+    const toolCalls = await deps.store.listToolCalls(runId);
+    const [{ runEvents, runtimeIds }, planMessage] = await Promise.all([
+      resolveRunRuntimeContext(deps, sessionId, run, toolCalls),
+      deps.store.getLatestPlanMessageForRun(sessionId, runId),
+    ]);
+    const artifacts = await loadRunDocumentArtifacts(deps, sessionId, runId, runtimeIds);
+    const toolTrace = planMessage?.metadata && typeof planMessage.metadata === "object"
+      ? readPersistedPlanToolTrace(planMessage.metadata as Record<string, unknown>)
+      : [];
+
+    return c.json({
+      run,
+      runEvents,
+      toolTrace,
+      artifacts,
+    });
+  });
+
+  app.get("/v1/sessions/:sessionId/runs/:runId/document", async (c) => {
     const sessionId = c.req.param("sessionId");
     const runId = c.req.param("runId");
     const session = await deps.store.getSession(sessionId);
@@ -14994,6 +15247,18 @@ export function createApp(inputDeps: CreateAppInput) {
     return c.json(await buildSessionBridgePayload(deps, session));
   });
 
+  app.get("/v1/sessions/:sessionId/bridge", async (c) => {
+    const sessionId = c.req.param("sessionId");
+    const session = await deps.store.getSession(sessionId);
+    if (!session) {
+      return c.json({ error: "Session not found." }, 404);
+    }
+    if (!(await canAccessSession(c, session))) {
+      return c.json({ error: "Not authorized for this session." }, 403);
+    }
+    return c.json(await buildSessionBridgePayload(deps, session));
+  });
+
   app.get("/sessions/:sessionId/runs/:runId/debug", async (c) => {
     const sessionId = c.req.param("sessionId");
     const runId = c.req.param("runId");
@@ -15076,7 +15341,51 @@ export function createApp(inputDeps: CreateAppInput) {
     return c.json(await buildRunLogsPayload(c, deps, session, run, toolCalls));
   });
 
+  app.get("/v1/sessions/:sessionId/runs/:runId/logs", async (c) => {
+    const sessionId = c.req.param("sessionId");
+    const runId = c.req.param("runId");
+    const session = await deps.store.getSession(sessionId);
+    if (!session) {
+      return c.json({ error: "Session not found." }, 404);
+    }
+    if (!(await canAccessSession(c, session))) {
+      return c.json({ error: "Not authorized for this session." }, 403);
+    }
+
+    const run = await deps.store.getRun(runId);
+    if (!run || run.sessionId !== sessionId) {
+      return c.json({ error: "Run not found." }, 404);
+    }
+    const toolCalls = await deps.store.listToolCalls(runId);
+    return c.json(await buildRunLogsPayload(c, deps, session, run, toolCalls));
+  });
+
   app.get("/api/v1/sessions/:sessionId/runs/:runId/output", async (c) => {
+    const sessionId = c.req.param("sessionId");
+    const runId = c.req.param("runId");
+    const session = await deps.store.getSession(sessionId);
+    if (!session) {
+      return c.json({ error: "Session not found." }, 404);
+    }
+    if (!(await canAccessSession(c, session))) {
+      return c.json({ error: "Not authorized for this session." }, 403);
+    }
+    const run = await deps.store.getRun(runId);
+    if (!run || run.sessionId !== sessionId) {
+      return c.json({ error: "Run not found." }, 404);
+    }
+    const toolCalls = await deps.store.listToolCalls(runId);
+    const runContext = await resolveRunRuntimeContext(deps, sessionId, run, toolCalls, { runEventLimit: 400 });
+    const backgroundJob = await deps.store.getLatestBackgroundJobForRun(run.id);
+    const bridge = await resolveHermesBridgeRecord(deps, backgroundJob);
+    const rawLog = await loadPersistedRawRunLog(deps, sessionId, run.id);
+    return c.json({
+      runId: run.id,
+      text: summarizeDetailedRunOutputLines(run, backgroundJob, bridge, runContext.runEvents, rawLog),
+    });
+  });
+
+  app.get("/v1/sessions/:sessionId/runs/:runId/output", async (c) => {
     const sessionId = c.req.param("sessionId");
     const runId = c.req.param("runId");
     const session = await deps.store.getSession(sessionId);
@@ -15152,6 +15461,39 @@ export function createApp(inputDeps: CreateAppInput) {
       nextOffset: works.length === limit ? offset + works.length : null,
       totalCount,
       facets,
+    });
+  });
+
+  app.get("/works/semantic-search", async (c) => {
+    if (!deps.semanticSearch) {
+      return c.json({ error: "Semantic search is not configured." }, 503);
+    }
+
+    const query = c.req.query("q")?.trim() ?? "";
+    if (!query) {
+      return c.json({ error: "Query is required." }, 400);
+    }
+
+    const limit = Math.min(12, Math.max(1, Number.parseInt(c.req.query("limit") ?? "8", 10) || 8));
+    const filters = {
+      ...(typeof c.req.query("language") === "string" && c.req.query("language")!.trim().length > 0 ? { language: c.req.query("language")!.trim() } : {}),
+      ...(typeof c.req.query("subject") === "string" && c.req.query("subject")!.trim().length > 0 ? { subject: c.req.query("subject")!.trim() } : {}),
+      ...(typeof c.req.query("bookshelf") === "string" && c.req.query("bookshelf")!.trim().length > 0 ? { bookshelf: c.req.query("bookshelf")!.trim() } : {}),
+    };
+
+    const workIds = Object.keys(filters).length > 0 ? await deps.store.listExploreWorkIds(filters) : undefined;
+    if (Array.isArray(workIds) && workIds.length === 0) {
+      return c.json({ results: [] });
+    }
+
+    const result = await deps.semanticSearch.search({
+      query,
+      workIds,
+      maxResults: limit,
+    });
+
+    return c.json({
+      results: result.chunks.slice(0, limit),
     });
   });
 

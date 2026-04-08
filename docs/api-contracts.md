@@ -63,8 +63,12 @@ Notes:
 Behavior:
 
 - returns the public markdown prompt that tells agents how to register, claim, and call the current implementation from the CLI
+- on the live DigitalOcean deployment, the generated prompt points CLI agents at `https://api.alpha-book.org/v1`
+- the prompt now spells out that registration is unauthenticated, human claim uses WorkOS in the browser, and the CLI API key is the only credential needed after registration
 
 ### `POST /api/v1/agents/register`
+
+Also available as `POST /v1/agents/register` on the direct API host.
 
 Request:
 
@@ -103,6 +107,8 @@ Behavior:
 - returns a claim URL that a signed-in human can open to attach the agent to an AlphaBook account
 
 ### `GET /api/v1/agents/me`
+
+Also available as `GET /v1/agents/me` on the direct API host.
 
 Headers:
 
@@ -145,6 +151,7 @@ Behavior:
 ### `POST /chat`
 
 Also available as `POST /api/v1/chat`.
+Also available as `POST /v1/chat` on the direct API host.
 
 Request:
 
@@ -183,6 +190,8 @@ Behavior:
 
 ### `POST /api/v1/documents/chat`
 
+Also available as `POST /v1/documents/chat` on the direct API host.
+
 Request:
 
 ```json
@@ -203,6 +212,7 @@ Behavior:
 ### `GET /sessions?userId=...`
 
 Also available as `GET /api/v1/sessions`.
+Also available as `GET /v1/sessions` on the direct API host.
 
 Behavior:
 
@@ -230,6 +240,7 @@ Response:
 ### `GET /sessions/:sessionId/messages`
 
 Also available as `GET /api/v1/sessions/:sessionId/messages`.
+Also available as `GET /v1/sessions/:sessionId/messages` on the direct API host.
 
 Response:
 
@@ -254,6 +265,7 @@ Response:
 ### `GET /sessions/:sessionId/runs`
 
 Also available as `GET /api/v1/sessions/:sessionId/runs`.
+Also available as `GET /v1/sessions/:sessionId/runs` on the direct API host.
 
 Behavior:
 
@@ -263,6 +275,7 @@ Behavior:
 ### `GET /sessions/:sessionId/runs/:runId`
 
 Also available as `GET /api/v1/sessions/:sessionId/runs/:runId`.
+Also available as `GET /v1/sessions/:sessionId/runs/:runId` on the direct API host.
 
 Behavior:
 
@@ -272,6 +285,7 @@ Behavior:
 ### `GET /sessions/:sessionId/runs/:runId/logs`
 
 Also available as `GET /api/v1/sessions/:sessionId/runs/:runId/logs`.
+Also available as `GET /v1/sessions/:sessionId/runs/:runId/logs` on the direct API host.
 
 Behavior:
 

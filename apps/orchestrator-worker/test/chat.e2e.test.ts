@@ -2445,7 +2445,7 @@ test("agent API keys can register and use CLI chat even when browser auth is ena
     status: string;
   };
   assert.match(registrationPayload.api_key, /^abk_/);
-  assert.match(registrationPayload.claim_url, /\/claim\/abclaim_/);
+  assert.match(registrationPayload.claim_url, /^http:\/\/localhost\/claim\/abclaim_|^https:\/\/api\.alpha-book\.org\/claim\/abclaim_/);
   assert.equal(registrationPayload.status, "pending_claim");
 
   const meResponse = await app.request("/api/v1/agents/me", {
@@ -2497,6 +2497,139 @@ test("agent API keys can register and use CLI chat even when browser auth is ena
   assert.equal(runState.run?.status, "completed");
 
   const logsResponse = await app.request(`/api/v1/sessions/${sessionMatch?.[1]}/runs/${runMatch?.[1]}/logs`, {
+    headers: {
+      authorization: `Bearer ${registrationPayload.api_key}`,
+    },
+  });
+  assert.equal(logsResponse.status, 200);
+});
+
+test("agent API key routes also work on /v1 aliases and skill.md advertises the DigitalOcean API flow", async () => {
+  const store = new InMemoryAppStore([], []);
+  const auth = new WorkOSAuth(
+    {
+      workosApiKey: "test-key",
+      workosClientId: "client_123",
+      cookiePassword: "super-secret-password",
+    },
+    store,
+  );
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    router: new ScriptedRouter([
+      {
+        type: "direct_response",
+        answer: "CLI access is ready.",
+      },
+    ]),
+    planner: new ScriptedPlanner([
+      {
+        type: "final_answer",
+        answer: "planner should not run",
+        citations: [],
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+      async runWorkspaceTask() {
+        return { ok: false, error: "disabled" };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: false, error: "disabled" };
+      },
+      async destroyWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+    },
+    auth,
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+    implementation: {
+      id: "alphabook",
+      productName: "AlphaBook",
+      siteOrigin: "https://alpha-book.org",
+      apiOrigin: "https://api.alpha-book.org",
+      allowedWebOrigins: ["https://alpha-book.org"],
+      defaultUserName: "AlphaBook User",
+      defaultReaderName: "AlphaBook Reader",
+    },
+  });
+
+  const skillResponse = await app.request("/skill.md");
+  assert.equal(skillResponse.status, 200);
+  const skillBody = await skillResponse.text();
+  assert.match(skillBody, /homepage: https:\/\/alpha-book\.org/);
+  assert.match(skillBody, /api_base":"https:\/\/api\.alpha-book\.org\/v1"/);
+  assert.match(skillBody, /The API you should call from the CLI is https:\/\/api\.alpha-book\.org/);
+  assert.match(skillBody, /`POST \/v1\/agents\/register` is intentionally unauthenticated\./);
+
+  const registrationResponse = await app.request("/v1/agents/register", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      name: "Codex",
+      description: "AlphaBook CLI researcher",
+    }),
+  });
+  assert.equal(registrationResponse.status, 201);
+  const registrationPayload = await registrationResponse.json() as {
+    api_key: string;
+    claim_url: string;
+  };
+  assert.match(registrationPayload.claim_url, /^https:\/\/api\.alpha-book\.org\/claim\/abclaim_/);
+
+  const chatResponse = await app.request("/v1/documents/chat", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${registrationPayload.api_key}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      message: "Can I use AlphaBook entirely from the CLI?",
+    }),
+  });
+  assert.equal(chatResponse.status, 200);
+  const chatBody = await chatResponse.text();
+  const sessionMatch = chatBody.match(/"sessionId":"([^"]+)"/);
+  const runMatch = chatBody.match(/"runId":"([^"]+)"/);
+  assert.ok(sessionMatch?.[1]);
+  assert.ok(runMatch?.[1]);
+
+  const meResponse = await app.request("/v1/agents/me", {
+    headers: {
+      authorization: `Bearer ${registrationPayload.api_key}`,
+    },
+  });
+  assert.equal(meResponse.status, 200);
+
+  const sessionsResponse = await app.request("/v1/sessions", {
+    headers: {
+      authorization: `Bearer ${registrationPayload.api_key}`,
+    },
+  });
+  assert.equal(sessionsResponse.status, 200);
+
+  const runsResponse = await app.request(`/v1/sessions/${sessionMatch?.[1]}/runs`, {
+    headers: {
+      authorization: `Bearer ${registrationPayload.api_key}`,
+    },
+  });
+  assert.equal(runsResponse.status, 200);
+
+  const logsResponse = await app.request(`/v1/sessions/${sessionMatch?.[1]}/runs/${runMatch?.[1]}/logs`, {
     headers: {
       authorization: `Bearer ${registrationPayload.api_key}`,
     },
