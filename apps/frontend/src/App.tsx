@@ -5,7 +5,7 @@ import { ChevronsLeft, ChevronsRight, Dices, Funnel, Link2, LoaderCircle, Messag
 
 import { ChatSessionSummarySchema, getToolLabel, type ChatSessionSummary, type ChunkSearchResult, type Citation, type MessageRecord, type NotificationRecord, type ProfileBookStat, type ProfileFacetStat, type ProfileQueryStat, type PublicProfileResponse, type UserProfile, type UserProfileStats, type WorkDetail, type WorkFacetCounts, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
-import { ApiError, buildSignInUrl, buildSignOutUrl, cancelRun, claimGuestProfile, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchAssistantDocumentState, fetchAssistantSessionBootstrap, fetchCurrentUser, fetchExploreSemanticSearch, fetchMessages, fetchNotifications, fetchProfile, fetchProfileStats, fetchRunState, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, getErrorMessage, markNotificationRead, queryAdminAnalytics, sendAnalyticsEvent, streamChat, streamRun, unfollowProfile, type BillingLimitErrorPayload, type PersistedRunEventRecord, type RunArtifactRecord, type RunStateRecord, type SessionRunRecord } from "./api";
+import { ApiError, buildSignInUrl, buildSignOutUrl, cancelRun, claimGuestProfile, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchAssistantDocumentState, fetchAssistantSessionBootstrap, fetchCurrentUser, fetchExploreSemanticSearch, fetchMessages, fetchNotifications, fetchProfile, fetchProfileStats, fetchRunState, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, getErrorMessage, markNotificationRead, queryAdminAnalytics, sendAnalyticsEvent, streamChat, streamExploreSemanticSearch, streamRun, unfollowProfile, type BillingLimitErrorPayload, type PersistedRunEventRecord, type RunArtifactRecord, type RunStateRecord, type SessionRunRecord } from "./api";
 import type { AssistantSurfaceProps } from "./components/assistant-surface";
 import { Avatar, AvatarFallback, AvatarImage } from "./components/ui/avatar";
 import { Button } from "./components/ui/button";
@@ -121,6 +121,11 @@ type AdminRunLogState = {
   error: string | null;
   runId: string;
   payload: Record<string, unknown> | null;
+};
+
+type ExploreSemanticProgressEntry = {
+  text: string;
+  detail?: Record<string, unknown> | null;
 };
 
 type AdminTableState = {
@@ -3647,6 +3652,7 @@ export default function App() {
   const [exploreQuery, setExploreQuery] = useState(initialUrlState.exploreQuery);
   const [exploreThinking, setExploreThinking] = useState(initialUrlState.exploreThinking);
   const [semanticResults, setSemanticResults] = useState<ChunkSearchResult[]>([]);
+  const [exploreSemanticProgress, setExploreSemanticProgress] = useState<ExploreSemanticProgressEntry[]>([]);
   const [feedWorks, setFeedWorks] = useState<WorkSummary[]>([]);
   const [feedNextOffset, setFeedNextOffset] = useState<number | null>(0);
   const [feedTotalCount, setFeedTotalCount] = useState<number | null>(null);
@@ -3672,6 +3678,7 @@ export default function App() {
   const lastReaderFrameHrefRef = useRef<string | null>(null);
   const latestReaderPathRef = useRef<string | null | undefined>(initialUrlState.readerPath);
   const latestExploreRequestIdRef = useRef(0);
+  const latestExploreAbortRef = useRef<AbortController | null>(null);
   const latestReaderContextRef = useRef({
     view: initialUrlState.view,
     sessionId: initialUrlState.sessionId,
@@ -4265,9 +4272,16 @@ export default function App() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [activeView, activeWorkId]);
 
+  useEffect(() => () => {
+    latestExploreAbortRef.current?.abort();
+  }, []);
+
   async function loadExploreWorks(reset = false) {
     const requestId = latestExploreRequestIdRef.current + 1;
     latestExploreRequestIdRef.current = requestId;
+    latestExploreAbortRef.current?.abort();
+    const abortController = new AbortController();
+    latestExploreAbortRef.current = abortController;
     const offset = reset ? 0 : feedNextOffset;
     if (offset === null || (feedLoading && !reset)) {
       return;
@@ -4280,14 +4294,35 @@ export default function App() {
       }
       setFeedLoading(true);
       if (exploreQuery.trim().length > 0) {
-        const next = await fetchExploreSemanticSearch({
-          query: exploreQuery.trim(),
-          limit: EXPLORE_PAGE_SIZE,
-          language: exploreAppliedFilters.language === "all" ? null : exploreAppliedFilters.language,
-          subject: exploreAppliedFilters.subject === "all" ? null : exploreAppliedFilters.subject,
-          bookshelf: exploreAppliedFilters.bookshelf === "all" ? null : exploreAppliedFilters.bookshelf,
-          thinking: exploreThinking,
-        });
+        setExploreSemanticProgress([]);
+        const next = exploreThinking
+          ? await streamExploreSemanticSearch({
+              query: exploreQuery.trim(),
+              limit: EXPLORE_PAGE_SIZE,
+              language: exploreAppliedFilters.language === "all" ? null : exploreAppliedFilters.language,
+              subject: exploreAppliedFilters.subject === "all" ? null : exploreAppliedFilters.subject,
+              bookshelf: exploreAppliedFilters.bookshelf === "all" ? null : exploreAppliedFilters.bookshelf,
+              signal: abortController.signal,
+              onProgress: (entry) => {
+                if (latestExploreRequestIdRef.current !== requestId) {
+                  return;
+                }
+                setExploreSemanticProgress((current) => (
+                  current.some((candidate) => candidate.text === entry.text)
+                    ? current
+                    : [...current, entry]
+                ));
+              },
+            })
+          : await fetchExploreSemanticSearch({
+              query: exploreQuery.trim(),
+              limit: EXPLORE_PAGE_SIZE,
+              language: exploreAppliedFilters.language === "all" ? null : exploreAppliedFilters.language,
+              subject: exploreAppliedFilters.subject === "all" ? null : exploreAppliedFilters.subject,
+              bookshelf: exploreAppliedFilters.bookshelf === "all" ? null : exploreAppliedFilters.bookshelf,
+              thinking: exploreThinking,
+              signal: abortController.signal,
+            });
         if (latestExploreRequestIdRef.current !== requestId) {
           return;
         }
@@ -4296,6 +4331,7 @@ export default function App() {
         setFeedNextOffset(null);
         setFeedTotalCount(next.chunks.length);
       } else {
+        setExploreSemanticProgress([]);
         setSemanticResults([]);
         const next = await fetchWorks({
           offset,
@@ -4326,11 +4362,17 @@ export default function App() {
       if (latestExploreRequestIdRef.current !== requestId) {
         return;
       }
+      if (error instanceof DOMException && error.name === "AbortError") {
+        return;
+      }
       if (reset) {
         setFeedInitialLoadState("error");
       }
       setLoadError(getErrorMessage(error, "We couldn't load the corpus feed."));
     } finally {
+      if (latestExploreAbortRef.current === abortController) {
+        latestExploreAbortRef.current = null;
+      }
       if (latestExploreRequestIdRef.current === requestId) {
         setFeedLoading(false);
       }
@@ -6568,6 +6610,17 @@ export default function App() {
               <div className="explore-feed-indicator" role="status" aria-live="polite">
                 <LoaderCircle aria-hidden="true" className="explore-feed-indicator-spinner animate-spin" />
                 <span>Loading books</span>
+              </div>
+            ) : null}
+
+            {exploreQuery.trim().length > 0 && exploreThinking && exploreSemanticProgress.length > 0 ? (
+              <div className="explore-thinking-log" role="status" aria-live="polite">
+                {exploreSemanticProgress.map((entry, index) => (
+                  <div key={`${entry.text}-${index}`} className="explore-thinking-log-line">
+                    <span className="explore-thinking-log-bullet" aria-hidden="true">•</span>
+                    <span>{entry.text}</span>
+                  </div>
+                ))}
               </div>
             ) : null}
           </form>

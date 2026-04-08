@@ -555,6 +555,27 @@ button {
   flex: 0 0 auto;
 }
 
+.explore-thinking-log {
+  display: grid;
+  gap: 6px;
+  padding: 10px 0 0;
+  max-width: 760px;
+}
+
+.explore-thinking-log-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 0.84rem;
+  line-height: 1.45;
+  color: rgba(52, 46, 40, 0.7);
+}
+
+.explore-thinking-log-bullet {
+  flex: 0 0 auto;
+  color: rgba(52, 46, 40, 0.42);
+}
+
 .explore-composer-toolbar {
   display: flex;
   justify-content: flex-end;

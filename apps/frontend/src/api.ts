@@ -573,6 +573,7 @@ export async function fetchExploreSemanticSearch(options: {
   subject?: string | null;
   bookshelf?: string | null;
   thinking?: boolean;
+  signal?: AbortSignal;
 }): Promise<ExploreSemanticSearchResponse> {
   const params = new URLSearchParams();
   params.set("q", options.query);
@@ -594,10 +595,112 @@ export async function fetchExploreSemanticSearch(options: {
   const response = await ensureOk(
     await fetch(`${API_BASE}/works/semantic-search?${params.toString()}`, {
       credentials: "include",
+      signal: options.signal,
     }),
   );
   const parsed = ExploreSemanticSearchResponseSchema.parse(await response.json());
   return parsed;
+}
+
+export async function streamExploreSemanticSearch(
+  options: {
+    query: string;
+    limit?: number;
+    language?: string | null;
+    subject?: string | null;
+    bookshelf?: string | null;
+    signal?: AbortSignal;
+    onProgress?: (entry: { text: string; detail?: Record<string, unknown> | null }) => void;
+  },
+): Promise<ExploreSemanticSearchResponse> {
+  const params = new URLSearchParams();
+  params.set("q", options.query);
+  params.set("thinking", "true");
+  params.set("stream", "true");
+  if (options.limit !== undefined) {
+    params.set("limit", String(options.limit));
+  }
+  if (options.language) {
+    params.set("language", options.language);
+  }
+  if (options.subject) {
+    params.set("subject", options.subject);
+  }
+  if (options.bookshelf) {
+    params.set("bookshelf", options.bookshelf);
+  }
+  const response = await ensureOk(
+    await fetch(`${API_BASE}/works/semantic-search?${params.toString()}`, {
+      credentials: "include",
+      signal: options.signal,
+      headers: {
+        Accept: "text/event-stream",
+      },
+    }),
+  );
+  if (!response.body) {
+    throw new ApiError("Semantic search stream was empty.");
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finalResult: ExploreSemanticSearchResponse | null = null;
+
+  const processEvent = (chunk: string) => {
+    const lines = chunk.split(/\r?\n/);
+    let event = "message";
+    const dataLines: string[] = [];
+    for (const line of lines) {
+      if (line.startsWith("event:")) {
+        event = line.slice(6).trim();
+      } else if (line.startsWith("data:")) {
+        dataLines.push(line.slice(5).trimStart());
+      }
+    }
+    if (dataLines.length === 0) {
+      return;
+    }
+    const raw = dataLines.join("\n");
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (event === "progress") {
+      options.onProgress?.({
+        text: typeof parsed.text === "string" ? parsed.text : "Working",
+        detail: parsed.detail && typeof parsed.detail === "object" ? parsed.detail as Record<string, unknown> : null,
+      });
+      return;
+    }
+    if (event === "result") {
+      finalResult = ExploreSemanticSearchResponseSchema.parse(parsed);
+      return;
+    }
+    if (event === "error") {
+      throw new ApiError(typeof parsed.message === "string" ? parsed.message : "Semantic search stream failed.");
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary >= 0) {
+      const eventChunk = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      if (eventChunk.trim().length > 0) {
+        processEvent(eventChunk);
+      }
+      boundary = buffer.indexOf("\n\n");
+    }
+    if (done) {
+      break;
+    }
+  }
+  if (buffer.trim().length > 0) {
+    processEvent(buffer);
+  }
+  if (!finalResult) {
+    throw new ApiError("Semantic search stream finished without a result.");
+  }
+  return finalResult;
 }
 
 export async function fetchWorkDetail(workId: string): Promise<WorkDetailResponse> {

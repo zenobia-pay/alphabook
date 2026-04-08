@@ -450,6 +450,11 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
       modelProvider: this.modelProvider,
       modelName: this.modelName,
     });
+    await args.onProgress?.("Embedding the original query and running the first Qdrant pass.", {
+      type: "semantic.step",
+      step: "initial_retrieval",
+      query: args.query,
+    });
 
     const initialChunks = await this.fetchSemanticMatches(args.query, initialTopK, args, {
       subqueryId: "sq_001",
@@ -463,6 +468,11 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
       chunksFound: initialChunks.length,
     });
 
+    await args.onProgress?.("Generating expansion queries from the strongest initial matches.", {
+      type: "semantic.step",
+      step: "query_expansion_started",
+      initialChunkCount: initialChunks.length,
+    });
     const expansionQueries = (await this.generateQueryVariants(args.query, initialChunks, 4, "query_expansion"))
       .filter((query) => {
         const normalized = query.trim().toLowerCase();
@@ -473,9 +483,26 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
         return true;
       })
       .slice(0, 4);
+    await args.onProgress?.(
+      expansionQueries.length > 0
+        ? `Generated ${expansionQueries.length} expansion quer${expansionQueries.length === 1 ? "y" : "ies"}. Running semantic retrieval for each one.`
+        : "The model did not propose any useful expansion queries, so AlphaLoop is keeping the search tight.",
+      {
+        type: "semantic.step",
+        step: "query_expansion_completed",
+        expansionQueries,
+      },
+    );
     let expansionNewCount = 0;
     for (let index = 0; index < expansionQueries.length; index += 1) {
       const query = expansionQueries[index]!;
+      await args.onProgress?.(`Running expansion query ${index + 1} of ${expansionQueries.length}: “${query}”.`, {
+        type: "semantic.step",
+        step: "query_expansion_search",
+        query,
+        queryIndex: index + 1,
+        queryCount: expansionQueries.length,
+      });
       const chunks = await this.fetchSemanticMatches(query, Math.ceil(initialTopK / 2), args, {
         subqueryId: `sq_${String(index + 2).padStart(3, "0")}`,
         expansionQuery: true,
@@ -504,9 +531,26 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
         })
         .slice(0, 3)
       : [];
+    await args.onProgress?.(
+      iterativeQueries.length > 0
+        ? `Generated ${iterativeQueries.length} follow-up quer${iterativeQueries.length === 1 ? "y" : "ies"} from the best retrieved passages.`
+        : "No additional follow-up queries looked promising, so AlphaLoop is ranking the current evidence.",
+      {
+        type: "semantic.step",
+        step: "iterative_query_generation_completed",
+        iterativeQueries,
+      },
+    );
     let iterativeNewCount = 0;
     for (let index = 0; index < iterativeQueries.length; index += 1) {
       const query = iterativeQueries[index]!;
+      await args.onProgress?.(`Running follow-up query ${index + 1} of ${iterativeQueries.length}: “${query}”.`, {
+        type: "semantic.step",
+        step: "iterative_search_query",
+        query,
+        queryIndex: index + 1,
+        queryCount: iterativeQueries.length,
+      });
       const chunks = await this.fetchSemanticMatches(query, Math.ceil(initialTopK / 3), args, {
         subqueryId: `sq_${String(index + expansionQueries.length + 2).padStart(3, "0")}`,
         expansionQuery: true,
@@ -527,6 +571,11 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
       totalUnique: retained.size,
     });
 
+    await args.onProgress?.(`Reranking ${retained.size} candidate passages from the retrieval passes.`, {
+      type: "semantic.step",
+      step: "rerank_started",
+      candidateCount: retained.size,
+    });
     const rankedChunks = [...retained.values()]
       .map((chunk) => ({
         ...chunk,
@@ -544,6 +593,11 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
       keptChunks: rankedChunks.length,
       droppedChunks: 0,
       topChunkPreview: rankedChunks[0]?.excerpt.slice(0, 100),
+    });
+    await args.onProgress?.(`Rerank kept ${rankedChunks.length} passages. Preparing the final answer.`, {
+      type: "semantic.step",
+      step: "rerank_completed",
+      keptChunks: rankedChunks.length,
     });
     alphaloopEvents.push({
       type: "complete",

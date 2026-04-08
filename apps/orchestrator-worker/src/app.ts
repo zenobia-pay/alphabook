@@ -16172,7 +16172,7 @@ export function createApp(inputDeps: CreateAppInput) {
           return c.json({ error: "Thinking mode is not configured." }, 503);
         }
         const currentUser = await resolveUser(c);
-        const result = await deps.semanticSearch.search({
+        const semanticArgs = {
           query,
           workIds,
           maxResults: limit,
@@ -16182,7 +16182,31 @@ export function createApp(inputDeps: CreateAppInput) {
               source: "semantic_search",
             },
           } : {}),
-        });
+        };
+        const shouldStream = c.req.query("stream") === "true" || c.req.header("accept")?.includes("text/event-stream");
+        if (shouldStream) {
+          return streamResponse(async (send) => {
+            const result = await deps.semanticSearch!.search({
+              ...semanticArgs,
+              onProgress: async (text, detail) => {
+                await send("progress", {
+                  text,
+                  ...(detail && typeof detail === "object" ? { detail } : {}),
+                });
+              },
+            });
+            const rankedChunks = (Array.isArray(result.rankedChunks) && result.rankedChunks.length > 0 ? result.rankedChunks : result.chunks)
+              .filter((chunk) => !allowedWorkIds || allowedWorkIds.has(chunk.workId))
+              .slice(0, limit)
+              .map((chunk) => normalizeExploreChunk(chunk));
+            await send("result", {
+              chunks: rankedChunks,
+              thinking: true,
+              alphaloopEvents: Array.isArray(result.alphaloopEvents) ? result.alphaloopEvents : [],
+            });
+          });
+        }
+        const result = await deps.semanticSearch.search(semanticArgs);
         const rankedChunks = (Array.isArray(result.rankedChunks) && result.rankedChunks.length > 0 ? result.rankedChunks : result.chunks)
           .filter((chunk) => !allowedWorkIds || allowedWorkIds.has(chunk.workId))
           .slice(0, limit)
