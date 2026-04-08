@@ -71,6 +71,17 @@ function buildQueueNames(env: LinuxEnv, implementationId: string) {
   };
 }
 
+function parseCsvEnv(value: string | undefined): string[] | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const parsed = value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  return parsed.length > 0 ? parsed : undefined;
+}
+
 function resolveDb(env: LinuxEnv): DbClient {
   if (!env.DATABASE_URL) {
     throw new Error("DATABASE_URL is required for the Linux deployment path.");
@@ -152,6 +163,9 @@ export function buildLinuxAppDeps(env: LinuxEnv, options: { boss?: PgBoss } = {}
   const runtimeGateway = resolveRuntimeGateway(env);
   const billing = createBillingService(store, {
     monthlyLimitUsd: env.BILLING_MONTHLY_LIMIT_USD ? Number(env.BILLING_MONTHLY_LIMIT_USD) : undefined,
+    testMonthlyLimitUsd: env.BILLING_TEST_MONTHLY_LIMIT_USD ? Number(env.BILLING_TEST_MONTHLY_LIMIT_USD) : undefined,
+    testUserIds: parseCsvEnv(env.BILLING_TEST_USER_IDS),
+    testUserEmails: parseCsvEnv(env.BILLING_TEST_USER_EMAILS),
     modelPricing: env.BILLING_MODEL_PRICING_JSON
       ? JSON.parse(env.BILLING_MODEL_PRICING_JSON) as Record<string, {
         inputPerMillionUsd: number;

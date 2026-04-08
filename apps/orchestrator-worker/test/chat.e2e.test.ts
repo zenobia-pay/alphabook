@@ -7031,6 +7031,84 @@ test("billing gate rejects chat requests once monthly spend exceeds limit", asyn
   assert.equal(Array.isArray(body.paymentRequirements?.accepts), true);
 });
 
+test("billing gate can use a lower per-user override limit", async () => {
+  const store = new InMemoryAppStore();
+  await store.upsertUserProfile({
+    id: "billing-user",
+    email: "reader@example.com",
+    name: "Reader",
+  });
+  await store.createBillingEvent({
+    userId: "billing-user",
+    sessionId: null,
+    runId: null,
+    source: "planner",
+    provider: "openai",
+    model: "gpt-5.2",
+    operation: "chat.completions.create",
+    inputTokens: 1,
+    outputTokens: 1,
+    totalTokens: 2,
+    cachedInputTokens: 0,
+    costUsd: 0.02,
+    requestId: null,
+    requestJson: null,
+    responseJson: null,
+    metadata: {},
+  });
+
+  const app = createApp({
+    store,
+    billing: createBillingService(store, {
+      monthlyLimitUsd: 50,
+      testMonthlyLimitUsd: 0.01,
+      testUserEmails: ["reader@example.com"],
+    }),
+    planner: new FallbackPlanner(),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+      async runWorkspaceTask() {
+        return { ok: false, error: "disabled" };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: false, error: "disabled" };
+      },
+      async destroyWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const response = await app.request("/chat", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      userId: "billing-user",
+      message: "Blocked",
+    }),
+  });
+
+  assert.equal(response.status, 402);
+  const body = await response.json() as { code?: string; limitUsd?: number; spendUsd?: number };
+  assert.equal(body.code, "billing_limit_exceeded");
+  assert.equal(body.limitUsd, 0.01);
+  assert.equal(body.spendUsd, 0.02);
+});
+
 test("billing blocked chat requests accept a valid x402 payment and return settlement headers", async () => {
   const store = new InMemoryAppStore();
   await store.ensureUser("billing-user");

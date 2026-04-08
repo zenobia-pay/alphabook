@@ -38,6 +38,9 @@ export interface BillingService {
 
 interface BillingConfig {
   monthlyLimitUsd?: number;
+  testMonthlyLimitUsd?: number;
+  testUserIds?: string[];
+  testUserEmails?: string[];
   modelPricing?: Record<string, ModelPricing>;
 }
 
@@ -106,18 +109,42 @@ function computeCostUsd(
 
 export function createBillingService(store: AppStore, config: BillingConfig = {}): BillingService {
   const monthlyLimitUsd = config.monthlyLimitUsd ?? 1_000_000;
+  const testMonthlyLimitUsd = typeof config.testMonthlyLimitUsd === "number" && Number.isFinite(config.testMonthlyLimitUsd)
+    ? Math.max(0, config.testMonthlyLimitUsd)
+    : null;
+  const testUserIds = new Set((config.testUserIds ?? []).map((value) => value.trim()).filter(Boolean));
+  const testUserEmails = new Set((config.testUserEmails ?? []).map((value) => value.trim().toLowerCase()).filter(Boolean));
   const pricing = {
     ...DEFAULT_MODEL_PRICING,
     ...(config.modelPricing ?? {}),
   };
 
+  async function effectiveMonthlyLimitUsd(userId: string): Promise<number> {
+    if (testMonthlyLimitUsd === null) {
+      return monthlyLimitUsd;
+    }
+    if (testUserIds.has(userId)) {
+      return testMonthlyLimitUsd;
+    }
+    if (testUserEmails.size === 0) {
+      return monthlyLimitUsd;
+    }
+    const profile = await store.getUserProfile(userId);
+    const email = profile?.email?.trim().toLowerCase();
+    if (email && testUserEmails.has(email)) {
+      return testMonthlyLimitUsd;
+    }
+    return monthlyLimitUsd;
+  }
+
   return {
     async check(userId: string, now = Date.now()): Promise<BillingCheckResult> {
       const windowStartedAt = new Date(now - THIRTY_DAYS_MS).toISOString();
       const spend = await store.getBillingSpend(userId, windowStartedAt);
+      const effectiveLimitUsd = await effectiveMonthlyLimitUsd(userId);
       return {
-        allowed: spend.totalCostUsd <= monthlyLimitUsd,
-        limitUsd: monthlyLimitUsd,
+        allowed: spend.totalCostUsd <= effectiveLimitUsd,
+        limitUsd: effectiveLimitUsd,
         spendUsd: spend.totalCostUsd,
         windowStartedAt,
       };
