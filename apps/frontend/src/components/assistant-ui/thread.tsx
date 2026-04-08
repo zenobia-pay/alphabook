@@ -324,17 +324,7 @@ const ThreadOutputs: FC<{
                 </button>
               );
             })
-          : Array.from({ length: 4 }, (_, index) => (
-              <div
-                key={`output-placeholder-${index}`}
-                className="assistant-output-placeholder"
-                role="listitem"
-                aria-hidden="true"
-              >
-                <span className="assistant-output-placeholder-icon" />
-                <span className="assistant-output-placeholder-line" />
-              </div>
-            ))}
+          : null}
       </div>
     </aside>
   );
