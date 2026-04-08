@@ -378,6 +378,9 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
           `Top retrieved passages:\n${context}`,
           "",
           `Generate ${count} new search queries that follow promising themes discovered in the passages.`,
+          "Stay tightly anchored to the original query's core intent.",
+          "Do not drift into incidental names, places, biographies, historical side topics, or concrete details unless they directly describe the same concept the user asked for.",
+          "Prefer short conceptual rewrites over long entity-heavy phrases.",
           "Return JSON only.",
         ].join("\n");
     const { object } = await generateObject({
@@ -517,7 +520,10 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
     });
 
     const iterativeSeedChunks = [...retained.values()]
-      .sort((left, right) => (right.rawScore - left.rawScore))
+      .sort((left, right) => (
+        lexicalRerankScore(args.query, right, right.rawScore + ((right.hitCount - 1) * 0.05))
+        - lexicalRerankScore(args.query, left, left.rawScore + ((left.hitCount - 1) * 0.05))
+      ))
       .slice(0, 8);
     const iterativeQueries = iterativeSeedChunks.length > 0
       ? (await this.generateQueryVariants(args.query, iterativeSeedChunks, 3, "iterative_search"))

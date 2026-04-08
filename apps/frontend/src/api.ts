@@ -645,6 +645,7 @@ export async function streamExploreSemanticSearch(
   const decoder = new TextDecoder();
   let buffer = "";
   let finalResult: ExploreSemanticSearchResponse | null = null;
+  const nextEventBoundary = () => buffer.search(/\r?\n\r?\n/);
 
   const processEvent = (chunk: string) => {
     const lines = chunk.split(/\r?\n/);
@@ -681,14 +682,15 @@ export async function streamExploreSemanticSearch(
   while (true) {
     const { done, value } = await reader.read();
     buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
-    let boundary = buffer.indexOf("\n\n");
+    let boundary = nextEventBoundary();
     while (boundary >= 0) {
       const eventChunk = buffer.slice(0, boundary);
-      buffer = buffer.slice(boundary + 2);
+      const separator = buffer.slice(boundary).match(/^\r?\n\r?\n/);
+      buffer = buffer.slice(boundary + (separator?.[0].length ?? 2));
       if (eventChunk.trim().length > 0) {
         processEvent(eventChunk);
       }
-      boundary = buffer.indexOf("\n\n");
+      boundary = nextEventBoundary();
     }
     if (done) {
       break;
