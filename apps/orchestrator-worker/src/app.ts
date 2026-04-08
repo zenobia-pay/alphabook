@@ -5811,6 +5811,71 @@ function summarizeRunFailure(
   return null;
 }
 
+function summarizeDetailedRunOutputLines(
+  run: RunRecord,
+  backgroundJob: BackgroundJobRecord | null,
+  bridge: HermesBridgeRecord | null,
+  runEvents: RunEventRecord[],
+  rawLog: Array<ToolRunRawLogEntry | Record<string, unknown>>,
+) {
+  const lines: string[] = [];
+  lines.push(`run_id=${run.id}`);
+  lines.push(`status=${run.status}`);
+  if (backgroundJob?.status) {
+    lines.push(`background_job_status=${backgroundJob.status}`);
+  }
+  if (bridge) {
+    if (bridge.externalJobId) lines.push(`externalJobId=${bridge.externalJobId}`);
+    if (bridge.wrapperRunDir) lines.push(`wrapperRunDir=${bridge.wrapperRunDir}`);
+    if (bridge.innerRunDir) lines.push(`innerRunDir=${bridge.innerRunDir}`);
+    if (bridge.innerRunId) lines.push(`innerRunId=${bridge.innerRunId}`);
+    if (bridge.archivePrefix) lines.push(`archivePrefix=${bridge.archivePrefix}`);
+    if (bridge.hermesSessionId) lines.push(`hermesSessionId=${bridge.hermesSessionId}`);
+  }
+
+  const textLines: string[] = [];
+  const seen = new Set<string>();
+  for (const event of runEvents) {
+    const data = event.dataJson && typeof event.dataJson === "object"
+      ? event.dataJson as Record<string, unknown>
+      : null;
+    if (!data) {
+      continue;
+    }
+    const text =
+      event.event === "tool.progress" || event.event === "tool.progress.raw" || event.event === "job.log"
+        ? (typeof data.text === "string" ? data.text.trim() : "")
+        : "";
+    if (!text || seen.has(text)) {
+      continue;
+    }
+    seen.add(text);
+    textLines.push(`${event.createdAt} ${text}`);
+  }
+
+  for (const entry of rawLog) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const payload = entry.payload && typeof entry.payload === "object"
+      ? entry.payload as Record<string, unknown>
+      : null;
+    const text = payload && typeof payload.text === "string" ? payload.text.trim() : "";
+    if (!text || seen.has(text)) {
+      continue;
+    }
+    seen.add(text);
+    const timestamp = typeof entry.timestamp === "string" ? entry.timestamp : "";
+    textLines.push(`${timestamp ? `${timestamp} ` : ""}${text}`);
+  }
+
+  if (textLines.length > 0) {
+    lines.push("");
+    lines.push(...textLines);
+  }
+  return lines.join("\n").trim();
+}
+
 function checkpointFromToolProgressDetail(detail: Record<string, unknown> | undefined) {
   if (!detail || typeof detail !== "object") {
     return null;
@@ -14715,6 +14780,31 @@ export function createApp(inputDeps: CreateAppInput) {
     return c.json(await buildRunLogsPayload(c, deps, session, run, toolCalls));
   });
 
+  app.get("/sessions/:sessionId/runs/:runId/output", async (c) => {
+    const sessionId = c.req.param("sessionId");
+    const runId = c.req.param("runId");
+    const session = await deps.store.getSession(sessionId);
+    if (!session) {
+      return c.json({ error: "Session not found." }, 404);
+    }
+    if (!(await canAccessSession(c, session))) {
+      return c.json({ error: "Not authorized for this session." }, 403);
+    }
+    const run = await deps.store.getRun(runId);
+    if (!run || run.sessionId !== sessionId) {
+      return c.json({ error: "Run not found." }, 404);
+    }
+    const toolCalls = await deps.store.listToolCalls(runId);
+    const runContext = await resolveRunRuntimeContext(deps, sessionId, run, toolCalls, { runEventLimit: 400 });
+    const backgroundJob = await deps.store.getLatestBackgroundJobForRun(run.id);
+    const bridge = await resolveHermesBridgeRecord(deps, backgroundJob);
+    const rawLog = await loadPersistedRawRunLog(deps, sessionId, run.id);
+    return c.json({
+      runId: run.id,
+      text: summarizeDetailedRunOutputLines(run, backgroundJob, bridge, runContext.runEvents, rawLog),
+    });
+  });
+
   app.get("/api/v1/sessions/:sessionId/runs/:runId/logs", async (c) => {
     const sessionId = c.req.param("sessionId");
     const runId = c.req.param("runId");
@@ -14732,6 +14822,31 @@ export function createApp(inputDeps: CreateAppInput) {
     }
     const toolCalls = await deps.store.listToolCalls(runId);
     return c.json(await buildRunLogsPayload(c, deps, session, run, toolCalls));
+  });
+
+  app.get("/api/v1/sessions/:sessionId/runs/:runId/output", async (c) => {
+    const sessionId = c.req.param("sessionId");
+    const runId = c.req.param("runId");
+    const session = await deps.store.getSession(sessionId);
+    if (!session) {
+      return c.json({ error: "Session not found." }, 404);
+    }
+    if (!(await canAccessSession(c, session))) {
+      return c.json({ error: "Not authorized for this session." }, 403);
+    }
+    const run = await deps.store.getRun(runId);
+    if (!run || run.sessionId !== sessionId) {
+      return c.json({ error: "Run not found." }, 404);
+    }
+    const toolCalls = await deps.store.listToolCalls(runId);
+    const runContext = await resolveRunRuntimeContext(deps, sessionId, run, toolCalls, { runEventLimit: 400 });
+    const backgroundJob = await deps.store.getLatestBackgroundJobForRun(run.id);
+    const bridge = await resolveHermesBridgeRecord(deps, backgroundJob);
+    const rawLog = await loadPersistedRawRunLog(deps, sessionId, run.id);
+    return c.json({
+      runId: run.id,
+      text: summarizeDetailedRunOutputLines(run, backgroundJob, bridge, runContext.runEvents, rawLog),
+    });
   });
 
   app.get("/admin/runs/:runId/logs", async (c) => {

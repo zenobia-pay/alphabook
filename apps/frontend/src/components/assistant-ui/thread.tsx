@@ -8,7 +8,7 @@ import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button
 import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { fetchRunLogs, type RunArtifactRecord } from "@/api";
+import { fetchRunOutput, type RunArtifactRecord } from "@/api";
 import { cn } from "@/lib/utils";
 import {
   ActionBarMorePrimitive,
@@ -167,62 +167,6 @@ function summarizePlanToolLine(entry: PlanToolTraceRecord) {
     return `${label} — Failed`;
   }
   return `${label} — Running`;
-}
-
-function compactJson(value: unknown) {
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
-  }
-}
-
-function buildDetailedRunOutputTextFromPayload(payload: Record<string, unknown> | null) {
-  if (!payload) {
-    return "";
-  }
-  const lines: string[] = [];
-  const run = payload.run && typeof payload.run === "object" ? payload.run as Record<string, unknown> : null;
-  const backgroundJob = payload.backgroundJob && typeof payload.backgroundJob === "object"
-    ? payload.backgroundJob as Record<string, unknown>
-    : null;
-  const bridge = payload.bridge && typeof payload.bridge === "object"
-    ? payload.bridge as Record<string, unknown>
-    : null;
-  if (run) {
-    if (typeof run.id === "string") {
-      lines.push(`run_id=${run.id}`);
-    }
-    if (typeof run.status === "string") {
-      lines.push(`status=${run.status}`);
-    }
-  }
-  if (backgroundJob && typeof backgroundJob.status === "string") {
-    lines.push(`background_job_status=${backgroundJob.status}`);
-  }
-  if (bridge) {
-    for (const key of ["externalJobId", "wrapperRunDir", "innerRunDir", "innerRunId", "archivePrefix", "hermesSessionId"]) {
-      const value = bridge[key];
-      if (typeof value === "string" && value.trim().length > 0) {
-        lines.push(`${key}=${value}`);
-      }
-    }
-  }
-  const rawLog = Array.isArray(payload.rawLog) ? payload.rawLog as Array<Record<string, unknown>> : [];
-  if (rawLog.length > 0 && lines.length > 0) {
-    lines.push("");
-  }
-  for (const entry of rawLog) {
-    const timestamp = typeof entry.timestamp === "string"
-      ? entry.timestamp
-      : typeof entry.createdAt === "string"
-        ? entry.createdAt
-        : "";
-    const event = typeof entry.event === "string" ? entry.event : "log";
-    const data = "data" in entry ? compactJson(entry.data) : compactJson(entry);
-    lines.push(`${timestamp ? `${timestamp} ` : ""}${event}${data && data !== "{}" ? ` ${data}` : ""}`);
-  }
-  return lines.join("\n").trim();
 }
 
 type ThreadSuggestion = {
@@ -825,10 +769,10 @@ const DetailedRunOutputButton: FC<{
     let cancelled = false;
     setLoading(true);
     setError(null);
-    void fetchRunLogs(sessionId, runId)
+    void fetchRunOutput(sessionId, runId)
       .then((payload) => {
         if (!cancelled) {
-          setText(buildDetailedRunOutputTextFromPayload(payload));
+          setText(typeof payload.text === "string" ? payload.text : "");
         }
       })
       .catch((fetchError) => {
