@@ -55,10 +55,10 @@ export const ALPHABOOK_IMPLEMENTATION: AlphaResearchImplementation = {
   defaultUserName: "AlphaBook User",
   defaultReaderName: "AlphaBook Reader",
   adapterId: "gutenberg",
-  themeColor: "#f5f0e8",
+  themeColor: "#323a85",
   ogImageUrl: "https://alpha-book.org/social-card.jpg",
   explorePlaceholder: "Ask about a book, a theme, or the whole corpus...",
-  assistantWelcomeHeading: "What do you want to research over 75,000 books?",
+  assistantWelcomeHeading: "What do you want to research?",
   emptyCorpusMessage: "No books are loaded yet.",
   assistantWelcomeSuggestions: [
     {
