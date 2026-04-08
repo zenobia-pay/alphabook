@@ -8616,9 +8616,10 @@ function shouldUseHermesBackend(
   input: {
     mode?: "semantic" | "comprehensive" | "agentic";
     researchMode?: "default" | "sprite_fanout";
+    workflow?: "auto" | "search" | "design_experiment";
   },
 ) {
-  return requestedAssistantMode(input) === "agentic"
+  return (requestedAssistantMode(input) === "agentic" || input.workflow === "design_experiment")
     && typeof deps.hermesJobApiUrl === "string"
     && deps.hermesJobApiUrl.trim().length > 0;
 }
@@ -9124,6 +9125,18 @@ function titleForHermesArtifact(relativePath: string) {
   if (base === "scope-report.json") {
     return "Scope Report";
   }
+  if (base === "experiment-plan.md") {
+    return "Experiment Plan";
+  }
+  if (base === "results.json") {
+    return "Results";
+  }
+  if (normalized.endsWith("evidence/index.json")) {
+    return "Evidence Index";
+  }
+  if (base === "labels.jsonl") {
+    return "Labels";
+  }
   if (normalized.endsWith("hits/index.json")) {
     return "Search Hits Index";
   }
@@ -9163,6 +9176,18 @@ function kindForHermesArtifact(relativePath: string) {
   if (base === "scope-report.json") {
     return "scope_report_json";
   }
+  if (base === "experiment-plan.md") {
+    return "experiment_plan_markdown";
+  }
+  if (base === "results.json") {
+    return "experiment_results_json";
+  }
+  if (normalized.endsWith("evidence/index.json")) {
+    return "experiment_evidence_index";
+  }
+  if (base === "labels.jsonl") {
+    return "experiment_labels_jsonl";
+  }
   if (normalized.endsWith("hits/index.json")) {
     return "hermes_search_hits_index";
   }
@@ -9189,6 +9214,8 @@ function isUserFacingHermesArtifact(relativePath: string) {
   if (
     normalized === "inner/manifest.json"
     || normalized === "inner/scope-report.json"
+    || normalized === "inner/experiment-plan.md"
+    || normalized === "inner/results.json"
     || normalized === "inner/final-answer.md"
     || normalized === "inner/final-answer.json"
     || normalized === "inner/run.log"
@@ -9197,8 +9224,10 @@ function isUserFacingHermesArtifact(relativePath: string) {
     || normalized === "inner/dataset.csv"
     || normalized === "inner/dataset.jsonl"
     || normalized === "inner/citation-index.json"
+    || normalized === "inner/labels.jsonl"
     || normalized === "inner/status.json"
     || normalized === "inner/hits/index.json"
+    || normalized === "inner/evidence/index.json"
   ) {
     return true;
   }
@@ -9351,8 +9380,11 @@ function buildHermesCompletionAnswer(
     .filter((path) =>
       path.endsWith("final-answer.md")
       || path.endsWith("scope-report.json")
+      || path.endsWith("experiment-plan.md")
+      || path.endsWith("results.json")
       || path.endsWith("briefing.md")
       || path.endsWith("hits/index.json")
+      || path.endsWith("evidence/index.json")
       || path.endsWith("dataset.csv")
       || path.endsWith("citation-index.json"),
     )
@@ -9969,7 +10001,9 @@ async function runHermesConversation(
   }
 
   const activeSession = session;
-  const effectiveHermesWorkflow: "search" = "search";
+  const effectiveHermesWorkflow: "search" | "design_experiment" = input.workflow === "design_experiment"
+    ? "design_experiment"
+    : "search";
   const baselineHermesMessageCount = 0;
   await deps.store.appendMessage(activeSession.id, "user", input.message, {
     phase: "user",
@@ -10085,7 +10119,11 @@ async function runHermesConversation(
     }));
   };
 
-  const planText = "Starting an Agentic search run on this thread and streaming the tool activity here.";
+  const planText = initialWorkflowPlan({
+    workflow: effectiveHermesWorkflow,
+    routedQuery: input.message,
+    executionMode: "agentic",
+  });
   const planMessage = await deps.store.appendMessage(activeSession.id, "assistant", planText, {
     phase: "plan",
     runId: run.id,
@@ -10136,9 +10174,11 @@ async function runHermesConversation(
     const entry: LiveToolTraceEntry = {
       id: hermesProgressToolCallId,
       toolName: "run_workspace_task",
-      label: "Agentic Search Progress",
-      rationale: "Streaming wrapper and inner-run progress while agentic search is running.",
-      progress: ["Agentic search launched."],
+      label: effectiveHermesWorkflow === "design_experiment" ? "Experiment Progress" : "Agentic Search Progress",
+      rationale: effectiveHermesWorkflow === "design_experiment"
+        ? "Streaming wrapper and experiment-run progress while the experiment is running."
+        : "Streaming wrapper and inner-run progress while agentic search is running.",
+      progress: [effectiveHermesWorkflow === "design_experiment" ? "Experiment launched." : "Agentic search launched."],
       sourceArgs: {
         __toolName: "run_workspace_task",
         __hermesSyntheticProgress: true,
@@ -10149,8 +10189,10 @@ async function runHermesConversation(
           __toolName: "run_workspace_task",
           __hermesSyntheticProgress: true,
         },
-        "Streaming wrapper and inner-run progress while agentic search is running.",
-        ["Agentic search launched."],
+        effectiveHermesWorkflow === "design_experiment"
+          ? "Streaming wrapper and experiment-run progress while the experiment is running."
+          : "Streaming wrapper and inner-run progress while agentic search is running.",
+        [effectiveHermesWorkflow === "design_experiment" ? "Experiment launched." : "Agentic search launched."],
       ),
       state: "running",
     };
@@ -14469,6 +14511,10 @@ export function createApp(inputDeps: CreateAppInput) {
           });
           if (precomputedRouteDecision.type === "search") {
             requestPayload.mode = precomputedRouteDecision.executionMode ?? "agentic";
+            requestPayload.workflow = "search";
+          } else if (precomputedRouteDecision.type === "design_experiment") {
+            requestPayload.mode = "agentic";
+            requestPayload.workflow = "design_experiment";
           }
         }
         if (requestedAssistantMode(requestPayload) === "agentic" && !deps.hermesJobApiUrl) {

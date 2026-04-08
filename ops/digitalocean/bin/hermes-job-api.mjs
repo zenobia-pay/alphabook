@@ -16,6 +16,7 @@ const SEARCH_RUN_ROOT = process.env.SEARCH_RUN_ROOT || "/srv/alphabook/logs/herm
 const SEMANTIC_RUN_ROOT = process.env.SEMANTIC_RUN_ROOT || "/srv/alphabook/logs/semantic-search";
 const CORPUS_RUN_ROOT = process.env.CORPUS_RUN_ROOT || "/srv/alphabook/logs/corpus-research";
 const SEARCH_CORPUS_RUN_ROOT = process.env.SEARCH_CORPUS_RUN_ROOT || "/srv/alphabook/logs/corpus-search";
+const DESIGN_EXPERIMENT_RUN_ROOT = process.env.DESIGN_EXPERIMENT_RUN_ROOT || "/srv/alphabook/logs/codex-design-experiment";
 const API_LOG_ROOT = process.env.API_LOG_ROOT || "/srv/alphabook/logs/hermes-job-api";
 const API_TOKEN = loadToken();
 const CORS_ORIGIN = process.env.HERMES_JOB_API_CORS_ORIGIN || "*";
@@ -24,12 +25,15 @@ const PRIMARY_ARTIFACTS = [
   "index.json",
   "manifest.json",
   "scope-report.json",
+  "experiment-plan.md",
+  "results.json",
   "final-answer.md",
   "final-answer.json",
   "briefing.md",
   "dataset.jsonl",
   "dataset.csv",
   "citation-index.json",
+  "labels.jsonl",
   "cost-profile.json",
   "query-expansion.json",
   "progress-summary.json",
@@ -192,6 +196,8 @@ function isUserFacingHermesArtifactName(name) {
   if (
     normalized === "manifest.json"
     || normalized === "scope-report.json"
+    || normalized === "experiment-plan.md"
+    || normalized === "results.json"
     || normalized === "final-answer.md"
     || normalized === "final-answer.json"
     || normalized === "run.log"
@@ -200,8 +206,10 @@ function isUserFacingHermesArtifactName(name) {
     || normalized === "dataset.csv"
     || normalized === "dataset.jsonl"
     || normalized === "citation-index.json"
+    || normalized === "labels.jsonl"
     || normalized === "status.json"
     || normalized === "hits/index.json"
+    || normalized === "evidence/index.json"
   ) {
     return true;
   }
@@ -436,6 +444,17 @@ function resolveLauncherConfig(payload) {
       innerRunRoot: SEARCH_CORPUS_RUN_ROOT,
       promptArgName: "--user-prompt",
       extraArgs: ["--effort", String(Number.isFinite(effort) && effort > 0 ? effort : 10)],
+    };
+  }
+  if (workflow === "design_experiment") {
+    return {
+      jobType: "hermes",
+      workflow,
+      launcherPath: path.join(ROOT_DIR, "ops/digitalocean/bin/run-codex-design-experiment.sh"),
+      runRoot: RESEARCH_RUN_ROOT,
+      innerRunRoot: DESIGN_EXPERIMENT_RUN_ROOT,
+      promptArgName: "--user-prompt",
+      extraArgs: [],
     };
   }
   return {

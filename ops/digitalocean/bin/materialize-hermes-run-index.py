@@ -11,16 +11,20 @@ from typing import Any
 PRIMARY_INNER_ARTIFACTS = [
     "manifest.json",
     "scope-report.json",
+    "experiment-plan.md",
+    "results.json",
     "final-answer.md",
     "final-answer.json",
     "briefing.md",
     "dataset.jsonl",
     "dataset.csv",
     "citation-index.json",
+    "labels.jsonl",
     "cost-profile.json",
     "status.json",
     "run.log",
     "stream.log",
+    "evidence/index.json",
 ]
 
 
