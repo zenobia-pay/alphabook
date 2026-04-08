@@ -15571,6 +15571,9 @@ export function createApp(inputDeps: CreateAppInput) {
     if (!deps.semanticSearch) {
       return c.json({ error: "Semantic search is not configured." }, 503);
     }
+    if (process.env.VECTOR_PROVIDER === "qdrant" && !(process.env.QDRANT_API_KEY ?? "").trim()) {
+      return c.json({ error: "Semantic search is unavailable right now." }, 503);
+    }
 
     const query = c.req.query("q")?.trim() ?? "";
     if (!query) {

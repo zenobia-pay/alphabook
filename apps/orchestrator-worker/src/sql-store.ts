@@ -2070,6 +2070,18 @@ export class SqlAppStore implements AppStore {
     }
     return this.queryLiveWorkCount(filters);
   }
+
+  async listExploreWorkIds(filters: ExploreWorksFilters = {}) {
+    const filterClause = this.buildExploreFilterClause(filters, "w");
+    const result = await this.db.query<{ id: string }>(
+      `SELECT w.id FROM works w WHERE 1 = 1 ${this.adapterWorkClause("w")} ${filterClause.clause} ORDER BY w.id ASC`,
+      filterClause.params,
+    );
+    return result.rows
+      .map((row) => row.id)
+      .filter((id): id is string => typeof id === "string" && id.length > 0);
+  }
+
   async listWorkFacets(filters: ExploreWorksFilters = {}): Promise<ExploreWorkFacets> {
     if (!this.hasDatasetExploreFilters(filters)) {
       const cached = await this.getSiteStat<ExploreWorkFacets>("explore_work_facets");

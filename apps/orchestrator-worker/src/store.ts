@@ -530,6 +530,7 @@ export interface AppStore {
     optionsOrOffset?: { offset?: number; limit?: number; filters?: ExploreWorksFilters } | number,
     limit?: number,
   ): Promise<WorkSummary[]>;
+  listExploreWorkIds(filters?: ExploreWorksFilters): Promise<string[]>;
   countWorks(filters?: ExploreWorksFilters): Promise<number>;
   listWorkFacets(filters?: ExploreWorksFilters): Promise<ExploreWorkFacets>;
   listDocuments(offset?: number, limit?: number): Promise<CorpusDocumentRecord[]>;
@@ -3004,6 +3005,12 @@ export class InMemoryAppStore implements AppStore {
       })
       .slice(offset, offset + limit);
     return rankedWorks.map((work) => toWorkSummary(work));
+  }
+
+  async listExploreWorkIds(filters?: ExploreWorksFilters): Promise<string[]> {
+    return this.works
+      .filter((work) => workMatchesExploreFilters(work, filters))
+      .map((work) => work.id);
   }
 
   async countWorks(filters?: ExploreWorksFilters): Promise<number> {
