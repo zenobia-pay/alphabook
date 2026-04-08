@@ -473,6 +473,7 @@ fi
 
 archive_script="${ROOT_DIR}/ops/digitalocean/bin/archive-hermes-run.mjs"
 synthesis_script="${ROOT_DIR}/ops/digitalocean/bin/run-codex-search-synthesis.sh"
+resolve_hits_script="${ROOT_DIR}/ops/digitalocean/bin/resolve-search-hit-links.py"
 
 resolve_inner_run_dir() {
   python3 - "$WRAPPER_INNER_RUN_FILE" "$STDOUT_LOG" <<'PY'
@@ -509,6 +510,16 @@ PY
 if [[ "$exit_code" -eq 0 && -x "$synthesis_script" ]]; then
   inner_run_dir="$(resolve_inner_run_dir || true)"
   if [[ -n "$inner_run_dir" && -d "$inner_run_dir" ]]; then
+    if [[ -x "$resolve_hits_script" ]]; then
+      if python3 "$resolve_hits_script" \
+        --inner-run-dir "$inner_run_dir" \
+        --site-origin "https://alpha-book.org" \
+        --session-id "${ALPHABOOK_SESSION_ID:-}" >>"$STDOUT_LOG" 2>>"$STDERR_LOG"; then
+        echo "hit_link_resolution=completed inner_run_dir=$inner_run_dir" >>"$STDOUT_LOG"
+      else
+        echo "hit_link_resolution=failed inner_run_dir=$inner_run_dir" >>"$STDERR_LOG"
+      fi
+    fi
     if "$synthesis_script" \
       --root-dir "$ROOT_DIR" \
       --inner-run-dir "$inner_run_dir" \

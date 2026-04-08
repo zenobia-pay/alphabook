@@ -109,7 +109,9 @@ Hard requirements:
 - Prefer a compact, high-signal answer over a procedural report.
 - Use representative examples across the requested scope, not just the first few hits.
 - If the evidence supports differences across periods, genres, or patterns, say so clearly.
-- Ground every claim in the kept evidence and cite with file names like `hits/hit-0003.md`.
+- Ground every claim in the kept evidence.
+- If a hit record includes `alphabook_url`, cite with a markdown link to that AlphaBook reader URL.
+- Also include the hit file name for auditability, for example `[Robinson Crusoe](https://alpha-book.org/?view=explore&...) (hits/hit-0001.md)`.
 - Do not dump raw file lists as the main answer.
 
 Write these required outputs:
@@ -123,7 +125,7 @@ Write these required outputs:
   - `## Representative Examples`
   - `## Limits`
 - Keep it readable by a product user, not an engineer.
-- Cite specific hit files inline.
+- Prefer clickable AlphaBook reader links inline when available, with hit file names as secondary audit references.
 
 `final-answer.json` requirements:
 - Valid JSON object with keys:
@@ -140,7 +142,10 @@ Write these required outputs:
   - `period`
   - `point`
   - `citation`
-- `citations` should be an array of referenced hit file names.
+- `citations` should be an array of objects with:
+  - `hit`
+  - `title`
+  - `alphabook_url`
 
 When finished:
 - Print a short confirmation mentioning `final-answer.md` and `final-answer.json`.
