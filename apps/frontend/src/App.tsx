@@ -3,7 +3,7 @@ import type { ReadonlyJSONObject, ReadonlyJSONValue } from "assistant-stream/uti
 import type { AgentationProps } from "agentation";
 import { ChevronsLeft, ChevronsRight, Dices, Funnel, Link2, LoaderCircle, MessageSquarePlus, X } from "lucide-react";
 
-import { ChatSessionSummarySchema, getToolLabel, type ChatSessionSummary, type Citation, type MessageRecord, type NotificationRecord, type ProfileBookStat, type ProfileFacetStat, type ProfileQueryStat, type PublicProfileResponse, type UserProfile, type UserProfileStats, type WorkDetail, type WorkFacetCounts, type WorkSource, type WorkSummary } from "@alphabook/shared";
+import { ChatSessionSummarySchema, getToolLabel, type ChatSessionSummary, type ChunkSearchResult, type Citation, type MessageRecord, type NotificationRecord, type ProfileBookStat, type ProfileFacetStat, type ProfileQueryStat, type PublicProfileResponse, type UserProfile, type UserProfileStats, type WorkDetail, type WorkFacetCounts, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
 import { ApiError, buildSignInUrl, buildSignOutUrl, cancelRun, claimGuestProfile, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchAssistantDocumentState, fetchAssistantSessionBootstrap, fetchCurrentUser, fetchExploreSemanticSearch, fetchMessages, fetchNotifications, fetchProfile, fetchProfileStats, fetchRunState, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, getErrorMessage, markNotificationRead, queryAdminAnalytics, sendAnalyticsEvent, streamChat, streamRun, unfollowProfile, type BillingLimitErrorPayload, type PersistedRunEventRecord, type RunArtifactRecord, type RunStateRecord, type SessionRunRecord } from "./api";
 import type { AssistantSurfaceProps } from "./components/assistant-surface";
@@ -105,6 +105,7 @@ type UrlState = {
   exploreFilters: ExploreFilterState;
   exploreRandomSeed: number | null;
   exploreQuery: string;
+  exploreThinking: boolean;
 };
 
 type AdminAccessState = {
@@ -409,6 +410,7 @@ function readUrlState(): UrlState {
       exploreFilters: DEFAULT_EXPLORE_FILTERS,
       exploreRandomSeed: null,
       exploreQuery: "",
+      exploreThinking: false,
     };
   }
 
@@ -447,6 +449,7 @@ function readUrlState(): UrlState {
     },
     exploreRandomSeed: Number.isInteger(parsedExploreSeed) && parsedExploreSeed > 0 ? parsedExploreSeed : null,
     exploreQuery: params.get("exploreQuery")?.trim() ?? "",
+    exploreThinking: params.get("exploreThinking") === "true",
   };
 }
 
@@ -547,12 +550,18 @@ function writeUrlState(next: UrlState, mode: UrlWriteMode = "replace") {
     } else {
       url.searchParams.delete("exploreQuery");
     }
+    if (next.exploreThinking) {
+      url.searchParams.set("exploreThinking", "true");
+    } else {
+      url.searchParams.delete("exploreThinking");
+    }
   } else {
     url.searchParams.delete("exploreLanguage");
     url.searchParams.delete("exploreSubject");
     url.searchParams.delete("exploreBookshelf");
     url.searchParams.delete("exploreSeed");
     url.searchParams.delete("exploreQuery");
+    url.searchParams.delete("exploreThinking");
   }
 
   const nextUrl = `${url.pathname}${url.search}${url.hash}`;
@@ -3636,6 +3645,8 @@ export default function App() {
   const [AssistantSurfaceComponent, setAssistantSurfaceComponent] = useState<ComponentType<AssistantSurfaceProps> | null>(null);
   const [exploreDraft, setExploreDraft] = useState(initialUrlState.exploreQuery);
   const [exploreQuery, setExploreQuery] = useState(initialUrlState.exploreQuery);
+  const [exploreThinking, setExploreThinking] = useState(initialUrlState.exploreThinking);
+  const [semanticResults, setSemanticResults] = useState<ChunkSearchResult[]>([]);
   const [feedWorks, setFeedWorks] = useState<WorkSummary[]>([]);
   const [feedNextOffset, setFeedNextOffset] = useState<number | null>(0);
   const [feedTotalCount, setFeedTotalCount] = useState<number | null>(null);
@@ -3806,11 +3817,18 @@ export default function App() {
     [notificationsState.notifications],
   );
   const activeReaderFrameHref = useMemo(
-    () => (
-      activeWorkId && activeWork
-        ? buildWorkContentFrameHref(activeWorkId, activeWork.gutenbergId, activePassageId, activeReaderPath)
-        : null
-    ),
+    () => {
+      if (!activeWorkId) {
+        return null;
+      }
+      if (activeReaderPath) {
+        return buildWorkContentFrameHref(activeWorkId, activeWork?.gutenbergId, activePassageId, activeReaderPath);
+      }
+      if (!activeWork) {
+        return null;
+      }
+      return buildWorkContentFrameHref(activeWorkId, activeWork.gutenbergId, activePassageId, activeReaderPath);
+    },
     [activePassageId, activeReaderPath, activeWork, activeWorkId],
   );
 
@@ -4057,6 +4075,7 @@ export default function App() {
       setExploreRandomSeed(next.exploreRandomSeed);
       setExploreQuery(next.exploreQuery);
       setExploreDraft(next.exploreQuery);
+      setExploreThinking(next.exploreThinking);
       setMobileNavOpen(false);
     };
 
@@ -4084,9 +4103,10 @@ export default function App() {
       exploreFilters: exploreAppliedFilters,
       exploreRandomSeed,
       exploreQuery,
+      exploreThinking,
     }, pendingUrlWriteModeRef.current);
     pendingUrlWriteModeRef.current = "replace";
-  }, [activeView, selectedSessionId, activeWorkId, activeReaderPath, activeChunkId, activePassageId, activeProfileUserId, selectedAdminRunId, adminSection, debugEnabled, exploreAppliedFilters, exploreRandomSeed, exploreQuery]);
+  }, [activeView, selectedSessionId, activeWorkId, activeReaderPath, activeChunkId, activePassageId, activeProfileUserId, selectedAdminRunId, adminSection, debugEnabled, exploreAppliedFilters, exploreRandomSeed, exploreQuery, exploreThinking]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -4263,11 +4283,14 @@ export default function App() {
           language: exploreAppliedFilters.language === "all" ? null : exploreAppliedFilters.language,
           subject: exploreAppliedFilters.subject === "all" ? null : exploreAppliedFilters.subject,
           bookshelf: exploreAppliedFilters.bookshelf === "all" ? null : exploreAppliedFilters.bookshelf,
+          thinking: exploreThinking,
         });
-        setFeedWorks(next.works);
+        setSemanticResults(next.chunks);
+        setFeedWorks([]);
         setFeedNextOffset(null);
-        setFeedTotalCount(next.works.length);
+        setFeedTotalCount(next.chunks.length);
       } else {
+        setSemanticResults([]);
         const next = await fetchWorks({
           offset,
           limit: EXPLORE_PAGE_SIZE,
@@ -4305,7 +4328,7 @@ export default function App() {
       return;
     }
     void loadExploreWorks(true);
-  }, [activeView, exploreAppliedFilters, exploreRandomSeed, exploreQuery]);
+  }, [activeView, exploreAppliedFilters, exploreRandomSeed, exploreQuery, exploreThinking]);
 
   useEffect(() => {
     setExploreDraftFilters(exploreAppliedFilters);
@@ -4569,13 +4592,15 @@ export default function App() {
         debugEnabled: context.debugEnabled,
         exploreFilters: exploreAppliedFilters,
         exploreRandomSeed,
+        exploreQuery,
+        exploreThinking,
       }, historyMode);
       setActiveReaderPath(normalized);
     };
 
     window.addEventListener("message", handleReaderLocation);
     return () => window.removeEventListener("message", handleReaderLocation);
-  }, [activePassageId, exploreAppliedFilters, exploreRandomSeed]);
+  }, [activePassageId, exploreAppliedFilters, exploreRandomSeed, exploreQuery, exploreThinking]);
 
   useEffect(() => {
     if (!activeWorkId) {
@@ -4586,6 +4611,13 @@ export default function App() {
 
   useEffect(() => {
     if (!pendingCitation) {
+      return;
+    }
+    if (pendingCitation.readerPath) {
+      const normalized = normalizeReaderPath(pendingCitation.readerPath);
+      if (normalized) {
+        setActiveReaderPath(normalized);
+      }
       return;
     }
     setActiveReaderPath(null);
@@ -5911,6 +5943,7 @@ export default function App() {
     pendingUrlWriteModeRef.current = "push";
     setExploreQuery("");
     setExploreDraft("");
+    setSemanticResults([]);
     setExploreRandomSeed(generateExploreRandomSeed());
   }
 
@@ -6009,6 +6042,29 @@ export default function App() {
       return;
     }
     startNewBookChat();
+  }
+
+  function openExploreChunk(chunk: ChunkSearchResult) {
+    pendingUrlWriteModeRef.current = "push";
+    track("book_open", {
+      workId: chunk.workId,
+      chunkId: chunk.id,
+      source: "explore_semantic_result",
+    });
+    setMobileNavOpen(false);
+    setPendingCitation({
+      workId: chunk.workId,
+      chunkId: chunk.id,
+      label: `${chunk.workTitle ?? chunk.workId}#${chunk.chunkIndex}`,
+      excerpt: chunk.excerpt,
+      ...(chunk.readerPath ? { readerPath: chunk.readerPath } : {}),
+    });
+    setActiveReaderPath(chunk.readerPath ?? null);
+    setActiveChunkId(chunk.id);
+    setActivePassageId(null);
+    setHighlightedPassageExcerpt(chunk.excerpt);
+    setActiveProfileUserId(null);
+    setActiveWorkId(chunk.workId);
   }
 
   function closeExploreWorkOverlay() {
@@ -6465,6 +6521,17 @@ export default function App() {
                   Search
                 </Button>
               </div>
+              <label className="explore-thinking-toggle">
+                <input
+                  type="checkbox"
+                  checked={exploreThinking}
+                  onChange={(event) => {
+                    pendingUrlWriteModeRef.current = "push";
+                    setExploreThinking(event.currentTarget.checked);
+                  }}
+                />
+                <span>Thinking</span>
+              </label>
               {exploreQuery.trim().length > 0 ? (
                 <div className="explore-search-meta">
                   <span>Showing semantic matches for “{exploreQuery.trim()}”</span>
@@ -6492,74 +6559,114 @@ export default function App() {
           </form>
         </section>
 
-        <section className="work-feed" aria-label="Corpus feed" aria-busy={feedLoading}>
-          {feedWorks.map((work) => {
-            const primaryAuthor = work.authors[0] ?? null;
-            return (
-              <article key={work.id} className="work-feed-card">
-                <button
-                  type="button"
-                  className="work-feed-open"
-                  onClick={() => openWork(work.id)}
-                >
-                  <div className="work-feed-artwork">
-                    {work.coverImageUrl ? (
-                      <div className="work-feed-cover">
-                        <img src={work.coverImageUrl} alt="" loading="lazy" />
+        {exploreQuery.trim().length > 0 ? (
+          <section className="semantic-results" aria-label="Semantic matches" aria-busy={feedLoading}>
+            {semanticResults.map((chunk) => {
+              const primaryAuthor = chunk.authors?.[0] ?? null;
+              const preview = chunk.excerpt.trim().length > 0 ? chunk.excerpt : chunk.text;
+              return (
+                <article key={chunk.id} className="semantic-result-card">
+                  <button
+                    type="button"
+                    className="semantic-result-open"
+                    onClick={() => openExploreChunk(chunk)}
+                  >
+                    <div className="semantic-result-meta">
+                      <p className="semantic-result-kicker">Matched passage</p>
+                      <h2>{chunk.workTitle ?? chunk.workId}</h2>
+                      <div className="semantic-result-byline">
+                        {primaryAuthor ? <span>{primaryAuthor}</span> : null}
+                        <span>Passage {chunk.chunkIndex}</span>
                       </div>
-                    ) : (
-                      <div className="work-feed-cover work-feed-cover-placeholder" aria-hidden="true">
-                        <div className="work-feed-cover-spine" />
-                        <div className="work-feed-cover-fallback-copy">
-                          <p className="work-feed-cover-kicker">alpha book</p>
-                          <p className="work-feed-cover-title">{work.title}</p>
-                          {primaryAuthor ? (
-                            <p className="work-feed-cover-author">{primaryAuthor}</p>
-                          ) : null}
+                    </div>
+                    <p className="semantic-result-text">{preview}</p>
+                  </button>
+                </article>
+              );
+            })}
+
+            {!feedLoading && semanticResults.length === 0 && feedInitialLoadState === "ready" ? (
+              <div className="feed-status">
+                <p>No passages matched that search.</p>
+              </div>
+            ) : null}
+
+            {!feedLoading && semanticResults.length === 0 && feedInitialLoadState === "error" ? (
+              <div className="feed-status">
+                <p>We couldn't run that semantic search.</p>
+                <Button type="button" variant="ghost" onClick={retryInitialWorksLoad}>Retry</Button>
+              </div>
+            ) : null}
+          </section>
+        ) : (
+          <section className="work-feed" aria-label="Corpus feed" aria-busy={feedLoading}>
+            {feedWorks.map((work) => {
+              const primaryAuthor = work.authors[0] ?? null;
+              return (
+                <article key={work.id} className="work-feed-card">
+                  <button
+                    type="button"
+                    className="work-feed-open"
+                    onClick={() => openWork(work.id)}
+                  >
+                    <div className="work-feed-artwork">
+                      {work.coverImageUrl ? (
+                        <div className="work-feed-cover">
+                          <img src={work.coverImageUrl} alt="" loading="lazy" />
                         </div>
-                      </div>
-                    )}
-                  </div>
-                  <div className="work-feed-copy">
-                    <h2>{work.title}</h2>
-                    {primaryAuthor ? <p className="work-feed-authors">{primaryAuthor}</p> : null}
-                  </div>
-                </button>
-              </article>
-            );
-          })}
+                      ) : (
+                        <div className="work-feed-cover work-feed-cover-placeholder" aria-hidden="true">
+                          <div className="work-feed-cover-spine" />
+                          <div className="work-feed-cover-fallback-copy">
+                            <p className="work-feed-cover-kicker">alpha book</p>
+                            <p className="work-feed-cover-title">{work.title}</p>
+                            {primaryAuthor ? (
+                              <p className="work-feed-cover-author">{primaryAuthor}</p>
+                            ) : null}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    <div className="work-feed-copy">
+                      <h2>{work.title}</h2>
+                      {primaryAuthor ? <p className="work-feed-authors">{primaryAuthor}</p> : null}
+                    </div>
+                  </button>
+                </article>
+              );
+            })}
 
-          {!feedLoading && feedWorks.length === 0 && feedInitialLoadState === "ready" ? (
-            <div className="feed-status">
-              <p>No books match the current metadata filters.</p>
-              {hasActiveExploreFilters ? (
-                <Button type="button" variant="ghost" onClick={resetExploreFilters}>Clear filters</Button>
-              ) : null}
-            </div>
-          ) : null}
+            {!feedLoading && feedWorks.length === 0 && feedInitialLoadState === "ready" ? (
+              <div className="feed-status">
+                <p>No books match the current metadata filters.</p>
+                {hasActiveExploreFilters ? (
+                  <Button type="button" variant="ghost" onClick={resetExploreFilters}>Clear filters</Button>
+                ) : null}
+              </div>
+            ) : null}
 
-          {!feedLoading && feedWorks.length === 0 && feedInitialLoadState === "error" ? (
-            <div className="feed-status">
-              <p>We couldn't load the corpus feed.</p>
-              <Button type="button" variant="ghost" onClick={retryInitialWorksLoad}>Retry</Button>
-            </div>
-          ) : null}
+            {!feedLoading && feedWorks.length === 0 && feedInitialLoadState === "error" ? (
+              <div className="feed-status">
+                <p>We couldn't load the corpus feed.</p>
+                <Button type="button" variant="ghost" onClick={retryInitialWorksLoad}>Retry</Button>
+              </div>
+            ) : null}
 
-          {!feedLoading && feedWorks.length === 0 && feedInitialLoadState !== "error" ? (
-            <div className="feed-status">
-              <p>
-                {IMPLEMENTATION.emptyCorpusMessage}
-              </p>
-            </div>
-          ) : null}
-
+            {!feedLoading && feedWorks.length === 0 && feedInitialLoadState !== "error" ? (
+              <div className="feed-status">
+                <p>
+                  {IMPLEMENTATION.emptyCorpusMessage}
+                </p>
+              </div>
+            ) : null}
+          </section>
+        )}
           {isFeedAppending ? (
             <div className="feed-status feed-status-loading" role="status" aria-live="polite">
               <LoaderCircle aria-hidden="true" className="explore-feed-indicator-spinner animate-spin" />
               <p>Loading more books</p>
             </div>
           ) : null}
-        </section>
       </div>
     );
   }

@@ -9554,8 +9554,8 @@ function extractResearchRunHits(artifacts: RunArtifactLike[]): ResearchRunHit[] 
     workId: hit.workId,
     excerpt: hit.excerpt,
     ...(hit.chunkId ? { chunkId: hit.chunkId } : {}),
-    ...(hit.readerPath ? { readerPath: hit.readerPath } : {}),
-    ...((hit.alphabookUrl ?? "").trim().length > 0 ? { readerUrl: hit.alphabookUrl!.trim() } : {}),
+      ...(hit.readerPath ? { readerPath: hit.readerPath } : {}),
+      ...((hit.alphabookUrl ?? "").trim().length > 0 ? { readerUrl: hit.alphabookUrl!.trim() } : {}),
   }));
 }
 
@@ -9593,85 +9593,6 @@ async function loadResearchRunArchiveManifest(
   }
   const text = await deps.blobStore.getText(manifestKey).catch(() => null);
   return parseHermesArchiveManifest(text);
-}
-
-function normalizeStructuredResearchHitId(input: string) {
-  const trimmed = input.trim().replace(/^hits\//u, "");
-  return trimmed.endsWith(".md") ? trimmed.slice(0, -3) : trimmed;
-}
-
-function fallbackStructuredWorkId(title: string) {
-  const slug = title
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/gu, "-")
-    .replace(/^-+|-+$/gu, "");
-  return slug.length > 0 ? `structured:${slug}` : "structured:unknown-work";
-}
-
-async function deriveResearchRunHitsFromStructured(
-  deps: AppDeps,
-  structured: Record<string, unknown> | null,
-): Promise<ResearchRunHit[]> {
-  const citationEntries = Array.isArray(structured?.citations)
-    ? structured.citations.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object")
-    : [];
-  if (citationEntries.length === 0) {
-    return [];
-  }
-
-  const representativeExamples = Array.isArray(structured?.representative_examples)
-    ? structured.representative_examples.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object")
-    : [];
-  const excerptByHitId = new Map<string, string>();
-  for (const example of representativeExamples) {
-    const citation = typeof example.citation === "string" ? example.citation.trim() : "";
-    if (!citation) {
-      continue;
-    }
-    for (const match of citation.matchAll(/\b(hit-\d+)\.md\b/gu)) {
-      const hitId = match[1]?.trim();
-      if (hitId && !excerptByHitId.has(hitId)) {
-        excerptByHitId.set(hitId, citation);
-      }
-    }
-  }
-
-  const workIdByTitle = new Map<string, string>();
-  const resolveWorkId = async (title: string) => {
-    if (workIdByTitle.has(title)) {
-      return workIdByTitle.get(title) ?? fallbackStructuredWorkId(title);
-    }
-    const matches = await deps.store.searchWorks(title, { limit: 1 }).catch(() => []);
-    const workId = matches[0]?.id ?? fallbackStructuredWorkId(title);
-    workIdByTitle.set(title, workId);
-    return workId;
-  };
-
-  const hits: ResearchRunHit[] = [];
-  for (const entry of citationEntries) {
-    const rawHit = typeof entry.hit === "string" ? entry.hit.trim() : "";
-    const title = typeof entry.title === "string" ? entry.title.trim() : "";
-    if (!rawHit || !title) {
-      continue;
-    }
-    const hitId = normalizeStructuredResearchHitId(rawHit);
-    const workId = await resolveWorkId(title);
-    if (!hitId) {
-      continue;
-    }
-    const readerUrl = typeof entry.alphabook_url === "string" && entry.alphabook_url.trim().length > 0
-      ? entry.alphabook_url.trim()
-      : undefined;
-    hits.push({
-      hitId,
-      title,
-      workId,
-      excerpt: excerptByHitId.get(hitId) ?? title,
-      ...(readerUrl ? { readerUrl } : {}),
-    });
-  }
-  return hits;
 }
 
 async function finalizeHermesRun(
@@ -14591,15 +14512,14 @@ export function createApp(inputDeps: CreateAppInput) {
         ...((hit.alphabookUrl ?? "").trim().length > 0 ? { readerUrl: hit.alphabookUrl!.trim() } : {}),
       }))
       : [];
-    const structured = structuredFromArtifacts
-      ?? (structuredFromArchive && typeof structuredFromArchive === "object" && !Array.isArray(structuredFromArchive)
-        ? structuredFromArchive as Record<string, unknown>
-        : null);
-    const hitsFromStructured = hitsFromArtifacts.length === 0 && hitsFromArchive.length === 0
-      ? await deriveResearchRunHitsFromStructured(deps, structured)
-      : [];
     const citationsFromMessage = answerMessage ? sanitizeAppCitations(answerMessage.metadata?.citations) : [];
-    const hits = hitsFromArtifacts.length > 0 ? hitsFromArtifacts : hitsFromArchive.length > 0 ? hitsFromArchive : hitsFromStructured;
+    const structured =
+      structuredFromArtifacts && typeof structuredFromArtifacts === "object" && !Array.isArray(structuredFromArtifacts)
+        ? structuredFromArtifacts
+        : structuredFromArchive && typeof structuredFromArchive === "object" && !Array.isArray(structuredFromArchive)
+          ? structuredFromArchive as Record<string, unknown>
+          : null;
+    const hits = hitsFromArtifacts.length > 0 ? hitsFromArtifacts : hitsFromArchive;
     const citations = citationsFromMessage.length > 0
       ? citationsFromMessage
       : citationsFromHermesResolvedHits(hits.map((hit) => ({
@@ -16160,85 +16080,112 @@ export function createApp(inputDeps: CreateAppInput) {
   });
 
   app.get("/works/semantic-search", async (c) => {
-    if (!deps.vectorIndex) {
-      return c.json({ error: "Semantic search is not configured." }, 503);
-    }
-
-    const query = c.req.query("q")?.trim() ?? "";
-    if (!query) {
-      return c.json({ error: "Query is required." }, 400);
-    }
-
-    const limit = Math.min(24, Math.max(1, Number.parseInt(c.req.query("limit") ?? "12", 10) || 12));
-    const thinking = c.req.query("thinking") === "true" || c.req.query("thinking") === "1";
-    const filters = {
-      ...(typeof c.req.query("language") === "string" && c.req.query("language")!.trim().length > 0 ? { language: c.req.query("language")!.trim() } : {}),
-      ...(typeof c.req.query("subject") === "string" && c.req.query("subject")!.trim().length > 0 ? { subject: c.req.query("subject")!.trim() } : {}),
-      ...(typeof c.req.query("bookshelf") === "string" && c.req.query("bookshelf")!.trim().length > 0 ? { bookshelf: c.req.query("bookshelf")!.trim() } : {}),
-    };
-
-    const workIds = Object.keys(filters).length > 0 ? await deps.store.listExploreWorkIds(filters) : undefined;
-    if (Array.isArray(workIds) && workIds.length === 0) {
-      return c.json({ chunks: [], thinking });
-    }
-    const allowedWorkIds = Array.isArray(workIds) ? new Set(workIds) : null;
-    if (thinking) {
-      if (!deps.semanticSearch) {
-        return c.json({ error: "Thinking mode is not configured." }, 503);
+    try {
+      if (!deps.vectorIndex) {
+        return c.json({ error: "Semantic search is not configured." }, 503);
       }
-      const result = await deps.semanticSearch.search({
-        query,
-        workIds,
-        maxResults: limit,
-        billingContext: {
-          source: "semantic_search",
-        },
+
+      const query = c.req.query("q")?.trim() ?? "";
+      if (!query) {
+        return c.json({ error: "Query is required." }, 400);
+      }
+
+      const limit = Math.min(24, Math.max(1, Number.parseInt(c.req.query("limit") ?? "12", 10) || 12));
+      const thinking = c.req.query("thinking") === "true" || c.req.query("thinking") === "1";
+      const filters = {
+        ...(typeof c.req.query("language") === "string" && c.req.query("language")!.trim().length > 0 ? { language: c.req.query("language")!.trim() } : {}),
+        ...(typeof c.req.query("subject") === "string" && c.req.query("subject")!.trim().length > 0 ? { subject: c.req.query("subject")!.trim() } : {}),
+        ...(typeof c.req.query("bookshelf") === "string" && c.req.query("bookshelf")!.trim().length > 0 ? { bookshelf: c.req.query("bookshelf")!.trim() } : {}),
+      };
+
+      const normalizeExploreChunk = <T extends { workId: string; readerPath?: string | null }>(chunk: T): T => {
+        if (typeof chunk.readerPath !== "string" || /^\/\d+(?:\/|$)/u.test(chunk.readerPath)) {
+          return chunk;
+        }
+        const gutenbergIdMatch = chunk.workId.match(/^local-gutenberg-(\d+)$/u);
+        if (!gutenbergIdMatch) {
+          return chunk;
+        }
+        const prefixedPath = chunk.readerPath.startsWith("/")
+          ? `/${gutenbergIdMatch[1]}${chunk.readerPath}`
+          : `/${gutenbergIdMatch[1]}/${chunk.readerPath}`;
+        return {
+          ...chunk,
+          readerPath: prefixedPath,
+        };
+      };
+
+      const workIds = Object.keys(filters).length > 0 ? await deps.store.listExploreWorkIds(filters) : undefined;
+      if (Array.isArray(workIds) && workIds.length === 0) {
+        return c.json({ chunks: [], thinking });
+      }
+      const allowedWorkIds = Array.isArray(workIds) ? new Set(workIds) : null;
+      if (thinking) {
+        if (!deps.semanticSearch) {
+          return c.json({ error: "Thinking mode is not configured." }, 503);
+        }
+        const currentUser = await resolveUser(c);
+        const result = await deps.semanticSearch.search({
+          query,
+          workIds,
+          maxResults: limit,
+          ...(currentUser && typeof currentUser.id === "string" && currentUser.id.trim().length > 0 ? {
+            billingContext: {
+              userId: currentUser.id,
+              source: "semantic_search",
+            },
+          } : {}),
+        });
+        const rankedChunks = (Array.isArray(result.rankedChunks) && result.rankedChunks.length > 0 ? result.rankedChunks : result.chunks)
+          .filter((chunk) => !allowedWorkIds || allowedWorkIds.has(chunk.workId))
+          .slice(0, limit)
+          .map((chunk) => normalizeExploreChunk(chunk));
+        return c.json({
+          chunks: rankedChunks,
+          thinking: true,
+        });
+      }
+
+      const embedding = await deps.embedder.embedQuery(query);
+      const vectorMatches = await deps.vectorIndex.query(embedding, {
+        topK: Math.max(limit * 8, 64),
+        returnMetadata: true,
       });
-      const rankedChunks = (Array.isArray(result.rankedChunks) && result.rankedChunks.length > 0 ? result.rankedChunks : result.chunks)
-        .filter((chunk) => !allowedWorkIds || allowedWorkIds.has(chunk.workId))
-        .slice(0, limit);
+      const chunkIds = vectorMatches
+        .map((match) => (typeof match.id === "string" ? match.id.trim() : ""))
+        .filter((id): id is string => id.length > 0);
+      const chunks = await deps.store.getChunksByIds(chunkIds);
+      const chunkById = new Map(chunks.map((chunk) => [chunk.id, chunk]));
+      const rankedChunks = [];
+      const seenChunkIds = new Set<string>();
+      for (const match of vectorMatches) {
+        const chunk = chunkById.get(match.id);
+        if (!chunk) {
+          continue;
+        }
+        if (allowedWorkIds && !allowedWorkIds.has(chunk.workId)) {
+          continue;
+        }
+        if (seenChunkIds.has(chunk.id)) {
+          continue;
+        }
+        seenChunkIds.add(chunk.id);
+        rankedChunks.push(normalizeExploreChunk({
+          ...chunk,
+          score: match.score,
+        }));
+        if (rankedChunks.length >= limit) {
+          break;
+        }
+      }
       return c.json({
         chunks: rankedChunks,
-        thinking: true,
+        thinking: false,
       });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Semantic search failed.";
+      return c.json({ error: message }, 502);
     }
-
-    const embedding = await deps.embedder.embedQuery(query);
-    const vectorMatches = await deps.vectorIndex.query(embedding, {
-      topK: Math.max(limit * 8, 64),
-      returnMetadata: true,
-    });
-    const chunkIds = vectorMatches
-      .map((match) => (typeof match.id === "string" ? match.id.trim() : ""))
-      .filter((id): id is string => id.length > 0);
-    const chunks = await deps.store.getChunksByIds(chunkIds);
-    const chunkById = new Map(chunks.map((chunk) => [chunk.id, chunk]));
-    const rankedChunks = [];
-    const seenChunkIds = new Set<string>();
-    for (const match of vectorMatches) {
-      const chunk = chunkById.get(match.id);
-      if (!chunk) {
-        continue;
-      }
-      if (allowedWorkIds && !allowedWorkIds.has(chunk.workId)) {
-        continue;
-      }
-      if (seenChunkIds.has(chunk.id)) {
-        continue;
-      }
-      seenChunkIds.add(chunk.id);
-      rankedChunks.push({
-        ...chunk,
-        score: match.score,
-      });
-      if (rankedChunks.length >= limit) {
-        break;
-      }
-    }
-    return c.json({
-      chunks: rankedChunks,
-      thinking: false,
-    });
   });
 
   app.get("/api/v1/documents", async (c) => {

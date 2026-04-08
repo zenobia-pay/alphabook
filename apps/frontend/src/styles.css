@@ -664,6 +664,21 @@ button {
   padding: 0 18px;
 }
 
+.explore-thinking-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  width: fit-content;
+  font-size: 0.9rem;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.explore-thinking-toggle input {
+  width: 16px;
+  height: 16px;
+}
+
 .explore-search-meta {
   display: flex;
   align-items: center;
@@ -1423,6 +1438,71 @@ button {
   font-size: 0.82rem;
   line-height: 1.35;
   color: rgba(38, 26, 25, 0.66);
+}
+
+.semantic-results {
+  width: min(1120px, 100%);
+  display: grid;
+  gap: 14px;
+}
+
+.semantic-result-card {
+  border-top: 1px solid rgba(72, 43, 37, 0.1);
+  padding-top: 14px;
+}
+
+.semantic-result-open {
+  width: 100%;
+  display: grid;
+  gap: 12px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+.semantic-result-meta {
+  display: grid;
+  gap: 6px;
+}
+
+.semantic-result-kicker {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(52, 46, 40, 0.5);
+}
+
+.semantic-result-meta h2 {
+  margin: 0;
+  font-family: "Newsreader", serif;
+  font-size: clamp(1.35rem, 2vw, 1.9rem);
+  line-height: 1.05;
+  color: var(--ink);
+}
+
+.semantic-result-byline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  font-size: 0.92rem;
+  color: rgba(52, 46, 40, 0.62);
+}
+
+.semantic-result-text {
+  margin: 0;
+  max-width: 78ch;
+  font-size: 1rem;
+  line-height: 1.65;
+  color: rgba(32, 27, 24, 0.88);
+}
+
+.semantic-result-open:hover .semantic-result-meta h2,
+.semantic-result-open:hover .semantic-result-text {
+  color: #000;
 }
 
 .feed-status {
@@ -4084,6 +4164,10 @@ button {
   .explore-search-row {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .semantic-results {
+    width: 100%;
   }
 
   .work-feed {

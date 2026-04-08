@@ -462,7 +462,8 @@ export const ChunkSearchResultSchema = z.object({
 export type ChunkSearchResult = z.infer<typeof ChunkSearchResultSchema>;
 
 export const ExploreSemanticSearchResponseSchema = z.object({
-  works: z.array(WorkSummarySchema),
+  chunks: z.array(ChunkSearchResultSchema),
+  thinking: z.boolean().default(false),
 });
 
 export type ExploreSemanticSearchResponse = z.infer<typeof ExploreSemanticSearchResponseSchema>;

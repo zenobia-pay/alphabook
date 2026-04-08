@@ -8,6 +8,14 @@ export interface Embedder {
 
 type FetchLike = typeof fetch;
 
+type OpenAIEmbeddingPayload = {
+  data?: Array<{
+    embedding?: number[];
+  }>;
+  usage?: Record<string, unknown>;
+  id?: string;
+};
+
 export class HashEmbedder implements Embedder {
   async embedQuery(text: string): Promise<number[]> {
     return hashTextToVector(text);
@@ -32,26 +40,48 @@ export class OpenAIEmbedder implements Embedder {
       body.dimensions = this.dimensions;
     }
 
-    const response = await this.fetchImpl("https://api.openai.com/v1/embeddings", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify(body),
-    });
-    if (!response.ok) {
-      const detail = await response.text();
-      throw new Error(`Embedding request failed: ${detail}`);
+    let payload: OpenAIEmbeddingPayload | null = null;
+    let lastError: Error | null = null;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const response = await this.fetchImpl("https://api.openai.com/v1/embeddings", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${this.apiKey}`,
+          },
+          body: JSON.stringify(body),
+        });
+        if (!response.ok) {
+          const detail = await response.text();
+          const shouldRetry = attempt === 0
+            && (
+              response.status >= 500
+              || /upstream connect error|connection refused|transport failure/i.test(detail)
+            );
+          if (shouldRetry) {
+            await new Promise((resolve) => setTimeout(resolve, 250));
+            continue;
+          }
+          throw new Error(`Embedding request failed: ${detail}`);
+        }
+        payload = await response.json() as OpenAIEmbeddingPayload;
+        lastError = null;
+        break;
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        if (attempt === 0) {
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          continue;
+        }
+      }
     }
-
-    const payload = (await response.json()) as {
-      data?: Array<{
-        embedding?: number[];
-      }>;
-      usage?: Record<string, unknown>;
-      id?: string;
-    };
+    if (lastError) {
+      throw lastError;
+    }
+    if (!payload) {
+      throw new Error("Embedding response was empty.");
+    }
     if (this.billing && billingContext) {
       const usage = openAIUsageFromResponse(payload as Record<string, unknown>);
       if (usage) {

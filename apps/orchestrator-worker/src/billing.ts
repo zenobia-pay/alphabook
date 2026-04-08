@@ -124,6 +124,9 @@ export function createBillingService(store: AppStore, config: BillingConfig = {}
     },
 
     async track(context: BillingContext, event: BillingUsageEventInput): Promise<void> {
+      if (typeof context.userId !== "string" || context.userId.trim().length === 0) {
+        return;
+      }
       const inputTokens = Math.max(0, Math.trunc(event.inputTokens ?? 0));
       const outputTokens = Math.max(0, Math.trunc(event.outputTokens ?? 0));
       const cachedInputTokens = Math.max(0, Math.trunc(event.cachedInputTokens ?? 0));

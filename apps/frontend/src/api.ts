@@ -572,6 +572,7 @@ export async function fetchExploreSemanticSearch(options: {
   language?: string | null;
   subject?: string | null;
   bookshelf?: string | null;
+  thinking?: boolean;
 }): Promise<ExploreSemanticSearchResponse> {
   const params = new URLSearchParams();
   params.set("q", options.query);
@@ -587,19 +588,16 @@ export async function fetchExploreSemanticSearch(options: {
   if (options.bookshelf) {
     params.set("bookshelf", options.bookshelf);
   }
+  if (options.thinking) {
+    params.set("thinking", "true");
+  }
   const response = await ensureOk(
     await fetch(`${API_BASE}/works/semantic-search?${params.toString()}`, {
       credentials: "include",
     }),
   );
   const parsed = ExploreSemanticSearchResponseSchema.parse(await response.json());
-  return {
-    ...parsed,
-    works: parsed.works.map((work) => ({
-      ...work,
-      coverImageUrl: work.coverImageUrl ?? (work.hasCoverImage ? `${API_BASE}/works/${work.id}/cover` : null),
-    })),
-  };
+  return parsed;
 }
 
 export async function fetchWorkDetail(workId: string): Promise<WorkDetailResponse> {
