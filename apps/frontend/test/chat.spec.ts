@@ -153,7 +153,9 @@ test("current view and assistant session persist in the URL across refresh", asy
   await expect(page.locator(".aui-assistant-message-root").last()).toContainText(/Workspace Summary/i);
 });
 
-test("logged out assistant keeps the normal shell while disabling the composer", async ({ page }) => {
+test("logged out assistant keeps the normal shell and redirects on send with the typed prompt", async ({ page }) => {
+  let signInRequestUrl = "";
+
   await page.route("**/api/me", async (route) => {
     await route.fulfill({
       status: 200,
@@ -180,13 +182,141 @@ test("logged out assistant keeps the normal shell while disabling the composer",
     });
   });
 
+  await page.route("**/api/auth/sign-in**", async (route) => {
+    signInRequestUrl = route.request().url();
+    await route.fulfill({
+      status: 200,
+      contentType: "text/html",
+      body: "<html><body>Sign in</body></html>",
+    });
+  });
+
   await page.goto("/");
 
   await expect(page.getByRole("heading", { name: "What do you want to research?" })).toBeVisible();
-  await expect(page.locator(".aui-composer-input")).toBeDisabled();
-  const thread = page.getByTestId("thread");
-  await expect(thread.getByText("Sign in to start a research thread.")).toBeVisible();
-  await expect(thread.getByRole("link", { name: "Sign in" })).toBeVisible();
+  await expect(page.locator(".aui-composer-input")).toBeEditable();
+
+  await page.locator(".aui-composer-input").fill("Trace Melville's treatment of obsession.");
+  await page.locator(".aui-composer-send").click();
+
+  await expect.poll(() => signInRequestUrl).not.toBe("");
+  const signInUrl = new URL(signInRequestUrl);
+  const returnTo = signInUrl.searchParams.get("returnTo");
+  expect(returnTo).toBeTruthy();
+
+  const returnUrl = new URL(returnTo!);
+  expect(returnUrl.searchParams.get("pendingPrompt")).toBe("Trace Melville's treatment of obsession.");
+  expect(returnUrl.searchParams.get("pendingPromptAuto")).toBe("1");
+});
+
+test("signed-in return auto-submits a pending prompt and clears it from the URL", async ({ page }) => {
+  const answer = "Queued the research thread from the post-login handoff.";
+  let chatRequestBody: { message?: string } | null = null;
+
+  await page.route("**/api/me", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        authConfigured: true,
+        authenticated: true,
+        user: {
+          id: "reader-123",
+          email: "reader@example.com",
+          handle: "reader",
+          name: "Reader",
+          avatarUrl: "https://example.com/avatar.png",
+          createdAt: "2026-04-01T00:00:00.000Z",
+          followersCount: 0,
+          followingCount: 0,
+        },
+      }),
+    });
+  });
+
+  await page.route("**/api/admin/access", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        allowed: false,
+        authenticated: true,
+        authConfigured: true,
+        user: {
+          id: "reader-123",
+          email: "reader@example.com",
+          handle: "reader",
+          name: "Reader",
+          avatarUrl: "https://example.com/avatar.png",
+          createdAt: "2026-04-01T00:00:00.000Z",
+          followersCount: 0,
+          followingCount: 0,
+        },
+      }),
+    });
+  });
+
+  await page.route("**/api/chat", async (route) => {
+    chatRequestBody = JSON.parse(route.request().postData() ?? "{}") as { message?: string };
+    await route.fulfill({
+      status: 200,
+      contentType: "text/event-stream",
+      headers: {
+        "cache-control": "no-cache",
+      },
+      body: [
+        'event: session.created\ndata: {"sessionId":"session-post-login","title":"Post-login research"}\n\n',
+        'event: run.started\ndata: {"runId":"run-post-login"}\n\n',
+        `event: assistant.completed\ndata: ${JSON.stringify({ answer, citations: [], phase: "answer" })}\n\n`,
+        'event: run.completed\ndata: {"runId":"run-post-login","status":"completed"}\n\n',
+      ].join(""),
+    });
+  });
+
+  await page.route("**/api/sessions/session-post-login/messages", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        messages: [
+          {
+            id: "message-post-login-user",
+            sessionId: "session-post-login",
+            role: "user",
+            content: "Compare Don Quixote and Middlemarch",
+            metadata: {},
+            createdAt: "2026-04-08T12:00:00.000Z",
+          },
+          {
+            id: "message-post-login-assistant",
+            sessionId: "session-post-login",
+            role: "assistant",
+            content: answer,
+            metadata: {
+              phase: "answer",
+            },
+            createdAt: "2026-04-08T12:00:01.000Z",
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.route("**/api/sessions/session-post-login/runs", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        runs: [],
+      }),
+    });
+  });
+
+  await page.goto("/?pendingPrompt=Compare%20Don%20Quixote%20and%20Middlemarch&pendingPromptAuto=1");
+
+  await expect.poll(() => chatRequestBody?.message ?? "").toBe("Compare Don Quixote and Middlemarch");
+  await expect(page.locator(".aui-assistant-message-root").last()).toContainText(answer);
+  await expect(page).not.toHaveURL(/pendingPrompt=/);
 });
 
 test("new chat renders immediately instead of showing a loading skeleton during auth", async ({ page }) => {

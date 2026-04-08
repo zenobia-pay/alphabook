@@ -5754,6 +5754,7 @@ export default function App() {
 
     const initialSessionId = options.sessionIdOverride !== undefined ? options.sessionIdOverride : selectedSessionId;
     const transportQuestion = options.transportMessageOverride?.trim() || normalizedQuestion;
+    const transportUserId = authState.authConfigured ? undefined : (currentUserId ?? guestUserId);
     if (initialSessionId) {
       track("assistant_followup_message", {
         sessionId: initialSessionId,
@@ -5825,7 +5826,7 @@ export default function App() {
       await streamChat(
         {
           sessionId: initialSessionId ?? undefined,
-          userId: authState.authConfigured ? undefined : currentUserId,
+          userId: transportUserId,
           message: transportQuestion,
           workIds: options.workIdsOverride,
           workflow: options.workflowOverride ?? "auto",
@@ -5849,7 +5850,7 @@ export default function App() {
               setSessions((current) => [
                 {
                   id: createdSessionId,
-                  userId: currentUserId,
+                  userId: currentUserId ?? guestUserId,
                   title: typeof event.data.title === "string" ? event.data.title : normalizedQuestion.slice(0, 64),
                   createdAt: new Date().toISOString(),
                   lastMessageAt: new Date().toISOString(),
