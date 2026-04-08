@@ -9412,12 +9412,16 @@ async function persistHermesFallbackArtifacts(
 
 function buildHermesCompletionAnswer(
   compiledAnswerText: string | null,
+  briefingMarkdown: string | null,
   finalSnapshot: HermesSessionSnapshot | null,
   archiveManifest: HermesArchiveManifest | null,
   hitsIndexText?: string | null,
 ) {
   if (typeof compiledAnswerText === "string" && compiledAnswerText.trim().length > 0) {
     return compiledAnswerText.trim();
+  }
+  if (typeof briefingMarkdown === "string" && briefingMarkdown.trim().length > 0) {
+    return briefingMarkdown.trim();
   }
   const finalMessages = Array.isArray(finalSnapshot?.messages) ? finalSnapshot.messages : [];
   const finalAssistantMessage = [...finalMessages]
@@ -9694,7 +9698,13 @@ async function finalizeHermesRun(
       normalizeHermesArtifactName("hermes.session.json"),
     ).then((response) => response.artifact.content).catch(() => null);
   const finalSnapshot = parseHermesJsonRecord(sessionArtifactText ?? "") as HermesSessionSnapshot | null;
-  const finalAnswer = buildHermesCompletionAnswer(compiledAnswerMarkdown || null, finalSnapshot, archiveManifest, hitsIndexText);
+  const finalAnswer = buildHermesCompletionAnswer(
+    compiledAnswerMarkdown || null,
+    briefingMarkdown || null,
+    finalSnapshot,
+    archiveManifest,
+    hitsIndexText,
+  );
   const hermesResolvedHits = extractHermesResolvedHits(hitsIndexText);
   const hermesCitations = citationsFromHermesResolvedHits(hermesResolvedHits);
 

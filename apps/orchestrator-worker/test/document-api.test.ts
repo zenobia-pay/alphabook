@@ -584,6 +584,8 @@ test("document chat launches Agentic search from the router decision instead of 
     const body = await response.text();
     assert.match(body, /I’ve selected Agentic search/);
     assert.match(body, /"completionMode":"agentic"/);
+    assert.match(body, /Journal inventory ready/);
+    assert.doesNotMatch(body, /The agentic run searched the journal corpus directly\./);
     assert.doesNotMatch(body, /semantic_deep_search/);
     assert.equal(hermesLaunchPayloads.length, 1);
     assert.equal((hermesLaunchPayloads[0] as { workflow?: string }).workflow, "search");
