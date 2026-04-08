@@ -10314,11 +10314,58 @@ async function runHermesConversation(
 
   let backgroundJobId: string | null = null;
 
+  const appendInitialHermesProgress = async (text: string, detail?: Record<string, unknown>) => {
+    const toolEntry = await ensureHermesProgressTool();
+    const normalizedText = truncateHermesText(text, 280);
+    if (!normalizedText) {
+      return;
+    }
+    const nextProgress = toolEntry.progress.includes(normalizedText)
+      ? toolEntry.progress
+      : [...toolEntry.progress, normalizedText];
+    const nextProgressDetails = detail
+      ? [...(toolEntry.progressDetails ?? []), structuredClone(detail)]
+      : toolEntry.progressDetails;
+    liveToolTrace = liveToolTrace.map((entry) => (
+      entry.id === toolEntry.id
+        ? {
+          ...entry,
+          rationale: nextProgress[nextProgress.length - 1] ?? entry.rationale,
+          progress: nextProgress,
+          ...(nextProgressDetails ? { progressDetails: nextProgressDetails } : {}),
+          args: canonicalToolArgs(
+            entry.toolName,
+            entry.sourceArgs,
+            nextProgress[nextProgress.length - 1] ?? entry.rationale,
+            nextProgress,
+            nextProgressDetails,
+          ),
+        }
+        : entry
+    ));
+    await persistLatestPlanToolTrace();
+    await emit("tool.progress", {
+      runId: run.id,
+      sessionId: activeSession.id,
+      toolCallId: toolEntry.id,
+      toolName: toolEntry.toolName,
+      text: normalizedText,
+      ...(detail ? { detail } : {}),
+    });
+  };
+
   try {
     const hermesUserPrompt = await buildHermesUserPrompt(deps, {
       input,
       conversationHistory,
     });
+    await appendInitialHermesProgress(
+      `${effectiveHermesWorkflow === "design_experiment" ? "Launching experiment" : "Launching agentic search"} with user query '${hermesUserPrompt}'`,
+      {
+        query: hermesUserPrompt,
+        workflow: effectiveHermesWorkflow,
+      },
+    );
     const archivePrefix = artifactKeys.sessionArtifact(activeSession.id, `runs/${run.id}/hermes`);
     const launchPayload = {
       userPrompt: hermesUserPrompt,
