@@ -2025,7 +2025,6 @@ function BillingLimitDialog({
       <section className="billing-limit-panel">
         <div className="billing-limit-header">
           <div>
-            <p className="billing-limit-eyebrow">{blocked ? "Free tier limit reached" : "Plans"}</p>
             <h2>{blocked ? "Upgrade to Pro to keep going" : "Choose your plan"}</h2>
           </div>
           <button type="button" className="billing-limit-close" aria-label="Close usage limit dialog" onClick={onClose}>
@@ -2035,7 +2034,7 @@ function BillingLimitDialog({
         <div className="billing-limit-copy">
           <p>
             {blocked
-              ? "You’ve used this month’s Free Tier allowance. Upgrade to Pro for a much larger monthly budget and uninterrupted runs."
+              ? "Subscribe to Alpha Research Pro for pro access to our entire suite of research products"
               : "Free includes monthly usage for lighter research. Pro unlocks much more room for regular, heavier sessions."}
           </p>
           {currentUsageSummary || windowEndDate ? (
@@ -2050,22 +2049,12 @@ function BillingLimitDialog({
               <h3>Free usage</h3>
               <p className="billing-plan-price">$0 / month</p>
               <p className="billing-plan-allowance">{formatCompactCreditAmount(FREE_TIER_MONTHLY_CREDITS)}</p>
-              <ul className="billing-plan-points">
-                <li>Monthly usage included</li>
-                <li>Best for occasional research</li>
-                <li>Status: {formatSubscriptionStatusLabel(state.subscriptionStatus)}</li>
-              </ul>
             </article>
             <article className={cn("billing-plan-card billing-plan-card-pro", state.tier === "studio" && "is-current")}>
               <p className="billing-plan-kicker">Pro Tier</p>
               <h3>For regular usage</h3>
               <p className="billing-plan-price">$500 / month</p>
               <p className="billing-plan-allowance">{formatCompactCreditAmount(PRO_TIER_MONTHLY_CREDITS)}</p>
-              <ul className="billing-plan-points">
-                <li>Much larger monthly allowance</li>
-                <li>Better for longer research sessions</li>
-                <li>Upgrade when Free is no longer enough</li>
-              </ul>
               {state.checkoutEligible ? (
                 <button type="button" className="billing-limit-button billing-limit-button-primary" onClick={onSubscribe} disabled={subscribing}>
                   {subscribing ? "Redirecting…" : "Upgrade to Pro"}
@@ -2075,9 +2064,6 @@ function BillingLimitDialog({
               )}
             </article>
           </div>
-        </div>
-        <div className="billing-limit-actions">
-          <button type="button" className="billing-limit-button billing-limit-button-secondary" onClick={onClose}>Close</button>
         </div>
       </section>
     </div>
@@ -6583,11 +6569,11 @@ export default function App() {
         <section className="explore-hero">
           <h1>
             {formattedCorpusCount
-              ? `Ask or search anything over ${formattedCorpusCount} ${CORPUS_LABEL_PLURAL}.`
-              : "Ask or search anything over the corpus."}
+              ? `Search over ${formattedCorpusCount} ${CORPUS_LABEL_PLURAL}.`
+              : "Search over the corpus."}
           </h1>
 
-          <form className="explore-composer-shell" onSubmit={submitExplorePrompt}>
+          <form className="explore-composer-shell explore-composer-root" onSubmit={submitExplorePrompt}>
             <div className="explore-composer-toolbar" aria-label="Explore controls">
               <Button
                 type="button"
@@ -6682,8 +6668,7 @@ export default function App() {
             </div>
 
             <div className="explore-composer-layout">
-              <label className="explore-search-label" htmlFor="explore-semantic-search">Semantic search</label>
-              <div className="explore-search-row">
+              <div className="explore-search-surface">
                 <input
                   id="explore-semantic-search"
                   className="explore-search-input"
@@ -6692,26 +6677,31 @@ export default function App() {
                   value={exploreDraft}
                   onChange={(event) => setExploreDraft(event.currentTarget.value)}
                 />
-                <Button
-                  type="submit"
-                  variant="default"
-                  className="explore-search-submit"
-                  disabled={!exploreDraft.trim()}
-                >
-                  Search
-                </Button>
+                <div className="explore-search-footer">
+                  <button
+                    type="button"
+                    className={`explore-thinking-toggle${exploreThinking ? " is-active" : ""}`}
+                    aria-pressed={exploreThinking}
+                    onClick={() => {
+                      pendingUrlWriteModeRef.current = "push";
+                      setExploreThinking((current) => !current);
+                    }}
+                  >
+                    <span className="explore-thinking-toggle-indicator" aria-hidden="true" />
+                    <span>Thinking</span>
+                  </button>
+
+                  <Button
+                    type="submit"
+                    variant="default"
+                    className="explore-search-submit"
+                    disabled={!exploreDraft.trim()}
+                    aria-label="Search"
+                  >
+                    <ArrowUpIcon />
+                  </Button>
+                </div>
               </div>
-              <label className="explore-thinking-toggle">
-                <input
-                  type="checkbox"
-                  checked={exploreThinking}
-                  onChange={(event) => {
-                    pendingUrlWriteModeRef.current = "push";
-                    setExploreThinking(event.currentTarget.checked);
-                  }}
-                />
-                <span>Thinking</span>
-              </label>
               {exploreQuery.trim().length > 0 ? (
                 <div className="explore-search-meta">
                   <span>Showing semantic matches for “{exploreQuery.trim()}”</span>

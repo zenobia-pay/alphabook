@@ -536,7 +536,7 @@ button {
 .explore-composer-shell {
   width: min(760px, 100%);
   display: grid;
-  gap: 12px;
+  gap: 8px;
 }
 
 .explore-feed-indicator {
@@ -580,7 +580,7 @@ button {
   display: flex;
   justify-content: flex-end;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
 }
 
 .explore-composer-layout {
@@ -593,14 +593,14 @@ button {
 }
 
 .explore-tool-button {
-  width: 44px;
-  min-width: 44px;
-  height: 44px;
+  width: 42px;
+  min-width: 42px;
+  height: 42px;
   justify-content: center;
   padding: 0;
   position: relative;
   border: 1px solid rgba(26, 33, 52, 0.08);
-  border-radius: 999px;
+  border-radius: 14px;
   background: rgba(255, 255, 255, 0.94);
   color: rgba(26, 33, 52, 0.72);
   box-shadow: 0 12px 28px rgba(15, 23, 42, 0.06);
@@ -643,31 +643,26 @@ button {
   box-shadow: 0 18px 48px rgba(15, 23, 42, 0.12);
 }
 
-.explore-search-label {
-  font-size: 0.78rem;
-  font-weight: 600;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: rgba(52, 46, 40, 0.56);
-}
-
-.explore-search-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
+.explore-search-surface {
+  display: grid;
+  gap: 14px;
+  padding: 16px 16px 14px;
+  border: 1px solid rgba(72, 43, 37, 0.12);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow: 0 18px 44px rgba(15, 23, 42, 0.06);
 }
 
 .explore-search-input {
-  flex: 1 1 auto;
+  width: 100%;
   min-width: 0;
-  height: 52px;
-  border: 1px solid rgba(72, 43, 37, 0.12);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.96);
-  padding: 0 16px;
-  font-size: 1rem;
+  min-height: 36px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font-size: 1.05rem;
+  line-height: 1.4;
   color: var(--ink);
-  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.05);
 }
 
 .explore-search-input::placeholder {
@@ -676,28 +671,67 @@ button {
 
 .explore-search-input:focus {
   outline: none;
-  border-color: rgba(43, 93, 255, 0.28);
-  box-shadow: 0 0 0 4px rgba(43, 93, 255, 0.08);
+}
+
+.explore-search-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 
 .explore-search-submit {
-  height: 52px;
-  padding: 0 18px;
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 999px;
+}
+
+.explore-search-submit svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
 }
 
 .explore-thinking-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   width: fit-content;
-  font-size: 0.9rem;
-  color: var(--ink-soft);
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid rgba(43, 93, 255, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.82);
+  font-size: 0.92rem;
+  color: rgba(52, 46, 40, 0.72);
   cursor: pointer;
+  transition: color 160ms ease, background 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
 }
 
-.explore-thinking-toggle input {
-  width: 16px;
-  height: 16px;
+.explore-thinking-toggle:hover {
+  border-color: rgba(43, 93, 255, 0.22);
+  color: var(--accent-strong);
+}
+
+.explore-thinking-toggle.is-active {
+  border-color: rgba(43, 93, 255, 0.2);
+  background: rgba(43, 93, 255, 0.12);
+  color: var(--accent-strong);
+  box-shadow: inset 0 0 0 1px rgba(43, 93, 255, 0.05);
+}
+
+.explore-thinking-toggle-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.42;
+}
+
+.explore-thinking-toggle.is-active .explore-thinking-toggle-indicator {
+  opacity: 1;
 }
 
 .explore-search-meta {
@@ -2557,15 +2591,6 @@ button {
   gap: 16px;
 }
 
-.billing-limit-eyebrow {
-  margin: 0 0 10px;
-  color: var(--accent);
-  font-size: 0.78rem;
-  font-weight: 700;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-}
-
 .billing-limit-header h2 {
   margin: 0;
   font-size: clamp(1.9rem, 3vw, 2.5rem);
@@ -2695,30 +2720,10 @@ button {
   color: var(--text-muted);
 }
 
-.billing-plan-points {
-  margin: 0;
-  padding-left: 1.1rem;
-  display: grid;
-  gap: 8px;
-  color: var(--text-muted);
-  font-size: 0.92rem;
-  line-height: 1.5;
-}
-
-.billing-plan-card-pro .billing-plan-points {
-  color: var(--text-muted);
-}
-
 .billing-plan-current-state {
   color: var(--ink);
   font-size: 0.9rem;
   font-weight: 600;
-}
-
-.billing-limit-actions {
-  margin-top: 18px;
-  display: flex;
-  justify-content: flex-end;
 }
 
 .billing-limit-button {
@@ -2738,13 +2743,6 @@ button {
   background: var(--accent);
   color: white;
   box-shadow: none;
-}
-
-.billing-limit-button-secondary {
-  border: 1px solid rgba(34, 29, 24, 0.12);
-  border-radius: 0;
-  background: #fff;
-  color: var(--ink);
 }
 
 .app-error-notice-mark {
@@ -4386,9 +4384,23 @@ button {
     justify-content: flex-start;
   }
 
-  .explore-search-row {
-    flex-direction: column;
-    align-items: stretch;
+  .explore-search-surface {
+    padding: 14px 14px 12px;
+    border-radius: 18px;
+  }
+
+  .explore-search-input {
+    font-size: 1rem;
+  }
+
+  .explore-search-footer {
+    gap: 10px;
+  }
+
+  .explore-search-submit {
+    width: 32px;
+    min-width: 32px;
+    height: 32px;
   }
 
   .semantic-results {

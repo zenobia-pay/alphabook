@@ -24,12 +24,9 @@ test("empty chat state renders with the ChatGPT-style layout", async ({ page }) 
 test("explore centers the composer above the corpus feed", async ({ page }) => {
   await page.goto("/?view=explore");
 
-  await expect(page.getByRole("heading", { name: "Ask or search anything" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /Search over/i })).toBeVisible();
   await expect(page.locator(".explore-composer-root")).toBeVisible();
   await expect(page.locator(".work-feed-card")).toHaveCount(3);
-
-  await page.locator(".work-feed-card").first().click();
-  await expect(page.locator(".work-feed-card").first()).toHaveClass(/is-selected/);
 
   await expect(page.locator(".app-shell")).toHaveScreenshot("explore-feed.png", {
     animations: "disabled",
@@ -141,7 +138,7 @@ test("current view and assistant session persist in the URL across refresh", asy
   await page.getByRole("button", { name: "Explore" }).click();
   await expect(page).toHaveURL(/view=explore/);
   await page.reload();
-  await expect(page.getByRole("heading", { name: "Ask or search anything" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /Search over/i })).toBeVisible();
 
   await page.getByRole("button", { name: "New chat" }).click();
   await page.locator(".aui-composer-input").fill("Find books about sadness.");
@@ -2499,14 +2496,14 @@ test("browser back moves through prior views", async ({ page }) => {
   await page.goto("/");
 
   await page.getByRole("button", { name: "Explore" }).click();
-  await expect(page.getByRole("heading", { name: "Ask or search anything" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /Search over/i })).toBeVisible();
 
   await page.locator(".work-feed-card").first().click();
   await expect(page).toHaveURL(/\/works\//);
   await expect(page.locator(".book-page")).toBeVisible();
 
   await page.goBack();
-  await expect(page.getByRole("heading", { name: "Ask or search anything" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /Search over/i })).toBeVisible();
   await expect(page).toHaveURL(/view=explore/);
 
   await page.goBack();
