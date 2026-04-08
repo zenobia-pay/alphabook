@@ -5,7 +5,7 @@ import { artifactKeys, buildCorpusChunkId, parseCorpusChunkId } from "@alphabook
 import { workDetailToDocumentDetail } from "@alphabook/platform";
 import type { ChunkSearchResult, NotificationType, ToolName, WorkSummary } from "@alphabook/shared";
 
-import { InMemoryAppStore, type AdminRunRecord, type AdminSessionRecord, type AdminUserRecord, type AgentIdentityRecord, type AnalyticsEventRecord, type AppStore, type ArtifactRecord, type BackgroundJobRecord, type BillingEventRecord, type BillingSpendSummary, type DocumentTextRecord, type ExploreWorkFacets, type ExploreWorksFilters, type MessageRecord, type NotificationRecord, type PassageSearchFilters, type ResearchScopeEstimate, type ResearchTaskRecord, type RunEventRecord, type RunRecord, type RuntimeInstanceRecord, type SeedChunk, type SeedWork, type SessionRecord, type SessionSummaryRecord, type ToolCallRecord, type UserProfileStatsRecord, type UserRecord, type WorkDetailRecord, type WorkFileKind, type WorkFileRecord, type WorkSetSizeEstimate } from "./store";
+import { InMemoryAppStore, type AdminRunRecord, type AdminSessionRecord, type AdminUserRecord, type AgentIdentityRecord, type AnalyticsEventRecord, type AppStore, type ArtifactRecord, type BackgroundJobRecord, type BillingEventRecord, type BillingSpendSummary, type DocumentTextRecord, type ExploreWorkFacets, type ExploreWorksFilters, type MessageRecord, type NotificationRecord, type PassageSearchFilters, type ResearchScopeEstimate, type ResearchTaskRecord, type RunEventRecord, type RunRecord, type RuntimeInstanceRecord, type SeedChunk, type SeedWork, type SessionRecord, type SessionSummaryRecord, type SubscriptionRecord, type ToolCallRecord, type UserProfileStatsRecord, type UserRecord, type WorkDetailRecord, type WorkFileKind, type WorkFileRecord, type WorkSetSizeEstimate } from "./store";
 import { MemoryBlobStore, type BlobStore } from "./r2";
 
 const INLINE_PAYLOAD_MAX_BYTES = 4_096;
@@ -417,6 +417,7 @@ export class SqlAppStore implements AppStore {
   private backgroundJobsTableReady: Promise<void> | null = null;
   private researchTasksTableReady: Promise<void> | null = null;
   private runEventSequencesTableReady: Promise<void> | null = null;
+  private subscriptionsTableReady: Promise<void> | null = null;
 
   constructor(
     private readonly db: DbClient,
@@ -888,6 +889,30 @@ export class SqlAppStore implements AppStore {
     await this.runEventSequencesTableReady;
   }
 
+  private async ensureSubscriptionsTable() {
+    if (!this.subscriptionsTableReady) {
+      this.subscriptionsTableReady = this.db.query(`
+        CREATE TABLE IF NOT EXISTS subscriptions (
+          user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+          stripe_customer_id TEXT UNIQUE,
+          stripe_subscription_id TEXT UNIQUE,
+          stripe_product_id TEXT,
+          stripe_price_id TEXT,
+          checkout_session_id TEXT,
+          tier TEXT NOT NULL,
+          status TEXT NOT NULL,
+          cancel_at_period_end INTEGER NOT NULL DEFAULT 0,
+          current_period_start TEXT,
+          current_period_end TEXT,
+          metadata_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+      `).then(() => undefined);
+    }
+    await this.subscriptionsTableReady;
+  }
+
   private async allocateRunEventSequence(runId: string) {
     await this.ensureRunEventSequencesTable();
     const result = await this.db.query<{ next_sequence: number | string }>(
@@ -1109,10 +1134,125 @@ export class SqlAppStore implements AppStore {
       return;
     }
     await this.ensureUser(userId);
+    await this.ensureSubscriptionsTable();
     await this.db.query("UPDATE chat_sessions SET user_id = ? WHERE user_id = ?", [userId, guestUserId]);
     await this.db.query("UPDATE billing_events SET user_id = ? WHERE user_id = ?", [userId, guestUserId]);
     await this.db.query("UPDATE analytics_events SET user_id = ? WHERE user_id = ?", [userId, guestUserId]);
+    await this.db.query("UPDATE subscriptions SET user_id = ? WHERE user_id = ?", [userId, guestUserId]);
     await this.db.query("DELETE FROM users WHERE id = ? AND id <> ?", [guestUserId, userId]);
+  }
+
+  async getSubscriptionByUserId(userId: string): Promise<SubscriptionRecord | null> {
+    await this.ensureSubscriptionsTable();
+    const rows = await this.db.query<{
+      user_id: string;
+      stripe_customer_id: string | null;
+      stripe_subscription_id: string | null;
+      stripe_product_id: string | null;
+      stripe_price_id: string | null;
+      checkout_session_id: string | null;
+      tier: SubscriptionRecord["tier"];
+      status: SubscriptionRecord["status"];
+      cancel_at_period_end: number | boolean | string;
+      current_period_start: string | null;
+      current_period_end: string | null;
+      metadata_json: string | Record<string, unknown> | null;
+      created_at: string;
+      updated_at: string;
+    }>(
+      `SELECT user_id, stripe_customer_id, stripe_subscription_id, stripe_product_id, stripe_price_id, checkout_session_id, tier, status,
+              cancel_at_period_end, current_period_start, current_period_end, metadata_json, created_at, updated_at
+       FROM subscriptions
+       WHERE user_id = ?
+       LIMIT 1`,
+      [userId],
+    );
+    const row = rows.rows[0];
+    if (!row) {
+      return null;
+    }
+    return {
+      userId: row.user_id,
+      stripeCustomerId: row.stripe_customer_id,
+      stripeSubscriptionId: row.stripe_subscription_id,
+      stripeProductId: row.stripe_product_id,
+      stripePriceId: row.stripe_price_id,
+      checkoutSessionId: row.checkout_session_id,
+      tier: row.tier,
+      status: row.status,
+      cancelAtPeriodEnd: row.cancel_at_period_end === true || row.cancel_at_period_end === 1 || row.cancel_at_period_end === "1",
+      currentPeriodStart: row.current_period_start,
+      currentPeriodEnd: row.current_period_end,
+      metadata: parseJsonObject(row.metadata_json),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  async getSubscriptionByStripeCustomerId(stripeCustomerId: string): Promise<SubscriptionRecord | null> {
+    await this.ensureSubscriptionsTable();
+    const rows = await this.db.query<{ user_id: string }>(
+      "SELECT user_id FROM subscriptions WHERE stripe_customer_id = ? LIMIT 1",
+      [stripeCustomerId],
+    );
+    return rows.rows[0] ? await this.getSubscriptionByUserId(rows.rows[0].user_id) : null;
+  }
+
+  async getSubscriptionByStripeSubscriptionId(stripeSubscriptionId: string): Promise<SubscriptionRecord | null> {
+    await this.ensureSubscriptionsTable();
+    const rows = await this.db.query<{ user_id: string }>(
+      "SELECT user_id FROM subscriptions WHERE stripe_subscription_id = ? LIMIT 1",
+      [stripeSubscriptionId],
+    );
+    return rows.rows[0] ? await this.getSubscriptionByUserId(rows.rows[0].user_id) : null;
+  }
+
+  async upsertSubscription(
+    input: Omit<SubscriptionRecord, "createdAt" | "updatedAt"> & { createdAt?: string; updatedAt?: string },
+  ): Promise<SubscriptionRecord> {
+    await this.ensureSubscriptionsTable();
+    await this.ensureUser(input.userId);
+    const existing = await this.getSubscriptionByUserId(input.userId);
+    const createdAt = input.createdAt ?? existing?.createdAt ?? nowIso();
+    const updatedAt = input.updatedAt ?? nowIso();
+    await this.db.query(
+      `
+        INSERT INTO subscriptions (
+          user_id, stripe_customer_id, stripe_subscription_id, stripe_product_id, stripe_price_id, checkout_session_id,
+          tier, status, cancel_at_period_end, current_period_start, current_period_end, metadata_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+          stripe_customer_id = excluded.stripe_customer_id,
+          stripe_subscription_id = excluded.stripe_subscription_id,
+          stripe_product_id = excluded.stripe_product_id,
+          stripe_price_id = excluded.stripe_price_id,
+          checkout_session_id = excluded.checkout_session_id,
+          tier = excluded.tier,
+          status = excluded.status,
+          cancel_at_period_end = excluded.cancel_at_period_end,
+          current_period_start = excluded.current_period_start,
+          current_period_end = excluded.current_period_end,
+          metadata_json = excluded.metadata_json,
+          updated_at = excluded.updated_at
+      `,
+      [
+        input.userId,
+        input.stripeCustomerId,
+        input.stripeSubscriptionId,
+        input.stripeProductId,
+        input.stripePriceId,
+        input.checkoutSessionId,
+        input.tier,
+        input.status,
+        input.cancelAtPeriodEnd ? 1 : 0,
+        input.currentPeriodStart,
+        input.currentPeriodEnd,
+        JSON.stringify(input.metadata ?? {}),
+        createdAt,
+        updatedAt,
+      ],
+    );
+    return (await this.getSubscriptionByUserId(input.userId))!;
   }
 
   async createAgentIdentity(input: {

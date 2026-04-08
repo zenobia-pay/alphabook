@@ -10,6 +10,7 @@ import {
   getImplementationConfig,
 } from "@alphabook/implementations";
 import PgBoss from "pg-boss";
+import Stripe from "stripe";
 
 import { createApp, type AppDeps, type ResearchTaskQueueMessage } from "./app";
 import { WorkOSAuth } from "./auth";
@@ -162,8 +163,10 @@ export function buildLinuxAppDeps(env: LinuxEnv, options: { boss?: PgBoss } = {}
   });
   const runtimeGateway = resolveRuntimeGateway(env);
   const billing = createBillingService(store, {
-    monthlyLimitUsd: env.BILLING_MONTHLY_LIMIT_USD ? Number(env.BILLING_MONTHLY_LIMIT_USD) : undefined,
-    testMonthlyLimitUsd: env.BILLING_TEST_MONTHLY_LIMIT_USD ? Number(env.BILLING_TEST_MONTHLY_LIMIT_USD) : undefined,
+    freeMonthlyCredits: env.BILLING_FREE_MONTHLY_CREDITS ? Number(env.BILLING_FREE_MONTHLY_CREDITS) : undefined,
+    studioMonthlyCredits: env.BILLING_STUDIO_MONTHLY_CREDITS ? Number(env.BILLING_STUDIO_MONTHLY_CREDITS) : undefined,
+    creditsPerUsdCost: env.BILLING_CREDITS_PER_USD_COST ? Number(env.BILLING_CREDITS_PER_USD_COST) : undefined,
+    testMonthlyCredits: env.BILLING_TEST_MONTHLY_CREDITS ? Number(env.BILLING_TEST_MONTHLY_CREDITS) : undefined,
     testUserIds: parseCsvEnv(env.BILLING_TEST_USER_IDS),
     testUserEmails: parseCsvEnv(env.BILLING_TEST_USER_EMAILS),
     modelPricing: env.BILLING_MODEL_PRICING_JSON
@@ -275,6 +278,18 @@ export function buildLinuxAppDeps(env: LinuxEnv, options: { boss?: PgBoss } = {}
     errorAlertWebhookUrl: env.ERROR_ALERT_WEBHOOK_URL,
     resendApiKey: env.RESEND_API_KEY,
     resendFromEmail: env.RESEND_FROM_EMAIL,
+    stripe:
+      env.STRIPE_SECRET_KEY && env.STRIPE_PRICE_ID && env.STRIPE_PRODUCT_ID
+        ? {
+            client: new Stripe(env.STRIPE_SECRET_KEY, {
+              apiVersion: "2025-08-27.basil",
+            }),
+            publishableKey: env.STRIPE_PUBLISHABLE_KEY,
+            webhookSecret: env.STRIPE_WEBHOOK_SECRET,
+            priceId: env.STRIPE_PRICE_ID,
+            productId: env.STRIPE_PRODUCT_ID,
+          }
+        : undefined,
     implementation: {
       id: implementation.id,
       productName: implementation.productName,

@@ -13,6 +13,7 @@ import {
   WorkListResponseSchema,
   WorkSourceResponseSchema,
   type Citation,
+  type BillingOverview,
   type ChatSessionSummary,
   type CurrentUserResponse,
   type ExploreSemanticSearchResponse,
@@ -54,9 +55,15 @@ export class ApiError extends Error {
 export type BillingLimitErrorPayload = {
   error?: string;
   code?: string;
-  limitUsd?: number;
+  tier?: "free" | "studio";
+  subscriptionStatus?: string;
+  limitCredits?: number;
+  usedCredits?: number;
+  remainingCredits?: number;
   spendUsd?: number;
   windowStartedAt?: string;
+  windowEndsAt?: string;
+  checkoutEligible?: boolean;
   paymentRequirements?: unknown;
 };
 
@@ -316,6 +323,26 @@ export async function fetchCurrentUser(): Promise<CurrentUserResponse> {
     }),
   );
   return CurrentUserResponseSchema.parse(await response.json());
+}
+
+export async function fetchBillingOverview(): Promise<BillingOverview> {
+  const response = await ensureOk(
+    await fetch(`${API_BASE}/billing`, {
+      credentials: "include",
+      cache: "no-store",
+    }),
+  );
+  return await response.json() as BillingOverview;
+}
+
+export async function createBillingCheckoutSession(): Promise<{ url: string | null }> {
+  const response = await ensureOk(
+    await fetch(`${API_BASE}/billing/checkout`, {
+      method: "POST",
+      credentials: "include",
+    }),
+  );
+  return await response.json() as { url: string | null };
 }
 
 export async function fetchNotifications(): Promise<NotificationListResponse> {

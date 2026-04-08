@@ -7060,8 +7060,9 @@ test("billing gate can use a lower per-user override limit", async () => {
   const app = createApp({
     store,
     billing: createBillingService(store, {
-      monthlyLimitUsd: 50,
-      testMonthlyLimitUsd: 0.01,
+      freeMonthlyCredits: 1_000_000,
+      creditsPerUsdCost: 100,
+      testMonthlyCredits: 1,
       testUserEmails: ["reader@example.com"],
     }),
     planner: new FallbackPlanner(),
@@ -7103,10 +7104,10 @@ test("billing gate can use a lower per-user override limit", async () => {
   });
 
   assert.equal(response.status, 402);
-  const body = await response.json() as { code?: string; limitUsd?: number; spendUsd?: number };
+  const body = await response.json() as { code?: string; limitCredits?: number; usedCredits?: number };
   assert.equal(body.code, "billing_limit_exceeded");
-  assert.equal(body.limitUsd, 0.01);
-  assert.equal(body.spendUsd, 0.02);
+  assert.equal(body.limitCredits, 1);
+  assert.equal(body.usedCredits, 2);
 });
 
 test("billing blocked chat requests accept a valid x402 payment and return settlement headers", async () => {

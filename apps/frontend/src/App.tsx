@@ -3,9 +3,9 @@ import type { ReadonlyJSONObject, ReadonlyJSONValue } from "assistant-stream/uti
 import type { AgentationProps } from "agentation";
 import { ChevronsLeft, ChevronsRight, Dices, Funnel, Link2, LoaderCircle, MessageSquarePlus, X } from "lucide-react";
 
-import { ChatSessionSummarySchema, getToolLabel, type ChatSessionSummary, type ChunkSearchResult, type Citation, type MessageRecord, type NotificationRecord, type ProfileBookStat, type ProfileFacetStat, type ProfileQueryStat, type PublicProfileResponse, type UserProfile, type UserProfileStats, type WorkDetail, type WorkFacetCounts, type WorkSource, type WorkSummary } from "@alphabook/shared";
+import { ChatSessionSummarySchema, getToolLabel, type BillingOverview, type ChatSessionSummary, type ChunkSearchResult, type Citation, type MessageRecord, type NotificationRecord, type ProfileBookStat, type ProfileFacetStat, type ProfileQueryStat, type PublicProfileResponse, type UserProfile, type UserProfileStats, type WorkDetail, type WorkFacetCounts, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
-import { ApiError, buildSignInUrl, buildSignOutUrl, cancelRun, claimGuestProfile, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchAssistantDocumentState, fetchAssistantSessionBootstrap, fetchCurrentUser, fetchExploreSemanticSearch, fetchMessages, fetchNotifications, fetchProfile, fetchProfileStats, fetchRunState, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, getErrorMessage, markNotificationRead, queryAdminAnalytics, sendAnalyticsEvent, streamChat, streamExploreSemanticSearch, streamRun, unfollowProfile, type BillingLimitErrorPayload, type PersistedRunEventRecord, type RunArtifactRecord, type RunStateRecord, type SessionRunRecord } from "./api";
+import { ApiError, buildSignInUrl, buildSignOutUrl, cancelRun, claimGuestProfile, createBillingCheckoutSession, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchAssistantDocumentState, fetchAssistantSessionBootstrap, fetchBillingOverview, fetchCurrentUser, fetchExploreSemanticSearch, fetchMessages, fetchNotifications, fetchProfile, fetchProfileStats, fetchRunState, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, getErrorMessage, markNotificationRead, queryAdminAnalytics, sendAnalyticsEvent, streamChat, streamExploreSemanticSearch, streamRun, unfollowProfile, type BillingLimitErrorPayload, type PersistedRunEventRecord, type RunArtifactRecord, type RunStateRecord, type SessionRunRecord } from "./api";
 import type { AssistantSurfaceProps } from "./components/assistant-surface";
 import { Avatar, AvatarFallback, AvatarImage } from "./components/ui/avatar";
 import { Button } from "./components/ui/button";
@@ -86,6 +86,7 @@ type AuthState = {
   loading: boolean;
   authConfigured: boolean;
   user: UserProfile | null;
+  billing: BillingOverview | null;
   error: string | null;
 };
 
@@ -186,9 +187,14 @@ type OverlayContentsEntry = {
 };
 
 type BillingLimitState = {
-  limitUsd: number | null;
-  spendUsd: number | null;
+  tier: "free" | "studio";
+  subscriptionStatus: string | null;
+  limitCredits: number | null;
+  usedCredits: number | null;
+  remainingCredits: number | null;
   windowStartedAt: string | null;
+  windowEndsAt: string | null;
+  checkoutEligible: boolean;
 };
 
 declare global {
@@ -1943,21 +1949,22 @@ function parseBillingLimitState(error: unknown): BillingLimitState | null {
     return null;
   }
   return {
-    limitUsd: typeof payload.limitUsd === "number" ? payload.limitUsd : null,
-    spendUsd: typeof payload.spendUsd === "number" ? payload.spendUsd : null,
+    tier: payload.tier === "studio" ? "studio" : "free",
+    subscriptionStatus: typeof payload.subscriptionStatus === "string" ? payload.subscriptionStatus : null,
+    limitCredits: typeof payload.limitCredits === "number" ? payload.limitCredits : null,
+    usedCredits: typeof payload.usedCredits === "number" ? payload.usedCredits : null,
+    remainingCredits: typeof payload.remainingCredits === "number" ? payload.remainingCredits : null,
     windowStartedAt: typeof payload.windowStartedAt === "string" ? payload.windowStartedAt : null,
+    windowEndsAt: typeof payload.windowEndsAt === "string" ? payload.windowEndsAt : null,
+    checkoutEligible: payload.checkoutEligible === true,
   };
 }
 
-function formatUsdAmount(value: number | null) {
+function formatCreditAmount(value: number | null | undefined) {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return null;
   }
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: value >= 100 ? 0 : 2,
-  }).format(value);
+  return `${new Intl.NumberFormat("en-US").format(Math.max(0, Math.round(value)))} credits`;
 }
 
 function formatBillingWindowDate(value: string | null) {
@@ -1975,16 +1982,36 @@ function formatBillingWindowDate(value: string | null) {
   }).format(timestamp);
 }
 
+function formatTierLabel(tier: "free" | "studio") {
+  return tier === "studio" ? "Studio" : "Free";
+}
+
+function formatSubscriptionStatusLabel(status: string | null | undefined) {
+  if (!status) {
+    return "Free";
+  }
+  return status
+    .split("_")
+    .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
 function BillingLimitDialog({
   state,
   onClose,
+  onSubscribe,
+  subscribing,
 }: {
   state: BillingLimitState;
   onClose: () => void;
+  onSubscribe: () => void;
+  subscribing: boolean;
 }) {
-  const limit = formatUsdAmount(state.limitUsd);
-  const spend = formatUsdAmount(state.spendUsd);
+  const limit = formatCreditAmount(state.limitCredits);
+  const used = formatCreditAmount(state.usedCredits);
+  const remaining = formatCreditAmount(state.remainingCredits);
   const windowDate = formatBillingWindowDate(state.windowStartedAt);
+  const windowEndDate = formatBillingWindowDate(state.windowEndsAt);
 
   return (
     <div className="billing-limit-shell" role="dialog" aria-modal="true" aria-label="Usage limit reached">
@@ -1997,19 +2024,29 @@ function BillingLimitDialog({
           </button>
         </div>
         <div className="billing-limit-copy">
-          <p>You’ve used this month’s AI credit budget for this account, so new runs are paused for now.</p>
-          {limit || spend ? (
+          <p>You’ve used this month’s credit budget for this account, so new runs are paused for now.</p>
+          {(limit || used || remaining) ? (
             <dl className="billing-limit-stats">
-              {spend ? (
+              <dt>Current tier</dt>
+              <dd>{formatTierLabel(state.tier)}</dd>
+              <dt>Status</dt>
+              <dd>{formatSubscriptionStatusLabel(state.subscriptionStatus)}</dd>
+              {used ? (
                 <>
-                  <dt>Current spend</dt>
-                  <dd>{spend}</dd>
+                  <dt>Credits used</dt>
+                  <dd>{used}</dd>
                 </>
               ) : null}
               {limit ? (
                 <>
-                  <dt>Monthly limit</dt>
+                  <dt>Monthly credits</dt>
                   <dd>{limit}</dd>
+                </>
+              ) : null}
+              {remaining ? (
+                <>
+                  <dt>Credits remaining</dt>
+                  <dd>{remaining}</dd>
                 </>
               ) : null}
               {windowDate ? (
@@ -2018,11 +2055,26 @@ function BillingLimitDialog({
                   <dd>{windowDate}</dd>
                 </>
               ) : null}
+              {windowEndDate ? (
+                <>
+                  <dt>Current window ends</dt>
+                  <dd>{windowEndDate}</dd>
+                </>
+              ) : null}
             </dl>
           ) : null}
-          <p>When the limit is raised, the billing window resets, or payment is accepted, you can start runs again.</p>
+          <p>
+            {state.tier === "free"
+              ? "Upgrade to Studio to unlock a much larger monthly credit pool."
+              : "When the billing window resets or your plan changes, you can start runs again."}
+          </p>
         </div>
         <div className="billing-limit-actions">
+          {state.checkoutEligible ? (
+            <button type="button" className="billing-limit-button" onClick={onSubscribe} disabled={subscribing}>
+              {subscribing ? "Redirecting…" : "Subscribe"}
+            </button>
+          ) : null}
           <button type="button" className="billing-limit-button" onClick={onClose}>Close</button>
         </div>
       </section>
@@ -3610,6 +3662,7 @@ export default function App() {
     loading: true,
     authConfigured: false,
     user: null,
+    billing: null,
     error: null,
   });
   const [activeView, setActiveView] = useState<ViewMode>(initialUrlState.view);
@@ -3641,6 +3694,7 @@ export default function App() {
   ));
   const [loadError, setLoadError] = useState<string | null>(initialAssistantSessionBootstrap?.error ?? null);
   const [billingLimitState, setBillingLimitState] = useState<BillingLimitState | null>(null);
+  const [isStartingCheckout, setIsStartingCheckout] = useState(false);
   const [streamingAssistantId, setStreamingAssistantId] = useState<string | null>(null);
   const streamingAssistantIdRef = useRef<string | null>(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -3765,6 +3819,7 @@ export default function App() {
     [authState.authConfigured, authState.loading, authState.user, guestUserId],
   );
   const currentUserId = currentUser?.id ?? null;
+  const billingOverview = authState.billing;
   const activeSession = useMemo(
     () => sessions.find((session) => session.id === selectedSessionId) ?? null,
     [selectedSessionId, sessions],
@@ -3916,6 +3971,7 @@ export default function App() {
           loading: false,
           authConfigured: next.authConfigured,
           user: next.user,
+          billing: next.billing ?? null,
           error: null,
         });
       } catch (error) {
@@ -3923,11 +3979,35 @@ export default function App() {
           loading: false,
           authConfigured: false,
           user: null,
+          billing: null,
           error: getErrorMessage(error, "We couldn't load your account right now."),
         });
       }
     })();
   }, []);
+
+  useEffect(() => {
+    if (authState.loading || !authState.user) {
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const next = await fetchBillingOverview();
+        if (!cancelled) {
+          setAuthState((state) => ({
+            ...state,
+            billing: next,
+          }));
+        }
+      } catch {
+        // Keep the last successful billing snapshot.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [authState.loading, authState.user?.id]);
 
   useEffect(() => {
     if (activeView === "assistant_document") {
@@ -6170,6 +6250,25 @@ export default function App() {
     setActiveView("profile");
   }
 
+  async function beginSubscriptionCheckout() {
+    if (isStartingCheckout) {
+      return;
+    }
+    setIsStartingCheckout(true);
+    try {
+      const session = await createBillingCheckoutSession();
+      if (session.url) {
+        window.location.assign(session.url);
+        return;
+      }
+      setLoadError("We couldn't start checkout right now.");
+    } catch (error) {
+      setLoadError(getErrorMessage(error, "We couldn't start checkout right now."));
+    } finally {
+      setIsStartingCheckout(false);
+    }
+  }
+
   async function toggleFollowProfile() {
     if (!activeProfileUserId || !publicProfile || publicProfile.isSelf) {
       return;
@@ -6925,6 +7024,7 @@ export default function App() {
     const joinedLabel = formatMonthYear(currentUser?.createdAt);
     const currentMeta = [profileTag, joinedLabel ? `joined ${joinedLabel}` : null].filter(Boolean).join(" • ");
     const stats = profileStats;
+    const billing = billingOverview;
     const metrics = stats
       ? [
         {
@@ -6984,12 +7084,56 @@ export default function App() {
             </article>
           </div>
           <div className="profile-actions">
+            {billing?.subscription.checkoutEligible ? (
+              <Button type="button" variant="ghost" className="profile-chip" onClick={() => void beginSubscriptionCheckout()} disabled={isStartingCheckout}>
+                {isStartingCheckout ? "Redirecting…" : "Subscribe"}
+              </Button>
+            ) : null}
             {authState.authConfigured && authState.user ? (
               <Button type="button" variant="ghost" className="profile-chip" onClick={handleSignOut}>
                 Log out
               </Button>
             ) : null}
           </div>
+        </section>
+
+        <section className="profile-section-card profile-section-card-hero">
+          <div className="profile-section-header">
+            <div>
+              <h2>Plan and credits</h2>
+              <p>
+                {billing
+                  ? `${formatTierLabel(billing.subscription.tier)} tier • ${formatSubscriptionStatusLabel(billing.subscription.status)}`
+                  : "We are loading your subscription and monthly credit usage."}
+              </p>
+            </div>
+          </div>
+          {billing ? (
+            <div className="profile-metric-grid">
+              <ProfileMetricCard
+                label="Current tier"
+                value={formatTierLabel(billing.subscription.tier)}
+                detail={formatSubscriptionStatusLabel(billing.subscription.status)}
+              />
+              <ProfileMetricCard
+                label="Credits used"
+                value={formatCreditAmount(billing.usage.usedCredits) ?? "0 credits"}
+                detail={`${formatCreditAmount(billing.usage.monthlyCredits) ?? "0 credits"} this month`}
+              />
+              <ProfileMetricCard
+                label="Credits remaining"
+                value={formatCreditAmount(billing.usage.remainingCredits) ?? "0 credits"}
+                detail={`Window resets ${formatBillingWindowDate(billing.usage.windowEndsAt) ?? "soon"}`}
+              />
+              <ProfileMetricCard
+                label="Billing window"
+                value={formatBillingWindowDate(billing.usage.windowStartedAt) ?? "This month"}
+                detail={`through ${formatBillingWindowDate(billing.usage.windowEndsAt) ?? "now"}`}
+              />
+            </div>
+          ) : (
+            <p className="profile-section-empty">Loading your plan details…</p>
+          )}
         </section>
 
         <section className="profile-section-card profile-section-card-hero">
@@ -8025,6 +8169,8 @@ export default function App() {
         <BillingLimitDialog
           state={billingLimitState}
           onClose={() => setBillingLimitState(null)}
+          onSubscribe={() => void beginSubscriptionCheckout()}
+          subscribing={isStartingCheckout}
         />
       ) : null}
 

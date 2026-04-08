@@ -230,6 +230,25 @@ CREATE TABLE IF NOT EXISTS billing_events (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS subscriptions (
+  user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  stripe_customer_id TEXT UNIQUE,
+  stripe_subscription_id TEXT UNIQUE,
+  stripe_product_id TEXT,
+  stripe_price_id TEXT,
+  checkout_session_id TEXT,
+  tier TEXT NOT NULL CHECK (tier IN ('free', 'studio')),
+  status TEXT NOT NULL CHECK (
+    status IN ('incomplete', 'incomplete_expired', 'trialing', 'active', 'past_due', 'canceled', 'unpaid', 'paused')
+  ),
+  cancel_at_period_end INTEGER NOT NULL DEFAULT 0,
+  current_period_start TEXT,
+  current_period_end TEXT,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS analytics_events (
   id TEXT PRIMARY KEY,
   event TEXT NOT NULL,

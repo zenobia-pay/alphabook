@@ -18,7 +18,7 @@ import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { ZodError, z } from "zod";
 
 import type { WorkOSAuth } from "./auth";
-import type { BillingService } from "./billing";
+import type { BillingCheckResult, BillingService } from "./billing";
 import { HashEmbedder, type Embedder } from "./embeddings";
 import {
   cancelHermesJob,
@@ -40,6 +40,7 @@ import type { Synthesizer, ToolHistoryEntry } from "./synthesizer";
 import type { AgentIdentityRecord, AnalyticsEventRecord, AppStore, ArtifactRecord, BackgroundJobRecord, MessageRecord, NotificationRecord, PassageSearchFilters, RunEventRecord, RunRecord, RuntimeInstanceRecord, SessionRecord, ToolCallRecord, UserRecord, WorkDetailRecord } from "./store";
 import { parseModelJsonObject } from "./json";
 import type { ModelTextGenerationBinding } from "./model-binding";
+import { subscriptionRecordFromStripe, type StripeConfig } from "./stripe";
 
 export interface WorkerQueues {
   ingestName: string;
@@ -93,6 +94,7 @@ export interface AppDeps {
   errorAlertWebhookUrl?: string;
   resendApiKey?: string;
   resendFromEmail?: string;
+  stripe?: StripeConfig;
   x402?: {
     enabled: boolean;
     payTo: string;
@@ -304,7 +306,7 @@ async function createX402PaymentRequired(
 async function createX402PaymentRequirements(
   deps: AppDeps,
   request: Request,
-  billingCheck: { limitUsd: number; spendUsd: number; windowStartedAt: string },
+  billingCheck: BillingCheckResult,
   error?: string,
 ) {
   const x402 = await createX402PaymentRequired(deps, request, error);
@@ -326,7 +328,7 @@ async function createX402PaymentRequirements(
 async function verifyAndSettleX402Payment(
   deps: AppDeps,
   request: Request,
-  billingCheck: { limitUsd: number; spendUsd: number; windowStartedAt: string },
+  billingCheck: BillingCheckResult,
 ) {
   const paymentHeader = paymentSignatureHeaderFromRequest(request);
   if (!paymentHeader) {
@@ -13795,6 +13797,30 @@ export function createApp(inputDeps: CreateAppInput) {
     };
   }
 
+  async function buildSelfBillingResponse(userId: string, now = Date.now()) {
+    const [overview, subscription] = await Promise.all([
+      deps.billing.getOverview(userId, now),
+      deps.store.getSubscriptionByUserId(userId),
+    ]);
+    return {
+      subscription: {
+        tier: overview.tier,
+        status: overview.subscriptionStatus,
+        checkoutEligible: overview.checkoutEligible,
+        cancelAtPeriodEnd: subscription?.cancelAtPeriodEnd ?? false,
+        currentPeriodStart: subscription?.currentPeriodStart ?? null,
+        currentPeriodEnd: subscription?.currentPeriodEnd ?? null,
+      },
+      usage: {
+        usedCredits: overview.usedCredits,
+        monthlyCredits: overview.limitCredits,
+        remainingCredits: overview.remainingCredits,
+        windowStartedAt: overview.windowStartedAt,
+        windowEndsAt: overview.windowEndsAt,
+      },
+    };
+  }
+
   app.get("/health", async (c) => {
     const database = await deps.store.healthCheck();
     return c.json({
@@ -13910,10 +13936,12 @@ export function createApp(inputDeps: CreateAppInput) {
   app.get("/me", async (c) => {
     const principal = await resolvePrincipal(c);
     const user = principal?.user ?? null;
+    const billing = user ? await buildSelfBillingResponse(user.id) : null;
     return c.json({
       authenticated: Boolean(user),
       authConfigured: deps.auth?.isConfigured() ?? false,
       user: user ?? null,
+      billing,
       auth: principal
         ? {
             type: principal.kind,
@@ -13925,6 +13953,160 @@ export function createApp(inputDeps: CreateAppInput) {
       pragma: "no-cache",
     });
   });
+
+  const handleGetBilling = async (c: Context) => {
+    const principal = await resolvePrincipal(c);
+    if (!principal || principal.kind !== "user") {
+      return c.json({ error: "Authentication required." }, deps.auth?.isConfigured() ? 401 : 400);
+    }
+    return c.json(await buildSelfBillingResponse(principal.user.id), 200, {
+      "cache-control": "private, no-store, max-age=0",
+      pragma: "no-cache",
+    });
+  };
+
+  app.get("/billing", handleGetBilling);
+  app.get("/api/billing", handleGetBilling);
+  app.get("/v1/billing", handleGetBilling);
+
+  const handleCreateStripeCheckout = async (c: Context) => {
+    const trustedRequest = requireTrustedBrowserRequest(c);
+    if (trustedRequest) {
+      return trustedRequest;
+    }
+    const principal = await resolvePrincipal(c);
+    if (!principal || principal.kind !== "user") {
+      return c.json({ error: "Authentication required." }, deps.auth?.isConfigured() ? 401 : 400);
+    }
+    if (!deps.stripe) {
+      return c.json({ error: "Stripe billing is not configured." }, 501);
+    }
+    const billing = await buildSelfBillingResponse(principal.user.id);
+    if (!billing.subscription.checkoutEligible) {
+      return c.json({ error: "This account already has a paid subscription." }, 400);
+    }
+    const existingSubscription = await deps.store.getSubscriptionByUserId(principal.user.id);
+    const session = await deps.stripe.client.checkout.sessions.create({
+      mode: "subscription",
+      line_items: [
+        {
+          price: deps.stripe.priceId,
+          quantity: 1,
+        },
+      ],
+      success_url: `${siteOrigin(deps)}/profile?checkout=success`,
+      cancel_url: `${siteOrigin(deps)}/profile?checkout=canceled`,
+      allow_promotion_codes: true,
+      client_reference_id: principal.user.id,
+      customer: existingSubscription?.stripeCustomerId ?? undefined,
+      customer_email: existingSubscription?.stripeCustomerId ? undefined : principal.user.email ?? undefined,
+      metadata: {
+        userId: principal.user.id,
+      },
+      subscription_data: {
+        metadata: {
+          userId: principal.user.id,
+        },
+      },
+    });
+    await deps.store.upsertSubscription({
+      userId: principal.user.id,
+      stripeCustomerId: typeof session.customer === "string" ? session.customer : existingSubscription?.stripeCustomerId ?? null,
+      stripeSubscriptionId: typeof session.subscription === "string" ? session.subscription : existingSubscription?.stripeSubscriptionId ?? null,
+      stripeProductId: deps.stripe.productId,
+      stripePriceId: deps.stripe.priceId,
+      checkoutSessionId: session.id,
+      tier: existingSubscription?.tier ?? "free",
+      status: existingSubscription?.status ?? "incomplete",
+      cancelAtPeriodEnd: existingSubscription?.cancelAtPeriodEnd ?? false,
+      currentPeriodStart: existingSubscription?.currentPeriodStart ?? null,
+      currentPeriodEnd: existingSubscription?.currentPeriodEnd ?? null,
+      metadata: {
+        ...(existingSubscription?.metadata ?? {}),
+        lastCheckoutSessionId: session.id,
+      },
+      createdAt: existingSubscription?.createdAt,
+    });
+    return c.json({ url: session.url }, 200, {
+      "cache-control": "no-store",
+    });
+  };
+
+  app.post("/billing/checkout", handleCreateStripeCheckout);
+  app.post("/api/billing/checkout", handleCreateStripeCheckout);
+  app.post("/v1/billing/checkout", handleCreateStripeCheckout);
+
+  const handleStripeWebhook = async (c: Context) => {
+    if (!deps.stripe?.webhookSecret) {
+      return c.json({ error: "Stripe webhook signing secret is not configured." }, 501);
+    }
+    const signature = c.req.header("stripe-signature");
+    if (!signature) {
+      return c.json({ error: "Missing Stripe signature." }, 400);
+    }
+    const rawBody = await c.req.raw.text();
+    let event;
+    try {
+      event = deps.stripe.client.webhooks.constructEvent(rawBody, signature, deps.stripe.webhookSecret);
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : "Invalid Stripe signature." }, 400);
+    }
+
+    if (event.type === "checkout.session.completed") {
+      const session = event.data.object;
+      const userId = session.metadata?.userId ?? session.client_reference_id ?? null;
+      if (session.mode === "subscription" && userId && typeof session.subscription === "string") {
+        const subscription = await deps.stripe.client.subscriptions.retrieve(session.subscription);
+        await deps.store.upsertSubscription({
+          ...subscriptionRecordFromStripe({
+            userId,
+            subscription,
+            config: deps.stripe,
+            stripeCustomerId: typeof session.customer === "string" ? session.customer : null,
+            checkoutSessionId: session.id,
+            metadata: {
+              webhookEvent: event.type,
+            },
+          }),
+        });
+      }
+    }
+
+    if (
+      event.type === "customer.subscription.created"
+      || event.type === "customer.subscription.updated"
+      || event.type === "customer.subscription.deleted"
+    ) {
+      const subscription = event.data.object;
+      const existingBySubscription = await deps.store.getSubscriptionByStripeSubscriptionId(subscription.id);
+      const existingByCustomer = typeof subscription.customer === "string"
+        ? await deps.store.getSubscriptionByStripeCustomerId(subscription.customer)
+        : null;
+      const userId = subscription.metadata.userId ?? existingBySubscription?.userId ?? existingByCustomer?.userId ?? null;
+      if (userId) {
+        const existing = existingBySubscription ?? existingByCustomer;
+        await deps.store.upsertSubscription({
+          ...subscriptionRecordFromStripe({
+            userId,
+            subscription,
+            config: deps.stripe,
+            stripeCustomerId: typeof subscription.customer === "string" ? subscription.customer : existing?.stripeCustomerId ?? null,
+            checkoutSessionId: existing?.checkoutSessionId ?? null,
+            metadata: {
+              ...(existing?.metadata ?? {}),
+              webhookEvent: event.type,
+            },
+          }),
+          createdAt: existing?.createdAt,
+        });
+      }
+    }
+
+    return c.json({ received: true });
+  };
+
+  app.post("/stripe/webhook", handleStripeWebhook);
+  app.post("/api/stripe/webhook", handleStripeWebhook);
 
   app.get("/notifications", async (c) => {
     const principal = await resolvePrincipal(c);
@@ -14678,9 +14860,15 @@ export function createApp(inputDeps: CreateAppInput) {
       return c.json({
         error: "Monthly AI usage limit reached.",
         code: "billing_limit_exceeded",
-        limitUsd: billingCheck.limitUsd,
+        tier: billingCheck.tier,
+        subscriptionStatus: billingCheck.subscriptionStatus,
+        limitCredits: billingCheck.limitCredits,
+        usedCredits: billingCheck.usedCredits,
+        remainingCredits: billingCheck.remainingCredits,
         spendUsd: billingCheck.spendUsd,
         windowStartedAt: billingCheck.windowStartedAt,
+        windowEndsAt: billingCheck.windowEndsAt,
+        checkoutEligible: billingCheck.checkoutEligible,
         paymentRequirements,
       }, 402);
       }
@@ -14805,9 +14993,15 @@ export function createApp(inputDeps: CreateAppInput) {
         return c.json({
           error: "Monthly AI usage limit reached.",
           code: "billing_limit_exceeded",
-          limitUsd: billingCheck.limitUsd,
+          tier: billingCheck.tier,
+          subscriptionStatus: billingCheck.subscriptionStatus,
+          limitCredits: billingCheck.limitCredits,
+          usedCredits: billingCheck.usedCredits,
+          remainingCredits: billingCheck.remainingCredits,
           spendUsd: billingCheck.spendUsd,
           windowStartedAt: billingCheck.windowStartedAt,
+          windowEndsAt: billingCheck.windowEndsAt,
+          checkoutEligible: billingCheck.checkoutEligible,
           paymentRequirements,
         }, 402);
       }

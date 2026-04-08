@@ -26,19 +26,28 @@ export interface BillingUsageEventInput {
 
 export interface BillingCheckResult {
   allowed: boolean;
-  limitUsd: number;
+  tier: "free" | "studio";
+  subscriptionStatus: "free" | "incomplete" | "incomplete_expired" | "trialing" | "active" | "past_due" | "canceled" | "unpaid" | "paused";
+  limitCredits: number;
+  usedCredits: number;
+  remainingCredits: number;
   spendUsd: number;
   windowStartedAt: string;
+  windowEndsAt: string;
+  checkoutEligible: boolean;
 }
 
 export interface BillingService {
   check(userId: string, now?: number): Promise<BillingCheckResult>;
+  getOverview(userId: string, now?: number): Promise<BillingCheckResult>;
   track(context: BillingContext, event: BillingUsageEventInput): Promise<void>;
 }
 
 interface BillingConfig {
-  monthlyLimitUsd?: number;
-  testMonthlyLimitUsd?: number;
+  freeMonthlyCredits?: number;
+  studioMonthlyCredits?: number;
+  creditsPerUsdCost?: number;
+  testMonthlyCredits?: number;
   testUserIds?: string[];
   testUserEmails?: string[];
   modelPricing?: Record<string, ModelPricing>;
@@ -51,6 +60,10 @@ interface ModelPricing {
 }
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+const DEFAULT_FREE_MONTHLY_CREDITS = 1_000_000;
+const DEFAULT_STUDIO_MONTHLY_CREDITS = 50_000_000;
+const DEFAULT_CREDITS_PER_USD_COST = 333_333;
+const PAID_ACCESS_STATUSES = new Set(["active", "trialing", "past_due"]);
 
 const DEFAULT_MODEL_PRICING: Record<string, ModelPricing> = {
   "gpt-5": {
@@ -72,6 +85,10 @@ const DEFAULT_MODEL_PRICING: Record<string, ModelPricing> = {
 
 function roundUsd(value: number): number {
   return Math.round(value * 1_000_000) / 1_000_000;
+}
+
+function roundCredits(value: number): number {
+  return Math.max(0, Math.ceil(value));
 }
 
 function resolvePricing(model: string, pricing: Record<string, ModelPricing>): ModelPricing | null {
@@ -108,9 +125,17 @@ function computeCostUsd(
 }
 
 export function createBillingService(store: AppStore, config: BillingConfig = {}): BillingService {
-  const monthlyLimitUsd = config.monthlyLimitUsd ?? 1_000_000;
-  const testMonthlyLimitUsd = typeof config.testMonthlyLimitUsd === "number" && Number.isFinite(config.testMonthlyLimitUsd)
-    ? Math.max(0, config.testMonthlyLimitUsd)
+  const freeMonthlyCredits = typeof config.freeMonthlyCredits === "number" && Number.isFinite(config.freeMonthlyCredits)
+    ? Math.max(0, Math.trunc(config.freeMonthlyCredits))
+    : DEFAULT_FREE_MONTHLY_CREDITS;
+  const studioMonthlyCredits = typeof config.studioMonthlyCredits === "number" && Number.isFinite(config.studioMonthlyCredits)
+    ? Math.max(0, Math.trunc(config.studioMonthlyCredits))
+    : DEFAULT_STUDIO_MONTHLY_CREDITS;
+  const creditsPerUsdCost = typeof config.creditsPerUsdCost === "number" && Number.isFinite(config.creditsPerUsdCost)
+    ? Math.max(1, Math.trunc(config.creditsPerUsdCost))
+    : DEFAULT_CREDITS_PER_USD_COST;
+  const testMonthlyCredits = typeof config.testMonthlyCredits === "number" && Number.isFinite(config.testMonthlyCredits)
+    ? Math.max(0, Math.trunc(config.testMonthlyCredits))
     : null;
   const testUserIds = new Set((config.testUserIds ?? []).map((value) => value.trim()).filter(Boolean));
   const testUserEmails = new Set((config.testUserEmails ?? []).map((value) => value.trim().toLowerCase()).filter(Boolean));
@@ -119,35 +144,86 @@ export function createBillingService(store: AppStore, config: BillingConfig = {}
     ...(config.modelPricing ?? {}),
   };
 
-  async function effectiveMonthlyLimitUsd(userId: string): Promise<number> {
-    if (testMonthlyLimitUsd === null) {
-      return monthlyLimitUsd;
+  function creditsFromUsd(costUsd: number) {
+    return roundCredits(Math.max(0, costUsd) * creditsPerUsdCost);
+  }
+
+  async function effectiveMonthlyCredits(userId: string, now: number) {
+    const subscription = await store.getSubscriptionByUserId(userId);
+    const hasStudioAccess = Boolean(
+      subscription
+      && PAID_ACCESS_STATUSES.has(subscription.status)
+      && (!subscription.currentPeriodEnd || Date.parse(subscription.currentPeriodEnd) >= now),
+    );
+    let tier: BillingCheckResult["tier"] = hasStudioAccess ? "studio" : "free";
+    let subscriptionStatus: BillingCheckResult["subscriptionStatus"] = subscription?.status ?? "free";
+    let monthlyCredits = hasStudioAccess ? studioMonthlyCredits : freeMonthlyCredits;
+    let checkoutEligible = !hasStudioAccess;
+
+    if (testMonthlyCredits === null) {
+      return {
+        tier,
+        subscriptionStatus,
+        monthlyCredits,
+        checkoutEligible,
+      };
     }
     if (testUserIds.has(userId)) {
-      return testMonthlyLimitUsd;
+      return {
+        tier,
+        subscriptionStatus,
+        monthlyCredits: testMonthlyCredits,
+        checkoutEligible,
+      };
     }
     if (testUserEmails.size === 0) {
-      return monthlyLimitUsd;
+      return {
+        tier,
+        subscriptionStatus,
+        monthlyCredits,
+        checkoutEligible,
+      };
     }
     const profile = await store.getUserProfile(userId);
     const email = profile?.email?.trim().toLowerCase();
     if (email && testUserEmails.has(email)) {
-      return testMonthlyLimitUsd;
+      monthlyCredits = testMonthlyCredits;
     }
-    return monthlyLimitUsd;
+    return {
+      tier,
+      subscriptionStatus,
+      monthlyCredits,
+      checkoutEligible,
+    };
+  }
+
+  async function overview(userId: string, now: number): Promise<BillingCheckResult> {
+    const windowStartedAt = new Date(now - THIRTY_DAYS_MS).toISOString();
+    const windowEndsAt = new Date(now).toISOString();
+    const spend = await store.getBillingSpend(userId, windowStartedAt);
+    const usedCredits = creditsFromUsd(spend.totalCostUsd);
+    const effective = await effectiveMonthlyCredits(userId, now);
+    return {
+      allowed: usedCredits <= effective.monthlyCredits,
+      tier: effective.tier,
+      subscriptionStatus: effective.subscriptionStatus,
+      limitCredits: effective.monthlyCredits,
+      usedCredits,
+      remainingCredits: Math.max(0, effective.monthlyCredits - usedCredits),
+      spendUsd: spend.totalCostUsd,
+      windowStartedAt,
+      windowEndsAt,
+      checkoutEligible: effective.checkoutEligible,
+    };
   }
 
   return {
     async check(userId: string, now = Date.now()): Promise<BillingCheckResult> {
-      const windowStartedAt = new Date(now - THIRTY_DAYS_MS).toISOString();
-      const spend = await store.getBillingSpend(userId, windowStartedAt);
-      const effectiveLimitUsd = await effectiveMonthlyLimitUsd(userId);
-      return {
-        allowed: spend.totalCostUsd <= effectiveLimitUsd,
-        limitUsd: effectiveLimitUsd,
-        spendUsd: spend.totalCostUsd,
-        windowStartedAt,
-      };
+      return overview(userId, now);
+    },
+
+    async getOverview(userId: string, now = Date.now()): Promise<BillingCheckResult> {
+      return overview(userId, now);
     },
 
     async track(context: BillingContext, event: BillingUsageEventInput): Promise<void> {

@@ -405,6 +405,23 @@ export interface BillingSpendSummary {
   eventCount: number;
 }
 
+export interface SubscriptionRecord {
+  userId: string;
+  stripeCustomerId: string | null;
+  stripeSubscriptionId: string | null;
+  stripeProductId: string | null;
+  stripePriceId: string | null;
+  checkoutSessionId: string | null;
+  tier: "free" | "studio";
+  status: "incomplete" | "incomplete_expired" | "trialing" | "active" | "past_due" | "canceled" | "unpaid" | "paused";
+  cancelAtPeriodEnd: boolean;
+  currentPeriodStart: string | null;
+  currentPeriodEnd: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ArtifactRecord {
   id: string;
   sessionId: string;
@@ -440,6 +457,12 @@ export interface AppStore {
   upsertUserProfile(input: { id: string; email?: string | null; name?: string | null; avatarUrl?: string | null }): Promise<UserRecord>;
   getUserProfile(userId: string): Promise<UserRecord | null>;
   claimGuestUserData(guestUserId: string, userId: string): Promise<void>;
+  getSubscriptionByUserId(userId: string): Promise<SubscriptionRecord | null>;
+  getSubscriptionByStripeCustomerId(stripeCustomerId: string): Promise<SubscriptionRecord | null>;
+  getSubscriptionByStripeSubscriptionId(stripeSubscriptionId: string): Promise<SubscriptionRecord | null>;
+  upsertSubscription(
+    input: Omit<SubscriptionRecord, "createdAt" | "updatedAt"> & { createdAt?: string; updatedAt?: string },
+  ): Promise<SubscriptionRecord>;
   createAgentIdentity(input: {
     name: string;
     description?: string | null;
@@ -2158,6 +2181,7 @@ function diversifyChunkResults<T extends { workId: string; score: number }>(
 export class InMemoryAppStore implements AppStore {
   private readonly users = new Set<string>();
   private readonly userProfiles = new Map<string, UserRecord>();
+  private readonly subscriptions = new Map<string, SubscriptionRecord>();
   private readonly agentIdentities = new Map<string, AgentIdentityRecord & { apiKeyHash: string }>();
   private readonly follows = new Set<string>();
   private readonly sessions = new Map<string, SessionRecord>();
@@ -2254,10 +2278,49 @@ export class InMemoryAppStore implements AppStore {
         event.userId = userId;
       }
     }
+    const subscription = this.subscriptions.get(guestUserId);
+    if (subscription) {
+      this.subscriptions.set(userId, {
+        ...subscription,
+        userId,
+        updatedAt: nowIso(),
+      });
+      this.subscriptions.delete(guestUserId);
+    }
     if (guestProfile) {
       this.userProfiles.delete(guestUserId);
     }
     this.users.delete(guestUserId);
+  }
+
+  async getSubscriptionByUserId(userId: string): Promise<SubscriptionRecord | null> {
+    const record = this.subscriptions.get(userId);
+    return record ? { ...record, metadata: { ...record.metadata } } : null;
+  }
+
+  async getSubscriptionByStripeCustomerId(stripeCustomerId: string): Promise<SubscriptionRecord | null> {
+    const record = [...this.subscriptions.values()].find((candidate) => candidate.stripeCustomerId === stripeCustomerId) ?? null;
+    return record ? { ...record, metadata: { ...record.metadata } } : null;
+  }
+
+  async getSubscriptionByStripeSubscriptionId(stripeSubscriptionId: string): Promise<SubscriptionRecord | null> {
+    const record = [...this.subscriptions.values()].find((candidate) => candidate.stripeSubscriptionId === stripeSubscriptionId) ?? null;
+    return record ? { ...record, metadata: { ...record.metadata } } : null;
+  }
+
+  async upsertSubscription(
+    input: Omit<SubscriptionRecord, "createdAt" | "updatedAt"> & { createdAt?: string; updatedAt?: string },
+  ): Promise<SubscriptionRecord> {
+    await this.ensureUser(input.userId);
+    const existing = this.subscriptions.get(input.userId);
+    const record: SubscriptionRecord = {
+      ...input,
+      metadata: { ...(input.metadata ?? {}) },
+      createdAt: input.createdAt ?? existing?.createdAt ?? nowIso(),
+      updatedAt: input.updatedAt ?? nowIso(),
+    };
+    this.subscriptions.set(input.userId, record);
+    return { ...record, metadata: { ...record.metadata } };
   }
 
   async createAgentIdentity(input: {

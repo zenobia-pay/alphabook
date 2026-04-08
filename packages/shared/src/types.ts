@@ -232,10 +232,39 @@ export const UserProfileSchema = z.object({
 
 export type UserProfile = z.infer<typeof UserProfileSchema>;
 
+export const BillingSubscriptionSchema = z.object({
+  tier: z.enum(["free", "studio"]),
+  status: z.enum(["free", "incomplete", "incomplete_expired", "trialing", "active", "past_due", "canceled", "unpaid", "paused"]),
+  checkoutEligible: z.boolean(),
+  cancelAtPeriodEnd: z.boolean(),
+  currentPeriodStart: z.string().nullable(),
+  currentPeriodEnd: z.string().nullable(),
+});
+
+export type BillingSubscription = z.infer<typeof BillingSubscriptionSchema>;
+
+export const BillingUsageSchema = z.object({
+  usedCredits: z.number().int().nonnegative(),
+  monthlyCredits: z.number().int().nonnegative(),
+  remainingCredits: z.number().int().nonnegative(),
+  windowStartedAt: z.string(),
+  windowEndsAt: z.string(),
+});
+
+export type BillingUsage = z.infer<typeof BillingUsageSchema>;
+
+export const BillingOverviewSchema = z.object({
+  subscription: BillingSubscriptionSchema,
+  usage: BillingUsageSchema,
+});
+
+export type BillingOverview = z.infer<typeof BillingOverviewSchema>;
+
 export const CurrentUserResponseSchema = z.object({
   authenticated: z.boolean(),
   authConfigured: z.boolean(),
   user: UserProfileSchema.nullable(),
+  billing: BillingOverviewSchema.nullable().optional(),
 });
 
 export type CurrentUserResponse = z.infer<typeof CurrentUserResponseSchema>;
