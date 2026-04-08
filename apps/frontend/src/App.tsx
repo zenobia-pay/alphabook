@@ -4630,7 +4630,10 @@ export default function App() {
 
     let cancelled = false;
     let pollTimer: number | null = null;
+    let refreshTimer: number | null = null;
+    let streamHandshakeTimer: number | null = null;
     let streamFailed = false;
+    let sawStreamEvent = false;
     let consecutivePollFailures = 0;
     const abortController = new AbortController();
     reconnectRunStreamAbortControllerRef.current?.abort();
@@ -4683,6 +4686,16 @@ export default function App() {
       setRunArtifacts(Array.isArray(nextRunState?.artifacts) ? nextRunState.artifacts : []);
     };
 
+    const scheduleRefreshMessages = (delayMs = 750) => {
+      if (cancelled || refreshTimer !== null) {
+        return;
+      }
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = null;
+        void refreshMessages();
+      }, delayMs);
+    };
+
     void streamRun(
       selectedSessionId,
       recoveredActiveRunId,
@@ -4704,6 +4717,7 @@ export default function App() {
             || event.event === "assistant.delta"
             || event.event === "assistant.completed"
           ) {
+            sawStreamEvent = true;
             setStreamConnected(true);
           }
           if (event.event === "assistant.delta" && typeof event.data.text === "string") {
@@ -4724,18 +4738,15 @@ export default function App() {
           if (
             event.event === "assistant.plan"
             || event.event === "job.started"
-            || event.event === "job.progress"
-            || event.event === "job.log"
             || event.event === "job.updated"
             || event.event === "tool.started"
-            || event.event === "tool.progress"
             || event.event === "tool.completed"
             || event.event === "artifact.created"
             || event.event === "artifacts.updated"
             || event.event === "assistant.completed"
             || event.event === "run.completed"
           ) {
-            void refreshMessages();
+            scheduleRefreshMessages();
           }
         },
       },
@@ -4751,8 +4762,8 @@ export default function App() {
       void pollMessages();
     });
 
-    window.setTimeout(() => {
-      if (!cancelled && !streamFailed) {
+    streamHandshakeTimer = window.setTimeout(() => {
+      if (!cancelled && !streamFailed && !sawStreamEvent) {
         void pollMessages();
       }
     }, 2500);
@@ -4766,6 +4777,12 @@ export default function App() {
       setStreamConnected(false);
       if (pollTimer !== null) {
         window.clearTimeout(pollTimer);
+      }
+      if (refreshTimer !== null) {
+        window.clearTimeout(refreshTimer);
+      }
+      if (streamHandshakeTimer !== null) {
+        window.clearTimeout(streamHandshakeTimer);
       }
     };
   }, [activeView, authState.loading, isSending, recoveredActiveRunId, selectedSessionId]);
@@ -4850,7 +4867,7 @@ export default function App() {
         if (nextRunId) {
           pollTimer = window.setTimeout(() => {
             void loadRuns();
-          }, 4000);
+          }, 15000);
         }
       } catch {
         if (!cancelled && selectedSessionIdRef.current === selectedSessionId) {
@@ -5443,6 +5460,16 @@ export default function App() {
         settleRunUi();
       }, 1200);
     };
+    let conversationRefreshTimer: number | null = null;
+    const queueConversationRefresh = (delayMs = 900) => {
+      if (!workingSessionId || conversationRefreshTimer !== null) {
+        return;
+      }
+      conversationRefreshTimer = window.setTimeout(() => {
+        conversationRefreshTimer = null;
+        void refreshAssistantConversation(workingSessionId as string);
+      }, delayMs);
+    };
     const settleRunUi = () => {
       if (runSettled || activeRunTokenRef.current !== runToken) {
         return;
@@ -5525,7 +5552,7 @@ export default function App() {
                 ));
               }
               if (workingSessionId) {
-                void refreshAssistantConversation(workingSessionId);
+                queueConversationRefresh(0);
               }
               return;
             }
@@ -5533,7 +5560,7 @@ export default function App() {
             if (event.event === "assistant.plan" && typeof event.data.text === "string") {
               appendAssistantPlan(workingSessionId, event.data.text);
               if (workingSessionId) {
-                void refreshAssistantConversation(workingSessionId);
+                queueConversationRefresh();
               }
               return;
             }
@@ -5545,35 +5572,35 @@ export default function App() {
               || event.event === "job.updated"
             ) {
               if (workingSessionId) {
-                void refreshAssistantConversation(workingSessionId);
+                queueConversationRefresh();
               }
               return;
             }
 
             if (event.event === "tool.started" && typeof event.data.toolName === "string") {
               if (workingSessionId) {
-                void refreshAssistantConversation(workingSessionId);
+                queueConversationRefresh();
               }
               return;
             }
 
             if (event.event === "tool.completed" && typeof event.data.toolName === "string") {
               if (workingSessionId) {
-                void refreshAssistantConversation(workingSessionId);
+                queueConversationRefresh();
               }
               return;
             }
 
             if (event.event === "tool.progress" && typeof event.data.toolName === "string" && typeof event.data.text === "string") {
               if (workingSessionId) {
-                void refreshAssistantConversation(workingSessionId);
+                queueConversationRefresh();
               }
               return;
             }
 
             if (event.event === "artifact.created" || event.event === "artifacts.updated") {
               if (workingSessionId) {
-                void refreshAssistantConversation(workingSessionId);
+                queueConversationRefresh();
               }
               return;
             }
@@ -5594,7 +5621,7 @@ export default function App() {
                 );
               }
               if (workingSessionId) {
-                void refreshAssistantConversation(workingSessionId);
+                queueConversationRefresh(0);
               }
               settleRunUi();
               setStreamConnected(false);
@@ -5614,7 +5641,7 @@ export default function App() {
                 ));
               }
               if (workingSessionId) {
-                void refreshAssistantConversation(workingSessionId);
+                queueConversationRefresh(0);
               } else {
                 void refreshSessions(workingSessionId ?? null);
               }
@@ -5645,6 +5672,9 @@ export default function App() {
       }
     } finally {
       clearStreamIdleTimer();
+      if (conversationRefreshTimer !== null) {
+        window.clearTimeout(conversationRefreshTimer);
+      }
       if (activeChatAbortControllerRef.current === abortController) {
         activeChatAbortControllerRef.current = null;
       }
