@@ -318,7 +318,9 @@ export class AlphaloopSemanticSearchService implements SemanticSearchService {
       initialTopK: Math.max(40, Math.min(200, (args.maxResults ?? 8) * 10)),
       maxExpandedQueries: 6,
       maxIterations: 2,
-      relevanceThreshold: 0.35,
+      // Qdrant scores for solid corpus matches routinely land in the mid-teens,
+      // so the previous 0.35 cutoff was pruning the entire agentic result set.
+      relevanceThreshold: 0.12,
       search: async (query, { topK }) => {
         const expansionQuery = looksLikeExpansionQuery(args.query, query);
         const subqueryId = `sq_${String(++subquerySequence).padStart(3, "0")}`;
