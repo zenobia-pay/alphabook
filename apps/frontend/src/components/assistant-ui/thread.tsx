@@ -183,6 +183,7 @@ const suggestionIconMap = {
 
 export const Thread: FC<{
   isRunning?: boolean;
+  showRunningDot?: boolean;
   artifacts?: RunArtifactRecord[];
   showArtifacts?: boolean;
   showWelcome?: boolean;
@@ -193,6 +194,7 @@ export const Thread: FC<{
   composerDisabledNotice?: React.ReactNode;
 }> = ({
   isRunning = false,
+  showRunningDot = isRunning,
   artifacts = [],
   showArtifacts = true,
   showWelcome = true,
@@ -254,7 +256,7 @@ export const Thread: FC<{
 
           <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 mx-auto mt-auto flex w-full max-w-(--thread-max-width) flex-col gap-3 overflow-visible pb-3 md:pb-4">
             <ThreadScrollToBottom />
-            {isRunning ? <ThreadRunningDot /> : null}
+            {showRunningDot ? <ThreadRunningDot /> : null}
             <Composer
               isRunning={isRunning}
               onCancel={onCancel}

@@ -33,6 +33,7 @@ type ThreadSuggestion = {
 export type AssistantSurfaceProps = {
   messages: UiMessage[];
   isSending: boolean;
+  showRunningDot?: boolean;
   streamingAssistantId: string | null;
   artifacts: RunArtifactRecord[];
   showArtifacts?: boolean;
@@ -49,6 +50,7 @@ export type AssistantSurfaceProps = {
 export default function AssistantSurface({
   messages,
   isSending,
+  showRunningDot = isSending,
   streamingAssistantId,
   artifacts,
   showArtifacts = true,
@@ -84,6 +86,7 @@ export default function AssistantSurface({
     <AssistantRuntimeProvider runtime={runtime}>
       <Thread
         isRunning={isSending}
+        showRunningDot={showRunningDot}
         artifacts={artifacts}
         showArtifacts={showArtifacts}
         showWelcome={showWelcome}

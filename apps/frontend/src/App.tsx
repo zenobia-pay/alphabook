@@ -1990,7 +1990,7 @@ function messageToThreadMessage(
                 }),
           };
         });
-    const hasRunningTool = message.toolCalls.some((entry) => entry.state === "running");
+    const hasRunningTool = phase !== "plan" && message.toolCalls.some((entry) => entry.state === "running");
     const textParts = message.content
       ? [
           {
@@ -2008,7 +2008,7 @@ function messageToThreadMessage(
       content,
       metadata,
       status:
-        ((isSending || runActive) && message.id === activeAssistantId) || hasRunningTool
+        ((isSending || (runActive && phase !== "plan")) && message.id === activeAssistantId) || hasRunningTool
           ? ({ type: "running" } as const)
           : ({ type: "complete", reason: "stop" } as const),
     };
@@ -6012,6 +6012,7 @@ export default function App() {
         key={props.componentKey}
         messages={props.messages}
         isSending={props.isSending}
+        showRunningDot={isSending}
         streamingAssistantId={props.streamingAssistantId}
         artifacts={props.artifacts}
         showArtifacts={props.showArtifacts}

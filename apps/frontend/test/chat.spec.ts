@@ -1998,7 +1998,7 @@ test("semantic search shows AlphaLoop progress and citations instead of a static
   await expect(page.getByRole("button", { name: /Semantic Search/ })).toHaveCount(0);
 });
 
-test("active Hermes plan messages keep the thread running dot while the run is still active", async ({ page }) => {
+test("active Hermes plan messages rely on the trace card instead of generic running dots", async ({ page }) => {
   const sessionId = "11111111-1111-4111-8111-111111111130";
   const runId = "22222222-2222-4222-8222-222222222240";
   const planMessageId = "33333333-3333-4333-8333-333333333350";
@@ -2126,8 +2126,10 @@ test("active Hermes plan messages keep the thread running dot while the run is s
   const message = page.locator(".aui-assistant-message-root").filter({
     hasText: "Starting a Hermes research run on this thread and streaming the tool activity here.",
   });
-  await expect(message.locator(".aui-assistant-running-indicator")).toBeVisible();
-  await expect(page.locator(".aui-assistant-running-indicator")).toHaveCount(1);
+  await expect(message).toBeVisible();
+  await expect(message.locator(".aui-assistant-running-indicator")).toHaveCount(0);
+  await expect(page.locator(".aui-assistant-running-indicator")).toHaveCount(0);
+  await expect(page.locator(".aui-thread-running-footer-dot")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Stop" })).toBeVisible();
 });
 
