@@ -9595,6 +9595,85 @@ async function loadResearchRunArchiveManifest(
   return parseHermesArchiveManifest(text);
 }
 
+function normalizeStructuredResearchHitId(input: string) {
+  const trimmed = input.trim().replace(/^hits\//u, "");
+  return trimmed.endsWith(".md") ? trimmed.slice(0, -3) : trimmed;
+}
+
+function fallbackStructuredWorkId(title: string) {
+  const slug = title
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gu, "-")
+    .replace(/^-+|-+$/gu, "");
+  return slug.length > 0 ? `structured:${slug}` : "structured:unknown-work";
+}
+
+async function deriveResearchRunHitsFromStructured(
+  deps: AppDeps,
+  structured: Record<string, unknown> | null,
+): Promise<ResearchRunHit[]> {
+  const citationEntries = Array.isArray(structured?.citations)
+    ? structured.citations.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object")
+    : [];
+  if (citationEntries.length === 0) {
+    return [];
+  }
+
+  const representativeExamples = Array.isArray(structured?.representative_examples)
+    ? structured.representative_examples.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object")
+    : [];
+  const excerptByHitId = new Map<string, string>();
+  for (const example of representativeExamples) {
+    const citation = typeof example.citation === "string" ? example.citation.trim() : "";
+    if (!citation) {
+      continue;
+    }
+    for (const match of citation.matchAll(/\b(hit-\d+)\.md\b/gu)) {
+      const hitId = match[1]?.trim();
+      if (hitId && !excerptByHitId.has(hitId)) {
+        excerptByHitId.set(hitId, citation);
+      }
+    }
+  }
+
+  const workIdByTitle = new Map<string, string>();
+  const resolveWorkId = async (title: string) => {
+    if (workIdByTitle.has(title)) {
+      return workIdByTitle.get(title) ?? fallbackStructuredWorkId(title);
+    }
+    const matches = await deps.store.searchWorks(title, { limit: 1 }).catch(() => []);
+    const workId = matches[0]?.id ?? fallbackStructuredWorkId(title);
+    workIdByTitle.set(title, workId);
+    return workId;
+  };
+
+  const hits: ResearchRunHit[] = [];
+  for (const entry of citationEntries) {
+    const rawHit = typeof entry.hit === "string" ? entry.hit.trim() : "";
+    const title = typeof entry.title === "string" ? entry.title.trim() : "";
+    if (!rawHit || !title) {
+      continue;
+    }
+    const hitId = normalizeStructuredResearchHitId(rawHit);
+    const workId = await resolveWorkId(title);
+    if (!hitId) {
+      continue;
+    }
+    const readerUrl = typeof entry.alphabook_url === "string" && entry.alphabook_url.trim().length > 0
+      ? entry.alphabook_url.trim()
+      : undefined;
+    hits.push({
+      hitId,
+      title,
+      workId,
+      excerpt: excerptByHitId.get(hitId) ?? title,
+      ...(readerUrl ? { readerUrl } : {}),
+    });
+  }
+  return hits;
+}
+
 async function finalizeHermesRun(
   deps: AppDeps,
   activeRuns: Map<string, ActiveRunState>,
@@ -14512,12 +14591,15 @@ export function createApp(inputDeps: CreateAppInput) {
         ...((hit.alphabookUrl ?? "").trim().length > 0 ? { readerUrl: hit.alphabookUrl!.trim() } : {}),
       }))
       : [];
-    const citationsFromMessage = answerMessage ? sanitizeAppCitations(answerMessage.metadata?.citations) : [];
     const structured = structuredFromArtifacts
       ?? (structuredFromArchive && typeof structuredFromArchive === "object" && !Array.isArray(structuredFromArchive)
         ? structuredFromArchive as Record<string, unknown>
         : null);
-    const hits = hitsFromArtifacts.length > 0 ? hitsFromArtifacts : hitsFromArchive;
+    const hitsFromStructured = hitsFromArtifacts.length === 0 && hitsFromArchive.length === 0
+      ? await deriveResearchRunHitsFromStructured(deps, structured)
+      : [];
+    const citationsFromMessage = answerMessage ? sanitizeAppCitations(answerMessage.metadata?.citations) : [];
+    const hits = hitsFromArtifacts.length > 0 ? hitsFromArtifacts : hitsFromArchive.length > 0 ? hitsFromArchive : hitsFromStructured;
     const citations = citationsFromMessage.length > 0
       ? citationsFromMessage
       : citationsFromHermesResolvedHits(hits.map((hit) => ({
