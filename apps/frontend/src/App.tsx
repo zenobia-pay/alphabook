@@ -216,7 +216,8 @@ const SEO_SITE_ORIGIN = IMPLEMENTATION.siteOrigin;
 const BOOK_CONTENT_ORIGIN = IMPLEMENTATION.contentOrigin;
 const BOOK_CONTENT_VERSION = "20260326g";
 const DEFAULT_SEO_DESCRIPTION = IMPLEMENTATION.siteDescription;
-const DEFAULT_OG_IMAGE_PATH = "/social-card.svg";
+const DEFAULT_OG_IMAGE_PATH = "/social-card.jpg";
+const DEFAULT_TWITTER_IMAGE_PATH = "/twitter-card.jpg";
 const CORPUS_LABEL_PLURAL = IMPLEMENTATION.corpusLabelPlural;
 const FREE_TIER_MONTHLY_CREDITS = 1_000_000;
 const PRO_TIER_MONTHLY_CREDITS = 15_000_000;
@@ -4213,6 +4214,7 @@ export default function App() {
     });
     const canonicalUrl = new URL(seo.canonicalPath, SEO_SITE_ORIGIN).toString();
     const imageUrl = new URL(DEFAULT_OG_IMAGE_PATH, SEO_SITE_ORIGIN).toString();
+    const twitterImageUrl = new URL(DEFAULT_TWITTER_IMAGE_PATH, SEO_SITE_ORIGIN).toString();
 
     document.title = seo.title;
     upsertMetaTag("name", "description", seo.description);
@@ -4225,11 +4227,16 @@ export default function App() {
     upsertMetaTag("property", "og:type", seo.ogType);
     upsertMetaTag("property", "og:url", canonicalUrl);
     upsertMetaTag("property", "og:image", imageUrl);
-    upsertMetaTag("property", "og:image:alt", "alpha book preview card");
+    upsertMetaTag("property", "og:image:secure_url", imageUrl);
+    upsertMetaTag("property", "og:image:type", "image/jpeg");
+    upsertMetaTag("property", "og:image:width", "1200");
+    upsertMetaTag("property", "og:image:height", "630");
+    upsertMetaTag("property", "og:image:alt", "alpha book preview card with a silhouetted figure against a city skyline");
     upsertMetaTag("name", "twitter:card", "summary_large_image");
     upsertMetaTag("name", "twitter:title", seo.title);
     upsertMetaTag("name", "twitter:description", seo.description);
-    upsertMetaTag("name", "twitter:image", imageUrl);
+    upsertMetaTag("name", "twitter:image", twitterImageUrl);
+    upsertMetaTag("name", "twitter:image:alt", "alpha book preview card with a silhouetted figure against a city skyline");
     upsertLinkTag("canonical", canonicalUrl);
     upsertJsonLdScript("seo-structured-data", seo.jsonLd);
   }, [
