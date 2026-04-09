@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="${ROOT_DIR:-/srv/alphabook/repo}"
-RUN_ROOT="${RUN_ROOT:-/srv/alphabook/logs/hermes-corpus-research}"
+RUN_ROOT="${RUN_ROOT:-/srv/alphabook/logs/codex-design-experiment-wrapper}"
 INNER_RUN_ROOT="${INNER_RUN_ROOT:-/srv/alphabook/logs/codex-design-experiment}"
 ENV_FILE="${ENV_FILE:-$ROOT_DIR/.dev.vars}"
 FALLBACK_ENV_FILE="${FALLBACK_ENV_FILE:-/srv/alphabook/.ingest.env}"

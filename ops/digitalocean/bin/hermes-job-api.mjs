@@ -11,7 +11,10 @@ import crypto from "node:crypto";
 const HOST = process.env.HERMES_JOB_API_HOST || "0.0.0.0";
 const PORT = Number.parseInt(process.env.HERMES_JOB_API_PORT || "8788", 10);
 const ROOT_DIR = process.env.ROOT_DIR || "/srv/alphabook/repo";
-const RESEARCH_RUN_ROOT = process.env.RUN_ROOT || "/srv/alphabook/logs/hermes-corpus-research";
+const DESIGN_EXPERIMENT_WRAPPER_RUN_ROOT =
+  process.env.DESIGN_EXPERIMENT_WRAPPER_RUN_ROOT
+  || process.env.RUN_ROOT
+  || "/srv/alphabook/logs/codex-design-experiment-wrapper";
 const SEARCH_RUN_ROOT = process.env.SEARCH_RUN_ROOT || "/srv/alphabook/logs/hermes-search";
 const SEMANTIC_RUN_ROOT = process.env.SEMANTIC_RUN_ROOT || "/srv/alphabook/logs/semantic-search";
 const CORPUS_RUN_ROOT = process.env.CORPUS_RUN_ROOT || "/srv/alphabook/logs/corpus-research";
@@ -451,7 +454,7 @@ function resolveLauncherConfig(payload) {
       jobType: "hermes",
       workflow,
       launcherPath: path.join(ROOT_DIR, "ops/digitalocean/bin/run-codex-design-experiment.sh"),
-      runRoot: RESEARCH_RUN_ROOT,
+      runRoot: DESIGN_EXPERIMENT_WRAPPER_RUN_ROOT,
       innerRunRoot: DESIGN_EXPERIMENT_RUN_ROOT,
       promptArgName: "--user-prompt",
       extraArgs: [],
