@@ -5830,7 +5830,7 @@ export default function App() {
           userId: transportUserId,
           message: transportQuestion,
           workIds: options.workIdsOverride,
-          workflow: options.workflowOverride ?? "search",
+          ...(options.workflowOverride ? { workflow: options.workflowOverride } : {}),
         },
         {
           onEvent: (event) => {
