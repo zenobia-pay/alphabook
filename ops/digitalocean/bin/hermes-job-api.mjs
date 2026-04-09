@@ -142,7 +142,7 @@ function isProcessAlive(pid) {
 }
 
 function getWrapperRunRoots() {
-  return [RESEARCH_RUN_ROOT, SEARCH_RUN_ROOT, SEMANTIC_RUN_ROOT];
+  return [DESIGN_EXPERIMENT_WRAPPER_RUN_ROOT, SEARCH_RUN_ROOT, SEMANTIC_RUN_ROOT];
 }
 
 function listRunDirs() {
