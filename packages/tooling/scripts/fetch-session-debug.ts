@@ -3,6 +3,9 @@ import { dirname, resolve } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
+const API_ORIGIN = "https://api.alpha-book.org";
+const API_BASES = [`${API_ORIGIN}/api/v1`, `${API_ORIGIN}/v1`, API_ORIGIN] as const;
+
 type RunRecord = {
   id: string;
   sessionId: string;
@@ -134,14 +137,35 @@ async function fetchJson<T>(url: string, cookie: string): Promise<T> {
     maxBuffer: 200 * 1024 * 1024,
   });
   const text = stdout.toString();
+  if (/<!doctype html|<html\b|<head\b|<body\b|<title\b/i.test(text)) {
+    throw new Error(`Expected JSON from ${url}, but received HTML instead.`);
+  }
   return JSON.parse(text) as T;
 }
 
+async function fetchFirstWorkingJson<T>(paths: string[], cookie: string) {
+  const failures: string[] = [];
+  for (const path of paths) {
+    for (const base of API_BASES) {
+      const url = `${base}${path}`;
+      try {
+        return {
+          url,
+          payload: await fetchJson<T>(url, cookie),
+        };
+      } catch (error) {
+        failures.push(`${url}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  }
+  throw new Error(`All candidate endpoints failed:\n${failures.join("\n")}`);
+}
+
 async function resolveRunId(sessionId: string, cookie: string) {
-  const payload = await fetchJson<{ runs: RunRecord[] }>(
-    "https://api.alpha-book.org/admin/runs",
-    cookie,
-  );
+  const { payload } = await fetchFirstWorkingJson<{ runs: RunRecord[] }>([
+    `/sessions/${sessionId}/runs`,
+    "/admin/runs",
+  ], cookie);
   const runs = payload.runs
     .filter((run) => run.sessionId === sessionId)
     .sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt));
@@ -151,21 +175,21 @@ async function resolveRunId(sessionId: string, cookie: string) {
   return runs[0].id;
 }
 
-function buildLogsUrl(runId: string, args: Args) {
-  const url = new URL(`https://api.alpha-book.org/admin/runs/${runId}/logs`);
+function buildLogsSuffix(args: Args) {
+  const query = new URLSearchParams();
   if (args.includeArtifacts) {
-    url.searchParams.set("includeArtifacts", "1");
+    query.set("includeArtifacts", "1");
   }
   if (args.includeArtifactContents) {
-    url.searchParams.set("includeArtifactContents", "1");
+    query.set("includeArtifactContents", "1");
   }
   if (args.includeRuntimeInstances) {
-    url.searchParams.set("includeRuntimeInstances", "1");
+    query.set("includeRuntimeInstances", "1");
   }
   if (args.includeLiveRuntime) {
-    url.searchParams.set("includeLiveRuntime", "1");
+    query.set("includeLiveRuntime", "1");
   }
-  return url.toString();
+  return query.size > 0 ? `?${query.toString()}` : "";
 }
 
 async function main() {
@@ -178,8 +202,14 @@ async function main() {
   const cookie = await readCookieFromDevVars();
   const runId = args.runId ?? await resolveRunId(sessionId!, cookie);
   const sessionOrUnknown = sessionId ?? "unknown-session";
-  const logsUrl = buildLogsUrl(runId, args);
-  const payload = await fetchJson<Record<string, unknown>>(logsUrl, cookie);
+  const logsSuffix = buildLogsSuffix(args);
+  const logPaths = sessionId
+    ? [
+      `/admin/runs/${runId}/logs${logsSuffix}`,
+      `/sessions/${sessionId}/runs/${runId}/logs${logsSuffix}`,
+    ]
+    : [`/admin/runs/${runId}/logs${logsSuffix}`];
+  const { payload, url: logsUrl } = await fetchFirstWorkingJson<Record<string, unknown>>(logPaths, cookie);
   const outPath = resolve(args.out ?? `/tmp/alphabook-run-${runId}.json`);
 
   await mkdir(dirname(outPath), { recursive: true });

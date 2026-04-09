@@ -16,6 +16,7 @@ This script:
 
 - reads `ALPHABOOK_COOKIE` from `.dev.vars`
 - uses browser-style headers
+- prefers the versioned live API routes under `/api/v1` and falls back only if needed
 - resolves the latest run for the session
 - calls the admin logs endpoint
 - saves the payload to `/tmp/alphabook-run-<run-id>.json`
@@ -50,7 +51,7 @@ If this fails, stop there and fix auth first. A healthy response should show `"a
 3. Resolve the run id from the session:
 
 ```bash
-curl -sS "https://api.alpha-book.org/sessions/<session-id>/runs" \
+curl -sS "https://api.alpha-book.org/api/v1/sessions/<session-id>/runs" \
   -H "Cookie: $COOKIE" \
   -H 'Origin: https://alpha-book.org' \
   -H 'Referer: https://alpha-book.org/' \
@@ -78,7 +79,7 @@ npm run debug:session -- --run <run-id> --full
 If you need the raw curl manually, use:
 
 ```bash
-curl -sS "https://api.alpha-book.org/admin/runs/<run-id>/logs" \
+curl -sS "https://api.alpha-book.org/api/v1/admin/runs/<run-id>/logs" \
   -H "Cookie: $COOKIE" \
   -H 'Origin: https://alpha-book.org' \
   -H 'Referer: https://alpha-book.org/' \
@@ -144,15 +145,24 @@ When a user says “check the logs” for a live assistant session:
 
 Do not rely only on the summarized run state when the admin payload is available.
 
+## Route Preference
+
+Use the versioned live API routes first:
+
+- `https://api.alpha-book.org/api/v1/...`
+- `https://api.alpha-book.org/v1/...`
+
+Do not start with unversioned live routes such as `/admin/runs` or `/sessions/:id/runs` when debugging production sessions. Those paths may be routed to the SPA shell and return HTML with `200 OK` instead of JSON.
+
 ## Detailed Endpoints
 
-- `GET /sessions/:sessionId/debug`
+- `GET /api/v1/sessions/:sessionId/debug`
   Best whole-session debug snapshot for a signed-in owner.
-- `GET /sessions/:sessionId/runs/:runId/debug`
+- `GET /api/v1/sessions/:sessionId/runs/:runId/debug`
   Best structured per-run snapshot.
-- `GET /sessions/:sessionId/runs/:runId/logs`
+- `GET /api/v1/sessions/:sessionId/runs/:runId/logs`
   Best per-run artifact view for non-admin debugging.
-- `GET /admin/runs/:runId/logs`
+- `GET /api/v1/admin/runs/:runId/logs`
   Best overall log endpoint. Use this first when admin access is available.
 
 ## Why Can The Admin Payload Be Huge?

@@ -384,6 +384,11 @@ Artifact requirements:
   - `hits/`
 - Save a lightweight machine-readable index at:
   - `hits/index.json`
+- Always write a concise `final-answer.md`.
+  - It can be short.
+  - For normal evidence-search runs, summarize the scope, what was found, and point the reader to the saved hit artifacts.
+  - For tiny-scope direct-read handoff runs, explicitly say that synthesis should read the full scoped works directly and list the exact next files to inspect.
+  - Do not omit `final-answer.md` just because the run is evidence-only.
 - Save the final scoped searchable file list at:
   - `scoped-files.tsv`
 - Each kept hit should get its own file in `hits/`, for example `hit-0001.md`.
@@ -402,6 +407,8 @@ Quality bar:
 - Treat the effort cap as a hard maximum, not a quota. Stop once you have enough strong, representative evidence, or sooner if the scoped corpus is exhausted.
 - Keep the output inspectable and lightweight.
 - Do not spend time building a full synthesis, labels, or a large structured dataset.
+- Before finishing, validate that `hits/index.json` is consistent with the hit markdown files actually written in `hits/`.
+  - If the counts disagree, regenerate `hits/index.json` from the written hit files before exiting.
 - If the query resolves to 1 to 3 exact books, prefer the tiny-scope direct-reading handoff over a normal capped evidence search.
 
 At the end:
