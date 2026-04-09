@@ -5,7 +5,7 @@ import { ChevronsLeft, ChevronsRight, Dices, Funnel, Link2, LoaderCircle, Messag
 
 import { ChatSessionSummarySchema, getToolLabel, type BillingOverview, type ChatSessionSummary, type ChunkSearchResult, type Citation, type MessageRecord, type NotificationRecord, type ProfileBookStat, type ProfileFacetStat, type ProfileQueryStat, type PublicProfileResponse, type UserProfile, type UserProfileStats, type WorkDetail, type WorkFacetCounts, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
-import { ApiError, buildSignInUrl, buildSignOutUrl, cancelRun, claimGuestProfile, createBillingCheckoutSession, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchAssistantDocumentState, fetchAssistantSessionBootstrap, fetchBillingOverview, fetchCurrentUser, fetchExploreSemanticSearch, fetchMessages, fetchNotifications, fetchProfile, fetchProfileStats, fetchRunState, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, getErrorMessage, markNotificationRead, queryAdminAnalytics, sendAnalyticsEvent, streamChat, streamExploreSemanticSearch, streamRun, unfollowProfile, type BillingLimitErrorPayload, type PersistedRunEventRecord, type RunArtifactRecord, type RunStateRecord, type SessionRunRecord } from "./api";
+import { ApiError, buildSignInUrl, buildSignOutUrl, cancelRun, claimGuestProfile, createBillingCheckoutSession, createBillingPortalSession, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchAssistantDocumentState, fetchAssistantSessionBootstrap, fetchBillingOverview, fetchCurrentUser, fetchExploreSemanticSearch, fetchMessages, fetchNotifications, fetchProfile, fetchProfileStats, fetchRunState, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, getErrorMessage, markNotificationRead, queryAdminAnalytics, sendAnalyticsEvent, streamChat, streamExploreSemanticSearch, streamRun, unfollowProfile, type BillingLimitErrorPayload, type PersistedRunEventRecord, type RunArtifactRecord, type RunStateRecord, type SessionRunRecord } from "./api";
 import type { AssistantSurfaceProps } from "./components/assistant-surface";
 import { Avatar, AvatarFallback, AvatarImage } from "./components/ui/avatar";
 import { Button } from "./components/ui/button";
@@ -3720,6 +3720,7 @@ export default function App() {
   const [loadError, setLoadError] = useState<string | null>(initialAssistantSessionBootstrap?.error ?? null);
   const [billingLimitState, setBillingLimitState] = useState<BillingLimitState | null>(null);
   const [isStartingCheckout, setIsStartingCheckout] = useState(false);
+  const [isOpeningPortal, setIsOpeningPortal] = useState(false);
   const [streamingAssistantId, setStreamingAssistantId] = useState<string | null>(null);
   const streamingAssistantIdRef = useRef<string | null>(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -6337,6 +6338,25 @@ export default function App() {
     }
   }
 
+  async function openSubscriptionPortal() {
+    if (isOpeningPortal) {
+      return;
+    }
+    setIsOpeningPortal(true);
+    try {
+      const session = await createBillingPortalSession();
+      if (session.url) {
+        window.location.assign(session.url);
+        return;
+      }
+      setLoadError("We couldn't open subscription management right now.");
+    } catch (error) {
+      setLoadError(getErrorMessage(error, "We couldn't open subscription management right now."));
+    } finally {
+      setIsOpeningPortal(false);
+    }
+  }
+
   async function toggleFollowProfile() {
     if (!activeProfileUserId || !publicProfile || publicProfile.isSelf) {
       return;
@@ -7138,6 +7158,10 @@ export default function App() {
             {billing?.subscription.checkoutEligible ? (
               <Button type="button" className="profile-upgrade-button" onClick={() => openBillingDialog()} disabled={isStartingCheckout}>
                 {isStartingCheckout ? "Redirecting…" : "Upgrade to Pro"}
+              </Button>
+            ) : billing ? (
+              <Button type="button" className="profile-upgrade-button" onClick={() => void openSubscriptionPortal()} disabled={isOpeningPortal}>
+                {isOpeningPortal ? "Redirecting…" : "Manage subscription"}
               </Button>
             ) : null}
           </div>

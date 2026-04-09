@@ -345,6 +345,16 @@ export async function createBillingCheckoutSession(): Promise<{ url: string | nu
   return await response.json() as { url: string | null };
 }
 
+export async function createBillingPortalSession(): Promise<{ url: string | null }> {
+  const response = await ensureOk(
+    await fetch(`${API_BASE}/billing/manage`, {
+      method: "POST",
+      credentials: "include",
+    }),
+  );
+  return await response.json() as { url: string | null };
+}
+
 export async function fetchNotifications(): Promise<NotificationListResponse> {
   const response = await ensureOk(
     await fetch(`${API_BASE}/notifications`, {
