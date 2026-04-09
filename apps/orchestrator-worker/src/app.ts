@@ -9412,12 +9412,16 @@ async function persistHermesFallbackArtifacts(
 
 function buildHermesCompletionAnswer(
   compiledAnswerText: string | null,
+  briefingMarkdown: string | null,
   finalSnapshot: HermesSessionSnapshot | null,
   archiveManifest: HermesArchiveManifest | null,
   hitsIndexText?: string | null,
 ) {
   if (typeof compiledAnswerText === "string" && compiledAnswerText.trim().length > 0) {
     return compiledAnswerText.trim();
+  }
+  if (typeof briefingMarkdown === "string" && briefingMarkdown.trim().length > 0) {
+    return briefingMarkdown.trim();
   }
   const finalMessages = Array.isArray(finalSnapshot?.messages) ? finalSnapshot.messages : [];
   const finalAssistantMessage = [...finalMessages]
@@ -9748,7 +9752,7 @@ async function finalizeHermesRun(
     .find((entry) => entry.role === "user" && entry.content.trim().length > 0)
     ?.content
     ?.trim() ?? params.job.userPrompt?.trim() ?? "";
-  const synthesisSourceMarkdown = compiledAnswerMarkdown || "";
+  const synthesisSourceMarkdown = compiledAnswerMarkdown || briefingMarkdown || "";
   let synthesizedHermesAnswer: string | null = null;
   if (synthesisSourceMarkdown && latestUserMessage) {
     try {
@@ -9770,6 +9774,7 @@ async function finalizeHermesRun(
   }
   const finalAnswer = synthesizedHermesAnswer ?? buildHermesCompletionAnswer(
     compiledAnswerMarkdown || null,
+    briefingMarkdown || null,
     finalSnapshot,
     archiveManifest,
     hitsIndexText,
@@ -9783,7 +9788,13 @@ async function finalizeHermesRun(
   const runSucceeded =
     params.job.state === "completed"
     && (params.job.exitCode == null || params.job.exitCode === 0)
-    && Boolean(compiledAnswerMarkdown);
+    && (
+      Boolean(compiledAnswerMarkdown)
+      || Boolean(briefingMarkdown)
+      || Boolean(hitsIndexText)
+      || /^completed/iu.test(manifestStatus)
+      || (archiveSummary.fileCount ?? 0) > 0
+    );
 
   if (!runSucceeded) {
     const failureMessage =
