@@ -151,7 +151,7 @@ export const ChatRequestSchema = z.object({
   workIds: z.array(z.string()).optional(),
   stream: z.boolean().optional(),
   mode: z.enum(["semantic", "comprehensive", "agentic"]).optional(),
-  workflow: z.enum(["auto", "search", "design_experiment"]).optional(),
+  workflow: z.enum(["search", "design_experiment"]).optional(),
   intensityOverride: z.enum(["normal", "high", "maximum"]).optional(),
   researchMode: z.enum(["default", "sprite_fanout"]).optional(),
   semanticBackend: z.enum(["alphaloop", "context1"]).optional(),

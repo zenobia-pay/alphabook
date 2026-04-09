@@ -54,7 +54,7 @@ function inferExplicitExecutionMode(userMessage: string): SearchExecutionMode | 
 
 export interface RouterContext {
   userMessage: string;
-  requestedWorkflow?: "auto" | "search" | "design_experiment";
+  requestedWorkflow?: "search" | "design_experiment";
   conversationHistory: Array<{
     role: "user" | "assistant" | "system" | "tool";
     content: string;
@@ -254,7 +254,7 @@ export class OpenAIRouter implements Router {
             task: "Route the user's message before any search or experiment tools run.",
             responseInstructions: "Reply with JSON only.",
             userMessage: context.userMessage,
-            requestedWorkflow: context.requestedWorkflow ?? "auto",
+            requestedWorkflow: context.requestedWorkflow ?? null,
             conversationHistory: context.conversationHistory,
             outputContract: {
               allowedTypes: ["direct_response", "search", "design_experiment"],

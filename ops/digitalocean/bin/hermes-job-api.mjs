@@ -397,7 +397,7 @@ function resolveRunDir(jobId) {
 }
 
 function normalizeWorkflow(value) {
-  if (value === "search" || value === "design_experiment" || value === "auto") {
+  if (value === "search" || value === "design_experiment") {
     return value;
   }
   return null;
@@ -457,15 +457,7 @@ function resolveLauncherConfig(payload) {
       extraArgs: [],
     };
   }
-  return {
-    jobType: "hermes",
-    workflow: workflow ?? "auto",
-    launcherPath: path.join(ROOT_DIR, "ops/digitalocean/bin/run-hermes-corpus-research.sh"),
-    runRoot: RESEARCH_RUN_ROOT,
-    innerRunRoot: CORPUS_RUN_ROOT,
-    promptArgName: "--user-prompt",
-    extraArgs: [],
-  };
+  throw new Error("Hermes jobs require an explicit workflow of search or design_experiment.");
 }
 
 function resolveArtifactPath(runDir, artifactName) {

@@ -1150,7 +1150,7 @@ function searchPlanFromEstimate(
 
 function requestedAssistantMode(input: {
   mode?: "semantic" | "comprehensive" | "agentic";
-  workflow?: "auto" | "search" | "design_experiment";
+  workflow?: "search" | "design_experiment";
   researchMode?: "default" | "sprite_fanout";
 }): "semantic" | "comprehensive" | "agentic" {
   if (input.mode === "agentic") {
@@ -1181,7 +1181,7 @@ function inferExplicitAssistantMode(message: string): "semantic" | "comprehensiv
 
 function requestedIntensityOverride(input: {
   mode?: "semantic" | "comprehensive" | "agentic";
-  workflow?: "auto" | "search" | "design_experiment";
+  workflow?: "search" | "design_experiment";
   intensityOverride?: "normal" | "high" | "maximum";
   researchMode?: "default" | "sprite_fanout";
 }): "normal" | "high" | "maximum" | undefined {
@@ -1195,7 +1195,7 @@ function requestedIntensityOverride(input: {
 }
 
 function hermesSearchEffort(input: {
-  workflow?: "auto" | "search" | "design_experiment";
+  workflow?: "search" | "design_experiment";
   intensityOverride?: "normal" | "high" | "maximum";
   mode?: "semantic" | "comprehensive" | "agentic";
   researchMode?: "default" | "sprite_fanout";
@@ -8679,7 +8679,7 @@ function shouldUseHermesBackend(
   input: {
     mode?: "semantic" | "comprehensive" | "agentic";
     researchMode?: "default" | "sprite_fanout";
-    workflow?: "auto" | "search" | "design_experiment";
+    workflow?: "search" | "design_experiment";
   },
 ) {
   return (requestedAssistantMode(input) === "agentic" || input.workflow === "design_experiment")
@@ -14117,6 +14117,36 @@ export function createApp(inputDeps: CreateAppInput) {
   app.post("/billing/checkout", handleCreateStripeCheckout);
   app.post("/api/billing/checkout", handleCreateStripeCheckout);
   app.post("/v1/billing/checkout", handleCreateStripeCheckout);
+
+  const handleCreateStripePortalSession = async (c: Context) => {
+    const trustedRequest = requireTrustedBrowserRequest(c);
+    if (trustedRequest) {
+      return trustedRequest;
+    }
+    const principal = await resolvePrincipal(c);
+    if (!principal || principal.kind !== "user") {
+      return c.json({ error: "Authentication required." }, deps.auth?.isConfigured() ? 401 : 400);
+    }
+    if (!deps.stripe) {
+      return c.json({ error: "Stripe billing is not configured." }, 501);
+    }
+    const subscription = await deps.store.getSubscriptionByUserId(principal.user.id);
+    const stripeCustomerId = subscription?.stripeCustomerId ?? null;
+    if (!stripeCustomerId) {
+      return c.json({ error: "This account does not have a billable subscription to manage." }, 400);
+    }
+    const session = await deps.stripe.client.billingPortal.sessions.create({
+      customer: stripeCustomerId,
+      return_url: `${siteOrigin(deps)}/profile`,
+    });
+    return c.json({ url: session.url }, 200, {
+      "cache-control": "no-store",
+    });
+  };
+
+  app.post("/billing/manage", handleCreateStripePortalSession);
+  app.post("/api/billing/manage", handleCreateStripePortalSession);
+  app.post("/v1/billing/manage", handleCreateStripePortalSession);
 
   const handleStripeWebhook = async (c: Context) => {
     if (!deps.stripe?.webhookSecret) {

@@ -45,7 +45,7 @@ type RemoteJobCreatePayload = {
   jobType?: "hermes" | "semantic_search";
   userPrompt?: string;
   query?: string;
-  workflow?: "search" | "design_experiment" | "auto";
+  workflow?: "search" | "design_experiment";
   effort?: number;
   model?: string;
   maxTurns?: number;
@@ -125,7 +125,7 @@ export async function resumeHermesJob(
     previousJobId: string;
     hermesSessionId?: string;
     userPrompt: string;
-    workflow?: "search" | "design_experiment" | "auto";
+    workflow?: "search" | "design_experiment";
     effort?: number;
     model?: string;
     maxTurns?: number;
