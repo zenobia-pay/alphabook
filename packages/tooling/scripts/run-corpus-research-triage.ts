@@ -448,6 +448,10 @@ function usageToCost(model: string, promptTokens: number, completionTokens: numb
   );
 }
 
+function parsedFindings(value: { findings?: BaseDecision[] } | null | undefined): BaseDecision[] {
+  return Array.isArray(value?.findings) ? value.findings : [];
+}
+
 function paragraphGroups(lines: string[]): Array<{ startLine: number; endLine: number; text: string; words: number }> {
   const groups: Array<{ startLine: number; endLine: number; text: string; words: number }> = [];
   let currentStart = -1;
@@ -1264,7 +1268,7 @@ async function runNanoTriage(
           schema: triageSchema(),
         });
         usage = response.usage;
-        decisions = (response.parsed.findings ?? []).map((item) => {
+        decisions = parsedFindings(response.parsed).map((item) => {
           const normalized = normalizeDecision(item, options.maxQuoteChars);
           const candidate = candidateById.get(normalized.candidateId);
           return {
@@ -1285,7 +1289,7 @@ async function runNanoTriage(
         schema: triageSchema(),
       });
       usage = response.usage;
-      decisions = (response.parsed.findings ?? []).map((item) => {
+      decisions = parsedFindings(response.parsed).map((item) => {
         const normalized = normalizeDecision(item, options.maxQuoteChars);
         const candidate = candidateById.get(normalized.candidateId);
         return {
@@ -1429,7 +1433,7 @@ async function runMiniEscalation(
           schema: triageSchema(),
         });
         usage = response.usage;
-        decisions = (response.parsed.findings ?? []).map((item) => ({
+        decisions = parsedFindings(response.parsed).map((item) => ({
           ...normalizeDecision(item, options.maxQuoteChars),
           stage: "mini" as const,
         }));
@@ -1445,7 +1449,7 @@ async function runMiniEscalation(
         schema: triageSchema(),
       });
       usage = response.usage;
-      decisions = (response.parsed.findings ?? []).map((item) => ({
+      decisions = parsedFindings(response.parsed).map((item) => ({
         ...normalizeDecision(item, options.maxQuoteChars),
         stage: "mini" as const,
       }));
