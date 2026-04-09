@@ -331,6 +331,33 @@ function normalizeWhitespace(value: string): string {
   return value.replace(/\s+/gu, " ").trim();
 }
 
+function sanitizeForJsonTransport(value: string): string {
+  let output = "";
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        output += value[index] + value[index + 1];
+        index += 1;
+      } else {
+        output += "\uFFFD";
+      }
+      continue;
+    }
+    if (code >= 0xdc00 && code <= 0xdfff) {
+      output += "\uFFFD";
+      continue;
+    }
+    if ((code < 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d) || code === 0x7f) {
+      output += " ";
+      continue;
+    }
+    output += value[index]!;
+  }
+  return output;
+}
+
 function normalizePassageText(value: string): string {
   return normalizeWhitespace(value.replace(/[“”]/gu, "\"").replace(/[‘’]/gu, "'").toLowerCase());
 }
@@ -978,27 +1005,72 @@ async function callOpenAI<T>(input: {
   prompt: string;
   schema: ReturnType<typeof triageSchema> | ReturnType<typeof briefingSchema>;
 }): Promise<OpenAiResponse<T>> {
-  const response = await fetch(`${openAiBaseUrl()}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${input.apiKey}`,
+  const headers = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${input.apiKey}`,
+  };
+  const buildRequestBody = (system: string, prompt: string) => JSON.stringify({
+    model: input.model,
+    response_format: {
+      type: "json_schema",
+      json_schema: input.schema,
     },
-    body: JSON.stringify({
-      model: input.model,
-      response_format: {
-        type: "json_schema",
-        json_schema: input.schema,
-      },
-      messages: [
-        { role: "system", content: input.system },
-        { role: "user", content: input.prompt },
-      ],
-    }),
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: prompt },
+    ],
+  });
+  const primarySystem = sanitizeForJsonTransport(input.system);
+  const primaryPrompt = sanitizeForJsonTransport(input.prompt);
+  let response = await fetch(`${openAiBaseUrl()}/chat/completions`, {
+    method: "POST",
+    headers,
+    body: buildRequestBody(primarySystem, primaryPrompt),
   });
 
   if (!response.ok) {
-    throw new Error(`OpenAI request failed with status ${response.status}: ${(await response.text()).slice(0, 400)}`);
+    const errorText = await response.text();
+    if (response.status === 400 && /parse the json body of your request/iu.test(errorText)) {
+      const fallbackSystem = sanitizeForJsonTransport(primarySystem.normalize("NFKC"));
+      const fallbackPrompt = sanitizeForJsonTransport(primaryPrompt.normalize("NFKC"));
+      if (fallbackSystem !== primarySystem || fallbackPrompt !== primaryPrompt) {
+        response = await fetch(`${openAiBaseUrl()}/chat/completions`, {
+          method: "POST",
+          headers,
+          body: buildRequestBody(fallbackSystem, fallbackPrompt),
+        });
+        if (response.ok) {
+          const payload = await response.json() as {
+            choices?: Array<{
+              message?: {
+                content?: string | null;
+              };
+            }>;
+            usage?: {
+              prompt_tokens?: number;
+              completion_tokens?: number;
+            };
+          };
+          const content = payload.choices?.[0]?.message?.content;
+          if (!content) {
+            throw new Error("OpenAI request returned no content.");
+          }
+          const promptTokens = payload.usage?.prompt_tokens ?? 0;
+          const completionTokens = payload.usage?.completion_tokens ?? 0;
+          return {
+            parsed: JSON.parse(extractJsonObject(content)) as T,
+            usage: {
+              phase: input.phase,
+              model: input.model,
+              prompt_tokens: promptTokens,
+              completion_tokens: completionTokens,
+              estimated_cost_usd: usageToCost(input.model, promptTokens, completionTokens),
+            },
+          };
+        }
+      }
+    }
+    throw new Error(`OpenAI request failed with status ${response.status}: ${errorText.slice(0, 400)}`);
   }
 
   const payload = await response.json() as {
