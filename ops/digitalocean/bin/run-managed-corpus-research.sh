@@ -295,7 +295,7 @@ EOS
 chmod +x "$run_dir/run.sh"
 
 (
-  export ROOT_DIR CORPUS_ROOT RUN_DIR="$run_dir" USER_PROMPT NANO_MODEL ESCALATION_MODEL SYNTHESIS_MODEL CONCURRENCY RUN_LOG="$run_log" STATUS_FILE="$status_file"
+  export ROOT_DIR CORPUS_ROOT PRECOMPUTED_INDEX_DIR RUN_DIR="$run_dir" USER_PROMPT NANO_MODEL ESCALATION_MODEL SYNTHESIS_MODEL CONCURRENCY RUN_LOG="$run_log" STATUS_FILE="$status_file"
   cd "$ROOT_DIR"
   nohup "$run_dir/run.sh" >"$run_dir/stdout.log" 2>"$run_dir/stderr.log" &
   echo $! >"$pid_file"
