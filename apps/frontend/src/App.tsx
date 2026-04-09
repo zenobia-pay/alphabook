@@ -5741,7 +5741,7 @@ export default function App() {
       workIdsOverride?: string[];
       viewOverride?: ViewMode;
       transportMessageOverride?: string;
-      workflowOverride?: "auto" | "search" | "design_experiment";
+      workflowOverride?: "search" | "design_experiment";
     } = {},
   ) {
     const normalizedQuestion = question.trim();
@@ -5830,7 +5830,7 @@ export default function App() {
           userId: transportUserId,
           message: transportQuestion,
           workIds: options.workIdsOverride,
-          workflow: options.workflowOverride ?? "auto",
+          workflow: options.workflowOverride ?? "search",
         },
         {
           onEvent: (event) => {
