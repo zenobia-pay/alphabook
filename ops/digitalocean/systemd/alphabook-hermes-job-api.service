@@ -1,12 +1,12 @@
 [Unit]
-Description=AlphaBook Hermes corpus research job API
+Description=AlphaBook Hermes job API
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 Environment=ROOT_DIR=/srv/alphabook/repo
-Environment=RUN_ROOT=/srv/alphabook/logs/hermes-corpus-research
+Environment=DESIGN_EXPERIMENT_WRAPPER_RUN_ROOT=/srv/alphabook/logs/codex-design-experiment-wrapper
 Environment=CORPUS_RUN_ROOT=/srv/alphabook/logs/corpus-research
 Environment=API_LOG_ROOT=/srv/alphabook/logs/hermes-job-api
 Environment=HERMES_JOB_API_HOST=0.0.0.0
