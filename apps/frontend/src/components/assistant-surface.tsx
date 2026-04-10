@@ -36,6 +36,8 @@ export type AssistantSurfaceProps = {
   streamingAssistantId: string | null;
   artifacts: RunArtifactRecord[];
   showArtifacts?: boolean;
+  mobileOutputsOpen?: boolean;
+  onMobileOutputsOpenChange?: (open: boolean) => void;
   showWelcome?: boolean;
   onPrompt: (prompt: string) => Promise<void>;
   onCancel: () => Promise<void>;
@@ -52,6 +54,8 @@ export default function AssistantSurface({
   streamingAssistantId,
   artifacts,
   showArtifacts = true,
+  mobileOutputsOpen,
+  onMobileOutputsOpenChange,
   showWelcome = true,
   onPrompt,
   onCancel,
@@ -86,6 +90,8 @@ export default function AssistantSurface({
         isRunning={isSending}
         artifacts={artifacts}
         showArtifacts={showArtifacts}
+        mobileOutputsOpen={mobileOutputsOpen}
+        onMobileOutputsOpenChange={onMobileOutputsOpenChange}
         showWelcome={showWelcome}
         suggestions={suggestions}
         composerDisabled={composerDisabled}

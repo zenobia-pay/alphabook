@@ -1,7 +1,7 @@
 import { Component, createContext, type ComponentType, type CSSProperties, type ErrorInfo, type FormEvent, type ReactNode, type UIEvent, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReadonlyJSONObject, ReadonlyJSONValue } from "assistant-stream/utils";
 import type { AgentationProps } from "agentation";
-import { ChevronsLeft, ChevronsRight, Dices, Funnel, Link2, LoaderCircle, MessageSquarePlus, X } from "lucide-react";
+import { ChevronsLeft, ChevronsRight, Dices, FileText, Funnel, Link2, LoaderCircle, MessageSquarePlus, X } from "lucide-react";
 
 import { ChatSessionSummarySchema, getToolLabel, type BillingOverview, type ChatSessionSummary, type ChunkSearchResult, type Citation, type MessageRecord, type NotificationRecord, type ProfileBookStat, type ProfileFacetStat, type ProfileQueryStat, type PublicProfileResponse, type UserProfile, type UserProfileStats, type WorkDetail, type WorkFacetCounts, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
@@ -2754,6 +2754,42 @@ function persistedResearchDocumentHtml(artifacts: RunArtifactRecord[]) {
   return candidate ? artifactText(candidate) : "";
 }
 
+function countVisibleOutputArtifacts(artifacts: RunArtifactRecord[]) {
+  const visibleNames = new Set<string>();
+  for (const artifact of artifacts) {
+    const normalized = artifact.filename.trim().toLowerCase();
+    if (
+      normalized === "inner/final-answer.md"
+      || normalized === "final-answer.md"
+      || normalized === "inner/final-answer.json"
+      || normalized === "final-answer.json"
+      || normalized === "inner/manifest.json"
+      || normalized === "manifest.json"
+      || normalized === "inner/scope-report.json"
+      || normalized === "scope-report.json"
+      || normalized === "inner/run.log"
+      || normalized === "run.log"
+      || normalized === "inner/scoped-files.tsv"
+      || normalized === "scoped-files.tsv"
+      || normalized === "inner/hits/index.json"
+      || normalized === "hits/index.json"
+      || normalized === "inner/briefing.md"
+      || normalized === "briefing.md"
+      || normalized === "inner/dataset.csv"
+      || normalized === "dataset.csv"
+      || normalized === "inner/dataset.jsonl"
+      || normalized === "dataset.jsonl"
+      || normalized === "inner/citation-index.json"
+      || normalized === "citation-index.json"
+      || /^inner\/hits\/hit-\d+\.md$/u.test(normalized)
+      || /^hits\/hit-\d+\.md$/u.test(normalized)
+    ) {
+      visibleNames.add(artifact.filename);
+    }
+  }
+  return visibleNames.size;
+}
+
 function currentResearchDocumentHtml(
   _messages: UiMessage[],
   artifacts: RunArtifactRecord[],
@@ -3717,6 +3753,7 @@ export default function App() {
       ? initialAssistantSessionBootstrap.runState.artifacts
       : []
   ));
+  const [mobileOutputsOpen, setMobileOutputsOpen] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(initialAssistantSessionBootstrap?.error ?? null);
   const [billingLimitState, setBillingLimitState] = useState<BillingLimitState | null>(null);
   const [isStartingCheckout, setIsStartingCheckout] = useState(false);
@@ -3875,6 +3912,8 @@ export default function App() {
         : activeView === "admin"
           ? "Admin"
           : NAV_ITEMS.find((item) => item.id === activeView)?.label ?? PRODUCT_NAME;
+  const mobileOutputCount = useMemo(() => countVisibleOutputArtifacts(runArtifacts), [runArtifacts]);
+  const showMobileOutputsToggle = activeView === "assistant" && mobileOutputCount > 0;
   const authLocked = authState.authConfigured && !authState.user;
   const hasAuthenticatedUser = Boolean(authState.user);
   const authPending = authState.loading;
@@ -3905,6 +3944,16 @@ export default function App() {
     () => buildSessionNotificationMap(notificationsState.notifications),
     [notificationsState.notifications],
   );
+
+  useEffect(() => {
+    setMobileOutputsOpen(false);
+  }, [activeView, selectedSessionId]);
+
+  useEffect(() => {
+    if (mobileOutputsOpen && mobileOutputCount === 0) {
+      setMobileOutputsOpen(false);
+    }
+  }, [mobileOutputCount, mobileOutputsOpen]);
   const activeReaderFrameHref = useMemo(
     () => {
       if (!activeWorkId) {
@@ -6399,6 +6448,8 @@ export default function App() {
     streamingAssistantId: string | null;
     artifacts: RunArtifactRecord[];
     showArtifacts?: boolean;
+    mobileOutputsOpen?: boolean;
+    onMobileOutputsOpenChange?: (open: boolean) => void;
     showWelcome?: boolean;
     onPrompt: (prompt: string) => Promise<void>;
     onCancel: () => Promise<void>;
@@ -6424,6 +6475,8 @@ export default function App() {
         streamingAssistantId={props.streamingAssistantId}
         artifacts={props.artifacts}
         showArtifacts={props.showArtifacts}
+        mobileOutputsOpen={props.mobileOutputsOpen}
+        onMobileOutputsOpenChange={props.onMobileOutputsOpenChange}
         showWelcome={props.showWelcome}
         onPrompt={props.onPrompt}
         onCancel={props.onCancel}
@@ -6491,6 +6544,8 @@ export default function App() {
               isSending: isSending || recoveredActiveRunId !== null,
               streamingAssistantId,
               artifacts: runArtifacts,
+              mobileOutputsOpen,
+              onMobileOutputsOpenChange: setMobileOutputsOpen,
               onPrompt: sendPrompt,
               onCancel: cancelActiveRun,
               componentKey: selectedSessionId ?? "new-thread",
@@ -8152,21 +8207,37 @@ export default function App() {
             <span className="mobile-shell-wordmark">{WORDMARK}</span>
             <strong>{activeViewLabel}</strong>
           </div>
-          <Button
-            type="button"
-            variant="outline"
-            size="icon"
-            className="mobile-shell-button mobile-profile-button overflow-hidden"
-            aria-label="Open profile"
-            onClick={() => {
-              openProfile(currentUser?.id ?? null);
-            }}
-          >
-            <Avatar className="size-8">
-              {currentUser?.avatarUrl ? <AvatarImage className="sidebar-avatar-image" src={currentUser.avatarUrl} alt={displayProfileName} /> : null}
-              <AvatarFallback>{hasAuthenticatedUser ? initialsFromSeed(displayProfileName) : <ProfileIcon />}</AvatarFallback>
-            </Avatar>
-          </Button>
+          <div className="mobile-shell-actions">
+            {showMobileOutputsToggle ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                className={cn("mobile-shell-button mobile-shell-button-with-count", mobileOutputsOpen && "is-active")}
+                aria-label={mobileOutputsOpen ? "Hide outputs" : "Show outputs"}
+                aria-pressed={mobileOutputsOpen}
+                onClick={() => setMobileOutputsOpen((current) => !current)}
+              >
+                <FileText />
+                <span className="mobile-shell-button-count">{mobileOutputCount}</span>
+              </Button>
+            ) : null}
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              className="mobile-shell-button mobile-profile-button overflow-hidden"
+              aria-label="Open profile"
+              onClick={() => {
+                openProfile(currentUser?.id ?? null);
+              }}
+            >
+              <Avatar className="size-8">
+                {currentUser?.avatarUrl ? <AvatarImage className="sidebar-avatar-image" src={currentUser.avatarUrl} alt={displayProfileName} /> : null}
+                <AvatarFallback>{hasAuthenticatedUser ? initialsFromSeed(displayProfileName) : <ProfileIcon />}</AvatarFallback>
+              </Avatar>
+            </Button>
+          </div>
         </div>
         {loadError ? <ErrorNotice className="thread-error-banner" message={loadError} onDismiss={() => setLoadError(null)} /> : null}
         {renderMainView()}

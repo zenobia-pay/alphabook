@@ -184,6 +184,8 @@ export const Thread: FC<{
   isRunning?: boolean;
   artifacts?: RunArtifactRecord[];
   showArtifacts?: boolean;
+  mobileOutputsOpen?: boolean;
+  onMobileOutputsOpenChange?: (open: boolean) => void;
   showWelcome?: boolean;
   suggestions?: ThreadSuggestion[];
   onSuggestionSelect?: (prompt: string) => void;
@@ -194,6 +196,8 @@ export const Thread: FC<{
   isRunning = false,
   artifacts = [],
   showArtifacts = true,
+  mobileOutputsOpen,
+  onMobileOutputsOpenChange,
   showWelcome = true,
   suggestions = [],
   onSuggestionSelect,
@@ -265,7 +269,13 @@ export const Thread: FC<{
           </ThreadPrimitive.ViewportFooter>
         </ThreadPrimitive.Viewport>
 
-        {showArtifacts ? <ThreadOutputs artifacts={artifacts} /> : null}
+        {showArtifacts ? (
+          <ThreadOutputs
+            artifacts={artifacts}
+            mobileExpanded={mobileOutputsOpen}
+            onMobileExpandedChange={onMobileOutputsOpenChange}
+          />
+        ) : null}
       </div>
     </ThreadPrimitive.Root>
   );
@@ -273,10 +283,14 @@ export const Thread: FC<{
 
 const ThreadOutputs: FC<{
   artifacts: RunArtifactRecord[];
-}> = ({ artifacts }) => {
+  mobileExpanded?: boolean;
+  onMobileExpandedChange?: (open: boolean) => void;
+}> = ({ artifacts, mobileExpanded, onMobileExpandedChange }) => {
   const visibleArtifacts = useMemo(() => selectVisibleArtifacts(artifacts), [artifacts]);
   const [isExpanded, setIsExpanded] = useState(true);
   const hasArtifacts = visibleArtifacts.length > 0;
+  const isMobileControlled = typeof mobileExpanded === "boolean";
+  const expanded = isMobileControlled ? mobileExpanded : isExpanded;
 
   const handleOpenArtifact = useCallback((artifact: RunArtifactRecord) => {
     const content = typeof artifact.content === "string" ? artifact.content : "";
@@ -289,13 +303,21 @@ const ThreadOutputs: FC<{
     window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
   }, []);
 
+  const handleToggle = useCallback(() => {
+    if (isMobileControlled) {
+      onMobileExpandedChange?.(!expanded);
+      return;
+    }
+    setIsExpanded((current) => !current);
+  }, [expanded, isMobileControlled, onMobileExpandedChange]);
+
   return (
-    <aside className={cn("assistant-outputs-rail", isExpanded && "is-expanded")} aria-label="Outputs">
+    <aside className={cn("assistant-outputs-rail", expanded && "is-expanded")} aria-label="Outputs">
       <button
         type="button"
         className="assistant-outputs-toggle"
-        aria-expanded={isExpanded}
-        onClick={() => setIsExpanded((current) => !current)}
+        aria-expanded={expanded}
+        onClick={handleToggle}
       >
         <span className="assistant-outputs-toggle-copy">
           <span className="assistant-outputs-label">Outputs</span>
