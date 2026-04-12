@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="${ROOT_DIR:-/srv/alphabook/repo}"
 RUN_ROOT="${RUN_ROOT:-/srv/alphabook/logs/hermes-search}"
+SEARCH_CORPUS_RUN_ROOT="${SEARCH_CORPUS_RUN_ROOT:-/srv/alphabook/logs/corpus-search}"
 HERMES_CONFIG_SOURCE="${HERMES_CONFIG_SOURCE:-/root/.hermes/config.yaml}"
 HERMES_ENV_SOURCE="${HERMES_ENV_SOURCE:-/root/.hermes/.env}"
 ENV_FILE="${ENV_FILE:-$ROOT_DIR/.dev.vars}"
