@@ -7797,13 +7797,22 @@ async function rewriteAnswerWithHermesHitLinks(
   let rewritten = answer;
   for (const [filename, link] of linkByFile.entries()) {
     const patterns = [
+      new RegExp(`\\[([^\\]]*${escapeRegExp(filename)}[^\\]]*)\\]\\((?:\\./)?${escapeRegExp(filename)}\\)`, "gu"),
+      new RegExp(`\\[([^\\]]+)\\]\\((?:\\./)?${escapeRegExp(filename)}\\)`, "gu"),
+      new RegExp(`\\((?:\\./)?${escapeRegExp(filename)}\\)`, "gu"),
       new RegExp(`\`${escapeRegExp(filename)}\``, "gu"),
       new RegExp(escapeRegExp(filename), "gu"),
     ];
-    for (const pattern of patterns) {
+    rewritten = rewritten.replace(patterns[0], `[$1](${link})`);
+    rewritten = rewritten.replace(patterns[1], `[$1](${link})`);
+    rewritten = rewritten.replace(patterns[2], `([Open passage](${link}))`);
+    for (const pattern of patterns.slice(3)) {
       rewritten = rewritten.replace(pattern, `[${filename}](${link})`);
     }
   }
+
+  // Never ship local run-artifact hrefs to the public site. If enrichment fails, leave plain text.
+  rewritten = rewritten.replace(/\[([^\]]+)\]\((?:\.\/)?(?:inner\/)?hits\/(hit-\d+\.md)\)/gu, "$1 ($2)");
   return rewritten;
 }
 

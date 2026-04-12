@@ -46,6 +46,18 @@ def load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def parse_hits_index_payload(payload: Any) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    if isinstance(payload, list):
+        hits = [entry for entry in payload if isinstance(entry, dict)]
+        return hits, None
+    if isinstance(payload, dict):
+        raw_hits = payload.get("hits")
+        if isinstance(raw_hits, list):
+            hits = [entry for entry in raw_hits if isinstance(entry, dict)]
+            return hits, payload
+    raise ValueError("invalid_hits_index")
+
+
 def load_chunks(chunks_path: Path) -> list[dict[str, Any]]:
     chunks: list[dict[str, Any]] = []
     for line in chunks_path.read_text(encoding="utf-8").splitlines():
@@ -88,6 +100,19 @@ def resolve_chunk(hit: dict[str, Any], chunks: list[dict[str, Any]]) -> dict[str
     if best_score <= 0:
         return None
     return best_record
+
+
+def extract_quote_from_hit_markdown(path: Path) -> str:
+    text = path.read_text(encoding="utf-8", errors="ignore")
+    marker_match = re.search(r"(?im)^(?:exact_quoted_chunk|Exact quoted chunk):\s*$", text)
+    if not marker_match:
+        return ""
+    body = text[marker_match.end():].strip()
+    if body.startswith('"""'):
+        body = body[3:]
+        if body.endswith('"""'):
+            body = body[:-3]
+    return body.strip()
 
 
 def build_full_reader_path(gutenberg_id: str, reader_path: str | None) -> str | None:
@@ -147,8 +172,9 @@ def main() -> int:
         print(json.dumps({"ok": False, "reason": "missing_hits_index", "path": str(hits_index_path)}))
         return 1
 
-    hits = load_json(hits_index_path)
-    if not isinstance(hits, list):
+    try:
+        hits, payload_wrapper = parse_hits_index_payload(load_json(hits_index_path))
+    except ValueError:
         print(json.dumps({"ok": False, "reason": "invalid_hits_index"}))
         return 1
 
@@ -161,6 +187,17 @@ def main() -> int:
         source_file = str(hit.get("source_file") or "")
         gutenberg_id = derive_gutenberg_id(source_file)
         if not gutenberg_id:
+            continue
+        quote = str(hit.get("quote") or "").strip()
+        if not quote:
+            hit_id = str(hit.get("hit_id") or "")
+            if hit_id:
+                hit_path = inner_run_dir / "hits" / f"{hit_id}.md"
+                if hit_path.exists():
+                    quote = extract_quote_from_hit_markdown(hit_path)
+                    if quote:
+                        hit["quote"] = quote
+        if not quote:
             continue
         chunks_path = Path(source_file).with_name("chunks.jsonl")
         if not chunks_path.exists():
@@ -194,7 +231,13 @@ def main() -> int:
             if hit_path.exists():
                 rewrite_hit_markdown(hit_path, hit)
 
-    hits_index_path.write_text(json.dumps(hits, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    if payload_wrapper is None:
+        output_payload: Any = hits
+    else:
+        payload_wrapper["hits"] = hits
+        payload_wrapper["hit_count"] = len(hits)
+        output_payload = payload_wrapper
+    hits_index_path.write_text(json.dumps(output_payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(json.dumps({
         "ok": True,
         "inner_run_dir": str(inner_run_dir),
