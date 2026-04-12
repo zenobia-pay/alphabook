@@ -209,7 +209,15 @@ print(secrets.token_hex(4))
 PY
 )"
 run_dir="$RUN_ROOT/$timestamp-$run_id"
+inner_timestamp="$(date -u +%Y%m%d-%H%M%S)"
+inner_run_id="$(python3 - <<'PY'
+import secrets
+print(secrets.token_hex(4))
+PY
+)"
+inner_run_dir="$SEARCH_CORPUS_RUN_ROOT/$inner_timestamp-$inner_run_id"
 mkdir -p "$run_dir"
+mkdir -p "$inner_run_dir"
 job_id="$(basename "$run_dir")"
 state_dir="$run_dir/state"
 attempts_dir="$run_dir/attempts"
@@ -247,6 +255,8 @@ ln -sfn "attempts/$attempt_id/runtime/heartbeat.pid" "$run_dir/heartbeat.pid"
 ln -sfn "attempts/$attempt_id/runtime/inner-run-dir.txt" "$run_dir/inner-run-dir.txt"
 ln -sfn "attempts/$attempt_id/hermes-home" "$run_dir/hermes-home"
 ln -sfn "attempts/$attempt_id" "$run_dir/current-attempt"
+
+printf '%s\n' "$inner_run_dir" >"$inner_run_file"
 
 if [[ -f "$HERMES_CONFIG_SOURCE" ]]; then
   cp "$HERMES_CONFIG_SOURCE" "$hermes_home/.hermes/config.yaml"
@@ -287,7 +297,7 @@ else:
 path.write_text(text)
 PY
 
-python3 - "$prompt_file" "$CORPUS_ROOT" "$PRECOMPUTED_INDEX_DIR" "$USER_PROMPT" "$EFFORT" <<'PY'
+python3 - "$prompt_file" "$CORPUS_ROOT" "$PRECOMPUTED_INDEX_DIR" "$USER_PROMPT" "$EFFORT" "$inner_run_dir" <<'PY'
 from pathlib import Path
 import sys
 
@@ -296,6 +306,7 @@ corpus_root = sys.argv[2]
 precomputed_index_dir = sys.argv[3]
 user_prompt = sys.argv[4]
 effort = int(sys.argv[5])
+inner_run_dir = sys.argv[6]
 
 prompt = f"""You are on a DigitalOcean droplet with a prepared Project Gutenberg corpus at {corpus_root}.
 
@@ -349,9 +360,8 @@ Search requirements:
 - When invoking repo helpers on this droplet, use repo-root absolute paths under `/srv/alphabook/repo/...`.
 
 Artifact requirements:
-- Create a timestamped inner run directory under:
-  /srv/alphabook/logs/corpus-search/<timestamp>-<run-id>/
-- Immediately write that absolute inner run directory path into `$WRAPPER_INNER_RUN_FILE` after you create it, if that environment variable is set.
+- Work only inside this preallocated inner run directory:
+  {inner_run_dir}
 - Log progress in `run.log`.
 - Write `manifest.json` with at least:
   - run_id
@@ -420,7 +430,7 @@ At the end:
 prompt_path.write_text(prompt)
 PY
 
-python3 - "$status_file" "$summary_file" "$timestamp" "$run_id" "$job_id" "$ROOT_DIR" "$CORPUS_ROOT" "$PRECOMPUTED_INDEX_DIR" "$MODEL" "$MAX_TURNS" "$USER_PROMPT" "$EFFORT" "$ALPHABOOK_SESSION_ID" "$ALPHABOOK_RUN_ID" "$CALLBACK_URL" "$ARCHIVE_PREFIX" <<'PY'
+python3 - "$status_file" "$summary_file" "$timestamp" "$run_id" "$job_id" "$ROOT_DIR" "$CORPUS_ROOT" "$PRECOMPUTED_INDEX_DIR" "$MODEL" "$MAX_TURNS" "$USER_PROMPT" "$EFFORT" "$ALPHABOOK_SESSION_ID" "$ALPHABOOK_RUN_ID" "$CALLBACK_URL" "$ARCHIVE_PREFIX" "$inner_run_dir" <<'PY'
 from pathlib import Path
 import json
 import sys
@@ -440,6 +450,8 @@ payload = {
     "alphabook_run_id": sys.argv[14] or None,
     "callback_url": sys.argv[15] or None,
     "archive_prefix": sys.argv[16] or None,
+    "inner_run_dir": sys.argv[17],
+    "inner_run_id": Path(sys.argv[17]).name,
     "state": "launching",
     "run_dir": str(Path(sys.argv[1]).parent.parent),
     "state_dir": str(Path(sys.argv[1]).parent),
@@ -450,6 +462,39 @@ payload = {
 }
 Path(sys.argv[1]).write_text(json.dumps(payload, indent=2) + "\n")
 Path(sys.argv[2]).write_text(json.dumps(payload, indent=2) + "\n")
+PY
+
+python3 - "$inner_run_dir/manifest.json" "$inner_run_dir/status.json" "$inner_run_dir/run.log" "$USER_PROMPT" "$inner_timestamp" "$inner_run_id" "$CORPUS_ROOT" "$EFFORT" <<'PY'
+from pathlib import Path
+import json
+import sys
+
+manifest = {
+    "run_id": sys.argv[6],
+    "timestamp": sys.argv[5],
+    "user_prompt": sys.argv[4],
+    "effort": int(sys.argv[8]),
+    "corpus_root": sys.argv[7],
+    "chosen_scope": None,
+    "scope_rationale": None,
+    "search_strategy_summary": None,
+    "resolved_work_count": None,
+    "synthesis_mode": None,
+    "synthesis_rationale": None,
+    "kept_hit_count": 0,
+    "status": "running",
+    "output_file_list": [
+        str(Path(sys.argv[1])),
+        str(Path(sys.argv[2])),
+        str(Path(sys.argv[3])),
+    ],
+}
+Path(sys.argv[1]).write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+Path(sys.argv[2]).write_text(json.dumps({
+    "phase": "launching",
+    "status": "running",
+}, indent=2) + "\n", encoding="utf-8")
+Path(sys.argv[3]).write_text("", encoding="utf-8")
 PY
 
 python3 - "$attempt_manifest_file" "$run_dir" "$attempt_dir" "$attempt_id" "$timestamp" <<'PY'
