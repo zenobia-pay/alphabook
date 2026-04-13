@@ -942,7 +942,9 @@ function hydrateConversationMessages(
   const hydrated = Array.isArray(rawMessages) ? rawMessages.map(hydrateStoredMessage) : [];
   const run = runState?.run;
   const toolTrace = Array.isArray(runState?.toolTrace) ? runState.toolTrace : [];
-  if (run && toolTrace.length > 0) {
+  const hasUserProgress = Array.isArray(runState?.runEvents)
+    && runState.runEvents.some((event) => event.event === "user.progress");
+  if (run && toolTrace.length > 0 && !hasUserProgress) {
     for (let index = hydrated.length - 1; index >= 0; index -= 1) {
       const message = hydrated[index];
       if (message.role !== "assistant") {

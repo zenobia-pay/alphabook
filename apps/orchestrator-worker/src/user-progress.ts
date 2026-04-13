@@ -124,6 +124,60 @@ function summarizeCommand(command: string) {
   return null;
 }
 
+function summarizePromptLine(text: string) {
+  const searchMatch = text.match(/^Launching agentic search with user query '(.+)'$/u);
+  if (searchMatch?.[1]) {
+    return truncateText(`Search brief: ${searchMatch[1]}`);
+  }
+  const experimentMatch = text.match(/^Launching experiment with user query '(.+)'$/u);
+  if (experimentMatch?.[1]) {
+    return truncateText(`Experiment brief: ${experimentMatch[1]}`);
+  }
+  return null;
+}
+
+function summarizePrettyCliLine(text: string) {
+  const normalized = text.trim();
+  if (!normalized.startsWith("┊")) {
+    return null;
+  }
+  const preparing = normalized.match(/^┊\s+[\p{Emoji}\u{1F300}-\u{1FAFF}]?\s*preparing\s+([a-z0-9_-]+)\.\.\.$/iu);
+  if (preparing?.[1]) {
+    const tool = preparing[1].replace(/[_-]+/gu, " ").trim();
+    return truncateText(`Preparing ${tool}.`);
+  }
+  const read = normalized.match(/^┊\s+[\p{Emoji}\u{1F300}-\u{1FAFF}]?\s*read\s+(\S+)\s+([\d.]+s)$/iu);
+  if (read?.[1]) {
+    const path = read[1];
+    const base = path.split("/").at(-1) ?? path;
+    if (base === "run.log") {
+      return "Reading the current run log.";
+    }
+    if (base === "status.json") {
+      return "Checking the current run status.";
+    }
+    if (base === "manifest.json") {
+      return "Reading the run manifest.";
+    }
+    if (base.endsWith(".md")) {
+      return truncateText(`Reading ${base.replace(/[-_]+/gu, " ")}.`);
+    }
+    return truncateText(`Reading ${base}.`);
+  }
+  const shell = normalized.match(/^┊\s+[\p{Emoji}\u{1F300}-\u{1FAFF}]?\s*\$\s+(.+)$/u);
+  if (shell?.[1]) {
+    return summarizeCommand(shell[1]);
+  }
+  const find = normalized.match(/^┊\s+[\p{Emoji}\u{1F300}-\u{1FAFF}]?\s*find\s+(.+?)\s+([\d.]+s)$/iu);
+  if (find?.[1]) {
+    const target = find[1];
+    if (/\.txt\b/iu.test(target)) {
+      return "Scanning text files in the current run workspace.";
+    }
+  }
+  return null;
+}
+
 function summarizeToolStarted(toolName: string, data: Record<string, unknown>) {
   const args = safeRecord(data.args);
   const query = typeof args?.query === "string" ? truncateText(args.query, 140) : null;
@@ -195,6 +249,22 @@ function summarizeLogLine(
   }
   if (/^(?:timestamp|run_id|job_id|wrapper_run_dir|inner_run_dir|root_dir|corpus_root|archive_prefix|alphabook_session_id|alphabook_run_id|model)=/u.test(trimmed)) {
     return null;
+  }
+  const promptLine = summarizePromptLine(trimmed);
+  if (promptLine) {
+    return {
+      text: promptLine,
+      kind: "status",
+      meaningful: true,
+    };
+  }
+  const prettyCliLine = summarizePrettyCliLine(trimmed);
+  if (prettyCliLine) {
+    return {
+      text: prettyCliLine,
+      kind: "activity",
+      meaningful: true,
+    };
   }
 
   const parsed = parseJsonLine(trimmed);

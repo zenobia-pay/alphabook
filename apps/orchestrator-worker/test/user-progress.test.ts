@@ -62,6 +62,36 @@ test("heartbeat lines become task-oriented liveness updates", () => {
   });
 });
 
+test("launch prompt lines are rewritten as explicit user-facing briefs", () => {
+  const candidate = deriveUserProgressCandidate({
+    event: "tool.progress",
+    data: {
+      text: "Launching agentic search with user query 'Find people who became experts through obsessive niche preservation work'",
+    },
+  });
+
+  assert.deepEqual(candidate, {
+    text: "Search brief: Find people who became experts through obsessive niche preservation work",
+    kind: "status",
+    meaningful: true,
+  });
+});
+
+test("pretty cli helper lines are normalized into readable activity", () => {
+  const candidate = deriveUserProgressCandidate({
+    event: "job.log",
+    data: {
+      text: "┊ 📖 read /srv/alphabook/logs/corpus-search/20260413-180400-b97ef383/run.log 0.9s",
+    },
+  });
+
+  assert.deepEqual(candidate, {
+    text: "Reading the current run log.",
+    kind: "activity",
+    meaningful: true,
+  });
+});
+
 test("json fragments from manifest dumps are suppressed", () => {
   const candidate = deriveUserProgressCandidate({
     event: "job.log",
