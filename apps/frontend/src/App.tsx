@@ -867,53 +867,10 @@ function readRunEventText(event: PersistedRunEventRecord): string | null {
   return null;
 }
 
-function buildPersistedRunLogMessage(
-  sessionId: string,
-  runState: AssistantSessionBootstrapPayload["runState"] | RunStateRecord | null | undefined,
-): UiMessage | null {
-  const run = runState?.run;
-  if (!run) {
-    return null;
-  }
-  const runEvents = Array.isArray(runState?.runEvents) ? runState.runEvents : [];
-  if (runEvents.length === 0) {
-    return null;
-  }
-
-  const userProgressLines = runEvents
-    .filter((event) => event.event === "user.progress")
-    .map((event) => typeof event.dataJson?.line === "string" ? event.dataJson.line.trim() : "")
-    .filter((line) => line.length > 0);
-  if (userProgressLines.length > 0) {
-    return {
-      id: `run-progress:${run.id}`,
-      sessionId,
-      role: "assistant",
-      content: userProgressLines.join("\n\n"),
-      metadata: {
-        phase: "progress",
-        runId: run.id,
-        synthetic: true,
-      },
-      createdAt: runEvents[runEvents.length - 1]?.createdAt ?? run.startedAt,
-      citations: [],
-      toolCalls: [],
-    };
-  }
-  return null;
-}
-
 function hydrateConversationMessages(
-  sessionId: string,
   rawMessages: RawUiMessage[] | undefined,
-  runState: AssistantSessionBootstrapPayload["runState"] | RunStateRecord | null | undefined,
 ): UiMessage[] {
-  const hydrated = Array.isArray(rawMessages) ? rawMessages.map(hydrateStoredMessage) : [];
-  const progressMessage = buildPersistedRunLogMessage(sessionId, runState);
-  if (!progressMessage) {
-    return hydrated;
-  }
-  return [...hydrated.filter((message) => message.id !== progressMessage.id), progressMessage];
+  return Array.isArray(rawMessages) ? rawMessages.map(hydrateStoredMessage) : [];
 }
 
 function dedupeAdjacentErrorMessages(messages: UiMessage[]) {
@@ -3289,9 +3246,7 @@ function AssistantDocumentFramePage({
   const bootstrap = useMemo(() => readAssistantDocumentBootstrap(sessionId, runId), [runId, sessionId]);
   const bootstrapHydratedMessages = useMemo(() => {
     return hydrateConversationMessages(
-      sessionId,
       Array.isArray(bootstrap?.messages) ? bootstrap.messages : [],
-      bootstrap?.runState,
     );
   }, [bootstrap]);
   const [messages, setMessages] = useState<UiMessage[]>(bootstrapHydratedMessages);
@@ -3353,7 +3308,7 @@ function AssistantDocumentFramePage({
           window.clearTimeout(loadingTimer);
           loadingTimer = null;
         }
-        const merged = hydrateConversationMessages(sessionId, nextMessages, nextState);
+        const merged = hydrateConversationMessages(nextMessages);
         setMessages(merged);
         setArtifacts(Array.isArray(nextState.artifacts) ? nextState.artifacts : []);
         setRunStatus(nextState.run?.status ?? null);
@@ -3673,11 +3628,9 @@ export default function App() {
   const initialAssistantSessionBootstrap = readAssistantSessionBootstrap(initialUrlState.sessionId);
   const initialWorkPageBootstrap = readWorkPageBootstrap(initialUrlState.workId);
   const initialBootstrapHydratedMessages = hydrateConversationMessages(
-    initialUrlState.sessionId ?? "pending",
     Array.isArray(initialAssistantSessionBootstrap?.messages)
       ? initialAssistantSessionBootstrap.messages
       : [],
-    initialAssistantSessionBootstrap?.runState,
   );
   const initialBootstrapRuns = Array.isArray(initialAssistantSessionBootstrap?.runs)
     ? initialAssistantSessionBootstrap.runs
@@ -3967,7 +3920,7 @@ export default function App() {
           return;
         }
         setRunArtifacts(Array.isArray(nextState.artifacts) ? nextState.artifacts : []);
-        setMessages((current) => hydrateConversationMessages(selectedSessionId, current, nextState));
+        setMessages((current) => hydrateConversationMessages(current));
       } catch {
         // Best-effort backfill for lightweight bootstrap payloads.
       }
@@ -5037,7 +4990,7 @@ export default function App() {
           return;
         }
         consecutivePollFailures = 0;
-        const hydrated = hydrateConversationMessages(selectedSessionId, nextMessages, nextRunState);
+        const hydrated = hydrateConversationMessages(nextMessages);
         setMessages(hydrated);
         setRunArtifacts(Array.isArray(nextRunState?.artifacts) ? nextRunState.artifacts : []);
         pollTimer = window.setTimeout(() => {
@@ -5068,7 +5021,7 @@ export default function App() {
       if (cancelled || selectedSessionIdRef.current !== selectedSessionId) {
         return;
       }
-      const hydrated = hydrateConversationMessages(selectedSessionId, nextMessages, nextRunState);
+      const hydrated = hydrateConversationMessages(nextMessages);
       setMessages(hydrated);
       setRunArtifacts(Array.isArray(nextRunState?.artifacts) ? nextRunState.artifacts : []);
     };
@@ -5359,7 +5312,7 @@ export default function App() {
     const activeRun =
       nextRuns.find((run) => run.status === "running" || run.status === "queued")
       ?? null;
-    const hydratedMessages = hydrateConversationMessages(sessionId, bootstrap.messages, bootstrap.runState);
+    const hydratedMessages = hydrateConversationMessages(bootstrap.messages);
     setSessions((current) => (
       Array.isArray(bootstrap.sessions) && bootstrap.sessions.length > 0
         ? bootstrap.sessions

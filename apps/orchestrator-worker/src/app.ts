@@ -9142,10 +9142,6 @@ function summarizeHermesToolResult(
   };
 }
 
-function userProgressArtifactKey(sessionId: string, runId: string) {
-  return artifactKeys.sessionArtifact(sessionId, `runs/${runId}/user-progress.log`);
-}
-
 async function ensureUserProgressState(
   deps: AppDeps,
   activeRun: ActiveRunState | undefined,
@@ -9155,52 +9151,25 @@ async function ensureUserProgressState(
   if (activeRun?.userProgress?.initialized) {
     return activeRun.userProgress;
   }
-  const existingText = await deps.blobStore.getText(userProgressArtifactKey(sessionId, runId)).catch(() => null);
-  const lines = typeof existingText === "string"
-    ? existingText.split(/\r?\n/u).map((line) => line.trim()).filter((line) => line.length > 0)
-    : [];
+  const messages = await deps.store.listMessages(sessionId);
+  const lines = messages
+    .filter((message) =>
+      message.role === "assistant"
+      && message.metadata?.phase === "progress"
+      && message.metadata?.runId === runId)
+    .map((message) => message.content.trim())
+    .filter((line) => line.length > 0);
   const nextState = {
     initialized: true,
     lines,
-    lastMeaningfulText: lines.length > 0
-      ? lines[lines.length - 1]!.replace(/^\S+\s+/u, "").trim()
-      : null,
-    lastPublishedText: lines.length > 0
-      ? lines[lines.length - 1]!.replace(/^\S+\s+/u, "").trim()
-      : null,
+    lastMeaningfulText: lines.length > 0 ? lines[lines.length - 1]! : null,
+    lastPublishedText: lines.length > 0 ? lines[lines.length - 1]! : null,
     lastPublishedAt: 0,
   };
   if (activeRun) {
     activeRun.userProgress = nextState;
   }
   return nextState;
-}
-
-async function persistUserProgressArtifact(
-  deps: AppDeps,
-  sessionId: string,
-  runId: string,
-  lines: string[],
-) {
-  const r2Key = userProgressArtifactKey(sessionId, runId);
-  const content = lines.join("\n");
-  await deps.blobStore.putText(r2Key, content, "text/plain; charset=utf-8");
-  await deps.store.saveArtifact({
-    sessionId,
-    runtimeId: null,
-    r2Key,
-    filename: "user-progress.log",
-    mimeType: "text/plain; charset=utf-8",
-    byteSize: new TextEncoder().encode(content).length,
-    summaryText: "User Progress Log",
-    metadata: {
-      kind: "user_progress_log",
-      title: "User Progress Log",
-      runId,
-      lineCount: lines.length,
-      previewable: true,
-    },
-  });
 }
 
 async function emitUserFacingProgress(
@@ -9229,27 +9198,28 @@ async function emitUserFacingProgress(
       return;
     }
   }
-  const createdAt = new Date().toISOString();
-  const line = `${createdAt} ${candidate.text}`;
-  if (progressState.lines[progressState.lines.length - 1] === line) {
+  if (progressState.lines[progressState.lines.length - 1] === candidate.text) {
     return;
   }
-  progressState.lines.push(line);
+  progressState.lines.push(candidate.text);
   progressState.lastPublishedText = candidate.text;
   progressState.lastPublishedAt = nowMs;
   if (candidate.meaningful !== false && candidate.kind !== "heartbeat") {
     progressState.lastMeaningfulText = candidate.text;
   }
-  await persistUserProgressArtifact(deps, sessionId, runId, progressState.lines);
+  const progressMessage = await deps.store.appendMessage(sessionId, "assistant", candidate.text, {
+    phase: "progress",
+    runId,
+    progressKind: candidate.kind,
+  });
   const userProgressEvent = {
     runId,
     sessionId,
+    messageId: progressMessage.id,
     kind: candidate.kind satisfies UserProgressKind,
     text: candidate.text,
-    line,
     ...(candidate.phase ? { phase: candidate.phase } : {}),
   };
-  await deps.store.appendRunEvent(runId, sessionId, "user.progress", userProgressEvent);
   if (deliver) {
     await deliver("user.progress", userProgressEvent);
   }

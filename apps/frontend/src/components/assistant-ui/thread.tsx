@@ -784,10 +784,6 @@ const AssistantMessage: FC = () => {
   });
   const hasPlanToolTrace = phase === "plan" && planToolTrace.length > 0;
 
-  if (phase === "progress") {
-    return null;
-  }
-
   return (
     <MessagePrimitive.Root
       className="aui-assistant-message-root fade-in slide-in-from-bottom-1 relative mx-auto w-full max-w-(--thread-max-width) animate-in py-3 duration-150"
