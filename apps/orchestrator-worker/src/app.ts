@@ -15576,8 +15576,14 @@ export function createApp(inputDeps: CreateAppInput) {
             requestPayload.mode = precomputedRouteDecision.executionMode ?? "agentic";
             requestPayload.workflow = "search";
           } else if (precomputedRouteDecision.type === "design_experiment") {
-            requestPayload.mode = "agentic";
-            requestPayload.workflow = "design_experiment";
+            precomputedRouteDecision = {
+              type: "direct_response",
+              answer: formatExperimentPlanForMessage(precomputedRouteDecision.approvedPlan),
+              workflowHint: "design_experiment",
+              experimentProposal: {
+                plan: precomputedRouteDecision.approvedPlan,
+              },
+            };
           }
         }
         if (requestedAssistantMode(requestPayload) === "agentic" && !deps.hermesJobApiUrl) {

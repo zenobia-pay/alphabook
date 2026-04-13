@@ -311,6 +311,112 @@ test("design_experiment requests fail without an approved experiment plan", asyn
   assert.match(await response.text(), /approvedExperimentPlan is required/);
 });
 
+test("router-produced experiment plans require approval instead of auto-launching", async () => {
+  const store = new InMemoryAppStore([], []);
+  let createWorkspaceCalls = 0;
+  let runWorkspaceTaskCalls = 0;
+  const approvedPlan = {
+    title: "Humour By Country Experiment",
+    researchQuestion: "How do the five humour anthologies differ by country in themes, delivery, and read-aloud performance?",
+    summary: "Build a comparable passage dataset across America, Holland, Ireland, Germany, and Russia, label each item for humor dimensions, and produce a comparison chart.",
+    dataset: {
+      itemUnit: "One sampled joke or section from a country anthology.",
+      corpusScope: "The five humour anthologies for America, Holland, Ireland, Germany, and Russia.",
+      passageSelection: "Take prefaces plus a fixed comparable sample of representative sections or jokes from each book.",
+      expectedItemCount: 60,
+    },
+    labeling: {
+      itemCount: 60,
+      structuredFields: [
+        {
+          name: "delivery_style",
+          description: "The dominant comedic delivery style in the selected item.",
+          valueType: "enum",
+          allowedValues: ["narrative anecdote", "aphorism", "dialogue", "satire"],
+        },
+      ],
+      labelingMethod: "Run a labeling pass over the comparable sample and save one record per selected item.",
+      costEstimate: "About 60 labeled items; estimate the cost before execution and report it.",
+    },
+    resultsView: {
+      primaryArtifact: "A side-by-side comparison paper with a grouped bar chart and the label table.",
+      chartType: "grouped bar chart",
+      xAxis: "country anthology",
+      yAxis: "count of labeled comedic delivery styles",
+      outputs: ["paper draft", "chart image", "label table"],
+    },
+  };
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    router: new ScriptedRouter([
+      {
+        type: "design_experiment",
+        approvedPlan,
+        designSummary: approvedPlan.summary,
+        executionPrompt: "Run the approved humour-by-country comparison experiment.",
+      },
+    ]),
+    planner: new ScriptedPlanner([
+      {
+        type: "final_answer",
+        answer: "planner should not run",
+        citations: [],
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        createWorkspaceCalls += 1;
+        return { ok: true, runtimeId: "runtime-exp-1", manifest: { works: [], selectedChunkIds: [], taskContext: {} } };
+      },
+      async runWorkspaceTask() {
+        runWorkspaceTaskCalls += 1;
+        return { ok: true, runtimeId: "runtime-exp-1", briefing: "should not run", citations: [], artifacts: [], billingEvents: [] };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: false, error: "disabled" };
+      },
+      async destroyWorkspace() {
+        return { ok: true };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const response = await app.request("/chat", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      userId: "11111111-1111-1111-1111-111111111111",
+      message: "Help me plan an experiment comparing these humour books by country.",
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  const body = await response.text();
+  assert.equal(createWorkspaceCalls, 0);
+  assert.equal(runWorkspaceTaskCalls, 0);
+  assert.match(body, /Approval required|Dataset|Results View|Labeling/i);
+  const [session] = await store.listSessions("11111111-1111-1111-1111-111111111111");
+  const messages = await store.listMessages(session!.id);
+  const assistantMessage = messages.find((message) => message.role === "assistant");
+  assert.equal(
+    (((assistantMessage?.metadata.experimentProposal as Record<string, unknown>)?.plan as Record<string, unknown>)?.title),
+    approvedPlan.title,
+  );
+});
+
 test("sprite fanout mode bypasses router and runs the distributed runtime lane", async () => {
   const store = new InMemoryAppStore([], []);
   let spriteRuns = 0;
