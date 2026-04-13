@@ -47,6 +47,31 @@ function extractQuotedTerms(command: string) {
   return [...new Set(terms)].slice(0, 6);
 }
 
+function extractFlagValue(command: string, flag: string) {
+  const escaped = flag.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const match = command.match(new RegExp(`${escaped}\\s+(?:'([^']+)'|"([^"]+)"|(\\S+))`, "u"));
+  return (match?.[1] ?? match?.[2] ?? match?.[3] ?? "").trim() || null;
+}
+
+function formatSearchTerms(rawPattern: string | null) {
+  if (!rawPattern) {
+    return null;
+  }
+  const cleaned = rawPattern
+    .replace(/\\[bBsSdDwW]/gu, " ")
+    .replace(/[()[\]^$+*?]/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  const terms = cleaned
+    .split("|")
+    .map((part) => stripSurroundingQuotes(part))
+    .map((part) => part.replace(/\s+/gu, " ").trim())
+    .filter((part) => part.length > 1)
+    .filter((part) => !/[\\/]/u.test(part))
+    .slice(0, 6);
+  return terms.length > 0 ? terms.join("; ") : null;
+}
+
 function extractSourceVolume(command: string) {
   const match = command.match(/\/(?:gutenberg\/clean|clean)\/(\d{3,8})\//u);
   return match?.[1] ?? null;
@@ -103,9 +128,25 @@ function summarizeCommand(command: string) {
   const normalized = command.replace(/\s+/gu, " ").trim();
   const sourceVolume = extractSourceVolume(normalized);
   const quotedTerms = extractQuotedTerms(normalized);
+  const explicitPattern = formatSearchTerms(extractFlagValue(normalized, "--pattern"));
+  if (normalized.includes("manifest.json") && normalized.includes("run.log") && normalized.includes("scoped-files.tsv")) {
+    return "Initializing the search workspace, manifest, and scoped file list.";
+  }
+  if (normalized.includes("run-ripgrep-progress.sh")) {
+    return explicitPattern
+      ? truncateText(`Running a bounded corpus search for: ${explicitPattern}`)
+      : "Running a bounded corpus search across the current file batch.";
+  }
+  if (normalized.includes("partition-file-list.sh")) {
+    return "Partitioning the scoped corpus into search batches.";
+  }
+  if (normalized.includes("all-text-files.tsv") && normalized.includes("scoped-files.tsv")) {
+    return "Copying the corpus file index into the search workspace.";
+  }
   if (/\brg\b/u.test(normalized)) {
-    if (quotedTerms.length > 0) {
-      return truncateText(`Searching ${sourceVolume ? `source volume ${sourceVolume}` : "source texts"} for: ${quotedTerms.join("; ")}`);
+    const rgTerms = explicitPattern ?? (quotedTerms.length > 0 ? quotedTerms.join("; ") : null);
+    if (rgTerms) {
+      return truncateText(`Searching ${sourceVolume ? `source volume ${sourceVolume}` : "source texts"} for: ${rgTerms}`);
     }
     return `Searching ${sourceVolume ? `source volume ${sourceVolume}` : "source texts"}.`;
   }
@@ -120,6 +161,9 @@ function summarizeCommand(command: string) {
     return `Reading sampled passages from ${sourceVolume ? `source volume ${sourceVolume}` : "a source text"}.`;
   }
   if (/\bpython(?:3)?\b/u.test(normalized)) {
+    if (normalized.includes("manifest.json") || normalized.includes("run.log") || normalized.includes("scoped-files.tsv")) {
+      return "Initializing the search workspace, manifest, and scoped file list.";
+    }
     if (quotedTerms.length > 0) {
       return truncateText(`Running a comparison script for: ${quotedTerms.join("; ")}`);
     }
@@ -159,14 +203,26 @@ function summarizePrettyCliLine(text: string) {
   if (read?.[1]) {
     const path = read[1];
     const base = path.split("/").at(-1) ?? path;
+    if (base === "all-text-files.tsv") {
+      return "Reviewing the corpus file index to choose search scope.";
+    }
+    if (base === "metadata-table.jsonl" || base === "metadata-table.json") {
+      return "Reviewing corpus metadata to narrow candidate books.";
+    }
+    if (base === "ripgrep.log" || base === "ripgrep-status.json" || base === "ripgrep-progress.jsonl") {
+      return "Checking bounded search progress and current hit counts.";
+    }
+    if (base === "scoped-files.tsv") {
+      return "Checking the scoped corpus file list.";
+    }
     if (base === "run.log") {
-      return "Reading the current run log.";
+      return "Checking the current run log for search progress.";
     }
     if (base === "status.json") {
       return "Checking the current run status.";
     }
     if (base === "manifest.json") {
-      return "Reading the run manifest.";
+      return "Reviewing the run manifest and search scope.";
     }
     if (base.endsWith(".md")) {
       return truncateText(`Reading ${base.replace(/[-_]+/gu, " ")}.`);

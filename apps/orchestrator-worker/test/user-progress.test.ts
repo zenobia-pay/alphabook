@@ -86,7 +86,52 @@ test("pretty cli helper lines are normalized into readable activity", () => {
   });
 
   assert.deepEqual(candidate, {
-    text: "Reading the current run log.",
+    text: "Checking the current run log for search progress.",
+    kind: "activity",
+    meaningful: true,
+  });
+});
+
+test("pretty cli file reads are rewritten at the task level", () => {
+  const candidate = deriveUserProgressCandidate({
+    event: "job.log",
+    data: {
+      text: "┊ 📄 read /srv/alphabook/gutenberg/research-corpus-index/all-text-files.tsv 0.1s",
+    },
+  });
+
+  assert.deepEqual(candidate, {
+    text: "Reviewing the corpus file index to choose search scope.",
+    kind: "activity",
+    meaningful: true,
+  });
+});
+
+test("bounded ripgrep helper commands preserve the actual search terms", () => {
+  const candidate = deriveUserProgressCandidate({
+    event: "job.log",
+    data: {
+      text: `{"type":"item.completed","item":{"type":"command_execution","command":"/bin/bash -lc \\"/srv/alphabook/repo/ops/digitalocean/bin/run-ripgrep-progress.sh --file-list /tmp/part.tsv --pattern 'inventor|inventors|invention|invented' --output-dir /tmp/search\\""}}`,
+    },
+  });
+
+  assert.deepEqual(candidate, {
+    text: "Running a bounded corpus search for: inventor; inventors; invention; invented",
+    kind: "activity",
+    meaningful: true,
+  });
+});
+
+test("workspace initialization scripts describe the actual setup work", () => {
+  const candidate = deriveUserProgressCandidate({
+    event: "job.log",
+    data: {
+      text: `{"type":"item.completed","item":{"type":"command_execution","command":"python3 - <<'PY'\\nwith open('manifest.json','w') as f: pass\\nwith open('run.log','a') as f: pass\\ncp /srv/alphabook/gutenberg/research-corpus-index/all-text-files.tsv /tmp/scoped-files.tsv\\nPY"}}`,
+    },
+  });
+
+  assert.deepEqual(candidate, {
+    text: "Initializing the search workspace, manifest, and scoped file list.",
     kind: "activity",
     meaningful: true,
   });
