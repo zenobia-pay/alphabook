@@ -871,11 +871,35 @@ function buildPersistedRunLogMessage(
   runState: AssistantSessionBootstrapPayload["runState"] | RunStateRecord | null | undefined,
 ): UiMessage | null {
   const run = runState?.run;
-  if (!run || (run.status !== "running" && run.status !== "queued")) {
+  if (!run) {
     return null;
   }
   const runEvents = Array.isArray(runState?.runEvents) ? runState.runEvents : [];
   if (runEvents.length === 0) {
+    return null;
+  }
+
+  const userProgressLines = runEvents
+    .filter((event) => event.event === "user.progress")
+    .map((event) => typeof event.dataJson?.line === "string" ? event.dataJson.line.trim() : "")
+    .filter((line) => line.length > 0);
+  if (userProgressLines.length > 0) {
+    return {
+      id: `run-progress:${run.id}`,
+      sessionId,
+      role: "assistant",
+      content: userProgressLines.join("\n\n"),
+      metadata: {
+        phase: "progress",
+        runId: run.id,
+        synthetic: true,
+      },
+      createdAt: runEvents[runEvents.length - 1]?.createdAt ?? run.startedAt,
+      citations: [],
+      toolCalls: [],
+    };
+  }
+  if (run.status !== "running" && run.status !== "queued") {
     return null;
   }
 
@@ -5101,6 +5125,7 @@ export default function App() {
             || event.event === "job.progress"
             || event.event === "job.log"
             || event.event === "job.updated"
+            || event.event === "user.progress"
             || event.event === "tool.started"
             || event.event === "tool.progress"
             || event.event === "tool.completed"
@@ -5129,6 +5154,7 @@ export default function App() {
             event.event === "assistant.plan"
             || event.event === "job.started"
             || event.event === "job.updated"
+            || event.event === "user.progress"
             || event.event === "tool.started"
             || event.event === "tool.completed"
             || event.event === "artifact.created"
@@ -5962,6 +5988,7 @@ export default function App() {
               || event.event === "job.progress"
               || event.event === "job.log"
               || event.event === "job.updated"
+              || event.event === "user.progress"
             ) {
               if (workingSessionId) {
                 queueConversationRefresh();

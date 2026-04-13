@@ -35,6 +35,7 @@ import { FallbackPlanner, parseToolCall } from "./planner";
 import type { Router, RouterDecision } from "./router";
 import type { SemanticSearchService } from "./semantic-search";
 import { cleanupToolStreamWithWorkersAi, type ToolStreamCleanupLine } from "./tool-stream-cleanup";
+import { deriveUserProgressCandidate, type UserProgressKind } from "./user-progress";
 import type { VectorSearchIndex } from "./vectorize";
 import type { Synthesizer, ToolHistoryEntry } from "./synthesizer";
 import type { AgentIdentityRecord, AnalyticsEventRecord, AppStore, ArtifactRecord, BackgroundJobRecord, MessageRecord, NotificationRecord, PassageSearchFilters, RunEventRecord, RunRecord, RuntimeInstanceRecord, SessionRecord, ToolCallRecord, UserRecord, WorkDetailRecord } from "./store";
@@ -2480,6 +2481,13 @@ export type ActiveRunState = {
   runtimeIds: Set<string>;
   cancelRequested: boolean;
   rawLog: ToolRunRawLogEntry[];
+  userProgress?: {
+    initialized: boolean;
+    lines: string[];
+    lastMeaningfulText: string | null;
+    lastPublishedText: string | null;
+    lastPublishedAt: number;
+  };
   subscribers: Map<string, (event: string, data: Record<string, unknown>) => Promise<void>>;
 };
 
@@ -9134,6 +9142,120 @@ function summarizeHermesToolResult(
   };
 }
 
+function userProgressArtifactKey(sessionId: string, runId: string) {
+  return artifactKeys.sessionArtifact(sessionId, `runs/${runId}/user-progress.log`);
+}
+
+async function ensureUserProgressState(
+  deps: AppDeps,
+  activeRun: ActiveRunState | undefined,
+  sessionId: string,
+  runId: string,
+) {
+  if (activeRun?.userProgress?.initialized) {
+    return activeRun.userProgress;
+  }
+  const existingText = await deps.blobStore.getText(userProgressArtifactKey(sessionId, runId)).catch(() => null);
+  const lines = typeof existingText === "string"
+    ? existingText.split(/\r?\n/u).map((line) => line.trim()).filter((line) => line.length > 0)
+    : [];
+  const nextState = {
+    initialized: true,
+    lines,
+    lastMeaningfulText: lines.length > 0
+      ? lines[lines.length - 1]!.replace(/^\S+\s+/u, "").trim()
+      : null,
+    lastPublishedText: lines.length > 0
+      ? lines[lines.length - 1]!.replace(/^\S+\s+/u, "").trim()
+      : null,
+    lastPublishedAt: 0,
+  };
+  if (activeRun) {
+    activeRun.userProgress = nextState;
+  }
+  return nextState;
+}
+
+async function persistUserProgressArtifact(
+  deps: AppDeps,
+  sessionId: string,
+  runId: string,
+  lines: string[],
+) {
+  const r2Key = userProgressArtifactKey(sessionId, runId);
+  const content = lines.join("\n");
+  await deps.blobStore.putText(r2Key, content, "text/plain; charset=utf-8");
+  await deps.store.saveArtifact({
+    sessionId,
+    runtimeId: null,
+    r2Key,
+    filename: "user-progress.log",
+    mimeType: "text/plain; charset=utf-8",
+    byteSize: new TextEncoder().encode(content).length,
+    summaryText: "User Progress Log",
+    metadata: {
+      kind: "user_progress_log",
+      title: "User Progress Log",
+      runId,
+      lineCount: lines.length,
+      previewable: true,
+    },
+  });
+}
+
+async function emitUserFacingProgress(
+  deps: AppDeps,
+  activeRuns: Map<string, ActiveRunState>,
+  runId: string,
+  sessionId: string,
+  event: string,
+  data: Record<string, unknown>,
+  deliver?: (event: string, data: Record<string, unknown>) => Promise<void>,
+) {
+  const activeRun = activeRuns.get(runId);
+  const progressState = await ensureUserProgressState(deps, activeRun, sessionId, runId);
+  const candidate = deriveUserProgressCandidate({
+    event,
+    data,
+    lastMeaningfulText: progressState.lastMeaningfulText,
+  });
+  if (!candidate) {
+    return;
+  }
+  const nowMs = Date.now();
+  if (progressState.lastPublishedText === candidate.text) {
+    const minRepeatMs = candidate.kind === "heartbeat" ? 15_000 : 8_000;
+    if (nowMs - progressState.lastPublishedAt < minRepeatMs) {
+      return;
+    }
+  }
+  const createdAt = new Date().toISOString();
+  const line = `${createdAt} ${candidate.text}`;
+  if (progressState.lines[progressState.lines.length - 1] === line) {
+    return;
+  }
+  progressState.lines.push(line);
+  progressState.lastPublishedText = candidate.text;
+  progressState.lastPublishedAt = nowMs;
+  if (candidate.meaningful !== false && candidate.kind !== "heartbeat") {
+    progressState.lastMeaningfulText = candidate.text;
+  }
+  await persistUserProgressArtifact(deps, sessionId, runId, progressState.lines);
+  const userProgressEvent = {
+    runId,
+    sessionId,
+    kind: candidate.kind satisfies UserProgressKind,
+    text: candidate.text,
+    line,
+    ...(candidate.phase ? { phase: candidate.phase } : {}),
+  };
+  await deps.store.appendRunEvent(runId, sessionId, "user.progress", userProgressEvent);
+  if (deliver) {
+    await deliver("user.progress", userProgressEvent);
+  }
+  await fanOutActiveRunSubscribers(activeRuns, runId, "user.progress", userProgressEvent);
+}
+
 async function fanOutActiveRunSubscribers(
   activeRuns: Map<string, ActiveRunState>,
   runId: string,
@@ -9164,6 +9286,7 @@ async function publishPersistedHermesEvent(
   send?: (event: string, data: Record<string, unknown>) => Promise<void>,
 ) {
   await deps.store.appendRunEvent(runId, sessionId, event, data);
+  await emitUserFacingProgress(deps, activeRuns, runId, sessionId, event, data, send);
   if (send) {
     await send(event, data);
   }
@@ -10344,6 +10467,7 @@ async function runHermesConversation(
     ]);
     if (persistable.has(event)) {
       await deps.store.appendRunEvent(run.id, activeSession.id, event, data);
+      await emitUserFacingProgress(deps, activeRuns, run.id, activeSession.id, event, data, send);
     }
     await send(event, data);
     const activeRun = activeRuns.get(run.id);
@@ -11227,6 +11351,15 @@ export async function runOrchestrator(
     const persistedSessionId = typeof nextData.sessionId === "string" ? nextData.sessionId : session?.id ?? null;
     if (persistedRunId && persistedSessionId && persistableRunEventNames.has(event)) {
       await deps.store.appendRunEvent(persistedRunId, persistedSessionId, event, nextData);
+      await emitUserFacingProgress(
+        deps,
+        activeRuns,
+        persistedRunId,
+        persistedSessionId,
+        event,
+        nextData,
+        originalSend,
+      );
     }
     try {
       await originalSend(event, nextData);
@@ -15954,7 +16087,7 @@ export function createApp(inputDeps: CreateAppInput) {
           includeArtifacts: false,
           includeRuntimeInstances: false,
           includeBackgroundJob: false,
-          runEventLimit: preferredRun.status === "running" || preferredRun.status === "queued" ? 160 : 0,
+          runEventLimit: preferredRun.status === "running" || preferredRun.status === "queued" ? 160 : 80,
         })
       : null;
 
