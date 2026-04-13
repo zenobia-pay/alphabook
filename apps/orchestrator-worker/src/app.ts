@@ -9515,6 +9515,114 @@ function citationsFromHermesResolvedHits(hits: HermesResolvedHitRecord[]): Citat
   }));
 }
 
+type DirectSourceStructuredCitation = {
+  sourcePath: string;
+  section: string | null;
+  title: string;
+  quote: string;
+  workId: string;
+};
+
+function workIdFromDirectSourcePath(sourcePath: string): string | null {
+  const normalized = sourcePath.trim();
+  const gutenbergMatch = normalized.match(/\/gutenberg\/clean\/(\d+)\/clean\.txt$/u);
+  if (gutenbergMatch) {
+    return `local-gutenberg-${gutenbergMatch[1]}`;
+  }
+  return null;
+}
+
+function extractDirectSourceStructuredCitations(finalAnswerJsonText: string | null | undefined): DirectSourceStructuredCitation[] {
+  const parsed = parseHermesJsonRecord(finalAnswerJsonText ?? "");
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return [];
+  }
+  const representativeExamples = Array.isArray((parsed as Record<string, unknown>).representative_examples)
+    ? (parsed as Record<string, unknown>).representative_examples as Array<Record<string, unknown>>
+    : [];
+  const citations: DirectSourceStructuredCitation[] = [];
+  for (const example of representativeExamples) {
+    if (!example || typeof example !== "object") {
+      continue;
+    }
+    const citation = typeof example.citation === "string" ? example.citation.trim() : "";
+    const match = citation.match(/^direct-source:([^#\s][^#]*?)(?:#(.+))?$/u);
+    if (!match) {
+      continue;
+    }
+    const sourcePath = match[1]?.trim() ?? "";
+    const workId = workIdFromDirectSourcePath(sourcePath);
+    const quote = typeof example.quote === "string" ? example.quote.trim() : "";
+    const title = typeof example.title === "string" ? example.title.trim() : "";
+    const section = typeof match[2] === "string" && match[2].trim().length > 0 ? match[2].trim() : null;
+    if (!sourcePath || !workId || !quote) {
+      continue;
+    }
+    citations.push({
+      sourcePath,
+      section,
+      title,
+      quote,
+      workId,
+    });
+  }
+  return citations;
+}
+
+async function resolveDirectSourceStructuredCitations(
+  deps: AppDeps,
+  structuredCitations: DirectSourceStructuredCitation[],
+): Promise<Citation[]> {
+  const resolved: Citation[] = [];
+  for (const entry of structuredCitations) {
+    const matchedChunk = await deps.store.findChunkByWorkAndExcerpt(entry.workId, entry.quote).catch(() => null);
+    resolved.push({
+      workId: entry.workId,
+      label: entry.section ?? entry.title ?? "Source passage",
+      excerpt: entry.quote,
+      ...(matchedChunk?.id ? { chunkId: matchedChunk.id } : {}),
+      ...(matchedChunk?.readerPath ? { readerPath: matchedChunk.readerPath } : {}),
+    });
+  }
+  return dedupeAppCitations(resolved);
+}
+
+async function rewriteAnswerWithDirectSourceLinks(
+  deps: AppDeps,
+  sessionId: string,
+  answer: string,
+  structuredCitations: DirectSourceStructuredCitation[],
+  resolvedCitations: Citation[],
+) {
+  if (!answer.trim() || structuredCitations.length === 0 || resolvedCitations.length === 0) {
+    return answer;
+  }
+  let rewritten = answer;
+  for (const [index, entry] of structuredCitations.entries()) {
+    const citation = resolvedCitations[index];
+    if (!citation) {
+      continue;
+    }
+    const link = await buildCitationPassageUrl(deps, sessionId, citation).catch(() => null);
+    if (!link) {
+      continue;
+    }
+    const escapedSourcePath = escapeRegExp(entry.sourcePath);
+    const escapedSection = entry.section ? escapeRegExp(entry.section) : null;
+    if (escapedSection) {
+      const sectionPattern = new RegExp(
+        String.raw`\(\s*source:\s*\[clean\.txt\]\(${escapedSourcePath}\),\s*section\s*[“"]${escapedSection}[”"]\s*\)`,
+        "gu",
+      );
+      rewritten = rewritten.replace(sectionPattern, `(source: [Open passage](${link}), section “${entry.section}”)`);
+    }
+    const sourcePattern = new RegExp(String.raw`\[clean\.txt\]\(${escapedSourcePath}\)`, "gu");
+    rewritten = rewritten.replace(sourcePattern, `[Open passage](${link})`);
+  }
+  rewritten = rewritten.replace(/\[clean\.txt\]\(\/mnt\/[^)]+\/clean\.txt\)/gu, "clean.txt");
+  return rewritten;
+}
+
 type ResearchRunHit = {
   hitId: string;
   title: string;
@@ -9686,6 +9794,14 @@ async function finalizeHermesRun(
       params.job.id,
       normalizeHermesArtifactName("final-answer.md"),
     ).then((response) => response.artifact.content.trim()).catch(() => "");
+  const finalAnswerJsonText =
+    await loadHermesArchiveText(deps, archiveManifest, (file) => normalizeHermesArtifactFilename(file.relativePath).endsWith("final-answer.json"))
+    ?? await fetchHermesArtifact(
+      deps.hermesJobApiUrl!,
+      deps.hermesJobApiToken,
+      params.job.id,
+      normalizeHermesArtifactName("final-answer.json"),
+    ).then((response) => response.artifact.content).catch(() => null);
 
   const sessionArtifactText =
     await loadHermesArchiveText(deps, archiveManifest, (file) => normalizeHermesArtifactFilename(file.relativePath).endsWith("hermes.session.json"))
@@ -9698,6 +9814,8 @@ async function finalizeHermesRun(
   const finalSnapshot = parseHermesJsonRecord(sessionArtifactText ?? "") as HermesSessionSnapshot | null;
   const hermesResolvedHits = extractHermesResolvedHits(hitsIndexText);
   const hermesCitations = citationsFromHermesResolvedHits(hermesResolvedHits);
+  const directSourceStructuredCitations = extractDirectSourceStructuredCitations(finalAnswerJsonText);
+  const directSourceCitations = await resolveDirectSourceStructuredCitations(deps, directSourceStructuredCitations);
   const finalAnswer = buildHermesCompletionAnswer(
     compiledAnswerMarkdown || null,
     briefingMarkdown || null,
@@ -9809,11 +9927,21 @@ async function finalizeHermesRun(
   await trackHermesRunBillingEvent(deps, params.session, currentRun, params.job, {
     status: "completed",
   });
+  const combinedHermesCitations = dedupeAppCitations([
+    ...hermesCitations,
+    ...directSourceCitations,
+  ]);
   await persistCompletedAssistantAnswer(deps, {
     sessionId: params.session.id,
     runId: currentRun.id,
-    answer: await rewriteAnswerWithHermesHitLinks(deps, params.session.id, finalAnswer, hermesResolvedHits),
-    citations: hermesCitations,
+    answer: await rewriteAnswerWithDirectSourceLinks(
+      deps,
+      params.session.id,
+      await rewriteAnswerWithHermesHitLinks(deps, params.session.id, finalAnswer, hermesResolvedHits),
+      directSourceStructuredCitations,
+      directSourceCitations,
+    ),
+    citations: combinedHermesCitations,
     toolHistory: [],
     send: params.send ?? (async () => {}),
     extraMetadata: {
