@@ -44,7 +44,7 @@ function inferExplicitExecutionMode(userMessage: string): SearchExecutionMode | 
   if (
     /\b(comprehensive|deep research|deeper research|sprite fanout|sprite_fanout)\b/.test(normalized)
   ) {
-    return "comprehensive";
+    return "semantic";
   }
   if (/\bsemantic\b/.test(normalized)) {
     return "semantic";
@@ -124,7 +124,7 @@ export class OpenAIRouter implements Router {
     const rawExecutionMode = SearchExecutionModeSchema.safeParse(candidate.executionMode).success
       ? candidate.executionMode as SearchExecutionMode
       : undefined;
-    const executionMode = rawExecutionMode;
+    const executionMode = rawExecutionMode === "comprehensive" ? "semantic" : rawExecutionMode;
     const experimentProposalCandidate = candidate.experimentProposal
       && typeof candidate.experimentProposal === "object"
       && !Array.isArray(candidate.experimentProposal)

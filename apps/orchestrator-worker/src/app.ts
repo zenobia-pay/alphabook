@@ -1152,12 +1152,9 @@ function requestedAssistantMode(input: {
   mode?: "semantic" | "comprehensive" | "agentic";
   workflow?: "search" | "design_experiment";
   researchMode?: "default" | "sprite_fanout";
-}): "semantic" | "comprehensive" | "agentic" {
+}): "semantic" | "agentic" {
   if (input.mode === "agentic") {
     return "agentic";
-  }
-  if (input.mode === "comprehensive" || input.researchMode === "sprite_fanout") {
-    return "comprehensive";
   }
   if (input.workflow === "search") {
     return "agentic";
@@ -1165,13 +1162,13 @@ function requestedAssistantMode(input: {
   return "semantic";
 }
 
-function inferExplicitAssistantMode(message: string): "semantic" | "comprehensive" | "agentic" | undefined {
+function inferExplicitAssistantMode(message: string): "semantic" | "agentic" | undefined {
   const normalized = message.toLowerCase();
   if (/\bagentic\b/u.test(normalized)) {
     return "agentic";
   }
   if (/\b(comprehensive|deep research|deeper research|sprite fanout|sprite_fanout)\b/u.test(normalized)) {
-    return "comprehensive";
+    return "semantic";
   }
   if (/\bsemantic\b/u.test(normalized)) {
     return "semantic";
@@ -1187,9 +1184,6 @@ function requestedIntensityOverride(input: {
 }): "normal" | "high" | "maximum" | undefined {
   if (input.intensityOverride) {
     return input.intensityOverride;
-  }
-  if (requestedAssistantMode(input) === "comprehensive") {
-    return "maximum";
   }
   return undefined;
 }
@@ -1214,8 +1208,8 @@ function hermesSearchEffort(input: {
   }
 }
 
-function inferSearchExecutionMode(query: string, scopedWorkCount = 0): "semantic" | "comprehensive" {
-  return isBroadCorpusResearchQuery(query, scopedWorkCount) ? "comprehensive" : "semantic";
+function inferSearchExecutionMode(_query: string, _scopedWorkCount = 0): "semantic" {
+  return "semantic";
 }
 
 async function deriveScopeEstimateFromSearchResult(
@@ -6002,11 +5996,6 @@ function initialWorkflowPlan(intent: {
     return normalizedMessage
       ? `I’ve locked the experiment design. I’m setting up the run for “${normalizedMessage},” then I’ll write the analysis scripts, execute them, and bring back the paper draft and artifacts.`
       : "I’ve locked the experiment design. I’m setting up the run, then I’ll write the analysis scripts, execute them, and bring back the paper draft and artifacts.";
-  }
-  if (intent.executionMode === "comprehensive") {
-    return normalizedMessage
-      ? `I’ve selected Search for “${normalizedMessage}.” I’m going broad, pulling the strongest passages, and building a grounded briefing.`
-      : "I’ve selected Search. I’m going broad, pulling the strongest passages, and building a grounded briefing.";
   }
   if (intent.executionMode === "agentic") {
     return normalizedMessage
@@ -12632,36 +12621,6 @@ export async function runOrchestrator(
       promise: Promise<Record<string, unknown>>;
     }
     | null = null;
-  const runSpriteFanoutMode = async () => {
-    const normalizedToolArgs = normalizeToolArgs("run_workspace_task", {
-      runtimeId: `sprite-fanout:${run.id}`,
-      taskSpec: {
-        kind: "sprite_fanout_research",
-        mode: "sprite_fanout",
-        phase: "collect_and_brief",
-        question: input.message,
-        researchObjective: input.message,
-        intensity: requestedAssistantMode(input) === "comprehensive" ? "maximum" : "normal",
-        workIds: Array.isArray(input.workIds) ? input.workIds : [],
-      },
-    });
-    const rationale = "I’m running a broad search across many parts of the library and combining the strongest passages into one answer.";
-    await startBackgroundTool("run_workspace_task", normalizedToolArgs, rationale);
-    const completed = await harvestPendingWorkspace(true);
-    if (completed || runFinalized) {
-      return;
-    }
-    const latestToolCalls = await deps.store.listToolCalls(run.id);
-    const latestRunWorkspaceTask = [...latestToolCalls]
-      .reverse()
-      .find((toolCall) => toolCall.toolName === "run_workspace_task");
-    const latestError =
-      typeof latestRunWorkspaceTask?.resultJson?.error === "string" && latestRunWorkspaceTask.resultJson.error.trim().length > 0
-        ? latestRunWorkspaceTask.resultJson.error.trim()
-        : null;
-    throw new Error(latestError ?? "Sprite fanout research did not return a usable briefing.");
-  };
-
   const runDesignExperimentMode = async () => {
     await ensureInitialPlanSent(routedQueryRef.current);
     if (!latestCompletedRuntimeId() && !pendingWorkspaceExecution) {
@@ -12697,15 +12656,6 @@ export async function runOrchestrator(
     throw new Error("The experiment run hit its wall-clock limit before it produced a paper draft.");
   };
   try {
-    if (requestedAssistantMode(input) === "comprehensive") {
-      recordRawLog("research_mode.selected", {
-        runId: run.id,
-        sessionId: session.id,
-        researchMode: "sprite_fanout",
-      });
-      await runSpriteFanoutMode();
-      return;
-    }
     recordRawLog("router.started", {
       sessionId: session.id,
       message: input.message,
@@ -12853,9 +12803,7 @@ export async function runOrchestrator(
       workflow: "search",
       routedQuery,
       rationale: routeDecision.rationale
-        ?? (input.mode === "comprehensive"
-          ? "I’ve selected Search and this query needs the broader corpus pass."
-          : "I’ve selected Search and I’m starting with the fast evidence pass."),
+        ?? "I’ve selected Search and I’m starting with the fast evidence pass.",
       executionMode: input.mode,
     };
     await ensureInitialPlanSent(routedQuery);
@@ -15166,7 +15114,7 @@ export function createApp(inputDeps: CreateAppInput) {
         ownerUserId,
         chatRequest: {
           message: payload.prompt,
-          mode: payload.mode ?? "comprehensive",
+          mode: "semantic",
           sessionId: payload.sessionId,
           userId: ownerUserId,
           workIds: payload.workIds ?? [],

@@ -796,10 +796,9 @@ export async function streamChat(
     sessionId?: string;
     message: string;
     workIds?: string[];
-    mode?: "semantic" | "comprehensive" | "agentic";
+    mode?: "semantic" | "agentic";
     workflow?: "search" | "design_experiment";
     intensityOverride?: "normal" | "high" | "maximum";
-    researchMode?: "default" | "sprite_fanout";
     semanticBackend?: "alphaloop" | "context1";
   },
   handlers: ChatStreamHandlers,
