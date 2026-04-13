@@ -133,6 +133,52 @@ test("workspace initialization scripts describe the actual setup work", () => {
   });
 });
 
+test("python heredoc search-pattern setup is summarized semantically", () => {
+  const candidate = deriveUserProgressCandidate({
+    event: "job.log",
+    data: {
+      text: `{"type":"item.completed","item":{"type":"command_execution","command":"python3 - <<'PY'\\npatterns=['memoir','autobiograph','biograph','obituary','for many years','collection','inventor','naturalist']\\nprint(patterns)\\nPY"}}`,
+    },
+  });
+
+  assert.deepEqual(candidate, {
+    text: "Preparing keyword search patterns for the corpus sweep.",
+    kind: "activity",
+    meaningful: true,
+  });
+});
+
+test("python heredoc tsv normalization is summarized semantically", () => {
+  const candidate = deriveUserProgressCandidate({
+    event: "job.log",
+    data: {
+      text: `{"type":"item.completed","item":{"type":"command_execution","command":"python3 - <<'PY'\\ninput_path='scoped-files.tsv'\\noutput_path='scoped-files-clean.tsv'\\nPY"}}`,
+    },
+  });
+
+  assert.deepEqual(candidate, {
+    text: "Normalizing the scoped corpus file list before batched search.",
+    kind: "activity",
+    meaningful: true,
+  });
+});
+
+test("run workspace tool start is suppressed in favor of the explicit search brief", () => {
+  const candidate = deriveUserProgressCandidate({
+    event: "tool.started",
+    data: {
+      toolName: "run_workspace_task",
+      args: {
+        taskSpec: {
+          question: "Find real-life examples of obsessive preservers.",
+        },
+      },
+    },
+  });
+
+  assert.equal(candidate, null);
+});
+
 test("partial hermes json command lines are still summarized", () => {
   const candidate = deriveUserProgressCandidate({
     event: "job.log",
@@ -196,6 +242,7 @@ test("generic launch chatter is excluded from cleanup candidates", () => {
   assert.equal(shouldIgnoreRawProgressText("Working through launching."), true);
   assert.equal(shouldIgnoreRawProgressText("Task heartbeat received: task is alive."), true);
   assert.equal(shouldIgnoreRawProgressText("Prepared the terminal."), true);
+  assert.equal(shouldIgnoreRawProgressText("No user-meaningful activity captured."), true);
 });
 
 test("openai transport chatter is excluded from cleanup candidates", () => {

@@ -42,7 +42,7 @@ function extractQuotedTerms(command: string) {
       && !term.startsWith("/bin/")
       && !term.includes("<<'PY'")
       && !/[\\/]/u.test(term)
-      && !/^(?:head|sed|rg|python3?|bash|sh|json|utf-8|in_progress|completed)$/iu.test(term),
+      && !/^(?:head|sed|rg|python3?|bash|sh|py|json|utf-8|in_progress|completed)$/iu.test(term),
     );
   return [...new Set(terms)].slice(0, 6);
 }
@@ -112,7 +112,8 @@ function genericProgressNoise(text: string) {
     return true;
   }
   return (
-    /^(?:launching the analysis workspace|working through launching|started a workspace task|workspace task started|task run initialized|task status: running|task is running|workspace task heartbeat(?:: .*?)?|task heartbeat received(?:: .*?)?|still working: pid=\d+ status=alive|pid=\d+ status=alive)\.?$/u.test(normalized)
+    /^(?:no user-meaningful activity (?:captured|recorded))\.?$/u.test(normalized)
+    || /^(?:launching the analysis workspace|working through launching|started a workspace task|workspace task started|task run initialized|task status: running|task is running|workspace task heartbeat(?:: .*?)?|task heartbeat received(?:: .*?)?|still working: pid=\d+ status=alive|pid=\d+ status=alive)\.?$/u.test(normalized)
     || /^(?:preparing|prepared)\s+(?:the\s+)?(?:terminal|skills list|list of skills|code execution(?: environment| step)?|run environment|prompt input file|working directory|output folder structure|analysis workspace)\.?$/u.test(normalized)
     || /^(?:a|an)\s+(?:log file|process log file|inner run directory record|manifest file|session snapshot)\s+(?:was referenced|was created|was prepared|was generated).?$/u.test(normalized)
     || /^(?:generated|created)\s+(?:status\.json|run\.log|manifest\.json|scoped-files\.tsv|the output folder structure).?$/u.test(normalized)
@@ -189,8 +190,32 @@ function summarizeCommand(command: string) {
     return `Reading sampled passages from ${sourceVolume ? `source volume ${sourceVolume}` : "a source text"}.`;
   }
   if (/\bpython(?:3)?\b/u.test(normalized)) {
-    if (normalized.includes("manifest.json") || normalized.includes("run.log") || normalized.includes("scoped-files.tsv")) {
+    if (normalized.includes("manifest.json") && normalized.includes("run.log") && normalized.includes("scoped-files.tsv")) {
       return "Initializing the search workspace, manifest, and scoped file list.";
+    }
+    if (/<<['"]?PY['"]?/iu.test(normalized)) {
+      if (normalized.includes("rg_hits.jsonl")) {
+        return "Ranking ripgrep hits to decide which source files to inspect next.";
+      }
+      if (normalized.includes("scoped-files-clean.tsv")) {
+        return "Normalizing the scoped corpus file list before batched search.";
+      }
+      if (
+        normalized.includes("memoir")
+        || normalized.includes("autobiograph")
+        || normalized.includes("biograph")
+        || normalized.includes("obituary")
+        || normalized.includes("for many years")
+        || normalized.includes("collection")
+        || normalized.includes("inventor")
+        || normalized.includes("naturalist")
+      ) {
+        return "Preparing keyword search patterns for the corpus sweep.";
+      }
+      if (normalized.includes(".tsv")) {
+        return "Running a scripted search-processing step across the current corpus batch.";
+      }
+      return null;
     }
     if (quotedTerms.length > 0) {
       return truncateText(`Running a comparison script for: ${quotedTerms.join("; ")}`);
@@ -290,11 +315,7 @@ function summarizeToolStarted(toolName: string, data: Record<string, unknown>) {
     return query ? `Searching passages for: ${query}` : "Searching passages relevant to the request.";
   }
   if (toolName === "run_workspace_task") {
-    if (objective && objective.trim().length > 0) {
-      return truncateText(`Started agentic workspace for: ${objective.trim()}`);
-    }
-    const rationale = typeof data.rationale === "string" ? data.rationale.trim() : "";
-    return rationale ? truncateText(rationale) : "Started the agentic workspace.";
+    return null;
   }
   return null;
 }

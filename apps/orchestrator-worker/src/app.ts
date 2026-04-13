@@ -10838,6 +10838,18 @@ async function runHermesConversation(
       input,
       conversationHistory,
     });
+    await appendUserFacingProgressCandidate(
+      deps,
+      activeRuns,
+      run.id,
+      activeSession.id,
+      {
+        text: `${effectiveHermesWorkflow === "design_experiment" ? "Experiment brief" : "Search brief"}: ${truncateHermesText(hermesUserPrompt, 220)}`,
+        kind: "status",
+        meaningful: true,
+      },
+      send,
+    );
     await appendInitialHermesProgress(
       `${effectiveHermesWorkflow === "design_experiment" ? "Launching experiment" : "Launching agentic search"} with user query '${hermesUserPrompt}'`,
       {
