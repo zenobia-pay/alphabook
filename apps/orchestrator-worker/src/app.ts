@@ -35,7 +35,7 @@ import { FallbackPlanner, parseToolCall } from "./planner";
 import type { Router, RouterDecision } from "./router";
 import type { SemanticSearchService } from "./semantic-search";
 import { cleanupToolStreamWithWorkersAi, type ToolStreamCleanupLine } from "./tool-stream-cleanup";
-import { deriveUserProgressCandidate, type UserProgressKind } from "./user-progress";
+import { deriveUserProgressCandidate, type UserProgressCandidate, type UserProgressKind } from "./user-progress";
 import type { VectorSearchIndex } from "./vectorize";
 import type { Synthesizer, ToolHistoryEntry } from "./synthesizer";
 import type { AgentIdentityRecord, AnalyticsEventRecord, AppStore, ArtifactRecord, BackgroundJobRecord, MessageRecord, NotificationRecord, PassageSearchFilters, RunEventRecord, RunRecord, RuntimeInstanceRecord, SessionRecord, ToolCallRecord, UserRecord, WorkDetailRecord } from "./store";
@@ -2489,6 +2489,7 @@ export type ActiveRunState = {
     lastPublishedText: string | null;
     lastPublishedAt: number;
     title: string;
+    seenOpenAiRequestIds?: string[];
   };
   subscribers: Map<string, (event: string, data: Record<string, unknown>) => Promise<void>>;
 };
@@ -9170,6 +9171,7 @@ async function ensureUserProgressState(
     lastPublishedText: lines.length > 0 ? lines[lines.length - 1]! : null,
     lastPublishedAt: 0,
     title: typeof progressMessage?.metadata?.progressTitle === "string" ? progressMessage.metadata.progressTitle : "Agentic Search",
+    seenOpenAiRequestIds: [],
   };
   if (activeRun) {
     activeRun.userProgress = nextState;
@@ -9185,25 +9187,16 @@ function progressTitleForRun(lines: string[]) {
   return "Agentic Search";
 }
 
-async function emitUserFacingProgress(
+async function appendUserFacingProgressCandidate(
   deps: AppDeps,
   activeRuns: Map<string, ActiveRunState>,
   runId: string,
   sessionId: string,
-  event: string,
-  data: Record<string, unknown>,
+  candidate: UserProgressCandidate,
   deliver?: (event: string, data: Record<string, unknown>) => Promise<void>,
 ) {
   const activeRun = activeRuns.get(runId);
   const progressState = await ensureUserProgressState(deps, activeRun, sessionId, runId);
-  const candidate = deriveUserProgressCandidate({
-    event,
-    data,
-    lastMeaningfulText: progressState.lastMeaningfulText,
-  });
-  if (!candidate) {
-    return;
-  }
   const nowMs = Date.now();
   if (progressState.lastPublishedText === candidate.text) {
     const minRepeatMs = candidate.kind === "heartbeat" ? 15_000 : 8_000;
@@ -9251,6 +9244,221 @@ async function emitUserFacingProgress(
     await deliver("user.progress", userProgressEvent);
   }
   await fanOutActiveRunSubscribers(activeRuns, runId, "user.progress", userProgressEvent);
+}
+
+async function emitUserFacingProgress(
+  deps: AppDeps,
+  activeRuns: Map<string, ActiveRunState>,
+  runId: string,
+  sessionId: string,
+  event: string,
+  data: Record<string, unknown>,
+  deliver?: (event: string, data: Record<string, unknown>) => Promise<void>,
+) {
+  const activeRun = activeRuns.get(runId);
+  const progressState = await ensureUserProgressState(deps, activeRun, sessionId, runId);
+  const candidate = deriveUserProgressCandidate({
+    event,
+    data,
+    lastMeaningfulText: progressState.lastMeaningfulText,
+  });
+  if (!candidate) {
+    return;
+  }
+  await appendUserFacingProgressCandidate(deps, activeRuns, runId, sessionId, candidate, deliver);
+}
+
+function summarizeOpenAiContentValue(
+  value: unknown,
+  parts: string[] = [],
+  seen = new Set<string>(),
+  depth = 0,
+): string[] {
+  if (parts.length >= 8 || depth > 5 || value == null) {
+    return parts;
+  }
+  if (typeof value === "string") {
+    const normalized = value.replace(/\s+/gu, " ").trim();
+    if (
+      normalized.length >= 6
+      && normalized.length <= 600
+      && !/^\{.*\}$/u.test(normalized)
+      && !seen.has(normalized)
+    ) {
+      parts.push(normalized);
+      seen.add(normalized);
+    }
+    return parts;
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value.slice(0, 8)) {
+      summarizeOpenAiContentValue(entry, parts, seen, depth + 1);
+      if (parts.length >= 8) {
+        break;
+      }
+    }
+    return parts;
+  }
+  if (typeof value !== "object") {
+    return parts;
+  }
+  const record = value as Record<string, unknown>;
+  if (typeof record.role === "string" && record.content != null) {
+    const roleParts = summarizeOpenAiContentValue(record.content, [], new Set<string>(), depth + 1);
+    for (const part of roleParts) {
+      const labeled = `${record.role}: ${part}`;
+      if (!seen.has(labeled)) {
+        parts.push(labeled);
+        seen.add(labeled);
+      }
+      if (parts.length >= 8) {
+        return parts;
+      }
+    }
+  }
+  for (const key of ["instructions", "prompt", "input_text", "output_text", "text", "summary", "question", "query", "content", "message"]) {
+    if (record[key] != null) {
+      summarizeOpenAiContentValue(record[key], parts, seen, depth + 1);
+      if (parts.length >= 8) {
+        return parts;
+      }
+    }
+  }
+  for (const key of ["messages", "input", "output", "choices"]) {
+    if (record[key] != null) {
+      summarizeOpenAiContentValue(record[key], parts, seen, depth + 1);
+      if (parts.length >= 8) {
+        return parts;
+      }
+    }
+  }
+  return parts;
+}
+
+function buildOpenAiCleanupLines(
+  requestPayload: Record<string, unknown> | null,
+  responsePayload: Record<string, unknown> | null,
+  record: Record<string, unknown>,
+): ToolStreamCleanupLine[] {
+  const lines: ToolStreamCleanupLine[] = [];
+  const requestBody =
+    requestPayload?.requestBody && typeof requestPayload.requestBody === "object"
+      ? requestPayload.requestBody as Record<string, unknown>
+      : null;
+  const model =
+    typeof record.model === "string" && record.model.trim().length > 0
+      ? record.model.trim()
+      : requestBody && typeof requestBody.model === "string"
+        ? requestBody.model
+        : null;
+  if (model) {
+    lines.push({ toolName: "openai_proxy", key: "model", value: model });
+  }
+  if (typeof record.path === "string" && record.path.trim().length > 0) {
+    lines.push({ toolName: "openai_proxy", key: "path", value: record.path.trim() });
+  }
+  const requestTexts = requestPayload ? summarizeOpenAiContentValue(requestPayload.requestBody).slice(0, 4) : [];
+  for (const [index, text] of requestTexts.entries()) {
+    lines.push({ toolName: "openai_proxy", key: `request.${index + 1}`, value: truncateHermesText(text, 320) });
+  }
+  const responseBody = responsePayload?.responseBody ?? responsePayload;
+  const responseTexts = summarizeOpenAiContentValue(responseBody).slice(0, 4);
+  for (const [index, text] of responseTexts.entries()) {
+    lines.push({ toolName: "openai_proxy", key: `response.${index + 1}`, value: truncateHermesText(text, 320) });
+  }
+  if (typeof responsePayload?.error === "string" && responsePayload.error.trim().length > 0) {
+    lines.push({ toolName: "openai_proxy", key: "error", value: truncateHermesText(responsePayload.error.trim(), 320) });
+  }
+  return lines;
+}
+
+async function emitAiCleanedProgressBatch(
+  deps: AppDeps,
+  activeRuns: Map<string, ActiveRunState>,
+  runId: string,
+  sessionId: string,
+  toolName: string,
+  lines: ToolStreamCleanupLine[],
+  deliver?: (event: string, data: Record<string, unknown>) => Promise<void>,
+) {
+  if (!deps.ai || lines.length === 0) {
+    return;
+  }
+  try {
+    const cleaned = await cleanupToolStreamWithWorkersAi(deps.ai, {
+      model: deps.toolStreamCleanupModel,
+      toolName,
+      lines: lines.slice(0, 16),
+    });
+    const outputLines = cleaned.normalizedLines.length > 0
+      ? cleaned.normalizedLines
+      : typeof cleaned.summary === "string" && cleaned.summary.trim().length > 0
+        ? [cleaned.summary.trim()]
+        : [];
+    for (const line of outputLines) {
+      const normalized = line.replace(/\s+/gu, " ").trim();
+      if (!normalized) {
+        continue;
+      }
+      await appendUserFacingProgressCandidate(deps, activeRuns, runId, sessionId, {
+        text: truncateHermesText(normalized, 220),
+        kind: "activity",
+        meaningful: true,
+      }, deliver);
+    }
+  } catch {
+    // Fail closed: if cleanup fails, emit nothing.
+  }
+}
+
+async function emitHermesOpenAiProgress(
+  deps: AppDeps,
+  activeRuns: Map<string, ActiveRunState>,
+  runId: string,
+  sessionId: string,
+  jobId: string,
+  rawLine: string,
+  deliver?: (event: string, data: Record<string, unknown>) => Promise<void>,
+) {
+  const record = parseHermesJsonRecord(rawLine);
+  if (!record || typeof record.requestId !== "string" || record.requestId.trim().length === 0) {
+    return;
+  }
+  const activeRun = activeRuns.get(runId);
+  const progressState = await ensureUserProgressState(deps, activeRun, sessionId, runId);
+  const requestId = record.requestId.trim();
+  if (progressState.seenOpenAiRequestIds?.includes(requestId)) {
+    return;
+  }
+  const requestArtifactName = typeof record.requestFile === "string" ? record.requestFile.split(/[\\/]/u).at(-1) : null;
+  const responseArtifactName = typeof record.responseFile === "string" ? record.responseFile.split(/[\\/]/u).at(-1) : null;
+  if (!requestArtifactName || !responseArtifactName) {
+    return;
+  }
+  try {
+    const [requestArtifact, responseArtifact] = await Promise.all([
+      fetchHermesArtifact(deps.hermesJobApiUrl!, deps.hermesJobApiToken, jobId, requestArtifactName),
+      fetchHermesArtifact(deps.hermesJobApiUrl!, deps.hermesJobApiToken, jobId, responseArtifactName),
+    ]);
+    const requestPayload = parseHermesJsonRecord(requestArtifact.artifact.content);
+    const responsePayload = parseHermesJsonRecord(responseArtifact.artifact.content);
+    const cleanupLines = buildOpenAiCleanupLines(requestPayload, responsePayload, record);
+    if (cleanupLines.length === 0) {
+      return;
+    }
+    progressState.seenOpenAiRequestIds = [...(progressState.seenOpenAiRequestIds ?? []), requestId].slice(-64);
+    await emitAiCleanedProgressBatch(
+      deps,
+      activeRuns,
+      runId,
+      sessionId,
+      "openai_proxy",
+      cleanupLines,
+      deliver,
+    );
+  } catch {
+    // If the proxy artifacts are not readable yet, skip rather than inventing a summary.
+  }
 }
 
 async function fanOutActiveRunSubscribers(
@@ -10898,29 +11106,91 @@ async function runHermesConversation(
       await updateHermesPlanMetadata();
 
       for (const source of logUpdate.sources) {
-        if (!isHeartbeatProgressSource(source.name)) {
-          continue;
-        }
+        const cleanupLines: ToolStreamCleanupLine[] = [];
         for (const line of source.lines) {
           const text = line.trim();
           if (!text) {
             continue;
           }
-          if (backgroundJobId) {
-            await emit("job.log", {
+          if (source.name === "openai_requests") {
+            await emitHermesOpenAiProgress(
+              deps,
+              activeRuns,
+              run.id,
+              activeSession.id,
+              job.id,
+              text,
+              send,
+            );
+            continue;
+          }
+          const progressCandidate = deriveUserProgressCandidate({
+            event: "job.log",
+            data: {
               runId: run.id,
               sessionId: activeSession.id,
-              jobId: backgroundJobId,
+              ...(backgroundJobId ? { jobId: backgroundJobId } : {}),
               provider: "hermes",
               source: source.name,
               updatedAt: source.updatedAt,
               text: truncateHermesText(text, 280),
-            });
+            },
+            lastMeaningfulText: activeRuns.get(run.id)?.userProgress?.lastMeaningfulText ?? null,
+          });
+          if (backgroundJobId) {
+            if (isHeartbeatProgressSource(source.name)) {
+              await emit("job.log", {
+                runId: run.id,
+                sessionId: activeSession.id,
+                jobId: backgroundJobId,
+                provider: "hermes",
+                source: source.name,
+                updatedAt: source.updatedAt,
+                text: truncateHermesText(text, 280),
+              });
+            }
           }
-          await appendToolProgress(text, {
-            source: source.name,
-            updatedAt: source.updatedAt,
-          }, currentToolCallId);
+          if (isHeartbeatProgressSource(source.name)) {
+            await appendToolProgress(text, {
+              source: source.name,
+              updatedAt: source.updatedAt,
+            }, currentToolCallId);
+            if (!progressCandidate) {
+              cleanupLines.push({
+                toolName: "run_workspace_task",
+                key: source.name,
+                value: text,
+              });
+            }
+            continue;
+          }
+          if (progressCandidate) {
+            await appendUserFacingProgressCandidate(
+              deps,
+              activeRuns,
+              run.id,
+              activeSession.id,
+              progressCandidate,
+              send,
+            );
+            continue;
+          }
+          cleanupLines.push({
+            toolName: "run_workspace_task",
+            key: source.name,
+            value: text,
+          });
+        }
+        if (cleanupLines.length > 0) {
+          await emitAiCleanedProgressBatch(
+            deps,
+            activeRuns,
+            run.id,
+            activeSession.id,
+            source.name === "openai_requests" ? "openai_proxy" : "run_workspace_task",
+            cleanupLines,
+            send,
+          );
         }
       }
 
