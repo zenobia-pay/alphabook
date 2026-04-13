@@ -370,6 +370,10 @@ export function deriveUserProgressCandidate(input: ProgressEventInput): UserProg
     };
   }
   if (event === "run.completed") {
+    const completionMode = typeof data.completionMode === "string" ? data.completionMode : null;
+    if (completionMode === "direct_response") {
+      return null;
+    }
     const status = typeof data.status === "string" ? data.status : "completed";
     if (status === "completed") {
       return {
