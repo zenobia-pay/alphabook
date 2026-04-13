@@ -16,6 +16,7 @@ import { createApp, type AppDeps, type ResearchTaskQueueMessage } from "./app";
 import { WorkOSAuth } from "./auth";
 import { createBillingService } from "./billing";
 import { GoogleAIEmbedder, OpenAIEmbedder } from "./embeddings";
+import type { ModelTextGenerationBinding } from "./model-binding";
 import { OpenAIPlanner } from "./planner";
 import { OpenAIRouter } from "./router";
 import { S3BlobStore } from "./s3-store";
@@ -148,6 +149,62 @@ function resolveVectorIndex(env: LinuxEnv) {
   return undefined;
 }
 
+function resolveAiBinding(env: LinuxEnv): ModelTextGenerationBinding {
+  const apiKey = env.OPENAI_API_KEY;
+  if (!apiKey) {
+    throw new Error("OPENAI_API_KEY is required.");
+  }
+  const defaultModel = env.OPENAI_MODEL ?? "gpt-5.2";
+  const binding: ModelTextGenerationBinding = {
+    async run<ModelInput extends Record<string, unknown>, ModelOutput = unknown>(model: string, input: ModelInput, _options?: Record<string, unknown>) {
+      const resolvedModel = model.startsWith("@cf/") ? defaultModel : model;
+      const body = "messages" in input && Array.isArray(input.messages)
+        ? {
+            model: resolvedModel,
+            messages: input.messages,
+          }
+        : "prompt" in input && typeof input.prompt === "string"
+          ? {
+              model: resolvedModel,
+              messages: [
+                {
+                  role: "user" as const,
+                  content: input.prompt,
+                },
+              ],
+            }
+          : null;
+      if (!body) {
+        throw new Error("Linux AI binding only supports prompt or messages inputs.");
+      }
+      const response = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) {
+        const detail = await response.text().catch(() => "");
+        throw new Error(`AI binding request failed: ${detail || response.statusText}`);
+      }
+      const payload = await response.json() as {
+        choices?: Array<{
+          message?: {
+            content?: string;
+          };
+        }>;
+      };
+      const content = payload.choices?.[0]?.message?.content?.trim() ?? "";
+      return {
+        response: content,
+      } as ModelOutput;
+    },
+  };
+  return binding;
+}
+
 export function buildLinuxAppDeps(env: LinuxEnv, options: { boss?: PgBoss } = {}): AppDeps {
   if (!env.OPENAI_API_KEY) {
     throw new Error("OPENAI_API_KEY is required.");
@@ -192,6 +249,7 @@ export function buildLinuxAppDeps(env: LinuxEnv, options: { boss?: PgBoss } = {}
     buildPlannerPrompt(implementation),
   );
   const embedder = resolveEmbedder(env, billing);
+  const ai = resolveAiBinding(env);
   const vectorIndex = resolveVectorIndex(env);
   const semanticSearch = vectorIndex
     ? new DelegatingSemanticSearchService(
@@ -236,6 +294,7 @@ export function buildLinuxAppDeps(env: LinuxEnv, options: { boss?: PgBoss } = {}
   return {
     store,
     billing,
+    ai,
     router,
     planner,
     semanticSearch,
