@@ -9187,6 +9187,15 @@ function progressTitleForRun(lines: string[]) {
   return "Agentic Search";
 }
 
+function canonicalizeProgressText(text: string) {
+  return text
+    .replace(/^Still working:\s*/iu, "")
+    .replace(/[.]+$/u, "")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .toLowerCase();
+}
+
 async function appendUserFacingProgressCandidate(
   deps: AppDeps,
   activeRuns: Map<string, ActiveRunState>,
@@ -9197,6 +9206,7 @@ async function appendUserFacingProgressCandidate(
 ) {
   const activeRun = activeRuns.get(runId);
   const progressState = await ensureUserProgressState(deps, activeRun, sessionId, runId);
+  const canonicalCandidate = canonicalizeProgressText(candidate.text);
   const nowMs = Date.now();
   if (progressState.lastPublishedText === candidate.text) {
     const minRepeatMs = candidate.kind === "heartbeat" ? 15_000 : 8_000;
@@ -9205,6 +9215,20 @@ async function appendUserFacingProgressCandidate(
     }
   }
   if (progressState.lines[progressState.lines.length - 1] === candidate.text) {
+    return;
+  }
+  const recentCanonicals = progressState.lines
+    .slice(-8)
+    .map((line) => canonicalizeProgressText(line))
+    .filter((line) => line.length > 0);
+  if (canonicalCandidate.length > 0 && recentCanonicals.includes(canonicalCandidate)) {
+    return;
+  }
+  if (
+    candidate.kind === "heartbeat"
+    && canonicalCandidate.length > 0
+    && canonicalizeProgressText(progressState.lastMeaningfulText ?? "") === canonicalCandidate
+  ) {
     return;
   }
   progressState.lines.push(candidate.text);
