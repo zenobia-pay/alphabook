@@ -15965,7 +15965,7 @@ export function createApp(inputDeps: CreateAppInput) {
     if (!(await canAccessSession(c, session))) {
       return c.json({ error: "Not authorized for this session." }, 403);
     }
-    const messages = await deps.store.listMessages(sessionId);
+    const messages = (await deps.store.listMessages(sessionId)).map(stripBootstrapMessageToolTrace);
     return c.json({ messages });
   };
 
