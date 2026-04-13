@@ -35,7 +35,7 @@ import { FallbackPlanner, parseToolCall } from "./planner";
 import type { Router, RouterDecision } from "./router";
 import type { SemanticSearchService } from "./semantic-search";
 import { cleanupToolStreamWithWorkersAi, type ToolStreamCleanupLine } from "./tool-stream-cleanup";
-import { deriveUserProgressCandidate, type UserProgressCandidate, type UserProgressKind } from "./user-progress";
+import { deriveUserProgressCandidate, shouldIgnoreRawProgressText, type UserProgressCandidate, type UserProgressKind } from "./user-progress";
 import type { VectorSearchIndex } from "./vectorize";
 import type { Synthesizer, ToolHistoryEntry } from "./synthesizer";
 import type { AgentIdentityRecord, AnalyticsEventRecord, AppStore, ArtifactRecord, BackgroundJobRecord, MessageRecord, NotificationRecord, PassageSearchFilters, RunEventRecord, RunRecord, RuntimeInstanceRecord, SessionRecord, ToolCallRecord, UserRecord, WorkDetailRecord } from "./store";
@@ -9369,29 +9369,17 @@ function buildOpenAiCleanupLines(
     requestPayload?.requestBody && typeof requestPayload.requestBody === "object"
       ? requestPayload.requestBody as Record<string, unknown>
       : null;
-  const model =
-    typeof record.model === "string" && record.model.trim().length > 0
-      ? record.model.trim()
-      : requestBody && typeof requestBody.model === "string"
-        ? requestBody.model
-        : null;
-  if (model) {
-    lines.push({ toolName: "openai_proxy", key: "model", value: model });
-  }
-  if (typeof record.path === "string" && record.path.trim().length > 0) {
-    lines.push({ toolName: "openai_proxy", key: "path", value: record.path.trim() });
-  }
   const requestTexts = requestPayload ? summarizeOpenAiContentValue(requestPayload.requestBody).slice(0, 4) : [];
   for (const [index, text] of requestTexts.entries()) {
-    lines.push({ toolName: "openai_proxy", key: `request.${index + 1}`, value: truncateHermesText(text, 320) });
+    lines.push({ toolName: "openai_proxy", key: `request_intent.${index + 1}`, value: truncateHermesText(text, 320) });
   }
   const responseBody = responsePayload?.responseBody ?? responsePayload;
   const responseTexts = summarizeOpenAiContentValue(responseBody).slice(0, 4);
   for (const [index, text] of responseTexts.entries()) {
-    lines.push({ toolName: "openai_proxy", key: `response.${index + 1}`, value: truncateHermesText(text, 320) });
+    lines.push({ toolName: "openai_proxy", key: `response_result.${index + 1}`, value: truncateHermesText(text, 320) });
   }
   if (typeof responsePayload?.error === "string" && responsePayload.error.trim().length > 0) {
-    lines.push({ toolName: "openai_proxy", key: "error", value: truncateHermesText(responsePayload.error.trim(), 320) });
+    lines.push({ toolName: "openai_proxy", key: "failure", value: truncateHermesText(responsePayload.error.trim(), 320) });
   }
   return lines;
 }
@@ -11179,7 +11167,7 @@ async function runHermesConversation(
               source: source.name,
               updatedAt: source.updatedAt,
             }, currentToolCallId);
-            if (!progressCandidate) {
+            if (!progressCandidate && !shouldIgnoreRawProgressText(text)) {
               cleanupLines.push({
                 toolName: "run_workspace_task",
                 key: source.name,
@@ -11197,6 +11185,9 @@ async function runHermesConversation(
               progressCandidate,
               send,
             );
+            continue;
+          }
+          if (shouldIgnoreRawProgressText(text)) {
             continue;
           }
           cleanupLines.push({

@@ -102,6 +102,34 @@ function stripLogTimestampPrefix(value: string) {
     .trim();
 }
 
+function normalizeProgressLine(value: string) {
+  return stripLogTimestampPrefix(value.replace(/\s+/gu, " ").trim());
+}
+
+function genericProgressNoise(text: string) {
+  const normalized = normalizeProgressLine(text).toLowerCase();
+  if (!normalized) {
+    return true;
+  }
+  return (
+    /^(?:launching the analysis workspace|working through launching|started a workspace task|workspace task started|task run initialized|task status: running|task is running|workspace task heartbeat(?:: .*?)?|task heartbeat received(?:: .*?)?|still working: pid=\d+ status=alive|pid=\d+ status=alive)\.?$/u.test(normalized)
+    || /^(?:preparing|prepared)\s+(?:the\s+)?(?:terminal|skills list|list of skills|code execution(?: environment| step)?|run environment|prompt input file|working directory|output folder structure|analysis workspace)\.?$/u.test(normalized)
+    || /^(?:a|an)\s+(?:log file|process log file|inner run directory record|manifest file|session snapshot)\s+(?:was referenced|was created|was prepared|was generated).?$/u.test(normalized)
+    || /^(?:generated|created)\s+(?:status\.json|run\.log|manifest\.json|scoped-files\.tsv|the output folder structure).?$/u.test(normalized)
+    || /^(?:requested|sent|prepared)\s+.*\bopenai proxy\b.*$/u.test(normalized)
+    || /^(?:used|selected|prepared).*\bgpt-[\w.:-]+\b.*$/u.test(normalized)
+    || /^(?:openai request logging was enabled|used the openai proxy service|a new session was created and a session snapshot was prepared)\.?$/u.test(normalized)
+  );
+}
+
+export function shouldIgnoreRawProgressText(text: string) {
+  const normalized = normalizeProgressLine(text);
+  if (!normalized || commandLooksLikeJsonFragment(normalized)) {
+    return true;
+  }
+  return genericProgressNoise(normalized);
+}
+
 function humanizeAgentText(text: string) {
   const normalized = text.replace(/\s+/gu, " ").trim();
   if (!normalized) {
@@ -167,7 +195,10 @@ function summarizeCommand(command: string) {
     if (quotedTerms.length > 0) {
       return truncateText(`Running a comparison script for: ${quotedTerms.join("; ")}`);
     }
-    return "Running a comparison script across the selected sources.";
+    if (normalized.includes(".tsv") || normalized.includes("collect") || normalized.includes("catalog") || normalized.includes("preserve")) {
+      return "Running a scripted search-processing step across the current corpus batch.";
+    }
+    return null;
   }
   if (normalized.includes("for spec in") || normalized.includes("ifs=: read -r gid start end")) {
     return "Sampling passages across the selected source volumes.";
@@ -210,16 +241,16 @@ function summarizePrettyCliLine(text: string) {
       return "Reviewing corpus metadata to narrow candidate books.";
     }
     if (base === "ripgrep.log" || base === "ripgrep-status.json" || base === "ripgrep-progress.jsonl") {
-      return "Checking bounded search progress and current hit counts.";
+      return "Checking whether the current bounded search batch is producing strong matches.";
     }
     if (base === "scoped-files.tsv") {
       return "Checking the scoped corpus file list.";
     }
     if (base === "run.log") {
-      return "Checking the current run log for search progress.";
+      return null;
     }
     if (base === "status.json") {
-      return "Checking the current run status.";
+      return null;
     }
     if (base === "manifest.json") {
       return "Reviewing the run manifest and search scope.";
@@ -260,10 +291,10 @@ function summarizeToolStarted(toolName: string, data: Record<string, unknown>) {
   }
   if (toolName === "run_workspace_task") {
     if (objective && objective.trim().length > 0) {
-      return truncateText(`Launching the analysis workspace for: ${objective.trim()}`);
+      return truncateText(`Started agentic workspace for: ${objective.trim()}`);
     }
     const rationale = typeof data.rationale === "string" ? data.rationale.trim() : "";
-    return rationale ? truncateText(rationale) : "Launching the analysis workspace.";
+    return rationale ? truncateText(rationale) : "Started the agentic workspace.";
   }
   return null;
 }
@@ -275,7 +306,13 @@ function summarizeJobProgress(data: Record<string, unknown>) {
     return null;
   }
   if (detail) {
+    if (shouldIgnoreRawProgressText(detail)) {
+      return null;
+    }
     return truncateText(detail.endsWith(".") ? detail : `${detail}.`);
+  }
+  if (!phase || /^(?:launching|running)$/iu.test(phase)) {
+    return null;
   }
   return truncateText(`Working through ${phase.replace(/[_-]+/gu, " ")}.`);
 }
@@ -321,8 +358,8 @@ function summarizeLogLine(
   data: Record<string, unknown>,
   lastMeaningfulText?: string | null,
 ): UserProgressCandidate | null {
-  const trimmed = stripLogTimestampPrefix(text.trim());
-  if (!trimmed || commandLooksLikeJsonFragment(trimmed)) {
+  const trimmed = normalizeProgressLine(text);
+  if (!trimmed || shouldIgnoreRawProgressText(trimmed)) {
     return null;
   }
   if (trimmed.length > 280 || /^##\s+/u.test(trimmed)) {
@@ -337,6 +374,20 @@ function summarizeLogLine(
   }
   if (/^(?:timestamp|run_id|job_id|wrapper_run_dir|inner_run_dir|root_dir|corpus_root|archive_prefix|alphabook_session_id|alphabook_run_id|model)=/u.test(trimmed)) {
     return null;
+  }
+  if (/exit code 1/iu.test(trimmed) && /failed/iu.test(trimmed)) {
+    return {
+      text: "Several search-processing steps failed with exit code 1; inspecting the failure output before retrying.",
+      kind: "activity",
+      meaningful: true,
+    };
+  }
+  if (/processing failed .*?(catalog|collect\/preserve|craft\/tinker|long years|meticulous|obsession)/iu.test(trimmed)) {
+    return {
+      text: "The first bounded search term groups failed across several TSV partitions; checking the failure output before retrying.",
+      kind: "activity",
+      meaningful: true,
+    };
   }
   const promptLine = summarizePromptLine(trimmed);
   if (promptLine) {

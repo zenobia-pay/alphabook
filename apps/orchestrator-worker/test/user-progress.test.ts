@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { deriveUserProgressCandidate } from "../src/user-progress";
+import { deriveUserProgressCandidate, shouldIgnoreRawProgressText } from "../src/user-progress";
 
 test("tool.started preserves concrete search query text", () => {
   const candidate = deriveUserProgressCandidate({
@@ -85,11 +85,7 @@ test("pretty cli helper lines are normalized into readable activity", () => {
     },
   });
 
-  assert.deepEqual(candidate, {
-    text: "Checking the current run log for search progress.",
-    kind: "activity",
-    meaningful: true,
-  });
+  assert.equal(candidate, null);
 });
 
 test("pretty cli file reads are rewritten at the task level", () => {
@@ -194,6 +190,59 @@ test("raw launcher env lines are suppressed from progress logs", () => {
   });
 
   assert.equal(candidate, null);
+});
+
+test("generic launch chatter is excluded from cleanup candidates", () => {
+  assert.equal(shouldIgnoreRawProgressText("Working through launching."), true);
+  assert.equal(shouldIgnoreRawProgressText("Task heartbeat received: task is alive."), true);
+  assert.equal(shouldIgnoreRawProgressText("Prepared the terminal."), true);
+});
+
+test("openai transport chatter is excluded from cleanup candidates", () => {
+  assert.equal(shouldIgnoreRawProgressText("Sent a request to the OpenAI proxy to retrieve available models."), true);
+  assert.equal(shouldIgnoreRawProgressText("Used model gpt-5.4."), true);
+});
+
+test("ripgrep helper reads are rewritten at the semantic level", () => {
+  const candidate = deriveUserProgressCandidate({
+    event: "job.log",
+    data: {
+      text: "┊ 📖 read /srv/alphabook/logs/corpus-search/20260413-180400-b97ef383/ripgrep-status.json 0.3s",
+    },
+  });
+
+  assert.deepEqual(candidate, {
+    text: "Checking whether the current bounded search batch is producing strong matches.",
+    kind: "activity",
+    meaningful: true,
+  });
+});
+
+test("generic job progress launch detail is suppressed", () => {
+  const candidate = deriveUserProgressCandidate({
+    event: "job.progress",
+    data: {
+      detail: "Working through launching",
+      phase: "launching",
+    },
+  });
+
+  assert.equal(candidate, null);
+});
+
+test("failed partition processing is rewritten as a retry-oriented search failure", () => {
+  const candidate = deriveUserProgressCandidate({
+    event: "job.log",
+    data: {
+      text: "Processing failed for several .tsv parts across multiple steps (catalog, collect/preserve, craft/tinker, long years, meticulous, obsession).",
+    },
+  });
+
+  assert.deepEqual(candidate, {
+    text: "The first bounded search term groups failed across several TSV partitions; checking the failure output before retrying.",
+    kind: "activity",
+    meaningful: true,
+  });
 });
 
 test("unknown raw shell blobs are suppressed instead of persisted", () => {
