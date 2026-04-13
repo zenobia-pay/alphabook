@@ -117,3 +117,29 @@ test("json fragments from manifest dumps are suppressed", () => {
 
   assert.equal(candidate, null);
 });
+
+test("timestamp-prefixed progress lines are cleaned before saving", () => {
+  const candidate = deriveUserProgressCandidate({
+    event: "job.log",
+    data: {
+      text: "[2026-04-13T18:24:43Z] Wrote `final-answer.md` and `final-answer.json` in `/srv/alphabook/logs/codex-design-experiment/20260413T181730Z-886917d4`.",
+    },
+  });
+
+  assert.deepEqual(candidate, {
+    text: "Wrote `final-answer.md` and `final-answer.json` in `/srv/alphabook/logs/codex-design-experiment/20260413T181730Z-886917d4`.",
+    kind: "activity",
+    meaningful: true,
+  });
+});
+
+test("long answer blobs are suppressed from progress logs", () => {
+  const candidate = deriveUserProgressCandidate({
+    event: "job.log",
+    data: {
+      text: "America and Ireland are the books to put under the lamp first. America looks built for immediate room response: the contents front-load short comic bits like “My Dog,” “Speech on the Babies,” and Bill Nye sketches, and the sampled opening starts joking almost before it has sat down. Ireland is different but equally alive: less vaudeville, more folk current, more social breath, more buoyancy and movement.",
+    },
+  });
+
+  assert.equal(candidate, null);
+});

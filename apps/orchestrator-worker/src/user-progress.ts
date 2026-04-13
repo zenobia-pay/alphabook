@@ -67,7 +67,14 @@ function extractSedRange(command: string) {
 
 function commandLooksLikeJsonFragment(line: string) {
   return /^[\[\]{}],?$/u.test(line)
-    || /^"(?:path|bytes|updated_at|name|run_id|timestamp|wrapper_run_dir|inner_run_dir)"\s*:/u.test(line);
+    || /^"(?:path|bytes|updated_at|started_at|finished_at|name|run_id|timestamp|wrapper_run_dir|inner_run_dir|status)"\s*:/u.test(line);
+}
+
+function stripLogTimestampPrefix(value: string) {
+  return value
+    .replace(/^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\]\s*/u, "")
+    .replace(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\s+/u, "")
+    .trim();
 }
 
 function humanizeAgentText(text: string) {
@@ -259,8 +266,11 @@ function summarizeLogLine(
   data: Record<string, unknown>,
   lastMeaningfulText?: string | null,
 ): UserProgressCandidate | null {
-  const trimmed = text.trim();
+  const trimmed = stripLogTimestampPrefix(text.trim());
   if (!trimmed || commandLooksLikeJsonFragment(trimmed)) {
+    return null;
+  }
+  if (trimmed.length > 280 || /^##\s+/u.test(trimmed)) {
     return null;
   }
   if (/pid=\d+\s+alive$/iu.test(trimmed) || typeof safeRecord(data.detail)?.source === "string" && safeRecord(data.detail)?.source === "heartbeat") {
