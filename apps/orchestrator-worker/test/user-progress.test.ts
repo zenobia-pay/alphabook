@@ -118,7 +118,7 @@ test("json fragments from manifest dumps are suppressed", () => {
   assert.equal(candidate, null);
 });
 
-test("timestamp-prefixed progress lines are cleaned before saving", () => {
+test("timestamp-prefixed plain text lines are ignored unless explicitly structured", () => {
   const candidate = deriveUserProgressCandidate({
     event: "job.log",
     data: {
@@ -126,11 +126,7 @@ test("timestamp-prefixed progress lines are cleaned before saving", () => {
     },
   });
 
-  assert.deepEqual(candidate, {
-    text: "Wrote `final-answer.md` and `final-answer.json` in `/srv/alphabook/logs/codex-design-experiment/20260413T181730Z-886917d4`.",
-    kind: "activity",
-    meaningful: true,
-  });
+  assert.equal(candidate, null);
 });
 
 test("long answer blobs are suppressed from progress logs", () => {
@@ -166,7 +162,7 @@ test("unknown raw shell blobs are suppressed instead of persisted", () => {
   assert.equal(candidate, null);
 });
 
-test("scoped file counts are summarized into user-facing lines", () => {
+test("scoped file count lines are ignored unless emitted structurally", () => {
   const candidate = deriveUserProgressCandidate({
     event: "job.log",
     data: {
@@ -174,14 +170,10 @@ test("scoped file counts are summarized into user-facing lines", () => {
     },
   });
 
-  assert.deepEqual(candidate, {
-    text: "Scoped 72,644 candidate files for search.",
-    kind: "activity",
-    meaningful: true,
-  });
+  assert.equal(candidate, null);
 });
 
-test("partition file lines are summarized into user-facing lines", () => {
+test("partition file lines are ignored unless emitted structurally", () => {
   const candidate = deriveUserProgressCandidate({
     event: "job.log",
     data: {
@@ -189,9 +181,5 @@ test("partition file lines are summarized into user-facing lines", () => {
     },
   });
 
-  assert.deepEqual(candidate, {
-    text: "Partitioned the scoped file list into search batches.",
-    kind: "activity",
-    meaningful: true,
-  });
+  assert.equal(candidate, null);
 });
