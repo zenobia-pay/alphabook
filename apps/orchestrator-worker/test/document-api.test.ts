@@ -374,7 +374,7 @@ test("document chat infers Agentic mode from the raw message before runner selec
 
     assert.equal(response.status, 200);
     const body = await response.text();
-    assert.match(body, /I’ve selected Agentic search/);
+    assert.match(body, /event: assistant\.delta/);
     assert.match(body, /"completionMode":"agentic"/);
     assert.doesNotMatch(body, /semantic_deep_search/);
     assert.equal(hermesLaunchPayloads.length, 1);
@@ -582,7 +582,7 @@ test("document chat launches Agentic search from the router decision instead of 
 
     assert.equal(response.status, 200);
     const body = await response.text();
-    assert.match(body, /I’ve selected Agentic search/);
+    assert.match(body, /event: assistant\.delta/);
     assert.match(body, /"completionMode":"agentic"/);
     assert.match(body, /Journal inventory ready/);
     assert.doesNotMatch(body, /The agentic run searched the journal corpus directly\./);
@@ -974,7 +974,7 @@ test("document chat launches Agentic search even when the user only says use age
 
     assert.equal(response.status, 200);
     const body = await response.text();
-    assert.match(body, /I’ve selected Agentic search/);
+    assert.match(body, /event: assistant\.delta/);
     assert.match(body, /Agentic Search Progress/);
     assert.match(body, /Scoped 72644 files from the precomputed corpus index/);
     assert.equal(hermesLaunchPayloads.length, 1);

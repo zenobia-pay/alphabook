@@ -6059,6 +6059,62 @@ function initialWorkflowPlan(intent: {
     : "I’ve selected Search. I’m starting with the fast evidence pass and will widen if the query needs more depth.";
 }
 
+async function createInitialWorkflowPlan(
+  deps: AppDeps,
+  intent: {
+    workflow: "search" | "design_experiment";
+    routedQuery: string;
+    executionMode?: "semantic" | "comprehensive" | "agentic";
+    designSummary?: string;
+  },
+  auditLog?: AuditLogger,
+): Promise<string> {
+  if (!deps.ai) {
+    return initialWorkflowPlan(intent);
+  }
+  auditLog?.("internal.initial_plan.started", {
+    model: DEFAULT_SESSION_TITLE_MODEL,
+    workflow: intent.workflow,
+    executionMode: intent.executionMode ?? null,
+  });
+  const payload = await deps.ai.run<{ messages: Array<{ role: "system" | "user"; content: string }> }, unknown>(DEFAULT_SESSION_TITLE_MODEL, {
+    messages: [
+      {
+        role: "system",
+        content: [
+          "Write the assistant's first short progress update for a newly started AlphaBook run.",
+          "Return plain text only.",
+          "Use 1 or 2 sentences, under 35 words total.",
+          "Sound natural, specific, and confident.",
+          "Do not quote the user's request.",
+          "Do not repeat or paraphrase the request verbatim.",
+          "Do not say Agentic search, semantic search, AlphaLoop, workflow, mode, pipeline, or evidence pass.",
+          "Say what you are about to do next in concrete research terms.",
+          "If this is an experiment run, mention the approved plan and what will be produced.",
+        ].join("\n"),
+      },
+      {
+        role: "user",
+        content: [
+          `Workflow: ${intent.workflow}`,
+          `Execution mode: ${intent.executionMode ?? "n/a"}`,
+          `Research brief: ${intent.routedQuery.trim()}`,
+          intent.designSummary ? `Approved design: ${intent.designSummary}` : "",
+        ].filter(Boolean).join("\n"),
+      },
+    ],
+  });
+  const generated = normalizeWorkersAiText(payload).trim();
+  if (!generated) {
+    throw new Error("Initial workflow plan generation returned an empty response.");
+  }
+  auditLog?.("internal.initial_plan.completed", {
+    model: DEFAULT_SESSION_TITLE_MODEL,
+    text: generated,
+  });
+  return generated;
+}
+
 function isTextArtifact(filename: string, mimeType: string) {
   return mimeType.startsWith("text/") || mimeType.includes("json") || /\.(md|txt|json|log)$/iu.test(filename);
 }
@@ -10743,11 +10799,14 @@ async function runHermesConversation(
     }));
   };
 
-  const planText = initialWorkflowPlan({
-    workflow: effectiveHermesWorkflow,
-    routedQuery: input.message,
-    executionMode: "agentic",
-  });
+  const planText = await createInitialWorkflowPlan(
+    deps,
+    {
+      workflow: effectiveHermesWorkflow,
+      routedQuery: input.message,
+      executionMode: "agentic",
+    },
+  );
   const planMessage = await deps.store.appendMessage(activeSession.id, "assistant", planText, {
     phase: "plan",
     runId: run.id,
@@ -12578,7 +12637,7 @@ type InitialWorkflowIntent = {
     }
     ensureResearchDocumentShell(routedQuery);
     const planText = initialWorkflowIntent
-      ? initialWorkflowPlan(initialWorkflowIntent)
+      ? await createInitialWorkflowPlan(deps, initialWorkflowIntent, recordRawLog)
       : requestedAssistantMode(input) === "semantic"
         ? initialSemanticAssistantPlan(routedQuery)
         : initialAssistantPlan(routedQuery);
