@@ -900,38 +900,7 @@ function buildPersistedRunLogMessage(
       toolCalls: [],
     };
   }
-  if (run.status !== "running" && run.status !== "queued") {
-    return null;
-  }
-
-  const lines: string[] = [];
-  const seen = new Set<string>();
-  for (const event of runEvents) {
-    const text = readRunEventText(event);
-    if (!text || seen.has(text)) {
-      continue;
-    }
-    seen.add(text);
-    lines.push(text);
-  }
-  if (lines.length === 0) {
-    return null;
-  }
-
-  return {
-    id: `run-progress:${run.id}`,
-    sessionId,
-    role: "assistant",
-    content: lines.join("\n\n"),
-    metadata: {
-      phase: "progress",
-      runId: run.id,
-      synthetic: true,
-    },
-    createdAt: runEvents[runEvents.length - 1]?.createdAt ?? run.startedAt,
-    citations: [],
-    toolCalls: [],
-  };
+  return null;
 }
 
 function hydrateConversationMessages(
@@ -940,35 +909,6 @@ function hydrateConversationMessages(
   runState: AssistantSessionBootstrapPayload["runState"] | RunStateRecord | null | undefined,
 ): UiMessage[] {
   const hydrated = Array.isArray(rawMessages) ? rawMessages.map(hydrateStoredMessage) : [];
-  const run = runState?.run;
-  const toolTrace = Array.isArray(runState?.toolTrace) ? runState.toolTrace : [];
-  const hasUserProgress = Array.isArray(runState?.runEvents)
-    && runState.runEvents.some((event) => event.event === "user.progress");
-  if (run && toolTrace.length > 0 && !hasUserProgress) {
-    for (let index = hydrated.length - 1; index >= 0; index -= 1) {
-      const message = hydrated[index];
-      if (message.role !== "assistant") {
-        continue;
-      }
-      if (message.metadata?.phase !== "plan") {
-        continue;
-      }
-      if (message.metadata?.runId !== run.id) {
-        continue;
-      }
-      hydrated[index] = {
-        ...message,
-        metadata: {
-          ...(message.metadata ?? {}),
-          runStatus: run.status,
-        },
-        toolCalls: toolTrace.map((entry, traceIndex) =>
-          normalizeToolTraceEntry(entry as Record<string, unknown>, traceIndex),
-        ),
-      };
-      break;
-    }
-  }
   const progressMessage = buildPersistedRunLogMessage(sessionId, runState);
   if (!progressMessage) {
     return hydrated;
