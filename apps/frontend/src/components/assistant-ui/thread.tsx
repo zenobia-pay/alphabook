@@ -63,6 +63,13 @@ type PlanToolTraceRecord = {
   isError?: boolean;
 };
 
+function readProgressLines(value: unknown) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
+}
+
 function readStringList(value: unknown) {
   if (!Array.isArray(value)) {
     return [];
@@ -783,6 +790,40 @@ const AssistantMessage: FC = () => {
     return typeof custom?.runStatus === "string" ? custom.runStatus : null;
   });
   const hasPlanToolTrace = phase === "plan" && planToolTrace.length > 0;
+  const progressTitle = useAuiState((state) => {
+    const metadata = state.message.metadata;
+    const custom = metadata && typeof metadata === "object" && "custom" in metadata
+      ? metadata.custom as Record<string, unknown>
+      : null;
+    return typeof custom?.progressTitle === "string" ? custom.progressTitle : null;
+  });
+  const rawProgressLines = useAuiState((state) => {
+    const metadata = state.message.metadata;
+    const custom = metadata && typeof metadata === "object" && "custom" in metadata
+      ? metadata.custom as Record<string, unknown>
+      : null;
+    return custom?.progressLines;
+  });
+  const progressLines = useMemo(() => readProgressLines(rawProgressLines), [rawProgressLines]);
+
+  if (phase === "progress") {
+    return (
+      <MessagePrimitive.Root
+        className="aui-assistant-message-root fade-in slide-in-from-bottom-1 relative mx-auto w-full max-w-(--thread-max-width) animate-in py-3 duration-150"
+        data-role="assistant"
+        data-running-message={isRunning ? "true" : "false"}
+      >
+        <div className="aui-assistant-message-content wrap-break-word px-2 text-foreground leading-relaxed">
+          <ProgressTraceCard
+            title={progressTitle ?? "Agentic Search"}
+            lines={progressLines}
+            isRunning={isRunning}
+            runStatus={runStatus}
+          />
+        </div>
+      </MessagePrimitive.Root>
+    );
+  }
 
   return (
     <MessagePrimitive.Root
@@ -808,6 +849,62 @@ const AssistantMessage: FC = () => {
         <AssistantActionBar />
       </div>
     </MessagePrimitive.Root>
+  );
+};
+
+const ProgressTraceCard: FC<{
+  title: string;
+  lines: string[];
+  isRunning: boolean;
+  runStatus: string | null;
+}> = ({ title, lines, isRunning, runStatus }) => {
+  const [collapsed, setCollapsed] = useState(false);
+  const statusLabel =
+    runStatus === "failed" ? "Failed"
+      : runStatus === "cancelled" ? "Cancelled"
+        : runStatus === "completed" ? "Completed"
+          : runStatus === "queued" || runStatus === "running" || isRunning
+            ? "In Progress"
+            : "Completed";
+
+  return (
+    <section className="aui-agentic-trace" aria-label={`${title} run`}>
+      <button
+        type="button"
+        className="aui-agentic-trace-header"
+        aria-expanded={!collapsed}
+        onClick={() => setCollapsed((current) => !current)}
+      >
+        <div className="aui-agentic-trace-heading">
+          <div className="aui-agentic-trace-title-row">
+            <span className="aui-agentic-trace-title">{title}</span>
+            {statusLabel === "In Progress" ? <span className="aui-agentic-trace-spinner" aria-hidden="true" /> : null}
+            <span className={cn(
+              "aui-agentic-trace-status",
+              statusLabel === "Failed" && "is-error",
+              statusLabel === "Cancelled" && "is-error",
+              statusLabel === "Completed" && "is-complete",
+            )}
+            >
+              {statusLabel}
+            </span>
+          </div>
+        </div>
+        <ChevronDownIcon className={cn("aui-agentic-trace-chevron", !collapsed && "is-open")} />
+      </button>
+      {!collapsed ? (
+        <div className="aui-agentic-trace-body">
+          <div className="aui-agentic-trace-lines" role="list">
+            {lines.map((line, index) => (
+              <div key={`${index}-${line.slice(0, 48)}`} className="aui-agentic-trace-line" role="listitem">
+                <span className="aui-agentic-trace-line-dot" aria-hidden="true" />
+                <span className="aui-agentic-trace-line-text">{line}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </section>
   );
 };
 
