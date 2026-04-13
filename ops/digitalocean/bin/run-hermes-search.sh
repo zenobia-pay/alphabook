@@ -614,7 +614,7 @@ PY
 if [[ "$exit_code" -eq 0 && -x "$synthesis_script" ]]; then
   inner_run_dir="$(resolve_inner_run_dir || true)"
   if [[ -n "$inner_run_dir" && -d "$inner_run_dir" ]]; then
-    if [[ -x "$resolve_hits_script" ]]; then
+    if [[ -f "$resolve_hits_script" ]]; then
       if python3 "$resolve_hits_script" \
         --inner-run-dir "$inner_run_dir" \
         --site-origin "https://alpha-book.org" \
