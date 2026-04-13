@@ -1634,6 +1634,17 @@ export class SqlAppStore implements AppStore {
     return null;
   }
 
+  async getLatestProgressMessageForRun(sessionId: string, runId: string): Promise<MessageRecord | null> {
+    const messages = await this.listMessages(sessionId);
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index]!;
+      if (message.role === "assistant" && message.metadata.phase === "progress" && message.metadata.runId === runId) {
+        return message;
+      }
+    }
+    return null;
+  }
+
   async appendMessage(sessionId: string, role: MessageRecord["role"], content: string, metadata: Record<string, unknown> = {}): Promise<MessageRecord> {
     const id = crypto.randomUUID();
     const createdAt = nowIso();
@@ -1643,6 +1654,24 @@ export class SqlAppStore implements AppStore {
 
   async updateMessageMetadata(messageId: string, metadata: Record<string, unknown>): Promise<void> {
     await this.db.query("UPDATE messages SET metadata_json = ? WHERE id = ?", [JSON.stringify(metadata), messageId]);
+  }
+
+  async updateMessage(messageId: string, updates: { content?: string; metadata?: Record<string, unknown> }): Promise<void> {
+    const sets: string[] = [];
+    const params: unknown[] = [];
+    if (typeof updates.content === "string") {
+      sets.push("content = ?");
+      params.push(updates.content);
+    }
+    if (updates.metadata) {
+      sets.push("metadata_json = ?");
+      params.push(JSON.stringify(updates.metadata));
+    }
+    if (sets.length === 0) {
+      return;
+    }
+    params.push(messageId);
+    await this.db.query(`UPDATE messages SET ${sets.join(", ")} WHERE id = ?`, params);
   }
 
   async createRun(sessionId: string, options: {

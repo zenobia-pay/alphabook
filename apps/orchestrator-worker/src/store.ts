@@ -490,7 +490,9 @@ export interface AppStore {
   listAdminSessions(): Promise<AdminSessionRecord[]>;
   listMessages(sessionId: string): Promise<MessageRecord[]>;
   getLatestPlanMessageForRun(sessionId: string, runId: string): Promise<MessageRecord | null>;
+  getLatestProgressMessageForRun(sessionId: string, runId: string): Promise<MessageRecord | null>;
   appendMessage(sessionId: string, role: MessageRecord["role"], content: string, metadata?: Record<string, unknown>): Promise<MessageRecord>;
+  updateMessage(messageId: string, updates: { content?: string; metadata?: Record<string, unknown> }): Promise<void>;
   updateMessageMetadata(messageId: string, metadata: Record<string, unknown>): Promise<void>;
   createRun(sessionId: string, options?: {
     ownerInstanceId?: string | null;
@@ -2704,6 +2706,21 @@ export class InMemoryAppStore implements AppStore {
     return null;
   }
 
+  async getLatestProgressMessageForRun(sessionId: string, runId: string): Promise<MessageRecord | null> {
+    const messages = this.messages.get(sessionId) ?? [];
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (
+        message.role === "assistant"
+        && message.metadata?.phase === "progress"
+        && message.metadata?.runId === runId
+      ) {
+        return message;
+      }
+    }
+    return null;
+  }
+
   async appendMessage(
     sessionId: string,
     role: MessageRecord["role"],
@@ -2734,6 +2751,24 @@ export class InMemoryAppStore implements AppStore {
       next[index] = {
         ...next[index],
         metadata,
+      };
+      this.messages.set(sessionId, next);
+      return;
+    }
+  }
+
+  async updateMessage(messageId: string, updates: { content?: string; metadata?: Record<string, unknown> }): Promise<void> {
+    for (const [sessionId, messages] of this.messages.entries()) {
+      const index = messages.findIndex((message) => message.id === messageId);
+      if (index === -1) {
+        continue;
+      }
+      const current = messages[index]!;
+      const next = [...messages];
+      next[index] = {
+        ...current,
+        ...(typeof updates.content === "string" ? { content: updates.content } : {}),
+        ...(updates.metadata ? { metadata: updates.metadata } : {}),
       };
       this.messages.set(sessionId, next);
       return;

@@ -795,72 +795,6 @@ function hydrateStoredMessage(message: RawUiMessage): UiMessage {
   };
 }
 
-function deriveProgressTitle(messages: UiMessage[]) {
-  const joined = messages.map((message) => message.content).join("\n");
-  if (/^\s*Experiment brief:/mu.test(joined) || /\bexperiment\b/iu.test(joined)) {
-    return "Agentic Experiment";
-  }
-  return "Agentic Search";
-}
-
-function groupProgressMessages(
-  messages: UiMessage[],
-  runState?: AssistantSessionBootstrapPayload["runState"] | RunStateRecord | null,
-): UiMessage[] {
-  const grouped: UiMessage[] = [];
-  let index = 0;
-
-  while (index < messages.length) {
-    const message = messages[index]!;
-    const phase = typeof message.metadata?.phase === "string" ? message.metadata.phase : null;
-    const runId = typeof message.metadata?.runId === "string" ? message.metadata.runId : null;
-    if (phase !== "progress" || !runId) {
-      grouped.push(message);
-      index += 1;
-      continue;
-    }
-
-    const runMessages: UiMessage[] = [];
-    let cursor = index;
-    while (cursor < messages.length) {
-      const candidate = messages[cursor]!;
-      const candidatePhase = typeof candidate.metadata?.phase === "string" ? candidate.metadata.phase : null;
-      const candidateRunId = typeof candidate.metadata?.runId === "string" ? candidate.metadata.runId : null;
-      if (candidatePhase !== "progress" || candidateRunId !== runId) {
-        break;
-      }
-      runMessages.push(candidate);
-      cursor += 1;
-    }
-
-    const latest = runMessages[runMessages.length - 1]!;
-    const runStatus =
-      runState?.run?.id === runId && typeof runState.run.status === "string"
-        ? runState.run.status
-        : typeof latest.metadata?.runStatus === "string"
-          ? latest.metadata.runStatus
-          : null;
-    grouped.push({
-      ...latest,
-      content: runMessages.map((entry) => entry.content.trim()).filter((entry) => entry.length > 0).join("\n"),
-      metadata: {
-        ...latest.metadata,
-        phase: "progress",
-        runId,
-        runStatus,
-        progressTitle: deriveProgressTitle(runMessages),
-        progressLines: runMessages.map((entry) => entry.content.trim()).filter((entry) => entry.length > 0),
-        groupedProgress: true,
-      },
-      citations: [],
-      toolCalls: [],
-    });
-    index = cursor;
-  }
-
-  return grouped;
-}
-
 function readRunEventText(event: PersistedRunEventRecord): string | null {
   if (!event || typeof event !== "object") {
     return null;
@@ -938,7 +872,26 @@ function hydrateConversationMessages(
   runState?: AssistantSessionBootstrapPayload["runState"] | RunStateRecord | null,
 ): UiMessage[] {
   const hydrated = Array.isArray(rawMessages) ? rawMessages.map(hydrateStoredMessage) : [];
-  return groupProgressMessages(hydrated, runState);
+  return hydrated.map((message) => {
+    const phase = typeof message.metadata?.phase === "string" ? message.metadata.phase : null;
+    const runId = typeof message.metadata?.runId === "string" ? message.metadata.runId : null;
+    if (phase !== "progress" || !runId) {
+      return message;
+    }
+    const runStatus =
+      runState?.run?.id === runId && typeof runState.run.status === "string"
+        ? runState.run.status
+        : typeof message.metadata?.runStatus === "string"
+          ? message.metadata.runStatus
+          : null;
+    return {
+      ...message,
+      metadata: {
+        ...message.metadata,
+        runStatus,
+      },
+    };
+  });
 }
 
 function dedupeAdjacentErrorMessages(messages: UiMessage[]) {

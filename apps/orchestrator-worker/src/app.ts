@@ -2483,10 +2483,12 @@ export type ActiveRunState = {
   rawLog: ToolRunRawLogEntry[];
   userProgress?: {
     initialized: boolean;
+    messageId: string | null;
     lines: string[];
     lastMeaningfulText: string | null;
     lastPublishedText: string | null;
     lastPublishedAt: number;
+    title: string;
   };
   subscribers: Map<string, (event: string, data: Record<string, unknown>) => Promise<void>>;
 };
@@ -9151,25 +9153,36 @@ async function ensureUserProgressState(
   if (activeRun?.userProgress?.initialized) {
     return activeRun.userProgress;
   }
-  const messages = await deps.store.listMessages(sessionId);
-  const lines = messages
-    .filter((message) =>
-      message.role === "assistant"
-      && message.metadata?.phase === "progress"
-      && message.metadata?.runId === runId)
-    .map((message) => message.content.trim())
-    .filter((line) => line.length > 0);
+  const progressMessage = await deps.store.getLatestProgressMessageForRun(sessionId, runId);
+  const metadataLines = Array.isArray(progressMessage?.metadata?.progressLines)
+    ? progressMessage!.metadata.progressLines.filter((line): line is string => typeof line === "string" && line.trim().length > 0)
+    : [];
+  const lines = metadataLines.length > 0
+    ? metadataLines
+    : typeof progressMessage?.content === "string"
+      ? progressMessage.content.split(/\r?\n/u).map((line) => line.trim()).filter((line) => line.length > 0)
+      : [];
   const nextState = {
     initialized: true,
+    messageId: progressMessage?.id ?? null,
     lines,
     lastMeaningfulText: lines.length > 0 ? lines[lines.length - 1]! : null,
     lastPublishedText: lines.length > 0 ? lines[lines.length - 1]! : null,
     lastPublishedAt: 0,
+    title: typeof progressMessage?.metadata?.progressTitle === "string" ? progressMessage.metadata.progressTitle : "Agentic Search",
   };
   if (activeRun) {
     activeRun.userProgress = nextState;
   }
   return nextState;
+}
+
+function progressTitleForRun(lines: string[]) {
+  const joined = lines.join("\n");
+  if (/^\s*Experiment brief:/mu.test(joined) || /\bexperiment\b/iu.test(joined)) {
+    return "Agentic Experiment";
+  }
+  return "Agentic Search";
 }
 
 async function emitUserFacingProgress(
@@ -9207,15 +9220,29 @@ async function emitUserFacingProgress(
   if (candidate.meaningful !== false && candidate.kind !== "heartbeat") {
     progressState.lastMeaningfulText = candidate.text;
   }
-  const progressMessage = await deps.store.appendMessage(sessionId, "assistant", candidate.text, {
+  progressState.title = progressTitleForRun(progressState.lines);
+  const progressMetadata = {
     phase: "progress",
     runId,
     progressKind: candidate.kind,
-  });
+    progressTitle: progressState.title,
+    progressLines: [...progressState.lines],
+  };
+  let progressMessageId = progressState.messageId;
+  if (progressMessageId) {
+    await deps.store.updateMessage(progressMessageId, {
+      content: progressState.lines.join("\n"),
+      metadata: progressMetadata,
+    });
+  } else {
+    const progressMessage = await deps.store.appendMessage(sessionId, "assistant", progressState.lines.join("\n"), progressMetadata);
+    progressMessageId = progressMessage.id;
+    progressState.messageId = progressMessage.id;
+  }
   const userProgressEvent = {
     runId,
     sessionId,
-    messageId: progressMessage.id,
+    messageId: progressMessageId,
     kind: candidate.kind satisfies UserProgressKind,
     text: candidate.text,
     ...(candidate.phase ? { phase: candidate.phase } : {}),
