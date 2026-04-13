@@ -153,8 +153,7 @@ function summarizePrettyCliLine(text: string) {
   }
   const preparing = normalized.match(/^┊\s+[\p{Emoji}\u{1F300}-\u{1FAFF}]?\s*preparing\s+([a-z0-9_-]+)\.\.\.$/iu);
   if (preparing?.[1]) {
-    const tool = preparing[1].replace(/[_-]+/gu, " ").trim();
-    return truncateText(`Preparing ${tool}.`);
+    return null;
   }
   const read = normalized.match(/^┊\s+[\p{Emoji}\u{1F300}-\u{1FAFF}]?\s*read\s+(\S+)\s+([\d.]+s)$/iu);
   if (read?.[1]) {
@@ -184,6 +183,50 @@ function summarizePrettyCliLine(text: string) {
     if (/\.txt\b/iu.test(target)) {
       return "Scanning text files in the current run workspace.";
     }
+  }
+  return null;
+}
+
+function summarizePlainTextLine(text: string) {
+  const normalized = text.replace(/\s+/gu, " ").trim();
+  if (!normalized) {
+    return null;
+  }
+  if (/^\d+\s+\/srv\/alphabook\/logs\/.+\/scoped-files\.tsv$/u.test(normalized)) {
+    const count = normalized.split(/\s+/u)[0] ?? "";
+    return Number.isFinite(Number(count))
+      ? `Scoped ${Number(count).toLocaleString("en-US")} candidate files for search.`
+      : "Scoped candidate files for search.";
+  }
+  if (/^PART\s+\/srv\/alphabook\/logs\/.+\/partitions\/part-\d+\.files\.tsv$/u.test(normalized)) {
+    return "Partitioned the scoped file list into search batches.";
+  }
+  if (/^Loaded \d+ available .* skills\.?$/iu.test(normalized)) {
+    return normalized.endsWith(".") ? normalized : `${normalized}.`;
+  }
+  if (/^Determine corpus scope and write initial manifest\/run log\/scoped-files setup$/u.test(normalized)) {
+    return normalized;
+  }
+  if (/^Run bounded searches over scoped TSV, inspect context, and keep representative evidence hits$/u.test(normalized)) {
+    return normalized;
+  }
+  if (/^Read the .* instructions\.?$/iu.test(normalized)) {
+    return normalized.endsWith(".") ? normalized : `${normalized}.`;
+  }
+  if (/^Unknown argument:/u.test(normalized)) {
+    return truncateText(`Search helper failed: ${normalized}`);
+  }
+  if (/^KeyError:/u.test(normalized)) {
+    return truncateText(`Workspace script failed: ${normalized}`);
+  }
+  if (/^Initialized run\./u.test(normalized)) {
+    return truncateText(normalized);
+  }
+  if (/^Wrote `[^`]+`/u.test(normalized)) {
+    return truncateText(normalized);
+  }
+  if (/^Launching the analysis workspace\.?$/u.test(normalized)) {
+    return "Launching the analysis workspace.";
   }
   return null;
 }
@@ -334,12 +377,15 @@ function summarizeLogLine(
     }
     return null;
   }
-
-  return {
-    text: truncateText(trimmed),
-    kind: "activity",
-    meaningful: true,
-  };
+  const plainText = summarizePlainTextLine(trimmed);
+  if (plainText) {
+    return {
+      text: plainText,
+      kind: "activity",
+      meaningful: true,
+    };
+  }
+  return null;
 }
 
 export function deriveUserProgressCandidate(input: ProgressEventInput): UserProgressCandidate | null {

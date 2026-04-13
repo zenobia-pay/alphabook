@@ -143,3 +143,55 @@ test("long answer blobs are suppressed from progress logs", () => {
 
   assert.equal(candidate, null);
 });
+
+test("raw launcher env lines are suppressed from progress logs", () => {
+  const candidate = deriveUserProgressCandidate({
+    event: "job.log",
+    data: {
+      text: "prompt_file=/srv/alphabook/logs/hermes-search/20260413T191411Z-794da1d0/state/prompt.txt",
+    },
+  });
+
+  assert.equal(candidate, null);
+});
+
+test("unknown raw shell blobs are suppressed instead of persisted", () => {
+  const candidate = deriveUserProgressCandidate({
+    event: "job.log",
+    data: {
+      text: "with open(os.path.join(run_dir,'manifest.json'),'w') as f: json.dump(manifest,f,indent=2)",
+    },
+  });
+
+  assert.equal(candidate, null);
+});
+
+test("scoped file counts are summarized into user-facing lines", () => {
+  const candidate = deriveUserProgressCandidate({
+    event: "job.log",
+    data: {
+      text: "72644 /srv/alphabook/logs/corpus-search/20260413-191411-e2026b48/scoped-files.tsv",
+    },
+  });
+
+  assert.deepEqual(candidate, {
+    text: "Scoped 72,644 candidate files for search.",
+    kind: "activity",
+    meaningful: true,
+  });
+});
+
+test("partition file lines are summarized into user-facing lines", () => {
+  const candidate = deriveUserProgressCandidate({
+    event: "job.log",
+    data: {
+      text: "PART /srv/alphabook/logs/corpus-search/20260413-191411-e2026b48/partitions/part-00001.files.tsv",
+    },
+  });
+
+  assert.deepEqual(candidate, {
+    text: "Partitioned the scoped file list into search batches.",
+    kind: "activity",
+    meaningful: true,
+  });
+});
