@@ -144,6 +144,46 @@ export type PlannerDecision = z.infer<typeof PlannerDecisionSchema>;
 export type PlannerToolCall = z.infer<typeof PlannerToolCallSchema>;
 export type PlannerFinalAnswer = z.infer<typeof PlannerFinalAnswerSchema>;
 
+export const ExperimentDatasetPlanSchema = z.object({
+  itemUnit: z.string().min(1),
+  corpusScope: z.string().min(1),
+  passageSelection: z.string().min(1),
+  expectedItemCount: z.number().int().positive(),
+});
+
+export const ExperimentLabelFieldSchema = z.object({
+  name: z.string().min(1),
+  description: z.string().min(1),
+  valueType: z.string().min(1),
+  allowedValues: z.array(z.string().min(1)).optional(),
+});
+
+export const ExperimentLabelingPlanSchema = z.object({
+  itemCount: z.number().int().positive(),
+  structuredFields: z.array(ExperimentLabelFieldSchema).min(1),
+  labelingMethod: z.string().min(1),
+  costEstimate: z.string().min(1),
+});
+
+export const ExperimentResultsViewPlanSchema = z.object({
+  primaryArtifact: z.string().min(1),
+  chartType: z.string().min(1),
+  xAxis: z.string().min(1),
+  yAxis: z.string().min(1),
+  outputs: z.array(z.string().min(1)).min(1),
+});
+
+export const ExperimentPlanSchema = z.object({
+  title: z.string().min(1),
+  researchQuestion: z.string().min(1),
+  summary: z.string().min(1),
+  dataset: ExperimentDatasetPlanSchema,
+  labeling: ExperimentLabelingPlanSchema,
+  resultsView: ExperimentResultsViewPlanSchema,
+});
+
+export type ExperimentPlan = z.infer<typeof ExperimentPlanSchema>;
+
 export const ChatRequestSchema = z.object({
   sessionId: z.string().uuid().optional(),
   userId: z.string().min(1).optional(),
@@ -152,6 +192,7 @@ export const ChatRequestSchema = z.object({
   stream: z.boolean().optional(),
   mode: z.enum(["semantic", "comprehensive", "agentic"]).optional(),
   workflow: z.enum(["search", "design_experiment"]).optional(),
+  approvedExperimentPlan: ExperimentPlanSchema.optional(),
   intensityOverride: z.enum(["normal", "high", "maximum"]).optional(),
   researchMode: z.enum(["default", "sprite_fanout"]).optional(),
   semanticBackend: z.enum(["alphaloop", "context1"]).optional(),

@@ -9,7 +9,7 @@ import {
   workSourceToDocumentSource,
   workSummaryToDocumentSummary,
 } from "@alphabook/platform";
-import { ChatRequestSchema, ToolArgsSchemas, getToolLabel, type ChatRequest, type ChunkSearchResult, type Citation, type NotificationType, type PlannerDecision, type ToolName, type WorkSummary } from "@alphabook/shared";
+import { ChatRequestSchema, ToolArgsSchemas, getToolLabel, type ChatRequest, type ChunkSearchResult, type Citation, type ExperimentPlan, type NotificationType, type PlannerDecision, type ToolName, type WorkSummary } from "@alphabook/shared";
 import { createFacilitatorConfig } from "@coinbase/x402";
 import { decodePaymentSignatureHeader, encodePaymentRequiredHeader, encodePaymentResponseHeader } from "@x402/core/http";
 import { HTTPFacilitatorClient, x402ResourceServer } from "@x402/core/server";
@@ -5987,14 +5987,55 @@ function initialSemanticAssistantPlan(userMessage: string) {
     : "I’m running AlphaLoop now and will answer from the strongest passages it finds.";
 }
 
-function fallbackExperimentProposalFromAnswer(answer: string, userMessage: string) {
-  const normalizedAnswer = answer.trim() || "Experiment proposal ready for approval.";
-  const normalizedRequest = userMessage.trim() || normalizedAnswer;
-  return {
-    title: "Experiment Proposal",
-    summary: normalizedAnswer,
-    approvalPrompt: `I approve this experiment plan. Build the scripts, run the labels and aggregation, and produce the paper draft and charts.\n\nApproved experiment request:\n${normalizedRequest}\n\nApproved plan:\n${normalizedAnswer}`,
-  };
+function formatExperimentPlanForMessage(plan: ExperimentPlan) {
+  const fieldLines = plan.labeling.structuredFields.map((field) => {
+    const allowedValues = Array.isArray(field.allowedValues) && field.allowedValues.length > 0
+      ? ` Allowed values: ${field.allowedValues.join(", ")}.`
+      : "";
+    return `- ${field.name} (${field.valueType}): ${field.description}.${allowedValues}`;
+  });
+  const outputLines = plan.resultsView.outputs.map((output) => `- ${output}`);
+  return [
+    plan.summary,
+    "",
+    `Dataset`,
+    `- Unit: ${plan.dataset.itemUnit}`,
+    `- Scope: ${plan.dataset.corpusScope}`,
+    `- Passage selection: ${plan.dataset.passageSelection}`,
+    `- Expected item count: ${plan.dataset.expectedItemCount}`,
+    "",
+    `Labeling`,
+    `- Item count: ${plan.labeling.itemCount}`,
+    `- Method: ${plan.labeling.labelingMethod}`,
+    `- Cost estimate: ${plan.labeling.costEstimate}`,
+    ...fieldLines,
+    "",
+    `Results View`,
+    `- Primary artifact: ${plan.resultsView.primaryArtifact}`,
+    `- Chart type: ${plan.resultsView.chartType}`,
+    `- X-axis: ${plan.resultsView.xAxis}`,
+    `- Y-axis: ${plan.resultsView.yAxis}`,
+    ...outputLines,
+  ].join("\n");
+}
+
+function buildExperimentExecutionPrompt(plan: ExperimentPlan) {
+  const labelFields = plan.labeling.structuredFields
+    .map((field) => {
+      const allowedValues = Array.isArray(field.allowedValues) && field.allowedValues.length > 0
+        ? ` Allowed values: ${field.allowedValues.join(", ")}.`
+        : "";
+      return `${field.name} (${field.valueType}): ${field.description}.${allowedValues}`;
+    })
+    .join(" ");
+  return [
+    `Execute the approved experiment plan "${plan.title}".`,
+    `Research question: ${plan.researchQuestion}`,
+    `Dataset: Build a passage-level dataset where each item is ${plan.dataset.itemUnit}. Scope: ${plan.dataset.corpusScope}. Passage selection rule: ${plan.dataset.passageSelection}. Expected item count: ${plan.dataset.expectedItemCount}.`,
+    `Labeling: Produce ${plan.labeling.itemCount} labeled items. Structured fields: ${labelFields} Labeling method: ${plan.labeling.labelingMethod}. Cost estimate to report: ${plan.labeling.costEstimate}.`,
+    `Results view: Deliver ${plan.resultsView.primaryArtifact}. Use a ${plan.resultsView.chartType} with x-axis "${plan.resultsView.xAxis}" and y-axis "${plan.resultsView.yAxis}". Outputs: ${plan.resultsView.outputs.join(", ")}.`,
+    `Write the scripts, run the labeling workflow, save the labels, generate the specified results view, and produce the paper draft plus artifacts.`,
+  ].join(" ");
 }
 
 function initialWorkflowPlan(intent: {
@@ -10588,6 +10629,7 @@ async function runHermesConversation(
   const baselineHermesMessageCount = 0;
   await deps.store.appendMessage(activeSession.id, "user", input.message, {
     phase: "user",
+    ...(input.approvedExperimentPlan ? { approvedExperimentPlan: input.approvedExperimentPlan } : {}),
   });
   const sessionMessages = await deps.store.listMessages(activeSession.id);
   const conversationHistory = formatConversationHistory(sessionMessages);
@@ -12079,7 +12121,9 @@ export async function runOrchestrator(
   const activeSession = session;
 
   if (!options.recovery?.skipUserMessageAppend) {
-    await deps.store.appendMessage(activeSession.id, "user", input.message);
+    await deps.store.appendMessage(activeSession.id, "user", input.message, input.approvedExperimentPlan
+      ? { approvedExperimentPlan: input.approvedExperimentPlan }
+      : undefined);
     recordRawLog("message.user", {
       sessionId: activeSession.id,
       content: input.message,
@@ -12141,14 +12185,15 @@ export async function runOrchestrator(
   let workspaceLastFailureAt = 0;
   let initialPlanSent = false;
   let planMessageId: string | null = null;
-  type HighLevelWorkflow = "search" | "design_experiment";
-  type InitialWorkflowIntent = {
-    workflow: HighLevelWorkflow;
-    routedQuery: string;
-    rationale: string;
-    executionMode?: "semantic" | "comprehensive" | "agentic";
-    designSummary?: string;
-  };
+type HighLevelWorkflow = "search" | "design_experiment";
+type InitialWorkflowIntent = {
+  workflow: HighLevelWorkflow;
+  routedQuery: string;
+  rationale: string;
+  executionMode?: "semantic" | "comprehensive" | "agentic";
+  designSummary?: string;
+  approvedPlan?: ExperimentPlan;
+};
   let initialWorkflowIntent: InitialWorkflowIntent | null = null;
   type PendingWorkspaceExecution = {
     toolName: ToolName;
@@ -12807,6 +12852,7 @@ export async function runOrchestrator(
       workflow: "design_experiment",
       approved: true,
       ...(initialWorkflowIntent?.designSummary ? { designSummary: initialWorkflowIntent.designSummary } : {}),
+      ...(initialWorkflowIntent?.approvedPlan ? { approvedExperimentPlan: initialWorkflowIntent.approvedPlan } : {}),
       prewarmed: true,
     },
   });
@@ -12828,7 +12874,9 @@ export async function runOrchestrator(
       chunkIds: [],
       searchHints: {
         searchWorksQuery: routedQueryRef.current,
-        passageSearchFocus: "Find the passages and records needed to execute the approved experiment design. Build labels first, then run the aggregation and write up the paper.",
+        passageSearchFocus: initialWorkflowIntent?.approvedPlan
+          ? `Build the approved experiment dataset using this passage-selection rule: ${initialWorkflowIntent.approvedPlan.dataset.passageSelection} Then label each item with ${initialWorkflowIntent.approvedPlan.labeling.structuredFields.map((field) => field.name).join(", ")} and generate the specified results view.`
+          : "Find the passages and records needed to execute the approved experiment design. Build labels first, then run the aggregation and write up the paper.",
       },
       deliverables: [
         "output/briefing.md",
@@ -12847,6 +12895,15 @@ export async function runOrchestrator(
         labelsDir: "output/labels",
       },
       ...(initialWorkflowIntent?.designSummary ? { designSummary: initialWorkflowIntent.designSummary } : {}),
+      ...(initialWorkflowIntent?.approvedPlan ? {
+        approvedExperimentPlan: initialWorkflowIntent.approvedPlan,
+        experimentPlan: {
+          researchQuestion: initialWorkflowIntent.approvedPlan.researchQuestion,
+          dataset: initialWorkflowIntent.approvedPlan.dataset,
+          labeling: initialWorkflowIntent.approvedPlan.labeling,
+          resultsView: initialWorkflowIntent.approvedPlan.resultsView,
+        },
+      } : {}),
     },
   });
 
@@ -13279,7 +13336,7 @@ export async function runOrchestrator(
 
     if (routeDecision.type === "direct_response") {
       const experimentProposal = routeDecision.workflowHint === "design_experiment"
-        ? routeDecision.experimentProposal ?? fallbackExperimentProposalFromAnswer(routeDecision.answer, input.message)
+        ? routeDecision.experimentProposal
         : undefined;
       const artifactKey = await persistFinalArtifact(deps, session.id, run.id, routeDecision.answer, []);
       const directResearchDocumentHtml = await appendFinalAnswerResearchDocumentHtml(
@@ -13329,7 +13386,8 @@ export async function runOrchestrator(
     }
 
     if (routeDecision.type === "design_experiment") {
-      const routedQuery = routeDecision.executionPrompt.trim() || input.message;
+      const approvedPlan = routeDecision.approvedPlan;
+      const routedQuery = routeDecision.executionPrompt.trim() || buildExperimentExecutionPrompt(approvedPlan);
       routedQueryRef.current = routedQuery;
       initialWorkflowIntent = {
         workflow: "design_experiment",
@@ -13337,6 +13395,7 @@ export async function runOrchestrator(
         rationale: routeDecision.rationale
           ?? "The experiment design is concrete and approved, so I’m setting up the runner now.",
         designSummary: routeDecision.designSummary,
+        approvedPlan,
       };
       await runDesignExperimentMode();
       return;
@@ -15374,6 +15433,9 @@ export function createApp(inputDeps: CreateAppInput) {
       ...payload,
       userId: user?.id ?? payload.userId,
     };
+    if (requestPayload.workflow === "design_experiment" && !requestPayload.approvedExperimentPlan) {
+      return c.json({ error: "approvedExperimentPlan is required to launch an experiment." }, 400);
+    }
     if (!requestPayload.mode) {
       const inferredMode = inferExplicitAssistantMode(requestPayload.message);
       if (inferredMode) {
@@ -15434,7 +15496,15 @@ export function createApp(inputDeps: CreateAppInput) {
         } catch {
           executionCtx = null;
         }
-        if (!requestPayload.mode && requestPayload.workflow !== "search" && requestPayload.workflow !== "design_experiment" && deps.router) {
+        if (requestPayload.workflow === "design_experiment" && requestPayload.approvedExperimentPlan) {
+          precomputedRouteDecision = {
+            type: "design_experiment",
+            approvedPlan: requestPayload.approvedExperimentPlan,
+            designSummary: formatExperimentPlanForMessage(requestPayload.approvedExperimentPlan),
+            executionPrompt: buildExperimentExecutionPrompt(requestPayload.approvedExperimentPlan),
+            rationale: "The user explicitly approved this experiment plan, so the experiment can launch now.",
+          };
+        } else if (!requestPayload.mode && requestPayload.workflow !== "search" && requestPayload.workflow !== "design_experiment" && deps.router) {
           const conversationHistory = existingSession
             ? formatConversationHistory(await deps.store.listMessages(existingSession.id))
             : [];

@@ -39,7 +39,11 @@ Rules:
 - If earlier turns establish that the user wants books, fiction, passages, quotes, examples, or corpus evidence, and the latest user turn is just a clarification, preference, or short confirmation, choose search unless they are still designing an experiment.
 - When the latest user turn is a vague clarification like "examples", "books / fiction", "all of it", or similar, infer the real search goal from the earlier user turns.
 - Only choose design_experiment after the design is concrete enough to run and the user has accepted it. Otherwise ask follow-up questions or summarize the proposed design with a direct_response.
-- A runnable experiment design usually includes: the research goal, corpus scope or subset, the labeling frame or extraction target, the aggregation/analysis step, and the intended output artifact.
+- A runnable experiment design must include three explicit sections:
+  1. Dataset: exactly what the dataset is, the unit of analysis, the passage-selection rule, and the expected item count.
+  2. Labeling: the structured fields per item, the item count, the labeling method, and a concrete cost estimate.
+  3. Results view: the final artifact, the chart type, and the exact x-axis and y-axis.
+- If any of those sections is missing or vague, do not choose design_experiment.
 - If you choose search, rewrite the request into the exact full search query the downstream pipeline should use.
 - If the user explicitly requests agentic search, Hermes, deep research, or semantic mode in plain language, preserve that request in executionMode. Treat comprehensive or sprite-fanout wording as a request for semantic mode.
 - For ordinary corpus searches, prefer agentic executionMode unless the user explicitly asks for semantic mode or the request is clearly a lightweight semantic lookup.
@@ -48,8 +52,9 @@ Rules:
 - If you choose direct_response, stay grounded in AlphaBook's actual dataset and capabilities.
 - For generic questions that are not yet corpus searches, do not answer from broad world knowledge. Re-anchor the user to what AlphaBook can search, compare, or test in the book corpus.
 - In direct_response mode, prefer responses like "I can search the corpus for..." or "If you want to study this in books, I can..." over generic factual or self-help answers.
-- When an experiment is not yet approved, use direct_response and include a concise proposal the UI can render with an explicit approve button.
-- If you choose design_experiment, include a concise design summary and an execution prompt that tells the runtime what to build and run.
+- When an experiment is not yet approved, use direct_response and include experimentProposal.plan with the full structured plan the UI can render with an explicit approve button.
+- The experimentProposal.plan must be self-contained and specific enough that the runtime could execute it unchanged after approval.
+- If you choose design_experiment, include the same approved structured plan in approvedPlan plus a concise designSummary and an executionPrompt that tells the runtime what to build and run.
 - Never copy schema notes, placeholder text, or field descriptions into the JSON values.
 - Omit fields that do not apply to the chosen type instead of filling them with explanatory text.
 - Return JSON only.`;

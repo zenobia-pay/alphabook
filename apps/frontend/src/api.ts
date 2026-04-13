@@ -798,6 +798,35 @@ export async function streamChat(
     workIds?: string[];
     mode?: "semantic" | "agentic";
     workflow?: "search" | "design_experiment";
+    approvedExperimentPlan?: {
+      title: string;
+      researchQuestion: string;
+      summary: string;
+      dataset: {
+        itemUnit: string;
+        corpusScope: string;
+        passageSelection: string;
+        expectedItemCount: number;
+      };
+      labeling: {
+        itemCount: number;
+        structuredFields: Array<{
+          name: string;
+          description: string;
+          valueType: string;
+          allowedValues?: string[];
+        }>;
+        labelingMethod: string;
+        costEstimate: string;
+      };
+      resultsView: {
+        primaryArtifact: string;
+        chartType: string;
+        xAxis: string;
+        yAxis: string;
+        outputs: string[];
+      };
+    };
     intensityOverride?: "normal" | "high" | "maximum";
     semanticBackend?: "alphaloop" | "context1";
   },

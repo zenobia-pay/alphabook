@@ -182,9 +182,37 @@ class DemoRouter implements Router {
         answer: "Before I run an experiment, I need a concrete design and your explicit approval.",
         workflowHint: "design_experiment",
         experimentProposal: {
-          title: "Experiment Proposal",
-          summary: `Proposed request: ${message || "Experiment design needed."}`,
-          approvalPrompt: `I approve this experiment plan.\n\nRequest:\n${message || "Experiment design needed."}`,
+          plan: {
+            title: "Experiment Proposal",
+            researchQuestion: message || "Experiment design needed.",
+            summary: `Proposed request: ${message || "Experiment design needed."}`,
+            dataset: {
+              itemUnit: "One passage selected for the experiment dataset.",
+              corpusScope: "The corpus slice selected for this experiment.",
+              passageSelection: "Keep the passages gathered for the experiment design.",
+              expectedItemCount: 100,
+            },
+            labeling: {
+              itemCount: 100,
+              structuredFields: [
+                {
+                  name: "label",
+                  description: "The primary experiment label for the selected passage.",
+                  valueType: "enum",
+                  allowedValues: ["class_a", "class_b"],
+                },
+              ],
+              labelingMethod: "Run the labeling step defined in the experiment plan.",
+              costEstimate: "Estimate the labeling cost before execution.",
+            },
+            resultsView: {
+              primaryArtifact: "Short paper draft with one chart and the label table.",
+              chartType: "bar chart",
+              xAxis: "label",
+              yAxis: "number of passages",
+              outputs: ["paper draft", "chart", "labels table"],
+            },
+          },
         },
       };
     }

@@ -63,6 +63,36 @@ type PlanToolTraceRecord = {
   isError?: boolean;
 };
 
+type ExperimentPlanRecord = {
+  title: string;
+  researchQuestion: string;
+  summary: string;
+  dataset: {
+    itemUnit: string;
+    corpusScope: string;
+    passageSelection: string;
+    expectedItemCount: number;
+  };
+  labeling: {
+    itemCount: number;
+    structuredFields: Array<{
+      name: string;
+      description: string;
+      valueType: string;
+      allowedValues?: string[];
+    }>;
+    labelingMethod: string;
+    costEstimate: string;
+  };
+  resultsView: {
+    primaryArtifact: string;
+    chartType: string;
+    xAxis: string;
+    yAxis: string;
+    outputs: string[];
+  };
+};
+
 function readProgressLines(value: unknown) {
   if (!Array.isArray(value)) {
     return [];
@@ -735,27 +765,17 @@ const AssistantMessage: FC = () => {
     const proposal = custom?.experimentProposal && typeof custom.experimentProposal === "object"
       ? custom.experimentProposal as Record<string, unknown>
       : null;
-    if (
-      !proposal
-      || typeof proposal.title !== "string"
-      || typeof proposal.summary !== "string"
-      || typeof proposal.approvalPrompt !== "string"
-    ) {
+    const plan = proposal?.plan && typeof proposal.plan === "object"
+      ? proposal.plan as Record<string, unknown>
+      : null;
+    if (!plan) {
       return null;
     }
-    return JSON.stringify({
-      title: proposal.title,
-      summary: proposal.summary,
-      approvalPrompt: proposal.approvalPrompt,
-    });
+    return JSON.stringify(plan);
   });
   const experimentProposal = useMemo(() => (
     experimentProposalJson
-      ? JSON.parse(experimentProposalJson) as {
-          title: string;
-          summary: string;
-          approvalPrompt: string;
-        }
+      ? JSON.parse(experimentProposalJson) as ExperimentPlanRecord
       : null
   ), [experimentProposalJson]);
   const isErrorMessage = phase === "error";
@@ -968,21 +988,17 @@ const PlanToolTraceCard: FC<{
 
 
 const ExperimentApprovalCard: FC<{
-  proposal: {
-    title: string;
-    summary: string;
-    approvalPrompt: string;
-  };
+  proposal: ExperimentPlanRecord;
   disabled?: boolean;
 }> = ({ proposal, disabled = false }) => {
   const handleApprove = useCallback(() => {
     window.dispatchEvent(new CustomEvent("alphabook:approve-experiment", {
       detail: {
         displayText: `Approve experiment: ${proposal.title}`,
-        transportMessage: proposal.approvalPrompt,
+        approvedExperimentPlan: proposal,
       },
     }));
-  }, [proposal.approvalPrompt, proposal.title]);
+  }, [proposal]);
 
   return (
     <Card className="mt-4 border-black/10 bg-neutral-50/90 shadow-none">
@@ -991,7 +1007,45 @@ const ExperimentApprovalCard: FC<{
           <div className="text-[0.72rem] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Approval required</div>
           <h3 className="mt-1 text-base font-semibold text-foreground">{proposal.title}</h3>
         </div>
-        <div className="whitespace-pre-wrap text-sm leading-6 text-foreground/90">{proposal.summary}</div>
+        <div className="space-y-4 text-sm leading-6 text-foreground/90">
+          <div>
+            <div className="font-medium text-foreground">Research question</div>
+            <div>{proposal.researchQuestion}</div>
+          </div>
+          <div>
+            <div className="font-medium text-foreground">Summary</div>
+            <div>{proposal.summary}</div>
+          </div>
+          <div>
+            <div className="font-medium text-foreground">Dataset</div>
+            <div>Unit: {proposal.dataset.itemUnit}</div>
+            <div>Scope: {proposal.dataset.corpusScope}</div>
+            <div>Passage selection: {proposal.dataset.passageSelection}</div>
+            <div>Expected items: {proposal.dataset.expectedItemCount}</div>
+          </div>
+          <div>
+            <div className="font-medium text-foreground">Labeling</div>
+            <div>Item count: {proposal.labeling.itemCount}</div>
+            <div>Method: {proposal.labeling.labelingMethod}</div>
+            <div>Cost estimate: {proposal.labeling.costEstimate}</div>
+            <div className="mt-1">
+              {proposal.labeling.structuredFields.map((field) => (
+                <div key={field.name}>
+                  {field.name} ({field.valueType}): {field.description}
+                  {field.allowedValues && field.allowedValues.length > 0 ? ` Allowed values: ${field.allowedValues.join(", ")}.` : ""}
+                </div>
+              ))}
+            </div>
+          </div>
+          <div>
+            <div className="font-medium text-foreground">Results view</div>
+            <div>Primary artifact: {proposal.resultsView.primaryArtifact}</div>
+            <div>Chart: {proposal.resultsView.chartType}</div>
+            <div>X-axis: {proposal.resultsView.xAxis}</div>
+            <div>Y-axis: {proposal.resultsView.yAxis}</div>
+            <div>Outputs: {proposal.resultsView.outputs.join(", ")}</div>
+          </div>
+        </div>
         <div className="flex justify-end">
           <Button type="button" onClick={handleApprove} disabled={disabled}>
             Approve

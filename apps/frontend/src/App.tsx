@@ -5768,6 +5768,35 @@ export default function App() {
       viewOverride?: ViewMode;
       transportMessageOverride?: string;
       workflowOverride?: "search" | "design_experiment";
+      approvedExperimentPlan?: {
+        title: string;
+        researchQuestion: string;
+        summary: string;
+        dataset: {
+          itemUnit: string;
+          corpusScope: string;
+          passageSelection: string;
+          expectedItemCount: number;
+        };
+        labeling: {
+          itemCount: number;
+          structuredFields: Array<{
+            name: string;
+            description: string;
+            valueType: string;
+            allowedValues?: string[];
+          }>;
+          labelingMethod: string;
+          costEstimate: string;
+        };
+        resultsView: {
+          primaryArtifact: string;
+          chartType: string;
+          xAxis: string;
+          yAxis: string;
+          outputs: string[];
+        };
+      };
     } = {},
   ) {
     const normalizedQuestion = question.trim();
@@ -5857,6 +5886,7 @@ export default function App() {
           message: transportQuestion,
           workIds: options.workIdsOverride,
           ...(options.workflowOverride ? { workflow: options.workflowOverride } : {}),
+          ...(options.approvedExperimentPlan ? { approvedExperimentPlan: options.approvedExperimentPlan } : {}),
         },
         {
           onEvent: (event) => {
@@ -6076,10 +6106,42 @@ export default function App() {
         ? event.detail as Record<string, unknown>
         : null;
       const displayText = typeof detail?.displayText === "string" ? detail.displayText : "Approve experiment";
-      const transportMessage = typeof detail?.transportMessage === "string" ? detail.transportMessage : "";
+      const approvedExperimentPlan =
+        detail?.approvedExperimentPlan && typeof detail.approvedExperimentPlan === "object"
+          ? detail.approvedExperimentPlan as {
+              title: string;
+              researchQuestion: string;
+              summary: string;
+              dataset: {
+                itemUnit: string;
+                corpusScope: string;
+                passageSelection: string;
+                expectedItemCount: number;
+              };
+              labeling: {
+                itemCount: number;
+                structuredFields: Array<{
+                  name: string;
+                  description: string;
+                  valueType: string;
+                  allowedValues?: string[];
+                }>;
+                labelingMethod: string;
+                costEstimate: string;
+              };
+              resultsView: {
+                primaryArtifact: string;
+                chartType: string;
+                xAxis: string;
+                yAxis: string;
+                outputs: string[];
+              };
+            }
+          : null;
       void sendPrompt(displayText, {
-        transportMessageOverride: transportMessage || displayText,
+        transportMessageOverride: displayText,
         workflowOverride: "design_experiment",
+        ...(approvedExperimentPlan ? { approvedExperimentPlan } : {}),
       });
     };
 

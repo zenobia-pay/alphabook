@@ -126,17 +126,41 @@ test("approved design experiments launch a visible runner job", async () => {
   const store = new InMemoryAppStore([], []);
   let createWorkspaceCalls = 0;
   let runWorkspaceTaskCalls = 0;
+  const approvedPlan = {
+    title: "Grief Framing Experiment",
+    researchQuestion: "How do grief passages differ by framing category across the selected corpus slice?",
+    summary: "Build a passage-level dataset, label each passage for grief framing, and aggregate the labels into a short paper and chart.",
+    dataset: {
+      itemUnit: "One grief-related passage candidate.",
+      corpusScope: "The selected grief corpus slice.",
+      passageSelection: "Keep the shortlisted grief passages gathered during planning, one row per quoted passage.",
+      expectedItemCount: 120,
+    },
+    labeling: {
+      itemCount: 120,
+      structuredFields: [
+        {
+          name: "grief_frame",
+          description: "The dominant grief framing category for the passage.",
+          valueType: "enum",
+          allowedValues: ["private sorrow", "religious consolation", "social duty"],
+        },
+      ],
+      labelingMethod: "Run the labeling script over the approved passage dataset.",
+      costEstimate: "About 120 passage labels; estimate the labeling cost before execution.",
+    },
+    resultsView: {
+      primaryArtifact: "A short paper with a grouped bar chart and label table.",
+      chartType: "grouped bar chart",
+      xAxis: "grief framing category",
+      yAxis: "number of passages",
+      outputs: ["paper draft", "label table", "chart image"],
+    },
+  };
   const app = createApp({
     store,
     billing: createBillingService(store),
-    router: new ScriptedRouter([
-      {
-        type: "design_experiment",
-        designSummary: "Label grief scenes, aggregate by category, and draft a short paper with charts.",
-        executionPrompt: "Run an experiment over the corpus that labels grief scenes, aggregates the labels by category, and writes a short paper with charts.",
-        rationale: "The design is concrete and approved, so the runner can start.",
-      },
-    ]),
+    router: new ScriptedRouter([]),
     planner: new ScriptedPlanner([
       {
         type: "final_answer",
@@ -160,7 +184,7 @@ test("approved design experiments launch a visible runner job", async () => {
           },
         };
       },
-      async runWorkspaceTask() {
+      async runWorkspaceTask(_args: Record<string, unknown>) {
         runWorkspaceTaskCalls += 1;
         return {
           ok: true,
@@ -205,8 +229,9 @@ test("approved design experiments launch a visible runner job", async () => {
     },
     body: JSON.stringify({
       userId: "11111111-1111-1111-1111-111111111111",
-      message: "Yes, run that experiment.",
+      message: "Approve experiment: Grief Framing Experiment",
       workflow: "design_experiment",
+      approvedExperimentPlan: approvedPlan,
     }),
   });
 
@@ -222,9 +247,68 @@ test("approved design experiments launch a visible runner job", async () => {
   assert.doesNotMatch(body, /event: planner\.turn/);
   const [session] = await store.listSessions("11111111-1111-1111-1111-111111111111");
   const messages = await store.listMessages(session!.id);
+  assert.equal(
+    ((messages.find((message) => message.role === "user")?.metadata.approvedExperimentPlan as Record<string, unknown>)?.title),
+    approvedPlan.title,
+  );
   const planMessage = messages.find((message) => message.metadata?.phase === "plan");
   const planToolCalls = Array.isArray(planMessage?.metadata?.toolCalls) ? planMessage.metadata.toolCalls as Array<Record<string, unknown>> : [];
   assert.equal(planToolCalls[0]?.toolName, "design_experiment");
+});
+
+test("design_experiment requests fail without an approved experiment plan", async () => {
+  const store = new InMemoryAppStore([], []);
+  const app = createApp({
+    store,
+    billing: createBillingService(store),
+    router: new ScriptedRouter([]),
+    planner: new ScriptedPlanner([
+      {
+        type: "final_answer",
+        answer: "planner should not run",
+        citations: [],
+      },
+    ]),
+    embedder: new HashEmbedder(),
+    synthesizer: new EchoSynthesizer(),
+    blobStore: new MemoryBlobStore(),
+    runtimeGateway: {
+      async createWorkspace() {
+        return { ok: false, error: "disabled" };
+      },
+      async runWorkspaceTask() {
+        return { ok: false, error: "disabled" };
+      },
+      async readWorkspaceFile() {
+        return { ok: false, error: "disabled" };
+      },
+      async listWorkspaceFiles() {
+        return { ok: false, error: "disabled" };
+      },
+      async destroyWorkspace() {
+        return { ok: true };
+      },
+    },
+    queues: {
+      ingestName: "alphabook-ingest",
+      jobsName: "alphabook-jobs",
+    },
+  });
+
+  const response = await app.request("/chat", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      userId: "11111111-1111-1111-1111-111111111111",
+      message: "Run the experiment now.",
+      workflow: "design_experiment",
+    }),
+  });
+
+  assert.equal(response.status, 400);
+  assert.match(await response.text(), /approvedExperimentPlan is required/);
 });
 
 test("sprite fanout mode bypasses router and runs the distributed runtime lane", async () => {

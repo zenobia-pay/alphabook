@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { HARD_LIMITS } from "@alphabook/corpus-core";
-import { ROUTER_SYSTEM_PROMPT } from "@alphabook/shared";
+import { ExperimentPlanSchema, ROUTER_SYSTEM_PROMPT, type ExperimentPlan } from "@alphabook/shared";
 
 import { openAIUsageFromResponse, type BillingContext, type BillingService } from "./billing";
 import { parseModelJsonObject } from "./json";
@@ -12,9 +12,7 @@ const RouterDecisionSchema = z.union([
     answer: z.string().min(1),
     workflowHint: z.enum(["search", "design_experiment"]).nullable().optional(),
     experimentProposal: z.object({
-      title: z.string().min(1),
-      summary: z.string().min(1),
-      approvalPrompt: z.string().min(1),
+      plan: ExperimentPlanSchema,
     }).optional(),
   }),
   z.object({
@@ -27,6 +25,7 @@ const RouterDecisionSchema = z.union([
     type: z.literal("design_experiment"),
     designSummary: z.string().min(1),
     executionPrompt: z.string().min(1),
+    approvedPlan: ExperimentPlanSchema,
     rationale: z.string().min(1).optional(),
   }),
 ]);
@@ -35,6 +34,11 @@ export type RouterDecision = z.infer<typeof RouterDecisionSchema>;
 type SearchExecutionMode = "semantic" | "comprehensive" | "agentic";
 type RouterAuditLog = (event: string, payload: Record<string, unknown>) => void;
 const SearchExecutionModeSchema = z.enum(["semantic", "comprehensive", "agentic"]);
+
+function parseExperimentPlanCandidate(value: unknown): ExperimentPlan | undefined {
+  const parsed = ExperimentPlanSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
+}
 
 function inferExplicitExecutionMode(userMessage: string): SearchExecutionMode | undefined {
   const normalized = userMessage.toLowerCase();
@@ -130,19 +134,11 @@ export class OpenAIRouter implements Router {
       && !Array.isArray(candidate.experimentProposal)
       ? candidate.experimentProposal as Record<string, unknown>
       : null;
-    const experimentProposal = experimentProposalCandidate
-      && typeof experimentProposalCandidate.title === "string"
-      && experimentProposalCandidate.title.trim().length > 0
-      && typeof experimentProposalCandidate.summary === "string"
-      && experimentProposalCandidate.summary.trim().length > 0
-      && typeof experimentProposalCandidate.approvalPrompt === "string"
-      && experimentProposalCandidate.approvalPrompt.trim().length > 0
-      ? {
-          title: experimentProposalCandidate.title.trim(),
-          summary: experimentProposalCandidate.summary.trim(),
-          approvalPrompt: experimentProposalCandidate.approvalPrompt.trim(),
-        }
+    const experimentProposalPlan = parseExperimentPlanCandidate(experimentProposalCandidate?.plan);
+    const experimentProposal = experimentProposalPlan
+      ? { plan: experimentProposalPlan }
       : undefined;
+    const approvedPlan = parseExperimentPlanCandidate(candidate.approvedPlan);
 
     if (rawType === "direct_response" && answer) {
       return {
@@ -175,12 +171,13 @@ export class OpenAIRouter implements Router {
       };
     }
 
-    if (rawType === "design_experiment" && designSummary && executionPrompt) {
+    if (rawType === "design_experiment" && designSummary && executionPrompt && approvedPlan) {
       return {
         decision: {
           type: "design_experiment",
           designSummary,
           executionPrompt,
+          approvedPlan,
           ...(rationale ? { rationale } : {}),
         },
         fallbackKind: "sanitized",
@@ -263,9 +260,9 @@ export class OpenAIRouter implements Router {
                 "Set type to one of the allowedTypes values.",
                 "Only include fields that belong to the chosen type.",
                 "For direct_response, include answer. Include workflowHint only when it is exactly search or design_experiment.",
-                "For direct_response experiment proposals, include experimentProposal with title, summary, and approvalPrompt.",
+                "For direct_response experiment proposals, include experimentProposal.plan with title, researchQuestion, summary, dataset, labeling, and resultsView.",
                 "For search, include fullQuery and optionally rationale or executionMode.",
-                "For design_experiment, include designSummary and executionPrompt and optionally rationale.",
+                "For design_experiment, include designSummary, executionPrompt, approvedPlan, and optionally rationale.",
               ],
               examples: [
                 {
@@ -281,6 +278,37 @@ export class OpenAIRouter implements Router {
                   type: "design_experiment",
                   designSummary: "Label a selected corpus slice for grief framing, then aggregate the labels into charts for a paper draft.",
                   executionPrompt: "Create and run the approved labeling and aggregation workflow over the selected corpus slice, then produce the paper draft and charts.",
+                  approvedPlan: {
+                    title: "Grief Framing Experiment",
+                    researchQuestion: "How do selected grief passages differ by framing category across the chosen corpus slice?",
+                    summary: "Build a passage-level dataset, label each passage for grief framing, and aggregate the labels into a short paper and charts.",
+                    dataset: {
+                      itemUnit: "One passage candidate drawn from the selected grief corpus slice.",
+                      corpusScope: "The selected corpus slice for grief-related passages.",
+                      passageSelection: "Use the shortlisted grief passages gathered during planning; keep one row per quoted passage.",
+                      expectedItemCount: 120,
+                    },
+                    labeling: {
+                      itemCount: 120,
+                      structuredFields: [
+                        {
+                          name: "grief_frame",
+                          description: "The dominant framing category expressed in the passage.",
+                          valueType: "enum",
+                          allowedValues: ["private sorrow", "religious consolation", "social duty", "obsessive memorialization"],
+                        },
+                      ],
+                      labelingMethod: "Use the labeling script specified in the plan to assign one structured record per passage.",
+                      costEstimate: "About 120 passage labels; estimate the labeling cost before running and report it in the paper.",
+                    },
+                    resultsView: {
+                      primaryArtifact: "A short paper with a grouped bar chart plus the underlying label table.",
+                      chartType: "grouped bar chart",
+                      xAxis: "grief framing category",
+                      yAxis: "number of passages",
+                      outputs: ["paper draft", "label table", "chart image"],
+                    },
+                  },
                 },
               ],
             },
