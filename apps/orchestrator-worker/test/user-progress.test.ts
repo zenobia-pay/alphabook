@@ -92,6 +92,21 @@ test("pretty cli helper lines are normalized into readable activity", () => {
   });
 });
 
+test("partial hermes json command lines are still summarized", () => {
+  const candidate = deriveUserProgressCandidate({
+    event: "job.log",
+    data: {
+      text: "{\"type\":\"item.started\",\"item\":{\"id\":\"item_17\",\"type\":\"command_execution\",\"command\":\"/bin/bash -lc 'for spec in 56949:60:120 64761:38:95 68835:52:120; do echo $spec; done'\",\"aggregated_output\":\"\"}",
+    },
+  });
+
+  assert.deepEqual(candidate, {
+    text: "Sampling passages across the selected source volumes.",
+    kind: "activity",
+    meaningful: true,
+  });
+});
+
 test("json fragments from manifest dumps are suppressed", () => {
   const candidate = deriveUserProgressCandidate({
     event: "job.log",

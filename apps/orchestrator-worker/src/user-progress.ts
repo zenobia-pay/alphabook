@@ -118,6 +118,9 @@ function summarizeCommand(command: string) {
     }
     return "Running a comparison script across the selected sources.";
   }
+  if (normalized.includes("for spec in") || normalized.includes("ifs=: read -r gid start end")) {
+    return "Sampling passages across the selected source volumes.";
+  }
   if (/\bls\b/u.test(normalized) || normalized.includes("manifest.json") || normalized.includes("status.json")) {
     return "Inspecting the run manifest and available inputs.";
   }
@@ -231,6 +234,26 @@ function parseJsonLine(text: string) {
   }
 }
 
+function summarizePartialHermesJson(text: string) {
+  const normalized = text.replace(/\s+/gu, " ").trim();
+  const agentMessageMatch = normalized.match(/"type":"agent_message","text":"(.+?)(?<!\\)"/u);
+  if (agentMessageMatch?.[1]) {
+    const candidate = humanizeAgentText(agentMessageMatch[1].replace(/\\"/gu, "\"").replace(/\\n/gu, " "));
+    if (candidate) {
+      return candidate;
+    }
+  }
+  const commandMatch = normalized.match(/"type":"command_execution","command":"(.+?)(?<!\\)"/u);
+  if (commandMatch?.[1]) {
+    const command = commandMatch[1].replace(/\\"/gu, "\"").replace(/\\n/gu, " ");
+    const candidate = summarizeCommand(command);
+    if (candidate) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
 function summarizeLogLine(
   text: string,
   data: Record<string, unknown>,
@@ -262,6 +285,14 @@ function summarizeLogLine(
   if (prettyCliLine) {
     return {
       text: prettyCliLine,
+      kind: "activity",
+      meaningful: true,
+    };
+  }
+  const partialHermesJson = summarizePartialHermesJson(trimmed);
+  if (partialHermesJson) {
+    return {
+      text: partialHermesJson,
       kind: "activity",
       meaningful: true,
     };
