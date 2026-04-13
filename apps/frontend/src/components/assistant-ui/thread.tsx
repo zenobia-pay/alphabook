@@ -246,7 +246,6 @@ export const Thread: FC<{
       <div className="assistant-thread-layout">
         <ThreadPrimitive.Viewport
           ref={viewportRef}
-          turnAnchor="top"
           className="aui-thread-viewport assistant-thread-main relative flex flex-1 flex-col overflow-x-auto overflow-y-auto px-4 pt-4"
         >
           <AuiIf condition={(s) => s.thread.isEmpty && showWelcome && !isRunning}>

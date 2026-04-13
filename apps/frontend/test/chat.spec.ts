@@ -975,11 +975,33 @@ test("assistant session thread stays scrollable with long history", async ({ pag
     });
   });
 
+  await page.route(`**/api/sessions/${sessionId}/bootstrap`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        sessionId,
+        sessions: [
+          {
+            id: sessionId,
+            userId: "local-user",
+            title: "Long thread",
+            createdAt: "2026-03-16T12:00:00.000Z",
+            lastMessageAt: "2026-03-16T12:17:00.000Z",
+            lastMessagePreview: "Long thread",
+          },
+        ],
+        messages: longMessages,
+        runs: [],
+      }),
+    });
+  });
+
   await page.goto(`/?view=assistant&session=${sessionId}`);
 
-  const viewport = page.locator(".assistant-session-thread .aui-thread-viewport");
-  const threadRoot = page.locator(".assistant-session-thread > .aui-thread-root");
-  const threadShell = page.locator('[data-testid="assistant-workspace-thread"]');
+  const threadShell = page.getByTestId("thread");
+  const viewport = threadShell.locator(".aui-thread-viewport");
+  const threadRoot = threadShell.locator("> .aui-thread-root");
   await expect(viewport).toBeVisible();
   const widths = await Promise.all([
     threadRoot.evaluate((node) => node.getBoundingClientRect().width),
@@ -988,11 +1010,13 @@ test("assistant session thread stays scrollable with long history", async ({ pag
   expect(widths[0]).toBeGreaterThan(widths[1] * 0.8);
   const before = await viewport.evaluate((node) => ({ scrollTop: node.scrollTop, scrollHeight: node.scrollHeight, clientHeight: node.clientHeight }));
   expect(before.scrollHeight).toBeGreaterThan(before.clientHeight);
+  const bottomOffset = before.scrollHeight - before.clientHeight - before.scrollTop;
+  expect(bottomOffset).toBeLessThan(24);
   await viewport.evaluate((node) => {
-    node.scrollTop = node.scrollHeight;
+    node.scrollTop = 0;
   });
   const after = await viewport.evaluate((node) => node.scrollTop);
-  expect(after).toBeGreaterThan(before.scrollTop);
+  expect(after).toBeLessThan(before.scrollTop);
 });
 
 test("assistant shows a friendly error notice instead of raw JSON", async ({ page }) => {
