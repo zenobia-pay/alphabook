@@ -13,6 +13,7 @@ import { type FC, memo, useState } from "react";
 import { CheckIcon, CopyIcon } from "lucide-react";
 
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
+import { OPEN_BOOK_OVERLAY_LINK_EVENT, parseBookOverlayLink } from "@/lib/book-overlay-links";
 import { cn } from "@/lib/utils";
 
 function normalizeMarkdownHref(href?: string) {
@@ -140,16 +141,45 @@ const defaultComponents = memoizeMarkdownComponents({
       {...props}
     />
   ),
-  a: ({ className, href, ...props }) => (
-    <a
-      className={cn(
-        "aui-md-a text-primary underline underline-offset-2 hover:text-primary/80",
-        className,
-      )}
-      href={normalizeMarkdownHref(href)}
-      {...props}
-    />
-  ),
+  a: ({ className, href, onClick, target, ...props }) => {
+    const normalizedHref = normalizeMarkdownHref(href);
+
+    return (
+      <a
+        className={cn(
+          "aui-md-a text-primary underline underline-offset-2 hover:text-primary/80",
+          className,
+        )}
+        href={normalizedHref}
+        target={target}
+        onClick={(event) => {
+          onClick?.(event);
+          if (event.defaultPrevented) {
+            return;
+          }
+          if (
+            event.button !== 0
+            || event.metaKey
+            || event.ctrlKey
+            || event.shiftKey
+            || event.altKey
+            || target === "_blank"
+          ) {
+            return;
+          }
+          const link = parseBookOverlayLink(normalizedHref);
+          if (!link) {
+            return;
+          }
+          event.preventDefault();
+          window.dispatchEvent(new CustomEvent(OPEN_BOOK_OVERLAY_LINK_EVENT, {
+            detail: link,
+          }));
+        }}
+        {...props}
+      />
+    );
+  },
   blockquote: ({ className, ...props }) => (
     <blockquote
       className={cn(

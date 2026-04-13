@@ -12,6 +12,7 @@ import { Button } from "./components/ui/button";
 import { Card, CardContent } from "./components/ui/card";
 import { Skeleton } from "./components/ui/skeleton";
 import { resolveFrontendImplementation } from "./implementation";
+import { OPEN_BOOK_OVERLAY_LINK_EVENT, type ParsedBookOverlayLink } from "./lib/book-overlay-links";
 import { cn } from "./lib/utils";
 
 type UiMessage = MessageRecord & {
@@ -3815,6 +3816,9 @@ export default function App() {
   const [pendingCitation, setPendingCitation] = useState<Citation | null>(null);
   const [activePassageId, setActivePassageId] = useState<string | null>(initialUrlState.passageId ?? null);
   const [highlightedPassageExcerpt, setHighlightedPassageExcerpt] = useState<string | null>(null);
+  const isBookOverlayOpen =
+    Boolean(activeWorkId)
+    && (activeView === "explore" || activeView === "assistant" || activeView === "assistant_document");
   const bookReaderFrameRef = useRef<HTMLIFrameElement | null>(null);
   const lastReaderFrameHrefRef = useRef<string | null>(null);
   const latestReaderPathRef = useRef<string | null | undefined>(initialUrlState.readerPath);
@@ -4457,7 +4461,7 @@ export default function App() {
   }, [currentUserId]);
 
   useEffect(() => {
-    if (activeView !== "explore" || !activeWorkId) {
+    if (!isBookOverlayOpen) {
       return;
     }
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -4467,7 +4471,34 @@ export default function App() {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [activeView, activeWorkId]);
+  }, [isBookOverlayOpen]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const handleOpenBookOverlayLink = (event: Event) => {
+      const detail = event instanceof CustomEvent && event.detail && typeof event.detail === "object"
+        ? event.detail as ParsedBookOverlayLink
+        : null;
+      if (!detail?.workId) {
+        return;
+      }
+      openBookOverlay({
+        workId: detail.workId,
+        readerPath: detail.readerPath,
+        chunkId: detail.chunkId,
+        passageId: detail.passageId,
+        source: "assistant_markdown_link",
+      });
+    };
+
+    window.addEventListener(OPEN_BOOK_OVERLAY_LINK_EVENT, handleOpenBookOverlayLink as EventListener);
+    return () => {
+      window.removeEventListener(OPEN_BOOK_OVERLAY_LINK_EVENT, handleOpenBookOverlayLink as EventListener);
+    };
+  }, [activeView]);
 
   useEffect(() => () => {
     latestExploreAbortRef.current?.abort();
@@ -6331,8 +6362,39 @@ export default function App() {
     setActiveWorkId(chunk.workId);
   }
 
+  function openBookOverlay(options: {
+    workId: string;
+    citation?: Citation | null;
+    readerPath?: string | null;
+    chunkId?: string | null;
+    passageId?: string | null;
+    source: string;
+  }) {
+    const shouldStayInCurrentView =
+      activeView === "assistant"
+      || activeView === "assistant_document"
+      || activeView === "explore";
+    pendingUrlWriteModeRef.current = "push";
+    track("book_open", {
+      workId: options.workId,
+      chunkId: options.chunkId ?? options.citation?.chunkId ?? null,
+      source: options.source,
+    });
+    setMobileNavOpen(false);
+    setPendingCitation(options.citation ?? null);
+    setActiveReaderPath(options.readerPath ?? null);
+    setActiveChunkId(options.chunkId ?? options.citation?.chunkId ?? null);
+    setActivePassageId(options.passageId ?? null);
+    setHighlightedPassageExcerpt(options.citation?.excerpt ?? null);
+    setActiveProfileUserId(null);
+    setActiveWorkId(options.workId);
+    if (!shouldStayInCurrentView) {
+      setActiveView("book");
+    }
+  }
+
   function closeExploreWorkOverlay() {
-    if (activeView !== "explore") {
+    if (!isBookOverlayOpen) {
       return;
     }
     pendingUrlWriteModeRef.current = "push";
@@ -6345,24 +6407,18 @@ export default function App() {
   }
 
   function openCitation(citation: Citation) {
-    pendingUrlWriteModeRef.current = "push";
     track("book_citation_open", {
       workId: citation.workId,
       chunkId: citation.chunkId ?? null,
       source: "citation",
     });
-    track("book_open", {
+    openBookOverlay({
       workId: citation.workId,
+      citation,
+      readerPath: citation.readerPath ?? null,
+      chunkId: citation.chunkId ?? null,
       source: "citation",
     });
-    setMobileNavOpen(false);
-    setPendingCitation(citation);
-    setActiveReaderPath(null);
-    setActivePassageId(null);
-    setHighlightedPassageExcerpt(null);
-    setActiveProfileUserId(null);
-    setActiveWorkId(citation.workId);
-    setActiveView("book");
   }
 
   function openProfile(userId?: string | null) {
@@ -6611,7 +6667,7 @@ export default function App() {
   }
 
   function renderExploreBookOverlay() {
-    if (activeView !== "explore" || !activeWorkId) {
+    if (!isBookOverlayOpen || !activeWorkId) {
       return null;
     }
 
