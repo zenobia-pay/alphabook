@@ -123,6 +123,117 @@ test("OpenAIRouter sanitizes malformed search decisions instead of failing the r
   });
 });
 
+test("OpenAIRouter repairs embedded plain-text experiment plans into structured proposal metadata", async () => {
+  let requestCount = 0;
+  const router = new OpenAIRouter(
+    "test-key",
+    "test-model",
+    async (_input, init) => {
+      requestCount += 1;
+      if (requestCount === 1) {
+        return new Response(JSON.stringify({
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                type: "direct_response",
+                answer: [
+                  "I can help you plan this experiment.",
+                  "",
+                  "**experimentProposal.plan**",
+                  "- **title:** Humour comparison experiment",
+                  "- **researchQuestion:** How do the humour books differ by country?",
+                  "- **summary:** Build a passage dataset, label it, and compare the distributions.",
+                  "- **dataset:**",
+                  "  - **itemUnit:** One sampled passage.",
+                  "  - **corpusScope:** Five humour books.",
+                  "  - **passageSelection:** Sample evenly across each book.",
+                  "  - **expectedItemCount:** 150",
+                  "- **labeling:**",
+                  "  - **itemCount:** 150",
+                  "  - **structuredFields:** humor_target, humor_device",
+                  "  - **labelingMethod:** Label each sampled passage.",
+                  "  - **costEstimate:** About 150 labels.",
+                  "- **resultsView:**",
+                  "  - **primaryArtifact:** Comparison report.",
+                  "  - **chartType:** grouped bar chart",
+                  "  - **xAxis:** country",
+                  "  - **yAxis:** labeled passage count",
+                  "  - **outputs:** chart image, label table",
+                ].join("\n"),
+              }),
+            },
+          }],
+        }), {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+          },
+        });
+      }
+      const repairBody = JSON.parse(String(init?.body ?? "{}")) as {
+        messages?: Array<{ content?: string }>;
+      };
+      assert.match(String(repairBody.messages?.[0]?.content ?? ""), /Extract a structured AlphaBook experiment proposal/);
+      return new Response(JSON.stringify({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              experimentProposal: {
+                plan: {
+                  title: "Humour comparison experiment",
+                  researchQuestion: "How do the humour books differ by country?",
+                  summary: "Build a passage dataset, label it, and compare the distributions.",
+                  dataset: {
+                    itemUnit: "One sampled passage.",
+                    corpusScope: "Five humour books.",
+                    passageSelection: "Sample evenly across each book.",
+                    expectedItemCount: 150,
+                  },
+                  labeling: {
+                    itemCount: 150,
+                    structuredFields: [
+                      {
+                        name: "humor_target",
+                        description: "The main target of the humor.",
+                        valueType: "enum",
+                        allowedValues: ["self", "other"],
+                      },
+                    ],
+                    labelingMethod: "Label each sampled passage.",
+                    costEstimate: "About 150 labels.",
+                  },
+                  resultsView: {
+                    primaryArtifact: "Comparison report.",
+                    chartType: "grouped bar chart",
+                    xAxis: "country",
+                    yAxis: "labeled passage count",
+                    outputs: ["chart image", "label table"],
+                  },
+                },
+              },
+            }),
+          },
+        }],
+      }), {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+        },
+      });
+    },
+  );
+
+  const decision = await router.decide({
+    userMessage: "Help me plan an experiment comparing these humour books by country.",
+    conversationHistory: [],
+  });
+
+  assert.equal(decision.type, "direct_response");
+  assert.equal(decision.workflowHint, "design_experiment");
+  assert.equal(decision.experimentProposal?.plan.title, "Humour comparison experiment");
+  assert.equal(requestCount, 2);
+});
+
 test("OpenAIRouter falls back to a safe search when the router returns a usable query without a valid type", async () => {
   const router = new OpenAIRouter(
     "test-key",

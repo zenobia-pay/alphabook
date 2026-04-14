@@ -34,10 +34,28 @@ export type RouterDecision = z.infer<typeof RouterDecisionSchema>;
 type SearchExecutionMode = "semantic" | "comprehensive" | "agentic";
 type RouterAuditLog = (event: string, payload: Record<string, unknown>) => void;
 const SearchExecutionModeSchema = z.enum(["semantic", "comprehensive", "agentic"]);
+const EmbeddedExperimentPlanRepairSchema = z.object({
+  experimentProposal: z.object({
+    plan: ExperimentPlanSchema,
+  }),
+});
 
 function parseExperimentPlanCandidate(value: unknown): ExperimentPlan | undefined {
   const parsed = ExperimentPlanSchema.safeParse(value);
   return parsed.success ? parsed.data : undefined;
+}
+
+function looksLikeEmbeddedExperimentPlan(answer: string) {
+  const normalized = answer.toLowerCase();
+  return (
+    normalized.includes("experimentproposal.plan")
+    || (
+      normalized.includes("researchquestion:")
+      && normalized.includes("dataset")
+      && normalized.includes("labeling")
+      && normalized.includes("resultsview")
+    )
+  );
 }
 
 function inferExplicitExecutionMode(userMessage: string): SearchExecutionMode | undefined {
@@ -94,6 +112,78 @@ export class OpenAIRouter implements Router {
     private readonly billing?: BillingService,
     private readonly systemPrompt: string = ROUTER_SYSTEM_PROMPT,
   ) {}
+
+  private async repairEmbeddedExperimentProposal(
+    answer: string,
+    context: RouterContext,
+  ): Promise<{ plan: ExperimentPlan } | null> {
+    if (!looksLikeEmbeddedExperimentPlan(answer)) {
+      return null;
+    }
+    const body = {
+      model: this.model,
+      response_format: { type: "json_object" as const },
+      messages: [
+        {
+          role: "system",
+          content: [
+            "Extract a structured AlphaBook experiment proposal from the assistant text.",
+            "Return JSON only.",
+            "Return exactly one object with experimentProposal.plan.",
+            "The plan must include title, researchQuestion, summary, dataset, labeling, and resultsView.",
+            "Do not invent new goals beyond the provided text.",
+          ].join("\n"),
+        },
+        {
+          role: "user",
+          content: answer,
+        },
+      ],
+    };
+    context.auditLog?.("router.repair.request", {
+      model: this.model,
+      request: body,
+    });
+    const response = await this.fetchImpl("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${this.apiKey}`,
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(HARD_LIMITS.MAX_TOOL_TIMEOUT_SECONDS * 1000),
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      context.auditLog?.("router.repair.response", {
+        ok: false,
+        status: response.status,
+        statusText: response.statusText,
+        body: text,
+      });
+      return null;
+    }
+    const payload = (await response.json()) as {
+      choices?: Array<{
+        message?: {
+          content?: string;
+        };
+      }>;
+    };
+    context.auditLog?.("router.repair.response", {
+      ok: true,
+      status: response.status,
+      statusText: response.statusText,
+      body: payload,
+    });
+    const content = payload.choices?.[0]?.message?.content;
+    if (!content) {
+      return null;
+    }
+    const parsed = parseModelJsonObject<unknown>(content);
+    const repaired = EmbeddedExperimentPlanRepairSchema.safeParse(parsed);
+    return repaired.success ? repaired.data.experimentProposal : null;
+  }
 
   private coerceDecision(parsed: unknown, context: RouterContext): {
     decision: RouterDecision;
@@ -401,6 +491,25 @@ export class OpenAIRouter implements Router {
           decision: correctedDecision,
         });
         return correctedDecision;
+      }
+      if (
+        validated.data.type === "direct_response"
+        && !validated.data.experimentProposal
+        && looksLikeEmbeddedExperimentPlan(validated.data.answer)
+      ) {
+        const repairedProposal = await this.repairEmbeddedExperimentProposal(validated.data.answer, context);
+        if (repairedProposal) {
+          const correctedDecision: RouterDecision = {
+            ...validated.data,
+            workflowHint: "design_experiment",
+            experimentProposal: repairedProposal,
+          };
+          context.auditLog?.("router.output.repaired", {
+            reason: "Router embedded an experiment proposal in answer text instead of experimentProposal.plan.",
+            decision: correctedDecision,
+          });
+          return correctedDecision;
+        }
       }
       return validated.data;
     }
