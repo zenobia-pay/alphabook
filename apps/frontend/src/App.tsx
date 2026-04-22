@@ -7297,15 +7297,15 @@ export default function App() {
 
     return (
       <div className="view-shell space-y-6">
-        <section className="grid gap-4 xl:grid-cols-[minmax(0,1.95fr)_minmax(17rem,0.7fr)]">
+        <section className="grid gap-4 xl:grid-cols-[minmax(0,1.6fr)_minmax(18rem,0.8fr)]">
           <Card className="overflow-hidden rounded-[30px] border-[rgba(72,43,37,0.06)] bg-[linear-gradient(135deg,rgba(19,22,36,0.98),rgba(54,63,96,0.92)_48%,rgba(208,120,75,0.78))] text-white shadow-[0_36px_120px_rgba(20,24,39,0.22)]">
             <CardContent className="space-y-6 p-6 md:p-8">
               <div className="space-y-3">
                 <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-white/70">Research dashboard</div>
-                <h1 className="max-w-[48rem] font-[Newsreader] text-[clamp(2.5rem,5vw,4.9rem)] font-semibold leading-[0.92] tracking-[-0.05em]">
+                <h1 className="max-w-3xl font-[Newsreader] text-[clamp(2.5rem,5vw,4.7rem)] font-semibold leading-[0.92] tracking-[-0.05em]">
                   Private workspaces, public lanes, and the runs you’ve already shipped.
                 </h1>
-                <p className="max-w-[40rem] text-sm leading-7 text-white/78">
+                <p className="max-w-2xl text-sm leading-7 text-white/78">
                   Signed in as {displayProfileName}. Use this page to jump back into active environments, inspect recent run history, or start a fresh research pass.
                 </p>
               </div>
