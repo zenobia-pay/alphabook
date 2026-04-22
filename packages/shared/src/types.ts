@@ -310,45 +310,6 @@ export const CurrentUserResponseSchema = z.object({
 
 export type CurrentUserResponse = z.infer<typeof CurrentUserResponseSchema>;
 
-export const DashboardEnvironmentSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  visibility: z.enum(["public", "private"]),
-  kind: z.enum(["dataset", "environment"]),
-  description: z.string(),
-  accessLabel: z.string(),
-  statusLabel: z.string(),
-  documentCount: z.number().int().nonnegative().nullable(),
-  runCount: z.number().int().nonnegative(),
-  lastActiveAt: z.string().nullable(),
-  sessionId: z.string().nullable(),
-  tags: z.array(z.string()).default([]),
-  accentToken: z.string(),
-});
-
-export type DashboardEnvironment = z.infer<typeof DashboardEnvironmentSchema>;
-
-export const DashboardRunSchema = z.object({
-  id: z.string(),
-  sessionId: z.string(),
-  sessionTitle: z.string().nullable(),
-  latestUserQuery: z.string().nullable(),
-  status: z.enum(["queued", "running", "completed", "failed", "timed_out"]),
-  plannerTurns: z.number().int().nonnegative(),
-  startedAt: z.string(),
-  completedAt: z.string().nullable(),
-});
-
-export type DashboardRun = z.infer<typeof DashboardRunSchema>;
-
-export const DashboardResponseSchema = z.object({
-  publicEnvironments: z.array(DashboardEnvironmentSchema),
-  privateEnvironments: z.array(DashboardEnvironmentSchema),
-  recentRuns: z.array(DashboardRunSchema),
-});
-
-export type DashboardResponse = z.infer<typeof DashboardResponseSchema>;
-
 export const PublicProfileResponseSchema = z.object({
   profile: UserProfileSchema,
   isFollowing: z.boolean(),
