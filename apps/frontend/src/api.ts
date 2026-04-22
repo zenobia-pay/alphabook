@@ -1,5 +1,6 @@
 import {
   CurrentUserResponseSchema,
+  DashboardResponseSchema,
   ExploreSemanticSearchResponseSchema,
   FollowProfileResponseSchema,
   MarkAllNotificationsReadResponseSchema,
@@ -16,6 +17,7 @@ import {
   type BillingOverview,
   type ChatSessionSummary,
   type CurrentUserResponse,
+  type DashboardResponse,
   type ExploreSemanticSearchResponse,
   type FollowProfileResponse,
   type MessageRecord,
@@ -323,6 +325,16 @@ export async function fetchCurrentUser(): Promise<CurrentUserResponse> {
     }),
   );
   return CurrentUserResponseSchema.parse(await response.json());
+}
+
+export async function fetchDashboard(): Promise<DashboardResponse> {
+  const response = await ensureOk(
+    await fetch(`${API_BASE}/dashboard`, {
+      credentials: "include",
+      cache: "no-store",
+    }),
+  );
+  return DashboardResponseSchema.parse(await response.json());
 }
 
 export async function fetchBillingOverview(): Promise<BillingOverview> {

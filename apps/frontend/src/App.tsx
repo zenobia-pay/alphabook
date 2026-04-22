@@ -1,11 +1,11 @@
 import { Component, createContext, type ComponentType, type CSSProperties, type ErrorInfo, type FormEvent, type ReactNode, type UIEvent, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReadonlyJSONObject, ReadonlyJSONValue } from "assistant-stream/utils";
 import type { AgentationProps } from "agentation";
-import { ChevronsLeft, ChevronsRight, Dices, FileText, Funnel, Link2, LoaderCircle, MessageSquarePlus, X } from "lucide-react";
+import { ChevronsLeft, ChevronsRight, Dices, FileText, Funnel, Link2, LoaderCircle, MessageSquarePlus, Orbit, X } from "lucide-react";
 
-import { ChatSessionSummarySchema, getToolLabel, type BillingOverview, type ChatSessionSummary, type ChunkSearchResult, type Citation, type MessageRecord, type NotificationRecord, type ProfileBookStat, type ProfileFacetStat, type ProfileQueryStat, type PublicProfileResponse, type UserProfile, type UserProfileStats, type WorkDetail, type WorkFacetCounts, type WorkSource, type WorkSummary } from "@alphabook/shared";
+import { ChatSessionSummarySchema, getToolLabel, type BillingOverview, type ChatSessionSummary, type ChunkSearchResult, type Citation, type DashboardEnvironment, type DashboardRun, type MessageRecord, type NotificationRecord, type ProfileBookStat, type ProfileFacetStat, type ProfileQueryStat, type PublicProfileResponse, type UserProfile, type UserProfileStats, type WorkDetail, type WorkFacetCounts, type WorkSource, type WorkSummary } from "@alphabook/shared";
 
-import { ApiError, buildSignInUrl, buildSignOutUrl, cancelRun, claimGuestProfile, createBillingCheckoutSession, createBillingPortalSession, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchAssistantDocumentState, fetchAssistantSessionBootstrap, fetchBillingOverview, fetchCurrentUser, fetchExploreSemanticSearch, fetchMessages, fetchNotifications, fetchProfile, fetchProfileStats, fetchRunState, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, getErrorMessage, markNotificationRead, queryAdminAnalytics, sendAnalyticsEvent, streamChat, streamExploreSemanticSearch, streamRun, unfollowProfile, type BillingLimitErrorPayload, type PersistedRunEventRecord, type RunArtifactRecord, type RunStateRecord, type SessionRunRecord } from "./api";
+import { ApiError, buildSignInUrl, buildSignOutUrl, cancelRun, claimGuestProfile, createBillingCheckoutSession, createBillingPortalSession, fetchAdminAccess, fetchAdminIncidents, fetchAdminRunLogs, fetchAdminRuns, fetchAdminSessions, fetchAdminUsers, fetchAssistantDocumentState, fetchAssistantSessionBootstrap, fetchBillingOverview, fetchCurrentUser, fetchDashboard, fetchExploreSemanticSearch, fetchMessages, fetchNotifications, fetchProfile, fetchProfileStats, fetchRunState, fetchRuns, fetchSessions, fetchWorkDetail, fetchWorks, fetchWorkSource, followProfile, getErrorMessage, markNotificationRead, queryAdminAnalytics, sendAnalyticsEvent, streamChat, streamExploreSemanticSearch, streamRun, unfollowProfile, type BillingLimitErrorPayload, type PersistedRunEventRecord, type RunArtifactRecord, type RunStateRecord, type SessionRunRecord } from "./api";
 import type { AssistantSurfaceProps } from "./components/assistant-surface";
 import { Avatar, AvatarFallback, AvatarImage } from "./components/ui/avatar";
 import { Button } from "./components/ui/button";
@@ -91,7 +91,7 @@ type AuthState = {
   error: string | null;
 };
 
-type ViewMode = "explore" | "assistant" | "assistant_document" | "profile" | "book" | "admin";
+type ViewMode = "dashboard" | "explore" | "assistant" | "assistant_document" | "profile" | "book" | "admin";
 type UrlWriteMode = "replace" | "push";
 type UrlState = {
   view: ViewMode;
@@ -158,6 +158,14 @@ type NotificationsState = {
   error: string | null;
   notifications: NotificationRecord[];
   unreadCount: number;
+};
+
+type DashboardState = {
+  loading: boolean;
+  error: string | null;
+  publicEnvironments: DashboardEnvironment[];
+  privateEnvironments: DashboardEnvironment[];
+  recentRuns: DashboardRun[];
 };
 
 type ThreadSuggestion = {
@@ -378,7 +386,9 @@ function buildSeoState(options: {
   const exploreDescription =
     activeView === "explore"
       ? "Browse the catalog, open full texts, and launch cited questions across the library."
-      : DEFAULT_SEO_DESCRIPTION;
+      : activeView === "dashboard"
+        ? "Open your research dashboard to revisit environments, datasets, and past runs."
+        : DEFAULT_SEO_DESCRIPTION;
   return {
     title: SEO_SITE_NAME,
     description: exploreDescription,
@@ -401,7 +411,7 @@ function buildSeoState(options: {
 }
 
 function isViewMode(value: string | null): value is ViewMode {
-  return value === "explore" || value === "assistant" || value === "assistant_document" || value === "profile" || value === "book" || value === "admin";
+  return value === "dashboard" || value === "explore" || value === "assistant" || value === "assistant_document" || value === "profile" || value === "book" || value === "admin";
 }
 
 function isRetryableReconnectError(error: unknown): boolean {
@@ -2255,6 +2265,7 @@ function ProfileIcon() {
 }
 
 const NAV_ITEMS: Array<{ id: ViewMode; label: string; icon: ComponentType }> = [
+  { id: "dashboard", label: "Dashboard", icon: Orbit },
   { id: "assistant", label: "New chat", icon: MessageSquarePlus },
   { id: "explore", label: "Explore", icon: CompassIcon },
   { id: "profile", label: "Profile", icon: ProfileIcon },
@@ -3503,6 +3514,149 @@ function SessionListCard({
   );
 }
 
+function formatRunStatusLabel(status: DashboardRun["status"]) {
+  switch (status) {
+    case "queued":
+      return "Queued";
+    case "running":
+      return "Running";
+    case "completed":
+      return "Completed";
+    case "failed":
+      return "Failed";
+    case "timed_out":
+      return "Timed out";
+    default:
+      return status;
+  }
+}
+
+function dashboardAccentStyle(token: string): CSSProperties {
+  switch (token) {
+    case "atlas":
+      return {
+        background: "linear-gradient(145deg, rgba(17,31,67,0.96), rgba(58,88,173,0.86))",
+        color: "rgba(255,255,255,0.96)",
+      };
+    case "briefing":
+      return {
+        background: "linear-gradient(145deg, rgba(92,40,19,0.95), rgba(199,117,72,0.84))",
+        color: "rgba(255,250,247,0.96)",
+      };
+    case "lab":
+      return {
+        background: "linear-gradient(145deg, rgba(16,64,54,0.96), rgba(75,154,129,0.82))",
+        color: "rgba(245,255,251,0.96)",
+      };
+    case "private-sand":
+      return {
+        background: "linear-gradient(145deg, rgba(249,239,227,0.98), rgba(255,255,255,0.96))",
+        color: "var(--ink)",
+      };
+    case "private-ink":
+    default:
+      return {
+        background: "linear-gradient(145deg, rgba(25,26,33,0.96), rgba(73,75,92,0.88))",
+        color: "rgba(255,255,255,0.96)",
+      };
+  }
+}
+
+function DashboardEnvironmentCard({
+  item,
+  onOpen,
+}: {
+  item: DashboardEnvironment;
+  onOpen: (sessionId: string | null) => void;
+}) {
+  const interactive = Boolean(item.sessionId);
+  return (
+    <button
+      type="button"
+      className={cn(
+        "group relative overflow-hidden rounded-[28px] border border-[rgba(72,43,37,0.08)] p-0 text-left shadow-[0_24px_60px_rgba(72,43,37,0.06)] transition hover:-translate-y-0.5 hover:shadow-[0_28px_80px_rgba(72,43,37,0.1)]",
+        !interactive && "cursor-default",
+      )}
+      style={dashboardAccentStyle(item.accentToken)}
+      onClick={() => onOpen(item.sessionId)}
+      disabled={!interactive}
+    >
+      <div className="space-y-6 p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="space-y-2">
+            <div className="flex flex-wrap gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] opacity-75">
+              <span>{item.accessLabel}</span>
+              <span>{item.kind}</span>
+            </div>
+            <h3 className="font-[Newsreader] text-[clamp(1.5rem,2.3vw,2rem)] font-semibold leading-[0.96] tracking-[-0.04em]">
+              {item.name}
+            </h3>
+          </div>
+          <span className="rounded-full border border-current/15 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.14em] opacity-80">
+            {item.statusLabel}
+          </span>
+        </div>
+        <p className="max-w-xl text-sm leading-6 opacity-85">{item.description}</p>
+        <div className="flex flex-wrap gap-2">
+          {item.tags.map((tag) => (
+            <span key={`${item.id}-${tag}`} className="rounded-full border border-current/15 px-3 py-1 text-xs opacity-80">
+              {tag}
+            </span>
+          ))}
+        </div>
+        <div className="grid gap-3 sm:grid-cols-3">
+          <div className="rounded-[18px] border border-current/10 bg-black/5 px-4 py-3">
+            <div className="text-[11px] uppercase tracking-[0.16em] opacity-70">Documents</div>
+            <div className="mt-1 text-lg font-semibold">{item.documentCount != null ? formatStatNumber(item.documentCount) : "Private"}</div>
+          </div>
+          <div className="rounded-[18px] border border-current/10 bg-black/5 px-4 py-3">
+            <div className="text-[11px] uppercase tracking-[0.16em] opacity-70">Runs</div>
+            <div className="mt-1 text-lg font-semibold">{formatStatNumber(item.runCount)}</div>
+          </div>
+          <div className="rounded-[18px] border border-current/10 bg-black/5 px-4 py-3">
+            <div className="text-[11px] uppercase tracking-[0.16em] opacity-70">Activity</div>
+            <div className="mt-1 text-lg font-semibold">{item.lastActiveAt ? formatRelativeTime(item.lastActiveAt) : "Shared"}</div>
+          </div>
+        </div>
+      </div>
+    </button>
+  );
+}
+
+function DashboardRunRow({
+  run,
+  onOpen,
+}: {
+  run: DashboardRun;
+  onOpen: (sessionId: string) => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onOpen(run.sessionId)}
+      className="grid w-full gap-3 rounded-[20px] border border-[rgba(72,43,37,0.08)] bg-white/80 px-4 py-4 text-left transition hover:border-[rgba(72,43,37,0.18)] hover:bg-white"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="space-y-1">
+          <div className="text-sm font-semibold text-[var(--ink)]">{run.sessionTitle ?? "Untitled session"}</div>
+          <div className="text-xs uppercase tracking-[0.16em] text-[var(--ink-soft)]">{formatRunStatusLabel(run.status)}</div>
+        </div>
+        <div className="text-right text-xs text-[var(--ink-soft)]">
+          <div>Started {formatRelativeTime(run.startedAt)}</div>
+          <div>{run.completedAt ? `Finished ${formatRelativeTime(run.completedAt)}` : "Still active"}</div>
+        </div>
+      </div>
+      {run.latestUserQuery ? (
+        <p className="text-sm leading-6 text-[var(--ink)]">{trimSentence(run.latestUserQuery, 180)}</p>
+      ) : null}
+      <div className="flex flex-wrap gap-2 text-xs text-[var(--ink-soft)]">
+        <span className="rounded-full bg-[rgba(72,43,37,0.06)] px-3 py-1">{pluralize(run.plannerTurns, "planner turn")}</span>
+        <span className="rounded-full bg-[rgba(72,43,37,0.06)] px-3 py-1">Run {run.id.slice(0, 8)}</span>
+      </div>
+    </button>
+  );
+}
+
 function trimSentence(value: string | null | undefined, maxLength = 180) {
   if (typeof value !== "string") {
     return null;
@@ -3759,6 +3913,13 @@ export default function App() {
   const [publicProfileLoading, setPublicProfileLoading] = useState(false);
   const [profileStats, setProfileStats] = useState<UserProfileStats | null>(null);
   const [profileStatsLoading, setProfileStatsLoading] = useState(false);
+  const [dashboardState, setDashboardState] = useState<DashboardState>({
+    loading: false,
+    error: null,
+    publicEnvironments: [],
+    privateEnvironments: [],
+    recentRuns: [],
+  });
   const [notificationsState, setNotificationsState] = useState<NotificationsState>({
     loading: false,
     error: null,
@@ -4283,6 +4444,81 @@ export default function App() {
       setActiveProfileUserId(currentUserId);
     }
   }, [activeView, activeProfileUserId, currentUserId]);
+
+  useEffect(() => {
+    if (authState.loading || !authState.user || activeView !== "assistant" || selectedSessionId) {
+      return;
+    }
+    if (typeof window === "undefined") {
+      return;
+    }
+    const url = new URL(window.location.href);
+    const hasExplicitSurface =
+      url.searchParams.has("view")
+      || url.searchParams.has("session")
+      || url.searchParams.has("work")
+      || url.searchParams.has("profile")
+      || url.searchParams.has("run")
+      || window.location.pathname !== "/";
+    if (hasExplicitSurface) {
+      return;
+    }
+    pendingUrlWriteModeRef.current = "replace";
+    setActiveView("dashboard");
+  }, [activeView, authState.loading, authState.user, selectedSessionId]);
+
+  useEffect(() => {
+    if (authState.loading) {
+      return;
+    }
+    if (activeView !== "dashboard") {
+      return;
+    }
+    if (!authState.user) {
+      setDashboardState({
+        loading: false,
+        error: null,
+        publicEnvironments: [],
+        privateEnvironments: [],
+        recentRuns: [],
+      });
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        setDashboardState((current) => ({ ...current, loading: true, error: null }));
+        const next = await fetchDashboard();
+        if (cancelled) {
+          return;
+        }
+        setDashboardState({
+          loading: false,
+          error: null,
+          publicEnvironments: next.publicEnvironments,
+          privateEnvironments: next.privateEnvironments,
+          recentRuns: next.recentRuns,
+        });
+      } catch (error) {
+        if (!cancelled) {
+          setDashboardState((current) => ({
+            ...current,
+            loading: false,
+            error: getErrorMessage(error, "We couldn't load your dashboard."),
+          }));
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeView,
+    authState.loading,
+    authState.user,
+  ]);
 
   useEffect(() => {
     if (!debugEnabled) {
@@ -7034,6 +7270,168 @@ export default function App() {
     );
   }
 
+  function renderDashboardView() {
+    if (authPending) {
+      return (
+        <section className="assistant-page">
+          <div className="assistant-thread-shell">
+            <AuthLoadingState compact />
+          </div>
+        </section>
+      );
+    }
+
+    if (authLocked || !hasAuthenticatedUser) {
+      return (
+        <section className="assistant-page">
+          <div className="assistant-thread-shell">
+            <LockedState compact title="Sign in to open your dashboard." />
+          </div>
+        </section>
+      );
+    }
+
+    const publicCount = dashboardState.publicEnvironments.length;
+    const privateCount = dashboardState.privateEnvironments.length;
+    const runCount = dashboardState.recentRuns.length;
+
+    return (
+      <div className="view-shell space-y-6">
+        <section className="grid gap-4 xl:grid-cols-[minmax(0,1.6fr)_minmax(18rem,0.8fr)]">
+          <Card className="overflow-hidden rounded-[30px] border-[rgba(72,43,37,0.06)] bg-[linear-gradient(135deg,rgba(19,22,36,0.98),rgba(54,63,96,0.92)_48%,rgba(208,120,75,0.78))] text-white shadow-[0_36px_120px_rgba(20,24,39,0.22)]">
+            <CardContent className="space-y-6 p-6 md:p-8">
+              <div className="space-y-3">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-white/70">Research dashboard</div>
+                <h1 className="max-w-3xl font-[Newsreader] text-[clamp(2.5rem,5vw,4.7rem)] font-semibold leading-[0.92] tracking-[-0.05em]">
+                  Private workspaces, public lanes, and the runs you’ve already shipped.
+                </h1>
+                <p className="max-w-2xl text-sm leading-7 text-white/78">
+                  Signed in as {displayProfileName}. Use this page to jump back into active environments, inspect recent run history, or start a fresh research pass.
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-3">
+                <Button type="button" className="bg-white text-black transition hover:bg-white/90" onClick={() => handleNavSelection("assistant")}>
+                  Start new run
+                </Button>
+                <Button type="button" variant="outline" className="border-white/20 bg-white/8 text-white hover:bg-white/14" onClick={() => handleNavSelection("explore")}>
+                  Browse public corpus
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+
+          <div className="grid gap-4">
+            <Card className="rounded-[26px] border-[rgba(72,43,37,0.06)] bg-[rgba(255,255,255,0.8)] shadow-none">
+              <CardContent className="grid gap-4 p-5">
+                <div className="rounded-[20px] bg-[rgba(72,43,37,0.04)] px-4 py-4">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--ink-soft)]">Public environments</div>
+                  <div className="mt-2 font-[Newsreader] text-4xl font-semibold tracking-[-0.05em] text-[var(--ink)]">{formatStatNumber(publicCount)}</div>
+                </div>
+                <div className="rounded-[20px] bg-[rgba(72,43,37,0.04)] px-4 py-4">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--ink-soft)]">Private environments</div>
+                  <div className="mt-2 font-[Newsreader] text-4xl font-semibold tracking-[-0.05em] text-[var(--ink)]">{formatStatNumber(privateCount)}</div>
+                </div>
+                <div className="rounded-[20px] bg-[rgba(72,43,37,0.04)] px-4 py-4">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--ink-soft)]">Recent runs</div>
+                  <div className="mt-2 font-[Newsreader] text-4xl font-semibold tracking-[-0.05em] text-[var(--ink)]">{formatStatNumber(runCount)}</div>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </section>
+
+        {dashboardState.error ? <ErrorNotice message={dashboardState.error} /> : null}
+
+        <section className="space-y-4">
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <h2 className="font-[Newsreader] text-[clamp(1.8rem,3vw,2.8rem)] font-semibold tracking-[-0.04em] text-[var(--ink)]">Datasets and environments</h2>
+              <p className="text-sm leading-6 text-[var(--ink-soft)]">Shared public lanes sit beside your own private research contexts.</p>
+            </div>
+          </div>
+          {dashboardState.loading ? (
+            <div className="grid gap-4 xl:grid-cols-2">
+              {[0, 1, 2, 3].map((item) => (
+                <Skeleton key={`dashboard-card-${item}`} className="h-[18rem] rounded-[28px]" />
+              ))}
+            </div>
+          ) : (
+            <div className="grid gap-6 xl:grid-cols-2">
+              <section className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--ink-soft)]">Public</div>
+                    <div className="text-sm text-[var(--ink-soft)]">Shared datasets and starting points.</div>
+                  </div>
+                </div>
+                <div className="grid gap-4">
+                  {dashboardState.publicEnvironments.map((item) => (
+                    <DashboardEnvironmentCard key={item.id} item={item} onOpen={openSession} />
+                  ))}
+                </div>
+              </section>
+
+              <section className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--ink-soft)]">Private</div>
+                    <div className="text-sm text-[var(--ink-soft)]">Only visible to your account.</div>
+                  </div>
+                </div>
+                {dashboardState.privateEnvironments.length > 0 ? (
+                  <div className="grid gap-4">
+                    {dashboardState.privateEnvironments.map((item) => (
+                      <DashboardEnvironmentCard key={item.id} item={item} onOpen={openSession} />
+                    ))}
+                  </div>
+                ) : (
+                  <Card className="rounded-[28px] border-[rgba(72,43,37,0.08)] bg-[rgba(255,255,255,0.82)] shadow-none">
+                    <CardContent className="space-y-3 p-5">
+                      <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--ink-soft)]">No private environments yet</div>
+                      <p className="max-w-xl text-sm leading-6 text-[var(--ink)]">
+                        Start a research run and we’ll surface the session here as your own private environment.
+                      </p>
+                      <Button type="button" onClick={() => handleNavSelection("assistant")}>Start your first run</Button>
+                    </CardContent>
+                  </Card>
+                )}
+              </section>
+            </div>
+          )}
+        </section>
+
+        <section className="space-y-4">
+          <div>
+            <h2 className="font-[Newsreader] text-[clamp(1.8rem,3vw,2.8rem)] font-semibold tracking-[-0.04em] text-[var(--ink)]">Past research runs</h2>
+            <p className="text-sm leading-6 text-[var(--ink-soft)]">Every recent run across your sessions, sorted newest first.</p>
+          </div>
+          {dashboardState.loading ? (
+            <div className="grid gap-3">
+              {[0, 1, 2].map((item) => (
+                <Skeleton key={`dashboard-run-${item}`} className="h-32 rounded-[24px]" />
+              ))}
+            </div>
+          ) : dashboardState.recentRuns.length > 0 ? (
+            <div className="grid gap-3">
+              {dashboardState.recentRuns.map((run) => (
+                <DashboardRunRow key={run.id} run={run} onOpen={openSession} />
+              ))}
+            </div>
+          ) : (
+            <Card className="rounded-[28px] border-[rgba(72,43,37,0.08)] bg-[rgba(255,255,255,0.82)] shadow-none">
+              <CardContent className="space-y-3 p-5">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--ink-soft)]">No runs yet</div>
+                <p className="max-w-xl text-sm leading-6 text-[var(--ink)]">
+                  Once you run research, the latest attempts will show up here with status, timing, and the prompt that kicked them off.
+                </p>
+              </CardContent>
+            </Card>
+          )}
+        </section>
+      </div>
+    );
+  }
+
   function renderProfileView() {
     const isPublicProfile = Boolean(activeProfileUserId && (!currentUserId || activeProfileUserId !== currentUserId));
     if (authPending) {
@@ -8075,6 +8473,8 @@ export default function App() {
 
   function renderMainView() {
     switch (activeView) {
+      case "dashboard":
+        return renderDashboardView();
       case "explore":
         return renderExploreView();
       case "assistant_document":

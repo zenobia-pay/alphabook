@@ -243,6 +243,97 @@ function publicAgentIdentity(agent: AgentIdentityRecord) {
   };
 }
 
+type DashboardEnvironmentRecord = {
+  id: string;
+  name: string;
+  visibility: "public" | "private";
+  kind: "dataset" | "environment";
+  description: string;
+  accessLabel: string;
+  statusLabel: string;
+  documentCount: number | null;
+  runCount: number;
+  lastActiveAt: string | null;
+  sessionId: string | null;
+  tags: string[];
+  accentToken: string;
+};
+
+function trimDashboardCopy(value: string | null | undefined, limit = 160) {
+  const normalized = typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+  if (!normalized) {
+    return "";
+  }
+  return normalized.length > limit ? `${normalized.slice(0, limit - 1).trimEnd()}…` : normalized;
+}
+
+function firstUserPrompt(messages: MessageRecord[]) {
+  return messages.find((message) => message.role === "user" && message.content.trim().length > 0)?.content ?? null;
+}
+
+function latestUserPrompt(messages: MessageRecord[]) {
+  return [...messages]
+    .reverse()
+    .find((message) => message.role === "user" && message.content.trim().length > 0)?.content ?? null;
+}
+
+function lastRunActivityAt(runs: RunRecord[]) {
+  return [...runs]
+    .sort((left, right) => (right.completedAt ?? right.startedAt).localeCompare(left.completedAt ?? left.startedAt))[0]?.completedAt
+    ?? [...runs].sort((left, right) => right.startedAt.localeCompare(left.startedAt))[0]?.startedAt
+    ?? null;
+}
+
+function buildPublicDashboardEnvironments(productName: string): DashboardEnvironmentRecord[] {
+  return [
+    {
+      id: "public-atlas",
+      name: "Public Atlas",
+      visibility: "public",
+      kind: "dataset",
+      description: `A public corpus lane for broad literary and historical scans across the ${productName} library.`,
+      accessLabel: "Public dataset",
+      statusLabel: "Shared with everyone",
+      documentCount: 60000,
+      runCount: 128,
+      lastActiveAt: null,
+      sessionId: null,
+      tags: ["general", "broad search", "shared"],
+      accentToken: "atlas",
+    },
+    {
+      id: "public-city-briefing",
+      name: "City Briefing Room",
+      visibility: "public",
+      kind: "environment",
+      description: "A shared environment tuned for quick background memos, comparisons, and annotated answer drafting.",
+      accessLabel: "Public environment",
+      statusLabel: "Ready for shared use",
+      documentCount: null,
+      runCount: 64,
+      lastActiveAt: null,
+      sessionId: null,
+      tags: ["briefings", "memos", "fast iteration"],
+      accentToken: "briefing",
+    },
+    {
+      id: "public-method-lab",
+      name: "Methods Lab",
+      visibility: "public",
+      kind: "environment",
+      description: "A shared setup for reproducible research flows, scoped prompts, and citation-heavy answer passes.",
+      accessLabel: "Public environment",
+      statusLabel: "Template lane",
+      documentCount: null,
+      runCount: 39,
+      lastActiveAt: null,
+      sessionId: null,
+      tags: ["methods", "citations", "templates"],
+      accentToken: "lab",
+    },
+  ];
+}
+
 function agentClaimUrl(deps: AppDeps, request: Request, claimToken: string) {
   return `${apiOrigin(deps, request)}/claim/${claimToken}`;
 }
@@ -16384,6 +16475,94 @@ export function createApp(inputDeps: CreateAppInput) {
   app.get("/sessions", handleListSessions);
   app.get("/v1/sessions", handleListSessions);
   app.get("/api/v1/sessions", handleListSessions);
+
+  const handleDashboard = async (c: Context) => {
+    const user = await resolveUser(c);
+    if (!user) {
+      return c.json({ error: "Authentication required." }, deps.auth?.isConfigured() ? 401 : 400);
+    }
+
+    const sessions = await deps.store.listSessions(user.id);
+    const sessionSnapshots = await Promise.all(
+      sessions.slice(0, 12).map(async (session) => {
+        const [messages, runs] = await Promise.all([
+          deps.store.listMessages(session.id),
+          deps.store.listRuns(session.id),
+        ]);
+        const firstPrompt = firstUserPrompt(messages);
+        const latestPrompt = latestUserPrompt(messages);
+        return {
+          session,
+          runs,
+          firstPrompt,
+          latestPrompt,
+          lastActiveAt: lastRunActivityAt(runs) ?? session.lastMessageAt ?? session.createdAt,
+        };
+      }),
+    );
+
+    const privateEnvironments = sessionSnapshots
+      .filter(({ runs, firstPrompt, latestPrompt, session }) => (
+        runs.length > 0
+        || Boolean(firstPrompt)
+        || Boolean(latestPrompt)
+        || Boolean(session.title)
+      ))
+      .slice(0, 6)
+      .map((entry, index) => {
+        const latestRun = [...entry.runs].sort((left, right) => right.startedAt.localeCompare(left.startedAt))[0] ?? null;
+        const promptPreview = trimDashboardCopy(entry.latestPrompt ?? entry.firstPrompt, 132);
+        return {
+          id: `private-${entry.session.id}`,
+          name: trimDashboardCopy(entry.session.title, 48) || `Research environment ${index + 1}`,
+          visibility: "private" as const,
+          kind: latestRun && entry.runs.length > 1 ? "environment" as const : "dataset" as const,
+          description: promptPreview || "A private research lane built from your prior prompts and runs.",
+          accessLabel: "Private to you",
+          statusLabel:
+            latestRun?.status === "running"
+              ? "Active run in progress"
+              : latestRun?.status === "queued"
+                ? "Queued to run"
+                : entry.runs.length > 0
+                  ? "Recent private activity"
+                  : "Saved private context",
+          documentCount: null,
+          runCount: entry.runs.length,
+          lastActiveAt: entry.lastActiveAt,
+          sessionId: entry.session.id,
+          tags: [
+            ...(latestRun ? [latestRun.status] : []),
+            ...(entry.session.activeRunStatus ? ["live"] : []),
+          ].slice(0, 3),
+          accentToken: index % 2 === 0 ? "private-ink" : "private-sand",
+        };
+      });
+
+    const recentRuns = sessionSnapshots
+      .flatMap((entry) => entry.runs.map((run) => ({
+        id: run.id,
+        sessionId: run.sessionId,
+        sessionTitle: entry.session.title,
+        latestUserQuery: trimDashboardCopy(entry.latestPrompt, 160) || null,
+        status: run.status,
+        plannerTurns: run.plannerTurns,
+        startedAt: run.startedAt,
+        completedAt: run.completedAt,
+      })))
+      .sort((left, right) => right.startedAt.localeCompare(left.startedAt))
+      .slice(0, 14);
+
+    return c.json({
+      publicEnvironments: buildPublicDashboardEnvironments(deps.implementation?.productName ?? "AlphaBook"),
+      privateEnvironments,
+      recentRuns,
+    });
+  };
+
+  app.get("/dashboard", handleDashboard);
+  app.get("/v1/dashboard", handleDashboard);
+  app.get("/api/v1/dashboard", handleDashboard);
 
   const handleListMessages = async (c: Context) => {
     const sessionId = c.req.param("sessionId") ?? "";
