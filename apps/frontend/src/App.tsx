@@ -3197,10 +3197,12 @@ function ResearchArtifactDocument({
   sessionTitle,
   documentHtml,
   emptyState = "No research has been written yet.",
+  showTitle = true,
 }: {
   sessionTitle: string;
   documentHtml: string;
   emptyState?: ReactNode;
+  showTitle?: boolean;
 }) {
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const previousHtmlRef = useRef<string>("");
@@ -3243,9 +3245,11 @@ function ResearchArtifactDocument({
       <section className="assistant-document-pane">
         <div className="assistant-document-scroll">
           <div className="assistant-document-text">
-            <h1 className="assistant-document-entry is-title">
-              {sessionTitle.trim() || "Research log"}
-            </h1>
+            {showTitle ? (
+              <h1 className="assistant-document-entry is-title">
+                {sessionTitle.trim() || "Research log"}
+              </h1>
+            ) : null}
             {documentHtml.trim().length > 0 ? (
               <div ref={bodyRef} className="assistant-document-body" />
             ) : emptyState ? (
@@ -3255,6 +3259,132 @@ function ResearchArtifactDocument({
         </div>
       </section>
     </ResearchDocumentErrorBoundary>
+  );
+}
+
+function formatArtifactBytes(bytes: number | null | undefined) {
+  if (typeof bytes !== "number" || !Number.isFinite(bytes) || bytes < 0) {
+    return null;
+  }
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function artifactDisplayName(artifact: RunArtifactRecord) {
+  return artifact.filename.trim().split("/").at(-1) || artifact.filename || "Artifact";
+}
+
+function isViewableDocumentArtifact(artifact: RunArtifactRecord) {
+  if (artifact.metadata?.kind === "research_document") {
+    return false;
+  }
+  return typeof artifact.content === "string" && artifact.content.trim().length > 0;
+}
+
+function artifactSheetKey(artifact: RunArtifactRecord) {
+  return `${artifact.r2Key ?? artifact.filename}-${artifact.createdAt ?? ""}`;
+}
+
+function ResearchArtifactSheet({
+  artifacts,
+  open,
+  onOpenChange,
+}: {
+  artifacts: RunArtifactRecord[];
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const viewableArtifacts = useMemo(() => artifacts.filter(isViewableDocumentArtifact), [artifacts]);
+  const [selectedArtifactKey, setSelectedArtifactKey] = useState<string | null>(null);
+  const selectedArtifact = useMemo(() => {
+    if (viewableArtifacts.length === 0) {
+      return null;
+    }
+    return viewableArtifacts.find((artifact) => artifactSheetKey(artifact) === selectedArtifactKey) ?? viewableArtifacts[0] ?? null;
+  }, [selectedArtifactKey, viewableArtifacts]);
+
+  useEffect(() => {
+    if (!open || viewableArtifacts.length === 0) {
+      return;
+    }
+    if (selectedArtifact && viewableArtifacts.includes(selectedArtifact)) {
+      return;
+    }
+    const first = viewableArtifacts[0];
+    setSelectedArtifactKey(first ? artifactSheetKey(first) : null);
+  }, [open, selectedArtifact, viewableArtifacts]);
+
+  if (!open) {
+    return null;
+  }
+
+  return (
+    <div className="assistant-document-artifact-layer" role="presentation">
+      <button
+        type="button"
+        className="assistant-document-artifact-backdrop"
+        aria-label="Close artifacts"
+        onClick={() => onOpenChange(false)}
+      />
+      <aside className="assistant-document-artifact-sheet" aria-label="Artifacts">
+        <header className="assistant-document-artifact-sheet-header">
+          <div>
+            <h2>Artifacts</h2>
+            <p>{viewableArtifacts.length} viewable</p>
+          </div>
+          <button
+            type="button"
+            className="assistant-document-icon-button"
+            aria-label="Close artifacts"
+            onClick={() => onOpenChange(false)}
+          >
+            <X aria-hidden="true" />
+          </button>
+        </header>
+
+        {viewableArtifacts.length > 0 ? (
+          <div className="assistant-document-artifact-browser">
+            <nav className="assistant-document-artifact-list" aria-label="Artifact files">
+              {viewableArtifacts.map((artifact) => {
+                const key = artifactSheetKey(artifact);
+                const selected = selectedArtifact === artifact;
+                const size = formatArtifactBytes(artifact.byteSize);
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    className={cn("assistant-document-artifact-row", selected && "is-selected")}
+                    aria-pressed={selected}
+                    onClick={() => setSelectedArtifactKey(key)}
+                  >
+                    <FileText aria-hidden="true" />
+                    <span>
+                      <strong>{artifactDisplayName(artifact)}</strong>
+                      <small>{[artifact.mimeType, size].filter(Boolean).join(" · ")}</small>
+                    </span>
+                  </button>
+                );
+              })}
+            </nav>
+
+            <section className="assistant-document-artifact-preview" aria-label={selectedArtifact?.filename ?? "Artifact preview"}>
+              <div className="assistant-document-artifact-preview-head">
+                <strong>{selectedArtifact ? artifactDisplayName(selectedArtifact) : "Artifact"}</strong>
+                {selectedArtifact?.filename ? <span>{selectedArtifact.filename}</span> : null}
+              </div>
+              <pre>{selectedArtifact?.content ?? ""}</pre>
+            </section>
+          </div>
+        ) : (
+          <div className="assistant-document-artifact-empty">No viewable artifacts are available for this run.</div>
+        )}
+      </aside>
+    </div>
   );
 }
 
@@ -3279,6 +3409,7 @@ function AssistantDocumentFramePage({
   ));
   const [runStatus, setRunStatus] = useState<SessionRunRecord["status"] | null>(() => bootstrap?.runState?.run?.status ?? null);
   const [sessionTitle, setSessionTitle] = useState<string>(() => deriveAssistantDocumentTitle(bootstrap?.sessionTitle, bootstrapHydratedMessages));
+  const [artifactSheetOpen, setArtifactSheetOpen] = useState(false);
   const [loading, setLoading] = useState(bootstrap ? false : !hasServerRenderedDocument);
   const [error, setError] = useState<string | null>(bootstrap?.error ?? null);
   const [errorStatus, setErrorStatus] = useState<number | null>(bootstrap?.errorStatus ?? null);
@@ -3392,6 +3523,7 @@ function AssistantDocumentFramePage({
     () => currentResearchDocumentHtml(messages, artifacts, runId),
     [artifacts, messages, runId],
   );
+  const viewableArtifactCount = useMemo(() => artifacts.filter(isViewableDocumentArtifact).length, [artifacts]);
 
   if (loading && !hasServerRenderedDocument) {
     return (
@@ -3428,9 +3560,26 @@ function AssistantDocumentFramePage({
 
   return (
     <section className="assistant-document-pane assistant-document-standalone" data-run-status={runStatus ?? "unknown"}>
+      <button
+        type="button"
+        className="assistant-document-artifact-trigger"
+        aria-label="Show artifacts"
+        aria-haspopup="dialog"
+        aria-expanded={artifactSheetOpen}
+        onClick={() => setArtifactSheetOpen(true)}
+      >
+        <FileText aria-hidden="true" />
+        <span>{viewableArtifactCount}</span>
+      </button>
       <ResearchArtifactDocument
         sessionTitle={sessionTitle}
         documentHtml={documentHtml}
+        showTitle={false}
+      />
+      <ResearchArtifactSheet
+        artifacts={artifacts}
+        open={artifactSheetOpen}
+        onOpenChange={setArtifactSheetOpen}
       />
     </section>
   );

@@ -549,6 +549,67 @@ test("session route bootstraps transcript content immediately when session data 
   await expect(page.getByText("Bootstrap research document.")).toBeVisible();
 });
 
+test("assistant document page reads as one section and opens artifacts in a side sheet", async ({ page }) => {
+  const sessionId = "11111111-1111-4111-8111-111111111115";
+  const runId = "22222222-2222-4222-8222-222222222223";
+
+  await page.addInitScript((bootstrap) => {
+    (window as Window & {
+      __ALPHABOOK_ASSISTANT_DOCUMENT_BOOTSTRAP__?: unknown;
+    }).__ALPHABOOK_ASSISTANT_DOCUMENT_BOOTSTRAP__ = bootstrap;
+  }, {
+    sessionId,
+    runId,
+    sessionTitle: "Enriched Tweets",
+    messages: [],
+    runState: {
+      run: {
+        id: runId,
+        sessionId,
+        startedAt: "2026-04-23T20:32:00.000Z",
+        completedAt: "2026-04-23T20:42:00.000Z",
+        status: "completed",
+        plannerTurns: 1,
+      },
+      artifacts: [
+        {
+          id: "artifact-document",
+          runId,
+          filename: "research-document.html",
+          mimeType: "text/html",
+          content: "<p>Task: Build a dataset of responses to viral tweets.</p>",
+          createdAt: "2026-04-23T20:42:00.000Z",
+          metadata: {
+            kind: "research_document",
+          },
+        },
+        {
+          id: "artifact-dataset",
+          runId,
+          filename: "inner/dataset.csv",
+          mimeType: "text/csv",
+          byteSize: 24,
+          content: "tweet_id,quote_id\n1,10\n",
+          createdAt: "2026-04-23T20:42:01.000Z",
+          metadata: {},
+        },
+      ],
+    },
+  });
+
+  await page.goto(`/?view=assistant_document&session=${sessionId}&run=${runId}`, { waitUntil: "domcontentloaded" });
+
+  await expect(page.getByText("Task: Build a dataset of responses to viral tweets.")).toBeVisible();
+  await expect(page.locator(".assistant-document-entry.is-title")).toHaveCount(0);
+  await expect(page.getByText("Agent run")).toHaveCount(0);
+  await expect(page.getByText("Requested artifacts")).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Show artifacts" }).click();
+  await expect(page.getByRole("complementary", { name: "Artifacts" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /dataset\.csv/ })).toBeVisible();
+  await expect(page.getByText("tweet_id,quote_id")).toBeVisible();
+});
+
 test("work route bootstraps the reader iframe immediately on load", async ({ page }) => {
   const workId = "591240be-ecf2-4c48-966a-57531a341da0";
 

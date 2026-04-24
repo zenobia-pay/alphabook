@@ -2841,6 +2841,7 @@ button {
 }
 
 .assistant-document-standalone {
+  position: relative;
   height: 100%;
   min-height: 100vh;
   background: linear-gradient(180deg, rgba(255, 254, 251, 0.96), rgba(246, 243, 238, 0.98));
@@ -2999,6 +3000,216 @@ button {
 .assistant-document-citation .assistant-document-link:hover {
   text-decoration: underline;
   text-underline-offset: 0.15em;
+}
+
+.assistant-document-artifact-trigger {
+  position: fixed;
+  top: 24px;
+  right: 24px;
+  z-index: 45;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 42px;
+  height: 42px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(20, 20, 20, 0.86);
+  color: white;
+  box-shadow: 0 12px 34px rgba(25, 22, 18, 0.16);
+  cursor: pointer;
+}
+
+.assistant-document-artifact-trigger svg,
+.assistant-document-icon-button svg,
+.assistant-document-artifact-row svg {
+  width: 17px;
+  height: 17px;
+}
+
+.assistant-document-artifact-trigger span {
+  font-family: "Manrope", sans-serif;
+  font-size: 0.76rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.assistant-document-artifact-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  pointer-events: none;
+}
+
+.assistant-document-artifact-backdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  background: rgba(18, 17, 15, 0.22);
+  pointer-events: auto;
+}
+
+.assistant-document-artifact-sheet {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(46rem, 100vw);
+  background: rgba(255, 254, 251, 0.98);
+  box-shadow: -26px 0 70px rgba(30, 27, 23, 0.2);
+  pointer-events: auto;
+}
+
+.assistant-document-artifact-sheet-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 22px 24px 16px;
+}
+
+.assistant-document-artifact-sheet-header h2 {
+  margin: 0;
+  font-family: "Manrope", sans-serif;
+  font-size: 0.94rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+
+.assistant-document-artifact-sheet-header p {
+  margin: 4px 0 0;
+  font-family: "Manrope", sans-serif;
+  font-size: 0.78rem;
+  color: var(--ink-subtle);
+}
+
+.assistant-document-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(38, 38, 38, 0.06);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.assistant-document-artifact-browser {
+  display: grid;
+  grid-template-columns: minmax(12rem, 16rem) minmax(0, 1fr);
+  min-height: 0;
+}
+
+.assistant-document-artifact-list {
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 12px 24px 18px;
+}
+
+.assistant-document-artifact-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  width: 100%;
+  margin: 0;
+  padding: 11px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.assistant-document-artifact-row:hover,
+.assistant-document-artifact-row.is-selected {
+  background: rgba(38, 38, 38, 0.055);
+}
+
+.assistant-document-artifact-row strong,
+.assistant-document-artifact-row small {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "Manrope", sans-serif;
+}
+
+.assistant-document-artifact-row strong {
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.assistant-document-artifact-row small {
+  margin-top: 2px;
+  font-size: 0.72rem;
+  color: var(--ink-subtle);
+}
+
+.assistant-document-artifact-preview {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  padding: 8px 20px 22px 8px;
+}
+
+.assistant-document-artifact-preview-head {
+  display: grid;
+  gap: 3px;
+  padding: 11px 0 12px;
+  font-family: "Manrope", sans-serif;
+}
+
+.assistant-document-artifact-preview-head strong,
+.assistant-document-artifact-preview-head span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assistant-document-artifact-preview-head strong {
+  color: var(--ink);
+  font-size: 0.9rem;
+}
+
+.assistant-document-artifact-preview-head span {
+  color: var(--ink-subtle);
+  font-size: 0.74rem;
+}
+
+.assistant-document-artifact-preview pre {
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  overflow: auto;
+  padding: 14px;
+  border-radius: 8px;
+  background: rgba(26, 25, 23, 0.05);
+  color: var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.78rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.assistant-document-artifact-empty {
+  padding: 28px 24px;
+  font-family: "Manrope", sans-serif;
+  font-size: 0.9rem;
+  color: var(--ink-subtle);
 }
 
 .book-page {
@@ -4191,6 +4402,36 @@ button {
 
   .assistant-document-scroll {
     padding: 16px;
+  }
+
+  .assistant-document-artifact-trigger {
+    top: 14px;
+    right: 14px;
+  }
+
+  .assistant-document-artifact-sheet {
+    width: 100vw;
+  }
+
+  .assistant-document-artifact-browser {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .assistant-document-artifact-list {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 6px 18px 8px;
+  }
+
+  .assistant-document-artifact-row {
+    flex: 0 0 12rem;
+  }
+
+  .assistant-document-artifact-preview {
+    padding: 0 18px 18px;
   }
 
   .book-reader-pane {
